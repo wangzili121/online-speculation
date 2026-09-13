@@ -20,6 +20,11 @@ def _version(distribution):
         return None
 
 
+def _has_orthrus_plugin():
+    return any(entry.name == "blockspec_orthrus"
+               for entry in metadata.entry_points(group="vllm.general_plugins"))
+
+
 def check(*, model, workload, runtime_root, max_model_len,
           expected_version="0.23.0", profiler=None):
     import torch
@@ -31,12 +36,17 @@ def check(*, model, workload, runtime_root, max_model_len,
         "vllm_ascend": _version("vllm-ascend"),
         "torch": _version("torch"),
         "torch_npu": _version("torch-npu"),
+        "online_speculation": _version("online-speculation"),
     }
     failures = []
     for name in ("vllm", "vllm_ascend"):
         value = versions[name] or ""
         if value.split("+", 1)[0] != expected_version:
             failures.append(f"{name} must be {expected_version}, found {value or 'missing'}")
+    plugin_registered = _has_orthrus_plugin()
+    if not plugin_registered:
+        failures.append(
+            "Orthrus vLLM plugin is not installed; run pip install -e . --no-deps")
     required_model_files = [model / "config.json", model / "tokenizer.json",
                             model / "model.safetensors"]
     for path in required_model_files:
@@ -118,6 +128,7 @@ def check(*, model, workload, runtime_root, max_model_len,
         "workload_requests": len(records),
         "workload_sha256": sha256_file(workload),
         "runtime_markers": markers,
+        "orthrus_plugin_registered": plugin_registered,
         "profiler": profiler,
         "profile_dependencies": profile_dependencies,
     }

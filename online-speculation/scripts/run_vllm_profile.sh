@@ -37,6 +37,7 @@ PROFILE_SECONDS="${PROFILE_SECONDS:-10}"
 PROFILE_WAIT_TIMEOUT="${PROFILE_WAIT_TIMEOUT:-1200}"
 MIN_SPEC_DRAFTS="${MIN_SPEC_DRAFTS:-32}"
 PROFILE_SYMBOLS_PATH="${PROFILE_SYMBOLS_PATH:-}"
+SERVICE_CAPTURE_MODE="${SERVICE_CAPTURE_MODE:-window}"
 
 output_dir="$ARTIFACT_ROOT/$PROFILE_ID"
 mkdir -p "$output_dir"
@@ -86,16 +87,27 @@ python scripts/capture_trial_manifest.py \
 export PORT MNS MBT MEMORY MAX_MODEL_LEN GRAPH_MODE ASYNC_SCHEDULING
 export MAX_GRAPH_CAPTURE_SIZE PROFILE_SYMBOLS_PATH
 export ORTHRUS_TRACE_FILE="$output_dir/orthrus-events-{pid}.jsonl"
+export PROMETHEUS_MULTIPROC_DIR="$output_dir/prometheus"
+mkdir -p "$PROMETHEUS_MULTIPROC_DIR"
 if [[ "$PROFILE_KIND" == "torch" ]]; then
   export TORCH_PROFILE_DIR="$output_dir/torch-raw"
   unset SERVICE_PROFILE_CONFIG
 else
+  if [[ -z "$PROFILE_SYMBOLS_PATH" ]]; then
+    PROFILE_SYMBOLS_PATH="$repo_root/runtime/vllm_ascend_v0_23/service_profiling_symbols.yaml"
+    export PROFILE_SYMBOLS_PATH
+  fi
   mkdir -p "$output_dir/service-raw"
   SERVICE_PROFILE_CONFIG="$output_dir/service-config.json"
+  service_create_args=()
+  if [[ "$SERVICE_CAPTURE_MODE" == "startup" ]]; then
+    service_create_args+=(--enabled)
+  fi
   python scripts/service_profile_vllm_orthrus.py create \
     --config "$SERVICE_PROFILE_CONFIG" \
     --profile-directory "$output_dir/service-raw" \
-    --seconds "$PROFILE_SECONDS" >"$output_dir/service-create.json"
+    --seconds "$PROFILE_SECONDS" \
+    "${service_create_args[@]}" >"$output_dir/service-create.json"
   export SERVICE_PROFILE_CONFIG
   unset TORCH_PROFILE_DIR
 fi
@@ -124,6 +136,10 @@ if (( WARMUP_REQUESTS > 0 )); then
     --output "$output_dir/warmup.json" >"$output_dir/warmup-summary.json"
 fi
 
+profile_args=()
+if [[ "$PROFILE_KIND" == "service" && "$SERVICE_CAPTURE_MODE" == "startup" ]]; then
+  profile_args+=(--service-startup-capture)
+fi
 python scripts/profile_vllm_orthrus.py \
   --profiler "$PROFILE_KIND" \
   --endpoint "http://127.0.0.1:$PORT" \
@@ -135,6 +151,8 @@ python scripts/profile_vllm_orthrus.py \
   --profile-wait-timeout "$PROFILE_WAIT_TIMEOUT" \
   --min-spec-drafts "$MIN_SPEC_DRAFTS" \
   --service-config "${SERVICE_PROFILE_CONFIG:-}" \
+  --service-log "$output_dir/server.log" \
+  "${profile_args[@]}" \
   --output "$output_dir/load.json" >"$output_dir/load-summary.json"
 
 kill -TERM "$server_pid"

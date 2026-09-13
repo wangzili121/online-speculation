@@ -14,14 +14,16 @@ def main():
     create.add_argument("--config", required=True)
     create.add_argument("--profile-directory", required=True)
     create.add_argument("--seconds", type=float, required=True)
+    create.add_argument("--enabled", action="store_true")
     analyze = subparsers.add_parser("analyze")
     analyze.add_argument("--input", required=True)
     analyze.add_argument("--output", required=True)
     args = parser.parse_args()
     if args.command == "create":
-        write_service_config(args.config, args.profile_directory, args.seconds)
+        write_service_config(args.config, args.profile_directory, args.seconds,
+                             enabled=args.enabled)
         result = {"config": args.config, "profile_directory": args.profile_directory,
-                  "seconds": args.seconds}
+                  "seconds": args.seconds, "enabled": args.enabled}
     else:
         result = analyze_service(args.input, args.output)
     print(report.dumps(result, indent=2))

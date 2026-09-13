@@ -28,7 +28,8 @@ verify，不是 32 个候选。
 - [x] PyTorch AR 与 vLLM AR 在相同模板下连续 64 个 greedy token 一致。
 - [x] B1 eager 与 `FULL_AND_PIECEWISE` 单请求 smoke，后者确认 ACL Graph replay。
 - [x] 256 条 6K--40K 混合编码 workload 和流式 TTFT/TPOT 测量入口。
-- [x] B1 单卡粗搜索收敛；正式 1024-token 复验正在运行。
+- [x] B1 单卡 256-token 粗搜索收敛。
+- [ ] B1 1024-token 正式稳定性复验：memory 0.94 已失败，0.90 正在复验。
 - [x] Torch-NPU、MS Service Profiler 和 Orthrus request-aware trace 采集入口。
 - [ ] B1 正式 profiling。
 - [ ] Draft/Verify 协同调度、异步续训、sparse draft KV、DDTree。
@@ -93,3 +94,17 @@ MNS 128、MBT 128K 和 memory 0.96/0.98 均已覆盖，且分别变慢或失败�
 不再机械扩展 MNS 256/512、MBT 256K 或 memory 0.97。`async scheduling`
 被 vLLM 0.23 的 `custom_class` speculative backend 明确禁用，记录为能力限制，
 不伪装成性能结论。
+
+## 1024-token 稳定性反例
+
+将 256-token 胜出配置原样用于 64-request、1024-token 输出时，服务在完成
+23/64 条后崩溃，因此 `memory=0.94` 不能成为正式 B1。崩溃前实际 running
+约 20、waiting 约 21、KV 使用率约 87%，错误来自 Orthrus draft attention
+的 `aclnnStack`，底层明确报告 device memory allocation failure。这里的
+额外显存不是普通 KV 配额，而是当前 eager draft 路径为每个请求、每层收集
+完整历史 KV，并将 GQA KV 展开到全部 query heads 所产生的临时张量。
+
+因此正式复验先降低 KV 预留到 `memory=0.90`，为 Orthrus 临时工作区留出
+空间。若仍失败，再验证 0.88；这属于让固定算法 workload 稳定运行的系统
+配置选择。后续 profiling 会单独量化 KV gather、GQA materialization 和
+draft attention，不能用短输出粗筛掩盖这一专属路径。

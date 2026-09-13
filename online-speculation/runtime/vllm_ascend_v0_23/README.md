@@ -21,3 +21,14 @@ pass. It deliberately does not install the incompatible PyPI
 `msserviceprofiler==1.2.2` command from the older CANN stack. Performance trials
 continue to use the unmodified official base image; the profiler image is not
 used for throughput numbers.
+
+Install this repository inside every fresh runtime container before preflight,
+even when its source directory is already on `PYTHONPATH`:
+
+```bash
+python -m pip install -e /workspace/online-speculation --no-deps
+```
+
+This creates the `vllm.general_plugins` entry point that registers
+`OrthrusLM`. Merely mounting `src/` is insufficient, and preflight rejects that
+state.

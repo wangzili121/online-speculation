@@ -3,21 +3,24 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 
 
-def write_service_config(path, profile_directory, duration):
+def write_service_config(path, profile_directory, duration, *, enabled=False):
     payload = {
-        "enable": 0,
+        "enable": int(enabled),
         "prof_dir": str(Path(profile_directory).resolve()),
         "profiler_level": "INFO",
         "host_system_usage_freq": -1,
         "npu_memory_usage_freq": -1,
         "acl_task_time": 0,
         "acl_prof_task_time_level": "",
-        "timelimit": max(1, int(duration) + 2),
+        # The runner stops collection explicitly. Keep a documented 120-second
+        # safety limit so CANN cannot race a short requested window.
+        "timelimit": 0 if enabled else max(120, int(duration) + 60),
         "domain": "Request;KVCache;ModelExecute;BatchSchedule;Communication",
     }
     with open(path, "x", encoding="utf-8") as handle:
@@ -29,10 +32,12 @@ def set_service_enabled(path, enabled):
     path = Path(path)
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["enable"] = int(enabled)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n",
-                         encoding="utf-8")
-    temporary.replace(path)
+    # CANN watches this exact path. Preserve the inode and force the update to
+    # disk so its polling thread cannot miss a short profiling window.
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True, indent=2) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def analyze_service(input_directory, output_directory, timeout=1800):

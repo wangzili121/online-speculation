@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+from pathlib import Path
 
 import aiohttp
 
@@ -23,6 +24,23 @@ async def metrics(session, endpoint):
     async with session.get(f"{endpoint.rstrip('/')}/metrics") as response:
         response.raise_for_status()
         return parse_metrics(await response.text())
+
+
+def signal_count(path, message):
+    if not path:
+        return 0
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace").count(message)
+    except FileNotFoundError:
+        return 0
+
+
+async def wait_for_service_signal(path, message, previous, timeout):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while signal_count(path, message) <= previous:
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError(f"service profiler did not report: {message}")
+        await asyncio.sleep(0.5)
 
 
 async def wait_for_decode_window(session, endpoint, baseline, benchmark, args):
@@ -64,24 +82,36 @@ async def run(args):
             profile_started = asyncio.get_running_loop().time()
             if args.profiler == "torch":
                 await control(session, args.endpoint, "start_profile")
-            else:
+            elif not args.service_startup_capture:
+                starts = signal_count(
+                    args.service_log, "Received profiler start signal from C++")
                 set_service_enabled(args.service_config, True)
+                await wait_for_service_signal(
+                    args.service_log, "Received profiler start signal from C++",
+                    starts, args.service_signal_timeout)
             enabled = True
             await asyncio.sleep(args.profile_seconds)
             if args.profiler == "torch":
                 await control(session, args.endpoint, "stop_profile")
-            else:
+            elif not args.service_startup_capture:
+                stops = signal_count(
+                    args.service_log, "Received profiler stop signal from C++")
                 set_service_enabled(args.service_config, False)
+                await wait_for_service_signal(
+                    args.service_log, "Received profiler stop signal from C++",
+                    stops, args.service_signal_timeout)
             enabled = False
         result = await benchmark
     except BaseException:
-        if enabled and args.profiler == "service":
+        if (enabled and args.profiler == "service" and
+                not args.service_startup_capture):
             set_service_enabled(args.service_config, False)
         benchmark.cancel()
         await asyncio.gather(benchmark, return_exceptions=True)
         raise
     result["profile_window"] = {
         "profiler": args.profiler,
+        "service_startup_capture": args.service_startup_capture,
         "minimum_ramp_up_seconds": args.ramp_up_seconds,
         "started_after_seconds": profile_started - started,
         "profile_seconds": args.profile_seconds,
@@ -112,12 +142,19 @@ def main():
     parser.add_argument("--profiler", choices=("torch", "service"),
                         default="torch")
     parser.add_argument("--service-config")
+    parser.add_argument("--service-log")
+    parser.add_argument("--service-signal-timeout", type=float, default=90.0)
+    parser.add_argument("--service-startup-capture", action="store_true",
+                        help="service profiler was enabled before server startup")
     parser.add_argument("--timeout", type=float, default=1800.0)
     parser.add_argument("--seed", type=int, default=20260914)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     if args.profiler == "service" and not args.service_config:
         parser.error("--service-config is required for service profiling")
+    if (args.profiler == "service" and not args.service_startup_capture
+            and not args.service_log):
+        parser.error("--service-log is required for windowed service profiling")
     result = asyncio.run(run(args))
     with open(args.output, "x", encoding="utf-8") as handle:
         report.dump(result, handle, indent=2)
