@@ -1,0 +1,356 @@
+[run]
+name = "gsm8k-llada-moe-a1b-3090-paired"
+ar_reference_config = "configs/gsm8k_3090_aligned.toml"
+sample_count = 32
+subset_seed = 20260808
+seed = 20260808
+
+[model]
+path = "models/LLaDA-MoE-7B-A1B-Instruct-783d3467"
+source = "inclusionAI/LLaDA-MoE-7B-A1B-Instruct"
+revision = "783d3467f108d28ac0a78d3e41af16ab05cabd8d"
+modelscope_source = "inclusionAI/LLaDA-MoE-7B-A1B-Instruct"
+modelscope_revision = "master"
+architecture = "masked_diffusion_moe"
+total_parameter_scale = "7B"
+active_parameter_scale = "1.4B"
+active_parameters = 1400000000
+mask_token_id = 156895
+weight_files = [
+  "model-00001-of-00003.safetensors",
+  "model-00002-of-00003.safetensors",
+  "model-00003-of-00003.safetensors",
+]
+weight_bytes = [4999258928, 4997188984, 4717712520]
+weight_sha256 = [
+  "84a7f34af2f3f14d767b0106b8fa7f0d7f9b95a0eeac74f2ab3f21bd69a03908",
+  "2ddb9174a03003263250c789942372382e2ce97f115377e28cb749c082f0b2d7",
+  "b1998424a021938681487ece097838f7131324eb4f776b8b0ce0c515526b31f4",
+]
+
+[proposal]
+kind = "shared_prefix_layers"
+layers = 8
+purpose = "shared-weight early-exit proposal with the same tokenizer and exact trajectory support"
+
+[alignment]
+method = "vrpo"
+adapter = "models/LLaDA-MoE-7B-A1B-Instruct-VRPO-GSM8K"
+reference = "models/LLaDA-MoE-7B-A1B-Instruct-783d3467"
+
+[vrpo_training]
+preference_data = "data/gsm8k/llada_vrpo_preferences.jsonl"
+preference_manifest = "data/gsm8k/llada_vrpo_preferences.manifest.json"
+candidate_pool_size = 512
+preference_pairs = 205
+num_generations = 4
+include_reference_completion = true
+max_steps = 205
+gradient_accumulation_steps = 4
+timestep_samples = 8
+masks_per_timestep = 1
+antithetic = true
+learning_rate = 5e-6
+beta = 0.04
+max_grad_norm = 1.0
+save_steps = 25
+seed = 20260808
+gradient_checkpointing = true
+
+[vrpo_lora]
+r = 16
+alpha = 32
+dropout = 0.05
+target_modules = [
+  "q_proj",
+  "k_proj",
+  "v_proj",
+  "o_proj",
+  "gate_proj",
+  "up_proj",
+  "down_proj",
+]
+
+[runtime]
+device = "cuda"
+dtype = "bfloat16"
+transformers = "4.53.2"
+attention = "sdpa"
+max_batch_size = 8
+
+[generation]
+max_new_tokens = 192
+block_length = 48
+denoising_steps = 12
+temperature = 1.0
+top_k = 0
+top_p = 1.0
+remasking = "low_confidence"
+mask_token_id = 156895
+
+[exact_policy]
+block_length = 48
+denoising_steps = 12
+temperature = 1.0
+top_k = 0
+top_p = 1.0
+remasking = "random"
+mask_token_id = 156895
+
+[search]
+width = 8
+branching_factor = 2
+decision_block_size = 48
+
+[best_of_n]
+samples = 8
+
+[mh]
+alpha = 4.0
+decision_block_size = 48
+updates_per_stage = 12
+updates = 48
+reward_temperature = 0.04
+
+[conditional_is]
+candidate_count = 8
+rollout_count = 3
+decision_block_size = 48
+reward_temperature = 0.1
+importance_log_ratio_clip = 10.0
+
+[verifier]
+provider = "python"
+name = "numeric_reference"
+factory = "inference_scaling.shared.evaluation.numeric:build_numeric_reference_verifier"
+requires_reference = true
+
+[replay]
+history_rollouts = 2
+fresh_rollouts = 1
+truncation = 8.0
+
+[dynamic_is]
+auxiliary_probability = 0.5
+history_cost = 0.05
+fresh_cost = 1.0
+design_rollouts = 2
+
+[passk]
+draws = 8
+k = [1, 2, 4, 8]
+
+[[main_pairs]]
+ar = "base"
+dllm = "base"
+relation = "matched_role"
+comparison = "one stochastic draw from each frozen base model"
+
+[[main_pairs]]
+ar = "beam"
+dllm = "block_beam"
+relation = "adapted"
+comparison = "width-eight likelihood search over token prefixes or reverse-diffusion blocks"
+
+[[main_pairs]]
+ar = "best_of_n"
+dllm = "best_of_n"
+relation = "matched_role"
+comparison = "eight independent samples followed by numeric self-consistency selection"
+
+[[main_pairs]]
+ar = "mh"
+dllm = "trajectory_power_mh"
+relation = "adapted"
+comparison = "finite-step sharpening of the tractable base probability object"
+
+[[main_pairs]]
+ar = "conditional_is"
+dllm = "conditional_is"
+relation = "exact_rule"
+comparison = "base candidates and base rollouts with blockwise reward SIR"
+
+[[main_pairs]]
+ar = "conditional_is_small_proposal"
+dllm = "conditional_is_reduced_layer_proposal"
+relation = "matched_role"
+comparison = "lower-compute rollout proposal with explicit importance correction"
+
+[[main_pairs]]
+ar = "verifier_mh"
+dllm = "verifier_mh"
+relation = "exact_rule"
+comparison = "independence MH for base probability times exponentiated terminal reward"
+
+[[main_pairs]]
+ar = "verifier_conditional_is"
+dllm = "verifier_conditional_is"
+relation = "exact_rule"
+comparison = "conditional SIR with the same terminal verifier reward"
+
+[[main_pairs]]
+ar = "verifier_conditional_is_small_proposal"
+dllm = "verifier_conditional_is_reduced_layer_proposal"
+relation = "matched_role"
+comparison = "lower-compute verifier rollout proposal with explicit correction"
+
+[[main_pairs]]
+ar = "rl_sample"
+dllm = "vrpo_sample"
+relation = "matched_role"
+comparison = "one stochastic draw from the aligned checkpoint"
+
+[[main_pairs]]
+ar = "rl_greedy"
+dllm = "vrpo_greedy"
+relation = "matched_role"
+comparison = "deterministic decoding from the aligned checkpoint"
+
+[[passk_pairs]]
+ar = "base"
+dllm = "base"
+
+[[passk_pairs]]
+ar = "mh"
+dllm = "trajectory_power_mh"
+
+[[passk_pairs]]
+ar = "rl_sample"
+dllm = "vrpo_sample"
+
+[[passk_pairs]]
+ar = "conditional_is"
+dllm = "conditional_is"
+
+[[passk_pairs]]
+ar = "conditional_is_small_proposal"
+dllm = "conditional_is_reduced_layer_proposal"
+
+[[passk_pairs]]
+ar = "conditional_is_small_proposal_unclipped"
+dllm = "conditional_is_reduced_layer_proposal_unclipped"
+
+[[passk_pairs]]
+ar = "conditional_is_small_proposal_uncorrected"
+dllm = "conditional_is_reduced_layer_proposal_uncorrected"
+
+[[distribution_pairs]]
+ar = "base"
+dllm = "base"
+
+[[distribution_pairs]]
+ar = "rl_sample"
+dllm = "vrpo_sample"
+
+[[distribution_pairs]]
+ar = "verifier_mh"
+dllm = "verifier_mh"
+
+[[distribution_pairs]]
+ar = "verifier_conditional_is"
+dllm = "verifier_conditional_is"
+
+[[distribution_pairs]]
+ar = "verifier_conditional_is_small_proposal"
+dllm = "verifier_conditional_is_reduced_layer_proposal"
+
+[[replay_pairs]]
+ar = "fresh_only"
+dllm = "fresh_only"
+
+[[replay_pairs]]
+ar = "warm_replay"
+dllm = "trajectory_warm_replay"
+
+[[dynamic_pairs]]
+ar = "base_candidate_fixed"
+dllm = "base_candidate_fixed"
+
+[[dynamic_pairs]]
+ar = "replay_aware_fixed"
+dllm = "trajectory_replay_aware_fixed"
+
+[[dynamic_pairs]]
+ar = "replay_aware_optimal"
+dllm = "trajectory_replay_aware_optimal"
+
+[[ablation_pairs]]
+ar = "candidate_count"
+dllm = "candidate_count"
+
+[[ablation_pairs]]
+ar = "rollout_count"
+dllm = "rollout_count"
+
+[[ablation_pairs]]
+ar = "guidance_steps"
+dllm = "decision_stages"
+
+[[ablation_pairs]]
+ar = "mh_alpha"
+dllm = "trajectory_mh_alpha"
+
+[[ablation_pairs]]
+ar = "mh_updates"
+dllm = "trajectory_mh_updates"
+
+[[ablation_pairs]]
+ar = "importance_clip"
+dllm = "trajectory_importance_clip"
+
+[[ablation_pairs]]
+ar = "generation_length"
+dllm = "generation_length"
+
+[[ablation_pairs]]
+ar = "reward_source"
+dllm = "reward_source"
+
+[[ablation_pairs]]
+ar = "temperature"
+dllm = "temperature"
+
+[[infra_pairs]]
+ar = "continuous_batching"
+dllm = "block_continuous_batching"
+
+[[infra_pairs]]
+ar = "resume_partial_rollouts"
+dllm = "resume_committed_blocks"
+
+[[infra_pairs]]
+ar = "streaming_reward"
+dllm = "streaming_reward"
+
+[[infra_pairs]]
+ar = "history_token_tree"
+dllm = "history_block_trajectory_cache"
+
+[[infra_pairs]]
+ar = "mh_proposal_tree_prefetch"
+dllm = "mh_continuation_prefetch"
+
+[[infra_pairs]]
+ar = "delayed_acceptance_mh"
+dllm = "delayed_acceptance_mh"
+
+[[infra_pairs]]
+ar = "replay_mixture_mh"
+dllm = "trajectory_replay_mixture_mh"
+
+[[infra_pairs]]
+ar = "progressive_is"
+dllm = "progressive_is"
+
+[[infra_pairs]]
+ar = "smc_rollout_forest"
+dllm = "block_smc_rollout_forest"
+
+[[infra_pairs]]
+ar = "vllm_backend"
+dllm = "llada_batched_transformers_backend"
+
+[[training_pairs]]
+ar = "grpo"
+dllm = "vrpo"
+comparison = "quality gain, generated training tokens, training FLOPs, and inference FLOPs"

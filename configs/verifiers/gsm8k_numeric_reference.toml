@@ -1,0 +1,10 @@
+[verifier]
+provider = "python"
+name = "numeric_reference"
+factory = "inference_scaling.shared.evaluation.numeric:build_numeric_reference_verifier"
+requires_reference = true
+
+[verifier.options]
+correct_reward = 1.0
+incorrect_reward = 0.0
+unparseable_reward = 0.0

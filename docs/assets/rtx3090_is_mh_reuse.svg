@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="720" viewBox="0 0 1500 720">
+<rect width="100%" height="100%" fill="#fbfdff"/>
+<style>text{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;fill:#14213d}.title{font-size:25px;font-weight:700}.sub{font-size:15px;fill:#52617a}.label{font-size:15px}.value{font-size:14px;font-weight:700}.axis{font-size:13px;fill:#64748b}</style>
+<text x="70" y="46" class="title">IS / MH rollout 复用的墙钟与主模型 FLOPs</text>
+<text x="70" y="75" class="sub">3 个随机种子的成对成本比均值；每行采用对应基线，虚线为 1.0×</text>
+<text x="545.0" y="105" text-anchor="middle" class="title">墙钟比</text>
+<text x="1095.0" y="105" text-anchor="middle" class="title">主模型 FLOPs 比</text>
+<line x1="449.4" y1="107" x2="449.4" y2="597" stroke="#ef8354" stroke-width="2" stroke-dasharray="6 5"/>
+<text x="330.0" y="627" text-anchor="middle" class="axis">0×</text>
+<text x="449.4" y="627" text-anchor="middle" class="axis">1×</text>
+<text x="568.9" y="627" text-anchor="middle" class="axis">2×</text>
+<text x="688.3" y="627" text-anchor="middle" class="axis">3×</text>
+<line x1="999.4" y1="107" x2="999.4" y2="597" stroke="#ef8354" stroke-width="2" stroke-dasharray="6 5"/>
+<text x="880.0" y="627" text-anchor="middle" class="axis">0×</text>
+<text x="999.4" y="627" text-anchor="middle" class="axis">1×</text>
+<text x="1118.9" y="627" text-anchor="middle" class="axis">2×</text>
+<text x="1238.3" y="627" text-anchor="middle" class="axis">3×</text>
+<text x="308" y="142" text-anchor="end" class="label">部分 rollout 续跑</text>
+<rect x="330" y="125" width="94.7" height="28" rx="5" fill="#2a9d8f" opacity="0.88"/>
+<text x="433.7" y="145" class="value">0.793×</text>
+<rect x="880" y="125" width="399.6" height="28" rx="5" fill="#d65a4a" opacity="0.88"/>
+<text x="1288.6" y="145" class="value">3.346×</text>
+<text x="308" y="212" text-anchor="end" class="label">流式 IS（0.2 s 奖励）</text>
+<rect x="330" y="195" width="80.2" height="28" rx="5" fill="#2a9d8f" opacity="0.88"/>
+<text x="419.2" y="215" class="value">0.671×</text>
+<rect x="880" y="195" width="119.4" height="28" rx="5" fill="#64748b" opacity="0.88"/>
+<text x="1008.4" y="215" class="value">1.000×</text>
+<text x="308" y="282" text-anchor="end" class="label">随机历史草稿</text>
+<rect x="330" y="265" width="117.3" height="28" rx="5" fill="#64748b" opacity="0.88"/>
+<text x="456.3" y="285" class="value">0.982×</text>
+<rect x="880" y="265" width="123.4" height="28" rx="5" fill="#d65a4a" opacity="0.88"/>
+<text x="1012.4" y="285" class="value">1.033×</text>
+<text x="308" y="352" text-anchor="end" class="label">MH 预取（近零延迟）</text>
+<rect x="330" y="335" width="125.4" height="28" rx="5" fill="#d65a4a" opacity="0.88"/>
+<text x="464.4" y="355" class="value">1.050×</text>
+<rect x="880" y="335" width="170.1" height="28" rx="5" fill="#d65a4a" opacity="0.88"/>
+<text x="1059.1" y="355" class="value">1.424×</text>
+<text x="308" y="422" text-anchor="end" class="label">MH 预取（0.2 s 奖励）</text>
+<rect x="330" y="405" width="97.6" height="28" rx="5" fill="#2a9d8f" opacity="0.88"/>
+<text x="436.6" y="425" class="value">0.817×</text>
+<rect x="880" y="405" width="151.3" height="28" rx="5" fill="#d65a4a" opacity="0.88"/>
+<text x="1040.3" y="425" class="value">1.267×</text>
+<text x="308" y="492" text-anchor="end" class="label">两阶段延迟接受 MH</text>
+<rect x="330" y="475" width="98.8" height="28" rx="5" fill="#2a9d8f" opacity="0.88"/>
+<text x="437.8" y="495" class="value">0.827×</text>
+<rect x="880" y="475" width="119.4" height="28" rx="5" fill="#64748b" opacity="0.88"/>
+<text x="1008.4" y="495" class="value">1.000×</text>
+<text x="308" y="562" text-anchor="end" class="label">冻结历史 MH（在线）</text>
+<rect x="330" y="545" width="63.8" height="28" rx="5" fill="#2a9d8f" opacity="0.88"/>
+<text x="402.8" y="565" class="value">0.534×</text>
+<rect x="880" y="545" width="119.8" height="28" rx="5" fill="#64748b" opacity="0.88"/>
+<text x="1008.8" y="565" class="value">1.003×</text>
+</svg>

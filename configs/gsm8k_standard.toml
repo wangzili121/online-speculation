@@ -1,0 +1,102 @@
+[run]
+name = "gsm8k-standard"
+sample_count = 128
+subset_seed = 20260808
+seed = 20260808
+
+[models]
+base = "models/Qwen2.5-1.5B-Instruct"
+base_source = "Qwen/Qwen2.5-1.5B-Instruct"
+base_revision = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+base_weight_sha256 = "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee"
+base_modelscope_source = "Qwen/Qwen2.5-1.5B-Instruct"
+proposal = "models/Qwen2.5-0.5B-Instruct"
+proposal_source = "Qwen/Qwen2.5-0.5B-Instruct"
+proposal_revision = "7ae557604adf67be50417f59c2c2f167def9a775"
+proposal_weight_sha256 = "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
+proposal_modelscope_source = "Qwen/Qwen2.5-0.5B-Instruct"
+rl = "models/Qwen2.5-1.5B-Instruct-GRPO-GSM8K"
+rl_source = "local GRPO training on pinned OpenAI GSM8K train split"
+rl_revision = "configs/gsm8k_grpo.toml"
+rl_base = "models/Qwen2.5-1.5B-Instruct"
+rl_kind = "peft_adapter"
+
+[runtime]
+backend = "transformers"
+device = "cuda"
+dtype = "float32"
+max_batch_size = 32
+max_batch_tokens = 16384
+max_score_batch_size = 16
+
+[vllm]
+asynchronous = true
+enable_prefix_caching = true
+exact_scoring_backend = "none"
+tensor_parallel_size = 1
+data_parallel_size = 1
+
+[vllm.base]
+gpu_memory_utilization = 0.62
+max_num_seqs = 64
+max_num_batched_tokens = 16384
+
+[vllm.proposal]
+gpu_memory_utilization = 0.28
+max_num_seqs = 32
+max_num_batched_tokens = 8192
+
+[vllm.rl]
+gpu_memory_utilization = 0.62
+max_num_seqs = 64
+max_num_batched_tokens = 16384
+
+[vllm.engine_kwargs]
+enable_chunked_prefill = true
+
+[generation]
+max_new_tokens = 256
+
+[sampling]
+temperature = 1.0
+
+[beam]
+num_beams = 20
+
+[best_of_n]
+samples = 20
+
+[mh]
+alpha = 4.0
+block_size = 16
+steps_per_block = 10
+suffix_schedule = "uniform"
+
+[conditional_is]
+candidate_count = 15
+rollout_count = 3
+rollout_design = "iid"
+block_size = 64
+reward_temperature = 0.1
+reward = "self_consistency"
+logprob_reward_scale = 1.0
+consilience_top_k = 5
+consilience_window_fraction = 0.2
+consilience_skip_fraction = 0.05
+consilience_initial_penalty = 3.0
+consilience_reward_scale = 1.0
+importance_log_ratio_clip = 10.0
+
+[verifier]
+provider = "python"
+name = "numeric_reference"
+factory = "inference_scaling.shared.evaluation.numeric:build_numeric_reference_verifier"
+requires_reference = true
+
+[matched_target]
+reward_temperature = 0.04
+
+[replay]
+history_rollouts = 2
+fresh_rollouts = 1
+truncation = 8.0

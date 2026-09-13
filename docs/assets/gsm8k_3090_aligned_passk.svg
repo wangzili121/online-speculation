@@ -1,0 +1,229 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+<title id="title">GSM8K 多次采样 pass@k</title>
+<desc id="desc">两个面板分别比较 Base、幂目标 MH、GRPO，以及三种条件重要性采样。点为 32 道题上的 pass@k，误差线为题目级自助法 95% 区间。</desc>
+<style>
+text { font-family: 'Noto Sans CJK SC', 'Microsoft YaHei', Arial, sans-serif; fill: #172033; }
+.title { font-size: 25px; font-weight: 600; }
+.panel-title { font-size: 18px; font-weight: 600; }
+.panel-subtitle { font-size: 13px; fill: #536078; }
+.legend { font-size: 12px; font-weight: 600; }
+.frame { fill: #ffffff; stroke: #aab4c4; stroke-width: 1; }
+.grid { stroke: #dbe1ea; stroke-width: 1; }
+.grid.vertical { stroke-dasharray: 3 4; }
+.tick { font-size: 12px; fill: #536078; }
+.axis-title { font-size: 13px; font-weight: 600; }
+.series { fill: none; stroke-width: 2.2; }
+.error { stroke-width: 1.3; opacity: 0.62; }
+.note { font-size: 13px; fill: #536078; }
+</style>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text class="title" x="82" y="43">多次采样：pass@k 与题目级不确定性</text>
+<text class="panel-title" x="82" y="82">采样分布锐化与训练后策略</text>
+<text class="panel-subtitle" x="82" y="104">Base、幂目标 MH 与 GRPO</text>
+<rect class="frame" x="82" y="158" width="500" height="422"/>
+<circle cx="89.0" cy="130.0" r="6" fill="#4b5563" stroke="#ffffff" stroke-width="1.5"/>
+<text class="legend" x="101" y="134">Base</text>
+<polygon points="244.0,123.0 251.0,136.0 237.0,136.0" fill="#ea580c" stroke="#ffffff" stroke-width="1.5"/>
+<text class="legend" x="256" y="134">幂目标 MH</text>
+<rect x="394.0" y="125.0" width="10" height="10" fill="#be123c" stroke="#ffffff" stroke-width="1.5"/>
+<text class="legend" x="411" y="134">GRPO</text>
+<line class="grid" x1="82" y1="580.0" x2="582" y2="580.0"/>
+<text class="tick" x="72" y="584.0" text-anchor="end">20%</text>
+<line class="grid" x1="82" y1="474.5" x2="582" y2="474.5"/>
+<text class="tick" x="72" y="478.5" text-anchor="end">40%</text>
+<line class="grid" x1="82" y1="369.0" x2="582" y2="369.0"/>
+<text class="tick" x="72" y="373.0" text-anchor="end">60%</text>
+<line class="grid" x1="82" y1="263.5" x2="582" y2="263.5"/>
+<text class="tick" x="72" y="267.5" text-anchor="end">80%</text>
+<line class="grid" x1="82" y1="158.0" x2="582" y2="158.0"/>
+<text class="tick" x="72" y="162.0" text-anchor="end">100%</text>
+<line class="grid vertical" x1="120.0" y1="158" x2="120.0" y2="580"/>
+<text class="tick" x="120.0" y="603" text-anchor="middle">1</text>
+<line class="grid vertical" x1="261.3" y1="158" x2="261.3" y2="580"/>
+<text class="tick" x="261.3" y="603" text-anchor="middle">2</text>
+<line class="grid vertical" x1="402.7" y1="158" x2="402.7" y2="580"/>
+<text class="tick" x="402.7" y="603" text-anchor="middle">4</text>
+<line class="grid vertical" x1="544.0" y1="158" x2="544.0" y2="580"/>
+<text class="tick" x="544.0" y="603" text-anchor="middle">8</text>
+<polyline class="series" points="120.0,475.3 261.3,411.2 402.7,361.0 544.0,322.8" stroke="#4b5563"/>
+<g aria-label="Base, pass@1 39.8%, 95% 区间 27.3%–52.7%">
+<line class="error" x1="120.0" y1="407.3" x2="120.0" y2="541.3" stroke="#4b5563"/>
+<line class="error" x1="116.0" y1="407.3" x2="124.0" y2="407.3" stroke="#4b5563"/>
+<line class="error" x1="116.0" y1="541.3" x2="124.0" y2="541.3" stroke="#4b5563"/>
+<circle cx="120.0" cy="475.3" r="6" fill="#4b5563" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="Base, pass@2 52.0%, 95% 区间 37.6%–66.3%">
+<line class="error" x1="261.3" y1="335.8" x2="261.3" y2="487.1" stroke="#4b5563"/>
+<line class="error" x1="257.3" y1="335.8" x2="265.3" y2="335.8" stroke="#4b5563"/>
+<line class="error" x1="257.3" y1="487.1" x2="265.3" y2="487.1" stroke="#4b5563"/>
+<circle cx="261.3" cy="411.2" r="6" fill="#4b5563" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="Base, pass@4 61.5%, 95% 区间 46.1%–76.2%">
+<line class="error" x1="402.7" y1="283.3" x2="402.7" y2="442.2" stroke="#4b5563"/>
+<line class="error" x1="398.7" y1="283.3" x2="406.7" y2="283.3" stroke="#4b5563"/>
+<line class="error" x1="398.7" y1="442.2" x2="406.7" y2="442.2" stroke="#4b5563"/>
+<circle cx="402.7" cy="361.0" r="6" fill="#4b5563" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="Base, pass@8 68.8%, 95% 区间 53.1%–84.4%">
+<line class="error" x1="544.0" y1="240.4" x2="544.0" y2="405.3" stroke="#4b5563"/>
+<line class="error" x1="540.0" y1="240.4" x2="548.0" y2="240.4" stroke="#4b5563"/>
+<line class="error" x1="540.0" y1="405.3" x2="548.0" y2="405.3" stroke="#4b5563"/>
+<circle cx="544.0" cy="322.8" r="6" fill="#4b5563" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<polyline class="series" points="120.0,483.6 261.3,437.1 402.7,402.9 544.0,372.3" stroke="#ea580c"/>
+<g aria-label="幂目标 MH, pass@1 38.3%, 95% 区间 24.6%–52.3%">
+<line class="error" x1="120.0" y1="409.4" x2="120.0" y2="555.7" stroke="#ea580c"/>
+<line class="error" x1="116.0" y1="409.4" x2="124.0" y2="409.4" stroke="#ea580c"/>
+<line class="error" x1="116.0" y1="555.7" x2="124.0" y2="555.7" stroke="#ea580c"/>
+<polygon points="120.0,476.6 127.0,489.6 113.0,489.6" fill="#ea580c" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="幂目标 MH, pass@2 47.1%, 95% 区间 31.5%–62.4%">
+<line class="error" x1="261.3" y1="356.4" x2="261.3" y2="519.5" stroke="#ea580c"/>
+<line class="error" x1="257.3" y1="356.4" x2="265.3" y2="356.4" stroke="#ea580c"/>
+<line class="error" x1="257.3" y1="519.5" x2="265.3" y2="519.5" stroke="#ea580c"/>
+<polygon points="261.3,430.1 268.3,443.1 254.3,443.1" fill="#ea580c" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="幂目标 MH, pass@4 53.6%, 95% 区间 37.5%–69.2%">
+<line class="error" x1="402.7" y1="320.5" x2="402.7" y2="487.7" stroke="#ea580c"/>
+<line class="error" x1="398.7" y1="320.5" x2="406.7" y2="320.5" stroke="#ea580c"/>
+<line class="error" x1="398.7" y1="487.7" x2="406.7" y2="487.7" stroke="#ea580c"/>
+<polygon points="402.7,395.9 409.7,408.9 395.7,408.9" fill="#ea580c" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="幂目标 MH, pass@8 59.4%, 95% 区间 43.8%–75.0%">
+<line class="error" x1="544.0" y1="289.9" x2="544.0" y2="454.7" stroke="#ea580c"/>
+<line class="error" x1="540.0" y1="289.9" x2="548.0" y2="289.9" stroke="#ea580c"/>
+<line class="error" x1="540.0" y1="454.7" x2="548.0" y2="454.7" stroke="#ea580c"/>
+<polygon points="544.0,365.3 551.0,378.3 537.0,378.3" fill="#ea580c" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<polyline class="series" points="120.0,374.4 261.3,323.4 402.7,287.0 544.0,256.9" stroke="#be123c"/>
+<g aria-label="GRPO, pass@1 59.0%, 95% 区间 44.5%–72.3%">
+<line class="error" x1="120.0" y1="304.3" x2="120.0" y2="450.6" stroke="#be123c"/>
+<line class="error" x1="116.0" y1="304.3" x2="124.0" y2="304.3" stroke="#be123c"/>
+<line class="error" x1="116.0" y1="450.6" x2="124.0" y2="450.6" stroke="#be123c"/>
+<rect x="115.0" y="369.4" width="10" height="10" fill="#be123c" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="GRPO, pass@2 68.6%, 95% 区间 54.4%–81.9%">
+<line class="error" x1="261.3" y1="253.4" x2="261.3" y2="398.8" stroke="#be123c"/>
+<line class="error" x1="257.3" y1="253.4" x2="265.3" y2="253.4" stroke="#be123c"/>
+<line class="error" x1="257.3" y1="398.8" x2="265.3" y2="398.8" stroke="#be123c"/>
+<rect x="256.3" y="318.4" width="10" height="10" fill="#be123c" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="GRPO, pass@4 75.5%, 95% 区间 61.4%–88.7%">
+<line class="error" x1="402.7" y1="217.8" x2="402.7" y2="361.5" stroke="#be123c"/>
+<line class="error" x1="398.7" y1="217.8" x2="406.7" y2="217.8" stroke="#be123c"/>
+<line class="error" x1="398.7" y1="361.5" x2="406.7" y2="361.5" stroke="#be123c"/>
+<rect x="397.7" y="282.0" width="10" height="10" fill="#be123c" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="GRPO, pass@8 81.2%, 95% 区间 65.6%–93.8%">
+<line class="error" x1="544.0" y1="191.0" x2="544.0" y2="339.3" stroke="#be123c"/>
+<line class="error" x1="540.0" y1="191.0" x2="548.0" y2="191.0" stroke="#be123c"/>
+<line class="error" x1="540.0" y1="339.3" x2="548.0" y2="339.3" stroke="#be123c"/>
+<rect x="539.0" y="251.9" width="10" height="10" fill="#be123c" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<text class="axis-title" x="332.0" y="635" text-anchor="middle">一次评测允许的独立采样数 k</text>
+<text class="panel-title" x="700" y="82">条件重要性采样</text>
+<text class="panel-subtitle" x="700" y="104">候选均来自 1.5B；比较补全模型与概率比截断</text>
+<rect class="frame" x="700" y="158" width="500" height="422"/>
+<circle cx="707.0" cy="130.0" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.5"/>
+<text class="legend" x="719" y="134">标准条件 IS</text>
+<polygon points="862.0,123.0 869.0,130.0 862.0,137.0 855.0,130.0" fill="#7e22ce" stroke="#ffffff" stroke-width="1.5"/>
+<text class="legend" x="874" y="134">0.5B 补全（截断）</text>
+<polygon points="1042.0,123.0 1049.0,136.0 1035.0,136.0" fill="#2563eb" stroke="#ffffff" stroke-width="1.5"/>
+<text class="legend" x="1054" y="134">0.5B 补全（无截断）</text>
+<line class="grid" x1="700" y1="580.0" x2="1200" y2="580.0"/>
+<text class="tick" x="690" y="584.0" text-anchor="end">20%</text>
+<line class="grid" x1="700" y1="474.5" x2="1200" y2="474.5"/>
+<text class="tick" x="690" y="478.5" text-anchor="end">40%</text>
+<line class="grid" x1="700" y1="369.0" x2="1200" y2="369.0"/>
+<text class="tick" x="690" y="373.0" text-anchor="end">60%</text>
+<line class="grid" x1="700" y1="263.5" x2="1200" y2="263.5"/>
+<text class="tick" x="690" y="267.5" text-anchor="end">80%</text>
+<line class="grid" x1="700" y1="158.0" x2="1200" y2="158.0"/>
+<text class="tick" x="690" y="162.0" text-anchor="end">100%</text>
+<line class="grid vertical" x1="738.0" y1="158" x2="738.0" y2="580"/>
+<text class="tick" x="738.0" y="603" text-anchor="middle">1</text>
+<line class="grid vertical" x1="879.3" y1="158" x2="879.3" y2="580"/>
+<text class="tick" x="879.3" y="603" text-anchor="middle">2</text>
+<line class="grid vertical" x1="1020.7" y1="158" x2="1020.7" y2="580"/>
+<text class="tick" x="1020.7" y="603" text-anchor="middle">4</text>
+<line class="grid vertical" x1="1162.0" y1="158" x2="1162.0" y2="580"/>
+<text class="tick" x="1162.0" y="603" text-anchor="middle">8</text>
+<polyline class="series" points="738.0,378.5 879.3,349.3 1020.7,321.9 1162.0,289.9" stroke="#15803d"/>
+<g aria-label="标准条件 IS, pass@1 58.2%, 95% 区间 43.0%–73.4%">
+<line class="error" x1="738.0" y1="298.1" x2="738.0" y2="458.8" stroke="#15803d"/>
+<line class="error" x1="734.0" y1="298.1" x2="742.0" y2="298.1" stroke="#15803d"/>
+<line class="error" x1="734.0" y1="458.8" x2="742.0" y2="458.8" stroke="#15803d"/>
+<circle cx="738.0" cy="378.5" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="标准条件 IS, pass@2 63.7%, 95% 区间 48.0%–78.5%">
+<line class="error" x1="879.3" y1="271.6" x2="879.3" y2="432.3" stroke="#15803d"/>
+<line class="error" x1="875.3" y1="271.6" x2="883.3" y2="271.6" stroke="#15803d"/>
+<line class="error" x1="875.3" y1="432.3" x2="883.3" y2="432.3" stroke="#15803d"/>
+<circle cx="879.3" cy="349.3" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="标准条件 IS, pass@4 68.9%, 95% 区间 53.3%–83.2%">
+<line class="error" x1="1020.7" y1="246.5" x2="1020.7" y2="404.1" stroke="#15803d"/>
+<line class="error" x1="1016.7" y1="246.5" x2="1024.7" y2="246.5" stroke="#15803d"/>
+<line class="error" x1="1016.7" y1="404.1" x2="1024.7" y2="404.1" stroke="#15803d"/>
+<circle cx="1020.7" cy="321.9" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="标准条件 IS, pass@8 75.0%, 95% 区间 59.4%–90.6%">
+<line class="error" x1="1162.0" y1="207.5" x2="1162.0" y2="372.3" stroke="#15803d"/>
+<line class="error" x1="1158.0" y1="207.5" x2="1166.0" y2="207.5" stroke="#15803d"/>
+<line class="error" x1="1158.0" y1="372.3" x2="1166.0" y2="372.3" stroke="#15803d"/>
+<circle cx="1162.0" cy="289.9" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<polyline class="series" points="738.0,440.3 879.3,405.3 1020.7,375.8 1162.0,355.8" stroke="#7e22ce"/>
+<g aria-label="0.5B 补全（截断）, pass@1 46.5%, 95% 区间 31.6%–61.3%">
+<line class="error" x1="738.0" y1="362.0" x2="738.0" y2="518.6" stroke="#7e22ce"/>
+<line class="error" x1="734.0" y1="362.0" x2="742.0" y2="362.0" stroke="#7e22ce"/>
+<line class="error" x1="734.0" y1="518.6" x2="742.0" y2="518.6" stroke="#7e22ce"/>
+<polygon points="738.0,433.3 745.0,440.3 738.0,447.3 731.0,440.3" fill="#7e22ce" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="0.5B 补全（截断）, pass@2 53.1%, 95% 区间 37.3%–68.5%">
+<line class="error" x1="879.3" y1="324.0" x2="879.3" y2="488.9" stroke="#7e22ce"/>
+<line class="error" x1="875.3" y1="324.0" x2="883.3" y2="324.0" stroke="#7e22ce"/>
+<line class="error" x1="875.3" y1="488.9" x2="883.3" y2="488.9" stroke="#7e22ce"/>
+<polygon points="879.3,398.3 886.3,405.3 879.3,412.3 872.3,405.3" fill="#7e22ce" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="0.5B 补全（截断）, pass@4 58.7%, 95% 区间 42.4%–74.6%">
+<line class="error" x1="1020.7" y1="292.2" x2="1020.7" y2="461.8" stroke="#7e22ce"/>
+<line class="error" x1="1016.7" y1="292.2" x2="1024.7" y2="292.2" stroke="#7e22ce"/>
+<line class="error" x1="1016.7" y1="461.8" x2="1024.7" y2="461.8" stroke="#7e22ce"/>
+<polygon points="1020.7,368.8 1027.7,375.8 1020.7,382.8 1013.7,375.8" fill="#7e22ce" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="0.5B 补全（截断）, pass@8 62.5%, 95% 区间 46.9%–78.1%">
+<line class="error" x1="1162.0" y1="273.4" x2="1162.0" y2="438.2" stroke="#7e22ce"/>
+<line class="error" x1="1158.0" y1="273.4" x2="1166.0" y2="273.4" stroke="#7e22ce"/>
+<line class="error" x1="1158.0" y1="438.2" x2="1166.0" y2="438.2" stroke="#7e22ce"/>
+<polygon points="1162.0,348.8 1169.0,355.8 1162.0,362.8 1155.0,355.8" fill="#7e22ce" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<polyline class="series" points="738.0,440.3 879.3,404.1 1020.7,371.6 1162.0,339.3" stroke="#2563eb"/>
+<g aria-label="0.5B 补全（无截断）, pass@1 46.5%, 95% 区间 31.6%–61.7%">
+<line class="error" x1="738.0" y1="359.9" x2="738.0" y2="518.6" stroke="#2563eb"/>
+<line class="error" x1="734.0" y1="359.9" x2="742.0" y2="359.9" stroke="#2563eb"/>
+<line class="error" x1="734.0" y1="518.6" x2="742.0" y2="518.6" stroke="#2563eb"/>
+<polygon points="738.0,433.3 745.0,446.3 731.0,446.3" fill="#2563eb" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="0.5B 补全（无截断）, pass@2 53.3%, 95% 区间 37.8%–68.8%">
+<line class="error" x1="879.3" y1="322.8" x2="879.3" y2="485.9" stroke="#2563eb"/>
+<line class="error" x1="875.3" y1="322.8" x2="883.3" y2="322.8" stroke="#2563eb"/>
+<line class="error" x1="875.3" y1="485.9" x2="883.3" y2="485.9" stroke="#2563eb"/>
+<polygon points="879.3,397.1 886.3,410.1 872.3,410.1" fill="#2563eb" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="0.5B 补全（无截断）, pass@4 59.5%, 95% 区间 43.9%–75.0%">
+<line class="error" x1="1020.7" y1="289.6" x2="1020.7" y2="454.0" stroke="#2563eb"/>
+<line class="error" x1="1016.7" y1="289.6" x2="1024.7" y2="289.6" stroke="#2563eb"/>
+<line class="error" x1="1016.7" y1="454.0" x2="1024.7" y2="454.0" stroke="#2563eb"/>
+<polygon points="1020.7,364.6 1027.7,377.6 1013.7,377.6" fill="#2563eb" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<g aria-label="0.5B 补全（无截断）, pass@8 65.6%, 95% 区间 50.0%–81.2%">
+<line class="error" x1="1162.0" y1="256.9" x2="1162.0" y2="421.8" stroke="#2563eb"/>
+<line class="error" x1="1158.0" y1="256.9" x2="1166.0" y2="256.9" stroke="#2563eb"/>
+<line class="error" x1="1158.0" y1="421.8" x2="1166.0" y2="421.8" stroke="#2563eb"/>
+<polygon points="1162.0,332.3 1169.0,345.3 1155.0,345.3" fill="#2563eb" stroke="#ffffff" stroke-width="1.5"/>
+</g>
+<text class="axis-title" x="950.0" y="635" text-anchor="middle">一次评测允许的独立采样数 k</text>
+<text class="axis-title" x="22" y="369.0" text-anchor="middle" transform="rotate(-90 22 369.0)">pass@k</text>
+<text class="note" x="82" y="681">每种方法：32 道固定题 × 8 次独立采样；竖线为题目级自助法 95% 区间。只估计 k≤8。</text>
+</svg>

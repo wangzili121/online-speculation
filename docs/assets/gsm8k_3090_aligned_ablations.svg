@@ -1,0 +1,319 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1000" viewBox="0 0 1280 1000" role="img" aria-labelledby="title desc">
+<title id="title">GSM8K 单卡消融：预算、质量与计算量</title>
+<desc id="desc">四个面板展示候选数、引导阶段、MH 每阶段更新次数和最大生成长度对准确率及估算计算量的影响。每个点使用相同的八道固定题，误差线为 Wilson 95% 区间。</desc>
+<style>
+text { font-family: 'Noto Sans CJK SC', 'Microsoft YaHei', Arial, sans-serif; fill: #172033; }
+.title { font-size: 25px; font-weight: 600; }
+.panel-title { font-size: 18px; font-weight: 600; }
+.panel-subtitle { font-size: 13px; fill: #536078; }
+.legend { font-size: 11px; font-weight: 600; }
+.frame { fill: #ffffff; stroke: #aab4c4; stroke-width: 1; }
+.grid { stroke: #dbe1ea; stroke-width: 1; }
+.grid.vertical { stroke-dasharray: 3 4; }
+.tick { font-size: 12px; fill: #536078; }
+.axis-title { font-size: 13px; font-weight: 600; }
+.series { fill: none; stroke-width: 2.1; }
+.error { stroke-width: 1.3; opacity: 0.58; }
+.error.light { opacity: 0.25; }
+.point-label { font-size: 11px; font-weight: 600; paint-order: stroke; stroke: #ffffff; stroke-width: 3px; }
+.note { font-size: 13px; fill: #536078; }
+</style>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text class="title" x="82" y="43">GSM8K 质量—预算消融（8 题）</text>
+<text class="panel-title" x="82" y="72">候选数 M（每个候选 3 条 rollout）</text>
+<text class="panel-subtitle" x="82" y="93">比较 1.5B 与 0.5B 补全，候选均来自 1.5B</text>
+<rect class="frame" x="82" y="150" width="500" height="270"/>
+<line class="grid" x1="82" y1="420.0" x2="582" y2="420.0"/>
+<text class="tick" x="72" y="424.0" text-anchor="end">0%</text>
+<line class="grid" x1="82" y1="352.5" x2="582" y2="352.5"/>
+<text class="tick" x="72" y="356.5" text-anchor="end">25%</text>
+<line class="grid" x1="82" y1="285.0" x2="582" y2="285.0"/>
+<text class="tick" x="72" y="289.0" text-anchor="end">50%</text>
+<line class="grid" x1="82" y1="217.5" x2="582" y2="217.5"/>
+<text class="tick" x="72" y="221.5" text-anchor="end">75%</text>
+<line class="grid" x1="82" y1="150.0" x2="582" y2="150.0"/>
+<text class="tick" x="72" y="154.0" text-anchor="end">100%</text>
+<line class="grid vertical" x1="85.4" y1="150" x2="85.4" y2="420"/>
+<text class="tick" x="85.4" y="441" text-anchor="middle">0.1</text>
+<line class="grid vertical" x1="243.8" y1="150" x2="243.8" y2="420"/>
+<text class="tick" x="243.8" y="441" text-anchor="middle">0.2</text>
+<line class="grid vertical" x1="453.3" y1="150" x2="453.3" y2="420"/>
+<text class="tick" x="453.3" y="441" text-anchor="middle">0.5</text>
+<circle cx="89.0" cy="118.0" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.4"/>
+<text class="legend" x="101.0" y="122.0">标准条件 IS</text>
+<polygon points="339.0,111.0 346.0,118.0 339.0,125.0 332.0,118.0" fill="#7e22ce" stroke="#ffffff" stroke-width="1.4"/>
+<text class="legend" x="351.0" y="122.0">0.5B 补全 IS</text>
+<polyline class="series" points="142.0,217.5 251.0,217.5 341.6,217.5 394.1,251.2" stroke="#15803d"/>
+<g aria-label="标准条件 IS，M=3，准确率 75.0%，95% 区间 40.9%–92.9%，8 题合计 0.1281 PFLOPs">
+<line class="error" x1="142.0" y1="169.3" x2="142.0" y2="309.5" stroke="#15803d"/>
+<line class="error" x1="138.0" y1="169.3" x2="146.0" y2="169.3" stroke="#15803d"/>
+<line class="error" x1="138.0" y1="309.5" x2="146.0" y2="309.5" stroke="#15803d"/>
+<circle cx="142.0" cy="217.5" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="142.0" y="207.5" text-anchor="middle">M=3</text>
+</g>
+<g aria-label="标准条件 IS，M=5，准确率 75.0%，95% 区间 40.9%–92.9%，8 题合计 0.2064 PFLOPs">
+<line class="error" x1="251.0" y1="169.3" x2="251.0" y2="309.5" stroke="#15803d"/>
+<line class="error" x1="247.0" y1="169.3" x2="255.0" y2="169.3" stroke="#15803d"/>
+<line class="error" x1="247.0" y1="309.5" x2="255.0" y2="309.5" stroke="#15803d"/>
+<circle cx="251.0" cy="217.5" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="251.0" y="207.5" text-anchor="middle">M=5</text>
+</g>
+<g aria-label="标准条件 IS，M=8，准确率 75.0%，95% 区间 40.9%–92.9%，8 题合计 0.3068 PFLOPs">
+<line class="error" x1="341.6" y1="169.3" x2="341.6" y2="309.5" stroke="#15803d"/>
+<line class="error" x1="337.6" y1="169.3" x2="345.6" y2="169.3" stroke="#15803d"/>
+<line class="error" x1="337.6" y1="309.5" x2="345.6" y2="309.5" stroke="#15803d"/>
+<circle cx="341.6" cy="217.5" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="341.6" y="207.5" text-anchor="middle">M=8</text>
+</g>
+<g aria-label="标准条件 IS，M=10，准确率 62.5%，95% 区间 30.6%–86.3%，8 题合计 0.3861 PFLOPs">
+<line class="error" x1="394.1" y1="186.9" x2="394.1" y2="337.4" stroke="#15803d"/>
+<line class="error" x1="390.1" y1="186.9" x2="398.1" y2="186.9" stroke="#15803d"/>
+<line class="error" x1="390.1" y1="337.4" x2="398.1" y2="337.4" stroke="#15803d"/>
+<circle cx="394.1" cy="251.2" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="394.1" y="241.2" text-anchor="middle">M=10</text>
+</g>
+<polyline class="series" points="275.7,318.8 378.3,251.2 484.4,285.0 522.0,251.2" stroke="#7e22ce"/>
+<g aria-label="0.5B 补全 IS，M=3，准确率 37.5%，95% 区间 13.7%–69.4%，8 题合计 0.2299 PFLOPs">
+<line class="error" x1="275.7" y1="232.6" x2="275.7" y2="383.1" stroke="#7e22ce"/>
+<line class="error" x1="271.7" y1="232.6" x2="279.7" y2="232.6" stroke="#7e22ce"/>
+<line class="error" x1="271.7" y1="383.1" x2="279.7" y2="383.1" stroke="#7e22ce"/>
+<polygon points="275.7,311.8 282.7,318.8 275.7,325.8 268.7,318.8" fill="#7e22ce" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="275.7" y="337.8" text-anchor="middle">M=3</text>
+</g>
+<g aria-label="0.5B 补全 IS，M=5，准确率 62.5%，95% 区间 30.6%–86.3%，8 题合计 0.3602 PFLOPs">
+<line class="error" x1="378.3" y1="186.9" x2="378.3" y2="337.4" stroke="#7e22ce"/>
+<line class="error" x1="374.3" y1="186.9" x2="382.3" y2="186.9" stroke="#7e22ce"/>
+<line class="error" x1="374.3" y1="337.4" x2="382.3" y2="337.4" stroke="#7e22ce"/>
+<polygon points="378.3,244.2 385.3,251.2 378.3,258.2 371.3,251.2" fill="#7e22ce" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="378.3" y="270.2" text-anchor="middle">M=5</text>
+</g>
+<g aria-label="0.5B 补全 IS，M=8，准确率 50.0%，95% 区间 21.5%–78.5%，8 题合计 0.5730 PFLOPs">
+<line class="error" x1="484.4" y1="208.1" x2="484.4" y2="361.9" stroke="#7e22ce"/>
+<line class="error" x1="480.4" y1="208.1" x2="488.4" y2="208.1" stroke="#7e22ce"/>
+<line class="error" x1="480.4" y1="361.9" x2="488.4" y2="361.9" stroke="#7e22ce"/>
+<polygon points="484.4,278.0 491.4,285.0 484.4,292.0 477.4,285.0" fill="#7e22ce" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="484.4" y="304.0" text-anchor="middle">M=8</text>
+</g>
+<g aria-label="0.5B 补全 IS，M=10，准确率 62.5%，95% 区间 30.6%–86.3%，8 题合计 0.6755 PFLOPs">
+<line class="error" x1="522.0" y1="186.9" x2="522.0" y2="337.4" stroke="#7e22ce"/>
+<line class="error" x1="518.0" y1="186.9" x2="526.0" y2="186.9" stroke="#7e22ce"/>
+<line class="error" x1="518.0" y1="337.4" x2="526.0" y2="337.4" stroke="#7e22ce"/>
+<polygon points="522.0,244.2 529.0,251.2 522.0,258.2 515.0,251.2" fill="#7e22ce" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="522.0" y="270.2" text-anchor="middle">M=10</text>
+</g>
+<text class="axis-title" x="332.0" y="472" text-anchor="middle">8 题合计估算稠密前向计算量（PFLOPs，对数轴）</text>
+<text class="panel-title" x="700" y="72">标准条件 IS 的引导阶段数 S</text>
+<text class="panel-subtitle" x="700" y="93">S=4/8/16 均为 6/8，计算量继续增加</text>
+<rect class="frame" x="700" y="150" width="500" height="270"/>
+<line class="grid" x1="700" y1="420.0" x2="1200" y2="420.0"/>
+<text class="tick" x="690" y="424.0" text-anchor="end">0%</text>
+<line class="grid" x1="700" y1="352.5" x2="1200" y2="352.5"/>
+<text class="tick" x="690" y="356.5" text-anchor="end">25%</text>
+<line class="grid" x1="700" y1="285.0" x2="1200" y2="285.0"/>
+<text class="tick" x="690" y="289.0" text-anchor="end">50%</text>
+<line class="grid" x1="700" y1="217.5" x2="1200" y2="217.5"/>
+<text class="tick" x="690" y="221.5" text-anchor="end">75%</text>
+<line class="grid" x1="700" y1="150.0" x2="1200" y2="150.0"/>
+<text class="tick" x="690" y="154.0" text-anchor="end">100%</text>
+<line class="grid vertical" x1="700.8" y1="150" x2="700.8" y2="420"/>
+<text class="tick" x="700.8" y="441" text-anchor="middle">0.1</text>
+<line class="grid vertical" x1="810.4" y1="150" x2="810.4" y2="420"/>
+<text class="tick" x="810.4" y="441" text-anchor="middle">0.2</text>
+<line class="grid vertical" x1="955.2" y1="150" x2="955.2" y2="420"/>
+<text class="tick" x="955.2" y="441" text-anchor="middle">0.5</text>
+<line class="grid vertical" x1="1064.7" y1="150" x2="1064.7" y2="420"/>
+<text class="tick" x="1064.7" y="441" text-anchor="middle">1</text>
+<line class="grid vertical" x1="1174.3" y1="150" x2="1174.3" y2="420"/>
+<text class="tick" x="1174.3" y="441" text-anchor="middle">2</text>
+<polyline class="series" points="741.5,251.2 878.0,217.5 1017.7,217.5 1158.5,217.5" stroke="#15803d"/>
+<g aria-label="标准条件 IS，S=2，准确率 62.5%，95% 区间 30.6%–86.3%，8 题合计 0.1293 PFLOPs">
+<line class="error" x1="741.5" y1="186.9" x2="741.5" y2="337.4" stroke="#15803d"/>
+<line class="error" x1="737.5" y1="186.9" x2="745.5" y2="186.9" stroke="#15803d"/>
+<line class="error" x1="737.5" y1="337.4" x2="745.5" y2="337.4" stroke="#15803d"/>
+<circle cx="741.5" cy="251.2" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="741.5" y="241.2" text-anchor="middle">S=2</text>
+</g>
+<g aria-label="标准条件 IS，S=4，准确率 75.0%，95% 区间 40.9%–92.9%，8 题合计 0.3068 PFLOPs">
+<line class="error" x1="878.0" y1="169.3" x2="878.0" y2="309.5" stroke="#15803d"/>
+<line class="error" x1="874.0" y1="169.3" x2="882.0" y2="169.3" stroke="#15803d"/>
+<line class="error" x1="874.0" y1="309.5" x2="882.0" y2="309.5" stroke="#15803d"/>
+<circle cx="878.0" cy="217.5" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="878.0" y="207.5" text-anchor="middle">S=4</text>
+</g>
+<g aria-label="标准条件 IS，S=8，准确率 75.0%，95% 区间 40.9%–92.9%，8 题合计 0.7426 PFLOPs">
+<line class="error" x1="1017.7" y1="169.3" x2="1017.7" y2="309.5" stroke="#15803d"/>
+<line class="error" x1="1013.7" y1="169.3" x2="1021.7" y2="169.3" stroke="#15803d"/>
+<line class="error" x1="1013.7" y1="309.5" x2="1021.7" y2="309.5" stroke="#15803d"/>
+<circle cx="1017.7" cy="217.5" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="1017.7" y="207.5" text-anchor="middle">S=8</text>
+</g>
+<g aria-label="标准条件 IS，S=16，准确率 75.0%，95% 区间 40.9%–92.9%，8 题合计 1.8104 PFLOPs">
+<line class="error" x1="1158.5" y1="169.3" x2="1158.5" y2="309.5" stroke="#15803d"/>
+<line class="error" x1="1154.5" y1="169.3" x2="1162.5" y2="169.3" stroke="#15803d"/>
+<line class="error" x1="1154.5" y1="309.5" x2="1162.5" y2="309.5" stroke="#15803d"/>
+<circle cx="1158.5" cy="217.5" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="1158.5" y="207.5" text-anchor="middle">S=16</text>
+</g>
+<text class="axis-title" x="950.0" y="472" text-anchor="middle">8 题合计估算稠密前向计算量（PFLOPs，对数轴）</text>
+<text class="panel-title" x="82" y="522">MH 每个长度阶段的更新次数 U</text>
+<text class="panel-subtitle" x="82" y="543">更新次数与准确率的有限预算关系</text>
+<rect class="frame" x="82" y="600" width="500" height="270"/>
+<line class="grid" x1="82" y1="870.0" x2="582" y2="870.0"/>
+<text class="tick" x="72" y="874.0" text-anchor="end">0%</text>
+<line class="grid" x1="82" y1="802.5" x2="582" y2="802.5"/>
+<text class="tick" x="72" y="806.5" text-anchor="end">25%</text>
+<line class="grid" x1="82" y1="735.0" x2="582" y2="735.0"/>
+<text class="tick" x="72" y="739.0" text-anchor="end">50%</text>
+<line class="grid" x1="82" y1="667.5" x2="582" y2="667.5"/>
+<text class="tick" x="72" y="671.5" text-anchor="end">75%</text>
+<line class="grid" x1="82" y1="600.0" x2="582" y2="600.0"/>
+<text class="tick" x="72" y="604.0" text-anchor="end">100%</text>
+<line class="grid vertical" x1="200.5" y1="600" x2="200.5" y2="870"/>
+<text class="tick" x="200.5" y="891" text-anchor="middle">0.2</text>
+<line class="grid vertical" x1="404.0" y1="600" x2="404.0" y2="870"/>
+<text class="tick" x="404.0" y="891" text-anchor="middle">0.5</text>
+<line class="grid vertical" x1="558.0" y1="600" x2="558.0" y2="870"/>
+<text class="tick" x="558.0" y="891" text-anchor="middle">1</text>
+<polyline class="series" points="140.3,768.8 228.2,701.2 391.5,667.5 523.7,633.8" stroke="#ea580c"/>
+<g aria-label="幂分布 MH，U=1，准确率 37.5%，95% 区间 13.7%–69.4%，8 题合计 0.1526 PFLOPs">
+<line class="error" x1="140.3" y1="682.6" x2="140.3" y2="833.1" stroke="#ea580c"/>
+<line class="error" x1="136.3" y1="682.6" x2="144.3" y2="682.6" stroke="#ea580c"/>
+<line class="error" x1="136.3" y1="833.1" x2="144.3" y2="833.1" stroke="#ea580c"/>
+<polygon points="140.3,761.8 147.3,774.8 133.3,774.8" fill="#ea580c" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="140.3" y="758.8" text-anchor="middle">U=1</text>
+</g>
+<g aria-label="幂分布 MH，U=2，准确率 62.5%，95% 区间 30.6%–86.3%，8 题合计 0.2266 PFLOPs">
+<line class="error" x1="228.2" y1="636.9" x2="228.2" y2="787.4" stroke="#ea580c"/>
+<line class="error" x1="224.2" y1="636.9" x2="232.2" y2="636.9" stroke="#ea580c"/>
+<line class="error" x1="224.2" y1="787.4" x2="232.2" y2="787.4" stroke="#ea580c"/>
+<polygon points="228.2,694.2 235.2,707.2 221.2,707.2" fill="#ea580c" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="228.2" y="691.2" text-anchor="middle">U=2</text>
+</g>
+<g aria-label="幂分布 MH，U=5，准确率 75.0%，95% 区间 40.9%–92.9%，8 题合计 0.4726 PFLOPs">
+<line class="error" x1="391.5" y1="619.3" x2="391.5" y2="759.5" stroke="#ea580c"/>
+<line class="error" x1="387.5" y1="619.3" x2="395.5" y2="619.3" stroke="#ea580c"/>
+<line class="error" x1="387.5" y1="759.5" x2="395.5" y2="759.5" stroke="#ea580c"/>
+<polygon points="391.5,660.5 398.5,673.5 384.5,673.5" fill="#ea580c" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="391.5" y="657.5" text-anchor="middle">U=5</text>
+</g>
+<g aria-label="幂分布 MH，U=10，准确率 87.5%，95% 区间 52.9%–97.8%，8 题合计 0.8569 PFLOPs">
+<line class="error" x1="523.7" y1="606.1" x2="523.7" y2="727.1" stroke="#ea580c"/>
+<line class="error" x1="519.7" y1="606.1" x2="527.7" y2="606.1" stroke="#ea580c"/>
+<line class="error" x1="519.7" y1="727.1" x2="527.7" y2="727.1" stroke="#ea580c"/>
+<polygon points="523.7,626.8 530.7,639.8 516.7,639.8" fill="#ea580c" stroke="#ffffff" stroke-width="1.4"/>
+<text class="point-label" x="523.7" y="623.8" text-anchor="middle">U=10</text>
+</g>
+<text class="axis-title" x="332.0" y="922" text-anchor="middle">8 题合计估算稠密前向计算量（PFLOPs，对数轴）</text>
+<text class="panel-title" x="700" y="522">生成长度预算</text>
+<text class="panel-subtitle" x="700" y="543">相同 8 道题；每个长度点重新运行全部方法</text>
+<rect class="frame" x="700" y="600" width="500" height="270"/>
+<line class="grid" x1="700" y1="870.0" x2="1200" y2="870.0"/>
+<text class="tick" x="690" y="874.0" text-anchor="end">0%</text>
+<line class="grid" x1="700" y1="802.5" x2="1200" y2="802.5"/>
+<text class="tick" x="690" y="806.5" text-anchor="end">25%</text>
+<line class="grid" x1="700" y1="735.0" x2="1200" y2="735.0"/>
+<text class="tick" x="690" y="739.0" text-anchor="end">50%</text>
+<line class="grid" x1="700" y1="667.5" x2="1200" y2="667.5"/>
+<text class="tick" x="690" y="671.5" text-anchor="end">75%</text>
+<line class="grid" x1="700" y1="600.0" x2="1200" y2="600.0"/>
+<text class="tick" x="690" y="604.0" text-anchor="end">100%</text>
+<circle cx="707.0" cy="566.0" r="6" fill="#4b5563" stroke="#ffffff" stroke-width="1.4"/>
+<text class="legend" x="719.0" y="570.0">Base</text>
+<rect x="868.7" y="561.0" width="10" height="10" fill="#2563eb" stroke="#ffffff" stroke-width="1.4"/>
+<text class="legend" x="885.7" y="570.0">Beam-8</text>
+<polygon points="1040.3,559.0 1047.3,566.0 1040.3,573.0 1033.3,566.0" fill="#0891b2" stroke="#ffffff" stroke-width="1.4"/>
+<text class="legend" x="1052.3" y="570.0">自一致性-8</text>
+<circle cx="707.0" cy="587.0" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.4"/>
+<text class="legend" x="719.0" y="591.0">标准条件 IS</text>
+<polygon points="873.7,580.0 880.7,587.0 873.7,594.0 866.7,587.0" fill="#7e22ce" stroke="#ffffff" stroke-width="1.4"/>
+<text class="legend" x="885.7" y="591.0">0.5B 补全 IS</text>
+<rect x="1035.3" y="582.0" width="10" height="10" fill="#be123c" stroke="#ffffff" stroke-width="1.4"/>
+<text class="legend" x="1052.3" y="591.0">GRPO 贪心</text>
+<line class="grid vertical" x1="748.0" y1="600" x2="748.0" y2="870"/>
+<text class="tick" x="748.0" y="891" text-anchor="middle">128</text>
+<line class="grid vertical" x1="950.0" y1="600" x2="950.0" y2="870"/>
+<text class="tick" x="950.0" y="891" text-anchor="middle">256</text>
+<line class="grid vertical" x1="1152.0" y1="600" x2="1152.0" y2="870"/>
+<text class="tick" x="1152.0" y="891" text-anchor="middle">512</text>
+<polyline class="series" points="748.0,802.5 950.0,701.2 1152.0,667.5" stroke="#4b5563"/>
+<g aria-label="Base，最大生成 128 token，准确率 25.0%">
+<line class="error light" x1="748.0" y1="710.5" x2="748.0" y2="850.7" stroke="#4b5563"/>
+<circle cx="748.0" cy="802.5" r="6" fill="#4b5563" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<g aria-label="Base，最大生成 256 token，准确率 62.5%">
+<line class="error light" x1="950.0" y1="636.9" x2="950.0" y2="787.4" stroke="#4b5563"/>
+<circle cx="950.0" cy="701.2" r="6" fill="#4b5563" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<g aria-label="Base，最大生成 512 token，准确率 75.0%">
+<line class="error light" x1="1152.0" y1="619.3" x2="1152.0" y2="759.5" stroke="#4b5563"/>
+<circle cx="1152.0" cy="667.5" r="6" fill="#4b5563" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<polyline class="series" points="748.0,802.5 950.0,667.5 1152.0,667.5" stroke="#2563eb"/>
+<g aria-label="Beam-8，最大生成 128 token，准确率 25.0%">
+<line class="error light" x1="748.0" y1="710.5" x2="748.0" y2="850.7" stroke="#2563eb"/>
+<rect x="743.0" y="797.5" width="10" height="10" fill="#2563eb" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<g aria-label="Beam-8，最大生成 256 token，准确率 75.0%">
+<line class="error light" x1="950.0" y1="619.3" x2="950.0" y2="759.5" stroke="#2563eb"/>
+<rect x="945.0" y="662.5" width="10" height="10" fill="#2563eb" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<g aria-label="Beam-8，最大生成 512 token，准确率 75.0%">
+<line class="error light" x1="1152.0" y1="619.3" x2="1152.0" y2="759.5" stroke="#2563eb"/>
+<rect x="1147.0" y="662.5" width="10" height="10" fill="#2563eb" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<polyline class="series" points="748.0,768.8 950.0,633.8 1152.0,667.5" stroke="#0891b2"/>
+<g aria-label="自一致性-8，最大生成 128 token，准确率 37.5%">
+<line class="error light" x1="748.0" y1="682.6" x2="748.0" y2="833.1" stroke="#0891b2"/>
+<polygon points="748.0,761.8 755.0,768.8 748.0,775.8 741.0,768.8" fill="#0891b2" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<g aria-label="自一致性-8，最大生成 256 token，准确率 87.5%">
+<line class="error light" x1="950.0" y1="606.1" x2="950.0" y2="727.1" stroke="#0891b2"/>
+<polygon points="950.0,626.8 957.0,633.8 950.0,640.8 943.0,633.8" fill="#0891b2" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<g aria-label="自一致性-8，最大生成 512 token，准确率 75.0%">
+<line class="error light" x1="1152.0" y1="619.3" x2="1152.0" y2="759.5" stroke="#0891b2"/>
+<polygon points="1152.0,660.5 1159.0,667.5 1152.0,674.5 1145.0,667.5" fill="#0891b2" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<polyline class="series" points="748.0,735.0 950.0,633.8 1152.0,667.5" stroke="#15803d"/>
+<g aria-label="标准条件 IS，最大生成 128 token，准确率 50.0%">
+<line class="error light" x1="748.0" y1="658.1" x2="748.0" y2="811.9" stroke="#15803d"/>
+<circle cx="748.0" cy="735.0" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<g aria-label="标准条件 IS，最大生成 256 token，准确率 87.5%">
+<line class="error light" x1="950.0" y1="606.1" x2="950.0" y2="727.1" stroke="#15803d"/>
+<circle cx="950.0" cy="633.8" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<g aria-label="标准条件 IS，最大生成 512 token，准确率 75.0%">
+<line class="error light" x1="1152.0" y1="619.3" x2="1152.0" y2="759.5" stroke="#15803d"/>
+<circle cx="1152.0" cy="667.5" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<polyline class="series" points="748.0,802.5 950.0,701.2 1152.0,667.5" stroke="#7e22ce"/>
+<g aria-label="0.5B 补全 IS，最大生成 128 token，准确率 25.0%">
+<line class="error light" x1="748.0" y1="710.5" x2="748.0" y2="850.7" stroke="#7e22ce"/>
+<polygon points="748.0,795.5 755.0,802.5 748.0,809.5 741.0,802.5" fill="#7e22ce" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<g aria-label="0.5B 补全 IS，最大生成 256 token，准确率 62.5%">
+<line class="error light" x1="950.0" y1="636.9" x2="950.0" y2="787.4" stroke="#7e22ce"/>
+<polygon points="950.0,694.2 957.0,701.2 950.0,708.2 943.0,701.2" fill="#7e22ce" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<g aria-label="0.5B 补全 IS，最大生成 512 token，准确率 75.0%">
+<line class="error light" x1="1152.0" y1="619.3" x2="1152.0" y2="759.5" stroke="#7e22ce"/>
+<polygon points="1152.0,660.5 1159.0,667.5 1152.0,674.5 1145.0,667.5" fill="#7e22ce" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<polyline class="series" points="748.0,735.0 950.0,667.5 1152.0,667.5" stroke="#be123c"/>
+<g aria-label="GRPO 贪心，最大生成 128 token，准确率 50.0%">
+<line class="error light" x1="748.0" y1="658.1" x2="748.0" y2="811.9" stroke="#be123c"/>
+<rect x="743.0" y="730.0" width="10" height="10" fill="#be123c" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<g aria-label="GRPO 贪心，最大生成 256 token，准确率 75.0%">
+<line class="error light" x1="950.0" y1="619.3" x2="950.0" y2="759.5" stroke="#be123c"/>
+<rect x="945.0" y="662.5" width="10" height="10" fill="#be123c" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<g aria-label="GRPO 贪心，最大生成 512 token，准确率 75.0%">
+<line class="error light" x1="1152.0" y1="619.3" x2="1152.0" y2="759.5" stroke="#be123c"/>
+<rect x="1147.0" y="662.5" width="10" height="10" fill="#be123c" stroke="#ffffff" stroke-width="1.4"/>
+</g>
+<text class="axis-title" x="950.0" y="922" text-anchor="middle">最大新生成 token 数</text>
+<text class="axis-title" x="22" y="510" text-anchor="middle" transform="rotate(-90 22 510)">单次生成准确率</text>
+<text class="note" x="82" y="980">所有点均为同一组 8 道固定题；竖线为 Wilson 95% 区间，区间重叠较大。FLOPs 使用 2 × 参数量 × 实际前向 token 位置数 的线性主导项估算。</text>
+</svg>

@@ -1,0 +1,88 @@
+# 通用 AR 推理入口；通过 --model 指定本地目录或 Hub 模型。
+[run]
+name = "arllm"
+sample_count = 32
+subset_seed = 20260910
+seed = 20260910
+
+[models]
+base = "models/base"
+
+[model_loading]
+local_files_only = true
+trust_remote_code = false
+
+[runtime]
+backend = "transformers"
+device = "cuda"
+dtype = "bfloat16"
+max_batch_size = 4
+max_batch_tokens = 65536
+max_score_batch_size = 1
+score_chunk_size = 256
+
+[generation]
+max_new_tokens = 32768
+
+[output]
+sampling_scope = "full"
+thinking_mode = "auto"
+thinking_format = "auto"
+generation_chunk_size = 256
+
+[sampling]
+temperature = 1.0
+
+[reward]
+source = "consilience"
+temperature = 2.0
+
+[reward.consilience]
+scope = "thinking"
+top_k = 5
+window_fraction = 0.2
+skip_fraction = 0.05
+initial_penalty = 3.0
+scale = 1.0
+score_temperature = 1.0
+
+[mh]
+alpha = 4.0
+block_size = 256
+steps_per_block = 1
+iterations = 16
+suffix_schedule = "multiscale"
+
+[conditional_is]
+candidate_count = 4
+rollout_count = 2
+block_size = 256
+reward = "consilience"
+reward_temperature = 2.0
+rollout_design = "iid"
+
+[beam]
+num_beams = 4
+
+[best_of_n]
+samples = 4
+
+[matched_target]
+reward_temperature = 0.04
+
+[verifier]
+provider = "python"
+name = "numeric_reference"
+factory = "inference_scaling.shared.evaluation.numeric:build_numeric_reference_verifier"
+requires_reference = true
+
+[replay]
+history_rollouts = 2
+fresh_rollouts = 1
+truncation = 8.0
+
+[vllm]
+asynchronous = true
+exact_scoring_backend = "transformers"
+enable_prefix_caching = true
+gpu_memory_utilization = 0.8

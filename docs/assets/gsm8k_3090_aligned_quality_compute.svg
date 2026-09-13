@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+<title id="title">GSM8K 单次生成准确率与推理计算量</title>
+<desc id="desc">左图比较采样选择不读取测试答案的方法；右图比较固定正确性奖励与修正消融。点为 32 道题准确率，误差线为 Wilson 95% 区间，横轴为对数尺度 PFLOPs。</desc>
+<style>
+text { font-family: 'Noto Sans CJK SC', 'Microsoft YaHei', Arial, sans-serif; fill: #172033; }
+.title { font-size: 25px; font-weight: 600; }
+.panel-title { font-size: 18px; font-weight: 600; }
+.panel-subtitle { font-size: 13px; fill: #536078; }
+.frame { fill: #ffffff; stroke: #aab4c4; stroke-width: 1; }
+.grid { stroke: #dbe1ea; stroke-width: 1; }
+.grid.vertical { stroke-dasharray: 3 4; }
+.tick { font-size: 12px; fill: #536078; }
+.axis-title { font-size: 13px; font-weight: 600; }
+.point-label { font-size: 12px; font-weight: 600; paint-order: stroke; stroke: #ffffff; stroke-width: 3px; stroke-linejoin: round; }
+.error { stroke-width: 1.5; opacity: 0.72; }
+.note { font-size: 13px; fill: #536078; }
+</style>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text id="main-title" class="title" x="82" y="43">GSM8K 质量—计算量比较（32 题）</text>
+<text class="panel-title" x="82" y="88">测试时可用的选择信号</text>
+<text class="panel-subtitle" x="82" y="109">采样选择不读取测试答案；各方法目标不同</text>
+<rect class="frame" x="82" y="126" width="500" height="448"/>
+<line class="grid" x1="82" y1="574.0" x2="582" y2="574.0"/>
+<text class="tick" x="72" y="578.0" text-anchor="end">20%</text>
+<line class="grid" x1="82" y1="454.5" x2="582" y2="454.5"/>
+<text class="tick" x="72" y="458.5" text-anchor="end">40%</text>
+<line class="grid" x1="82" y1="335.1" x2="582" y2="335.1"/>
+<text class="tick" x="72" y="339.1" text-anchor="end">60%</text>
+<line class="grid" x1="82" y1="215.6" x2="582" y2="215.6"/>
+<text class="tick" x="72" y="219.6" text-anchor="end">80%</text>
+<line class="grid vertical" x1="121.9" y1="126" x2="121.9" y2="574"/>
+<text class="tick" x="121.9" y="597" text-anchor="middle">0.03</text>
+<line class="grid vertical" x1="240.6" y1="126" x2="240.6" y2="574"/>
+<text class="tick" x="240.6" y="597" text-anchor="middle">0.1</text>
+<line class="grid vertical" x1="348.8" y1="126" x2="348.8" y2="574"/>
+<text class="tick" x="348.8" y="597" text-anchor="middle">0.3</text>
+<line class="grid vertical" x1="467.4" y1="126" x2="467.4" y2="574"/>
+<text class="tick" x="467.4" y="597" text-anchor="middle">1</text>
+<line class="grid vertical" x1="575.6" y1="126" x2="575.6" y2="574"/>
+<text class="tick" x="575.6" y="597" text-anchor="middle">3</text>
+<g aria-label="Base  40.6%, 0.0279 PFLOPs">
+<line class="error" x1="114.8" y1="348.6" x2="114.8" y2="541.0" stroke="#4b5563"/>
+<line class="error" x1="110.8" y1="348.6" x2="118.8" y2="348.6" stroke="#4b5563"/>
+<line class="error" x1="110.8" y1="541.0" x2="118.8" y2="541.0" stroke="#4b5563"/>
+<circle cx="114.8" cy="450.8" r="6" fill="#4b5563" stroke="#ffffff" stroke-width="1.5"/>
+<text class="point-label" x="124.8" y="468.8" text-anchor="start">Base  40.6%</text>
+</g>
+<g aria-label="Beam-8  37.5%, 0.2306 PFLOPs">
+<line class="error" x1="322.9" y1="366.5" x2="322.9" y2="556.5" stroke="#2563eb"/>
+<line class="error" x1="318.9" y1="366.5" x2="326.9" y2="366.5" stroke="#2563eb"/>
+<line class="error" x1="318.9" y1="556.5" x2="326.9" y2="556.5" stroke="#2563eb"/>
+<rect x="317.9" y="464.5" width="10" height="10" fill="#2563eb" stroke="#ffffff" stroke-width="1.5"/>
+<text class="point-label" x="332.9" y="457.5" text-anchor="start">Beam-8  37.5%</text>
+</g>
+<g aria-label="自一致性-8  43.8%, 0.1621 PFLOPs">
+<line class="error" x1="288.1" y1="331.0" x2="288.1" y2="525.2" stroke="#0891b2"/>
+<line class="error" x1="284.1" y1="331.0" x2="292.1" y2="331.0" stroke="#0891b2"/>
+<line class="error" x1="284.1" y1="525.2" x2="292.1" y2="525.2" stroke="#0891b2"/>
+<polygon points="288.1,425.1 295.1,432.1 288.1,439.1 281.1,432.1" fill="#0891b2" stroke="#ffffff" stroke-width="1.5"/>
+<text class="point-label" x="278.1" y="421.1" text-anchor="end">自一致性-8  43.8%</text>
+</g>
+<g aria-label="幂目标 MH  37.5%, 1.3077 PFLOPs">
+<line class="error" x1="493.8" y1="366.5" x2="493.8" y2="556.5" stroke="#ea580c"/>
+<line class="error" x1="489.8" y1="366.5" x2="497.8" y2="366.5" stroke="#ea580c"/>
+<line class="error" x1="489.8" y1="556.5" x2="497.8" y2="556.5" stroke="#ea580c"/>
+<polygon points="493.8,462.5 500.8,475.5 486.8,475.5" fill="#ea580c" stroke="#ffffff" stroke-width="1.5"/>
+<text class="point-label" x="483.8" y="488.5" text-anchor="end">幂目标 MH  37.5%</text>
+</g>
+<g aria-label="标准条件 IS  65.6%, 1.3706 PFLOPs">
+<line class="error" x1="498.5" y1="218.1" x2="498.5" y2="404.9" stroke="#15803d"/>
+<line class="error" x1="494.5" y1="218.1" x2="502.5" y2="218.1" stroke="#15803d"/>
+<line class="error" x1="494.5" y1="404.9" x2="502.5" y2="404.9" stroke="#15803d"/>
+<circle cx="498.5" cy="301.5" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.5"/>
+<text class="point-label" x="488.5" y="289.5" text-anchor="end">标准条件 IS  65.6%</text>
+</g>
+<g aria-label="0.5B 补全条件 IS  46.9%, 2.4724 PFLOPs">
+<line class="error" x1="556.6" y1="313.9" x2="556.6" y2="509.1" stroke="#7e22ce"/>
+<line class="error" x1="552.6" y1="313.9" x2="560.6" y2="313.9" stroke="#7e22ce"/>
+<line class="error" x1="552.6" y1="509.1" x2="560.6" y2="509.1" stroke="#7e22ce"/>
+<polygon points="556.6,406.5 563.6,413.5 556.6,420.5 549.6,413.5" fill="#7e22ce" stroke="#ffffff" stroke-width="1.5"/>
+<text class="point-label" x="546.6" y="433.5" text-anchor="end">0.5B 补全条件 IS  46.9%</text>
+</g>
+<g aria-label="GRPO 随机采样  68.8%, 0.0254 PFLOPs">
+<line class="error" x1="105.6" y1="203.4" x2="105.6" y2="386.2" stroke="#be123c"/>
+<line class="error" x1="101.6" y1="203.4" x2="109.6" y2="203.4" stroke="#be123c"/>
+<line class="error" x1="101.6" y1="386.2" x2="109.6" y2="386.2" stroke="#be123c"/>
+<polygon points="105.6,275.8 112.6,288.8 98.6,288.8" fill="#be123c" stroke="#ffffff" stroke-width="1.5"/>
+<text class="point-label" x="115.6" y="272.8" text-anchor="start">GRPO 随机采样  68.8%</text>
+</g>
+<g aria-label="GRPO 贪心解码  56.2%, 0.0263 PFLOPs">
+<line class="error" x1="109.0" y1="264.4" x2="109.0" y2="458.6" stroke="#db2777"/>
+<line class="error" x1="105.0" y1="264.4" x2="113.0" y2="264.4" stroke="#db2777"/>
+<line class="error" x1="105.0" y1="458.6" x2="113.0" y2="458.6" stroke="#db2777"/>
+<rect x="104.0" y="352.5" width="10" height="10" fill="#db2777" stroke="#ffffff" stroke-width="1.5"/>
+<text class="point-label" x="119.0" y="347.5" text-anchor="start">GRPO 贪心解码  56.2%</text>
+</g>
+<text class="axis-title" x="332.0" y="629" text-anchor="middle">估算稠密前向计算量（PFLOPs，对数轴）</text>
+<text class="panel-title" x="700" y="88">精确奖励目标与重评分消融</text>
+<text class="panel-subtitle" x="700" y="109">使用标准答案；未校正加权省去 1.5B 重评分</text>
+<rect class="frame" x="700" y="126" width="500" height="448"/>
+<line class="grid" x1="700" y1="574.0" x2="1200" y2="574.0"/>
+<text class="tick" x="690" y="578.0" text-anchor="end">20%</text>
+<line class="grid" x1="700" y1="454.5" x2="1200" y2="454.5"/>
+<text class="tick" x="690" y="458.5" text-anchor="end">40%</text>
+<line class="grid" x1="700" y1="335.1" x2="1200" y2="335.1"/>
+<text class="tick" x="690" y="339.1" text-anchor="end">60%</text>
+<line class="grid" x1="700" y1="215.6" x2="1200" y2="215.6"/>
+<text class="tick" x="690" y="219.6" text-anchor="end">80%</text>
+<line class="grid vertical" x1="739.9" y1="126" x2="739.9" y2="574"/>
+<text class="tick" x="739.9" y="597" text-anchor="middle">0.03</text>
+<line class="grid vertical" x1="858.6" y1="126" x2="858.6" y2="574"/>
+<text class="tick" x="858.6" y="597" text-anchor="middle">0.1</text>
+<line class="grid vertical" x1="966.8" y1="126" x2="966.8" y2="574"/>
+<text class="tick" x="966.8" y="597" text-anchor="middle">0.3</text>
+<line class="grid vertical" x1="1085.4" y1="126" x2="1085.4" y2="574"/>
+<text class="tick" x="1085.4" y="597" text-anchor="middle">1</text>
+<line class="grid vertical" x1="1193.6" y1="126" x2="1193.6" y2="574"/>
+<text class="tick" x="1193.6" y="597" text-anchor="middle">3</text>
+<g aria-label="verifier-MH  78.1%, 1.3028 PFLOPs">
+<line class="error" x1="1111.5" y1="162.0" x2="1111.5" y2="327.6" stroke="#ea580c"/>
+<line class="error" x1="1107.5" y1="162.0" x2="1115.5" y2="162.0" stroke="#ea580c"/>
+<line class="error" x1="1107.5" y1="327.6" x2="1115.5" y2="327.6" stroke="#ea580c"/>
+<polygon points="1111.5,219.8 1118.5,232.8 1104.5,232.8" fill="#ea580c" stroke="#ffffff" stroke-width="1.5"/>
+<text class="point-label" x="1101.5" y="214.8" text-anchor="end">verifier-MH  78.1%</text>
+</g>
+<g aria-label="标准 verifier-IS  75.0%, 1.4839 PFLOPs">
+<line class="error" x1="1124.3" y1="175.3" x2="1124.3" y2="347.6" stroke="#15803d"/>
+<line class="error" x1="1120.3" y1="175.3" x2="1128.3" y2="175.3" stroke="#15803d"/>
+<line class="error" x1="1120.3" y1="347.6" x2="1128.3" y2="347.6" stroke="#15803d"/>
+<circle cx="1124.3" cy="245.5" r="6" fill="#15803d" stroke="#ffffff" stroke-width="1.5"/>
+<text class="point-label" x="1114.3" y="265.5" text-anchor="end">标准 verifier-IS  75.0%</text>
+</g>
+<g aria-label="0.5B 补全 verifier-IS  62.5%, 2.2077 PFLOPs">
+<line class="error" x1="1163.4" y1="233.1" x2="1163.4" y2="423.1" stroke="#7e22ce"/>
+<line class="error" x1="1159.4" y1="233.1" x2="1167.4" y2="233.1" stroke="#7e22ce"/>
+<line class="error" x1="1159.4" y1="423.1" x2="1167.4" y2="423.1" stroke="#7e22ce"/>
+<polygon points="1163.4,313.1 1170.4,320.1 1163.4,327.1 1156.4,320.1" fill="#7e22ce" stroke="#ffffff" stroke-width="1.5"/>
+<text class="point-label" x="1153.4" y="340.1" text-anchor="end">0.5B 补全 verifier-IS  62.5%</text>
+</g>
+<g aria-label="GRPO 随机采样  68.8%, 0.0254 PFLOPs">
+<line class="error" x1="723.6" y1="203.4" x2="723.6" y2="386.2" stroke="#be123c"/>
+<line class="error" x1="719.6" y1="203.4" x2="727.6" y2="203.4" stroke="#be123c"/>
+<line class="error" x1="719.6" y1="386.2" x2="727.6" y2="386.2" stroke="#be123c"/>
+<polygon points="723.6,275.8 730.6,288.8 716.6,288.8" fill="#be123c" stroke="#ffffff" stroke-width="1.5"/>
+<text class="point-label" x="733.6" y="272.8" text-anchor="start">GRPO 随机采样  68.8%</text>
+</g>
+<g aria-label="0.5B 补全仅按奖励加权  62.5%, 0.5740 PFLOPs">
+<line class="error" x1="1030.7" y1="233.1" x2="1030.7" y2="423.1" stroke="#0f766e"/>
+<line class="error" x1="1026.7" y1="233.1" x2="1034.7" y2="233.1" stroke="#0f766e"/>
+<line class="error" x1="1026.7" y1="423.1" x2="1034.7" y2="423.1" stroke="#0f766e"/>
+<rect x="1025.7" y="315.1" width="10" height="10" fill="#0f766e" stroke="#ffffff" stroke-width="1.5"/>
+<text class="point-label" x="1020.7" y="303.1" text-anchor="end">0.5B 补全仅按奖励加权  62.5%</text>
+</g>
+<text class="axis-title" x="950.0" y="629" text-anchor="middle">估算稠密前向计算量（PFLOPs，对数轴）</text>
+<text class="axis-title" x="22" y="350.0" text-anchor="middle" transform="rotate(-90 22 350.0)">单次生成准确率</text>
+<text class="note" x="82" y="681">点：准确率；竖线：Wilson 95% 区间。FLOPs = 2 × 模型参数量 × 实际前向 token 位置数；墙钟单独计量。</text>
+</svg>
