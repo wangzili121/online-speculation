@@ -50,6 +50,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+python scripts/preflight_vllm_orthrus.py \
+  --model "$MODEL" --workload "$MANIFEST" \
+  --max-model-len "$MAX_MODEL_LEN" --output "$output_dir/preflight.json"
+
 runtime_json=$(printf \
   '{"vllm":"0.23.0","vllm_ascend":"0.23.0","device":"Ascend910B3"}')
 trial_json=$(printf \
@@ -68,7 +72,7 @@ bash scripts/serve_vllm_orthrus.sh >"$output_dir/server.log" 2>&1 &
 server_pid=$!
 
 deadline=$((SECONDS + SERVER_TIMEOUT))
-until curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null; do
+until curl -fs "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; do
   if ! kill -0 "$server_pid" 2>/dev/null; then
     echo "server exited before readiness; see $output_dir/server.log" >&2
     exit 3

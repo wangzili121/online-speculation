@@ -1,0 +1,97 @@
+"""Fail-fast checks for the pinned Orthrus vLLM-Ascend environment."""
+
+from __future__ import annotations
+
+from importlib import metadata
+import json
+import os
+from pathlib import Path
+import time
+
+from .artifacts import sha256_file
+from .workload import read_manifest
+
+
+def _version(distribution):
+    try:
+        return metadata.version(distribution)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def check(*, model, workload, runtime_root, max_model_len,
+          expected_version="0.23.0"):
+    import torch
+
+    model = Path(model)
+    runtime_root = Path(runtime_root)
+    versions = {
+        "vllm": _version("vllm"),
+        "vllm_ascend": _version("vllm-ascend"),
+        "torch": _version("torch"),
+        "torch_npu": _version("torch-npu"),
+    }
+    failures = []
+    for name in ("vllm", "vllm_ascend"):
+        value = versions[name] or ""
+        if value.split("+", 1)[0] != expected_version:
+            failures.append(f"{name} must be {expected_version}, found {value or 'missing'}")
+    required_model_files = [model / "config.json", model / "tokenizer.json",
+                            model / "model.safetensors"]
+    for path in required_model_files:
+        if not path.is_file():
+            failures.append(f"missing model file: {path}")
+    if (model / "model.safetensors").is_file() and (
+            model / "model.safetensors").stat().st_size < 1024**3:
+        failures.append("model.safetensors is unexpectedly small")
+    marker_files = {
+        "custom_proposer": runtime_root / "vllm_ascend/spec_decode/__init__.py",
+        "probabilistic_correction": runtime_root / "vllm_ascend/worker/model_runner_v1.py",
+        "k32_fallback": runtime_root / "vllm_ascend/attention/attention_v1.py",
+    }
+    markers = {}
+    expected = {
+        "custom_proposer": "custom_class",
+        "probabilistic_correction": "_draft_probs",
+        "k32_fallback": "min(requested, 16)",
+    }
+    for name, path in marker_files.items():
+        present = path.is_file() and expected[name] in path.read_text(
+            encoding="utf-8")
+        markers[name] = present
+        if not present:
+            failures.append(f"runtime overlay marker missing: {name}")
+    records = read_manifest(workload)
+    overflow = [row["request_id"] for row in records
+                if row["actual_prompt_tokens"] + row["max_tokens"] > max_model_len]
+    if overflow:
+        failures.append(f"{len(overflow)} workload requests exceed max_model_len")
+    npu_available = bool(getattr(torch, "npu", None) and torch.npu.is_available())
+    npu_count = torch.npu.device_count() if npu_available else 0
+    if not npu_available or npu_count != 1:
+        failures.append(f"exactly one visible NPU required, found {npu_count}")
+    result = {
+        "schema_version": 1,
+        "created_unix_seconds": time.time(),
+        "ok": not failures,
+        "failures": failures,
+        "versions": versions,
+        "visible_devices": os.environ.get("ASCEND_RT_VISIBLE_DEVICES"),
+        "npu_count": npu_count,
+        "model_bytes": ((model / "model.safetensors").stat().st_size
+                        if (model / "model.safetensors").is_file() else None),
+        "workload_requests": len(records),
+        "workload_sha256": sha256_file(workload),
+        "runtime_markers": markers,
+    }
+    return result
+
+
+def write(path, result):
+    with open(path, "x", encoding="utf-8") as handle:
+        json.dump(result, handle, ensure_ascii=True, indent=2)
+        handle.write("\n")
+
+
+def format_result(result):
+    return json.dumps(result, ensure_ascii=True, indent=2)

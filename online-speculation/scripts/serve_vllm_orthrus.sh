@@ -15,8 +15,12 @@ ORTHRUS_TRACE_FILE="${ORTHRUS_TRACE_FILE:-}"
 MAX_GRAPH_CAPTURE_SIZE="${MAX_GRAPH_CAPTURE_SIZE:-}"
 
 SPECULATIVE_CONFIG='{"method":"custom_class","model":"blockspec.vllm_ascend.proposer.OrthrusProposer","num_speculative_tokens":31,"draft_sample_method":"probabilistic"}'
-COMPILATION_CONFIG="{\"cudagraph_mode\":\"$GRAPH_MODE\"}"
-if [[ -n "$MAX_GRAPH_CAPTURE_SIZE" ]]; then
+if [[ "$GRAPH_MODE" == "eager" ]]; then
+  COMPILATION_CONFIG='{"cudagraph_mode":"NONE"}'
+else
+  COMPILATION_CONFIG="{\"cudagraph_mode\":\"$GRAPH_MODE\"}"
+fi
+if [[ -n "$MAX_GRAPH_CAPTURE_SIZE" && "$GRAPH_MODE" != "eager" ]]; then
   COMPILATION_CONFIG="{\"cudagraph_mode\":\"$GRAPH_MODE\",\"max_cudagraph_capture_size\":$MAX_GRAPH_CAPTURE_SIZE}"
 fi
 
