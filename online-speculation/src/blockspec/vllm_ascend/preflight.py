@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from importlib import metadata
+from importlib.util import find_spec
 import json
 import os
 from pathlib import Path
-import shutil
 import time
 
 from .artifacts import sha256_file
@@ -78,21 +78,24 @@ def check(*, model, workload, runtime_root, max_model_len,
     profile_dependencies = {}
     if profiler == "service":
         profile_dependencies = {
-            "msserviceprofiler": _version("msserviceprofiler"),
+            "ms_service_profiler": _version("ms-service-profiler"),
             "tzdata": _version("tzdata"),
-            "cli": shutil.which("msserviceprofiler"),
+            "pytz": _version("pytz"),
+            "module": find_spec("ms_service_profiler") is not None,
         }
-        if profile_dependencies["msserviceprofiler"] != "1.2.2":
-            failures.append("service profiler requires msserviceprofiler 1.2.2")
+        if profile_dependencies["ms_service_profiler"] != "26.0.0":
+            failures.append("service profiler requires ms-service-profiler 26.0.0")
         if profile_dependencies["tzdata"] != "2025.3":
             failures.append("service profiler requires tzdata 2025.3")
+        if profile_dependencies["pytz"] != "2026.3.post1":
+            failures.append("service profiler requires pytz 2026.3.post1")
         try:
             import ms_service_profiler  # noqa: F401
-            from msserviceprofiler.vllm_profiler.vllm_v1 import batch_hookers  # noqa: F401
+            from ms_service_profiler import analyze  # noqa: F401
         except ImportError as exc:
             failures.append(f"service profiler hook import failed: {exc}")
-        if profile_dependencies["cli"] is None:
-            failures.append("msserviceprofiler CLI is unavailable")
+        if not profile_dependencies["module"]:
+            failures.append("ms_service_profiler module is unavailable")
     elif profiler == "torch":
         try:
             from torch_npu.profiler import profiler as torch_npu_profiler

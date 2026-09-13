@@ -1,6 +1,8 @@
 ARG BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0
 FROM ${BASE_IMAGE}
 
-RUN python -m pip install --no-cache-dir --no-deps \
-      pandas==2.2.3 tzdata==2025.3 msserviceprofiler==1.2.2 \
-    && python -c "import ms_service_profiler; from msserviceprofiler.vllm_profiler.vllm_v1 import batch_hookers"
+RUN python -m pip install --no-cache-dir \
+      numpy==1.26.4 pandas==2.2.3 pytz==2026.3.post1 tzdata==2025.3 \
+      openpyxl==3.1.5 matplotlib==3.10.7 msguard==0.0.8 \
+    && python -c "import ms_service_profiler; from ms_service_profiler import analyze" \
+    && python -m ms_service_profiler --help >/dev/null

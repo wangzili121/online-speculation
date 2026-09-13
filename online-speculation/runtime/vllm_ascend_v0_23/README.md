@@ -15,7 +15,9 @@ embedding, MLP, norms and LM head.
 Run `./apply.sh /vllm-workspace/vllm-ascend` inside the pinned container. The
 script first performs a dry run, so source drift fails without partial edits.
 
-`Dockerfile.msprof` adds only the pinned MS Service Profiler dependencies used
-for the independent service-level profile pass. Performance trials continue to
-use the unmodified official base image; the profiler image is not used for
-throughput numbers.
+`Dockerfile.msprof` completes the pinned dependencies of the CANN 9.1 bundled
+`ms-service-profiler==26.0.0` used for the independent service-level profile
+pass. It deliberately does not install the incompatible PyPI
+`msserviceprofiler==1.2.2` command from the older CANN stack. Performance trials
+continue to use the unmodified official base image; the profiler image is not
+used for throughput numbers.

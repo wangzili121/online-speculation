@@ -25,6 +25,8 @@ def main():
     else:
         result = analyze_service(args.input, args.output)
     print(report.dumps(result, indent=2))
+    if args.command == "analyze" and not result["valid"]:
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

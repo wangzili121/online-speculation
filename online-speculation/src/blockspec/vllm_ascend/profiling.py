@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 
 def write_service_config(path, profile_directory, duration):
@@ -38,7 +39,7 @@ def analyze_service(input_directory, output_directory, timeout=1800):
     output_directory = Path(output_directory)
     output_directory.mkdir(parents=True, exist_ok=False)
     completed = subprocess.run(
-        ["msserviceprofiler", "analyze",
+        [sys.executable, "-m", "ms_service_profiler", "analyze",
          f"--input-path={Path(input_directory).resolve()}",
          f"--output-path={output_directory.resolve()}"],
         text=True, capture_output=True, timeout=timeout)
