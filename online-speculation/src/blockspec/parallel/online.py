@@ -9,6 +9,7 @@ import time
 
 import torch
 
+from ..accelerator import synchronize
 from ..losses import divergence
 from .backbone import DraftBoundary
 from .weights import source_identity
@@ -90,8 +91,7 @@ class SuffixLearner:
             raise RuntimeError("frozen representations or attention execution changed; rebuild the learner")
 
     def _sync(self):
-        if self.parameters[0].is_cuda:
-            torch.cuda.synchronize(self.parameters[0].device)
+        synchronize(self.parameters[0].device)
 
     def clear_replay(self):
         self.replay.clear()

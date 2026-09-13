@@ -24,7 +24,7 @@ def test_paired_runner_uses_shared_configuration_and_explicit_factory_context(tm
         "--output", str(tmp_path / "report.json"), "--requests", "3", "--learn-requests", "3",
         "--tokens", "16", "--learn-tokens", "12", "--repeats", "2", "--block-size", "4",
         "--stride", "1", "--learning-rate", ".001", "--top-k", "0", "--top-p", "1",
-        "--empty-system", "--shuffle-requests"])
+        "--empty-system", "--shuffle-requests", "--device", "cpu"])
     defaults = command.argument_parser().parse_args([
         "--model", str(tmp_path), "--prompts", str(evaluation), "--learning-prompts", str(learning),
         "--output", str(tmp_path / "defaults.json")])
@@ -40,7 +40,8 @@ def test_paired_runner_uses_shared_configuration_and_explicit_factory_context(tm
     generator_type = torch.Generator
     monkeypatch.setattr(torch, "Generator", lambda **kw: generator_type(device="cpu"))
     executor_type = command.SamplingExecutor
-    monkeypatch.setattr(command, "SamplingExecutor", lambda *a, **kw: executor_type(*a, **kw, device="cpu"))
+    monkeypatch.setattr(command, "SamplingExecutor",
+                        lambda *a, **kw: executor_type(*a, **(kw | {"device": "cpu"})))
     for name in ("synchronize", "reset_peak_memory_stats"):
         monkeypatch.setattr(torch.cuda, name, lambda *a, **kw: None)
     for name in ("memory_allocated", "max_memory_allocated"):

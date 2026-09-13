@@ -1,0 +1,21 @@
+diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
+--- a/vllm_ascend/worker/model_runner_v1.py
++++ b/vllm_ascend/worker/model_runner_v1.py
+@@ -2660,12 +2661,13 @@ class NPUModelRunner(GPUModelRunner):
+         if self.input_batch.sampling_metadata.top_k is not None and get_ascend_config().enable_reduce_sample:
+             max_topk = self.input_batch.top_k_cpu[self.input_batch.top_k_cpu < logits.shape[1]].max()
+             self.rejection_sampler.prepare_sampling(max_topk)
+-        sampler_output = self.rejection_sampler(
+-            spec_decode_metadata,
+-            draft_probs,
+-            logits,
+-            sampling_metadata,
+-        )
++        with record_function_or_nullcontext("orthrus.rejection_sampling"):
++            sampler_output = self.rejection_sampler(
++                spec_decode_metadata,
++                draft_probs,
++                logits,
++                sampling_metadata,
++            )
+         return sampler_output

@@ -9,6 +9,7 @@ import time
 
 import torch
 
+from .accelerator import device as resolve_device, synchronize
 from .sampling import SamplingConfig, Verification, _probabilities_unchecked
 
 
@@ -107,7 +108,7 @@ class SamplingExecutor:
                 or sampling.temperature <= 0 or dtype not in (torch.float32, torch.float64)):
             raise ValueError("positive-temperature floating probabilities and block size >= 2 required")
         self.vocabulary, self.block_size, self.sampling = vocabulary, block_size, sampling
-        self.device, self.dtype = torch.device(device), dtype
+        self.device, self.dtype = resolve_device(device), dtype
         if self.device.type == "cuda" and self.device.index is None:
             self.device = torch.device("cuda", torch.cuda.current_device())
         if use_cuda_graph and self.device.type != "cuda":
@@ -116,14 +117,12 @@ class SamplingExecutor:
         for n in range(1, block_size + 1):
             start = time.perf_counter()
             self.drafts[n] = _DraftSlot(n, vocabulary, sampling, self.device, dtype, use_cuda_graph)
-            if self.device.type == "cuda":
-                torch.cuda.synchronize(self.device)
+            synchronize(self.device)
             self.signature_seconds[n, "plain"] = time.perf_counter() - start
             if n > 1:
                 start = time.perf_counter()
                 self.verifiers[n] = _VerifySlot(n, vocabulary, sampling, self.device, dtype, use_cuda_graph)
-                if self.device.type == "cuda":
-                    torch.cuda.synchronize(self.device)
+                synchronize(self.device)
                 self.signature_seconds[n, "verify"] = time.perf_counter() - start
         self.setup_seconds = sum(self.signature_seconds.values())
 

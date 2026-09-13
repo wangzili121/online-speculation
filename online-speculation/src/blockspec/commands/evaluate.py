@@ -14,6 +14,9 @@ import time
 import numpy as np
 import torch
 
+from blockspec.accelerator import (device as resolve_device, max_memory_allocated,
+                                   memory_allocated, name as device_name, profiler,
+                                   reset_peak_memory_stats, synchronize)
 from blockspec.parallel import MaskedAttentionBranch, generate, generate_ar
 from blockspec.parallel.sampling import ProposalSampler
 from blockspec.parallel.weights import file_sha256, load_public
@@ -34,7 +37,7 @@ PROMPTS = (
 )
 
 
-def load_reference(folder, dtype, backend, manifest):
+def load_reference(folder, dtype, backend, manifest, device="cuda"):
     from blockspec.reference import checked_reference
 
     checked = checked_reference(folder, manifest)
@@ -47,7 +50,8 @@ def load_reference(folder, dtype, backend, manifest):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return getattr(module, entry["class"]).from_pretrained(
-        folder, dtype=dtype, attn_implementation=backend, local_files_only=True).cuda().eval().requires_grad_(False)
+        folder, dtype=dtype, attn_implementation=backend,
+        local_files_only=True).to(device).eval().requires_grad_(False)
 
 
 def prompt_texts(path, count, *, offset=0):
@@ -79,13 +83,13 @@ def render_prompt(tokenizer, text, *, thinking=False, empty_system=False):
                                          enable_thinking=thinking)
 
 
-def prompt_ids(folder, count, *, path=None, thinking=False, offset=0, empty_system=False):
+def prompt_ids(folder, count, *, path=None, thinking=False, offset=0, empty_system=False, device="cuda"):
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(folder, local_files_only=True)
     result = []
     for text in prompt_texts(path, count, offset=offset):
         rendered = render_prompt(tokenizer, text, thinking=thinking, empty_system=empty_system)
-        result.append(tokenizer(rendered, return_tensors="pt", add_special_tokens=False).input_ids.cuda())
+        result.append(tokenizer(rendered, return_tensors="pt", add_special_tokens=False).input_ids.to(device))
     return result
 
 
@@ -116,8 +120,10 @@ def compare_cache(actual, reference):
 @torch.inference_mode()
 def audit(args, own, reference):
     records = []
-    rng = torch.Generator(device="cuda").manual_seed(args.seed)
-    sequence = torch.randint(100, own.config.vocab_size - 1000, (1, 80), device="cuda", generator=rng)
+    runtime_device = own.embedding.weight.device
+    rng = torch.Generator(device=runtime_device).manual_seed(args.seed)
+    sequence = torch.randint(100, own.config.vocab_size - 1000, (1, 80),
+                             device=runtime_device, generator=rng)
     for prefix_length in (7, 29):
         prefix = sequence[:, :prefix_length]
         for block in args.blocks:
@@ -128,7 +134,7 @@ def audit(args, own, reference):
                             **compare_cache(ar.cache, oracle.past_key_values)})
             draft_ids = prefix.new_full((1, block), own.config.mask_token_id)
             draft_ids[:, 0] = sequence[:, prefix_length]
-            positions = torch.arange(prefix_length, prefix_length + block, device="cuda")[None]
+            positions = torch.arange(prefix_length, prefix_length + block, device=runtime_device)[None]
             before = [(layer.keys.clone(), layer.values.clone()) for layer in oracle.past_key_values.layers]
             draft = own(draft_ids, view="draft", cache=ar.cache, positions=positions)
             oracle_draft = reference(input_ids=draft_ids, past_key_values=oracle.past_key_values,
@@ -150,7 +156,8 @@ def audit(args, own, reference):
     tv_limit = 0.0001 if args.dtype == "float32" else 0.02
     numerical_pass = all(row["max_logit_error"] <= limit and row["max_tv"] <= tv_limit
                          and row.get("max_kv_tolerance_ratio", 0) <= 1 for row in records)
-    prompt = prompt_ids(args.model, 1, path=args.prompts, thinking=args.thinking, empty_system=args.empty_system)[0]
+    prompt = prompt_ids(args.model, 1, path=args.prompts, thinking=args.thinking,
+                        empty_system=args.empty_system, device=runtime_device)[0]
     own_ids = generate(MaskedAttentionBranch(own), prompt, args.tokens, block_size=args.blocks[-1],
                        eos_id=own.config.eos_token_id).tokens
     reference.config.block_size = args.blocks[-1]
@@ -179,7 +186,7 @@ def reference_generate(model, prompt, tokens, block, sampling, seed):
     hook = model.register_forward_pre_hook(count, with_kwargs=True)
     model.config.block_size = max(block, 2)
     torch.manual_seed(seed)
-    torch.cuda.synchronize()
+    synchronize(prompt.device)
     start = time.perf_counter()
     try:
         output = model.generate(input_ids=prompt, max_new_tokens=tokens,
@@ -187,7 +194,7 @@ def reference_generate(model, prompt, tokens, block, sampling, seed):
                                 top_p=sampling.top_p, use_diffusion_mode=block > 1,
                                 do_sample=sampling.temperature > 0,
                                 eos_token_id=model.config.eos_token_id)
-        torch.cuda.synchronize()
+        synchronize(prompt.device)
     finally:
         hook.remove()
     elapsed = time.perf_counter() - start
@@ -214,9 +221,6 @@ class ProfileSampler(ProposalSampler):
 @torch.inference_mode()
 def profile_generation(model, prompt, *, tokens, block_size, sampling, seed):
     """Separate operator attribution from uninstrumented throughput measurements."""
-    activities = [torch.profiler.ProfilerActivity.CPU]
-    if prompt.is_cuda:
-        activities.append(torch.profiler.ProfilerActivity.CUDA)
     versions = {name: value._version for name, value in model.named_parameters()}
     branch, records = MaskedAttentionBranch(model), []
 
@@ -243,14 +247,14 @@ def profile_generation(model, prompt, *, tokens, block_size, sampling, seed):
         pre = model.register_forward_pre_hook(before, with_kwargs=True)
         post = model.register_forward_hook(after, always_call=True)
         try:
-            with torch.profiler.profile(activities=activities, acc_events=True) as profiler:
+            with profiler(prompt.device, acc_events=True) as measured:
                 actual = run(method, ProfileSampler(sampling))
         finally:
             pre.remove()
             post.remove()
         events = [{"name": event.key, "count": event.count,
                    "self_cpu_us": event.self_cpu_time_total, "self_device_us": event.self_device_time_total,
-                   "inclusive_device_us": event.device_time_total} for event in profiler.key_averages()
+                   "inclusive_device_us": event.device_time_total} for event in measured.key_averages()
                   if event.device_type == torch.autograd.DeviceType.CPU]
         records.append({"method": method, "tokens": len(actual.tokens), "decode_forwards": actual.decode_forwards,
                         "tokens_unchanged": actual.tokens == expected.tokens,
@@ -268,7 +272,8 @@ def profile_generation(model, prompt, *, tokens, block_size, sampling, seed):
 def trace_decision(args, own):
     """Compare one greedy decision, including a same-cache one-row/block replay."""
     prompt = prompt_ids(args.model, args.request_index + 1, path=args.prompts, thinking=args.thinking,
-                        empty_system=args.empty_system)[args.request_index]
+                        empty_system=args.empty_system,
+                        device=own.embedding.weight.device)[args.request_index]
     branch, captures, output_ids = MaskedAttentionBranch(own), {}, {}
     for mode in ("ar", "speculative"):
         selected = {}
@@ -315,7 +320,7 @@ def trace_decision(args, own):
 @torch.inference_mode()
 def benchmark(args, own, reference):
     prompts = prompt_ids(args.model, args.requests, path=args.prompts, thinking=args.thinking,
-                         empty_system=args.empty_system)
+                         empty_system=args.empty_system, device=resolve_device(args.device))
     sampling = SamplingConfig(args.temperature, args.top_k, args.top_p)
     engines = ({("own" if len(args.sampling_executions) == 1 else f"own_{mode}"): mode
                 for mode in args.sampling_executions} if own is not None else {})
@@ -323,7 +328,8 @@ def benchmark(args, own, reference):
     for implementation, mode in engines.items():
         for block in args.blocks:
             executor = (None if mode == "scalar" else SamplingExecutor(
-                own.config.vocab_size, block, sampling, use_cuda_graph=mode == "graph"))
+                own.config.vocab_size, block, sampling, device=own.embedding.weight.device,
+                use_cuda_graph=mode == "graph"))
             samplers[implementation, block] = ProposalSampler(sampling, executor=executor)
             preparation[f"{implementation}_k{block}"] = 0. if executor is None else executor.setup_seconds
         samplers[implementation, 1] = samplers[implementation, args.blocks[0]]
@@ -336,7 +342,7 @@ def benchmark(args, own, reference):
             return reference_generate(reference, prompt, count, block, sampling, seed)
         options = {"sampling": sampling, "eos_id": own.config.eos_token_id,
                    "sampler": samplers[implementation, block],
-                   "generator": torch.Generator(device="cuda").manual_seed(seed)}
+                   "generator": torch.Generator(device=prompt.device).manual_seed(seed)}
         result = (generate_ar(branch, prompt, count, **options) if block == 1 else
                   generate(branch, prompt, count, block_size=block, **options))
         return result.summary() | {"token_ids": result.tokens}
@@ -344,8 +350,9 @@ def benchmark(args, own, reference):
     for implementation, block in methods:
         run(implementation, block, prompts[0], min(32, args.tokens), args.seed)
     records = []
-    torch.cuda.reset_peak_memory_stats()
-    resident = torch.cuda.memory_allocated()
+    runtime_device = own.embedding.weight.device if own is not None else next(reference.parameters()).device
+    reset_peak_memory_stats(runtime_device)
+    resident = memory_allocated(runtime_device)
     for repeat in range(args.repeats):
         for index, prompt in enumerate(prompts):
             ordered = methods if (repeat + index) % 2 == 0 else list(reversed(methods))
@@ -411,7 +418,7 @@ def benchmark(args, own, reference):
             "thinking": args.thinking, "empty_system": args.empty_system,
             "prompt_file_sha256": None if args.prompts is None else file_sha256(args.prompts),
             "prompts": prompt_texts(args.prompts, args.requests), "records": records, "aggregate": aggregate,
-            "resident_bytes": resident, "peak_allocated_bytes": torch.cuda.max_memory_allocated()}
+            "resident_bytes": resident, "peak_allocated_bytes": max_memory_allocated(runtime_device)}
 
 
 def main():
@@ -434,6 +441,7 @@ def main():
     parser.add_argument("--top-p", type=float, default=1)
     parser.add_argument("--sampling-executions", nargs="+", choices=("scalar", "tensor", "graph"))
     parser.add_argument("--seed", type=int, default=731)
+    parser.add_argument("--device", default="cuda")
     parser.add_argument("--request-index", type=int, default=6)
     parser.add_argument("--token-index", type=int, default=20)
     parser.add_argument("--output", type=Path)
@@ -458,15 +466,17 @@ def main():
     if (args.mode == "audit" or args.implementation in ("reference", "both")) and args.reference_manifest is None:
         parser.error("external execution requires a caller-supplied --reference-manifest")
     torch.set_num_threads(1)
+    runtime_device = resolve_device(args.device)
     own = reference = None
     dtype = getattr(torch, args.dtype)
     if args.mode == "audit" or args.implementation in ("own", "both"):
-        own = load_public(args.model, device="cuda", dtype=dtype).set_backend(args.backend)
+        own = load_public(args.model, device=runtime_device, dtype=dtype).set_backend(args.backend)
     if args.mode == "audit" or args.implementation in ("reference", "both"):
-        reference = load_reference(args.model, dtype, args.backend, args.reference_manifest)
+        reference = load_reference(args.model, dtype, args.backend, args.reference_manifest,
+                                   device=runtime_device)
     result = {"mode": args.mode, "dtype": args.dtype, "backend": args.backend,
               "python": platform.python_version(), "torch": torch.__version__,
-              "device": torch.cuda.get_device_name(), "seed": args.seed,
+              "device": device_name(runtime_device), "seed": args.seed,
               "config": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}}
     if args.mode == "audit":
         result.update(audit(args, own, reference))
@@ -474,7 +484,7 @@ def main():
         result.update(trace_decision(args, own))
     elif args.mode == "profile":
         prompt = prompt_ids(args.model, 1, path=args.prompts, thinking=args.thinking,
-                            empty_system=args.empty_system)[0]
+                            empty_system=args.empty_system, device=runtime_device)[0]
         result.update(profile_generation(own, prompt, tokens=args.tokens, block_size=args.blocks[-1],
                                          sampling=SamplingConfig(args.temperature, args.top_k, args.top_p), seed=args.seed))
     else:

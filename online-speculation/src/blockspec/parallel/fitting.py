@@ -11,6 +11,8 @@ import time
 
 import torch
 
+from ..accelerator import (autocast, name as device_name, rng_state, set_rng_state,
+                           synchronize)
 from .training import distillation_loss, distillation_update, sample_anchors
 from .weights import file_sha256, load_checkpoint, save_checkpoint
 
@@ -160,8 +162,8 @@ class Trainer:
         self.model = model.train_draft_only().set_backend(config.backend)
         self.config, self.data = config, data
         self.device = model.embedding.weight.device
-        if config.precision == "bf16" and self.device.type != "cuda":
-            raise ValueError("BF16 training autocast requires CUDA")
+        if config.precision == "bf16" and self.device.type not in ("cuda", "npu"):
+            raise ValueError("BF16 training autocast requires CUDA or NPU")
         self.parameters = [value for value in model.parameters() if value.requires_grad]
         self.optimizer = config.make_optimizer(self.parameters)
         self.stream = BatchStream(data, config.seed)
@@ -170,13 +172,13 @@ class Trainer:
         self.base_fingerprint = frozen_fingerprint(model)
 
     def _autocast(self):
-        return (torch.autocast("cuda", dtype=torch.bfloat16) if self.config.precision == "bf16"
+        return (autocast(self.device, torch.bfloat16) if self.config.precision == "bf16"
                 else nullcontext())
 
     def _runtime(self):
         return {"torch": str(torch.__version__), "cuda": torch.version.cuda,
                 "device_type": self.device.type,
-                "device_name": torch.cuda.get_device_name(self.device) if self.device.type == "cuda" else "cpu",
+                "device_name": device_name(self.device),
                 "threads": torch.get_num_threads(), "matmul_precision": torch.get_float32_matmul_precision(),
                 "deterministic": torch.are_deterministic_algorithms_enabled()}
 
@@ -187,8 +189,7 @@ class Trainer:
         records = []
         self.model.train()
         while self.step < end:
-            if self.device.type == "cuda":
-                torch.cuda.synchronize(self.device)
+            synchronize(self.device)
             start = time.perf_counter()
             rate = self.config.rate(self.step)
             batches = []
@@ -201,8 +202,7 @@ class Trainer:
                                           clip_grad=self.config.clip_grad, chunk_rows=self.config.chunk_rows,
                                           autocast=self._autocast)
             self.step += 1
-            if self.device.type == "cuda":
-                torch.cuda.synchronize(self.device)
+            synchronize(self.device)
             record = {"step": self.step, **metrics, "seconds": time.perf_counter() - start}
             records.append(record)
             if progress is not None:
@@ -234,7 +234,7 @@ class Trainer:
         state = {"format": "dual-fit-v1", "config": asdict(self.config), "data_sha256": self.data.fingerprint,
                  "data_stream": self.stream.state_dict(), "anchors_rng": self.anchors_rng.get_state(),
                  "torch_rng": torch.get_rng_state(), "runtime": self._runtime(),
-                 "cuda_rng": torch.cuda.get_rng_state(self.device) if self.device.type == "cuda" else None,
+                 "accelerator_rng": rng_state(self.device),
                  "base_fingerprint": self.base_fingerprint}
         save_checkpoint(path, self.model, optimizer=self.optimizer, step=self.step, training_state=state)
 
@@ -257,7 +257,8 @@ class Trainer:
         trainer.stream.load_state_dict(state["data_stream"])
         trainer.anchors_rng.set_state(state["anchors_rng"].cpu())
         torch.set_rng_state(state["torch_rng"].cpu())
-        if trainer.device.type == "cuda":
-            torch.cuda.set_rng_state(state["cuda_rng"].cpu(), trainer.device)
+        saved_rng = state.get("accelerator_rng", state.get("cuda_rng"))
+        if trainer.device.type != "cpu":
+            set_rng_state(saved_rng, trainer.device)
         trainer.step = saved["step"]
         return trainer

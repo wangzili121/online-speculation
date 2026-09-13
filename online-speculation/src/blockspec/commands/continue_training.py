@@ -10,6 +10,9 @@ import time
 import numpy as np
 import torch
 
+from blockspec.accelerator import (device as resolve_device, max_memory_allocated,
+                                   memory_allocated, name as device_name,
+                                   reset_peak_memory_stats, synchronize)
 from blockspec.parallel import MaskedAttentionBranch, generate, generate_ar
 from blockspec.parallel.audit import AuditSampler, SuffixAudit, audit_summary, paired_audit_intervals
 from blockspec.parallel.feedback import OnlineFeedback
@@ -49,6 +52,7 @@ def argument_parser(*, loss_choices=("tv", "forward_kl")):
     parser.add_argument("--audit-tokens", type=int, default=128)
     parser.add_argument("--audit-only", action="store_true")
     parser.add_argument("--seed", type=int, default=733)
+    parser.add_argument("--device", default="cuda")
     parser.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -68,21 +72,24 @@ def run_experiment(args, *, config=None, learner_factory=SuffixLearner, feedback
             prompt_texts(args.learning_prompts, args.learn_requests)):
         parser.error("learning and evaluation questions overlap")
     torch.set_num_threads(1)
-    model = load_public(args.model, device="cuda", dtype=torch.bfloat16)
+    runtime_device = resolve_device(args.device)
+    model = load_public(args.model, device=runtime_device, dtype=torch.bfloat16)
     before = parameter_digest(model)
     branch = MaskedAttentionBranch(model)
     prompts = prompt_ids(args.model, args.requests, path=args.prompts, thinking=args.thinking,
-                         offset=args.prompt_offset, empty_system=args.empty_system)
+                         offset=args.prompt_offset, empty_system=args.empty_system, device=runtime_device)
     training = prompt_ids(args.model, args.learn_requests, path=args.learning_prompts,
-                          thinking=args.thinking, empty_system=args.empty_system)
-    executor = (SamplingExecutor(model.config.vocab_size, args.block_size, sampling, use_cuda_graph=False) if args.temperature > 0 else None)
+                          thinking=args.thinking, empty_system=args.empty_system, device=runtime_device)
+    executor = (SamplingExecutor(model.config.vocab_size, args.block_size, sampling,
+                                 device=runtime_device, use_cuda_graph=False)
+                if args.temperature > 0 else None)
     sampler = ProposalSampler(sampling, executor=executor)
 
     def run(method, prompt, budget, seed, owner=None, sampler_override=None):
         feedback = (None if owner is None else OnlineFeedback(learner=owner) if feedback_factory is None
                     else feedback_factory(learner=owner, output_budget=budget))
         options = {"sampling": sampling, "eos_id": model.config.eos_token_id, "sampler": sampler_override or sampler,
-                   "generator": torch.Generator(device="cuda").manual_seed(seed)}
+                   "generator": torch.Generator(device=runtime_device).manual_seed(seed)}
         output = (generate_ar(branch, prompt, budget, **options) if method == "ar" else
                   generate(branch, prompt, budget, block_size=args.block_size,
                            feedback=feedback, **options))
@@ -118,8 +125,8 @@ def run_experiment(args, *, config=None, learner_factory=SuffixLearner, feedback
     owners = {"online": online, "continued": continued}
     records, streams = [], []
     state_switch_seconds = 0.
-    torch.cuda.reset_peak_memory_stats()
-    resident = torch.cuda.memory_allocated()
+    reset_peak_memory_stats(runtime_device)
+    resident = memory_allocated(runtime_device)
     for repeat in range(0 if args.audit_only else args.repeats):
         online.load_state_dict(initial_state)
         continued.load_state_dict(learned_state)
@@ -129,7 +136,7 @@ def run_experiment(args, *, config=None, learner_factory=SuffixLearner, feedback
             index, prompt = int(index), prompts[int(index)]
             offset = (index + repeat) % len(methods)
             for method in methods[offset:] + methods[:offset]:
-                torch.cuda.synchronize()
+                synchronize(runtime_device)
                 started = time.perf_counter()
                 with torch.no_grad():
                     if method in owners:
@@ -138,7 +145,7 @@ def run_experiment(args, *, config=None, learner_factory=SuffixLearner, feedback
                         weights = learned_weights if method == "learned" else original
                         for name, value in weights.items():
                             continued.execution[name].copy_(value)
-                torch.cuda.synchronize()
+                synchronize(runtime_device)
                 state_switch_seconds += time.perf_counter() - started
                 row = run(method, prompt, args.tokens, args.seed + repeat * 1000 + index, owners.get(method))
                 row.update(method=method, request=index, source_request=index + args.prompt_offset,
@@ -168,7 +175,7 @@ def run_experiment(args, *, config=None, learner_factory=SuffixLearner, feedback
     with torch.no_grad():
         for name, value in original.items():
             continued.execution[name].copy_(value)
-    peak = torch.cuda.max_memory_allocated()
+    peak = max_memory_allocated(runtime_device)
     audit_records, combined_audit, audit_seconds = [], None, 0.
     for index, prompt in enumerate(prompts[:args.audit_requests]):
         audit_sampler = AuditSampler(sampling, executor=executor)
@@ -184,7 +191,7 @@ def run_experiment(args, *, config=None, learner_factory=SuffixLearner, feedback
     restored = parameter_digest(model) == before
     frozen = all(not p.requires_grad and p.grad is None for p in model.parameters())
     result = {"script_sha256": file_sha256(__file__),
-              "torch": str(torch.__version__), "device": torch.cuda.get_device_name(),
+              "torch": str(torch.__version__), "device": device_name(runtime_device),
               "sampling": asdict(sampling), "learner": asdict(config),
               "config": {key: str(v) if isinstance(v, Path) else v for key, v in vars(args).items()},
               "prompt_sha256": file_sha256(args.prompts), "learning_prompt_sha256": file_sha256(args.learning_prompts),

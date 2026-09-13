@@ -25,6 +25,24 @@ def source_identity(source):
     return {key: value for key, value in source.items() if key in ("weight_sha256", "config_sha256")}
 
 
+def _safetensor_layout(path):
+    """Return local checkpoint shards and the optional strict weight index."""
+    index_path = path / "model.safetensors.index.json"
+    if not index_path.exists():
+        return ["model.safetensors"], None
+    index = json.loads(index_path.read_text()).get("weight_map")
+    if not isinstance(index, dict) or not index or any(
+            not isinstance(key, str) or not isinstance(filename, str)
+            for key, filename in index.items()):
+        raise ValueError("nonempty safetensors weight_map required")
+    filenames = sorted(set(index.values()))
+    for filename in filenames:
+        file = (path / filename).resolve()
+        if file.parent != path or file.suffix != ".safetensors":
+            raise ValueError("checkpoint shards must be local safetensors files")
+    return filenames, index
+
+
 def public_key_map(config, *, include_draft=True):
     """Own key -> public key. Both the output projection and Q/K norms are routed."""
     mapping = {"embedding.weight": "model.embed_tokens.weight", "norm.weight": "model.norm.weight"}
@@ -61,16 +79,7 @@ def load_ar_base(path, *, block_size, mask_token_id, device="cpu"):
         raise ValueError("a plain Qwen3 AR checkpoint is required")
     config = DualViewConfig.from_public(data | {"block_size": block_size, "mask_token_id": mask_token_id})
     mapping = public_key_map(config, include_draft=False)
-    index_path = path / "model.safetensors.index.json"
-    index = None
-    if index_path.exists():
-        index = json.loads(index_path.read_text()).get("weight_map")
-        if not isinstance(index, dict) or not index or any(
-                not isinstance(k, str) or not isinstance(v, str) for k, v in index.items()):
-            raise ValueError("nonempty safetensors weight_map required")
-        filenames = sorted(set(index.values()))
-    else:
-        filenames = ["model.safetensors"]
+    filenames, index = _safetensor_layout(path)
     with torch.device("meta"):
         model = DualViewDecoder(config)
     shapes = model.state_dict()
@@ -115,34 +124,45 @@ def load_ar_base(path, *, block_size, mask_token_id, device="cpu"):
 
 
 def load_public(path, *, device="cpu", dtype=torch.float32, expected_sha256=None):
-    path = Path(path)
+    path = Path(path).resolve()
     config = DualViewConfig.from_public(json.loads((path / "config.json").read_text()))
-    weights_path = path / "model.safetensors"
-    fingerprint = file_sha256(weights_path)
+    filenames, index = _safetensor_layout(path)
+    fingerprints = {filename: file_sha256(path / filename) for filename in filenames}
+    fingerprint = (fingerprints["model.safetensors"]
+                   if filenames == ["model.safetensors"] else fingerprints)
     if expected_sha256 is not None and fingerprint != expected_sha256:
         raise ValueError("public weight SHA256 mismatch")
     with torch.device("meta"):
         model = DualViewDecoder(config)
     expected = model.state_dict()
     mapping = public_key_map(config)
-    with safe_open(weights_path, framework="pt", device="cpu") as handle:
-        actual_keys = set(handle.keys())
-        extra_tied_head = config.tie_word_embeddings and "lm_head.weight" in actual_keys
-        required = set(mapping.values())
-        if extra_tied_head:
-            required.add("lm_head.weight")
-        if actual_keys != required:
-            raise ValueError(f"public tensor keys differ: missing={required - actual_keys}, "
-                             f"unexpected={actual_keys - required}")
-        if extra_tied_head and not torch.equal(handle.get_tensor("lm_head.weight"),
-                                              handle.get_tensor("model.embed_tokens.weight")):
-            raise ValueError("tied output head differs from token embeddings")
-        state = {}
-        for own, original in mapping.items():
-            tensor = handle.get_tensor(original)
-            if tensor.shape != expected[own].shape:
-                raise ValueError(f"shape mismatch for {original}: {tensor.shape} != {expected[own].shape}")
-            state[own] = tensor.to(device=device, dtype=dtype)
+    required = set(mapping.values())
+    reverse = {original: own for own, original in mapping.items()}
+    state, seen = {}, {}
+    tied_head = None
+    for filename in filenames:
+        file = (path / filename).resolve()
+        with safe_open(file, framework="pt", device="cpu") as handle:
+            for original in handle.keys():
+                if original in seen or (index is not None and index.get(original) != filename):
+                    raise ValueError("duplicate tensor or inconsistent shard index")
+                seen[original] = filename
+                tensor = handle.get_tensor(original)
+                if config.tie_word_embeddings and original == "lm_head.weight":
+                    tied_head = tensor.clone()
+                    continue
+                if original not in reverse:
+                    raise ValueError(f"public tensor keys differ: unexpected={{{original!r}}}")
+                own = reverse[original]
+                if tensor.shape != expected[own].shape:
+                    raise ValueError(f"shape mismatch for {original}: {tensor.shape} != {expected[own].shape}")
+                state[own] = tensor.to(device=device, dtype=dtype)
+    if set(state) != set(mapping) or (index is not None and set(index) != set(seen)):
+        missing = required - seen.keys()
+        unexpected = seen.keys() - required - ({"lm_head.weight"} if config.tie_word_embeddings else set())
+        raise ValueError(f"public tensor keys differ: missing={missing}, unexpected={unexpected}")
+    if tied_head is not None and not torch.equal(tied_head, state["embedding.weight"].cpu()):
+        raise ValueError("tied output head differs from token embeddings")
     if config.tie_word_embeddings:
         state["head.weight"] = state["embedding.weight"]
     model.load_state_dict(state, strict=True, assign=True)

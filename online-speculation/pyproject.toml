@@ -19,6 +19,9 @@ data = ["requests>=2.32", "transformers>=4.55", "tokenizers>=0.21"]
 [project.scripts]
 blockspec = "blockspec.cli:main"
 
+[project.entry-points."vllm.general_plugins"]
+blockspec_orthrus = "blockspec.vllm_ascend.plugin:register"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

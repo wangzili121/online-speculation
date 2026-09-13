@@ -11,7 +11,7 @@ import torch
 
 from blockspec.parallel import DualViewConfig, DualViewDecoder
 from blockspec.parallel.fitting import BatchStream, FitConfig, TokenDataset, Trainer, frozen_fingerprint
-from blockspec.parallel.weights import load_ar_base, load_checkpoint, public_key_map
+from blockspec.parallel.weights import load_ar_base, load_checkpoint, load_public, public_key_map
 
 
 def test_adamw_execution_choices_follow_the_same_fp32_update():
@@ -69,6 +69,26 @@ def ar_fixture(folder, source, *, sharded=False):
         save_file(tensors, folder / "model.safetensors")
 
 
+def public_fixture(folder, source, *, sharded=False):
+    config = source.config.to_dict() | {"model_type": "orthrus"}
+    (folder / "config.json").write_text(json.dumps(config))
+    state = source.state_dict()
+    tensors = {public: state[own].clone().contiguous()
+               for own, public in public_key_map(source.config).items()}
+    if source.config.tie_word_embeddings:
+        tensors["lm_head.weight"] = state["embedding.weight"].clone().contiguous()
+    if sharded:
+        index = {}
+        for shard in range(2):
+            name = f"model-{shard}.safetensors"
+            selected = {key: value for i, (key, value) in enumerate(tensors.items()) if i % 2 == shard}
+            index.update({key: name for key in selected})
+            save_file(selected, folder / name)
+        (folder / "model.safetensors.index.json").write_text(json.dumps({"weight_map": index}))
+    else:
+        save_file(tensors, folder / "model.safetensors")
+
+
 @pytest.mark.parametrize("sharded", [False, True])
 def test_ar_checkpoint_initializes_independent_attention_storage(tmp_path, sharded):
     original = model()
@@ -95,6 +115,31 @@ def test_sharded_import_checks_index_and_local_paths(tmp_path):
     path.write_text(json.dumps(index))
     with pytest.raises(ValueError, match="local safetensors"):
         load_ar_base(tmp_path, block_size=4, mask_token_id=1)
+
+
+@pytest.mark.parametrize("sharded", [False, True])
+def test_public_checkpoint_import_supports_single_and_sharded_weights(tmp_path, sharded):
+    original = model()
+    public_fixture(tmp_path, original, sharded=sharded)
+    loaded = load_public(tmp_path)
+    assert all(torch.equal(value, loaded.state_dict()[key])
+               for key, value in original.state_dict().items())
+    expected = ({name: hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+                 for name in ("model-0.safetensors", "model-1.safetensors")}
+                if sharded else hashlib.sha256((tmp_path / "model.safetensors").read_bytes()).hexdigest())
+    assert loaded.source["weight_sha256"] == expected
+    load_public(tmp_path, expected_sha256=expected)
+
+
+def test_public_sharded_import_rejects_nonlocal_index_paths(tmp_path):
+    public_fixture(tmp_path, model(), sharded=True)
+    path = tmp_path / "model.safetensors.index.json"
+    index = json.loads(path.read_text())
+    key = next(iter(index["weight_map"]))
+    index["weight_map"][key] = "../outside.safetensors"
+    path.write_text(json.dumps(index))
+    with pytest.raises(ValueError, match="local safetensors"):
+        load_public(tmp_path)
 
 
 def dataset(path, *, altered=False):

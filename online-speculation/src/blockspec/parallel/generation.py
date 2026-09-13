@@ -5,6 +5,7 @@ import time
 
 import torch
 
+from ..accelerator import synchronize
 from ..sampling import SamplingConfig
 from ..state import cache_length, trim_cache as crop_cache
 from .sampling import ProposalSampler
@@ -50,8 +51,7 @@ class Generation:
 
 
 def _sync(device):
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
+    synchronize(device)
 
 
 def _check(branch, prompt, budget, eos_id):

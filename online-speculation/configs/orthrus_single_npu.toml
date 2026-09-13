@@ -1,0 +1,54 @@
+[source]
+upstream_repository = "https://github.com/xchang1121/inference_scaling"
+upstream_commit = "1c3f65d38a7f9176ce9d9897f43515ed52654ce2"
+model = "chiennv/Orthrus-Qwen3-8B"
+
+[algorithm]
+block_size = 32
+speculative_candidates = 31
+temperature = 1.0
+top_k = 0
+top_p = 1.0
+sampling = "tensorized_exact_correction"
+
+[online]
+loss = "tv"
+last_layers = 1
+stride = 16
+replay_blocks = 1
+learning_rate = 1e-5
+
+[runtime]
+vllm = "0.23.0"
+vllm_ascend = "0.23.0"
+device = "Ascend910B3"
+cards_per_instance = 1
+max_model_len = 40960
+
+[workload]
+max_new_tokens = 1024
+prompt_seed = 20260914
+burst_sizes = [64, 128, 256]
+prompt_length_buckets = [[6144, 10240, 0.50], [24576, 36863, 0.35], [36864, 39936, 0.15]]
+
+[search]
+max_num_seqs = [64, 128, 256, 512]
+max_num_batched_tokens = [16384, 65536, 131072]
+gpu_memory_utilization = [0.90, 0.94, 0.98]
+graph_modes = ["eager", "FULL_AND_PIECEWISE"]
+async_scheduling = [false, true]
+
+[slo]
+selection_metric = "goodput"
+max_p95_ttft_ratio_vs_low_load = 2.0
+max_p95_tpot_ratio_vs_low_load = 1.25
+minimum_success_rate = 1.0
+minimum_keep_gain = 0.05
+
+[expansion]
+boundary_gain = 0.03
+max_num_seqs = [768, 1024]
+
+[kernel_gate]
+minimum_npu_busy_fraction = 0.20
+minimum_expected_end_to_end_gain = 0.08
