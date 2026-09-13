@@ -14,3 +14,8 @@ embedding, MLP, norms and LM head.
 
 Run `./apply.sh /vllm-workspace/vllm-ascend` inside the pinned container. The
 script first performs a dry run, so source drift fails without partial edits.
+
+`Dockerfile.msprof` adds only the pinned MS Service Profiler dependencies used
+for the independent service-level profile pass. Performance trials continue to
+use the unmodified official base image; the profiler image is not used for
+throughput numbers.

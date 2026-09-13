@@ -6,7 +6,8 @@ import asyncio
 import aiohttp
 
 from blockspec import reporting as report
-from blockspec.vllm_ascend.benchmark import run_benchmark
+from blockspec.vllm_ascend.benchmark import parse_metrics, run_benchmark
+from blockspec.vllm_ascend.profiling import set_service_enabled
 
 
 async def control(session, endpoint, operation):
@@ -18,7 +19,35 @@ async def control(session, endpoint, operation):
         return body
 
 
+async def metrics(session, endpoint):
+    async with session.get(f"{endpoint.rstrip('/')}/metrics") as response:
+        response.raise_for_status()
+        return parse_metrics(await response.text())
+
+
+async def wait_for_decode_window(session, endpoint, baseline, benchmark, args):
+    await asyncio.sleep(args.ramp_up_seconds)
+    deadline = asyncio.get_running_loop().time() + args.profile_wait_timeout
+    while True:
+        current = await metrics(session, endpoint)
+        drafts = (current.get("vllm:spec_decode_num_drafts_total", 0.0) -
+                  baseline.get("vllm:spec_decode_num_drafts_total", 0.0))
+        waiting = current.get("vllm:num_requests_waiting", 0.0)
+        if drafts >= args.min_spec_drafts and (
+                not args.require_backlog or waiting > 0):
+            return current, drafts
+        if benchmark.done():
+            raise RuntimeError(
+                "workload completed before a speculative-decode profile window")
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError(
+                "timed out waiting for speculative decode under backlog")
+        await asyncio.sleep(0.5)
+
+
 async def run(args):
+    async with aiohttp.ClientSession() as session:
+        baseline = await metrics(session, args.endpoint)
     benchmark = asyncio.create_task(run_benchmark(
         endpoint=args.endpoint + "/v1/chat/completions",
         metrics_url=args.endpoint + "/metrics", model=args.served_model,
@@ -26,12 +55,44 @@ async def run(args):
         arrival_rate=args.arrival_rate,
         client_concurrency=args.client_concurrency, timeout=args.timeout,
         seed=args.seed))
-    await asyncio.sleep(args.ramp_up_seconds)
-    async with aiohttp.ClientSession() as session:
-        await control(session, args.endpoint, "start_profile")
-        await asyncio.sleep(args.profile_seconds)
-        await control(session, args.endpoint, "stop_profile")
-    return await benchmark
+    started = asyncio.get_running_loop().time()
+    enabled = False
+    try:
+        async with aiohttp.ClientSession() as session:
+            state, drafts = await wait_for_decode_window(
+                session, args.endpoint, baseline, benchmark, args)
+            profile_started = asyncio.get_running_loop().time()
+            if args.profiler == "torch":
+                await control(session, args.endpoint, "start_profile")
+            else:
+                set_service_enabled(args.service_config, True)
+            enabled = True
+            await asyncio.sleep(args.profile_seconds)
+            if args.profiler == "torch":
+                await control(session, args.endpoint, "stop_profile")
+            else:
+                set_service_enabled(args.service_config, False)
+            enabled = False
+        result = await benchmark
+    except BaseException:
+        if enabled and args.profiler == "service":
+            set_service_enabled(args.service_config, False)
+        benchmark.cancel()
+        await asyncio.gather(benchmark, return_exceptions=True)
+        raise
+    result["profile_window"] = {
+        "profiler": args.profiler,
+        "minimum_ramp_up_seconds": args.ramp_up_seconds,
+        "started_after_seconds": profile_started - started,
+        "profile_seconds": args.profile_seconds,
+        "spec_drafts_at_start": drafts,
+        "running_at_start": state.get("vllm:num_requests_running"),
+        "waiting_at_start": state.get("vllm:num_requests_waiting"),
+        "require_backlog": args.require_backlog,
+        "stack": False,
+        "memory": False,
+    }
+    return result
 
 
 def main():
@@ -43,18 +104,21 @@ def main():
     parser.add_argument("--arrival-rate", type=float, default=0.0)
     parser.add_argument("--client-concurrency", type=int, default=256)
     parser.add_argument("--ramp-up-seconds", type=float, default=20.0)
+    parser.add_argument("--profile-wait-timeout", type=float, default=1200.0)
+    parser.add_argument("--min-spec-drafts", type=float, default=32.0)
+    parser.add_argument("--require-backlog", action=argparse.BooleanOptionalAction,
+                        default=True)
     parser.add_argument("--profile-seconds", type=float, default=10.0)
+    parser.add_argument("--profiler", choices=("torch", "service"),
+                        default="torch")
+    parser.add_argument("--service-config")
     parser.add_argument("--timeout", type=float, default=1800.0)
     parser.add_argument("--seed", type=int, default=20260914)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+    if args.profiler == "service" and not args.service_config:
+        parser.error("--service-config is required for service profiling")
     result = asyncio.run(run(args))
-    result["profile_window"] = {
-        "ramp_up_seconds": args.ramp_up_seconds,
-        "profile_seconds": args.profile_seconds,
-        "stack": False,
-        "memory": False,
-    }
     with open(args.output, "x", encoding="utf-8") as handle:
         report.dump(result, handle, indent=2)
         handle.write("\n")

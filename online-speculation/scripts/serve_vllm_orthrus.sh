@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}"
+
 : "${MODEL:?set MODEL to the Orthrus-Qwen3-8B directory}"
 
 PORT="${PORT:-8000}"
@@ -11,8 +14,15 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-40960}"
 GRAPH_MODE="${GRAPH_MODE:-FULL_AND_PIECEWISE}"
 ASYNC_SCHEDULING="${ASYNC_SCHEDULING:-0}"
 TORCH_PROFILE_DIR="${TORCH_PROFILE_DIR:-}"
+SERVICE_PROFILE_CONFIG="${SERVICE_PROFILE_CONFIG:-}"
+PROFILE_SYMBOLS_PATH="${PROFILE_SYMBOLS_PATH:-}"
 ORTHRUS_TRACE_FILE="${ORTHRUS_TRACE_FILE:-}"
 MAX_GRAPH_CAPTURE_SIZE="${MAX_GRAPH_CAPTURE_SIZE:-}"
+
+if [[ -n "$TORCH_PROFILE_DIR" && -n "$SERVICE_PROFILE_CONFIG" ]]; then
+  echo "torch and service profilers must run in separate passes" >&2
+  exit 2
+fi
 
 SPECULATIVE_CONFIG='{"method":"custom_class","model":"blockspec.vllm_ascend.proposer.OrthrusProposer","num_speculative_tokens":31,"draft_sample_method":"probabilistic"}'
 if [[ "$GRAPH_MODE" == "eager" ]]; then
@@ -48,6 +58,14 @@ fi
 if [[ -n "$TORCH_PROFILE_DIR" ]]; then
   mkdir -p "$TORCH_PROFILE_DIR"
   args+=(--profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"$TORCH_PROFILE_DIR\",\"torch_profiler_with_stack\":false,\"torch_profiler_with_memory\":false,\"ignore_frontend\":false}")
+fi
+if [[ -n "$SERVICE_PROFILE_CONFIG" ]]; then
+  test -f "$SERVICE_PROFILE_CONFIG"
+  export SERVICE_PROF_CONFIG_PATH="$SERVICE_PROFILE_CONFIG"
+fi
+if [[ -n "$PROFILE_SYMBOLS_PATH" ]]; then
+  test -f "$PROFILE_SYMBOLS_PATH"
+  export PROFILING_SYMBOLS_PATH="$PROFILE_SYMBOLS_PATH"
 fi
 if [[ -n "$ORTHRUS_TRACE_FILE" ]]; then
   mkdir -p "$(dirname "$ORTHRUS_TRACE_FILE")"

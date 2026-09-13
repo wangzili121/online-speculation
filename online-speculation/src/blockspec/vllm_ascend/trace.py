@@ -19,6 +19,10 @@ class TraceWriter:
         self.handle = open(path, "a", buffering=1, encoding="utf-8")
         self.lock = threading.Lock()
         atexit.register(self.handle.close)
+        self.write(
+            "orthrus.clock_sync", phase="i",
+            timestamp_us=time.perf_counter_ns() / 1000,
+            args={"wall_time_us": time.time_ns() / 1000})
 
     def write(self, name, *, phase, timestamp_us, duration_us=None, args=None):
         event = {

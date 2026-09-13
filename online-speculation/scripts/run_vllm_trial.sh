@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+export PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}"
+
 : "${TRIAL_ID:?set a unique trial id}"
 : "${MODEL:?set MODEL to the Orthrus-Qwen3-8B directory}"
 : "${MANIFEST:?set MANIFEST to a frozen workload}"

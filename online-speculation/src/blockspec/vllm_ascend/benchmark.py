@@ -1,6 +1,7 @@
 """Open-loop OpenAI-compatible serving benchmark with streaming SLO metrics."""
 
 import asyncio
+import hashlib
 import json
 import random
 import re
@@ -80,6 +81,9 @@ async def _request(session, semaphore, *, url, model, record, launch_at,
     }
     first = None
     usage = {}
+    content_digest = hashlib.sha256()
+    reasoning_digest = hashlib.sha256()
+    finish_reason = None
     error = None
     status = None
     async with semaphore:
@@ -101,9 +105,15 @@ async def _request(session, semaphore, *, url, model, record, launch_at,
                             usage = event["usage"]
                         choices = event.get("choices") or []
                         if choices:
+                            finish_reason = choices[0].get("finish_reason") or finish_reason
                             delta = choices[0].get("delta") or {}
-                            if first is None and (delta.get("content") or
-                                                  delta.get("reasoning_content")):
+                            content = delta.get("content") or ""
+                            reasoning = delta.get("reasoning_content") or ""
+                            if content:
+                                content_digest.update(content.encode("utf-8"))
+                            if reasoning:
+                                reasoning_digest.update(reasoning.encode("utf-8"))
+                            if first is None and (content or reasoning):
                                 first = time.perf_counter()
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -116,6 +126,11 @@ async def _request(session, semaphore, *, url, model, record, launch_at,
         "request_id": record["request_id"],
         "prompt_tokens": record["actual_prompt_tokens"],
         "output_tokens": output_tokens,
+        "output_sha256": hashlib.sha256(
+            content_digest.digest() + reasoning_digest.digest()).hexdigest(),
+        "content_sha256": content_digest.hexdigest(),
+        "reasoning_sha256": reasoning_digest.hexdigest(),
+        "finish_reason": finish_reason,
         "queue_seconds": started - queued,
         "latency_seconds": finished - started,
         "ttft_seconds": ttft,

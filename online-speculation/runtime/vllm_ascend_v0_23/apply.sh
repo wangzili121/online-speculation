@@ -34,3 +34,4 @@ apply_one() {
 apply_one "$here/orthrus.patch" "self._draft_prob_req_ids = None"
 apply_one "$here/instrumentation_draft.patch" 'record_function_or_nullcontext("orthrus.draft.run")'
 apply_one "$here/instrumentation.patch" 'record_function_or_nullcontext("orthrus.rejection_sampling")'
+apply_one "$here/instrumentation_state.patch" 'record_function_or_nullcontext("orthrus.state_commit")'

@@ -6,6 +6,7 @@ from importlib import metadata
 import json
 import os
 from pathlib import Path
+import shutil
 import time
 
 from .artifacts import sha256_file
@@ -20,7 +21,7 @@ def _version(distribution):
 
 
 def check(*, model, workload, runtime_root, max_model_len,
-          expected_version="0.23.0"):
+          expected_version="0.23.0", profiler=None):
     import torch
 
     model = Path(model)
@@ -48,12 +49,16 @@ def check(*, model, workload, runtime_root, max_model_len,
         "custom_proposer": runtime_root / "vllm_ascend/spec_decode/__init__.py",
         "probabilistic_correction": runtime_root / "vllm_ascend/worker/model_runner_v1.py",
         "k32_fallback": runtime_root / "vllm_ascend/attention/attention_v1.py",
+        "verify_trace": runtime_root / "vllm_ascend/worker/model_runner_v1.py",
+        "state_commit_trace": runtime_root / "vllm_ascend/worker/model_runner_v1.py",
     }
     markers = {}
     expected = {
         "custom_proposer": "custom_class",
         "probabilistic_correction": "_draft_probs",
         "k32_fallback": "min(requested, 16)",
+        "verify_trace": "orthrus.verify.run",
+        "state_commit_trace": "orthrus.state_commit",
     }
     for name, path in marker_files.items():
         present = path.is_file() and expected[name] in path.read_text(
@@ -70,6 +75,33 @@ def check(*, model, workload, runtime_root, max_model_len,
     npu_count = torch.npu.device_count() if npu_available else 0
     if not npu_available or npu_count != 1:
         failures.append(f"exactly one visible NPU required, found {npu_count}")
+    profile_dependencies = {}
+    if profiler == "service":
+        profile_dependencies = {
+            "msserviceprofiler": _version("msserviceprofiler"),
+            "tzdata": _version("tzdata"),
+            "cli": shutil.which("msserviceprofiler"),
+        }
+        if profile_dependencies["msserviceprofiler"] != "1.2.2":
+            failures.append("service profiler requires msserviceprofiler 1.2.2")
+        if profile_dependencies["tzdata"] != "2025.3":
+            failures.append("service profiler requires tzdata 2025.3")
+        try:
+            import ms_service_profiler  # noqa: F401
+            from msserviceprofiler.vllm_profiler.vllm_v1 import batch_hookers  # noqa: F401
+        except ImportError as exc:
+            failures.append(f"service profiler hook import failed: {exc}")
+        if profile_dependencies["cli"] is None:
+            failures.append("msserviceprofiler CLI is unavailable")
+    elif profiler == "torch":
+        try:
+            from torch_npu.profiler import profiler as torch_npu_profiler
+            profile_dependencies["torch_npu_analyze"] = callable(
+                getattr(torch_npu_profiler, "analyse", None))
+        except ImportError as exc:
+            failures.append(f"torch_npu profiler import failed: {exc}")
+        if not profile_dependencies.get("torch_npu_analyze"):
+            failures.append("torch_npu profiler analyze function is unavailable")
     result = {
         "schema_version": 1,
         "created_unix_seconds": time.time(),
@@ -83,6 +115,8 @@ def check(*, model, workload, runtime_root, max_model_len,
         "workload_requests": len(records),
         "workload_sha256": sha256_file(workload),
         "runtime_markers": markers,
+        "profiler": profiler,
+        "profile_dependencies": profile_dependencies,
     }
     return result
 

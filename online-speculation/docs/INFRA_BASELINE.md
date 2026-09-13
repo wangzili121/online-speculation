@@ -28,7 +28,9 @@ verify，不是 32 个候选。
 - [x] PyTorch AR 与 vLLM AR 在相同模板下连续 64 个 greedy token 一致。
 - [x] B1 eager 与 `FULL_AND_PIECEWISE` 单请求 smoke，后者确认 ACL Graph replay。
 - [x] 256 条 6K--40K 混合编码 workload 和流式 TTFT/TPOT 测量入口。
-- [ ] B1 系统参数搜索和正式 profiling。
+- [x] B1 单卡粗搜索收敛；正式 1024-token 复验正在运行。
+- [x] Torch-NPU、MS Service Profiler 和 Orthrus request-aware trace 采集入口。
+- [ ] B1 正式 profiling。
 - [ ] Draft/Verify 协同调度、异步续训、sparse draft KV、DDTree。
 
 ## 验收纪律
@@ -50,3 +52,44 @@ verify，不是 32 个候选。
   并非并发性能结论。
 - vLLM 0.23 当前会关闭 `custom_class` speculative decoding 的 async scheduling。
   该项在兼容与正确性验证前不能写成“已启用”。
+
+## 饱和探针与搜索裁剪
+
+首轮 `MNS=64 / MBT=64K / memory=0.94 / FULL_AND_PIECEWISE` 的
+`64 request burst x 1024 output` 是容量探针，不是正式基线。它运行
+1800.75 秒，63/64 条在客户端超时前完成，输出吞吐为 35.65 token/s；最后
+一条 39K prompt 的首 token 等待约 1667 秒并触发 1800 秒客户端超时。
+运行期间观测到 NPU AICore 100%、KV 峰值约 98%、持续 server backlog 和
+1 次 preemption，说明负载已经饱和，但该配置不满足 100% 成功门槛。
+
+这个探针也说明当前首先受 KV 容量而不是 MNS 上限约束：`MNS=64` 时实际
+running request 峰值约 25。系统粗筛因此使用完全相同 prompt 的 256-token
+manifest，先比较 memory 0.90/0.94/0.98 和 eager/graph，再搜索 MBT。若最佳
+memory 下 running request 仍显著小于 64，则只补一个 `MNS=128` 无效性验证，
+不机械运行 256/512；只有 running request 真正触及 MNS 上界才继续扩展。
+最终胜出配置必须回到原 1024-token manifest，使用 3600 秒客户端超时完成
+100% 成功复验。
+
+## 256-token 粗筛结果
+
+以下试验均使用同一组 64 条请求，成功率均为 100%；`0.98` 除外，它在真实
+K32 warmup 中因显存不足失败。吞吐单位为 output token/s。
+
+| MNS | MBT | memory | mode/capture | 吞吐 | preemption | 结论 |
+|---:|---:|---:|---|---:|---:|---|
+| 64 | 64K | 0.94 | eager | 26.72 | 0 | eager 对照 |
+| 64 | 64K | 0.90 | graph/512 | 26.28 | 3 | 淘汰 |
+| 64 | 64K | 0.94 | graph/512 | 27.13 | 1 | graph 有效 |
+| 64 | 64K | 0.98 | graph/512 | OOM | - | 淘汰 |
+| 64 | 64K | 0.94 | graph/1024 | **27.93** | 1 | 当前最佳 |
+| 64 | 16K | 0.94 | graph/512 | 26.92 | 1 | 淘汰 |
+| 64 | 128K | 0.94 | graph/512 | 25.14 | 0 | 淘汰 |
+| 128 | 64K | 0.94 | graph/1024 | 27.27 | 0 | 淘汰；running 峰值仅 25 |
+| 64 | 64K | 0.96 | graph/1024 | 20.82 | 1 | 淘汰 |
+
+粗筛胜出配置为 `MNS=64 / MBT=64K / memory=0.94 /
+FULL_AND_PIECEWISE / max graph capture=1024`。上界不是未经验证的边界：
+MNS 128、MBT 128K 和 memory 0.96/0.98 均已覆盖，且分别变慢或失败；因此
+不再机械扩展 MNS 256/512、MBT 256K 或 memory 0.97。`async scheduling`
+被 vLLM 0.23 的 `custom_class` speculative backend 明确禁用，记录为能力限制，
+不伪装成性能结论。

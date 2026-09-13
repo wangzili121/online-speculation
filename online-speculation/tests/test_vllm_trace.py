@@ -20,8 +20,10 @@ def test_trace_writes_chrome_events(tmp_path, monkeypatch):
         pass
     output = list(tmp_path.glob("trace-*.jsonl"))[0]
     events = [json.loads(line) for line in output.read_text().splitlines()]
-    assert [event["name"] for event in events] == ["ready", "run"]
-    assert events[1]["ph"] == "X" and events[1]["dur"] >= 0
+    assert [event["name"] for event in events] == [
+        "orthrus.clock_sync", "ready", "run"]
+    assert events[0]["args"]["wall_time_us"] > 0
+    assert events[2]["ph"] == "X" and events[2]["dur"] >= 0
     merged = tmp_path / "merged.json"
-    assert trace.merge_events([str(output)], merged) == 2
-    assert len(json.loads(merged.read_text())["traceEvents"]) == 2
+    assert trace.merge_events([str(output)], merged) == 3
+    assert len(json.loads(merged.read_text())["traceEvents"]) == 3
