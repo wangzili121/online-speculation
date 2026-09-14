@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "created_unix_seconds": 1789356595.4667017,
+  "trial": {
+    "trial_id": "pillar-recent-r005-formal64-20260914",
+    "source_revision": "working-pillar",
+    "requests": 64,
+    "client_concurrency": 64,
+    "arrival_rate": 0,
+    "max_num_seqs": 64,
+    "max_num_batched_tokens": 65536,
+    "gpu_memory_utilization": 0.94,
+    "max_model_len": 40960,
+    "graph_mode": "FULL_AND_PIECEWISE",
+    "async_scheduling": 0,
+    "max_graph_capture_size": "1024",
+    "draft_attention": "paged_pillar",
+    "draft_segment_threshold": 8192,
+    "pillar_policy": "recent",
+    "pillar_budget_ratio": 0.05,
+    "pillar_min_tokens": 128,
+    "pillar_max_tokens": 6144,
+    "pillar_selector_layer": -1,
+    "phase_scheduler": "off",
+    "draft_max_batch": 8,
+    "draft_length_bucket": 8192,
+    "draft_max_delay_steps": 2
+  },
+  "source": {
+    "repository": "/workspace/online-speculation",
+    "head": "unavailable: CalledProcessError: Command '['git', 'rev-parse', 'HEAD']' returned non-zero exit status 128.",
+    "status": "unavailable: CalledProcessError: Command '['git', 'status', '--porcelain']' returned non-zero exit status 128.",
+    "working_tree_diff_sha256": "1449c85b4ffef35a0f5b839d8cb363688883e49efef6fdb4e2cfb0ee76dad94b"
+  },
+  "inputs": {
+    "workload": "/workspace/artifacts/workloads/orthrus-coding-256-out128.jsonl",
+    "workload_sha256": "e2e428d3225d01957a8ab579e71ba8ec29962408936cfd0dc0a56b96b1e686d3",
+    "model": "/models/Orthrus-Qwen3-8B"
+  },
+  "runtime": {
+    "vllm": "0.23.0",
+    "vllm_ascend": "0.23.0",
+    "device": "Ascend910B3"
+  },
+  "environment": {
+    "hostname": "liteserver-cf0e-0.novalocal",
+    "python": "3.12.13 (main, Aug  3 2026, 03:44:26) [GCC 11.4.0]",
+    "platform": "Linux-5.10.0-136.12.0.86.r1526_92.hce2.aarch64-aarch64-with-glibc2.35",
+    "container_id": "1:name=systemd:/docker/2683c9ee42e1337c65a1b76df1dde6e4ff2d1ee68e7d3020802f2801e2df01e2",
+    "pip_versions": "Name: vllm\nVersion: 0.23.0+empty\nSummary: A high-throughput and memory-efficient inference and serving engine for LLMs\nHome-page: https://github.com/vllm-project/vllm\nAuthor: vLLM Team\nAuthor-email: \nLicense-Expression: Apache-2.0\nLocation: /usr/local/python3.12.13/lib/python3.12/site-packages\nEditable project location: /vllm-workspace/vllm\nRequires: aiohttp, anthropic, blake3, cachetools, cbor2, cloudpickle, compressed-tensors, depyf, diskcache, einops, fastapi, filelock, gguf, ijson, lark, llguidance, lm-format-enforcer, mcp, mistral_common, model-hosting-container-standards, msgspec, ninja, numpy, openai, openai-harmony, opencv-python-headless, opentelemetry-api, opentelemetry-exporter-otlp, opentelemetry-sdk, opentelemetry-semantic-conventions-ai, outlines_core, partial-json-parser, pillow, prometheus-fastapi-instrumentator, prometheus_client, protobuf, psutil, py-cpuinfo, pybase64, pydantic, python-json-logger, pyyaml, pyzmq, regex, requests, safetensors, sentencepiece, setproctitle, setuptools, six, tiktoken, tokenizers, tqdm, transformers, typing_extensions, watchfiles, xgrammar\nRequired-by: \n---\nName: vllm_ascend\nVersion: 0.23.0\nSummary: vLLM Ascend backend plugin\nHome-page: https://github.com/vllm-project/vllm-ascend\nAuthor: vLLM-Ascend team\nAuthor-email: \nLicense: Apache 2.0\nLocation: /usr/local/python3.12.13/lib/python3.12/site-packages\nEditable project location: /vllm-workspace/vllm-ascend\nRequires: arctic-inference, cmake, compressed_tensors, decorator, einops, fastapi, memcache_hybrid, memfabric_hybrid, msgpack, numba, numpy, packaging, pandas, pandas-stubs, pip, psutil, pybind11, pyyaml, quart, regex, scipy, setuptools, setuptools-scm, torch, torch-npu, torchaudio, torchvision, transformers, triton-ascend, wheel, xgrammar\nRequired-by: \n---\nName: torch\nVersion: 2.10.0+cpu\nSummary: Tensors and Dynamic neural networks in Python with strong GPU acceleration\nHome-page: https://pytorch.org\nAuthor: \nAuthor-email: PyTorch Team <packages@pytorch.org>\nLicense: BSD-3-Clause\nLocation: /usr/local/python3.12.13/lib/python3.12/site-packages\nRequires: filelock, fsspec, jinja2, networkx, setuptools, sympy, typing-extensions\nRequired-by: compressed-tensors, online-speculation, torch_npu, torchaudio, torchvision, vllm_ascend, xgrammar\n---\nName: torch_npu\nVersion: 2.10.0.post4\nSummary: NPU bridge for PyTorch\nHome-page: https://gitcode.com/ascend/pytorch\nAuthor: \nAuthor-email: \nLicense: BSD License\nLocation: /usr/local/python3.12.13/lib/python3.12/site-packages\nRequires: torch\nRequired-by: vllm_ascend",
+    "npu_smi": "+------------------------------------------------------------------------------------------------+\n| npu-smi 25.5.1                   Version: 25.5.1                                               |\n+---------------------------+---------------+----------------------------------------------------+\n| NPU   Name                | Health        | Power(W)    Temp(C)           Hugepages-Usage(page)|\n| Chip                      | Bus-Id        | AICore(%)   Memory-Usage(MB)  HBM-Usage(MB)        |\n+===========================+===============+====================================================+\n| 1     910B3               | OK            | 90.3        37                0    / 0             |\n| 0                         | 0000:C2:00.0  | 0           0    / 0          3428 / 65536         |\n+===========================+===============+====================================================+\n+---------------------------+---------------+----------------------------------------------------+\n| NPU     Chip              | Process id    | Process name             | Process memory(MB)      |\n+===========================+===============+====================================================+\n| No running processes found in NPU 1                                                            |\n+===========================+===============+====================================================+",
+    "visible_devices": "0"
+  }
+}

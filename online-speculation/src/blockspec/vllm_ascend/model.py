@@ -26,6 +26,8 @@ from vllm.transformers_utils.config import set_default_rope_theta
 from vllm.v1.attention.backend import AttentionType
 
 from .proposer import OrthrusDraftBatch
+from .sparse_draft import recent_page_plan, verifier_guided_page_plan
+from .trace import instant
 
 
 class OrthrusAttention(Qwen3Attention):
@@ -51,6 +53,21 @@ class OrthrusAttention(Qwen3Attention):
             quant_config=quant_config, prefix=f"{prefix}.o_proj_diff")
         self.q_norm_diff = RMSNorm(self.head_dim, eps=rms_norm_eps)
         self.k_norm_diff = RMSNorm(self.head_dim, eps=rms_norm_eps)
+        self.capture_target_query = False
+        self.last_target_query = None
+
+    def forward(self, positions, hidden_states):
+        qkv, _ = self.qkv_proj(hidden_states)
+        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        q = self.q_norm(q.view(-1, self.num_heads, self.head_dim)).view(q.shape)
+        k = self.k_norm(k.view(-1, self.num_kv_heads, self.head_dim)).view(k.shape)
+        q, k = self.rotary_emb(positions, q, k)
+        if self.capture_target_query:
+            # This view aliases the target-forward tensor and adds no copy to
+            # the verifier path. The proposer consumes it immediately.
+            self.last_target_query = q.view(-1, self.num_heads, self.head_dim)
+        attended = self.attn(q, k, v)
+        return self.o_proj(attended)[0]
 
     def draft_qkv(self, positions, hidden_states):
         qkv, _ = self.qkv_proj_diff(hidden_states)
@@ -157,15 +174,36 @@ class OrthrusForCausalLM(
         self.draft_attention_backend = os.environ.get(
             "ORTHRUS_DRAFT_ATTENTION", "native_gqa")
         if self.draft_attention_backend not in {
-                "expanded", "native_gqa", "paged_segmented"}:
+                "expanded", "native_gqa", "paged_segmented", "paged_pillar"}:
             raise ValueError(
                 "ORTHRUS_DRAFT_ATTENTION must be expanded, native_gqa, or "
-                "paged_segmented, got "
+                "paged_segmented/paged_pillar, got "
                 f"{self.draft_attention_backend!r}")
         self.draft_segment_threshold = int(os.environ.get(
             "ORTHRUS_DRAFT_SEGMENT_THRESHOLD", "24576"))
         if self.draft_segment_threshold <= 0:
             raise ValueError("ORTHRUS_DRAFT_SEGMENT_THRESHOLD must be positive")
+        self.pillar_policy = os.environ.get(
+            "ORTHRUS_PILLAR_POLICY", "verifier")
+        if self.pillar_policy not in {"recent", "verifier"}:
+            raise ValueError("ORTHRUS_PILLAR_POLICY must be recent or verifier")
+        self.pillar_budget_ratio = float(os.environ.get(
+            "ORTHRUS_PILLAR_BUDGET_RATIO", "0.05"))
+        self.pillar_min_tokens = int(os.environ.get(
+            "ORTHRUS_PILLAR_MIN_TOKENS", "128"))
+        self.pillar_max_tokens = int(os.environ.get(
+            "ORTHRUS_PILLAR_MAX_TOKENS", "6144"))
+        selector_layer = int(os.environ.get(
+            "ORTHRUS_PILLAR_SELECTOR_LAYER", "-1"))
+        layer_count = len(self.model.layers)
+        if selector_layer < 0:
+            selector_layer += layer_count
+        if not 0 <= selector_layer < layer_count:
+            raise ValueError("ORTHRUS_PILLAR_SELECTOR_LAYER is out of range")
+        self.pillar_selector_layer = selector_layer
+        if self.draft_attention_backend == "paged_pillar":
+            self.model.layers[
+                self.pillar_selector_layer].self_attn.capture_target_query = True
 
     def embed_input_ids(self, input_ids):
         return self.model.embed_input_ids(input_ids)
@@ -210,11 +248,12 @@ class OrthrusForCausalLM(
         rows = []
         native_attention = None
         paged_attention = None
-        if self.draft_attention_backend in {"native_gqa", "paged_segmented"}:
+        if self.draft_attention_backend in {
+                "native_gqa", "paged_segmented", "paged_pillar"}:
             import torch_npu
             native_attention = torch_npu.npu_fusion_attention_v3
             paged_attention = torch_npu.npu_fused_infer_attention_score
-        if (self.draft_attention_backend == "paged_segmented"
+        if (self.draft_attention_backend in {"paged_segmented", "paged_pillar"}
                 and (active > 1
                      or max(history_lengths) >= self.draft_segment_threshold)):
             attended = self._batched_segmented_draft_attention(
@@ -226,6 +265,10 @@ class OrthrusForCausalLM(
                 request_indices=request_indices,
                 history_lengths=history_lengths,
                 paged_attention=paged_attention,
+                history_block_table=getattr(
+                    self, "_pillar_block_table", None),
+                history_attention_lengths=getattr(
+                    self, "_pillar_history_lengths", None),
             )
             return attention.draft_output(attended.reshape(
                 active * block, -1))
@@ -262,7 +305,8 @@ class OrthrusForCausalLM(
     @staticmethod
     def _batched_segmented_draft_attention(
             *, attention, query, local_key, local_value, table,
-            request_indices, history_lengths, paged_attention):
+            request_indices, history_lengths, paged_attention,
+            history_block_table=None, history_attention_lengths=None):
         """Attend to paged history and local draft KV in two batched ops."""
         cache = attention.attn.kv_cache
         if (isinstance(cache, torch.Tensor) and cache.ndim > 0
@@ -275,11 +319,18 @@ class OrthrusForCausalLM(
                 "Orthrus drafting requires a bound target paged KV cache")
         active, query_tokens, num_heads, head_dim = query.shape
         block_size = key_cache.shape[1]
-        block_count = max(
-            (length + block_size - 1) // block_size
-            for length in history_lengths)
-        block_table = table.block_table.gpu[
-            request_indices, :block_count].contiguous()
+        if history_block_table is None:
+            block_count = max(
+                (length + block_size - 1) // block_size
+                for length in history_lengths)
+            block_table = table.block_table.gpu[
+                request_indices, :block_count].contiguous()
+            attention_lengths = history_lengths
+            history_scope = "orthrus.draft.attention.paged_history"
+        else:
+            block_table = history_block_table
+            attention_lengths = history_attention_lengths
+            history_scope = "orthrus.draft.attention.pillar_history"
         cumulative = [query_tokens * (index + 1) for index in range(active)]
         common = {
             "query": query.reshape(-1, num_heads, head_dim),
@@ -291,14 +342,13 @@ class OrthrusForCausalLM(
             "sparse_mode": 0,
             "softmax_lse_flag": True,
         }
-        with torch.profiler.record_function(
-                "orthrus.draft.attention.paged_history"):
+        with torch.profiler.record_function(history_scope):
             old_output, old_lse = paged_attention(
                 key=key_cache.view(key_cache.shape[0], block_size, -1),
                 value=value_cache.view(value_cache.shape[0], block_size, -1),
                 block_table=block_table,
                 block_size=block_size,
-                actual_seq_lengths_kv=history_lengths,
+                actual_seq_lengths_kv=attention_lengths,
                 **common,
             )
         with torch.profiler.record_function(
@@ -324,7 +374,7 @@ class OrthrusForCausalLM(
                         scheduler_output, common_attn_metadata,
                         accepted_token_counts=None, next_token_ids=None,
                         history_lengths=None, draft_request_indices=None):
-        del scheduler_output, common_attn_metadata
+        del scheduler_output
         if get_pp_group().world_size != 1:
             raise NotImplementedError("the first Orthrus baseline is single-card only")
         batch_size = len(input_batch.req_ids)
@@ -396,6 +446,59 @@ class OrthrusForCausalLM(
         positions = torch.stack([
             torch.arange(length, length + 32, device=device)
             for length in history_lengths])
+        self._pillar_block_table = None
+        self._pillar_history_lengths = None
+        if self.draft_attention_backend == "paged_pillar":
+            selector_attention = self.model.layers[
+                self.pillar_selector_layer].self_attn
+            target_query = selector_attention.last_target_query
+            query_start = getattr(common_attn_metadata, "query_start_loc", None)
+            if target_query is None or query_start is None:
+                raise RuntimeError(
+                    "paged_pillar requires the preceding verifier query metadata")
+            active_tensor = torch.tensor(
+                active_indices, dtype=torch.long, device=target_query.device)
+            final_query_offsets = query_start.index_select(
+                0, active_tensor + 1).long() - 1
+            final_query = target_query.index_select(0, final_query_offsets)
+            repeats = (selector_attention.num_heads
+                       // selector_attention.num_kv_heads)
+            query_by_kv_head = final_query.view(
+                len(active_indices), selector_attention.num_kv_heads,
+                repeats, selector_attention.head_dim).mean(dim=2)
+            selector_cache = selector_attention.attn.kv_cache
+            key_cache = (selector_cache[0]
+                         if isinstance(selector_cache, torch.Tensor)
+                         else selector_cache[0])
+            table = input_batch.block_table[0].block_table.gpu[
+                active_indices]
+            with torch.profiler.record_function("orthrus.draft.pillar.select"):
+                if self.pillar_policy == "verifier":
+                    plan = verifier_guided_page_plan(
+                        query_by_kv_head, key_cache, table, history_lengths,
+                        budget_ratio=self.pillar_budget_ratio,
+                        min_tokens=self.pillar_min_tokens,
+                        max_tokens=self.pillar_max_tokens,
+                        dense_below_tokens=self.draft_segment_threshold)
+                else:
+                    plan = recent_page_plan(
+                        table, history_lengths, key_cache.shape[1],
+                        budget_ratio=self.pillar_budget_ratio,
+                        min_tokens=self.pillar_min_tokens,
+                        max_tokens=self.pillar_max_tokens,
+                        dense_below_tokens=self.draft_segment_threshold)
+            self._pillar_block_table = plan.block_table
+            self._pillar_history_lengths = plan.sequence_lengths
+            instant("orthrus.draft.pillar.plan", {
+                "policy": self.pillar_policy,
+                "budget_ratio": self.pillar_budget_ratio,
+                "history_tokens": history_lengths,
+                "attended_history_tokens": plan.sequence_lengths,
+                "selected_blocks": plan.selected_blocks,
+                "total_blocks": plan.total_blocks,
+                "request_ids": [input_batch.req_ids[index]
+                                for index in active_indices],
+            })
         with torch.profiler.record_function("orthrus.draft.embedding"):
             hidden_states = self.model.embed_input_ids(tokens).reshape(
                 -1, self.config.hidden_size)

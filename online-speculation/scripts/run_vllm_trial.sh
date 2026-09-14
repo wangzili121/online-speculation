@@ -23,6 +23,11 @@ ASYNC_SCHEDULING="${ASYNC_SCHEDULING:-0}"
 MAX_GRAPH_CAPTURE_SIZE="${MAX_GRAPH_CAPTURE_SIZE:-}"
 ORTHRUS_DRAFT_ATTENTION="${ORTHRUS_DRAFT_ATTENTION:-native_gqa}"
 ORTHRUS_DRAFT_SEGMENT_THRESHOLD="${ORTHRUS_DRAFT_SEGMENT_THRESHOLD:-24576}"
+ORTHRUS_PILLAR_POLICY="${ORTHRUS_PILLAR_POLICY:-verifier}"
+ORTHRUS_PILLAR_BUDGET_RATIO="${ORTHRUS_PILLAR_BUDGET_RATIO:-0.05}"
+ORTHRUS_PILLAR_MIN_TOKENS="${ORTHRUS_PILLAR_MIN_TOKENS:-128}"
+ORTHRUS_PILLAR_MAX_TOKENS="${ORTHRUS_PILLAR_MAX_TOKENS:-6144}"
+ORTHRUS_PILLAR_SELECTOR_LAYER="${ORTHRUS_PILLAR_SELECTOR_LAYER:--1}"
 ORTHRUS_PHASE_SCHEDULER="${ORTHRUS_PHASE_SCHEDULER:-off}"
 ORTHRUS_DRAFT_MAX_BATCH="${ORTHRUS_DRAFT_MAX_BATCH:-8}"
 ORTHRUS_DRAFT_LENGTH_BUCKET="${ORTHRUS_DRAFT_LENGTH_BUCKET:-8192}"
@@ -67,11 +72,14 @@ python scripts/preflight_vllm_orthrus.py \
 runtime_json=$(printf \
   '{"vllm":"0.23.0","vllm_ascend":"0.23.0","device":"Ascend910B3"}')
 trial_json=$(printf \
-  '{"trial_id":"%s","source_revision":"%s","requests":%s,"client_concurrency":%s,"arrival_rate":%s,"max_num_seqs":%s,"max_num_batched_tokens":%s,"gpu_memory_utilization":%s,"max_model_len":%s,"graph_mode":"%s","async_scheduling":%s,"max_graph_capture_size":"%s","draft_attention":"%s","draft_segment_threshold":%s,"phase_scheduler":"%s","draft_max_batch":%s,"draft_length_bucket":%s,"draft_max_delay_steps":%s}' \
+  '{"trial_id":"%s","source_revision":"%s","requests":%s,"client_concurrency":%s,"arrival_rate":%s,"max_num_seqs":%s,"max_num_batched_tokens":%s,"gpu_memory_utilization":%s,"max_model_len":%s,"graph_mode":"%s","async_scheduling":%s,"max_graph_capture_size":"%s","draft_attention":"%s","draft_segment_threshold":%s,"pillar_policy":"%s","pillar_budget_ratio":%s,"pillar_min_tokens":%s,"pillar_max_tokens":%s,"pillar_selector_layer":%s,"phase_scheduler":"%s","draft_max_batch":%s,"draft_length_bucket":%s,"draft_max_delay_steps":%s}' \
   "$TRIAL_ID" "$SOURCE_REVISION" "$REQUESTS" "$CLIENT_CONCURRENCY" "$ARRIVAL_RATE" \
   "$MNS" "$MBT" "$MEMORY" "$MAX_MODEL_LEN" "$GRAPH_MODE" \
   "$ASYNC_SCHEDULING" "$MAX_GRAPH_CAPTURE_SIZE" "$ORTHRUS_DRAFT_ATTENTION" \
-  "$ORTHRUS_DRAFT_SEGMENT_THRESHOLD" "$ORTHRUS_PHASE_SCHEDULER" \
+  "$ORTHRUS_DRAFT_SEGMENT_THRESHOLD" "$ORTHRUS_PILLAR_POLICY" \
+  "$ORTHRUS_PILLAR_BUDGET_RATIO" "$ORTHRUS_PILLAR_MIN_TOKENS" \
+  "$ORTHRUS_PILLAR_MAX_TOKENS" "$ORTHRUS_PILLAR_SELECTOR_LAYER" \
+  "$ORTHRUS_PHASE_SCHEDULER" \
   "$ORTHRUS_DRAFT_MAX_BATCH" "$ORTHRUS_DRAFT_LENGTH_BUCKET" \
   "$ORTHRUS_DRAFT_MAX_DELAY_STEPS")
 python scripts/capture_trial_manifest.py \
@@ -82,6 +90,9 @@ python scripts/capture_trial_manifest.py \
 export PORT MNS MBT MEMORY MAX_MODEL_LEN GRAPH_MODE ASYNC_SCHEDULING
 export MAX_GRAPH_CAPTURE_SIZE
 export ORTHRUS_DRAFT_ATTENTION ORTHRUS_DRAFT_SEGMENT_THRESHOLD
+export ORTHRUS_PILLAR_POLICY ORTHRUS_PILLAR_BUDGET_RATIO
+export ORTHRUS_PILLAR_MIN_TOKENS ORTHRUS_PILLAR_MAX_TOKENS
+export ORTHRUS_PILLAR_SELECTOR_LAYER
 export ORTHRUS_PHASE_SCHEDULER ORTHRUS_DRAFT_MAX_BATCH
 export ORTHRUS_DRAFT_LENGTH_BUCKET ORTHRUS_DRAFT_MAX_DELAY_STEPS
 bash scripts/serve_vllm_orthrus.sh >"$output_dir/server.log" 2>&1 &

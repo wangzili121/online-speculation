@@ -28,6 +28,11 @@ GRAPH_MODE="${GRAPH_MODE:-FULL_AND_PIECEWISE}"
 MAX_GRAPH_CAPTURE_SIZE="${MAX_GRAPH_CAPTURE_SIZE:-1024}"
 ORTHRUS_DRAFT_ATTENTION="${ORTHRUS_DRAFT_ATTENTION:-native_gqa}"
 ORTHRUS_DRAFT_SEGMENT_THRESHOLD="${ORTHRUS_DRAFT_SEGMENT_THRESHOLD:-24576}"
+ORTHRUS_PILLAR_POLICY="${ORTHRUS_PILLAR_POLICY:-verifier}"
+ORTHRUS_PILLAR_BUDGET_RATIO="${ORTHRUS_PILLAR_BUDGET_RATIO:-0.05}"
+ORTHRUS_PILLAR_MIN_TOKENS="${ORTHRUS_PILLAR_MIN_TOKENS:-128}"
+ORTHRUS_PILLAR_MAX_TOKENS="${ORTHRUS_PILLAR_MAX_TOKENS:-6144}"
+ORTHRUS_PILLAR_SELECTOR_LAYER="${ORTHRUS_PILLAR_SELECTOR_LAYER:--1}"
 ORTHRUS_PHASE_SCHEDULER="${ORTHRUS_PHASE_SCHEDULER:-off}"
 ORTHRUS_DRAFT_MAX_BATCH="${ORTHRUS_DRAFT_MAX_BATCH:-8}"
 ORTHRUS_DRAFT_LENGTH_BUCKET="${ORTHRUS_DRAFT_LENGTH_BUCKET:-8192}"
@@ -80,12 +85,15 @@ runtime_json=$(printf \
   '{"vllm":"0.23.0","vllm_ascend":"0.23.0","device":"Ascend910B3","profiler":"%s"}' \
   "$PROFILE_KIND")
 profile_json=$(printf \
-  '{"profile_id":"%s","source_revision":"%s","profiler":"%s","requests":%s,"client_concurrency":%s,"arrival_rate":%s,"max_num_seqs":%s,"max_num_batched_tokens":%s,"gpu_memory_utilization":%s,"max_model_len":%s,"graph_mode":"%s","async_scheduling":%s,"max_graph_capture_size":"%s","draft_attention":"%s","draft_segment_threshold":%s,"phase_scheduler":"%s","draft_max_batch":%s,"draft_length_bucket":%s,"draft_max_delay_steps":%s,"ramp_up_seconds":%s,"profile_seconds":%s}' \
+  '{"profile_id":"%s","source_revision":"%s","profiler":"%s","requests":%s,"client_concurrency":%s,"arrival_rate":%s,"max_num_seqs":%s,"max_num_batched_tokens":%s,"gpu_memory_utilization":%s,"max_model_len":%s,"graph_mode":"%s","async_scheduling":%s,"max_graph_capture_size":"%s","draft_attention":"%s","draft_segment_threshold":%s,"pillar_policy":"%s","pillar_budget_ratio":%s,"pillar_min_tokens":%s,"pillar_max_tokens":%s,"pillar_selector_layer":%s,"phase_scheduler":"%s","draft_max_batch":%s,"draft_length_bucket":%s,"draft_max_delay_steps":%s,"ramp_up_seconds":%s,"profile_seconds":%s}' \
   "$PROFILE_ID" "$SOURCE_REVISION" "$PROFILE_KIND" "$REQUESTS" \
   "$CLIENT_CONCURRENCY" "$ARRIVAL_RATE" "$MNS" "$MBT" "$MEMORY" \
   "$MAX_MODEL_LEN" "$GRAPH_MODE" "$ASYNC_SCHEDULING" \
   "$MAX_GRAPH_CAPTURE_SIZE" "$ORTHRUS_DRAFT_ATTENTION" \
-  "$ORTHRUS_DRAFT_SEGMENT_THRESHOLD" "$ORTHRUS_PHASE_SCHEDULER" \
+  "$ORTHRUS_DRAFT_SEGMENT_THRESHOLD" "$ORTHRUS_PILLAR_POLICY" \
+  "$ORTHRUS_PILLAR_BUDGET_RATIO" "$ORTHRUS_PILLAR_MIN_TOKENS" \
+  "$ORTHRUS_PILLAR_MAX_TOKENS" "$ORTHRUS_PILLAR_SELECTOR_LAYER" \
+  "$ORTHRUS_PHASE_SCHEDULER" \
   "$ORTHRUS_DRAFT_MAX_BATCH" "$ORTHRUS_DRAFT_LENGTH_BUCKET" \
   "$ORTHRUS_DRAFT_MAX_DELAY_STEPS" "$RAMP_UP_SECONDS" "$PROFILE_SECONDS")
 python scripts/capture_trial_manifest.py \
@@ -96,6 +104,9 @@ python scripts/capture_trial_manifest.py \
 export PORT MNS MBT MEMORY MAX_MODEL_LEN GRAPH_MODE ASYNC_SCHEDULING
 export MAX_GRAPH_CAPTURE_SIZE PROFILE_SYMBOLS_PATH
 export ORTHRUS_DRAFT_ATTENTION ORTHRUS_DRAFT_SEGMENT_THRESHOLD
+export ORTHRUS_PILLAR_POLICY ORTHRUS_PILLAR_BUDGET_RATIO
+export ORTHRUS_PILLAR_MIN_TOKENS ORTHRUS_PILLAR_MAX_TOKENS
+export ORTHRUS_PILLAR_SELECTOR_LAYER
 export ORTHRUS_PHASE_SCHEDULER ORTHRUS_DRAFT_MAX_BATCH
 export ORTHRUS_DRAFT_LENGTH_BUCKET ORTHRUS_DRAFT_MAX_DELAY_STEPS
 export ORTHRUS_TRACE_FILE="$output_dir/orthrus-events-{pid}.jsonl"

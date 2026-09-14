@@ -20,6 +20,9 @@
 - [算法报告](docs/ALGORITHM.md)：NTP 与投机解码、共享注意力视图、位置与缓存不变量、校正证明、蒸馏及在线更新。
 - [性能记录](docs/RESULTS.md)：保留方法的实验条件、吞吐、学习成本和不确定性。
 - [运行说明](docs/RUNNING.md)：环境、资源参数、训练恢复、固定与在线对照。
+- [vLLM-Ascend 基线](docs/INFRA_BASELINE.md)：单卡系统配置、正式吞吐与多层 profiling。
+- [Draft/Verify 调度实验](docs/DRAFT_VERIFY_SCHEDULING.md)：SparseSpec 风格 phase admission 的实现与负结果。
+- [SparseSpec 移植实验](docs/SPARSESPEC_PORT.md)：PillarAttn 页稀疏原型、真实 NPU A/B 与后续门槛。
 
 ~~~bash
 python -m pip install -e '.[dev,hf]'

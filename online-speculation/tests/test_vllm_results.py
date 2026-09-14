@@ -18,6 +18,9 @@ def trial(root, name, *, throughput, workload="same", preemptions=0,
             "graph_mode": "FULL_AND_PIECEWISE", "async_scheduling": 0,
             "max_graph_capture_size": "1024", "draft_attention": "native_gqa",
             "draft_segment_threshold": 24576,
+            "pillar_policy": "verifier", "pillar_budget_ratio": 0.05,
+            "pillar_min_tokens": 128, "pillar_max_tokens": 6144,
+            "pillar_selector_layer": -1,
         },
         "inputs": {"workload_sha256": workload},
     }))
@@ -52,6 +55,11 @@ def test_trials_are_ranked_and_failed_runs_are_excluded(tmp_path):
     assert rows[0]["acceptance_rate"] == 0.25
     assert rows[0]["draft_attention"] == "native_gqa"
     assert rows[0]["draft_segment_threshold"] == 24576
+    assert rows[0]["pillar_policy"] == "verifier"
+    assert rows[0]["pillar_budget_ratio"] == 0.05
+    assert rows[0]["pillar_min_tokens"] == 128
+    assert rows[0]["pillar_max_tokens"] == 6144
+    assert rows[0]["pillar_selector_layer"] == -1
     assert rows[0]["graph_capture"] == "1024"
 
 
