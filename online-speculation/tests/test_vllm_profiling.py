@@ -11,7 +11,7 @@ def test_service_profile_config_has_safe_limit_and_is_toggleable(tmp_path):
     value = json.loads(path.read_text())
     assert value["enable"] == 0
     assert value["timelimit"] == 120
-    assert "BatchSchedule" in value["domain"]
+    assert value["domain"] == ""
     set_service_enabled(path, True)
     assert json.loads(path.read_text())["enable"] == 1
     set_service_enabled(path, False)

@@ -21,6 +21,12 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-40960}"
 GRAPH_MODE="${GRAPH_MODE:-FULL_AND_PIECEWISE}"
 ASYNC_SCHEDULING="${ASYNC_SCHEDULING:-0}"
 MAX_GRAPH_CAPTURE_SIZE="${MAX_GRAPH_CAPTURE_SIZE:-}"
+ORTHRUS_DRAFT_ATTENTION="${ORTHRUS_DRAFT_ATTENTION:-native_gqa}"
+ORTHRUS_DRAFT_SEGMENT_THRESHOLD="${ORTHRUS_DRAFT_SEGMENT_THRESHOLD:-24576}"
+ORTHRUS_PHASE_SCHEDULER="${ORTHRUS_PHASE_SCHEDULER:-off}"
+ORTHRUS_DRAFT_MAX_BATCH="${ORTHRUS_DRAFT_MAX_BATCH:-8}"
+ORTHRUS_DRAFT_LENGTH_BUCKET="${ORTHRUS_DRAFT_LENGTH_BUCKET:-8192}"
+ORTHRUS_DRAFT_MAX_DELAY_STEPS="${ORTHRUS_DRAFT_MAX_DELAY_STEPS:-2}"
 SOURCE_REVISION="${SOURCE_REVISION:-unknown}"
 SERVER_TIMEOUT="${SERVER_TIMEOUT:-1200}"
 REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-3600}"
@@ -61,10 +67,13 @@ python scripts/preflight_vllm_orthrus.py \
 runtime_json=$(printf \
   '{"vllm":"0.23.0","vllm_ascend":"0.23.0","device":"Ascend910B3"}')
 trial_json=$(printf \
-  '{"trial_id":"%s","source_revision":"%s","requests":%s,"client_concurrency":%s,"arrival_rate":%s,"max_num_seqs":%s,"max_num_batched_tokens":%s,"gpu_memory_utilization":%s,"max_model_len":%s,"graph_mode":"%s","async_scheduling":%s,"max_graph_capture_size":"%s"}' \
+  '{"trial_id":"%s","source_revision":"%s","requests":%s,"client_concurrency":%s,"arrival_rate":%s,"max_num_seqs":%s,"max_num_batched_tokens":%s,"gpu_memory_utilization":%s,"max_model_len":%s,"graph_mode":"%s","async_scheduling":%s,"max_graph_capture_size":"%s","draft_attention":"%s","draft_segment_threshold":%s,"phase_scheduler":"%s","draft_max_batch":%s,"draft_length_bucket":%s,"draft_max_delay_steps":%s}' \
   "$TRIAL_ID" "$SOURCE_REVISION" "$REQUESTS" "$CLIENT_CONCURRENCY" "$ARRIVAL_RATE" \
   "$MNS" "$MBT" "$MEMORY" "$MAX_MODEL_LEN" "$GRAPH_MODE" \
-  "$ASYNC_SCHEDULING" "$MAX_GRAPH_CAPTURE_SIZE")
+  "$ASYNC_SCHEDULING" "$MAX_GRAPH_CAPTURE_SIZE" "$ORTHRUS_DRAFT_ATTENTION" \
+  "$ORTHRUS_DRAFT_SEGMENT_THRESHOLD" "$ORTHRUS_PHASE_SCHEDULER" \
+  "$ORTHRUS_DRAFT_MAX_BATCH" "$ORTHRUS_DRAFT_LENGTH_BUCKET" \
+  "$ORTHRUS_DRAFT_MAX_DELAY_STEPS")
 python scripts/capture_trial_manifest.py \
   --repo . --workload "$MANIFEST" --model "$MODEL" \
   --runtime-json "$runtime_json" --trial-json "$trial_json" \
@@ -72,6 +81,9 @@ python scripts/capture_trial_manifest.py \
 
 export PORT MNS MBT MEMORY MAX_MODEL_LEN GRAPH_MODE ASYNC_SCHEDULING
 export MAX_GRAPH_CAPTURE_SIZE
+export ORTHRUS_DRAFT_ATTENTION ORTHRUS_DRAFT_SEGMENT_THRESHOLD
+export ORTHRUS_PHASE_SCHEDULER ORTHRUS_DRAFT_MAX_BATCH
+export ORTHRUS_DRAFT_LENGTH_BUCKET ORTHRUS_DRAFT_MAX_DELAY_STEPS
 bash scripts/serve_vllm_orthrus.sh >"$output_dir/server.log" 2>&1 &
 server_pid=$!
 
@@ -104,5 +116,8 @@ python scripts/benchmark_vllm_orthrus.py \
   --client-concurrency "$CLIENT_CONCURRENCY" --arrival-rate "$ARRIVAL_RATE" \
   --timeout "$REQUEST_TIMEOUT" --output "$result" \
   | tee "$output_dir/summary.json"
+python -c \
+  'import sys; from blockspec.vllm_ascend.results import validate_trial_result; validate_trial_result(sys.argv[1])' \
+  "$result"
 curl -fsS "http://127.0.0.1:$PORT/metrics" >"$output_dir/metrics.after.prom"
 touch "$output_dir/COMPLETE"

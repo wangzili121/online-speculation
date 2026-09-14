@@ -1,0 +1,27 @@
+diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
+--- a/vllm_ascend/worker/model_runner_v1.py
++++ b/vllm_ascend/worker/model_runner_v1.py
+@@ -1696,6 +1696,12 @@ class NPUModelRunner(GPUModelRunner):
+             self._draft_probs = self.drafter.take_last_draft_probs()
+             if self._draft_probs is not None:
+                 self._draft_prob_req_ids = self.input_batch.req_ids.copy()
++            if self.use_async_scheduling:
++                next_token_ids, accepted_counts = (
++                    self.drafter.take_last_async_state())
++                if next_token_ids is None or accepted_counts is None:
++                    raise RuntimeError("Orthrus async proposal omitted verifier state")
++                self._copy_valid_sampled_token_count(next_token_ids, accepted_counts)
+         elif isinstance(self.drafter, AscendNgramProposer):
+             if vllm_version_is("0.23.0"):
+                 draft_token_ids = self.drafter.propose(valid_sampled_token_ids)
+@@ -2527,6 +2533,10 @@ class NPUModelRunner(GPUModelRunner):
+                         or self.speculative_config.uses_draft_model()
+                         or self.speculative_config.uses_extract_hidden_states()
+                         or self.speculative_config.use_ngram_gpu()
++                        # Orthrus requires GPU sampled tokens only when the
++                        # one-cycle asynchronous correction pipeline is active.
++                        or (self.speculative_config.method == "custom_class"
++                            and self.use_async_scheduling)
+                     )
+                     and not self.speculative_config.disable_padded_drafter_batch
+                 )

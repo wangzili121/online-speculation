@@ -1,6 +1,7 @@
 """Single-card vLLM model with shared AR/draft Orthrus backbone weights."""
 
 from collections.abc import Iterable
+import os
 
 import torch
 from torch import nn
@@ -153,6 +154,18 @@ class OrthrusForCausalLM(
         self.logits_processor = LogitsProcessor(config.vocab_size)
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors)
+        self.draft_attention_backend = os.environ.get(
+            "ORTHRUS_DRAFT_ATTENTION", "native_gqa")
+        if self.draft_attention_backend not in {
+                "expanded", "native_gqa", "paged_segmented"}:
+            raise ValueError(
+                "ORTHRUS_DRAFT_ATTENTION must be expanded, native_gqa, or "
+                "paged_segmented, got "
+                f"{self.draft_attention_backend!r}")
+        self.draft_segment_threshold = int(os.environ.get(
+            "ORTHRUS_DRAFT_SEGMENT_THRESHOLD", "24576"))
+        if self.draft_segment_threshold <= 0:
+            raise ValueError("ORTHRUS_DRAFT_SEGMENT_THRESHOLD must be positive")
 
     def embed_input_ids(self, input_ids):
         return self.model.embed_input_ids(input_ids)
@@ -195,39 +208,155 @@ class OrthrusForCausalLM(
         k = k.view(active, block, attention.num_kv_heads, attention.head_dim)
         v = v.view(active, block, attention.num_kv_heads, attention.head_dim)
         rows = []
-        repeats = attention.num_heads // attention.num_kv_heads
+        native_attention = None
+        paged_attention = None
+        if self.draft_attention_backend in {"native_gqa", "paged_segmented"}:
+            import torch_npu
+            native_attention = torch_npu.npu_fusion_attention_v3
+            paged_attention = torch_npu.npu_fused_infer_attention_score
+        if (self.draft_attention_backend == "paged_segmented"
+                and (active > 1
+                     or max(history_lengths) >= self.draft_segment_threshold)):
+            attended = self._batched_segmented_draft_attention(
+                attention=attention,
+                query=q,
+                local_key=k,
+                local_value=v,
+                table=table,
+                request_indices=request_indices,
+                history_lengths=history_lengths,
+                paged_attention=paged_attention,
+            )
+            return attention.draft_output(attended.reshape(
+                active * block, -1))
         for local, request_index in enumerate(request_indices):
+            history_length = history_lengths[local]
             with torch.profiler.record_function("orthrus.draft.kv_gather"):
                 old_k, old_v = self._cache(
-                    layer, table, request_index, history_lengths[local])
+                    layer, table, request_index, history_length)
             full_k = torch.cat((old_k, k[local]), dim=0)
             full_v = torch.cat((old_v, v[local]), dim=0)
-            if repeats > 1:
-                full_k = full_k.repeat_interleave(repeats, dim=1)
-                full_v = full_v.repeat_interleave(repeats, dim=1)
-            with torch.profiler.record_function("orthrus.draft.attention"):
-                attended = F.scaled_dot_product_attention(
-                    q[local].transpose(0, 1)[None],
-                    full_k.transpose(0, 1)[None],
-                    full_v.transpose(0, 1)[None],
-                    is_causal=False, scale=attention.scaling)
-            rows.append(attended[0].transpose(0, 1).reshape(block, -1))
+            if self.draft_attention_backend == "native_gqa":
+                with torch.profiler.record_function(
+                        "orthrus.draft.attention.native_gqa"):
+                    attended = native_attention(
+                        q[local][None], full_k[None], full_v[None],
+                        attention.num_heads, "BSND", scale=attention.scaling,
+                        keep_prob=1.0, sparse_mode=0)[0]
+                rows.append(attended[0].reshape(block, -1))
+            else:
+                repeats = attention.num_heads // attention.num_kv_heads
+                if repeats > 1:
+                    full_k = full_k.repeat_interleave(repeats, dim=1)
+                    full_v = full_v.repeat_interleave(repeats, dim=1)
+                with torch.profiler.record_function(
+                        "orthrus.draft.attention.expanded"):
+                    attended = F.scaled_dot_product_attention(
+                        q[local].transpose(0, 1)[None],
+                        full_k.transpose(0, 1)[None],
+                        full_v.transpose(0, 1)[None],
+                        is_causal=False, scale=attention.scaling)
+                rows.append(attended[0].transpose(0, 1).reshape(block, -1))
         return attention.draft_output(torch.stack(rows).reshape(active * block, -1))
+
+    @staticmethod
+    def _batched_segmented_draft_attention(
+            *, attention, query, local_key, local_value, table,
+            request_indices, history_lengths, paged_attention):
+        """Attend to paged history and local draft KV in two batched ops."""
+        cache = attention.attn.kv_cache
+        if (isinstance(cache, torch.Tensor) and cache.ndim > 0
+                and cache.shape[0] == 2):
+            key_cache, value_cache = cache[0], cache[1]
+        elif isinstance(cache, (tuple, list)) and len(cache) >= 2:
+            key_cache, value_cache = cache[:2]
+        else:
+            raise RuntimeError(
+                "Orthrus drafting requires a bound target paged KV cache")
+        active, query_tokens, num_heads, head_dim = query.shape
+        block_size = key_cache.shape[1]
+        block_count = max(
+            (length + block_size - 1) // block_size
+            for length in history_lengths)
+        block_table = table.block_table.gpu[
+            request_indices, :block_count].contiguous()
+        cumulative = [query_tokens * (index + 1) for index in range(active)]
+        common = {
+            "query": query.reshape(-1, num_heads, head_dim),
+            "input_layout": "TND",
+            "actual_seq_lengths": cumulative,
+            "num_key_value_heads": attention.num_kv_heads,
+            "num_heads": attention.num_heads,
+            "scale": attention.scaling,
+            "sparse_mode": 0,
+            "softmax_lse_flag": True,
+        }
+        with torch.profiler.record_function(
+                "orthrus.draft.attention.paged_history"):
+            old_output, old_lse = paged_attention(
+                key=key_cache.view(key_cache.shape[0], block_size, -1),
+                value=value_cache.view(value_cache.shape[0], block_size, -1),
+                block_table=block_table,
+                block_size=block_size,
+                actual_seq_lengths_kv=history_lengths,
+                **common,
+            )
+        with torch.profiler.record_function(
+                "orthrus.draft.attention.local"):
+            local_output, local_lse = paged_attention(
+                key=local_key.reshape(
+                    -1, attention.num_kv_heads, attention.head_dim),
+                value=local_value.reshape(
+                    -1, attention.num_kv_heads, attention.head_dim),
+                actual_seq_lengths_kv=cumulative,
+                **common,
+            )
+        with torch.profiler.record_function("orthrus.draft.attention.merge"):
+            merged_lse = torch.logaddexp(old_lse, local_lse)
+            merged = (
+                old_output.float() * torch.exp(old_lse - merged_lse)
+                + local_output.float() * torch.exp(local_lse - merged_lse)
+            )
+            return merged.to(old_output.dtype).view_as(query)
 
     @torch.inference_mode()
     def orthrus_propose(self, *, sampled_token_ids, input_batch,
-                        scheduler_output, common_attn_metadata):
+                        scheduler_output, common_attn_metadata,
+                        accepted_token_counts=None, next_token_ids=None,
+                        history_lengths=None, draft_request_indices=None):
         del scheduler_output, common_attn_metadata
         if get_pp_group().world_size != 1:
             raise NotImplementedError("the first Orthrus baseline is single-card only")
-        active_indices = [index for index, row in enumerate(sampled_token_ids)
-                          if row]
         batch_size = len(input_batch.req_ids)
         vocabulary = self.config.vocab_size
+        async_tokens = torch.is_tensor(sampled_token_ids)
+        if async_tokens:
+            if sampled_token_ids.ndim != 2 or sampled_token_ids.shape[0] != batch_size:
+                raise ValueError(
+                    "padded sampled tokens must have shape [requests,tokens]")
+            if accepted_token_counts is None:
+                accepted_token_counts = (sampled_token_ids >= 0).sum(dim=1)
+            active_indices = (list(draft_request_indices)
+                              if draft_request_indices is not None else
+                              torch.nonzero(accepted_token_counts > 0,
+                                            as_tuple=False).flatten().tolist())
+            if next_token_ids is None:
+                gather_indices = (accepted_token_counts - 1).clamp_min(0).long()
+                next_token_ids = sampled_token_ids.gather(
+                    1, gather_indices[:, None]).squeeze(1)
+        else:
+            active_indices = (list(draft_request_indices)
+                              if draft_request_indices is not None else
+                              [index for index, row in enumerate(sampled_token_ids)
+                               if row])
         if not active_indices:
             empty = torch.empty((batch_size, 31, vocabulary),
                                 device=self.model.embed_tokens.weight.device)
-            return OrthrusDraftBatch([[] for _ in range(batch_size)], empty)
+            token_ids = (torch.full((batch_size, 31), -1, dtype=torch.long,
+                                    device=empty.device)
+                         if async_tokens else [[] for _ in range(batch_size)])
+            return OrthrusDraftBatch(
+                token_ids, empty, accepted_token_counts, next_token_ids, [])
         for index in active_indices:
             if (float(input_batch.temperature_cpu[index]) != 1.0
                     or int(input_batch.top_k_cpu[index]) not in (-1, 0, vocabulary)
@@ -237,14 +366,33 @@ class OrthrusForCausalLM(
                 raise ValueError("Orthrus baseline requires a request-local seed")
         device = self.model.embed_tokens.weight.device
         mask_id = int(self.config.mask_token_id)
-        anchors = [int(input_batch.token_ids_cpu[index,
-                       int(input_batch.num_tokens_no_spec[index]) - 1])
-                   for index in active_indices]
+        if async_tokens:
+            assert next_token_ids is not None
+            anchors = next_token_ids[active_indices].to(device=device)
+        else:
+            anchors = torch.tensor([
+                int(input_batch.token_ids_cpu[
+                    index, int(input_batch.num_tokens_no_spec[index]) - 1])
+                for index in active_indices
+            ], dtype=torch.long, device=device)
         tokens = torch.full((len(active_indices), 32), mask_id,
                             dtype=torch.long, device=device)
-        tokens[:, 0] = torch.tensor(anchors, dtype=torch.long, device=device)
-        history_lengths = [int(input_batch.num_tokens_no_spec[index]) - 1
-                           for index in active_indices]
+        tokens[:, 0] = anchors
+        if async_tokens and history_lengths is None:
+            # The async scheduler has only advanced the CPU-side sequence by
+            # one optimistic placeholder. Correct the draft history with the
+            # verifier's actual accepted-token count. This one D2H is kept in
+            # the first prototype for correctness; removing it is measured as
+            # a separate follow-up rather than hidden in the scheduler A/B.
+            counts_cpu = accepted_token_counts.to("cpu").tolist()
+            history_lengths = [
+                int(input_batch.num_tokens_no_spec[index])
+                + int(counts_cpu[index]) - 2
+                for index in active_indices
+            ]
+        elif not async_tokens:
+            history_lengths = [int(input_batch.num_tokens_no_spec[index]) - 1
+                               for index in active_indices]
         positions = torch.stack([
             torch.arange(length, length + 32, device=device)
             for length in history_lengths])
@@ -282,12 +430,24 @@ class OrthrusForCausalLM(
                 active_tokens.append((
                     probabilities[local] / exponential.clamp_min(
                         torch.finfo(torch.float32).tiny)).argmax(-1).tolist())
-        all_tokens = [[] for _ in range(batch_size)]
+        if async_tokens:
+            all_tokens = torch.full((batch_size, 31), -1, dtype=torch.long,
+                                    device=device)
+        else:
+            all_tokens = [[] for _ in range(batch_size)]
         all_probabilities = probabilities.new_zeros((batch_size, 31, vocabulary))
         for local, request_index in enumerate(active_indices):
-            all_tokens[request_index] = active_tokens[local]
+            if async_tokens:
+                all_tokens[request_index] = torch.tensor(
+                    active_tokens[local], dtype=torch.long, device=device)
+            else:
+                all_tokens[request_index] = active_tokens[local]
             all_probabilities[request_index] = probabilities[local]
-        return OrthrusDraftBatch(all_tokens, all_probabilities)
+        return OrthrusDraftBatch(
+            all_tokens, all_probabilities,
+            accepted_token_counts=accepted_token_counts,
+            next_token_ids=next_token_ids,
+            history_lengths=history_lengths)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(

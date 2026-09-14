@@ -1,0 +1,15 @@
+diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
+--- a/vllm_ascend/worker/model_runner_v1.py
++++ b/vllm_ascend/worker/model_runner_v1.py
+@@ -2538,7 +2538,10 @@ class NPUModelRunner(GPUModelRunner):
+                         or self.speculative_config.uses_draft_model()
+                         or self.speculative_config.uses_extract_hidden_states()
+                         or self.speculative_config.use_ngram_gpu()
+-                        or self.speculative_config.method == "custom_class"
++                        # Orthrus requires GPU sampled tokens only when the
++                        # one-cycle asynchronous correction pipeline is active.
++                        or (self.speculative_config.method == "custom_class"
++                            and self.use_async_scheduling)
+                     )
+                     and not self.speculative_config.disable_padded_drafter_batch
+                 )

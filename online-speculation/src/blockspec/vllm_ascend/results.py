@@ -33,7 +33,10 @@ def summarize_trial(directory):
         "mbt": trial["max_num_batched_tokens"],
         "memory": trial["gpu_memory_utilization"],
         "graph": trial["graph_mode"],
+        "graph_capture": trial.get("max_graph_capture_size"),
         "async": trial["async_scheduling"],
+        "draft_attention": trial.get("draft_attention", "expanded"),
+        "draft_segment_threshold": trial.get("draft_segment_threshold"),
         "success_rate": summary["success_rate"],
         "request_throughput": summary["request_throughput"],
         "output_token_throughput": summary["output_token_throughput"],
@@ -47,6 +50,16 @@ def summarize_trial(directory):
         "acceptance_rate": accepted / drafted if drafted else None,
         "workload_sha256": manifest["inputs"]["workload_sha256"],
     }
+
+
+def validate_trial_result(path):
+    with open(path, encoding="utf-8") as handle:
+        result = json.load(handle)
+    success_rate = result.get("summary", {}).get("success_rate")
+    if success_rate != 1.0:
+        raise RuntimeError(
+            f"trial success_rate must be 1.0, got {success_rate!r}")
+    return result
 
 
 def load_trials(root):

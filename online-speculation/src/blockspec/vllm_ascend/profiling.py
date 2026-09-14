@@ -21,7 +21,11 @@ def write_service_config(path, profile_directory, duration, *, enabled=False):
         # The runner stops collection explicitly. Keep a documented 120-second
         # safety limit so CANN cannot race a short requested window.
         "timelimit": 0 if enabled else max(120, int(duration) + 60),
-        "domain": "Request;KVCache;ModelExecute;BatchSchedule;Communication",
+        # Keep all domains. ms_service_profiler 26.0.0's vLLM handlers emit
+        # Engine/Schedule/Schedule.KVCache/Execute, while the public guide
+        # documents a different set of domain labels. A whitelist would
+        # silently produce empty trace databases.
+        "domain": "",
     }
     with open(path, "x", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=True, indent=2)

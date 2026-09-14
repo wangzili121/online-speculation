@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "workload": {
+    "requests": 64,
+    "client_concurrency": 64,
+    "max_new_tokens": 128,
+    "prompt_tokens": "6K-40K",
+    "model": "Orthrus-Qwen3-8B",
+    "device": "Ascend 910B3"
+  },
+  "trials": [
+    {
+      "name": "sync_b1",
+      "async_scheduling": false,
+      "phase_scheduler": "off",
+      "output_token_throughput": 34.2960673181885,
+      "p95_latency_seconds": 233.943258206686,
+      "remote_artifact": "tuning/paged-segmented-formal-64-out128-m94"
+    },
+    {
+      "name": "async_only",
+      "async_scheduling": true,
+      "phase_scheduler": "off",
+      "output_token_throughput": 33.762474761686356,
+      "p95_latency_seconds": 236.31848409532103,
+      "remote_artifact": "tuning/phase-async-delayed-verify-formal64-out128-m94-v1"
+    },
+    {
+      "name": "staggered_8",
+      "async_scheduling": true,
+      "phase_scheduler": "staggered",
+      "draft_max_batch": 8,
+      "output_token_throughput": 31.945383193703385,
+      "p95_latency_seconds": 249.1828886618139,
+      "remote_artifact": "tuning/phase-staggered-formal64-out128-b8-v1"
+    },
+    {
+      "name": "staggered_16",
+      "async_scheduling": true,
+      "phase_scheduler": "staggered",
+      "draft_max_batch": 16,
+      "output_token_throughput": 32.97508679451941,
+      "p95_latency_seconds": 242.24090230271685,
+      "remote_artifact": "tuning/phase-staggered-formal64-out128-b16-v1"
+    },
+    {
+      "name": "staggered_24",
+      "async_scheduling": true,
+      "phase_scheduler": "staggered",
+      "draft_max_batch": 24,
+      "output_token_throughput": 32.256542571558086,
+      "p95_latency_seconds": 247.943859372288,
+      "remote_artifact": "tuning/phase-staggered-formal64-out128-b24-v1"
+    },
+    {
+      "name": "sync_staggered_16",
+      "async_scheduling": false,
+      "phase_scheduler": "staggered",
+      "draft_max_batch": 16,
+      "output_token_throughput": 32.34393259308458,
+      "p95_latency_seconds": 247.57442263581325,
+      "remote_artifact": "tuning/phase-staggered-sync-formal64-out128-b16-v1"
+    }
+  ],
+  "profiles": {
+    "sync_b1": {
+      "device_busy_percent": 87.19483058357804,
+      "device_free_percent": 12.805168990052433,
+      "draft_batch_p95": 22.0,
+      "remote_artifact": "profiling/torch-paged-segmented-64-out128"
+    },
+    "async_only": {
+      "device_busy_percent": 81.2088915705415,
+      "device_free_percent": 18.79110865777268,
+      "draft_batch_p95": 23.0,
+      "remote_artifact": "profiling/phase-async-delayed-verify-torch64-out128-v1"
+    },
+    "staggered_16": {
+      "device_busy_percent": 77.57463937700699,
+      "device_free_percent": 22.42535979438682,
+      "draft_batch_p95": 16.0,
+      "deferred_requests_p95": 7.0,
+      "remote_artifact": "profiling/phase-staggered-torch64-out128-b16-v1"
+    }
+  },
+  "decision": "Keep async and staggered admission disabled in B1; a real Orthrus mixed-phase runner is required before further scheduler tuning."
+}

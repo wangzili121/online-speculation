@@ -1,0 +1,11 @@
+diff --git a/vllm/config/vllm.py b/vllm/config/vllm.py
+--- a/vllm/config/vllm.py
++++ b/vllm/config/vllm.py
+@@ -934,7 +934,8 @@ class VllmConfig:
+                     self.speculative_config.method not in get_args(EagleModelTypes)
+                     and self.speculative_config.method not in get_args(NgramGPUTypes)
+                     and self.speculative_config.method != "draft_model"
++                    and self.speculative_config.method != "custom_class"
+                 ):
+                     raise ValueError(
+                         "Currently, async scheduling is only supported "

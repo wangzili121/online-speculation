@@ -26,6 +26,12 @@ MEMORY="${MEMORY:-0.94}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-40960}"
 GRAPH_MODE="${GRAPH_MODE:-FULL_AND_PIECEWISE}"
 MAX_GRAPH_CAPTURE_SIZE="${MAX_GRAPH_CAPTURE_SIZE:-1024}"
+ORTHRUS_DRAFT_ATTENTION="${ORTHRUS_DRAFT_ATTENTION:-native_gqa}"
+ORTHRUS_DRAFT_SEGMENT_THRESHOLD="${ORTHRUS_DRAFT_SEGMENT_THRESHOLD:-24576}"
+ORTHRUS_PHASE_SCHEDULER="${ORTHRUS_PHASE_SCHEDULER:-off}"
+ORTHRUS_DRAFT_MAX_BATCH="${ORTHRUS_DRAFT_MAX_BATCH:-8}"
+ORTHRUS_DRAFT_LENGTH_BUCKET="${ORTHRUS_DRAFT_LENGTH_BUCKET:-8192}"
+ORTHRUS_DRAFT_MAX_DELAY_STEPS="${ORTHRUS_DRAFT_MAX_DELAY_STEPS:-2}"
 ASYNC_SCHEDULING="${ASYNC_SCHEDULING:-0}"
 SOURCE_REVISION="${SOURCE_REVISION:-unknown}"
 SERVER_TIMEOUT="${SERVER_TIMEOUT:-1200}"
@@ -74,11 +80,14 @@ runtime_json=$(printf \
   '{"vllm":"0.23.0","vllm_ascend":"0.23.0","device":"Ascend910B3","profiler":"%s"}' \
   "$PROFILE_KIND")
 profile_json=$(printf \
-  '{"profile_id":"%s","source_revision":"%s","profiler":"%s","requests":%s,"client_concurrency":%s,"arrival_rate":%s,"max_num_seqs":%s,"max_num_batched_tokens":%s,"gpu_memory_utilization":%s,"max_model_len":%s,"graph_mode":"%s","async_scheduling":%s,"max_graph_capture_size":"%s","ramp_up_seconds":%s,"profile_seconds":%s}' \
+  '{"profile_id":"%s","source_revision":"%s","profiler":"%s","requests":%s,"client_concurrency":%s,"arrival_rate":%s,"max_num_seqs":%s,"max_num_batched_tokens":%s,"gpu_memory_utilization":%s,"max_model_len":%s,"graph_mode":"%s","async_scheduling":%s,"max_graph_capture_size":"%s","draft_attention":"%s","draft_segment_threshold":%s,"phase_scheduler":"%s","draft_max_batch":%s,"draft_length_bucket":%s,"draft_max_delay_steps":%s,"ramp_up_seconds":%s,"profile_seconds":%s}' \
   "$PROFILE_ID" "$SOURCE_REVISION" "$PROFILE_KIND" "$REQUESTS" \
   "$CLIENT_CONCURRENCY" "$ARRIVAL_RATE" "$MNS" "$MBT" "$MEMORY" \
   "$MAX_MODEL_LEN" "$GRAPH_MODE" "$ASYNC_SCHEDULING" \
-  "$MAX_GRAPH_CAPTURE_SIZE" "$RAMP_UP_SECONDS" "$PROFILE_SECONDS")
+  "$MAX_GRAPH_CAPTURE_SIZE" "$ORTHRUS_DRAFT_ATTENTION" \
+  "$ORTHRUS_DRAFT_SEGMENT_THRESHOLD" "$ORTHRUS_PHASE_SCHEDULER" \
+  "$ORTHRUS_DRAFT_MAX_BATCH" "$ORTHRUS_DRAFT_LENGTH_BUCKET" \
+  "$ORTHRUS_DRAFT_MAX_DELAY_STEPS" "$RAMP_UP_SECONDS" "$PROFILE_SECONDS")
 python scripts/capture_trial_manifest.py \
   --repo . --workload "$MANIFEST" --model "$MODEL" \
   --runtime-json "$runtime_json" --trial-json "$profile_json" \
@@ -86,6 +95,9 @@ python scripts/capture_trial_manifest.py \
 
 export PORT MNS MBT MEMORY MAX_MODEL_LEN GRAPH_MODE ASYNC_SCHEDULING
 export MAX_GRAPH_CAPTURE_SIZE PROFILE_SYMBOLS_PATH
+export ORTHRUS_DRAFT_ATTENTION ORTHRUS_DRAFT_SEGMENT_THRESHOLD
+export ORTHRUS_PHASE_SCHEDULER ORTHRUS_DRAFT_MAX_BATCH
+export ORTHRUS_DRAFT_LENGTH_BUCKET ORTHRUS_DRAFT_MAX_DELAY_STEPS
 export ORTHRUS_TRACE_FILE="$output_dir/orthrus-events-{pid}.jsonl"
 export PROMETHEUS_MULTIPROC_DIR="$output_dir/prometheus"
 mkdir -p "$PROMETHEUS_MULTIPROC_DIR"
@@ -167,5 +179,14 @@ if [[ "$PROFILE_KIND" == "service" ]]; then
     --input "$output_dir/service-raw" \
     --output "$output_dir/service-analysis" \
     >"$output_dir/service-analysis.json"
+  python scripts/analyze_orthrus_service_profile.py \
+    --profile "$output_dir" \
+    --output "$output_dir/service-derived-summary.json" \
+    >"$output_dir/service-derived-summary.stdout"
+else
+  python scripts/analyze_orthrus_profile.py \
+    --profile "$output_dir" \
+    --output "$output_dir/derived-summary.json" \
+    >"$output_dir/derived-summary.stdout"
 fi
 touch "$output_dir/COMPLETE"
