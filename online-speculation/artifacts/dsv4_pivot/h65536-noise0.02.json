@@ -1,0 +1,80 @@
+{
+  "shape": {
+    "batch": 8,
+    "history": 65536,
+    "groups": "7",
+    "heads": 64,
+    "head_dim": 128,
+    "topk": 1024,
+    "candidate_ratios": "1.25,2.0",
+    "query_noise": 0.02,
+    "block_size": 128,
+    "warmup": 3,
+    "iterations": 10,
+    "seed": 20260914,
+    "compressed_history_tokens": 65536,
+    "raw_context_equivalent_c4": 262144
+  },
+  "rows": [
+    {
+      "group": 7,
+      "baseline_ms": 0.6717038806527853,
+      "reuse_ms": 0.18860520794987679,
+      "reuse_indexer_speedup": 3.561428064230843,
+      "reuse_topk_recall": 0.974068820476532,
+      "baseline_shape": [
+        8,
+        7,
+        1024
+      ],
+      "reuse_shape": [
+        8,
+        1,
+        1024
+      ],
+      "refine": [
+        {
+          "candidate_ratio": 1.25,
+          "candidate_count": 1280,
+          "torch_ms": 0.5992228165268898,
+          "torch_speedup": 1.1209584517258497,
+          "torch_topk_recall": 0.9999825954437256,
+          "native_two_pass_ms": 0.4481075797230005,
+          "native_two_pass_speedup": 1.4989790645094683,
+          "native_topk_recall": 0.9999825954437256,
+          "shape": [
+            8,
+            7,
+            1024
+          ],
+          "native_shape": [
+            8,
+            7,
+            1024
+          ]
+        },
+        {
+          "candidate_ratio": 2.0,
+          "candidate_count": 2048,
+          "torch_ms": 0.6058908067643642,
+          "torch_speedup": 1.1086220044167403,
+          "torch_topk_recall": 1.0,
+          "native_two_pass_ms": 0.4475095774978399,
+          "native_two_pass_speedup": 1.5009821340774043,
+          "native_topk_recall": 1.0,
+          "shape": [
+            8,
+            7,
+            1024
+          ],
+          "native_shape": [
+            8,
+            7,
+            1024
+          ]
+        }
+      ]
+    }
+  ],
+  "scope": "Indexer-only synthetic DSV4 shape. It does not measure top-k fidelity, DSpark acceptance, or end-to-end serving."
+}

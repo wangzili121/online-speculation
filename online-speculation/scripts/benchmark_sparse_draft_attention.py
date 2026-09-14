@@ -13,6 +13,7 @@ import torch_npu
 from blockspec.reporting import dumps
 from blockspec.vllm_ascend.sparse_draft import (
     recent_page_plan,
+    vegas_page_plan,
     verifier_guided_page_plan,
 )
 
@@ -125,6 +126,7 @@ def main():
     repeats = args.query_heads // args.kv_heads
     verifier_query = query[:, -1].view(
         len(histories), args.kv_heads, repeats, args.head_dim).mean(dim=2)
+    verifier_queries = query[:, [0, -1]]
 
     with torch.inference_mode():
         dense = paged_attention(
@@ -145,6 +147,11 @@ def main():
                     dense_below_tokens=args.dense_below_tokens),
                 "verifier": lambda: verifier_guided_page_plan(
                     verifier_query, key, table, histories,
+                    budget_ratio=ratio, min_tokens=args.min_tokens,
+                    max_tokens=args.max_tokens,
+                    dense_below_tokens=args.dense_below_tokens),
+                "vegas": lambda: vegas_page_plan(
+                    verifier_queries, key, table, histories,
                     budget_ratio=ratio, min_tokens=args.min_tokens,
                     max_tokens=args.max_tokens,
                     dense_below_tokens=args.dense_below_tokens),
@@ -178,9 +185,12 @@ def main():
                     "attention_speedup": dense_ms / attention_ms,
                     "combined_speedup": dense_ms / combined_ms,
                     "estimated_32_layer_attention_ms": (
-                        selection_ms + 32 * attention_ms),
+                        (32 * selection_ms if policy == "vegas"
+                         else selection_ms) + 32 * attention_ms),
                     "estimated_32_layer_attention_speedup": (
-                        32 * dense_ms / (selection_ms + 32 * attention_ms)),
+                        32 * dense_ms
+                        / ((32 * selection_ms if policy == "vegas"
+                            else selection_ms) + 32 * attention_ms)),
                     **similarity(output, dense),
                 })
 

@@ -1,0 +1,163 @@
+{
+  "shape": {
+    "batch": 8,
+    "history": 262144,
+    "groups": "6,8",
+    "heads": 64,
+    "head_dim": 128,
+    "topk": 2048,
+    "candidate_ratios": "1.25,2.0",
+    "query_noise": 0.1,
+    "block_size": 128,
+    "warmup": 5,
+    "iterations": 20,
+    "seed": 20260914,
+    "compressed_history_tokens": 262144,
+    "raw_context_equivalent_c4": 1048576
+  },
+  "rows": [
+    {
+      "group": 6,
+      "baseline_ms": 1.8722355831414461,
+      "reuse_ms": 0.6316248793154955,
+      "reuse_indexer_speedup": 2.9641574365633367,
+      "reuse_topk_recall": 0.8682047724723816,
+      "baseline_shape": [
+        8,
+        6,
+        2048
+      ],
+      "reuse_shape": [
+        8,
+        1,
+        2048
+      ],
+      "refine": [
+        {
+          "candidate_ratio": 1.25,
+          "candidate_count": 3072,
+          "torch_ms": 2.0812098402529955,
+          "torch_speedup": 0.8995900110264008,
+          "torch_topk_recall": 0.9790446162223816,
+          "native_two_pass_ms": 1.967762247659266,
+          "native_two_pass_speedup": 0.9514541634125501,
+          "native_topk_recall": 0.9790446162223816,
+          "native_breakdown_ms": {
+            "proxy_candidate_scan": 1.8190580187365413,
+            "candidate_pack": 0.11486615985631943,
+            "candidate_rescore": 0.1383141614496708,
+            "component_sum": 2.0722383400425315
+          },
+          "shape": [
+            8,
+            6,
+            2048
+          ],
+          "native_shape": [
+            8,
+            6,
+            2048
+          ]
+        },
+        {
+          "candidate_ratio": 2.0,
+          "candidate_count": 4096,
+          "torch_ms": 2.2915701614692807,
+          "torch_speedup": 0.8170099325874575,
+          "torch_topk_recall": 0.9972127676010132,
+          "native_two_pass_ms": 2.1346399560570717,
+          "native_two_pass_speedup": 0.8770732403040384,
+          "native_topk_recall": 0.9972127676010132,
+          "native_breakdown_ms": {
+            "proxy_candidate_scan": 1.9732397515326738,
+            "candidate_pack": 0.11368063278496265,
+            "candidate_rescore": 0.14124917797744274,
+            "component_sum": 2.2281695622950792
+          },
+          "shape": [
+            8,
+            6,
+            2048
+          ],
+          "native_shape": [
+            8,
+            6,
+            2048
+          ]
+        }
+      ]
+    },
+    {
+      "group": 8,
+      "baseline_ms": 2.503235940821469,
+      "reuse_ms": 0.6360614206641912,
+      "reuse_indexer_speedup": 3.935525500363671,
+      "reuse_topk_recall": 0.8603515625,
+      "baseline_shape": [
+        8,
+        8,
+        2048
+      ],
+      "reuse_shape": [
+        8,
+        1,
+        2048
+      ],
+      "refine": [
+        {
+          "candidate_ratio": 1.25,
+          "candidate_count": 3072,
+          "torch_ms": 2.1170289488509297,
+          "torch_speedup": 1.1824287722565923,
+          "torch_topk_recall": 0.9743804931640625,
+          "native_two_pass_ms": 1.970168249681592,
+          "native_two_pass_speedup": 1.2705696283685561,
+          "native_topk_recall": 0.9743804931640625,
+          "native_breakdown_ms": {
+            "proxy_candidate_scan": 1.8172715092077851,
+            "candidate_pack": 0.11699963361024857,
+            "candidate_rescore": 0.13367768842726946,
+            "component_sum": 2.067948831245303
+          },
+          "shape": [
+            8,
+            8,
+            2048
+          ],
+          "native_shape": [
+            8,
+            8,
+            2048
+          ]
+        },
+        {
+          "candidate_ratio": 2.0,
+          "candidate_count": 4096,
+          "torch_ms": 2.3473087465390563,
+          "torch_speedup": 1.0664280719408201,
+          "torch_topk_recall": 0.9959030151367188,
+          "native_two_pass_ms": 2.2127390606328845,
+          "native_two_pass_speedup": 1.1312838397246427,
+          "native_topk_recall": 0.9959030151367188,
+          "native_breakdown_ms": {
+            "proxy_candidate_scan": 1.9735557027161121,
+            "candidate_pack": 0.11804713867604733,
+            "candidate_rescore": 0.13427971862256527,
+            "component_sum": 2.2258825600147247
+          },
+          "shape": [
+            8,
+            8,
+            2048
+          ],
+          "native_shape": [
+            8,
+            8,
+            2048
+          ]
+        }
+      ]
+    }
+  ],
+  "scope": "Indexer-only synthetic DSV4 shape. It does not measure top-k fidelity, DSpark acceptance, or end-to-end serving."
+}

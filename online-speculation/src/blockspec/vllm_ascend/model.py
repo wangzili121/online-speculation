@@ -26,7 +26,9 @@ from vllm.transformers_utils.config import set_default_rope_theta
 from vllm.v1.attention.backend import AttentionType
 
 from .proposer import OrthrusDraftBatch
-from .sparse_draft import recent_page_plan, verifier_guided_page_plan
+from .sparse_draft import (compact_verifier_queries, recent_page_plan,
+                           reuse_vegas_page_plan, vegas_page_plan,
+                           verifier_guided_page_plan)
 from .trace import instant
 
 
@@ -63,9 +65,20 @@ class OrthrusAttention(Qwen3Attention):
         k = self.k_norm(k.view(-1, self.num_kv_heads, self.head_dim)).view(k.shape)
         q, k = self.rotary_emb(positions, q, k)
         if self.capture_target_query:
-            # This view aliases the target-forward tensor and adds no copy to
-            # the verifier path. The proposer consumes it immediately.
-            self.last_target_query = q.view(-1, self.num_heads, self.head_dim)
+            from vllm.forward_context import get_forward_context
+
+            metadata = get_forward_context().attn_metadata
+            if isinstance(metadata, list):
+                raise NotImplementedError(
+                    "Orthrus verifier-query capture does not support DBO")
+            # vLLM runs dummy forwards with no attention metadata while
+            # sizing memory and compiling graphs. A real verifier forward
+            # updates this buffer before the proposer can consume it.
+            if metadata is not None:
+                layer_metadata = metadata[self.attn.layer_name]
+                self.last_target_query = compact_verifier_queries(
+                    q.view(-1, self.num_heads, self.head_dim),
+                    layer_metadata.query_start_loc)
         attended = self.attn(q, k, v)
         return self.o_proj(attended)[0]
 
@@ -185,8 +198,11 @@ class OrthrusForCausalLM(
             raise ValueError("ORTHRUS_DRAFT_SEGMENT_THRESHOLD must be positive")
         self.pillar_policy = os.environ.get(
             "ORTHRUS_PILLAR_POLICY", "verifier")
-        if self.pillar_policy not in {"recent", "verifier"}:
-            raise ValueError("ORTHRUS_PILLAR_POLICY must be recent or verifier")
+        if self.pillar_policy not in {
+                "recent", "verifier", "vegas", "vegas_cached"}:
+            raise ValueError(
+                "ORTHRUS_PILLAR_POLICY must be recent, verifier, vegas, "
+                "or vegas_cached")
         self.pillar_budget_ratio = float(os.environ.get(
             "ORTHRUS_PILLAR_BUDGET_RATIO", "0.05"))
         self.pillar_min_tokens = int(os.environ.get(
@@ -202,8 +218,14 @@ class OrthrusForCausalLM(
             raise ValueError("ORTHRUS_PILLAR_SELECTOR_LAYER is out of range")
         self.pillar_selector_layer = selector_layer
         if self.draft_attention_backend == "paged_pillar":
-            self.model.layers[
-                self.pillar_selector_layer].self_attn.capture_target_query = True
+            capture_layers = (self.model.layers
+                              if self.pillar_policy in {
+                                  "vegas", "vegas_cached"}
+                              else [self.model.layers[
+                                  self.pillar_selector_layer]])
+            for layer in capture_layers:
+                layer.self_attn.capture_target_query = True
+        self._vegas_page_cache = {}
 
     def embed_input_ids(self, input_ids):
         return self.model.embed_input_ids(input_ids)
@@ -374,7 +396,7 @@ class OrthrusForCausalLM(
                         scheduler_output, common_attn_metadata,
                         accepted_token_counts=None, next_token_ids=None,
                         history_lengths=None, draft_request_indices=None):
-        del scheduler_output
+        del scheduler_output, common_attn_metadata
         if get_pp_group().world_size != 1:
             raise NotImplementedError("the first Orthrus baseline is single-card only")
         batch_size = len(input_batch.req_ids)
@@ -448,69 +470,139 @@ class OrthrusForCausalLM(
             for length in history_lengths])
         self._pillar_block_table = None
         self._pillar_history_lengths = None
+        table = input_batch.block_table[0]
+        active_block_table = table.block_table.gpu[active_indices]
         if self.draft_attention_backend == "paged_pillar":
-            selector_attention = self.model.layers[
-                self.pillar_selector_layer].self_attn
-            target_query = selector_attention.last_target_query
-            query_start = getattr(common_attn_metadata, "query_start_loc", None)
-            if target_query is None or query_start is None:
-                raise RuntimeError(
-                    "paged_pillar requires the preceding verifier query metadata")
-            active_tensor = torch.tensor(
-                active_indices, dtype=torch.long, device=target_query.device)
-            final_query_offsets = query_start.index_select(
-                0, active_tensor + 1).long() - 1
-            final_query = target_query.index_select(0, final_query_offsets)
-            repeats = (selector_attention.num_heads
-                       // selector_attention.num_kv_heads)
-            query_by_kv_head = final_query.view(
-                len(active_indices), selector_attention.num_kv_heads,
-                repeats, selector_attention.head_dim).mean(dim=2)
-            selector_cache = selector_attention.attn.kv_cache
-            key_cache = (selector_cache[0]
-                         if isinstance(selector_cache, torch.Tensor)
-                         else selector_cache[0])
-            table = input_batch.block_table[0].block_table.gpu[
-                active_indices]
-            with torch.profiler.record_function("orthrus.draft.pillar.select"):
-                if self.pillar_policy == "verifier":
-                    plan = verifier_guided_page_plan(
-                        query_by_kv_head, key_cache, table, history_lengths,
-                        budget_ratio=self.pillar_budget_ratio,
-                        min_tokens=self.pillar_min_tokens,
-                        max_tokens=self.pillar_max_tokens,
-                        dense_below_tokens=self.draft_segment_threshold)
-                else:
-                    plan = recent_page_plan(
-                        table, history_lengths, key_cache.shape[1],
-                        budget_ratio=self.pillar_budget_ratio,
-                        min_tokens=self.pillar_min_tokens,
-                        max_tokens=self.pillar_max_tokens,
-                        dense_below_tokens=self.draft_segment_threshold)
-            self._pillar_block_table = plan.block_table
-            self._pillar_history_lengths = plan.sequence_lengths
-            instant("orthrus.draft.pillar.plan", {
-                "policy": self.pillar_policy,
-                "budget_ratio": self.pillar_budget_ratio,
-                "history_tokens": history_lengths,
-                "attended_history_tokens": plan.sequence_lengths,
-                "selected_blocks": plan.selected_blocks,
-                "total_blocks": plan.total_blocks,
-                "request_ids": [input_batch.req_ids[index]
-                                for index in active_indices],
-            })
+            if self.pillar_policy != "vegas":
+                selector_attention = self.model.layers[
+                    self.pillar_selector_layer].self_attn
+                target_query = selector_attention.last_target_query
+                if target_query is None:
+                    raise RuntimeError(
+                        "paged_pillar requires preceding verifier queries")
+                active_tensor = torch.tensor(
+                    active_indices, dtype=torch.long,
+                    device=target_query.device)
+                final_query = target_query.index_select(
+                    0, active_tensor)[:, -1]
+                repeats = (selector_attention.num_heads
+                           // selector_attention.num_kv_heads)
+                query_by_kv_head = final_query.view(
+                    len(active_indices), selector_attention.num_kv_heads,
+                    repeats, selector_attention.head_dim).mean(dim=2)
+                selector_cache = selector_attention.attn.kv_cache
+                key_cache = selector_cache[0]
+                with torch.profiler.record_function(
+                        "orthrus.draft.pillar.select"):
+                    if self.pillar_policy == "verifier":
+                        plan = verifier_guided_page_plan(
+                            query_by_kv_head, key_cache, active_block_table,
+                            history_lengths,
+                            budget_ratio=self.pillar_budget_ratio,
+                            min_tokens=self.pillar_min_tokens,
+                            max_tokens=self.pillar_max_tokens,
+                            dense_below_tokens=self.draft_segment_threshold)
+                    else:
+                        plan = recent_page_plan(
+                            active_block_table, history_lengths,
+                            key_cache.shape[1],
+                            budget_ratio=self.pillar_budget_ratio,
+                            min_tokens=self.pillar_min_tokens,
+                            max_tokens=self.pillar_max_tokens,
+                            dense_below_tokens=self.draft_segment_threshold)
+                self._pillar_block_table = plan.block_table
+                self._pillar_history_lengths = plan.sequence_lengths
+                instant("orthrus.draft.pillar.plan", {
+                    "policy": self.pillar_policy,
+                    "budget_ratio": self.pillar_budget_ratio,
+                    "history_tokens": history_lengths,
+                    "attended_history_tokens": plan.sequence_lengths,
+                    "selected_blocks": plan.selected_blocks,
+                    "total_blocks": plan.total_blocks,
+                    "request_ids": [input_batch.req_ids[index]
+                                    for index in active_indices],
+                })
         with torch.profiler.record_function("orthrus.draft.embedding"):
             hidden_states = self.model.embed_input_ids(tokens).reshape(
                 -1, self.config.hidden_size)
         residual = None
-        table = input_batch.block_table[0]
-        for layer in self.model.layers:
+        vegas_active_tensor = None
+        if self.pillar_policy in {"vegas", "vegas_cached"}:
+            vegas_active_tensor = torch.tensor(
+                active_indices, dtype=torch.long, device=device)
+        request_ids = [input_batch.req_ids[index] for index in active_indices]
+        live_request_ids = set(input_batch.req_ids)
+        self._vegas_page_cache = {
+            key: value for key, value in self._vegas_page_cache.items()
+            if key[0] in live_request_ids
+        }
+        for layer_index, layer in enumerate(self.model.layers):
             if residual is None:
                 residual = hidden_states
                 normalized = layer.input_layernorm(hidden_states)
             else:
                 normalized, residual = layer.input_layernorm(hidden_states,
                                                               residual)
+            if (self.draft_attention_backend == "paged_pillar"
+                    and self.pillar_policy in {"vegas", "vegas_cached"}):
+                target_queries = layer.self_attn.last_target_query
+                if target_queries is None:
+                    raise RuntimeError(
+                        "vegas requires verifier queries for every layer")
+                layer_cache = layer.self_attn.attn.kv_cache
+                key_cache = layer_cache[0]
+                cache_hit = False
+                cached_rows = [
+                    self._vegas_page_cache.get((request_id, layer_index))
+                    for request_id in request_ids
+                ]
+                if self.pillar_policy == "vegas_cached":
+                    try:
+                        with torch.profiler.record_function(
+                                "orthrus.draft.vegas.reuse"):
+                            plan = reuse_vegas_page_plan(
+                                cached_rows, active_block_table,
+                                history_lengths, key_cache.shape[1],
+                                budget_ratio=self.pillar_budget_ratio,
+                                min_tokens=self.pillar_min_tokens,
+                                max_tokens=self.pillar_max_tokens,
+                                dense_below_tokens=(
+                                    self.draft_segment_threshold))
+                        cache_hit = True
+                    except ValueError:
+                        plan = None
+                else:
+                    plan = None
+                if plan is None:
+                    with torch.profiler.record_function(
+                            "orthrus.draft.vegas.select"):
+                        plan = vegas_page_plan(
+                            target_queries.index_select(
+                                0, vegas_active_tensor),
+                            key_cache, active_block_table, history_lengths,
+                            budget_ratio=self.pillar_budget_ratio,
+                            min_tokens=self.pillar_min_tokens,
+                            max_tokens=self.pillar_max_tokens,
+                            dense_below_tokens=self.draft_segment_threshold)
+                    if self.pillar_policy == "vegas_cached":
+                        for row, request_id in enumerate(request_ids):
+                            old_count = (plan.selected_blocks[row] - 1
+                                         if plan.selected_blocks[row]
+                                         < plan.total_blocks[row] else 0)
+                            if old_count:
+                                self._vegas_page_cache[
+                                    (request_id, layer_index)] = (
+                                        plan.block_table[
+                                            row, :old_count].clone())
+                self._pillar_block_table = plan.block_table
+                self._pillar_history_lengths = plan.sequence_lengths
+                instant("orthrus.draft.vegas.plan", {
+                    "layer": layer_index,
+                    "cache_hit": cache_hit,
+                    "budget_ratio": self.pillar_budget_ratio,
+                    "selected_blocks": plan.selected_blocks,
+                    "total_blocks": plan.total_blocks,
+                })
             with torch.profiler.record_function("orthrus.draft.layer"):
                 hidden_states = self._draft_attention(
                     layer, normalized.view(len(active_indices), 32, -1),

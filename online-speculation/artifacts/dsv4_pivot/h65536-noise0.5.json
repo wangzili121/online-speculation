@@ -1,0 +1,80 @@
+{
+  "shape": {
+    "batch": 8,
+    "history": 65536,
+    "groups": "7",
+    "heads": 64,
+    "head_dim": 128,
+    "topk": 1024,
+    "candidate_ratios": "1.25,2.0",
+    "query_noise": 0.5,
+    "block_size": 128,
+    "warmup": 3,
+    "iterations": 10,
+    "seed": 20260914,
+    "compressed_history_tokens": 65536,
+    "raw_context_equivalent_c4": 262144
+  },
+  "rows": [
+    {
+      "group": 7,
+      "baseline_ms": 0.6832638755440712,
+      "reuse_ms": 0.20621931180357933,
+      "reuse_indexer_speedup": 3.3132875363044048,
+      "reuse_topk_recall": 0.4698660969734192,
+      "baseline_shape": [
+        8,
+        7,
+        1024
+      ],
+      "reuse_shape": [
+        8,
+        1,
+        1024
+      ],
+      "refine": [
+        {
+          "candidate_ratio": 1.25,
+          "candidate_count": 1280,
+          "torch_ms": 0.6757259368896484,
+          "torch_speedup": 1.0111553194023004,
+          "torch_topk_recall": 0.5313372015953064,
+          "native_two_pass_ms": 0.5335437133908272,
+          "native_two_pass_speedup": 1.28061461206567,
+          "native_topk_recall": 0.5313372015953064,
+          "shape": [
+            8,
+            7,
+            1024
+          ],
+          "native_shape": [
+            8,
+            7,
+            1024
+          ]
+        },
+        {
+          "candidate_ratio": 2.0,
+          "candidate_count": 2048,
+          "torch_ms": 0.6874688901007175,
+          "torch_speedup": 0.9938833384067309,
+          "torch_topk_recall": 0.6600865125656128,
+          "native_two_pass_ms": 0.5115316715091467,
+          "native_two_pass_speedup": 1.3357215468756245,
+          "native_topk_recall": 0.6600865125656128,
+          "shape": [
+            8,
+            7,
+            1024
+          ],
+          "native_shape": [
+            8,
+            7,
+            1024
+          ]
+        }
+      ]
+    }
+  ],
+  "scope": "Indexer-only synthetic DSV4 shape. It does not measure top-k fidelity, DSpark acceptance, or end-to-end serving."
+}

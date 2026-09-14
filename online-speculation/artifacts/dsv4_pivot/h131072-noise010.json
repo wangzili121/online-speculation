@@ -1,0 +1,139 @@
+{
+  "shape": {
+    "batch": 8,
+    "history": 131072,
+    "groups": "5,7",
+    "heads": 64,
+    "head_dim": 128,
+    "topk": 1024,
+    "candidate_ratios": "1.25,2.0",
+    "query_noise": 0.1,
+    "block_size": 128,
+    "warmup": 5,
+    "iterations": 20,
+    "seed": 20260914,
+    "compressed_history_tokens": 131072,
+    "raw_context_equivalent_c4": 524288
+  },
+  "rows": [
+    {
+      "group": 5,
+      "baseline_ms": 0.9521397529169917,
+      "reuse_ms": 0.33786194398999214,
+      "reuse_indexer_speedup": 2.8181325830090977,
+      "reuse_topk_recall": 0.8675781488418579,
+      "baseline_shape": [
+        8,
+        5,
+        1024
+      ],
+      "reuse_shape": [
+        8,
+        1,
+        1024
+      ],
+      "refine": [
+        {
+          "candidate_ratio": 1.25,
+          "candidate_count": 1280,
+          "torch_ms": 0.6156088085845113,
+          "torch_speedup": 1.54666362735497,
+          "torch_topk_recall": 0.9451660513877869,
+          "native_two_pass_ms": 0.4537006141617894,
+          "native_two_pass_speedup": 2.0986080318098472,
+          "native_topk_recall": 0.9451660513877869,
+          "shape": [
+            8,
+            5,
+            1024
+          ],
+          "native_shape": [
+            8,
+            5,
+            1024
+          ]
+        },
+        {
+          "candidate_ratio": 2.0,
+          "candidate_count": 2048,
+          "torch_ms": 0.6217248272150755,
+          "torch_speedup": 1.53144881986129,
+          "torch_topk_recall": 0.995800793170929,
+          "native_two_pass_ms": 0.46898366417735815,
+          "native_two_pass_speedup": 2.030219441837351,
+          "native_topk_recall": 0.995800793170929,
+          "shape": [
+            8,
+            5,
+            1024
+          ],
+          "native_shape": [
+            8,
+            5,
+            1024
+          ]
+        }
+      ]
+    },
+    {
+      "group": 7,
+      "baseline_ms": 1.269313646480441,
+      "reuse_ms": 0.3386079566553235,
+      "reuse_indexer_speedup": 3.748623213164785,
+      "reuse_topk_recall": 0.862130343914032,
+      "baseline_shape": [
+        8,
+        7,
+        1024
+      ],
+      "reuse_shape": [
+        8,
+        1,
+        1024
+      ],
+      "refine": [
+        {
+          "candidate_ratio": 1.25,
+          "candidate_count": 1280,
+          "torch_ms": 0.6230798317119479,
+          "torch_speedup": 2.037160540075464,
+          "torch_topk_recall": 0.9408482313156128,
+          "native_two_pass_ms": 0.4575825994834304,
+          "native_two_pass_speedup": 2.7739552332483406,
+          "native_topk_recall": 0.9408482313156128,
+          "shape": [
+            8,
+            7,
+            1024
+          ],
+          "native_shape": [
+            8,
+            7,
+            1024
+          ]
+        },
+        {
+          "candidate_ratio": 2.0,
+          "candidate_count": 2048,
+          "torch_ms": 0.649780360981822,
+          "torch_speedup": 1.953450308289559,
+          "torch_topk_recall": 0.9960938096046448,
+          "native_two_pass_ms": 0.4831676371395588,
+          "native_two_pass_speedup": 2.6270667754053463,
+          "native_topk_recall": 0.9960938096046448,
+          "shape": [
+            8,
+            7,
+            1024
+          ],
+          "native_shape": [
+            8,
+            7,
+            1024
+          ]
+        }
+      ]
+    }
+  ],
+  "scope": "Indexer-only synthetic DSV4 shape. It does not measure top-k fidelity, DSpark acceptance, or end-to-end serving."
+}

@@ -2,9 +2,18 @@ import pytest
 import torch
 
 from blockspec.vllm_ascend.sparse_draft import (
+    compact_verifier_queries,
     recent_page_plan,
+    reuse_vegas_page_plan,
+    vegas_page_plan,
     verifier_guided_page_plan,
 )
+
+
+def test_compact_verifier_queries_keeps_request_boundaries():
+    query = torch.arange(7, dtype=torch.float32).view(7, 1, 1)
+    compact = compact_verifier_queries(query, torch.tensor([0, 2, 5, 7]))
+    assert compact[:, :, 0, 0].tolist() == [[0, 1], [2, 4], [5, 6]]
 
 
 def test_recent_page_plan_keeps_partial_page_last():
@@ -43,6 +52,56 @@ def test_verifier_guided_plan_uses_dense_budget_below_threshold():
         min_tokens=4, max_tokens=16, dense_below_tokens=16)
     assert set(plan.block_table[0].tolist()) == {0, 1, 2}
     assert plan.sequence_lengths == [10]
+
+
+def test_vegas_plan_finds_important_token_inside_page():
+    key = torch.zeros(4, 4, 1, 2)
+    key[0, -1, 0] = torch.tensor([2.0, 0.0])
+    key[1, 1, 0] = torch.tensor([9.0, 0.0])
+    key[2, -1, 0] = torch.tensor([3.0, 0.0])
+    key[3, -1, 0] = torch.tensor([100.0, 0.0])
+    table = torch.tensor([[0, 1, 2, 3]], dtype=torch.int32)
+    queries = torch.tensor([[[[1.0, 0.0]], [[1.0, 0.0]]]])
+    plan = vegas_page_plan(
+        queries, key, table, [16], budget_ratio=0.5,
+        min_tokens=4, max_tokens=16, dense_below_tokens=0,
+        page_chunk=2)
+    assert plan.block_table.tolist() == [[1, 3]]
+    assert plan.sequence_lengths == [8]
+
+
+def test_vegas_plan_is_layer_and_gqa_aware():
+    key = torch.zeros(3, 2, 1, 2)
+    key[0, 0, 0] = torch.tensor([1.0, 0.0])
+    key[1, 0, 0] = torch.tensor([0.0, 2.0])
+    table = torch.tensor([[0, 1, 2]], dtype=torch.int32)
+    # Two query heads share one KV head. Their mean points to page 1.
+    queries = torch.tensor([[
+        [[0.0, 1.0], [0.0, 3.0]],
+        [[0.0, 1.0], [0.0, 3.0]],
+    ]])
+    plan = vegas_page_plan(
+        queries, key, table, [6], budget_ratio=2 / 3,
+        min_tokens=2, max_tokens=6, dense_below_tokens=0)
+    assert plan.block_table.tolist() == [[1, 2]]
+
+
+def test_reuse_vegas_plan_keeps_old_selection_and_advances_newest_page():
+    table = torch.tensor([[0, 1, 2, 9]], dtype=torch.int32)
+    plan = reuse_vegas_page_plan(
+        [torch.tensor([1], dtype=torch.int32)], table, [16], 4,
+        budget_ratio=0.5, min_tokens=4, max_tokens=16,
+        dense_below_tokens=0)
+    assert plan.block_table.tolist() == [[1, 9]]
+    assert plan.sequence_lengths == [8]
+
+
+def test_reuse_vegas_plan_ignores_cache_for_dense_rows():
+    table = torch.tensor([[4, 5, 6]], dtype=torch.int32)
+    plan = reuse_vegas_page_plan(
+        [None], table, [10], 4, budget_ratio=0.1,
+        min_tokens=4, max_tokens=16, dense_below_tokens=16)
+    assert plan.block_table.tolist() == [[4, 5, 6]]
 
 
 @pytest.mark.parametrize("ratio", [0, -0.1, 1.1])

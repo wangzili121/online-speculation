@@ -1,0 +1,92 @@
+{
+  "shape": {
+    "batch": 8,
+    "history": 262144,
+    "groups": "7",
+    "heads": 64,
+    "head_dim": 128,
+    "topk": 2048,
+    "candidate_ratios": "1.25,2.0",
+    "query_noise": 0.1,
+    "block_size": 128,
+    "warmup": 5,
+    "iterations": 20,
+    "seed": 20260914,
+    "compressed_history_tokens": 262144,
+    "raw_context_equivalent_c4": 1048576
+  },
+  "rows": [
+    {
+      "group": 7,
+      "baseline_ms": 2.4764373898506165,
+      "reuse_ms": 0.6374109070748091,
+      "reuse_indexer_speedup": 3.8851506341732116,
+      "reuse_topk_recall": 0.8660540580749512,
+      "baseline_shape": [
+        8,
+        7,
+        2048
+      ],
+      "reuse_shape": [
+        8,
+        1,
+        2048
+      ],
+      "refine": [
+        {
+          "candidate_ratio": 1.25,
+          "candidate_count": 3072,
+          "torch_ms": 2.1045104134827852,
+          "torch_speedup": 1.1767285036866717,
+          "torch_topk_recall": 0.976998507976532,
+          "native_two_pass_ms": 1.968430238775909,
+          "native_two_pass_speedup": 1.2580772948248435,
+          "native_topk_recall": 0.976998507976532,
+          "native_breakdown_ms": {
+            "proxy_candidate_scan": 1.822336041368544,
+            "candidate_pack": 0.1236246433109045,
+            "candidate_rescore": 0.152661744505167,
+            "component_sum": 2.0986224291846156
+          },
+          "shape": [
+            8,
+            7,
+            2048
+          ],
+          "native_shape": [
+            8,
+            7,
+            2048
+          ]
+        },
+        {
+          "candidate_ratio": 2.0,
+          "candidate_count": 4096,
+          "torch_ms": 2.3283086949959397,
+          "torch_speedup": 1.0636207282878936,
+          "torch_topk_recall": 0.9963204860687256,
+          "native_two_pass_ms": 2.1430769469588995,
+          "native_two_pass_speedup": 1.155552250872171,
+          "native_topk_recall": 0.9963204860687256,
+          "native_breakdown_ms": {
+            "proxy_candidate_scan": 1.9730257103219628,
+            "candidate_pack": 0.11045613791793585,
+            "candidate_rescore": 0.13649070169776678,
+            "component_sum": 2.2199725499376655
+          },
+          "shape": [
+            8,
+            7,
+            2048
+          ],
+          "native_shape": [
+            8,
+            7,
+            2048
+          ]
+        }
+      ]
+    }
+  ],
+  "scope": "Indexer-only synthetic DSV4 shape. It does not measure top-k fidelity, DSpark acceptance, or end-to-end serving."
+}

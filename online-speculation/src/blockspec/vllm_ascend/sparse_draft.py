@@ -53,6 +53,23 @@ def _budget_blocks(
     return counts, budgets
 
 
+def compact_verifier_queries(
+    query: torch.Tensor,
+    query_start_loc: torch.Tensor,
+) -> torch.Tensor:
+    """Keep only the first and last verifier query for every request."""
+
+    if query.ndim != 3:
+        raise ValueError("query must have [tokens,heads,head_dim]")
+    if query_start_loc.ndim != 1 or query_start_loc.shape[0] < 2:
+        raise ValueError("query_start_loc must contain request boundaries")
+    boundaries = query_start_loc.to(device=query.device, dtype=torch.long)
+    first = boundaries[:-1]
+    last = boundaries[1:] - 1
+    return torch.stack(
+        (query.index_select(0, first), query.index_select(0, last)), dim=1)
+
+
 def recent_page_plan(
     block_table: torch.Tensor,
     history_lengths: list[int],
@@ -145,6 +162,158 @@ def verifier_guided_page_plan(
 
     newest_blocks = table.gather(1, (count_tensor - 1)[:, None]).to(torch.int32)
     selected.scatter_(1, (budget_tensor - 1)[:, None], newest_blocks)
+    lengths = [
+        (budget - 1) * block_size + length - (count - 1) * block_size
+        for length, count, budget in zip(history_lengths, counts, budgets)
+    ]
+    return PillarPagePlan(selected, lengths, budgets, counts)
+
+
+def vegas_page_plan(
+    verifier_queries: torch.Tensor,
+    key_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    history_lengths: list[int],
+    *,
+    budget_ratio: float,
+    min_tokens: int,
+    max_tokens: int,
+    dense_below_tokens: int,
+    page_chunk: int = 16,
+) -> PillarPagePlan:
+    """Select pages from per-layer verifier attention evidence.
+
+    VEGAS selects individual draft tokens from attention weights emitted by
+    the dense verifier. Ascend FIA does not expose those weights, so this
+    portable reference recomputes QK scores for the verifier's first and last
+    query. It scores every token in every old page, averages across verifier
+    queries and GQA heads, and ranks a page by its most important token. The
+    newest (possibly partial) page is always retained.
+
+    Unlike :func:`verifier_guided_page_plan`, callers build this plan for each
+    transformer layer. The implementation is intentionally chunked to bound
+    temporary memory; a future fused FIA implementation can produce the same
+    metadata without a second QK pass.
+    """
+
+    if key_cache.ndim != 4:
+        raise ValueError("key_cache must have [blocks,block,kv_heads,head_dim]")
+    if page_chunk <= 0:
+        raise ValueError("page_chunk must be positive")
+    batch = len(history_lengths)
+    query_heads = verifier_queries.shape[2] if verifier_queries.ndim == 4 else -1
+    kv_heads = key_cache.shape[2]
+    head_dim = key_cache.shape[3]
+    if (verifier_queries.ndim != 4
+            or verifier_queries.shape[:2] != (batch, 2)
+            or verifier_queries.shape[3] != head_dim
+            or query_heads % kv_heads):
+        raise ValueError(
+            "verifier_queries must have [batch,2,query_heads,head_dim] "
+            "with query_heads divisible by kv_heads")
+
+    block_size = key_cache.shape[1]
+    counts, budgets = _budget_blocks(
+        history_lengths, block_size, budget_ratio=budget_ratio,
+        min_tokens=min_tokens, max_tokens=max_tokens,
+        dense_below_tokens=dense_below_tokens)
+    if block_table.shape[0] != batch or block_table.shape[1] < max(counts):
+        raise ValueError("block_table does not cover every history")
+
+    selected = torch.full(
+        (batch, max(budgets)), -1, dtype=torch.int32,
+        device=block_table.device)
+    repeats = query_heads // kv_heads
+    logical_width = max(counts)
+    table = block_table[:, :logical_width].to(torch.long)
+    count_tensor = torch.tensor(counts, device=table.device)
+    old_width = max(count - 1 for count in counts)
+    old_budget_width = max(budget - 1 for budget in budgets)
+    if old_budget_width:
+        # Mean reductions are linear, so reduce first/last queries and the
+        # GQA groups before QK. This is exactly equivalent to materializing
+        # [query,page,token,kv_head,gqa_group] scores and then averaging them.
+        queries = verifier_queries.float().view(
+            batch, 2, kv_heads, repeats, head_dim).mean(dim=(1, 3))
+        page_scores = []
+        for start in range(0, old_width, page_chunk):
+            stop = min(start + page_chunk, old_width)
+            physical_blocks = table[:, start:stop].clamp_min(0)
+            keys = key_cache[physical_blocks].float()
+            token_scores = torch.einsum(
+                "bhd,bpthd->bpt", queries, keys) / kv_heads
+            scores = token_scores.amax(dim=2)
+            positions = torch.arange(start, stop, device=table.device)[None]
+            scores.masked_fill_(positions >= (count_tensor - 1)[:, None],
+                                -torch.inf)
+            page_scores.append(scores)
+        scores = torch.cat(page_scores, dim=1)
+        picked = torch.topk(
+            scores, k=old_budget_width, dim=1, sorted=False).indices
+
+    for row, (count, budget) in enumerate(zip(counts, budgets)):
+        logical_blocks = table[row, :count]
+        if budget == count:
+            selected[row, :count] = logical_blocks.to(torch.int32)
+            continue
+        old_budget = budget - 1
+        if old_budget:
+            positions = picked[row, :old_budget].sort().values
+            selected[row, :old_budget] = logical_blocks.index_select(
+                0, positions).to(torch.int32)
+        selected[row, old_budget] = logical_blocks[-1].to(torch.int32)
+
+    lengths = [
+        (budget - 1) * block_size + length - (count - 1) * block_size
+        for length, count, budget in zip(history_lengths, counts, budgets)
+    ]
+    return PillarPagePlan(selected, lengths, budgets, counts)
+
+
+def reuse_vegas_page_plan(
+    cached_old_blocks: list[torch.Tensor | None],
+    block_table: torch.Tensor,
+    history_lengths: list[int],
+    block_size: int,
+    *,
+    budget_ratio: float,
+    min_tokens: int,
+    max_tokens: int,
+    dense_below_tokens: int,
+) -> PillarPagePlan:
+    """Reuse verifier-selected old pages and advance the newest page.
+
+    Dense rows always use the current block table. Sparse rows reuse the old
+    importance pages from a previous verifier step while taking their newest
+    page from the current table, so newly committed Orthrus tokens remain
+    visible without another QK scan.
+    """
+
+    counts, budgets = _budget_blocks(
+        history_lengths, block_size, budget_ratio=budget_ratio,
+        min_tokens=min_tokens, max_tokens=max_tokens,
+        dense_below_tokens=dense_below_tokens)
+    if len(cached_old_blocks) != len(history_lengths):
+        raise ValueError("cached_old_blocks must contain one row per request")
+    if (block_table.shape[0] != len(history_lengths)
+            or block_table.shape[1] < max(counts)):
+        raise ValueError("block_table does not cover every history")
+
+    selected = torch.full(
+        (len(history_lengths), max(budgets)), -1, dtype=torch.int32,
+        device=block_table.device)
+    for row, (count, budget, cached) in enumerate(zip(
+            counts, budgets, cached_old_blocks)):
+        logical_blocks = block_table[row, :count].to(torch.long)
+        if budget == count:
+            selected[row, :count] = logical_blocks.to(torch.int32)
+            continue
+        if cached is None or cached.numel() != budget - 1:
+            raise ValueError("cached VEGAS row does not match its current budget")
+        selected[row, :budget - 1] = cached.to(
+            device=selected.device, dtype=torch.int32)
+        selected[row, budget - 1] = logical_blocks[-1].to(torch.int32)
+
     lengths = [
         (budget - 1) * block_size + length - (count - 1) * block_size
         for length, count, budget in zip(history_lengths, counts, budgets)
