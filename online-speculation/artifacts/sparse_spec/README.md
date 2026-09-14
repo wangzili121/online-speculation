@@ -15,6 +15,18 @@ The complete server archive is under:
 /data/disk/wangzili/online-speculation/artifacts/tuning/paged-segmented-formal-64-out128-m94
 ```
 
+The following two server runs are retained only as invalid-run evidence and
+must not be used for comparisons. Both host-network containers used port 8000,
+so their clients reached the same service:
+
+```text
+pillar-recent-r075-max24k-t24k-16-out1024-20260914
+pillar-recent-r100-max40k-t24k-16-out1024-20260914
+```
+
+Use the `samecard-repeat` manifests and summaries for the valid 75% versus
+dense comparison.
+
 The upstream source inspected for the port was:
 
 ```text

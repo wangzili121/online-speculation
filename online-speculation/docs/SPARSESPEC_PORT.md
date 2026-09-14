@@ -29,6 +29,23 @@ SparseSpec 和 Orthrus 都属于 self-speculation，但 draft 工作负载不同
 而且 draft attention 是针对 full history 训练的；历史过度稀疏时，block 接受率
 可能比 SparseSpec 更快下降。
 
+## Orthrus、SparseSpec 与 Vegas
+
+- [Orthrus](https://arxiv.org/abs/2605.12825) 为冻结的 AR backbone 训练额外的
+  双向 attention view，一次并行提出 32-token block。它的并行上限高，但每换
+  backbone 都需要重新训练 draft attention。
+- [SparseSpec](https://arxiv.org/abs/2512.01278) 不训练额外参数，用稀疏 attention
+  作为同模型 draft，并同时设计 unified scheduler、delayed verification 和 KV
+  offload。它更像一套完整的长推理 serving 系统。
+- [Vegas](https://arxiv.org/abs/2602.07223) 同样是 training-free self-speculation，
+  但重点是让完整 verifier 顺带产出逐 token attention importance，下一轮 draft
+  只读取 Top-K KV。它直接针对 standalone selector 不准、选择开销高的问题。
+
+三者不存在脱离模型、上下文和硬件的统一胜者。对当前已经训练好的 Orthrus，
+最有价值的组合是保留 K32 双向 draft，同时移植 Vegas 的精确 verifier-guided
+selector；之后再评估 SparseSpec 的 mixed-phase scheduler。当前实现的单层页代理
+只能验证稀疏执行路径，不能视为 Vegas 的等价复现。
+
 ## 上游核心技术与当前状态
 
 | SparseSpec 技术 | 上游做法 | Orthrus/Ascend 状态 |
@@ -132,11 +149,19 @@ FULL_AND_PIECEWISE/capture1024；基线是 `paged_segmented`。
 | B1 `paged_segmented` | 76.884 | 0.112/0.130 s | 6.76% |
 | `recent`, 25%/6K, threshold=24K | 74.790 | 0.099/0.136 s | 5.92% |
 | `recent`, 50%/12K, threshold=24K | 74.076 | 0.093/0.139 s | 6.02% |
+| B1 同卡复跑 | 77.657 | 0.105/0.128 s | 6.73% |
+| `recent`, 75%/24K, threshold=24K，同卡复跑 | 74.356 | 0.099/0.131 s | 6.23% |
 
 稀疏路径改善了约 12% 的 P50 TPOT，但总吞吐低 2.72%，P95 TPOT 反而高
 4.52%。把预算放宽至 50%/12K 后，接受率只从 5.92% 回升到 6.02%，吞吐
 反而进一步降至 74.076 tok/s。由此可以排除“只因预算过小”的解释，当前
-页级选择路径停止扫参。
+页级选择路径停止扫参。进一步去掉小 cap、保留最多 75%/24K 后，同卡吞吐仍比
+B1 低 4.25%；P50 TPOT 改善约 5.96%，但 P95 TPOT 变差约 2.00%。
+
+并行运行的 `pillar-recent-r075-max24k-t24k-16-out1024-20260914` 和
+`pillar-recent-r100-max40k-t24k-16-out1024-20260914` 不计入结果。两个容器均使用
+host network 且误用了同一端口，两个客户端实际打到同一服务，导致负载和指标
+相互污染。上表只使用随后在同一张 NPU 上顺序运行的有效对照。
 
 ## 下一步判据
 
