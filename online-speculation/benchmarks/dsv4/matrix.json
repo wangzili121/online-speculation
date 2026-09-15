@@ -1,0 +1,19 @@
+{
+  "profiles": {
+    "prod-128k": [
+      {"concurrency": 1, "input_len": 2048, "num_prompts": 32, "output_len": 256, "request_rate": "inf"},
+      {"concurrency": 4, "input_len": 2048, "num_prompts": 64, "output_len": 256, "request_rate": 4},
+      {"concurrency": 1, "input_len": 32768, "num_prompts": 16, "output_len": 256, "request_rate": 1},
+      {"concurrency": 2, "input_len": 32768, "num_prompts": 16, "output_len": 256, "request_rate": 1},
+      {"concurrency": 1, "input_len": 131072, "num_prompts": 4, "output_len": 512, "request_rate": "inf"}
+    ],
+    "prod-1m": [
+      {"concurrency": 1, "input_len": 2048, "num_prompts": 16, "output_len": 256, "request_rate": "inf"},
+      {"concurrency": 1, "input_len": 32768, "num_prompts": 8, "output_len": 256, "request_rate": "inf"},
+      {"concurrency": 1, "input_len": 131072, "num_prompts": 4, "output_len": 256, "request_rate": "inf"},
+      {"concurrency": 1, "input_len": 524288, "num_prompts": 2, "output_len": 256, "request_rate": "inf"},
+      {"concurrency": 1, "input_len": 1000000, "num_prompts": 1, "output_len": 1024, "request_rate": "inf"}
+    ]
+  },
+  "slo": ["ttft:5000", "tpot:100"]
+}

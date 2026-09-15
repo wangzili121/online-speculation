@@ -73,3 +73,19 @@ def write_manifest(path, value):
     with open(path, "x", encoding="utf-8") as handle:
         json.dump(value, handle, ensure_ascii=True, indent=2)
         handle.write("\n")
+
+
+def encode_private_json(value, **kwargs):
+    """Encode protocol or reproducibility data without publication filtering."""
+    return json.dumps(value, **kwargs)
+
+
+def write_private_json(path, value, *, exclusive=False, **kwargs):
+    """Write a local artifact that must retain paths, hashes, or token data."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = "x" if exclusive else "w"
+    options = {"ensure_ascii": True, "indent": 2, "sort_keys": True, **kwargs}
+    with path.open(mode, encoding="utf-8") as handle:
+        json.dump(value, handle, **options)
+        handle.write("\n")

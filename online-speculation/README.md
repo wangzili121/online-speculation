@@ -23,6 +23,8 @@
 - [vLLM-Ascend 基线](docs/INFRA_BASELINE.md)：单卡系统配置、正式吞吐与多层 profiling。
 - [Draft/Verify 调度实验](docs/DRAFT_VERIFY_SCHEDULING.md)：SparseSpec 风格 phase admission 的实现与负结果。
 - [SparseSpec 移植实验](docs/SPARSESPEC_PORT.md)：PillarAttn 页稀疏原型、真实 NPU A/B 与后续门槛。
+- [DeepSeek-V4 Orthrus 部署](docs/DSV4_DEPLOYMENT.md)：W8A8 主模型、SWA/C4/C128 混合历史、专属 proposer、v0.26 适配与 8 卡验收。
+- [DSV4 head v2 契约](docs/DSV4_HEAD_CONTRACT.md)：BF16 训练交换格式、独立 W8A8 校准、严格哈希与 tensor schema。
 
 ~~~bash
 python -m pip install -e '.[dev,hf]'

@@ -1,4 +1,4 @@
-"""Register the Orthrus checkpoint architecture without trusting remote code."""
+"""Register Orthrus model implementations without trusting remote code."""
 
 
 def register():
@@ -6,3 +6,7 @@ def register():
 
     ModelRegistry.register_model(
         "OrthrusLM", "blockspec.vllm_ascend.model:OrthrusForCausalLM")
+    ModelRegistry.register_model(
+        "OrthrusDSV4DraftModel",
+        "blockspec.vllm_ascend.dsv4:OrthrusDSV4DraftModel",
+    )
