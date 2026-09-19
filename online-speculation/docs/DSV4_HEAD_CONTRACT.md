@@ -42,10 +42,10 @@ tail remains target-owned compressor state and is never treated as a cache row.
 
 ## BF16 exchange artifact
 
-External training delivers a complete v2 manifest, config, safetensors index,
-and shards with `artifact_role=trained`. Its base identity and tensor schema
-must pass preflight with `--allow-bf16`. It is an exchange format, not the
-production artifact.
+The checked-in BF16 trainer, or a compatible external trainer, delivers a
+complete v2 manifest, config, safetensors index, and shards with
+`artifact_role=trained`. Its base identity and tensor schema must pass preflight
+with `--allow-bf16`. It is an exchange format, not the production artifact.
 
 ## Ascend W8A8 artifact
 

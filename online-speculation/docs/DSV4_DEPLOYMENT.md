@@ -4,14 +4,17 @@ This deployment targets `Eco-Tech/DeepSeek-V4-Flash-0731-w8a8` on one
 8 x 64 GiB Ascend A2 node with
 `quay.io/ascend/vllm-ascend:nightly-releases-v0.26.0rc`.
 
-It is an inference service. Training is external: the service consumes a
-versioned diffusion head, independently converts it to Ascend W8A8, and loads
-new weights after a restart. An initialized head proves the integration only;
-production performance is accepted only with a trained head.
+It is an inference service. Training runs in a separate BF16 process: the
+service consumes a versioned diffusion head, independently converts it to
+Ascend W8A8, and loads new weights after a restart. An initialized head proves
+the integration only; production performance is accepted only with a trained
+head. The checked-in training and continuation path is documented in
+[DSV4_TRAINING.md](DSV4_TRAINING.md).
 
-This is the fixed-head inference subset of Chang Bo's `online-speculation`,
-not its online learner. The exact algorithmic boundary and upstream PR
-comparison are recorded in [DSV4_CHANGBO_SCOPE.md](DSV4_CHANGBO_SCOPE.md).
+The vLLM path is the fixed-head inference subset of Chang Bo's
+`online-speculation`; online updates remain outside the serving process. The
+exact algorithmic boundary and upstream PR comparison are recorded in
+[DSV4_CHANGBO_SCOPE.md](DSV4_CHANGBO_SCOPE.md).
 
 ## Offline one-command deployment
 
@@ -35,9 +38,9 @@ eight-card reservation acknowledgment, paths, and free port, then pins and
 patches the runtime, starts the API service, and waits for one completion.
 The model/head paths may be changed, but both must be descendants of
 `MODELS_HOST` so the container sees them. It never pulls packages or images.
-The default `EXPECTED_IMAGE_DIGEST` is the digest verified on the online
-v0.26 test host (`sha256:0bc946247f2ae008fdf73838e597404fbbfebac4692c703eba531c05a9b5c58a`);
-an internal image with a different digest is rejected until its vLLM,
+The default `EXPECTED_IMAGE_DIGEST` is the digest verified on the online v0.26
+test host and recorded in the offline deployment script. An internal image with
+a different digest is rejected until its vLLM,
 vLLM-Ascend, CANN, driver, and patch layout are revalidated and the operator
 explicitly supplies the newly approved digest.
 It refuses an existing container rather than replacing it. Logs and the
@@ -167,8 +170,9 @@ python scripts/export_dsv4_orthrus_head.py \
 The initialized artifact records `scale_origin=target-copy-initialization` and
 cannot pass the trained-head production gate.
 
-For a trained BF16 delivery, run the project-specific ModelSlim adapter and
-seal its independently calibrated output:
+Train or continually adapt the BF16 head as described in
+[DSV4_TRAINING.md](DSV4_TRAINING.md). Then run the project-specific ModelSlim
+adapter and seal its independently calibrated output:
 
 ```bash
 ORTHRUS_MODELSLIM_ADAPTER=/workspace/tools/quantize_orthrus_dsv4_head.py \
