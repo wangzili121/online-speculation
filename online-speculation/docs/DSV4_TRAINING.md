@@ -51,6 +51,11 @@ as well as pretraining/continuation support:
 
 <https://github.com/Ascend/MindSpeed-LLM/tree/master/examples/mcore/deepseek4_flash>
 
+The official dequantizer currently preserves the source `quantization_config`
+in `config.json`. The trainer therefore checks actual safetensors headers and
+paired scale tensors instead of rejecting a checkpoint from stale metadata.
+FP8 and INT8 shards are still rejected before model allocation.
+
 The raw 284B BF16 weights alone require about 568 GB. They do not fit in
 8 x 64 GB before activations, communication buffers, and optimizer state are
 counted. The checked-in trainer can place a bounded number of layers on each

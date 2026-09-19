@@ -15,6 +15,7 @@ from blockspec.dsv4_training import (
     OrthrusDSV4TrainingModel,
     export_bf16_head,
     load_bf16_head,
+    validate_bf16_training_base,
 )
 from blockspec.parallel.fitting import TokenDataset
 
@@ -195,3 +196,52 @@ def test_bf16_exchange_round_trip(tmp_path):
     assert manifest["artifact_role"] == "trained"
     assert manifest["precision"] == "bf16"
     assert manifest["quantization"]["head_calibration_required"] is True
+
+
+def test_training_base_uses_shard_dtypes_not_stale_config_metadata(tmp_path):
+    from safetensors.torch import save_file
+
+    directory = tmp_path / "bf16"
+    directory.mkdir()
+    (directory / "config.json").write_text(
+        json.dumps({"quantization_config": {"quant_method": "fp8"}}),
+        encoding="utf-8",
+    )
+    save_file(
+        {"model.layers.0.attn.wq_a.weight": torch.ones(2, 2, dtype=torch.bfloat16)},
+        directory / "model-00001-of-00001.safetensors",
+    )
+    (directory / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "model.layers.0.attn.wq_a.weight": "model-00001-of-00001.safetensors"
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = validate_bf16_training_base(directory)
+    assert result["weight_tensors"] == 1
+    assert result["weight_dtypes"] == {"BF16": 1}
+    assert result["stale_quantization_metadata"] is True
+
+
+def test_training_base_rejects_quantized_weight_scale_pairs(tmp_path):
+    from safetensors.torch import save_file
+
+    directory = tmp_path / "int8"
+    directory.mkdir()
+    (directory / "config.json").write_text("{}", encoding="utf-8")
+    tensors = {
+        "model.layers.0.attn.wq_a.weight": torch.ones(2, 2, dtype=torch.int8),
+        "model.layers.0.attn.wq_a.weight_scale": torch.ones(2, 1),
+    }
+    shard = "model-00001-of-00001.safetensors"
+    save_file(tensors, directory / shard)
+    (directory / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {name: shard for name in tensors}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="quantized weights"):
+        validate_bf16_training_base(directory)

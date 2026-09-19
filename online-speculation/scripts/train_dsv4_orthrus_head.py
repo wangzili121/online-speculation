@@ -21,6 +21,7 @@ from blockspec.dsv4_training import (
     OrthrusDSV4TrainingModel,
     export_bf16_head,
     load_bf16_head,
+    validate_bf16_training_base,
 )
 from blockspec.parallel.fitting import TokenDataset
 from blockspec import reporting as report
@@ -36,31 +37,25 @@ def _resolve_device(name: str) -> torch.device:
     return torch.device(name)
 
 
-def _reject_quantized_training_base(path: Path) -> None:
-    config = json.loads((path / "config.json").read_text(encoding="utf-8"))
-    markers = (
-        "quant_model_description.json",
-        "quantization_config.json",
-    )
-    if config.get("quantization_config") is not None or any((path / name).exists() for name in markers):
-        raise SystemExit(
-            "the trainer needs a dequantized BF16 DSV4 checkpoint; W8A8/FP8 serving "
-            "weights do not provide the backward path"
-        )
-
-
 def _load_target(path: Path, device: torch.device, precision: str):
-    _reject_quantized_training_base(path)
     try:
-        from transformers import AutoModelForCausalLM
+        from transformers import AutoConfig, AutoModelForCausalLM
         from transformers.models.deepseek_v4.modeling_deepseek_v4 import (
             DeepseekV4ForCausalLM,
         )
     except (ImportError, ModuleNotFoundError) as error:
         raise SystemExit("DSV4 training requires Transformers with DeepseekV4ForCausalLM support") from error
+    try:
+        training_base = validate_bf16_training_base(path)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     dtype = torch.float32 if precision == "fp32" else torch.bfloat16
+    config = AutoConfig.from_pretrained(path, local_files_only=True)
+    if hasattr(config, "quantization_config"):
+        delattr(config, "quantization_config")
     target = AutoModelForCausalLM.from_pretrained(
         path,
+        config=config,
         dtype=dtype,
         attn_implementation="eager",
         local_files_only=True,
@@ -69,7 +64,7 @@ def _load_target(path: Path, device: torch.device, precision: str):
     if not isinstance(target, DeepseekV4ForCausalLM):
         raise SystemExit(f"expected DeepseekV4ForCausalLM, got {type(target).__name__}")
     target.config.use_cache = False
-    return target.to(device)
+    return target.to(device), training_base
 
 
 def _config(args) -> DSV4FitConfig:
@@ -230,7 +225,9 @@ def run(args) -> dict:
     else:
         npu_devices = []
         device = _resolve_device(args.device)
-    target = _load_target(args.bf16_base.resolve(), device, args.precision)
+    target, training_base = _load_target(
+        args.bf16_base.resolve(), device, args.precision
+    )
     base_identity = target_identity(args.bf16_base.resolve(), args.base_model_id)
     model = OrthrusDSV4TrainingModel(
         target, block_size=args.block_size, mask_token_id=args.mask_token_id
@@ -300,6 +297,7 @@ def run(args) -> dict:
         "checkpoint": str(args.output_checkpoint),
         "exported_head": None if exported is None else str(exported),
         "compress_ratios": model.compress_ratios,
+        "training_base_schema": training_base,
         "layer_devices": None if layer_devices is None else [str(value) for value in layer_devices],
         "target_frozen": all(not parameter.requires_grad for parameter in target.parameters()),
         "pass": all(not parameter.requires_grad for parameter in target.parameters()),

@@ -9,6 +9,7 @@ twins that are consumed by ``OrthrusDSV4DraftModel``.
 from __future__ import annotations
 
 import copy
+from collections import Counter
 import json
 import math
 from pathlib import Path
@@ -27,6 +28,7 @@ from .vllm_ascend.head_contract import (
     NUM_SPECULATIVE_TOKENS,
     find_weight_index,
     read_json,
+    read_safetensors_header,
     shard_manifest,
     target_identity,
     tensor_schema,
@@ -40,6 +42,72 @@ _LAYER_TYPES = {
     "compressed_sparse_attention": 4,
     "heavily_compressed_attention": 128,
 }
+
+_QUANTIZED_WEIGHT_DTYPES = frozenset(
+    {"F8_E4M3", "F8_E5M2", "I8", "U8"}
+)
+
+
+def validate_bf16_training_base(directory: Path) -> dict:
+    """Validate real shard dtypes instead of trusting stale quantization metadata."""
+    directory = Path(directory).resolve()
+    index = read_json(find_weight_index(directory))
+    weight_map = index.get("weight_map")
+    if not isinstance(weight_map, dict) or not weight_map:
+        raise ValueError("training base needs a nonempty safetensors weight map")
+    names = set(weight_map)
+    paired_scales = {
+        name
+        for name in names
+        if (
+            name.endswith(".scale")
+            and f"{name.removesuffix('.scale')}.weight" in names
+        )
+        or (
+            name.endswith((".weight_scale", ".weight_offset"))
+            and name.rsplit("_", 1)[0] in names
+        )
+    }
+    dtype_counts: Counter[str] = Counter()
+    quantized_weights = []
+    by_shard: dict[str, set[str]] = {}
+    for name, shard in weight_map.items():
+        by_shard.setdefault(shard, set()).add(name)
+    for shard, expected in sorted(by_shard.items()):
+        header = read_safetensors_header(directory / shard)
+        actual = set(header) - {"__metadata__"}
+        if actual != expected:
+            raise ValueError(
+                f"training-base index/header mismatch in {shard}: "
+                f"missing={sorted(expected - actual)[:4]}, "
+                f"extra={sorted(actual - expected)[:4]}"
+            )
+        for name in expected:
+            item = header[name]
+            if name in paired_scales:
+                continue
+            dtype = str(item.get("dtype"))
+            if not name.endswith(".weight"):
+                continue
+            dtype_counts[dtype] += 1
+            if dtype in _QUANTIZED_WEIGHT_DTYPES:
+                quantized_weights.append(name)
+    if paired_scales or quantized_weights:
+        raise ValueError(
+            "the trainer needs dequantized floating-point DSV4 shards; found "
+            f"{len(quantized_weights)} quantized weights and "
+            f"{len(paired_scales)} paired quantization scales"
+        )
+    if not dtype_counts or not set(dtype_counts).issubset({"BF16", "F16", "F32", "F64"}):
+        raise ValueError(f"unsupported DSV4 training weight dtypes: {dict(dtype_counts)}")
+    return {
+        "weight_tensors": sum(dtype_counts.values()),
+        "weight_dtypes": dict(sorted(dtype_counts.items())),
+        "shards": len(by_shard),
+        "stale_quantization_metadata": bool(
+            read_json(directory / "config.json").get("quantization_config")
+        ),
+    }
 
 
 def _normalized_layout(values) -> list[int]:
