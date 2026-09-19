@@ -83,6 +83,10 @@ def snapshot(args: argparse.Namespace) -> int:
     greedy_cases = list(config["greedy"]) + list(config.get("boundary_greedy", []))
     if args.include_long:
         greedy_cases.extend(config.get("long_greedy", []))
+    if greedy_cases:
+        # Discard one cold request so target-only and speculative snapshots
+        # compare the same post-warmup Ascend execution path.
+        _completion(args.base_url, args.model, greedy_cases[0])
     greedy = [_completion(args.base_url, args.model, case) for case in greedy_cases]
     repeated_case = dict(config["greedy"][0])
     repeated = [
@@ -107,6 +111,7 @@ def snapshot(args: argparse.Namespace) -> int:
         "schema": "dsv4-service-snapshot-v1",
         "base_url": args.base_url,
         "model": args.model,
+        "warmup_discarded": bool(greedy_cases),
         "greedy": greedy,
         "cache_repetitions": repeated,
         "sampling": sampled,
@@ -137,6 +142,16 @@ def _empirical_tv(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> fl
     )
 
 
+def _equal_length_pairs(
+    left: list[dict[str, Any]], right: list[dict[str, Any]], label: str
+):
+    if len(left) != len(right):
+        raise SystemExit(
+            f"{label} record count mismatch: baseline={len(left)}, candidate={len(right)}"
+        )
+    return zip(left, right)
+
+
 def compare(args: argparse.Namespace) -> int:
     baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
     candidate = json.loads(args.candidate.read_text(encoding="utf-8"))
@@ -144,7 +159,7 @@ def compare(args: argparse.Namespace) -> int:
         raise SystemExit("unsupported or mismatched snapshot schema")
     greedy_equal = len(baseline["greedy"]) == len(candidate["greedy"]) and all(
         _signature(left) == _signature(right)
-        for left, right in zip(baseline["greedy"], candidate["greedy"], strict=True)
+        for left, right in zip(baseline["greedy"], candidate["greedy"])
     )
     baseline_repeat = {_signature(item) for item in baseline["cache_repetitions"]}
     candidate_repeat = {_signature(item) for item in candidate["cache_repetitions"]}
@@ -152,16 +167,20 @@ def compare(args: argparse.Namespace) -> int:
     baseline_seed_replay = all(
         _signature(original) == _signature(replay)
         for original, replay in zip(
-            baseline["sampling"], baseline.get("sampling_replay", []), strict=False
+            baseline["sampling"], baseline.get("sampling_replay", [])
         )
     ) and bool(baseline.get("sampling_replay"))
     candidate_seed_replay = all(
         _signature(original) == _signature(replay)
         for original, replay in zip(
-            candidate["sampling"], candidate.get("sampling_replay", []), strict=False
+            candidate["sampling"], candidate.get("sampling_replay", [])
         )
     ) and bool(candidate.get("sampling_replay"))
-    pairs = list(zip(baseline["sampling"], candidate["sampling"], strict=True))
+    pairs = list(
+        _equal_length_pairs(
+            baseline["sampling"], candidate["sampling"], "sampling"
+        )
+    )
     fixed_seed_equal = sum(_signature(left) == _signature(right) for left, right in pairs)
     fixed_seed_rate = fixed_seed_equal / max(len(pairs), 1)
     tv = _empirical_tv(baseline["sampling"], candidate["sampling"])

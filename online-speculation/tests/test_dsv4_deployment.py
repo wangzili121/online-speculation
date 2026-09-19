@@ -13,19 +13,13 @@ ROOT = Path(__file__).resolve().parents[1]
 BASE_SUFFIXES = (
     "attn_sink",
     "wq_a.weight",
-    "wq_a.weight_scale",
-    "wq_a.weight_offset",
     "q_norm.weight",
     "wq_b.weight",
     "wq_b.weight_scale",
     "wq_b.weight_offset",
     "wkv.weight",
-    "wkv.weight_scale",
-    "wkv.weight_offset",
     "kv_norm.weight",
     "wo_a.weight",
-    "wo_a.weight_scale",
-    "wo_a.weight_offset",
     "wo_b.weight",
     "wo_b.weight_scale",
     "wo_b.weight_offset",
@@ -117,14 +111,16 @@ def _fake_target(path: Path):
         suffixes = BASE_SUFFIXES + (C4_SUFFIXES if ratio == 4 else ())
         for suffix in suffixes:
             name = f"model.layers.{layer}.self_attn.{suffix}"
-            is_int8 = suffix.endswith(".weight") and not suffix.endswith(
-                ("q_norm.weight", "kv_norm.weight", "weights_proj.weight")
+            is_int8 = suffix in (
+                "wq_b.weight",
+                "wo_b.weight",
+                "indexer.wq_b.weight",
             )
             tensors[name] = torch.ones(
                 2, dtype=torch.int8 if is_int8 else torch.float32
             )
-            if is_int8:
-                quant[name] = "W8A8_DYNAMIC"
+            if suffix.endswith(".weight"):
+                quant[name] = "W8A8_DYNAMIC" if is_int8 else "FLOAT"
         compressor = f"model.layers.{layer}.self_attn.compressor.wkv.weight"
         tensors[compressor] = torch.ones(2)
         quant[compressor] = "FLOAT"
@@ -263,6 +259,11 @@ def test_v026_overlay_contains_dedicated_method_and_guards():
     assert '"architectures": ["OrthrusDSV4DraftModel"]' in source
     assert 'self.method == \\"orthrus\\" and sampling_metadata is not None' in source
     assert 'self._get_spec_decode_draft_probs(' in source
+    assert 'input_ids=self.input_ids[:num_tokens]' in source
+    assert 'input_ids=self.input_ids[:num_input_tokens]' in source
+    assert 'input_ids=self.input_ids[:num_query_total]' in source
+    assert "if layer_name in self.shared_kv_cache_layers" in source
+    assert "spec_layer_name = self.shared_kv_cache_layers.get(" in source
     assert "validate_vllm_runtime(roots[0])" in source
     assert callable(module.validate_vllm_runtime)
 
@@ -308,6 +309,9 @@ def test_dsv4_orthrus_rejects_unimplemented_context_parallel():
     source = (ROOT / "src/blockspec/vllm_ascend/dsv4.py").read_text()
     assert 'additional_config.get("enable_dsa_cp")' in source
     assert 'additional_config.get("enable_flashcomm1")' in source
+    assert "self.vllm_config = vllm_config" in source
+    assert "self.compilation_config = vllm_config.compilation_config" in source
+    assert "self.do_not_compile = True" in source
     for script in (
         "scripts/serve_dsv4_target.sh",
         "scripts/serve_dsv4_orthrus.sh",
@@ -326,6 +330,7 @@ def test_dsv4_orthrus_launcher_uses_lossless_sampling_defaults():
     assert '"parallel_drafting": True' in launch
     smoke = (ROOT / "scripts/smoke_construct_dsv4_orthrus.py").read_text()
     assert '"draft_sample_method": "greedy"' in smoke
+    assert '"compile_wrapper_probe": "eager-forward-reached"' in smoke
     target = (ROOT / "scripts/serve_dsv4_target.sh").read_text()
     dspark = (ROOT / "scripts/serve_dsv4_dspark.sh").read_text()
     assert 'TARGET_EXECUTION_MODE:-eager' in target

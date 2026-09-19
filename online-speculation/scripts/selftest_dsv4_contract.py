@@ -34,19 +34,13 @@ from blockspec.vllm_ascend.artifacts import encode_private_json  # noqa: E402
 BASE_SUFFIXES = (
     "attn_sink",
     "wq_a.weight",
-    "wq_a.weight_scale",
-    "wq_a.weight_offset",
     "q_norm.weight",
     "wq_b.weight",
     "wq_b.weight_scale",
     "wq_b.weight_offset",
     "wkv.weight",
-    "wkv.weight_scale",
-    "wkv.weight_offset",
     "kv_norm.weight",
     "wo_a.weight",
-    "wo_a.weight_scale",
-    "wo_a.weight_offset",
     "wo_b.weight",
     "wo_b.weight_scale",
     "wo_b.weight_offset",
@@ -76,11 +70,17 @@ def _write_safetensors(path: Path, tensors: dict[str, str]) -> None:
 
 
 def _tensor_dtype(suffix: str) -> str:
-    if suffix.endswith(".weight") and not suffix.endswith(
-        ("q_norm.weight", "kv_norm.weight", "weights_proj.weight")
-    ):
+    if suffix in ("wq_b.weight", "wo_b.weight", "indexer.wq_b.weight"):
         return "I8"
     return "F32"
+
+
+def _quant_mode(suffix: str) -> str | None:
+    if not suffix.endswith(".weight"):
+        return None
+    if suffix in ("wq_b.weight", "wo_b.weight", "indexer.wq_b.weight"):
+        return "W8A8_DYNAMIC"
+    return "FLOAT"
 
 
 def _run(command: list[str], expected: int = 0) -> subprocess.CompletedProcess[str]:
@@ -126,14 +126,13 @@ def main() -> int:
                 dtype = _tensor_dtype(suffix)
                 target_tensors[source] = dtype
                 head_tensors[canonical] = dtype
-                if suffix.endswith(".weight") and not suffix.endswith(
-                    ("q_norm.weight", "kv_norm.weight", "weights_proj.weight")
-                ):
-                    target_quant[source] = "W8A8_DYNAMIC"
-                    head_quant[runtime_tensor_name(canonical)] = "W8A8_DYNAMIC"
+                mode = _quant_mode(suffix)
+                if mode is not None:
+                    target_quant[source] = mode
+                    head_quant[runtime_tensor_name(canonical)] = mode
             compressor = f"model.layers.{layer}.self_attn.compressor.wkv.weight"
-            target_tensors[compressor] = "I8"
-            target_quant[compressor] = "W8A8_DYNAMIC"
+            target_tensors[compressor] = "F32"
+            target_quant[compressor] = "FLOAT"
 
         target_shard = "quant_model_weights-00001-of-00001.safetensors"
         _write_safetensors(target / target_shard, target_tensors)
@@ -236,11 +235,11 @@ def main() -> int:
 
         quant_path = head / "quant_model_description.json"
         broken_quant = dict(head_quant)
-        broken_quant["orthrus.layers.0.self_attn.wq_a.weight"] = "FLOAT"
+        broken_quant["orthrus.layers.0.self_attn.wq_b.weight"] = "FLOAT"
         write_json(quant_path, broken_quant)
         wrong_quant = _run(preflight, expected=1)
-        if "required Orthrus projections are not W8A8" not in wrong_quant.stderr:
-            raise RuntimeError("non-W8A8 projection bypassed the quantization gate")
+        if "projection quantization mode mismatch" not in wrong_quant.stderr:
+            raise RuntimeError("incorrect projection mode bypassed the quantization gate")
         write_json(quant_path, head_quant)
 
         shard_path = head / head_shard

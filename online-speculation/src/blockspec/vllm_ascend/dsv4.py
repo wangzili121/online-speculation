@@ -741,6 +741,13 @@ class OrthrusDSV4DraftModel(DSparkDeepseekV4ForCausalLM):
     def __init__(self, *, vllm_config, prefix: str = "") -> None:
         del prefix
         nn.Module.__init__(self)
+        # The decorated DSpark parent installs its compile wrapper in __call__,
+        # but invoking its constructor would allocate a second draft backbone.
+        # Orthrus is intentionally eager, so initialize the inherited wrapper
+        # contract without constructing the parent model.
+        self.vllm_config = vllm_config
+        self.compilation_config = vllm_config.compilation_config
+        self.do_not_compile = True
         if get_pp_group().world_size != 1:
             raise NotImplementedError("DSV4 Orthrus currently requires PP=1")
         additional_config = getattr(vllm_config, "additional_config", None) or {}

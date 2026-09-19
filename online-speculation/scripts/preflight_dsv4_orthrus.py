@@ -198,52 +198,54 @@ def main() -> int:
             fail(f"head quant metadata is missing {missing_quant[:8]}")
         if missing_scales:
             fail(f"W8A8 head tensors are missing scales/offsets: {missing_scales[:8]}")
-        required_w8a8 = []
+        expected_projection_modes = {
+            "wq_a": "FLOAT",
+            "wq_b": "W8A8",
+            "wkv": "FLOAT",
+            "wo_a": "FLOAT",
+            "wo_b": "W8A8",
+        }
+        projection_mode_mismatches = []
+        projection_dtype_mismatches = []
         for layer, ratio in enumerate(ratios):
-            # Eco-Tech's ModelSlim artifact intentionally leaves the split O
-            # projections in floating point. Q/KV and the C4 indexer query are
-            # the projections that must use the Ascend W8A8 path.
-            roots = ["wq_a", "wq_b", "wkv"]
+            modes = dict(expected_projection_modes)
             if ratio == 4:
-                roots.append("indexer.wq_b")
-            required_w8a8.extend(
-                f"layers.{layer}.attn.{root}.weight" for root in roots
-            )
-        wrong_w8a8 = []
-        wrong_weight_dtype = []
-        for name in required_w8a8:
-            runtime_name = runtime_tensor_name(name)
-            if not str(head_quant.get(runtime_name, "")).startswith("W8A8"):
-                wrong_w8a8.append(runtime_name)
-            elif schema_by_name.get(name, {}).get("dtype") != "I8":
-                wrong_weight_dtype.append(name)
-        if wrong_w8a8:
-            fail(f"required Orthrus projections are not W8A8: {wrong_w8a8[:8]}")
-        if wrong_weight_dtype:
-            fail(f"W8A8 projection weights are not I8: {wrong_weight_dtype[:8]}")
-        wrong_output_quant = []
-        wrong_output_dtype = []
-        for layer in range(len(ratios)):
-            for root in ("wo_a", "wo_b"):
+                modes.update(
+                    {"indexer.wq_b": "W8A8", "indexer.weights_proj": "FLOAT"}
+                )
+            for root, expected_mode in modes.items():
                 name = f"layers.{layer}.attn.{root}.weight"
                 runtime_name = runtime_tensor_name(name)
                 mode = str(head_quant.get(runtime_name, ""))
                 dtype = schema_by_name.get(name, {}).get("dtype")
-                if mode.startswith("W8A8"):
+                if expected_mode == "W8A8":
+                    if not mode.startswith("W8A8"):
+                        projection_mode_mismatches.append(
+                            f"{runtime_name}={mode or 'missing'} (expected W8A8)"
+                        )
                     if dtype != "I8":
-                        wrong_output_dtype.append(name)
-                elif mode == "FLOAT":
-                    if dtype not in {"BF16", "F16", "F32"}:
-                        wrong_output_dtype.append(name)
+                        projection_dtype_mismatches.append(
+                            f"{name}={dtype} (expected I8)"
+                        )
                 else:
-                    wrong_output_quant.append(runtime_name)
-        if wrong_output_quant:
+                    if mode != "FLOAT":
+                        projection_mode_mismatches.append(
+                            f"{runtime_name}={mode or 'missing'} (expected FLOAT)"
+                        )
+                    if dtype not in {"BF16", "F16", "F32"}:
+                        projection_dtype_mismatches.append(
+                            f"{name}={dtype} (expected floating point)"
+                        )
+        if projection_mode_mismatches:
             fail(
-                "Orthrus output projections have unsupported quantization: "
-                f"{wrong_output_quant[:8]}"
+                "Orthrus projection quantization mode mismatch: "
+                f"{projection_mode_mismatches[:8]}"
             )
-        if wrong_output_dtype:
-            fail(f"Orthrus output projection dtype mismatch: {wrong_output_dtype[:8]}")
+        if projection_dtype_mismatches:
+            fail(
+                "Orthrus projection dtype mismatch: "
+                f"{projection_dtype_mismatches[:8]}"
+            )
         source_sha = quant.get("source_description_sha256")
         target_quant = model / "quant_model_description.json"
         if not target_quant.is_file():

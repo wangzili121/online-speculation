@@ -99,6 +99,19 @@ def main() -> int:
         if ".self_attn." in name
     ]
 
+    # Exercise the inherited compile wrapper without requiring a target model.
+    # A correctly initialized eager wrapper reaches the shared-backbone guard.
+    try:
+        model(
+            input_ids=torch.zeros(1, dtype=torch.int64, device=f"npu:{local_rank}"),
+            positions=torch.zeros(1, dtype=torch.int64, device=f"npu:{local_rank}"),
+        )
+    except RuntimeError as error:
+        if "not bound to the live DSV4 target" not in str(error):
+            raise
+    else:
+        raise RuntimeError("unbound Orthrus draft unexpectedly completed a forward pass")
+
     loaded = None
     if tp == 1 and args.load_format == "dummy":
         def checkpoint_named_parameters():
@@ -138,6 +151,7 @@ def main() -> int:
             name.startswith("orthrus.layers.")
             for name in vllm_config.quant_config.quant_description
         ),
+        "compile_wrapper_probe": "eager-forward-reached",
         "device": str(parameters[0][1].device),
     }
     if rank == 0:

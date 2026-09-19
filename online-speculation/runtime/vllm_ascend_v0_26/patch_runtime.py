@@ -245,6 +245,43 @@ def patch_ascend(root: Path, dry_run: bool) -> list[str]:
             dry_run,
         )
     )
+    changes.append(
+        replace_once(
+            runner,
+            "            for layer_name in group_kv_cache_spec.layer_names:\n"
+            "                if isinstance(group_spec, UniformTypeKVCacheSpecs):\n"
+            "                    layer_kv_cache_spec[layer_name] = group_spec.kv_cache_specs[layer_name]\n"
+            "                else:\n"
+            "                    layer_kv_cache_spec[layer_name] = group_spec\n"
+            "                if static_forward_context is not None:\n"
+            "                    attn_layer = static_forward_context.get(layer_name)\n",
+            "            for layer_name in group_kv_cache_spec.layer_names:\n"
+            "                spec_layer_name = self.shared_kv_cache_layers.get(\n"
+            "                    layer_name, layer_name\n"
+            "                )\n"
+            "                if isinstance(group_spec, UniformTypeKVCacheSpecs):\n"
+            "                    layer_kv_cache_spec[layer_name] = group_spec.kv_cache_specs[\n"
+            "                        spec_layer_name\n"
+            "                    ]\n"
+            "                else:\n"
+            "                    layer_kv_cache_spec[layer_name] = group_spec\n"
+            "                if static_forward_context is not None:\n"
+            "                    attn_layer = static_forward_context.get(spec_layer_name)\n",
+            dry_run,
+        )
+    )
+    changes.append(
+        replace_once(
+            runner,
+            "            for layer_name in kv_cache_group_spec.layer_names:\n"
+            "                layer_kv_cache_spec = kv_cache_group_spec.kv_cache_spec\n",
+            "            for layer_name in kv_cache_group_spec.layer_names:\n"
+            "                if layer_name in self.shared_kv_cache_layers:\n"
+            "                    continue\n"
+            "                layer_kv_cache_spec = kv_cache_group_spec.kv_cache_spec\n",
+            dry_run,
+        )
+    )
 
     proposer = root / "vllm_ascend/spec_decode/llm_base_proposer.py"
     bind = (
@@ -395,6 +432,44 @@ def patch_ascend(root: Path, dry_run: bool) -> list[str]:
             dry_run,
         )
     )
+    changes.append(
+        replace_once(
+            proposer,
+            "            draft_attn_metadatas=multi_steps_attn_metadata,\n"
+            "            eplb_heat_collection_status=(\n"
+            "                self.runner.eplb_heat_collection_status if self.runner.dynamic_eplb else False\n"
+            "            ),\n"
+            "        ):\n"
+            "            # Reset MOE layer index before first model call\n",
+            "            draft_attn_metadatas=multi_steps_attn_metadata,\n"
+            "            input_ids=self.input_ids[:num_tokens],\n"
+            "            eplb_heat_collection_status=(\n"
+            "                self.runner.eplb_heat_collection_status if self.runner.dynamic_eplb else False\n"
+            "            ),\n"
+            "        ):\n"
+            "            # Reset MOE layer index before first model call\n",
+            dry_run,
+        )
+    )
+    changes.append(
+        replace_once(
+            proposer,
+            "            draft_attn_metadatas=multi_steps_attn_metadata,\n"
+            "            eplb_heat_collection_status=(\n"
+            "                self.runner.eplb_heat_collection_status if self.runner.dynamic_eplb else False\n"
+            "            ),\n"
+            "        ):\n"
+            "            # Reset MOE layer index for forward pass\n",
+            "            draft_attn_metadatas=multi_steps_attn_metadata,\n"
+            "            input_ids=self.input_ids[:num_input_tokens],\n"
+            "            eplb_heat_collection_status=(\n"
+            "                self.runner.eplb_heat_collection_status if self.runner.dynamic_eplb else False\n"
+            "            ),\n"
+            "        ):\n"
+            "            # Reset MOE layer index for forward pass\n",
+            dry_run,
+        )
+    )
 
     dspark = root / "vllm_ascend/spec_decode/dspark_proposer.py"
     changes.append(
@@ -406,6 +481,21 @@ def patch_ascend(root: Path, dry_run: bool) -> list[str]:
             '            and vllm_config.speculative_config.draft_sample_method == "probabilistic"\n'
             '        ):\n',
             ("DynamicSpecScheduler",),
+            dry_run,
+        )
+    )
+    changes.append(
+        replace_once(
+            dspark,
+            "            is_draft_model=True,\n"
+            "            draft_attn_metadatas=[],\n"
+            "        ):\n"
+            "            if is_profile:\n",
+            "            is_draft_model=True,\n"
+            "            draft_attn_metadatas=[],\n"
+            "            input_ids=self.input_ids[:num_query_total],\n"
+            "        ):\n"
+            "            if is_profile:\n",
             dry_run,
         )
     )
