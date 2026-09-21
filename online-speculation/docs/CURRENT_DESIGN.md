@@ -4,7 +4,7 @@
 
 ## 1. 我们要解决什么问题
 
-普通大模型一次只生成一枚 token。常博的算法增加一个起草分支：
+普通大模型一次只生成一枚 token。`online-speculation` 增加一个起草分支：
 
 ```text
 起草 head 一次猜 31 枚 token
@@ -36,7 +36,7 @@ MoE/MLP、LM head 和历史 KV 都复用主模型。
 输入 token 历史 -> 返回候选 token
 ```
 
-它适合 n-gram、检索和规则算法。常博的 proposer 却是一个真正的 NPU 神经网络，还需要
+它适合 n-gram、检索和规则算法。这里的 proposer 却是一个真正的 NPU 神经网络，还需要
 模型加载、8 卡 TP、attention metadata、KV cache 和显存规划。
 
 ## 3. vLLM-Ascend 缺少什么，我们增加了什么
@@ -48,7 +48,10 @@ MoE/MLP、LM head 和历史 KV 都复用主模型。
 
 **解决：**保留上游已经创建的 custom proposer，并在 NPU decode 路径调用它。
 
-这一步只解决普通 token-only custom class，还不能运行神经网络 head。
+这一步已经由此前投机执行接入使用的
+[token-only custom class PR](https://github.com/wangzili121/vllm-ascend/commit/2e9d3209ad590b1300771c39d849ce1b1625ba22)
+完成。当前分支的 `a09abd67` 是同一改动在更新 vLLM-Ascend main 上的重放，不属于本次
+model-aware 扩展的新功能。它只解决普通 token-only custom class，还不能运行神经网络 head。
 
 ### 问题二：插件拿不到 NPU 运行环境
 
@@ -137,7 +140,7 @@ cache 所有权不同。
 | --- | --- | --- |
 | vLLM | 调度、验证、rejection sampling、OpenAI API | 不修改 |
 | vLLM-Ascend | model-aware custom proposer 通用生命周期 | 小型通用改动 |
-| `online-speculation` | 常博算法和 DSV4 专属实现 | 独立插件 |
+| `online-speculation` | Orthrus/online-speculation 和 DSV4 专属实现 | 独立插件 |
 
 因此不是给 vLLM-Ascend 增加一个专属 `orthrus` method，而是补一个其他神经网络 proposer
 也能复用的“模型型插件插座”。
