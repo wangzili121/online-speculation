@@ -15,7 +15,6 @@ import torch
 from .accelerator import autocast, rng_state, set_rng_state, synchronize
 from .dsv4_training import OrthrusDSV4TrainingModel
 from .parallel.fitting import BatchStream, TokenDataset
-from .parallel.training import sample_anchors
 
 
 @dataclass(frozen=True)
@@ -91,6 +90,16 @@ def _head_signature(model: OrthrusDSV4TrainingModel) -> str:
     return digest.hexdigest()
 
 
+def _sample_candidate_anchors(
+    candidates: list[torch.Tensor], count: int, generator: torch.Generator
+) -> torch.Tensor:
+    rows = []
+    for valid in candidates:
+        indices = torch.randint(len(valid), (count,), generator=generator)
+        rows.append(valid[indices])
+    return torch.stack(rows)
+
+
 class DSV4Trainer:
     """Head-only optimizer with exact interruption boundaries and fresh-data continuation."""
 
@@ -103,6 +112,8 @@ class DSV4Trainer:
     ):
         if data.sequence_length != config.sequence_length:
             raise ValueError("dataset and training sequence lengths differ")
+        if data.vocab_size != model.config.vocab_size:
+            raise ValueError("dataset and DSV4 vocabulary sizes differ")
         if config.sequence_length < model.block_size:
             raise ValueError("training sequence must contain a complete diffusion block")
         self.model = model.train()
@@ -177,12 +188,13 @@ class DSV4Trainer:
             token_losses, indexer_losses = [], []
             try:
                 for _ in range(self.config.accumulate):
-                    tokens = self.stream.batch(self.config.batch_size)
-                    anchors = sample_anchors(
-                        tokens,
-                        self.model.block_size,
+                    tokens, candidates = self.stream.batch_with_anchor_candidates(
+                        self.config.batch_size, self.model.block_size
+                    )
+                    anchors = _sample_candidate_anchors(
+                        candidates,
                         self.config.anchors_per_sequence,
-                        generator=self.anchors_rng,
+                        self.anchors_rng,
                     )
                     tokens = tokens.to(self.model.input_device)
                     anchors = anchors.to(self.model.input_device)
@@ -217,6 +229,47 @@ class DSV4Trainer:
             if progress is not None:
                 progress(record)
         return records
+
+    @torch.no_grad()
+    def evaluate(self, data: TokenDataset, batches: int = 4) -> dict[str, float]:
+        if (
+            data.sequence_length != self.config.sequence_length
+            or data.vocab_size != self.data.vocab_size
+            or type(batches) is not int
+            or batches < 1
+        ):
+            raise ValueError("validation data and positive batch count must match training")
+        stream = BatchStream(data, self.config.seed + 2)
+        anchors_rng = torch.Generator().manual_seed(self.config.seed + 3)
+        token_losses, indexer_losses, training = [], [], self.model.training
+        self.model.eval()
+        try:
+            for _ in range(batches):
+                tokens, candidates = stream.batch_with_anchor_candidates(
+                    self.config.batch_size, self.model.block_size
+                )
+                anchors = _sample_candidate_anchors(
+                    candidates, self.config.anchors_per_sequence, anchors_rng
+                )
+                with self._autocast():
+                    loss, metrics = self.model.loss(
+                        tokens.to(self.model.input_device),
+                        anchors.to(self.model.input_device),
+                        objective=self.config.objective,
+                        chunk_rows=self.config.chunk_rows,
+                        indexer_weight=self.config.indexer_weight,
+                    )
+                token_losses.append(float(metrics["token_loss"]))
+                indexer_losses.append(float(metrics["indexer_loss"]))
+        finally:
+            self.model.train(training)
+        token_loss = sum(token_losses) / len(token_losses)
+        indexer_loss = sum(indexer_losses) / len(indexer_losses)
+        return {
+            "loss": token_loss + self.config.indexer_weight * indexer_loss,
+            "token_loss": token_loss,
+            "indexer_loss": indexer_loss,
+        }
 
     def state_dict(self) -> dict:
         return {

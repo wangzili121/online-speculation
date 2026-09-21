@@ -705,13 +705,17 @@ class OrthrusDSV4TrainingModel(nn.Module):
 
         for start in range(0, count, chunk_rows):
             stop = min(start + chunk_rows, count)
-            term = checkpoint(
-                projected_loss,
+            arguments = (
                 student_hidden[start:stop],
                 teacher_hidden[start:stop],
                 labels[start:stop],
-                use_reentrant=False,
             )
+            if student_hidden.device.type == "cpu" or not torch.is_grad_enabled():
+                term = projected_loss(*arguments)
+            else:
+                term = checkpoint(
+                    projected_loss, *arguments, use_reentrant=False
+                )
             terms.append(term * ((stop - start) / count))
         token_loss = torch.stack(terms).sum()
         total = token_loss + indexer_loss * indexer_weight

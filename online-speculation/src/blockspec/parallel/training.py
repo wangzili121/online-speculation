@@ -93,8 +93,11 @@ def distillation_loss(model, tokens, anchors, *, block_size=None, chunk_rows=32,
     terms = []
     for start in range(0, count, chunk_rows):
         stop = min(count, start + chunk_rows)
-        term = checkpoint(chunk_loss, student_hidden[start:stop], teacher_hidden[start:stop],
-                          use_reentrant=False)
+        arguments = (student_hidden[start:stop], teacher_hidden[start:stop])
+        if student_hidden.device.type == "cpu" or not torch.is_grad_enabled():
+            term = chunk_loss(*arguments)
+        else:
+            term = checkpoint(chunk_loss, *arguments, use_reentrant=False)
         terms.append(term * ((stop - start) / count))
     return torch.stack(terms).sum()
 

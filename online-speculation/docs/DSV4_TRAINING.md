@@ -1,161 +1,170 @@
 # DSV4 Orthrus head training
 
-## Status and boundary
+## The short version
 
-The DSV4 inference path and the training path are intentionally separate.
+Serving and training use two views of the same DSV4 model:
 
-- vLLM-Ascend serves the W8A8 target and a calibrated W8A8 Orthrus head.
-- The trainer loads a differentiable BF16 DSV4 target, freezes every target
-  parameter, and updates only the tensors in `orthrus-dsv4-head-v2`.
-- `resume` restores the exact optimizer, RNG, data cursor, and update number on
-  the same dataset and refuses a different BF16 base identity.
-- `continue` starts a fresh schedule from an earlier head using newly completed
-  production requests. This is asynchronous online continuation, not autograd
-  inside the latency-sensitive vLLM process.
+1. vLLM-Ascend serves `Eco-Tech/DeepSeek-V4-Flash-0731-w8a8`.
+2. Training loads a dequantized BF16 DSV4, freezes its parameters, and updates
+   only the Orthrus diffusion head.
+3. The trained BF16 head is calibrated separately to W8A8 and then replaces the
+   head used by the service.
 
-The generic small-model implementation in `parallel/online.py` can reuse live
-verifier rows and replay only a suffix. The DSV4 implementation currently
-recomputes the frozen teacher on the BF16 sidecar. It does not yet capture and
-replay DSV4 verifier boundaries directly from vLLM.
+`resume` restores the exact optimizer, RNG, data cursor, and step. `continue`
+loads an earlier head on new completed traffic, but deliberately starts a fresh
+optimizer and schedule. Continuation runs beside the service, never inside the
+latency-sensitive vLLM process.
+
+## Why not train the W8A8 checkpoint directly?
+
+W8A8 in ModelSlim and vLLM-Ascend is an inference/export format. Its kernels do
+not expose the input-gradient path needed to backpropagate through the frozen
+shared mHC, MoE/MLP, norm, and LM head. "Frozen" means their parameter gradients
+are disabled; gradients still have to pass through their operations to reach an
+earlier diffusion-head layer.
+
+Quantization-aware training does not normally update integer tensors directly.
+PyTorch QAT keeps floating-point weights and activations, inserts fake-quantize
+operations, and approximates rounding gradients with a straight-through
+estimator. Ascend AMCT likewise documents QAT starting from a float network.
+
+For DSV4 specifically, MindSpeed-LLM says the released mixed-precision weights
+must be dequantized to BF16 before training. ModelSlim and vLLM-Ascend document
+W8A8 as quantization and inference deployment paths, not a differentiable DSV4
+training backend.
+
+References:
+
+- <https://docs.pytorch.org/blog/quantization-aware-training/>
+- <https://github.com/Ascend/MindSpeed-LLM/blob/master/examples/mcore/deepseek4_flash/README.md>
+- <https://github.com/Ascend/msmodelslim/blob/master/docs/en/feature_guide/quick_quantization_v1/usage.md>
+- <https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/user_guide/feature_guide/quantization.md>
+- <https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/920beta1/devaids/amct/atlasamct_16_0058.html>
 
 ## What is trained
 
-`dsv4_training.py` implements the complete hybrid layout used by inference:
+The trainer covers the full DSV4 hybrid layout:
 
-- SWA reads the frozen target's clean sliding history.
-- C4 reads the target compressor output and trains a diffusion-side query and
-  indexer while keeping the target compressor frozen.
-- C128 reads all complete target compressed-history entries.
-- Every block contains one anchor and 31 mask positions. Local block attention
-  is bidirectional, while clean history is read-only.
-- The shared embedding, mHC, MoE/MLP, final norm, and LM head remain frozen but
-  stay in the differentiable path from the head to the loss.
-- The default objective is full-vocabulary forward KL. Cross entropy is also
-  available for comparison. C4 indexer scores receive a separate teacher loss.
+- SWA, C4, and C128 each have a trainable diffusion-attention twin.
+- C4 also trains its diffusion-side query/indexer projections.
+- K is 32: one anchor token plus 31 predicted positions.
+- The target embedding, mHC, MoE/MLP, target compressor, final norm, and LM head
+  are shared and frozen.
+- The default loss is full-vocabulary forward KL plus the C4 indexer loss.
 
-The exporter writes one BF16 shard per layer using the exact v2 tensor names.
-The result is marked `artifact_role=trained` and still requires independent
-ModelSlim calibration before serving.
+The exported artifact is `orthrus-dsv4-head-v2` in BF16 exchange format. It must
+still pass independent ModelSlim calibration before W8A8 serving.
 
-## Required weights
+## CPU offload
 
-Do not train from either of these serving artifacts:
+Raw 284B BF16 weights occupy about 568 GB before activations and runtime state.
+The checked-in CPU-offload path loads the full BF16 base in host RAM, puts a
+bounded number of layers on each NPU, leaves the remaining layers on CPU, and
+moves activations through them sequentially. This is very slow but is suitable
+for proving the complete forward/backward/checkpoint/export path when eight
+NPUs cannot hold the BF16 base.
 
-- `Eco-Tech/DeepSeek-V4-Flash-0731-w8a8`
-- the official mixed FP8/FP4 inference checkpoint
+It still requires enough host RAM. It is not the final high-throughput topology;
+formal training will need a MindSpeed/Megatron sharded adapter or more nodes.
 
-Quantized inference kernels do not provide the backward path needed through
-the frozen shared backbone. Prepare a dequantized BF16 checkpoint first. The
-MindSpeed-LLM DeepSeek-V4 recipe provides FP8-to-BF16 and HF-to-MCore conversion
-as well as pretraining/continuation support:
-
-<https://github.com/Ascend/MindSpeed-LLM/tree/master/examples/mcore/deepseek4_flash>
-
-The official dequantizer currently preserves the source `quantization_config`
-in `config.json`. The trainer therefore checks actual safetensors headers and
-paired scale tensors instead of rejecting a checkpoint from stale metadata.
-FP8 and INT8 shards are still rejected before model allocation.
-
-The raw 284B BF16 weights alone require about 568 GB. They do not fit in
-8 x 64 GB before activations, communication buffers, and optimizer state are
-counted. The checked-in trainer can place a bounded number of layers on each
-NPU and keep the rest on host memory. This is useful for correctness and slow
-short-run validation on a host with enough RAM, but it is not a production
-throughput solution. Production training needs a MindSpeed/Megatron sharded
-adapter, more nodes, or deliberate CPU/NVMe offload engineering.
-
-## Architecture smoke test
-
-The smoke test creates a tiny three-layer DSV4 with one SWA, one C4, and one
-C128 layer. It runs a real optimizer step and verifies that the head changes,
-the target stays bitwise unchanged, and no target gradients remain.
+The architecture smoke test does not need the full checkpoint:
 
 ```bash
-python scripts/train_dsv4_orthrus_head.py smoke \
-  --device npu:0 \
-  --precision bf16
-```
-
-The same smoke test can cross two or more NPUs and exercise differentiable
-layer transfers:
-
-```bash
-python scripts/train_dsv4_orthrus_head.py smoke \
+python3 scripts/train_dsv4_orthrus_head.py smoke \
   --npu-devices 0,1 \
   --precision bf16
 ```
 
-For a memory-constrained full-model validation, load the BF16 target in host
-memory and move only a few consecutive head/backbone layers to every NPU:
+## Offline paper data
+
+The paper uses the Nemotron post-training dataset with a 1:1:1 chat/math/code
+mixture, K=32, sequence length 2048, 256 anchors per sequence, two epochs,
+learning rate `2e-4`, 5% warmup, cosine decay, and global batch 128.
+
+Prepare a revision-pinned local snapshot as follows:
 
 ```bash
-python scripts/train_dsv4_orthrus_head.py train \
-  --bf16-base /data/disk/models/DeepSeek-V4-Flash-0731-bf16 \
-  --data /data/disk/data/orthrus/train.tokens.jsonl \
-  --mask-token-id 128799 \
-  --npu-devices 0,1,2,3,4,5,6,7 \
-  --layers-per-npu 1 \
-  --steps 1 \
-  --output-checkpoint /data/disk/checkpoints/orthrus-dsv4-offload-smoke.pt
+python3 scripts/prepare_dsv4_orthrus_data.py paper \
+  --source /data/disk/data/Nemotron-Post-Training-Dataset-v2 \
+  --tokenizer /data/disk/models/Eco-Tech/DeepSeek-V4-Flash-0731-w8a8 \
+  --tokenizer-mode deepseek_v4 \
+  --examples-per-domain 200000 \
+  --offline \
+  --output /data/disk/data/orthrus-dsv4-paper
 ```
 
-This mode still needs enough host RAM for the complete BF16 base and moves
-activations between devices one layer at a time. Treat it as a deployment gate,
-not as the final training topology. Increase `--layers-per-npu` only after
-measuring target-layer, head-gradient, optimizer-state, and activation memory
-on the exact checkpoint.
+The current public dataset may contain fewer than 200,000 unique code rows.
+The script refuses silent oversampling: lower `--examples-per-domain` or pass
+`--allow-repeat` explicitly. It writes exact source counts, fingerprints,
+rejections, split metadata, and SHA256 values to `manifest.json`.
 
-## Initial training
+DSV4 checkpoints do not ship a Jinja chat template. `deepseek_v4` mode reuses
+the pinned vLLM image's built-in DSV4 message encoder, exactly as the serving
+flag `--tokenizer-mode deepseek_v4` does. `auto` selects this mode when tokenizer
+metadata has no template; `hf` requires an explicit `--chat-template`.
 
-The JSONL input contains one `input_ids` list per record. Sequences shorter
-than `--sequence-length` are skipped. Training and serving paths are separate
-because the serving target identity is embedded in the exported manifest.
+Reference: <https://github.com/vllm-project/recipes/blob/main/models/deepseek-ai/DeepSeek-V4-Flash.yaml>
+
+Packing is boundary-aware and assistant-only by default. Every row carries
+`anchor_ranges`, so a K=32 block cannot cross a conversation boundary or train
+on prompt tokens. This follows the public Orthrus trainer's required
+`assistant_mask` behavior. `--all-token-anchors` exists only for explicit
+ablation/debugging.
+
+Reference: <https://github.com/chiennv2000/orthrus/blob/main/src/utils/data_utils.py>
+
+## Online continuation data
+
+Capture completed requests as JSONL. Token IDs are preferred because they
+preserve the exact service boundary:
+
+```json
+{"request_id":"r1","status":"completed","prompt_token_ids":[1,2],"output_token_ids":[3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33]}
+```
+
+Then prepare a disjoint continuation snapshot:
 
 ```bash
-python scripts/train_dsv4_orthrus_head.py train \
-  --bf16-base /data/disk/models/DeepSeek-V4-Flash-0731-bf16 \
-  --serving-target /data/disk/models/Eco-Tech/DeepSeek-V4-Flash-0731-w8a8 \
-  --data /data/disk/data/orthrus/train.tokens.jsonl \
-  --mask-token-id 128799 \
-  --device npu:0 \
-  --sequence-length 4096 \
-  --anchors-per-sequence 16 \
-  --steps 1000 \
-  --output-checkpoint /data/disk/checkpoints/orthrus-dsv4-step-1000.pt \
-  --export-head /data/disk/models/orthrus-dsv4-head-v2-bf16-step-1000
+python3 scripts/prepare_dsv4_orthrus_data.py online \
+  --input /data/disk/data/traffic/completed.jsonl \
+  --output /data/disk/data/orthrus-online-2026-09-22
 ```
 
-## Resume and continual updates
+Failed or unfinished requests and responses too short to form a complete block
+are rejected and counted. Online `anchor_ranges` begin at the last prompt token,
+so all 31 prediction targets lie inside the accepted model response. Text-form
+`messages` are also supported when `--tokenizer` is supplied and the rendered
+full conversation preserves the rendered prompt as an exact token prefix.
 
-Exact interruption recovery keeps the saved schedule and requires the same
-tokenized data fingerprint:
+## Run training
+
+The wrapper defaults to a one-update CPU-offload smoke. Paths are explicit so it
+can be copied to an offline host without editing repository files:
 
 ```bash
-python scripts/train_dsv4_orthrus_head.py resume \
-  --bf16-base /data/disk/models/DeepSeek-V4-Flash-0731-bf16 \
-  --data /data/disk/data/orthrus/train.tokens.jsonl \
-  --mask-token-id 128799 \
-  --sequence-length 4096 \
-  --checkpoint /data/disk/checkpoints/orthrus-dsv4-step-500.pt \
-  --output-checkpoint /data/disk/checkpoints/orthrus-dsv4-step-1000.pt
+BF16_BASE=/data/disk/models/DeepSeek-V4-Flash-0731-bf16 \
+SERVING_TARGET=/data/disk/models/Eco-Tech/DeepSeek-V4-Flash-0731-w8a8 \
+TRAIN_DATA=/data/disk/data/orthrus-dsv4-paper/train.tokens.jsonl \
+VALIDATION_DATA=/data/disk/data/orthrus-dsv4-paper/validation.tokens.jsonl \
+MASK_TOKEN_ID=128799 \
+OUTPUT_CHECKPOINT=/data/disk/checkpoints/orthrus-dsv4-smoke.pt \
+EXPORT_HEAD=/data/disk/models/orthrus-dsv4-head-v2-bf16-smoke \
+bash scripts/run_dsv4_orthrus_training.sh offline smoke
 ```
 
-For asynchronous online continuation, first convert newly completed request
-and response token streams to a disjoint JSONL file. `continue` loads the prior
-head but intentionally starts a fresh optimizer and data schedule:
+After the smoke passes, replace `smoke` with `paper`. Because eight NPUs are
+used as one model-parallel replica rather than eight data-parallel replicas,
+the wrapper uses gradient accumulation 128 to preserve global batch 128. This
+full CPU-offloaded run is expected to be extremely slow.
+
+For asynchronous continuation, point `TRAIN_DATA` at the new online snapshot,
+set `INPUT_CHECKPOINT`, choose a new `OUTPUT_CHECKPOINT` and `EXPORT_HEAD`, then:
 
 ```bash
-python scripts/train_dsv4_orthrus_head.py continue \
-  --bf16-base /data/disk/models/DeepSeek-V4-Flash-0731-bf16 \
-  --serving-target /data/disk/models/Eco-Tech/DeepSeek-V4-Flash-0731-w8a8 \
-  --data /data/disk/data/orthrus/traffic-2026-09-20.tokens.jsonl \
-  --mask-token-id 128799 \
-  --checkpoint /data/disk/checkpoints/orthrus-dsv4-step-1000.pt \
-  --steps 50 \
-  --output-checkpoint /data/disk/checkpoints/orthrus-dsv4-online-0050.pt \
-  --export-head /data/disk/models/orthrus-dsv4-head-v2-bf16-online-0050
+bash scripts/run_dsv4_orthrus_training.sh continue smoke
 ```
 
-The candidate must then pass held-out acceptance/goodput evaluation, independent
-W8A8 calibration, strict preflight, and service restart. Online continuation
-never publishes directly into the live process.
+Training reports the same held-out validation loss before and after the update.
+That is only a training gate: the candidate head must then be calibrated to
+W8A8 and pass acceptance-rate, exactness, goodput, and service-restart tests
+before publication.

@@ -7,6 +7,7 @@ import argparse
 from dataclasses import asdict
 import hashlib
 import json
+import math
 from pathlib import Path
 import sys
 import tempfile
@@ -17,6 +18,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import torch
 
 from blockspec.dsv4_fitting import DSV4FitConfig, DSV4Trainer
+from blockspec.dsv4_data import file_sha256
 from blockspec.dsv4_training import (
     OrthrusDSV4TrainingModel,
     export_bf16_head,
@@ -67,16 +69,16 @@ def _load_target(path: Path, device: torch.device, precision: str):
     return target.to(device), training_base
 
 
-def _config(args) -> DSV4FitConfig:
+def _config(args, *, steps: int, warmup_steps: int) -> DSV4FitConfig:
     return DSV4FitConfig(
-        steps=args.steps,
+        steps=steps,
         batch_size=args.batch_size,
         sequence_length=args.sequence_length,
         anchors_per_sequence=args.anchors_per_sequence,
         accumulate=args.accumulate,
         chunk_rows=args.chunk_rows,
         learning_rate=args.learning_rate,
-        warmup_steps=args.warmup_steps,
+        warmup_steps=warmup_steps,
         minimum_lr_ratio=args.minimum_lr_ratio,
         weight_decay=args.weight_decay,
         clip_grad=args.clip_grad,
@@ -85,6 +87,55 @@ def _config(args) -> DSV4FitConfig:
         indexer_weight=args.indexer_weight,
         seed=args.seed,
     )
+
+
+def _schedule(args, data: TokenDataset) -> tuple[int, int]:
+    if args.steps is not None and args.epochs is not None:
+        raise SystemExit("choose either --steps or --epochs")
+    if args.epochs is not None:
+        if not math.isfinite(args.epochs) or args.epochs <= 0:
+            raise SystemExit("--epochs must be finite and positive")
+        examples_per_update = args.batch_size * args.accumulate
+        steps = math.ceil(len(data) * args.epochs / examples_per_update)
+    else:
+        steps = 1000 if args.steps is None else args.steps
+    if steps < 1:
+        raise SystemExit("training schedule must contain at least one update")
+    if args.warmup_steps is not None and args.warmup_ratio is not None:
+        raise SystemExit("choose either --warmup-steps or --warmup-ratio")
+    if args.warmup_ratio is not None:
+        if not 0 <= args.warmup_ratio < 1:
+            raise SystemExit("--warmup-ratio must be in [0, 1)")
+        warmup_steps = min(steps - 1, math.floor(steps * args.warmup_ratio))
+    elif args.warmup_steps is not None:
+        warmup_steps = args.warmup_steps
+    else:
+        warmup_steps = min(20, steps - 1)
+    return steps, warmup_steps
+
+
+def _validate_packed_data(path: Path, sequence_length: int, block_size: int) -> dict | None:
+    manifest_path = path.resolve().parent / "manifest.json"
+    if not manifest_path.is_file():
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("format") != "orthrus-dsv4-packed-v1":
+        return None
+    if manifest.get("sequence_length") != sequence_length:
+        raise SystemExit("packed-data sequence length differs from --sequence-length")
+    if manifest.get("block_size") != block_size:
+        raise SystemExit("packed-data block size differs from --block-size")
+    details = next(
+        (
+            value
+            for value in manifest.get("files", {}).values()
+            if isinstance(value, dict) and value.get("file") == path.name
+        ),
+        None,
+    )
+    if details is None or details.get("sha256") != file_sha256(path):
+        raise SystemExit("packed-data file is absent from its manifest or failed SHA256")
+    return manifest
 
 
 def _digest(module) -> str:
@@ -210,6 +261,8 @@ def run(args) -> dict:
         raise SystemExit("train/resume/continue require an explicit --mask-token-id")
     if args.block_size != 32 and not args.allow_nonproduction_block_size:
         raise SystemExit("production DSV4 Orthrus training requires --block-size 32")
+    if args.cpu_offload and not args.npu_devices:
+        raise SystemExit("--cpu-offload requires explicit --npu-devices")
     layer_devices = None
     if args.npu_devices:
         if args.layers_per_npu < 1:
@@ -248,7 +301,19 @@ def run(args) -> dict:
         model.to(device)
     if args.initial_head is not None:
         load_bf16_head(model, args.initial_head)
+    data_manifest = _validate_packed_data(
+        args.data, args.sequence_length, args.block_size
+    )
     data = TokenDataset(args.data, model.config.vocab_size, args.sequence_length)
+    validation_data = None
+    validation_manifest = None
+    if args.validation_data is not None:
+        validation_manifest = _validate_packed_data(
+            args.validation_data, args.sequence_length, args.block_size
+        )
+        validation_data = TokenDataset(
+            args.validation_data, model.config.vocab_size, args.sequence_length
+        )
     if args.mode == "resume":
         if args.checkpoint is None:
             raise SystemExit("resume requires --checkpoint")
@@ -256,8 +321,12 @@ def run(args) -> dict:
             args.checkpoint, model, data, base_identity=base_identity
         )
     else:
+        steps, warmup_steps = _schedule(args, data)
         trainer = DSV4Trainer(
-            model, data, _config(args), base_identity=base_identity
+            model,
+            data,
+            _config(args, steps=steps, warmup_steps=warmup_steps),
+            base_identity=base_identity,
         )
         if args.mode == "continue":
             if args.checkpoint is None and args.initial_head is None:
@@ -269,7 +338,17 @@ def run(args) -> dict:
         if record["step"] % args.log_every == 0:
             print(report.dumps(record, sort_keys=True), flush=True)
 
+    validation_before = (
+        trainer.evaluate(validation_data, args.validation_batches)
+        if validation_data is not None
+        else None
+    )
     records = trainer.run(args.stop_after, progress=progress)
+    validation_after = (
+        trainer.evaluate(validation_data, args.validation_batches)
+        if validation_data is not None
+        else None
+    )
     trainer.save(args.output_checkpoint)
     exported = None
     if args.export_head is not None:
@@ -287,6 +366,8 @@ def run(args) -> dict:
                 "step": trainer.step,
                 "config": asdict(trainer.config),
                 "data_sha256": data.fingerprint,
+                "validation_before": validation_before,
+                "validation_after": validation_after,
             },
         )
     return {
@@ -298,6 +379,11 @@ def run(args) -> dict:
         "exported_head": None if exported is None else str(exported),
         "compress_ratios": model.compress_ratios,
         "training_base_schema": training_base,
+        "data_manifest": None if data_manifest is None else str(args.data.resolve().parent / "manifest.json"),
+        "validation_manifest": None if validation_manifest is None else str(args.validation_data.resolve().parent / "manifest.json"),
+        "validation_before": validation_before,
+        "validation_after": validation_after,
+        "placement": "cpu_offload" if args.cpu_offload else ("layerwise" if npu_devices else "single_device"),
         "layer_devices": None if layer_devices is None else [str(value) for value in layer_devices],
         "target_frozen": all(not parameter.requires_grad for parameter in target.parameters()),
         "pass": all(not parameter.requires_grad for parameter in target.parameters()),
@@ -312,13 +398,16 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--initial-head", type=Path)
     value.add_argument("--checkpoint", type=Path)
     value.add_argument("--data", type=Path)
+    value.add_argument("--validation-data", type=Path)
+    value.add_argument("--validation-batches", type=int, default=4)
     value.add_argument("--output-checkpoint", type=Path)
     value.add_argument("--export-head", type=Path)
     value.add_argument("--base-model-id", default=BASE_MODEL_ID)
     value.add_argument("--mask-token-id", type=int)
     value.add_argument("--block-size", type=int, default=32)
     value.add_argument("--allow-nonproduction-block-size", action="store_true")
-    value.add_argument("--steps", type=int, default=1000)
+    value.add_argument("--steps", type=int)
+    value.add_argument("--epochs", type=float)
     value.add_argument("--stop-after", type=int)
     value.add_argument("--batch-size", type=int, default=1)
     value.add_argument("--sequence-length", type=int, default=4096)
@@ -326,7 +415,8 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--accumulate", type=int, default=1)
     value.add_argument("--chunk-rows", type=int, default=8)
     value.add_argument("--learning-rate", type=float, default=2e-4)
-    value.add_argument("--warmup-steps", type=int, default=20)
+    value.add_argument("--warmup-steps", type=int)
+    value.add_argument("--warmup-ratio", type=float)
     value.add_argument("--minimum-lr-ratio", type=float, default=0.1)
     value.add_argument("--weight-decay", type=float, default=0.0)
     value.add_argument("--clip-grad", type=float, default=1.0)
@@ -337,6 +427,11 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument(
         "--npu-devices",
         help="comma-separated devices for sequential model parallelism; remaining layers stay on CPU",
+    )
+    value.add_argument(
+        "--cpu-offload",
+        action="store_true",
+        help="keep unassigned BF16 layers on CPU; requires --npu-devices",
     )
     value.add_argument("--layers-per-npu", type=int, default=1)
     value.add_argument("--seed", type=int, default=42)
@@ -349,7 +444,7 @@ def main() -> int:
     args = parser().parse_args()
     if args.mode != "smoke" and args.output_checkpoint is None:
         raise SystemExit("train/resume/continue require --output-checkpoint")
-    if args.log_every < 1 or args.smoke_steps < 1:
+    if args.log_every < 1 or args.smoke_steps < 1 or args.validation_batches < 1:
         raise SystemExit("positive log and smoke step counts required")
     result = smoke(args) if args.mode == "smoke" else run(args)
     print(report.dumps(result, indent=2, sort_keys=True), flush=True)

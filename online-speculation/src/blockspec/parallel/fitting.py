@@ -18,7 +18,7 @@ from .weights import file_sha256, load_checkpoint, save_checkpoint
 
 
 class TokenDataset:
-    """Indexed tokenized JSONL; contiguous crops stay within individual records."""
+    """Indexed tokenized JSONL with optional valid draft-block spans."""
 
     def __init__(self, path, vocab_size, sequence_length):
         if any(type(n) is not int or n < 1 for n in (vocab_size, sequence_length)):
@@ -34,7 +34,7 @@ class TokenDataset:
                     break
                 if not line.strip():
                     continue
-                ids = self._decode(line)
+                ids, _ = self._decode_record(line)
                 if len(ids) >= sequence_length:
                     self.offsets.append(offset)
                 else:
@@ -43,19 +43,46 @@ class TokenDataset:
             raise ValueError("training data needs a complete sequence window")
         self.fingerprint = file_sha256(self.path)
 
-    def _decode(self, line):
-        ids = json.loads(line).get("input_ids")
+    def _decode_record(self, line):
+        record = json.loads(line)
+        ids = record.get("input_ids")
         if not isinstance(ids, list) or not ids or any(type(x) is not int or not 0 <= x < self.vocab_size for x in ids):
             raise ValueError("each JSONL record requires valid input_ids")
-        return ids
+        ranges = record.get("anchor_ranges")
+        if ranges is None:
+            ranges = [(0, len(ids))]
+        if (
+            not isinstance(ranges, list)
+            or not ranges
+            or any(
+                not isinstance(span, (list, tuple))
+                or len(span) != 2
+                or type(span[0]) is not int
+                or type(span[1]) is not int
+                or not 0 <= span[0] < span[1] <= len(ids)
+                for span in ranges
+            )
+        ):
+            raise ValueError("anchor_ranges must be nonempty half-open token spans")
+        ordered = sorted((int(start), int(stop)) for start, stop in ranges)
+        if any(left[1] > right[0] for left, right in zip(ordered, ordered[1:])):
+            raise ValueError("anchor_ranges must not overlap")
+        return ids, ordered
+
+    def _decode(self, line):
+        return self._decode_record(line)[0]
 
     def __len__(self):
         return len(self.offsets)
 
     def __getitem__(self, index):
+        return self.record(index)[0]
+
+    def record(self, index):
         with self.path.open("rb") as handle:
             handle.seek(self.offsets[index])
-            return torch.tensor(self._decode(handle.readline()), dtype=torch.long)
+            ids, ranges = self._decode_record(handle.readline())
+        return torch.tensor(ids, dtype=torch.long), ranges
 
 
 class BatchStream:
@@ -65,18 +92,81 @@ class BatchStream:
         self.order = torch.randperm(len(dataset), generator=self.rng)
         self.cursor = self.epoch = 0
 
+    def _next_record(self):
+        if self.cursor == len(self.order):
+            self.order = torch.randperm(len(self.dataset), generator=self.rng)
+            self.cursor = 0
+            self.epoch += 1
+        record = self.dataset.record(int(self.order[self.cursor]))
+        self.cursor += 1
+        return record
+
     def batch(self, count):
         rows, length = [], self.dataset.sequence_length
         for _ in range(count):
-            if self.cursor == len(self.order):
-                self.order = torch.randperm(len(self.dataset), generator=self.rng)
-                self.cursor = 0
-                self.epoch += 1
-            sequence = self.dataset[int(self.order[self.cursor])]
-            self.cursor += 1
+            sequence, _ = self._next_record()
             start = int(torch.randint(len(sequence) - length + 1, (), generator=self.rng))
             rows.append(sequence[start:start + length])
         return torch.stack(rows)
+
+    @staticmethod
+    def _valid_crop(sequence_length, window, ranges, block_size, rng):
+        max_start = sequence_length - window
+        intervals = []
+        for span_start, span_stop in ranges:
+            if span_stop - span_start < block_size:
+                continue
+            low = max(0, span_start - window + block_size)
+            high = min(max_start, span_stop - block_size)
+            if low <= high:
+                intervals.append((low, high))
+        if not intervals:
+            return None
+        merged = []
+        for low, high in sorted(intervals):
+            if merged and low <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], high))
+            else:
+                merged.append((low, high))
+        choice = int(
+            torch.randint(sum(high - low + 1 for low, high in merged), (), generator=rng)
+        )
+        start = 0
+        for low, high in merged:
+            width = high - low + 1
+            if choice < width:
+                start = low + choice
+                break
+            choice -= width
+        candidates = []
+        for span_start, span_stop in ranges:
+            low = max(span_start, start) - start
+            high = min(span_stop - block_size, start + window - block_size) - start
+            if low <= high:
+                candidates.append(torch.arange(low, high + 1, dtype=torch.long))
+        return start, torch.cat(candidates)
+
+    def batch_with_anchor_candidates(self, count, block_size):
+        """Return crops and local anchors whose complete blocks stay in one span."""
+        if type(count) is not int or count < 1 or type(block_size) is not int or block_size < 1:
+            raise ValueError("positive batch and block sizes required")
+        rows, candidates = [], []
+        attempts = 0
+        limit = max(len(self.dataset) * 2, count)
+        while len(rows) < count and attempts < limit:
+            sequence, ranges = self._next_record()
+            attempts += 1
+            selected = self._valid_crop(
+                len(sequence), self.dataset.sequence_length, ranges, block_size, self.rng
+            )
+            if selected is None:
+                continue
+            start, valid = selected
+            rows.append(sequence[start:start + self.dataset.sequence_length])
+            candidates.append(valid)
+        if len(rows) != count:
+            raise ValueError("training data has too few ranges containing a complete draft block")
+        return torch.stack(rows), candidates
 
     def state_dict(self):
         return {"rng": self.rng.get_state(), "order": self.order.clone(),

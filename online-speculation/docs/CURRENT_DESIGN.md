@@ -49,7 +49,7 @@ MoE/MLP、LM head 和历史 KV 都复用主模型。
 **解决：**保留上游已经创建的 custom proposer，并在 NPU decode 路径调用它。
 
 这一步已经由此前投机执行接入使用的
-[token-only custom class PR](https://github.com/wangzili121/vllm-ascend/commit/2e9d3209ad590b1300771c39d849ce1b1625ba22)
+[token-only custom class 分支](https://github.com/wangzili121/vllm-ascend/tree/custom-class-proposer-npu)
 完成。当前分支的 `a09abd67` 是同一改动在更新 vLLM-Ascend main 上的重放，不属于本次
 model-aware 扩展的新功能。它只解决普通 token-only custom class，还不能运行神经网络 head。
 
