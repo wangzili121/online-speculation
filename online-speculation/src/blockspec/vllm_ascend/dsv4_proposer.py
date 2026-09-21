@@ -22,12 +22,14 @@ class AscendOrthrusProposer(AscendDSparkProposer):
         runner=None,
     ) -> None:
         super().__init__(vllm_config, device, runner=runner)
-        if self.method != "orthrus":
+        if self.method not in {"orthrus", "dflash"}:
             raise ValueError(f"AscendOrthrusProposer received method={self.method!r}")
         if self.num_speculative_tokens != NUM_SPECULATIVE_TOKENS:
             raise ValueError("DSV4 Orthrus requires 31 speculative tokens")
         if self.sample_from_anchor is not False or self.num_query_per_req != BLOCK_SIZE:
-            raise ValueError("DSV4 Orthrus requires anchor plus 31 masked query positions")
+            raise ValueError(
+                "DSV4 Orthrus requires anchor plus 31 masked query positions"
+            )
         if not self.speculative_config.parallel_drafting:
             raise ValueError("DSV4 Orthrus requires parallel_drafting=true")
         if self.speculative_config.rejection_sample_method != "standard":

@@ -24,6 +24,7 @@
 - [Draft/Verify 调度实验](docs/DRAFT_VERIFY_SCHEDULING.md)：SparseSpec 风格 phase admission 的实现与负结果。
 - [SparseSpec 移植实验](docs/SPARSESPEC_PORT.md)：PillarAttn 页稀疏原型、真实 NPU A/B 与后续门槛。
 - [DeepSeek-V4 Orthrus 部署](docs/DSV4_DEPLOYMENT.md)：W8A8 主模型、SWA/C4/C128 混合历史、专属 proposer、v0.26 适配与 8 卡验收。
+- [Orthrus 插件接入边界](docs/CUSTOM_PROPOSER_INTEGRATION.md)：vLLM、vLLM-Ascend 与算法插件各自需要修改什么及原因。
 - [DSV4 head v2 契约](docs/DSV4_HEAD_CONTRACT.md)：BF16 训练交换格式、独立 W8A8 校准、严格哈希与 tensor schema。
 - [DSV4 head 训练与续训](docs/DSV4_TRAINING.md)：冻结 BF16 基模、混合注意力 head 训练、精确恢复、异步线上续训及资源边界。
 

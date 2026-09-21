@@ -16,6 +16,18 @@ The vLLM path is the fixed-head inference subset of Chang Bo's
 exact algorithmic boundary and upstream PR comparison are recorded in
 [DSV4_CHANGBO_SCOPE.md](DSV4_CHANGBO_SCOPE.md).
 
+Two integration lanes are shipped:
+
+- `scripts/serve_dsv4_orthrus_plugin.sh` is the clean plugin lane. It uses
+  upstream `method="custom_class"` plus vLLM-Ascend's small, generic
+  model-aware proposer extension. Orthrus and DSV4 code stay in this package.
+- `scripts/serve_dsv4_orthrus.sh` is the pinned v0.26 fallback used with the
+  guarded runtime overlay. It remains available for the immutable production
+  image until that generic extension is present there.
+
+The ownership and interface rationale are documented in
+[CUSTOM_PROPOSER_INTEGRATION.md](CUSTOM_PROPOSER_INTEGRATION.md).
+
 ## Offline one-command deployment
 
 On an exclusively reserved eight-card A2 node, preload the pinned image and
