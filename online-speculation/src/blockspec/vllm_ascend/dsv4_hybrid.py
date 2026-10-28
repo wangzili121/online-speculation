@@ -18,6 +18,15 @@ def front_pack_indices(indices: torch.Tensor) -> tuple[torch.Tensor, torch.Tenso
     return torch.where(packed_valid, packed, -1), packed_valid
 
 
+def c4_history_indices(
+    indices: torch.Tensor, history_lengths: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """QLI returns compressed row IDs, not original-token positions."""
+    complete_rows = torch.div(history_lengths, 4, rounding_mode="floor")
+    valid = (indices >= 0) & (indices < complete_rows[:, None, None])
+    return front_pack_indices(torch.where(valid, indices, -1))
+
+
 def merge_attention_segments(
     outputs: Sequence[torch.Tensor],
     logsumexp: Sequence[torch.Tensor],
@@ -146,9 +155,11 @@ def gather_paged_cache(
     return torch.where(mask, gathered, torch.zeros_like(gathered))
 
 
-def cache_checksum(cache: torch.Tensor) -> torch.Tensor:
-    """Keep an exact, memory-bounded sample for draft cache debug checks."""
+def cache_checksum(cache: torch.Tensor, *, full: bool = False) -> torch.Tensor:
+    """Snapshot a bounded sample, or all elements for explicit debug checks."""
     flat = cache.reshape(-1)
+    if full:
+        return flat.clone()
     max_samples = 65_536
     stride = max((flat.numel() + max_samples - 1) // max_samples, 1)
     return flat[::stride][:max_samples].clone()
@@ -157,7 +168,7 @@ def cache_checksum(cache: torch.Tensor) -> torch.Tensor:
 def assert_cache_unchanged(
     before: torch.Tensor, cache: torch.Tensor, name: str
 ) -> None:
-    after = cache_checksum(cache)
+    after = cache.reshape(-1) if before.numel() == cache.numel() else cache_checksum(cache)
     equal = before == after
     if before.is_floating_point():
         equal = equal | (torch.isnan(before) & torch.isnan(after))

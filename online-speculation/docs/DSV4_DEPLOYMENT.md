@@ -4,6 +4,11 @@ This deployment targets `Eco-Tech/DeepSeek-V4-Flash-0731-w8a8` on one
 8 x 64 GiB Ascend A2 node with
 `quay.io/ascend/vllm-ascend:nightly-releases-v0.26.0rc`.
 
+Production correctness acceptance is still open. Extended validation found
+C4 index-coordinate and history-mask bugs that the earlier short smoke tests
+did not expose. See [the validation record](DSV4_VALIDATION_20261028.md) for
+fixes, measured operator results, and outstanding service gates.
+
 It is an inference service. Training runs in a separate BF16 process: the
 service consumes a versioned diffusion head, independently converts it to
 Ascend W8A8, and loads new weights after a restart. An initialized head proves
@@ -80,7 +85,8 @@ For every 32-position draft block (anchor plus 31 proposals):
 1. SWA layers gather the committed target SWA history.
 2. C4 layers read target compressed KV and indexer-key caches, then execute the
    diffusion-side query/indexer without updating either cache.
-3. C128 layers gather target compressed KV history.
+3. C128 layers read target compressed KV history. FIA reads compatible
+   128-token pages directly; smaller pages retain the gather path.
 4. The 32 positions attend bidirectionally inside their local block.
 5. History, local block, and attention-sink output/LSE are merged with an exact
    log-sum-exp reduction.
@@ -89,11 +95,16 @@ For every 32-position draft block (anchor plus 31 proposals):
 
 The first implementation intentionally gathers paged history and uses Ascend
 FIA because that operation returns the LSE needed for exact segment merging.
-The C4 QLI bridge treats returned indices as original-token coordinates and
-maps only completed four-token groups to C4 rows; incomplete C4/C128 groups
-remain in the target compressor state cache. That coordinate contract and
-FIA LSE layout are explicit A2 bring-up gates; a mismatch must fail correctness
-testing instead of being hidden by a fallback.
+The C4 QLI operator returns compressed-row indices, which must not be divided
+by four again. Orthrus uses non-causal QLI metadata (`sparse_mode=0`) so all
+32 queries can search the complete committed history. Incomplete C4/C128
+groups remain in the target compressor state cache. These semantics and FIA
+LSE layout are tested separately from final target output equality.
+
+`ORTHRUS_VERIFY_CACHE_CHECKSUM=full` is a debug-only mode: it snapshots every
+cache element on the first call for each batch size in each layer, then uses
+bounded samples on later calls. It requires substantial extra memory; reduce
+the KV allocation for this test. It is not a production performance setting.
 
 The initial correctness backend is TP-only. Although the official target-only
 A2 recipe can enable DSA context parallel and FlashComm1, its attention

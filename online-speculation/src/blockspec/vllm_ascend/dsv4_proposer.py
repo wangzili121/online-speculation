@@ -10,6 +10,8 @@ from vllm.config import CUDAGraphMode, VllmConfig
 from vllm_ascend.spec_decode.dspark_proposer import AscendDSparkProposer
 
 from .head_contract import BLOCK_SIZE, NUM_SPECULATIVE_TOKENS
+from .draft_sampling import sample_seeded_parallel_draft
+from .trace import instant
 
 
 class AscendOrthrusProposer(AscendDSparkProposer):
@@ -43,6 +45,23 @@ class AscendOrthrusProposer(AscendDSparkProposer):
         # The generic base treats unknown methods as recurrent MTP models.
         # Orthrus emits one hidden tensor for the entire parallel block.
         return False
+
+    def take_last_draft_probs(self):
+        probabilities = super().take_last_draft_probs()
+        instant("orthrus.dsv4.draft_probs", {
+            "present": probabilities is not None,
+            "shape": list(probabilities.shape) if probabilities is not None else None,
+        })
+        return probabilities
+
+    def _sample_from_logits(self, logits, sampling_metadata):
+        if (not self._enable_probabilistic_draft_probs
+                or sampling_metadata.all_greedy or not sampling_metadata.generators):
+            return super()._sample_from_logits(logits, sampling_metadata)
+        return sample_seeded_parallel_draft(
+            logits, sampling_metadata.temperature, sampling_metadata.generators,
+            self.num_speculative_tokens, use_fp64_gumbel=self.use_fp64_gumbel,
+        )
 
     def set_inputs_first_pass(self, *args, **kwargs):
         cad = kwargs.get("cad")

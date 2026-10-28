@@ -6,6 +6,7 @@ torch = pytest.importorskip("torch")
 from blockspec.vllm_ascend.dsv4_hybrid import (
     assert_cache_unchanged,
     cache_checksum,
+    c4_history_indices,
     compressed_logical_indices,
     front_pack_indices,
     gather_paged_cache,
@@ -29,6 +30,21 @@ def test_cache_checksum_treats_unchanged_nan_as_equal():
     before = cache_checksum(cache)
 
     assert_cache_unchanged(before, cache, "test")
+
+
+def test_full_cache_guard_detects_changes_between_sampled_positions():
+    cache = torch.zeros(131_072, dtype=torch.bfloat16)
+    before = cache_checksum(cache, full=True)
+    cache[1] = 1
+    with pytest.raises(RuntimeError, match="modified target cache"):
+        assert_cache_unchanged(before, cache, "test")
+
+
+def test_c4_indexer_ids_are_compressed_rows():
+    indices = torch.tensor([[[0, 4, 31, 32, -1]], [[1, 2, -1, 0, 5]]])
+    packed, valid = c4_history_indices(indices, torch.tensor([129, 7]))
+    assert packed.tolist() == [[[0, 4, 31, -1, -1]], [[0, -1, -1, -1, -1]]]
+    assert valid.sum(-1).tolist() == [[3], [1]]
 
 
 def test_attention_segment_merge_matches_one_softmax():

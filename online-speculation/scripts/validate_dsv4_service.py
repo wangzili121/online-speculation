@@ -34,7 +34,7 @@ def _json_request(url: str, payload: dict[str, Any] | None = None) -> dict[str, 
         method="GET" if data is None else "POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=600) as response:
+        with urllib.request.urlopen(request, timeout=3000) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
         body = error.read().decode("utf-8", errors="replace")
@@ -49,6 +49,7 @@ def _choice_record(response: dict[str, Any]) -> dict[str, Any]:
         "finish_reason": choice.get("finish_reason"),
         "text": choice.get("text", ""),
         "tokens": tokens,
+        "token_ids": choice.get("token_ids"),
         "usage": response.get("usage", {}),
     }
 
@@ -61,6 +62,7 @@ def _completion(base_url: str, model: str, case: dict[str, Any]) -> dict[str, An
         "max_tokens": int(case["max_tokens"]),
         "temperature": float(case.get("temperature", 0.0)),
         "logprobs": 1,
+        "return_token_ids": True,
     }
     for key in ("seed", "top_p"):
         if key in case:
@@ -70,6 +72,10 @@ def _completion(base_url: str, model: str, case: dict[str, Any]) -> dict[str, An
     record = _choice_record(response)
     record["elapsed_seconds"] = time.perf_counter() - started
     record["case"] = case
+    print(dumps({"prompt_tokens": record["usage"].get("prompt_tokens"),
+                 "output_tokens": record["usage"].get("completion_tokens"),
+                 "temperature": payload["temperature"], "seed": case.get("seed"),
+                 "elapsed_seconds": record["elapsed_seconds"]}), flush=True)
     return record
 
 
@@ -123,7 +129,8 @@ def snapshot(args: argparse.Namespace) -> int:
 
 
 def _signature(record: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
-    return record["text"], tuple(record.get("tokens", []))
+    tokens = record.get("token_ids")
+    return record["text"], tuple(tokens if tokens is not None else record.get("tokens", []))
 
 
 def _first_token(record: dict[str, Any]) -> str:
@@ -198,10 +205,17 @@ def compare(args: argparse.Namespace) -> int:
         "passed": passed,
         "greedy_exact": greedy_equal,
         "cache_repetition_exact": cache_stable,
+        "baseline_cache_reproducible": len(baseline_repeat) == 1,
+        "candidate_cache_reproducible": len(candidate_repeat) == 1,
+        "greedy_mismatched_case_indices": [
+            index for index, (left, right) in enumerate(zip(baseline["greedy"], candidate["greedy"]))
+            if _signature(left) != _signature(right)
+        ],
         "baseline_fixed_seed_reproducible": baseline_seed_replay,
         "candidate_fixed_seed_reproducible": candidate_seed_replay,
         "cross_service_fixed_seed_match_rate_diagnostic": fixed_seed_rate,
         "first_token_empirical_tv": tv,
+        "distribution_scope": "First-token diagnostic only; does not verify the rejection sampler distribution.",
         "thresholds": {
             "min_fixed_seed_match": args.min_fixed_seed_match,
             "max_first_token_tv": args.max_first_token_tv,

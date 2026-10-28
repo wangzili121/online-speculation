@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 
 from blockspec.reporting import dumps
 
@@ -13,6 +14,9 @@ def main() -> int:
     parser.add_argument("--device", default="npu:0")
     parser.add_argument("--atol", type=float, default=0.05)
     parser.add_argument("--rtol", type=float, default=0.05)
+    parser.add_argument("--heads", type=int, default=8)
+    parser.add_argument("--head-dim", type=int, default=512)
+    parser.add_argument("--iterations", type=int, default=100)
     args = parser.parse_args()
 
     import torch
@@ -24,12 +28,13 @@ def main() -> int:
         compressed_logical_indices,
         gather_paged_cache,
         merge_attention_segments,
+        merge_attention_outputs,
     )
 
     device = torch.device(args.device)
     torch.npu.set_device(device)
     torch.manual_seed(20260915)
-    batch, queries, heads, dim = 2, 32, 4, 128
+    batch, queries, heads, dim = 2, 32, args.heads, args.head_dim
     scale = dim**-0.5
     query = torch.randn(
         batch, queries, heads, dim, device=device, dtype=torch.bfloat16
@@ -61,7 +66,9 @@ def main() -> int:
     lses = []
     references = []
     reference_lses = []
-    for width, lengths in ((19, [19, 13]), (5, [0, 5]), (32, [32, 32])):
+    all_keys = []
+    all_lengths = []
+    for width, lengths in ((128, [128, 13]), (1024, [0, 1024]), (32, [32, 32])):
         key_value = torch.randn(
             batch, width, 1, dim, device=device, dtype=torch.bfloat16
         )
@@ -83,6 +90,15 @@ def main() -> int:
         lses.append(lse)
         references.append(expected_output)
         reference_lses.append(expected_lse)
+        all_keys.append(key_value)
+        all_lengths.append(lengths)
+
+    # Count the sink exactly once. Its value is zero and its logit is per head.
+    sink = torch.linspace(-1, 1, heads, device=device).view(1, 1, heads, 1)
+    segments.append(torch.zeros_like(segments[0]))
+    lses.append(sink.expand_as(lses[0]).contiguous())
+    references.append(torch.zeros_like(references[0]))
+    reference_lses.append(lses[-1])
 
     merged, merged_lse = merge_attention_segments(segments, lses)
     expected_merged, expected_merged_lse = merge_attention_segments(
@@ -97,6 +113,32 @@ def main() -> int:
         atol=args.atol,
         rtol=args.rtol,
     )
+
+    native = merge_attention_outputs(segments, lses)
+    # Independent dense reference: one softmax over all history, draft and sink.
+    keys = torch.cat(all_keys, dim=1).expand(-1, -1, heads, -1).float()
+    valid = torch.cat([
+        torch.arange(k.shape[1], device=device)[None, :] <
+        torch.tensor(lengths, device=device)[:, None]
+        for k, lengths in zip(all_keys, all_lengths)
+    ], dim=1)
+    scores = torch.einsum("bqhd,bkhd->bqhk", query.float(), keys) * scale
+    scores.masked_fill_(~valid[:, None, None, :], float("-inf"))
+    scores = torch.cat([scores, sink.expand(batch, queries, heads, 1)], dim=-1)
+    dense = torch.einsum("bqhk,bkhd->bqhd", scores.softmax(-1)[..., :-1], keys)
+    torch.testing.assert_close(native.float(), dense, atol=args.atol, rtol=args.rtol)
+
+    timings = {}
+    for name, fn in (("torch_merge", merge_attention_segments),
+                     ("native_merge", merge_attention_outputs)):
+        for _ in range(10):
+            fn(segments, lses)
+        torch.npu.synchronize()
+        started = time.perf_counter()
+        for _ in range(args.iterations):
+            fn(segments, lses)
+        torch.npu.synchronize()
+        timings[name + "_us"] = (time.perf_counter() - started) * 1e6 / args.iterations
 
     cache = torch.randn(7, 16, 1, dim, device=device, dtype=torch.bfloat16)
     before = cache_checksum(cache)
@@ -133,6 +175,9 @@ def main() -> int:
                 "status": "ok",
                 "device": str(device),
                 "block_size": queries,
+                "query_shape": list(query.shape),
+                "native_merge_dense_max_abs_error": float((native.float() - dense).abs().max()),
+                "merge_timings": timings,
                 "fia_lse_layout": "B-Q-H-1",
                 "segments_merged": len(segments),
                 "paged_boundary_checked": True,

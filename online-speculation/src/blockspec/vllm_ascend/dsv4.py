@@ -46,13 +46,13 @@ from vllm_ascend.utils import enable_dsa_cp
 from .dsv4_hybrid import (
     assert_cache_unchanged,
     cache_checksum,
-    compressed_logical_indices,
-    front_pack_indices as _front_pack_indices,
+    c4_history_indices,
     gather_paged_cache,
     merge_attention_outputs,
     tail_logical_indices,
 )
 from .head_contract import BLOCK_SIZE, FORMAT_NAME, NUM_SPECULATIVE_TOKENS
+from .trace import instant
 
 
 _HEAD_WEIGHT = re.compile(
@@ -202,24 +202,31 @@ def _fia_segment(
     scale: float,
     *,
     allow_empty: bool = False,
+    block_table: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     import torch_npu
 
     if query.ndim != 4 or key_value.ndim != 4:
         raise ValueError("Orthrus FIA expects BSND query and key/value")
+    kv_heads = key_value.shape[2]
+    block_size = key_value.shape[1] if block_table is not None else 0
+    # FIA paged KV is [blocks, heads, block_size, dim]. DSV4 has one
+    # KV head, so this transpose only changes the view, without copying KV.
+    if block_table is not None:
+        key_value = key_value.transpose(1, 2)
     key_value = key_value.contiguous()
     result = torch_npu.npu_fused_infer_attention_score(
         query,
         key_value,
         key_value,
         num_heads=query.shape[2],
-        num_key_value_heads=key_value.shape[2],
+        num_key_value_heads=kv_heads,
         input_layout="BSND",
         sparse_mode=0,
         scale=scale,
         atten_mask=None,
-        block_table=None,
-        block_size=0,
+        block_table=block_table,
+        block_size=block_size,
         actual_seq_lengths=query_lengths,
         actual_seq_lengths_kv=key_lengths,
         softmax_lse_flag=True,
@@ -247,18 +254,27 @@ def _fia_segment(
     return output, lse
 
 
-def _compressed_width(metadata, cache: torch.Tensor, ratio: int) -> int:
-    """Derive a dense gather width without synchronizing a device seq_lens."""
-    maximum = getattr(metadata, "max_seq_lens", None)
-    if maximum is not None and not torch.is_tensor(maximum):
-        return max(int(maximum) // ratio, 1)
-    return max(int(metadata.block_table.shape[1]) * int(cache.shape[1]), 1)
+def _c128_segment(query, cache, block_table, lengths, maximum, scale):
+    # The pinned A2 FIA only supports paged blocks divisible by 128.
+    # DSV4 can allocate smaller compressed pages; keep their gather fallback.
+    if 128 <= cache.shape[1] <= 1024 and cache.shape[1] % 128 == 0:
+        return _fia_segment(
+            query, cache, [BLOCK_SIZE] * query.shape[0], lengths, scale,
+            allow_empty=True, block_table=block_table,
+        )
+    offsets = torch.arange(max(maximum, 1), device=lengths.device)
+    indices = torch.where(offsets[None, :] < lengths[:, None], offsets[None, :], -1)
+    kv = gather_paged_cache(cache, block_table, indices)
+    return _fia_segment(
+        query, kv, [BLOCK_SIZE] * query.shape[0], lengths, scale, allow_empty=True,
+    )
 
 
 class _OrthrusAttentionLayer(nn.Module):
     def __init__(self, vllm_config, config, layer_idx: int) -> None:
         super().__init__()
         self.layer_idx = layer_idx
+        self._full_checked_batches: set[int] = set()
         self.compress_ratio = int(config.compress_ratios[layer_idx])
         self.self_attn = DeepseekV4Attention(
             vllm_config=vllm_config,
@@ -356,18 +372,6 @@ class _OrthrusAttentionLayer(nn.Module):
         sin: torch.Tensor,
     ) -> torch.Tensor:
         """Run the diffusion-side indexer over all committed C4 history."""
-        if hasattr(indexer, "_select_topk_serial"):
-            return indexer._select_topk_serial(
-                hidden_states,
-                qr,
-                target_kv,
-                metadata,
-                cos,
-                sin,
-                qr_scale,
-                write_cache=False,
-            )
-
         import torch_npu
 
         request = _request_metadata(metadata)
@@ -399,6 +403,31 @@ class _OrthrusAttentionLayer(nn.Module):
         weights = _linear(indexer.weights_proj, hidden_states) * (
             indexer.softmax_scale * indexer.n_heads**-0.5
         )
+        # Each query reads the same committed prefix. The target's causal QLI
+        # metadata would shorten the history for the first K-1 query rows.
+        qli_metadata = getattr(request, "orthrus_qli_metadata", None)
+        if qli_metadata is None:
+            qli_metadata = torch.ops._C_ascend.npu_vllm_quant_lightning_indexer_metadata(
+                actual_seq_lengths_query=request.query_start_loc[1:],
+                actual_seq_lengths_key=request.seq_lens,
+                num_heads_q=indexer.n_heads,
+                num_heads_k=1,
+                head_dim=indexer.head_dim,
+                query_quant_mode=0,
+                key_quant_mode=0,
+                batch_size=request.seq_lens.shape[0],
+                max_seqlen_q=BLOCK_SIZE,
+                max_seqlen_k=request.max_seq_lens,
+                layout_query="TND",
+                layout_key="PA_BSND",
+                sparse_count=indexer.index_topk,
+                sparse_mode=0,
+                pre_tokens=(1 << 63) - 1,
+                next_tokens=(1 << 63) - 1,
+                cmp_ratio=4,
+                device=str(query.device),
+            )
+            request.orthrus_qli_metadata = qli_metadata
         topk, _ = torch.ops._C_ascend.npu_vllm_quant_lightning_indexer(
             query=query,
             key=indexer_key,
@@ -412,13 +441,13 @@ class _OrthrusAttentionLayer(nn.Module):
             actual_seq_lengths_query=request.query_start_loc[1:],
             actual_seq_lengths_key=request.seq_lens,
             block_table=request.block_table,
-            metadata=request.qli_metadata,
+            metadata=qli_metadata,
             query_quant_mode=0,
             key_quant_mode=0,
             layout_query="TND",
             layout_key="PA_BSND",
             sparse_count=indexer.index_topk,
-            sparse_mode=3,
+            sparse_mode=0,
             pre_tokens=(1 << 63) - 1,
             next_tokens=(1 << 63) - 1,
             cmp_ratio=4,
@@ -437,7 +466,7 @@ class _OrthrusAttentionLayer(nn.Module):
         layer_name: str,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         draft_impl = self.self_attn.dsa_attn.dsa_attn.impl
-        validate_cache = os.environ.get("ORTHRUS_VERIFY_CACHE_CHECKSUM", "0") == "1"
+        validate_cache = os.environ.get("ORTHRUS_VERIFY_CACHE_CHECKSUM", "0") in {"1", "full"}
         compress_cache, swa_cache, state_cache, _, _, _ = DeviceOperator.unpack_dsa_forward_kv_cache(
             target_kv, self.compress_ratio
         )
@@ -476,13 +505,6 @@ class _OrthrusAttentionLayer(nn.Module):
             common = layer_metadata.attention
             assert common is not None and compress_cache is not None and state_cache is not None
             compressed_req = _request_metadata(common)
-            logical, compressed_lengths = compressed_logical_indices(
-                seq_lens,
-                self.compress_ratio,
-                maximum=_compressed_width(
-                    compressed_req, compress_cache, self.compress_ratio
-                ),
-            )
             if self.compress_ratio == 4:
                 assert draft_impl.indexer is not None
                 assert layer_metadata.indexer is not None
@@ -507,17 +529,7 @@ class _OrthrusAttentionLayer(nn.Module):
                         raise RuntimeError(f"unexpected C4 top-k shape: {tuple(topk.shape)}")
                     topk = topk[:, 0]
                 topk = topk.view(batch, BLOCK_SIZE, -1).to(torch.long)
-                # QLI returns original-token positions. The compressed cache
-                # stores one physical row per C4 group.
-                complete_history = (
-                    torch.div(seq_lens, self.compress_ratio, rounding_mode="floor")
-                    * self.compress_ratio
-                )
-                valid = (topk >= 0) & (
-                    topk < complete_history[:, None, None]
-                )
-                topk = torch.where(valid, topk // self.compress_ratio, -1)
-                topk, valid = _front_pack_indices(topk)
+                topk, valid = c4_history_indices(topk, seq_lens)
                 compressed_kv = gather_paged_cache(
                     compress_cache,
                     compressed_req.block_table,
@@ -545,19 +557,17 @@ class _OrthrusAttentionLayer(nn.Module):
                 outputs.append(out.view_as(query_bsnd))
                 lses.append(lse.view(batch, BLOCK_SIZE, query_bsnd.shape[2], 1))
             else:
-                compressed_kv = gather_paged_cache(
+                compressed_lengths = torch.div(seq_lens, 128, rounding_mode="floor")
+                maximum = getattr(compressed_req, "max_seq_lens", None)
+                maximum = (int(maximum) // 128 if maximum is not None
+                           else compressed_req.block_table.shape[1] * compress_cache.shape[1])
+                out, lse = _c128_segment(
+                    query_bsnd,
                     compress_cache,
                     compressed_req.block_table,
-                    logical,
-                    validate=validate_cache,
-                )
-                out, lse = _fia_segment(
-                    query_bsnd,
-                    compressed_kv,
-                    query_lengths,
                     compressed_lengths,
+                    maximum,
                     draft_impl.softmax_scale,
-                    allow_empty=True,
                 )
                 outputs.append(out)
                 lses.append(lse)
@@ -592,13 +602,19 @@ class _OrthrusAttentionLayer(nn.Module):
         num_tokens = hidden_states.shape[0]
         cos = req.cos[layer_name][:num_tokens]
         sin = req.sin[layer_name][:num_tokens]
-        debug = os.environ.get("ORTHRUS_VERIFY_CACHE_CHECKSUM", "0") == "1"
+        guard_mode = os.environ.get("ORTHRUS_VERIFY_CACHE_CHECKSUM", "0")
+        debug = guard_mode in {"1", "full"}
+        batch = num_tokens // BLOCK_SIZE
+        full_check = guard_mode == "full" and batch not in self._full_checked_batches
         checksums = []
         if debug:
             torch.npu.synchronize()
+            anchors = positions.view(batch, BLOCK_SIZE)[:, 0]
+            if not torch.equal(anchors, swa_req.seq_lens.to(anchors.dtype)):
+                raise RuntimeError("Orthrus history length does not match anchor position")
             for index, cache in enumerate(target_kv):
                 if torch.is_tensor(cache):
-                    checksums.append((index, cache_checksum(cache)))
+                    checksums.append((index, cache_checksum(cache, full=full_check)))
 
         query, qr, qr_scale = _query_readonly(
             draft_impl, hidden_states, cos, sin
@@ -646,6 +662,15 @@ class _OrthrusAttentionLayer(nn.Module):
             torch.npu.synchronize()
             for index, before in checksums:
                 assert_cache_unchanged(before, target_kv[index], f"layer-{self.layer_idx}:{index}")
+            if full_check:
+                self._full_checked_batches.add(batch)
+        instant("orthrus.dsv4.attention", {
+            "layer": self.layer_idx, "compress_ratio": self.compress_ratio,
+            "batch": batch, "block_size": BLOCK_SIZE,
+            "query_shape": list(query.shape), "segments": len(outputs),
+            "cache_guard": "full" if full_check else "sampled" if debug else "off",
+            "checked_elements": sum(before.numel() for _, before in checksums),
+        })
         return output
 
     def forward(
