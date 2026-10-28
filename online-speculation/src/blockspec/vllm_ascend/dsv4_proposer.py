@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from typing import Any
 
 import torch
@@ -58,10 +59,26 @@ class AscendOrthrusProposer(AscendDSparkProposer):
         if (not self._enable_probabilistic_draft_probs
                 or sampling_metadata.all_greedy or not sampling_metadata.generators):
             return super()._sample_from_logits(logits, sampling_metadata)
-        return sample_seeded_parallel_draft(
+        trace_sampling = os.environ.get("ORTHRUS_TRACE_SAMPLING") == "1"
+        if trace_sampling:
+            generators = sampling_metadata.generators
+            before = {i: [g.initial_seed(), g.get_offset()]
+                      for i, g in generators.items()}
+        result = sample_seeded_parallel_draft(
             logits, sampling_metadata.temperature, sampling_metadata.generators,
             self.num_speculative_tokens, use_fp64_gumbel=self.use_fp64_gumbel,
         )
+        if trace_sampling:
+            ids, probabilities = result
+            instant("orthrus.dsv4.sampling", {
+                "request_ids": list(self.runner.input_batch.req_ids),
+                "generators_before": before,
+                "generator_offsets_after": {i: g.get_offset() for i, g in generators.items()},
+                "draft_ids": ids.view(-1, self.num_speculative_tokens).cpu().tolist(),
+                "selected_probabilities": probabilities.gather(1, ids.long()[:, None])
+                    .view(-1, self.num_speculative_tokens).cpu().tolist(),
+            })
+        return result
 
     def set_inputs_first_pass(self, *args, **kwargs):
         cad = kwargs.get("cad")
