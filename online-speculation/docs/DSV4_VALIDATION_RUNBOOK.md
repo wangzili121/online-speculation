@@ -111,3 +111,17 @@ timeout -k 30s 1800 python scripts/check_dsv4_sampling_state.py \
 5. Orthrus 适配正确性通过后再用训练 head 测吞吐和 goodput；适配仍有未解决或未归因的问题时保持 target-only 回滚路径，不启用生产/graph 验收标志。graph 必须独立验收。
 
 八卡只用于完整模型相关测试；算子、head 契约和多数接口问题应提前在前两阶段解决。具体已通过项及未通过项见 [验证记录](DSV4_VALIDATION_20261028.md)。
+
+## 有限时长的自动窗口
+
+`scripts/watch_dsv4_tp8.py` 在宿主机运行，要求专用且仅有 `sleep infinity` 的已准备容器，
+显式传入 `--allow-restart-container`。它每 3 秒读取一次 `npu-smi`，只在完整八卡均无进程、
+HBM 已回落时启动。利用率为零不算空闲；解析失败不会触发。默认等待 12 小时后退出。
+
+触发后依次跑完整模型 target-only、Orthrus 的 eager API 检查、32K/128K 和 Orthrus 重启对照；
+每项日志、退出码及 `status.json` 均保留。各服务之间重启专用容器，结束或失败时停止该容器，
+不停止其他容器或用户进程。启动前须先完成当前代码的安装、CPU 检查及生产 head preflight。
+
+此入口不包含 TP8 高接受率故障注入、graph、1M、持续负载或训练 head 的性能测试，
+`full_acceptance` 始终为 false。严格对照失败保留，交由后续归因，不自动标成上游差异。
+Docker 映射设备不是排他预留，检测与启动之间仍存在竞争，不能承诺其他人不会再次使用设备。
