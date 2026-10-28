@@ -333,6 +333,26 @@ def test_v026_vllm_overlay_is_guarded_and_idempotent(tmp_path):
     assert 'self.method in ("draft_model", "orthrus")' in patched
 
 
+def test_rejection_rng_patch_is_guarded_and_idempotent(tmp_path):
+    module, _ = _load_runtime_patcher()
+    path = tmp_path / "vllm_ascend/sample/rejection_sampler.py"
+    path.parent.mkdir(parents=True)
+    original = (
+        "    for i, generator in sampling_metadata.generators.items():\n"
+        "        temp_q = torch.empty_like(q[i])\n"
+        "        temp_q.exponential_(generator=generator)\n"
+    )
+    path.write_text(original)
+    assert module.patch_rejection_rng(tmp_path, True) == "would apply"
+    assert path.read_text() == original
+    assert module.patch_rejection_rng(tmp_path, False) == "applied"
+    assert module.patch_rejection_rng(tmp_path, False) == "already applied"
+    assert "if num_draft_tokens[i] == 0:" in path.read_text()
+    path.write_text("unsupported runtime")
+    with pytest.raises(SystemExit, match="version guard failed"):
+        module.patch_rejection_rng(tmp_path, False)
+
+
 def test_dsv4_target_compressors_are_not_registered_in_draft():
     source = (ROOT / "src/blockspec/vllm_ascend/dsv4.py").read_text()
     assert 'object.__setattr__(draft_impl, "compressor"' not in source

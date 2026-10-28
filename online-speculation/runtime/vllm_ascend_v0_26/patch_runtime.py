@@ -139,6 +139,20 @@ def replace_variant(
     return "would apply" if dry_run else "applied"
 
 
+def patch_rejection_rng(root: Path, dry_run: bool) -> str:
+    return replace_once(
+        root / "vllm_ascend/sample/rejection_sampler.py",
+        "    for i, generator in sampling_metadata.generators.items():\n"
+        "        temp_q = torch.empty_like(q[i])\n",
+        "    for i, generator in sampling_metadata.generators.items():\n"
+        "        # A prefill-only row has no residual distribution to sample.\n"
+        "        if num_draft_tokens[i] == 0:\n"
+        "            continue\n"
+        "        temp_q = torch.empty_like(q[i])\n",
+        dry_run,
+    )
+
+
 def patch_vllm(root: Path, dry_run: bool) -> list[str]:
     path = root / "vllm/config/speculative.py"
     changes = []
@@ -567,6 +581,7 @@ def main() -> int:
     validate_vllm_runtime(roots[0])
     api_family = validate_dsv4_runtime(roots[1])
     changes = patch_vllm(roots[0], args.dry_run) + patch_ascend(roots[1], args.dry_run)
+    changes.append(patch_rejection_rng(roots[1], args.dry_run))
     action = "Dry-run passed" if args.dry_run else "Applied"
     print(f"{action}: {len(changes)} guarded Orthrus edits ({api_family})")
     return 0

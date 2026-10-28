@@ -115,15 +115,37 @@ def seeded_rejection(device):
     print(json.dumps({"case": "seeded_rejection_batch_independence", "passed": True}), flush=True)
 
 
+def zero_draft_rng(device):
+    # A fresh prefill can share a batch with a decoding request. It has no
+    # rejected draft to recover, so recovery must not advance its request RNG.
+    generators = {i: torch.Generator(device=device).manual_seed(i) for i in range(2)}
+    metadata = SimpleNamespace(generators=generators)
+    before = {i: g.get_offset() for i, g in generators.items()}
+    sampler.sample_recovered_tokens(
+        31, [0, 31], torch.tensor([0, 31], device=device, dtype=torch.int32),
+        torch.zeros(31, device=device, dtype=torch.int32),
+        torch.tensor([1.0, 0.0, 0.0], device=device).expand(31, 3).contiguous(),
+        torch.tensor([0.1, 0.3, 0.6], device=device).expand(31, 3).contiguous(),
+        metadata, torch.device(device),
+    )
+    after = {i: g.get_offset() for i, g in generators.items()}
+    passed = before[0] == after[0] and after[1] > before[1]
+    print(json.dumps({"case": "zero_draft_rng", "before": before, "after": after,
+                      "passed": passed}), flush=True)
+    assert passed, "recovery consumed the RNG of a request with no draft tokens"
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="npu:0")
     parser.add_argument("--samples", type=int, default=8192)
+    parser.add_argument("--case", choices=("all", "zero-draft-rng"), default="all")
     args = parser.parse_args()
     torch.npu.set_device(args.device)
     init_device_properties_triton()
     torch.manual_seed(20261028)
-    seeded_drafts(args.device)
+    if args.case == "all":
+        seeded_drafts(args.device)
     config = SimpleNamespace(
         enable_reduce_sample=False,
         rejection_sampler_config=SimpleNamespace(
@@ -132,9 +154,11 @@ def main():
         ),
     )
     with patch.object(sampler, "get_ascend_config", return_value=config):
-        rejection_positions(args.device)
-        distribution(args.device, args.samples)
-        seeded_rejection(args.device)
+        if args.case == "all":
+            rejection_positions(args.device)
+            distribution(args.device, args.samples)
+            seeded_rejection(args.device)
+        zero_draft_rng(args.device)
     torch.npu.synchronize()
 
 
