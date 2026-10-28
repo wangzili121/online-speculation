@@ -49,6 +49,37 @@ def merge_attention_segments(
     return merged.to(outputs[0].dtype), merged_lse
 
 
+def merge_attention_outputs(
+    outputs: Sequence[torch.Tensor],
+    logsumexp: Sequence[torch.Tensor],
+) -> torch.Tensor:
+    """Merge segmented attention outputs using the native NPU update op."""
+    if not outputs or len(outputs) != len(logsumexp):
+        raise ValueError("outputs and logsumexp must contain the same non-zero segments")
+    shape = outputs[0].shape
+    lse_shape = logsumexp[0].shape
+    if len(shape) < 2 or lse_shape != shape[:-1] + (1,):
+        raise ValueError(f"LSE shape {lse_shape} does not match output shape {shape}")
+    if any(output.shape != shape for output in outputs):
+        raise ValueError("all segment outputs must have the same shape")
+    if any(lse.shape != lse_shape for lse in logsumexp):
+        raise ValueError("all segment LSE tensors must have the same shape")
+
+    if outputs[0].device.type == "npu":
+        import torch_npu
+
+        head_dim = shape[-1]
+        merged, _ = torch_npu.npu_attention_update(
+            [lse.float().reshape(-1) for lse in logsumexp],
+            [output.reshape(-1, head_dim) for output in outputs],
+            0,
+        )
+        return merged.view(shape)
+
+    merged, _ = merge_attention_segments(outputs, logsumexp)
+    return merged
+
+
 def tail_logical_indices(seq_lens: torch.Tensor, width: int) -> torch.Tensor:
     """Build front-packed logical indices for each request's trailing window."""
     if seq_lens.ndim != 1 or width <= 0:
@@ -115,21 +146,31 @@ def gather_paged_cache(
     return torch.where(mask, gathered, torch.zeros_like(gathered))
 
 
-def cache_checksum(cache: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Memory-bounded sampled fingerprint for draft cache debug checks."""
+def cache_checksum(cache: torch.Tensor) -> torch.Tensor:
+    """Keep an exact, memory-bounded sample for draft cache debug checks."""
     flat = cache.reshape(-1)
     max_samples = 65_536
     stride = max((flat.numel() + max_samples - 1) // max_samples, 1)
-    sample = flat[::stride][:max_samples].float()
-    weights = torch.arange(
-        1, sample.numel() + 1, device=sample.device, dtype=torch.float32
-    )
-    return sample.sum(), (sample * weights).sum()
+    return flat[::stride][:max_samples].clone()
 
 
 def assert_cache_unchanged(
-    before: tuple[torch.Tensor, torch.Tensor], cache: torch.Tensor, name: str
+    before: torch.Tensor, cache: torch.Tensor, name: str
 ) -> None:
     after = cache_checksum(cache)
-    if not torch.equal(before[0], after[0]) or not torch.equal(before[1], after[1]):
-        raise RuntimeError(f"Orthrus draft modified target cache {name}")
+    equal = before == after
+    if before.is_floating_point():
+        equal = equal | (torch.isnan(before) & torch.isnan(after))
+    if not bool(torch.all(equal).item()):
+        changed = ~equal
+        changed_count = int(changed.sum().item())
+        finite = changed & torch.isfinite(before) & torch.isfinite(after)
+        max_abs = 0.0
+        if bool(torch.any(finite).item()):
+            max_abs = float(
+                (before[finite].float() - after[finite].float()).abs().max().item()
+            )
+        raise RuntimeError(
+            f"Orthrus draft modified target cache {name}: "
+            f"sample_changed={changed_count}/{before.numel()}, max_abs={max_abs}"
+        )

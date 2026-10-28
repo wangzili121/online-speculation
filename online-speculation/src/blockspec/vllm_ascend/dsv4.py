@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import re
 import weakref
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from types import SimpleNamespace
 
 import torch
@@ -49,7 +49,7 @@ from .dsv4_hybrid import (
     compressed_logical_indices,
     front_pack_indices as _front_pack_indices,
     gather_paged_cache,
-    merge_attention_segments,
+    merge_attention_outputs,
     tail_logical_indices,
 )
 from .head_contract import BLOCK_SIZE, FORMAT_NAME, NUM_SPECULATIVE_TOKENS
@@ -197,18 +197,21 @@ def _normalize_fia_lse(lse: torch.Tensor, batch: int, queries: int) -> torch.Ten
 def _fia_segment(
     query: torch.Tensor,
     key_value: torch.Tensor,
-    query_lengths: list[int],
-    key_lengths: list[int],
+    query_lengths: Sequence[int] | torch.Tensor,
+    key_lengths: Sequence[int] | torch.Tensor,
     scale: float,
+    *,
+    allow_empty: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     import torch_npu
 
     if query.ndim != 4 or key_value.ndim != 4:
         raise ValueError("Orthrus FIA expects BSND query and key/value")
+    key_value = key_value.contiguous()
     result = torch_npu.npu_fused_infer_attention_score(
         query,
-        key_value.contiguous(),
-        key_value.contiguous(),
+        key_value,
+        key_value,
         num_heads=query.shape[2],
         num_key_value_heads=key_value.shape[2],
         input_layout="BSND",
@@ -225,12 +228,14 @@ def _fia_segment(
         raise RuntimeError("Ascend FIA did not return output and LSE")
     output, lse = result[:2]
     lse = _normalize_fia_lse(lse, query.shape[0], query.shape[1])
-    if any(length == 0 for length in key_lengths):
+    empty = None
+    if allow_empty and torch.is_tensor(key_lengths):
+        empty = key_lengths.to(device=output.device) == 0
+    elif not torch.is_tensor(key_lengths) and any(length == 0 for length in key_lengths):
         empty = torch.tensor(
-            [length == 0 for length in key_lengths],
-            dtype=torch.bool,
-            device=output.device,
+            [length == 0 for length in key_lengths], dtype=torch.bool, device=output.device
         )
+    if empty is not None:
         output = torch.where(
             empty.view(-1, 1, 1, 1), torch.zeros_like(output), output
         )
@@ -461,7 +466,7 @@ class _OrthrusAttentionLayer(nn.Module):
             query_bsnd,
             swa_kv,
             query_lengths,
-            [int(value) for value in swa_lengths.detach().cpu().tolist()],
+            swa_lengths,
             draft_impl.softmax_scale,
         )
         outputs.append(out)
@@ -533,8 +538,9 @@ class _OrthrusAttentionLayer(nn.Module):
                     flat_query,
                     flat_kv,
                     [1] * (batch * BLOCK_SIZE),
-                    [int(value) for value in flat_lengths.detach().cpu().tolist()],
+                    flat_lengths,
                     draft_impl.softmax_scale,
+                    allow_empty=True,
                 )
                 outputs.append(out.view_as(query_bsnd))
                 lses.append(lse.view(batch, BLOCK_SIZE, query_bsnd.shape[2], 1))
@@ -549,8 +555,9 @@ class _OrthrusAttentionLayer(nn.Module):
                     query_bsnd,
                     compressed_kv,
                     query_lengths,
-                    [int(value) for value in compressed_lengths.detach().cpu().tolist()],
+                    compressed_lengths,
                     draft_impl.softmax_scale,
+                    allow_empty=True,
                 )
                 outputs.append(out)
                 lses.append(lse)
@@ -588,6 +595,7 @@ class _OrthrusAttentionLayer(nn.Module):
         debug = os.environ.get("ORTHRUS_VERIFY_CACHE_CHECKSUM", "0") == "1"
         checksums = []
         if debug:
+            torch.npu.synchronize()
             for index, cache in enumerate(target_kv):
                 if torch.is_tensor(cache):
                     checksums.append((index, cache_checksum(cache)))
@@ -623,7 +631,7 @@ class _OrthrusAttentionLayer(nn.Module):
         )
         outputs.append(torch.zeros_like(local_out))
         lses.append(sink_lse)
-        merged, _ = merge_attention_segments(outputs, lses)
+        merged = merge_attention_outputs(outputs, lses)
         merged = merged.reshape(num_tokens, query.shape[1], query.shape[2])
         torch.ops._C_ascend.inplace_partial_rotary_mul(
             merged.unsqueeze(1),
@@ -635,6 +643,7 @@ class _OrthrusAttentionLayer(nn.Module):
         output = torch.empty_like(hidden_states)
         draft_impl._forward_o_proj(merged, output)
         if debug:
+            torch.npu.synchronize()
             for index, before in checksums:
                 assert_cache_unchanged(before, target_kv[index], f"layer-{self.layer_idx}:{index}")
         return output

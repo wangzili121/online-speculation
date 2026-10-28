@@ -9,6 +9,7 @@ from blockspec.vllm_ascend.dsv4_hybrid import (
     compressed_logical_indices,
     front_pack_indices,
     gather_paged_cache,
+    merge_attention_outputs,
     merge_attention_segments,
     tail_logical_indices,
 )
@@ -21,6 +22,13 @@ def test_cache_checksum_detects_sampled_offsetting_edits():
     cache[1] = -1
     with pytest.raises(RuntimeError, match="modified target cache"):
         assert_cache_unchanged(before, cache, "test")
+
+
+def test_cache_checksum_treats_unchanged_nan_as_equal():
+    cache = torch.tensor([1.0, float("nan"), 3.0])
+    before = cache_checksum(cache)
+
+    assert_cache_unchanged(before, cache, "test")
 
 
 def test_attention_segment_merge_matches_one_softmax():
@@ -47,6 +55,9 @@ def test_attention_segment_merge_matches_one_softmax():
     assert torch.allclose(merged, expected, atol=1e-5, rtol=1e-5)
     assert torch.allclose(
         merged_lse, torch.logsumexp(all_scores, dim=-1, keepdim=True)
+    )
+    assert torch.allclose(
+        merge_attention_outputs(outputs, lses), expected, atol=1e-5, rtol=1e-5
     )
 
 
