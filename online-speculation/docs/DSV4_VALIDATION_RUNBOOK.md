@@ -58,6 +58,29 @@ EOS 必须取实际模型的配置；本次 0731 权重是 `1`。不要套用其
 
 `trace_dsv4_native_layers.py` 可在独立离线 engine 中逐层记录相同位置的激活，接收 `--model`、`--baseline`、`--candidate`、`--output` 和 `--tp`。`--no-dsa-overlap` 做原生配置对照；`--benchmark-prolog` 在移除诊断 hooks 后，比较真实权重下 Q/KV 共用量化前后的结果及耗时。该脚本会加载模型、使用指定 TP 数量的卡，不能与服务同时占用同一组卡。
 
+## 真实引擎状态检查
+
+```bash
+# 使用独占的两张可见卡；保留镜像原有 PYTHONPATH，不能覆盖 CANN 的 acl 路径。
+PYTHONPATH="$PWD/src:$PWD/scripts:${PYTHONPATH:-}" \
+VLLM_BATCH_INVARIANT=1 ASCEND_RT_VISIBLE_DEVICES=0,1 \
+python scripts/check_dsv4_engine_state.py \
+  --model local/models/dsv4-4l --head local/models/head-4l --tp 2 \
+  --kv-cache-mib 1024 --output local/check-engine-state \
+  --natural-baseline local/check-orthrus/snapshot.json
+```
+
+此脚本自行启动和退出离线 engine，不需要 API 服务；仍使用真实模型、Orthrus proposer、验证器和 scheduler。只在测试 worker 中，真实 draft 运行后将候选替换为可控序列，配合 greedy 单 token 白名单，触发 0–31 个候选被接受、连续拒绝和整块接受。四个请求使用不同 token、输入长度和输出预算，并测试换序、取消后的新请求。白名单输出不能证明任意请求的模型数值正确，因此另做两类检查：
+
+- 逐轮核对请求 ID、候选传递、接受数量、anchor/MASK、有效历史长度和各 cache group 的分页表；两个 TP rank 的状态轨迹必须相同。
+- 在同一串行调度及同一候选序列下，对照主模型完整词表 logits 的字节哈希：先运行两次完全绕过 Orthrus proposer 的 token-only 参考，再运行真实 draft，以及仅跳过 head 计算的诊断路径。首次 token-only 运行预先指定为参考，不能事后挑选匹配的一次；同时保留参考路径自身的重复性结果。正式推理代码不变。
+
+脚本开启全量 cache guard，每层、每种 batch 大小首次全量快照，随后抽样；默认将每 rank KV 池限制为 1 GiB，避免诊断快照和比较临时张量耗尽显存。这是测试配置，不是生产性能配置。`--natural-baseline` 可选，用于再运行无 token 约束的串行/并发文本请求；其中的输出差异单独记录，不能用受控输出通过掩盖。
+
+`state_checks_passed` 代表状态检查，`adaptation_reference_passed` 要求真实路径匹配预定参考且匹配仅跳过 head 的诊断路径；二者通过时脚本返回 0。`reference_repeat_exact`、`all_shadow_logits_exact` 和 `natural_exact` 保留其他对照原始结果，不会因为适配检查通过而改成 true。参考自身不稳定不能豁免适配与预定参考不一致的情况。
+
+每 rank 的逐轮证据保存在 `events-rank*.jsonl`。这不覆盖真实训练 head 的接受率、随机采样高接受率的引擎路径、抢占后的换入换出、物理页强制复用或 graph；完整模型必须另跑。不要把小模型测试成功写成完整生产验收。
+
 ## 八卡窗口
 
 1. 确认完整模型和 head 的哈希、固定镜像及代码版本，先确认八卡不被其他任务使用。

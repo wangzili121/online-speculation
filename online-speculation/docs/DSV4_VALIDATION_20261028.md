@@ -2,7 +2,7 @@
 
 **还不能宣称“推理已完全验收，只差训练好的 head”。此前完整模型的短 smoke 只证明链路能跑，不能覆盖 draft 语义、长输出和并发状态。**
 
-**验收范围更新：已在纯主模型中复现并归因的数值差异，仅记录为上游限制，不要求我们修复，也不单独阻塞 Orthrus 适配验收。** 下文的严格对照失败仍如实保留；其中已归因的两个 greedy 案例不再继续追查主模型内部原因。未归因的并发差异、真实 engine 的高接受长度提交/回滚，以及完整模型复验仍属于我们的工作，不能因上游也有差异而全部豁免。具体标准见 [验收范围](DSV4_VALIDATION_RUNBOOK.md#验收范围)。
+**验收范围更新：已在纯主模型中复现并归因的数值差异，仅记录为上游限制，不要求我们修复，也不单独阻塞 Orthrus 适配验收。** 下文按时间保留严格对照结果；已归因的两个 greedy 案例不再继续追查主模型内部原因。后续已补做少卡真实 engine 的受控接受/回滚检查，并完成原并发案例归因，见“真实引擎状态验收”。完整模型、概率 draft 的随机高接受率等仍需复验，不能因上游也有差异而全部豁免。具体标准见 [验收范围](DSV4_VALIDATION_RUNBOOK.md#验收范围)。
 
 ## 本次修正
 
@@ -52,9 +52,9 @@ C4 native 路径需要一个全零的辅助 query RoPE，以及目标 key 的只
 
 ## 仍需验收
 
-1. 只继续定位尚未归因的混合长度并发等差异；下文已在纯主模型中复现并归因的两个 greedy 案例不再阻塞适配验收。少卡 seed 回放的修复仍需完整模型和长上下文复验。
+1. 已测的混合长度并发案例已完成归因，不再阻塞少卡适配验收；完整模型或新增请求出现的未知差异仍需单独判断。少卡 seed 回放的修复仍需完整模型和长上下文复验。
 2. 完整 43 层、TP=8 复验，包括长输出、长上下文和服务重启。四层通过不能替代这一项。
-3. 高接受率下的真实 engine KV 提交/回滚；初始化 head 接受率低，单测覆盖所有拒绝位置不等于服务已覆盖整块接受。
+3. 受控 greedy 候选已在真实 engine 覆盖全部接受长度及整块接受；概率 draft 在 temperature>0 下的高接受率引擎路径、真实训练 head 的表现仍需验收。不能把受控候选等同于训练 head 的质量验证。
 4. 1M 上下文、Ascend graph、训练 head 的性能收益及长时间稳定性。当前不将这些标为通过。
 
 ## 167 少卡复验与修复
@@ -111,6 +111,30 @@ Q/KV 计时移除了所有逐层诊断 hooks，包含 host dispatch 和临时缓
 实际服务的 NPU profiler 也确认了现成算子的使用：每 rank 记录到 80 次 FIA、16 次 SparseFlashAttention、64 次 AttentionUpdate，以及原生 QLI、量化 matmul 和融合 MoE。这次服务布局的 C128 使用直接分页 FIA，小分页 sparse 优化是另行测过的兼容路径，不能把它的约三成局部收益套到本服务。该 profile 开启了 cache guard，Slice/AsStrided 等检查开销很大，只用于确认调用路径，不用作生产耗时结论。汇总见 `local/operator-profile-prolog/operator-summary.json`。
 
 本轮结束后，167 的测试容器只剩 `sleep infinity`，0/1 两卡无 NPU 进程；未停止其他用户的任务。原始 trace、局部 benchmark、服务结果和 profiler 汇总另行归档，不提交权重或大体积 profiler 数据到代码仓库。
+
+### 真实引擎状态验收
+
+新增 `check_dsv4_engine_state.py`，仍使用 167 的 0/1 卡、实际四层 W8A8 权重、初始化 head、TP2、eager。正式 proposer 和算子实现没有改动；所有注入和诊断都在独立测试 worker 内。
+
+| 验证项 | 本轮结果 |
+| --- | --- |
+| 实际接受/拒绝流程 | 真实 draft 先运行，再仅在测试出口注入候选；覆盖接受 0–31 个候选、连续拒绝和整块接受，逐轮采样数量及最终输出符合预期 |
+| 请求与历史对应 | batch=1/2/3/4、输入长度 127/128/511/513、请求换序；逐轮检查 anchor/MASK、有效历史长度和各 cache group 分页表，通过 |
+| KV 只读 | 每层、每种 batch 首次全量 cache 快照，后续轮次抽样；未发现 draft 修改目标 cache |
+| 多轮与取消 | 最长受控输出 600 token，跨历史页和压缩组；取消后新请求正确。未强制制造物理页复用或内存抢占 |
+| TP 一致性 | 两个 rank 的请求、采样及状态轨迹哈希相同 |
+| 对目标计算的影响 | 预先指定首次 token-only 运行作为参考，完全绕过 Orthrus proposer；真实 Orthrus 与该参考的 45 轮完整词表 logits 字节哈希全部相同，仅跳过 head 的诊断路径也与真实路径相同 |
+| 原混合长度并发差异 | 4 例中 3 例逐 token 相同；剩余一例的共同前缀、分歧位置和两个候选 token，均与之前纯主模型 prefill/decode 的反例完全对应，按已知限制归档 |
+
+参考路径自身重复两次，在第 32–44 个验证步仍出现 logits 差异；此时两次都没有执行 Orthrus proposer，不能归咎于 draft 执行。保留该不一致，不继续追查其内部原因；同时要求真实路径匹配预先固定的第一组参考，不能因为参考不稳定就放行我们的差异。`state_checks_passed`、`adaptation_reference_passed` 与参考自身是否稳定分别记录。
+
+验证过程中的失败记录也保留：首轮启动覆盖了 CANN 的 `PYTHONPATH`，导致缺少 `acl`；全量 guard 初次使用自动分配的约 15 GiB KV 池，快照和临时比较张量导致 OOM。修正启动环境，并将此测试的每 rank KV 池固定为 1 GiB 后完成检查，没有缩短上述测试用例或放宽数值阈值。
+
+这些结果只支持“四层 TP2、greedy 受控候选的引擎适配检查”，不等同于完整 43 层、随机高接受率、graph 或性能验收。测试命令及各结果字段见 [真实引擎状态检查](DSV4_VALIDATION_RUNBOOK.md#真实引擎状态检查)。
+
+最终复跑保存在 167 的 `local/engine-state-v6/`，脚本退出码为 0：`state_checks_passed=true`、`adaptation_reference_passed=true`；`reference_repeat_exact=false` 和 `natural_exact=[false,true,true,true]` 如实保留。每 rank 记录 337 个受控请求验证步、429 个 draft 请求步，覆盖 batch 1–4；两个 rank 状态轨迹一致。CPU 最终回归为 135 passed、3 skipped，head/评估契约自测通过。旧轮次的失败记录没有覆盖，原始结果归档为 `artifacts/dsv4-20261028/engine-state-167.tar.gz`。
+
+结束检查确认 167 的 0/1 卡没有 NPU 进程，测试容器只剩空闲主进程；111 的八卡仍有运行任务，本轮未做完整模型 TP8 验证。
 
 ## 复现入口
 
