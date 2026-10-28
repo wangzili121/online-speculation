@@ -48,6 +48,7 @@ from .dsv4_hybrid import (
     cache_checksum,
     c4_history_indices,
     gather_paged_cache,
+    history_and_block_mask,
     merge_attention_outputs,
     tail_logical_indices,
 )
@@ -203,6 +204,7 @@ def _fia_segment(
     *,
     allow_empty: bool = False,
     block_table: torch.Tensor | None = None,
+    atten_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     import torch_npu
 
@@ -224,7 +226,7 @@ def _fia_segment(
         input_layout="BSND",
         sparse_mode=0,
         scale=scale,
-        atten_mask=None,
+        atten_mask=atten_mask,
         block_table=block_table,
         block_size=block_size,
         actual_seq_lengths=query_lengths,
@@ -254,6 +256,18 @@ def _fia_segment(
     return output, lse
 
 
+def _swa_block_segment(query, history, local, lengths, scale):
+    # Both branches use the same query and KV format. One softmax avoids two
+    # FIA launches and an intermediate normalized output; only padding is masked.
+    kv = torch.cat((history, local), dim=1)
+    mask = history_and_block_mask(lengths, history.shape[1], local.shape[1])
+    batch = query.shape[0]
+    return _fia_segment(
+        query, kv, [query.shape[1]] * batch, [kv.shape[1]] * batch, scale,
+        atten_mask=mask,
+    )
+
+
 def _c128_segment(query, cache, block_table, lengths, maximum, scale):
     # The pinned A2 FIA only supports paged blocks divisible by 128.
     # DSV4 can allocate smaller compressed pages; keep their gather fallback.
@@ -268,6 +282,49 @@ def _c128_segment(query, cache, block_table, lengths, maximum, scale):
     return _fia_segment(
         query, kv, [BLOCK_SIZE] * query.shape[0], lengths, scale, allow_empty=True,
     )
+
+
+def _c4_segment(query, cache, block_table, indices, lengths, scale, *, validate=False):
+    import torch_npu
+
+    batch, width, heads, dim = query.shape
+    counts = (indices >= 0).sum(-1)
+    backend = os.environ.get("ORTHRUS_C4_BACKEND", "sparse")
+    if backend == "gather":
+        kv = gather_paged_cache(cache, block_table, indices, validate=validate)
+        out, lse = _fia_segment(
+            query.reshape(batch * width, 1, heads, dim),
+            kv.reshape(batch * width, indices.shape[-1], 1, dim),
+            [1] * (batch * width), counts.flatten(), scale, allow_empty=True,
+        )
+        return out.view_as(query), lse.view(batch, width, heads, 1)
+    if backend != "sparse":
+        raise ValueError("ORTHRUS_C4_BACKEND must be sparse or gather")
+    if validate:
+        logical_blocks = indices.clamp_min(0).long() // cache.shape[1]
+        if int(logical_blocks.max()) >= block_table.shape[1]:
+            raise ValueError("C4 index exceeds block table capacity")
+        batch_ids = torch.arange(batch, device=indices.device)[:, None, None]
+        physical = block_table[batch_ids, logical_blocks]
+        if bool(((indices >= 0) & ((physical < 0) | (physical >= cache.shape[0]))).any()):
+            raise ValueError("C4 index maps to an invalid physical cache block")
+
+    # The MLA API requires a separate RoPE pair. DSV4 already includes RoPE in
+    # its 512-d query/key, so a zero auxiliary query preserves q@k exactly.
+    # key_rope is a strided read-only view, not another KV allocation.
+    auxiliary_query = torch.zeros(batch, width, heads, 64, device=query.device, dtype=query.dtype)
+    out, maximum, total = torch_npu.npu_sparse_flash_attention(
+        query, cache, cache, indices.to(torch.int32).unsqueeze(2), scale,
+        block_table=block_table,
+        actual_seq_lengths_query=torch.full_like(lengths, width),
+        actual_seq_lengths_kv=lengths,
+        query_rope=auxiliary_query, key_rope=cache[..., -64:],
+        sparse_mode=0, attention_mode=2,
+        layout_query="BSND", layout_kv="PA_BSND", return_softmax_lse=True,
+    )
+    lse = (maximum + total.log()).squeeze(1).unsqueeze(-1)
+    empty = (counts == 0)[..., None, None]
+    return out.masked_fill(empty, 0), lse.masked_fill(empty, -torch.inf)
 
 
 class _OrthrusAttentionLayer(nn.Module):
@@ -464,6 +521,7 @@ class _OrthrusAttentionLayer(nn.Module):
         target_kv: tuple[torch.Tensor, ...],
         layer_metadata,
         layer_name: str,
+        local_kv: torch.Tensor,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         draft_impl = self.self_attn.dsa_attn.dsa_attn.impl
         validate_cache = os.environ.get("ORTHRUS_VERIFY_CACHE_CHECKSUM", "0") in {"1", "full"}
@@ -479,7 +537,6 @@ class _OrthrusAttentionLayer(nn.Module):
                 f"{query.shape[0]} tokens for {batch} requests"
             )
         query_bsnd = query.view(batch, BLOCK_SIZE, query.shape[1], query.shape[2])
-        query_lengths = [BLOCK_SIZE] * batch
         outputs: list[torch.Tensor] = []
         lses: list[torch.Tensor] = []
 
@@ -491,10 +548,10 @@ class _OrthrusAttentionLayer(nn.Module):
             swa_indices,
             validate=validate_cache,
         )
-        out, lse = _fia_segment(
+        out, lse = _swa_block_segment(
             query_bsnd,
             swa_kv,
-            query_lengths,
+            local_kv.view(batch, BLOCK_SIZE, 1, local_kv.shape[-1]),
             swa_lengths,
             draft_impl.softmax_scale,
         )
@@ -528,34 +585,18 @@ class _OrthrusAttentionLayer(nn.Module):
                     if topk.shape[1] != 1:
                         raise RuntimeError(f"unexpected C4 top-k shape: {tuple(topk.shape)}")
                     topk = topk[:, 0]
-                topk = topk.view(batch, BLOCK_SIZE, -1).to(torch.long)
-                topk, valid = c4_history_indices(topk, seq_lens)
-                compressed_kv = gather_paged_cache(
+                topk, _ = c4_history_indices(topk.view(batch, BLOCK_SIZE, -1), seq_lens)
+                out, lse = _c4_segment(
+                    query_bsnd,
                     compress_cache,
                     compressed_req.block_table,
                     topk,
+                    torch.div(seq_lens, 4, rounding_mode="floor"),
+                    draft_impl.softmax_scale,
                     validate=validate_cache,
                 )
-                flat_query = query_bsnd.reshape(
-                    batch * BLOCK_SIZE, 1, query_bsnd.shape[2], query_bsnd.shape[3]
-                )
-                flat_kv = compressed_kv.reshape(
-                    batch * BLOCK_SIZE,
-                    compressed_kv.shape[2],
-                    compressed_kv.shape[3],
-                    compressed_kv.shape[4],
-                )
-                flat_lengths = valid.sum(dim=-1).reshape(-1)
-                out, lse = _fia_segment(
-                    flat_query,
-                    flat_kv,
-                    [1] * (batch * BLOCK_SIZE),
-                    flat_lengths,
-                    draft_impl.softmax_scale,
-                    allow_empty=True,
-                )
-                outputs.append(out.view_as(query_bsnd))
-                lses.append(lse.view(batch, BLOCK_SIZE, query_bsnd.shape[2], 1))
+                outputs.append(out)
+                lses.append(lse)
             else:
                 compressed_lengths = torch.div(seq_lens, 128, rounding_mode="floor")
                 maximum = getattr(compressed_req, "max_seq_lens", None)
@@ -631,21 +672,13 @@ class _OrthrusAttentionLayer(nn.Module):
         )
         batch = num_tokens // BLOCK_SIZE
         outputs, lses = self._history_segments(
-            query, hidden_states, qr, qr_scale, target_kv, layer_metadata, layer_name
+            query, hidden_states, qr, qr_scale, target_kv, layer_metadata, layer_name,
+            local_kv,
         )
-        local_out, local_lse = _fia_segment(
-            query.view(batch, BLOCK_SIZE, query.shape[1], query.shape[2]),
-            local_kv.view(batch, BLOCK_SIZE, 1, local_kv.shape[-1]),
-            [BLOCK_SIZE] * batch,
-            [BLOCK_SIZE] * batch,
-            draft_impl.softmax_scale,
-        )
-        outputs.append(local_out)
-        lses.append(local_lse)
         sink_lse = draft_impl.attn_sink.view(1, 1, -1, 1).expand(
             batch, BLOCK_SIZE, -1, -1
         )
-        outputs.append(torch.zeros_like(local_out))
+        outputs.append(torch.zeros_like(outputs[0]))
         lses.append(sink_lse)
         merged = merge_attention_outputs(outputs, lses)
         merged = merged.reshape(num_tokens, query.shape[1], query.shape[2])

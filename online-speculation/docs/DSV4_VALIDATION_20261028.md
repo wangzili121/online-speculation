@@ -29,6 +29,25 @@
 
 C128 另测了直接分页 FIA：128-token 页下约 535–630 us，gather + FIA 约 1,052–1,298 us；输出和 LSE 一致。当前 A2 FIA 拒绝 32-token 分页，因此该布局保留原 gather 路径。8/16 heads、32/128 页、空历史到 8,192 个压缩行共 16 组测试通过。不能将这一收益套用到不兼容的缓存布局。
 
+### 后续单卡优化
+
+完整模型 TP8 两次启动均在 NPU 驱动初始化超时，未进入权重加载。随后按要求停止重试八卡，改用空闲卡继续测试现成算子；没有停止其他用户的任务，也没有开发新 kernel。
+
+| 路径 | 修改及实测结果 |
+|---|---|
+| SWA + 块内 Attention | 临时拼接 KV，一次 FIA 计算，mask 只屏蔽历史 padding。包含 sink 合并的 36 组测试（batch 1/2/4、heads 8/16/32、历史 0/1/127/128）通过 FP32 对照；约 0.67–0.86 ms 降至 0.61–0.66 ms，减少约 9%–24% |
+| C4 稀疏历史 | 当前镜像的 `npu_sparse_flash_attention` 实际支持分页、非因果及 softmax max/sum 输出。六组测试覆盖空历史、短历史、Top-512、多请求和 262,144 个压缩行；通过 FP32 对照、LSE 对照和完整 cache 不变检查。生产适配函数约 0.63–0.68 ms，gather + FIA 约 2.2–4.7 ms |
+| C4 兼容回退 | 保留 `ORTHRUS_C4_BACKEND=gather`。多请求时改用扁平 `index_select`；单请求和 SWA 保留原索引路径，避免实测回退 |
+| 合并后的完整数学路径 | SWA/块内联合结果、压缩历史和 sink 再合并；32 heads 的独立 FP32 对照最大绝对误差约 0.00383，缓存检查通过 |
+
+C4 native 路径需要一个全零的辅助 query RoPE，以及目标 key 的只读切片，以满足现成 MLA 接口；附加项为零，不改变 DSV4 的 Attention 公式。切片本身不复制 KV，但算子仍有 workspace：测试中其临时峰值约 72–118 MiB，gather 路径约 34–131 MiB，不能声称所有场景都省内存。
+
+上述时间是局部 eager 路径耗时，不是整模型吞吐提升。短历史 C4 的 FP32 最大绝对误差约 0.0108，其余非空案例约 0.0012–0.0026；这是 BF16 算子容差验证，不代表服务逐 token 一致性已经通过。
+
+优化代码随后在 DSV4 前四层、W8A8、TP=2 实际接入：10 组 greedy 请求（最长输出 160 token、输入 4K）、16 组随机请求、batch 1/2/3/4 均跑完，SWA/C4/C128 的抽样 cache guard 未报错。两次串行 greedy 重复一致；EOS、显式 stop、SSE 取消、取消后重放通过。
+
+**服务正确性仍未通过：混合长度并发 greedy 与串行记录有差异；随机请求并发后串行回放仍只有 1/4 个 seed 一致。** 本次没有把局部算子通过或四层服务能运行解释成完整模型验收。CPU 回归为 74 passed、3 skipped（需要 CUDA graph 硬件的用例）。
+
 ## 仍需验收
 
 1. 继续定位确定性模式下的跨服务 greedy 差异及随机采样并发回放差异。按请求 seed 的独立测试通过，不能代替端到端复现通过。
@@ -44,5 +63,7 @@ C128 另测了直接分页 FIA：128-token 页下约 535–630 us，gather + FIA
 - `scripts/check_dsv4_rejection_npu.py`：真实 Ascend sampler 及请求级 seed。
 - `scripts/validate_dsv4_service.py` 配合 `configs/dsv4/correctness-extended.json`：服务快照和对照。
 - `scripts/check_dsv4_lifecycle.py`：混合长度并发、停止、取消和取消后的重放。
+- `scripts/benchmark_dsv4_attention_paths.py --case joined|gather|sparse`：现有算子路径对照；`sparse` 同时检查 FP32 参考、完整缓存和临时峰值内存。
+- `scripts/check_dsv4_sampling_replay.py`：区分串行重复、并发换序和并发同 seed，结果逐阶段保存。
 
 服务对照应同时设置相同的 `VLLM_BATCH_INVARIANT`；普通模式的不稳定结果保留，不用确定性测试覆盖或抹去。单看 API 首 token 的分布也不能验证 speculative rejection，因为它通常还没经过投机验证。

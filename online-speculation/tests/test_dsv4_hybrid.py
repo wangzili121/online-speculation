@@ -104,3 +104,33 @@ def test_hybrid_index_helpers():
     packed, valid = front_pack_indices(torch.tensor([[4, -1, 7, -1, 2]]))
     assert packed.tolist() == [[4, 7, 2, -1, -1]]
     assert valid.tolist() == [[True, True, True, False, False]]
+
+
+def test_history_and_block_mask_keeps_all_local_positions_visible():
+    from blockspec.vllm_ascend.dsv4_hybrid import history_and_block_mask
+
+    lengths = torch.tensor([0, 1, 127, 128])
+    for width in (16, 32, 64):
+        mask = history_and_block_mask(lengths, 128, width)
+        assert mask.shape == (4, 1, width, 128 + width)
+        assert not mask[..., 128:].any()
+        for row, length in enumerate(lengths.tolist()):
+            assert not mask[row, ..., :length].any()
+            assert mask[row, ..., length:128].all()
+
+
+@pytest.mark.parametrize("noncontiguous", [False, True])
+def test_sparse_gather_per_query_with_padding_and_page_reordering(noncontiguous):
+    cache = torch.arange(4*4*1*8).view(4, 4, 1, 8)
+    if noncontiguous:
+        cache = cache[..., ::2]
+    table = torch.tensor([[3, 1], [0, 2]])
+    indices = torch.tensor([[[0, 7, -1], [5, 2, 1]], [[7, 0, 4], [-1, -1, -1]]])
+    result = gather_paged_cache(cache, table, indices, validate=True)
+    expected = torch.zeros_like(result)
+    for batch in range(2):
+        for query in range(2):
+            for column, logical in enumerate(indices[batch, query].tolist()):
+                if logical >= 0:
+                    expected[batch, query, column] = cache[table[batch, logical//4], logical%4]
+    torch.testing.assert_close(result, expected, atol=0, rtol=0)

@@ -21,7 +21,7 @@ def main() -> int:
 
     import torch
 
-    from blockspec.vllm_ascend.dsv4 import _fia_segment
+    from blockspec.vllm_ascend.dsv4 import _fia_segment, _swa_block_segment
     from blockspec.vllm_ascend.dsv4_hybrid import (
         assert_cache_unchanged,
         cache_checksum,
@@ -127,6 +127,13 @@ def main() -> int:
     scores = torch.cat([scores, sink.expand(batch, queries, heads, 1)], dim=-1)
     dense = torch.einsum("bqhk,bkhd->bqhd", scores.softmax(-1)[..., :-1], keys)
     torch.testing.assert_close(native.float(), dense, atol=args.atol, rtol=args.rtol)
+    joined, joined_lse = _swa_block_segment(
+        query, all_keys[0], all_keys[2], torch.tensor(all_lengths[0], device=device), scale
+    )
+    joined = merge_attention_outputs(
+        [joined, segments[1], segments[-1]], [joined_lse, lses[1], lses[-1]]
+    )
+    torch.testing.assert_close(joined.float(), dense, atol=args.atol, rtol=args.rtol)
 
     timings = {}
     for name, fn in (("torch_merge", merge_attention_segments),
@@ -177,6 +184,7 @@ def main() -> int:
                 "block_size": queries,
                 "query_shape": list(query.shape),
                 "native_merge_dense_max_abs_error": float((native.float() - dense).abs().max()),
+                "joined_swa_block_dense_max_abs_error": float((joined.float() - dense).abs().max()),
                 "merge_timings": timings,
                 "fia_lse_layout": "B-Q-H-1",
                 "segments_merged": len(segments),

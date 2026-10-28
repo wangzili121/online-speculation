@@ -100,6 +100,15 @@ def tail_logical_indices(seq_lens: torch.Tensor, width: int) -> torch.Tensor:
     return torch.where(offsets[None, :] < lengths[:, None], indices, -1)
 
 
+def history_and_block_mask(
+    history_lengths: torch.Tensor, history_width: int, block_width: int
+) -> torch.Tensor:
+    """Mask padded history, while all queries see the entire temporary block."""
+    offsets = torch.arange(history_width + block_width, device=history_lengths.device)
+    masked = (offsets[None, :] >= history_lengths[:, None]) & (offsets[None, :] < history_width)
+    return masked[:, None, None, :].expand(-1, 1, block_width, -1).contiguous()
+
+
 def compressed_logical_indices(
     seq_lens: torch.Tensor, ratio: int, maximum: int | None = None
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -150,7 +159,17 @@ def gather_paged_cache(
     physical_blocks = block_table[batch_ids, logical_blocks]
     if validate and torch.any(valid & (physical_blocks < 0)):
         raise ValueError("logical index maps to an unallocated cache block")
-    gathered = cache[physical_blocks.clamp_min(0).long(), safe % block_size]
+    physical_blocks = physical_blocks.clamp_min(0).long()
+    offsets = safe % block_size
+    if logical_indices.ndim == 3 and logical_indices.shape[0] > 1 and cache.is_contiguous():
+        # C4 has a different sparse list per query. A single row index avoids
+        # materializing the much larger two-index gather on the NPU.
+        rows = physical_blocks * block_size + offsets
+        gathered = cache.flatten(0, 1).index_select(0, rows.flatten()).view(
+            *logical_indices.shape, *cache.shape[2:])
+        mask = ~valid.view(valid.shape + (1,) * (gathered.ndim - valid.ndim))
+        return gathered.masked_fill(mask, 0)
+    gathered = cache[physical_blocks, offsets]
     mask = valid.view(valid.shape + (1,) * (gathered.ndim - valid.ndim))
     return torch.where(mask, gathered, torch.zeros_like(gathered))
 

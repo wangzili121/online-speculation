@@ -82,19 +82,29 @@ It does not allocate another DSV4 backbone or another target history cache.
 
 For every 32-position draft block (anchor plus 31 proposals):
 
-1. SWA layers gather the committed target SWA history.
+1. Gather committed SWA history and concatenate the temporary local block.
+   One non-causal FIA call masks only the padded history positions.
 2. C4 layers read target compressed KV and indexer-key caches, then execute the
-   diffusion-side query/indexer without updating either cache.
+   diffusion-side query/indexer without updating either cache. Native Sparse
+   Flash Attention reads the selected pages without an explicit KV gather.
 3. C128 layers read target compressed KV history. FIA reads compatible
    128-token pages directly; smaller pages retain the gather path.
 4. The 32 positions attend bidirectionally inside their local block.
-5. History, local block, and attention-sink output/LSE are merged with an exact
-   log-sum-exp reduction.
+5. The combined SWA/local result, compressed-history result (if any), and sink
+   are merged once using native `npu_attention_update`.
 6. The regular vLLM verifier commits only the accepted prefix; the draft path
    never writes target KV.
 
-The first implementation intentionally gathers paged history and uses Ascend
-FIA because that operation returns the LSE needed for exact segment merging.
+The pinned image's Sparse Flash Attention was tested with paged KV,
+`sparse_mode=0`, and returned softmax max/sum. Their sum in log space supplies
+the LSE for exact merging. This actual capability is broader than the bundled
+README states. The MLA interface requires auxiliary RoPE tensors: a zero query
+and a read-only slice of the existing key preserve the DSV4 score exactly.
+This is not an extra positional rotation. Set `ORTHRUS_C4_BACKEND=gather` to
+use the previous gather/FIA implementation on an incompatible runtime.
+Native sparse attention is faster in the measured cases but can require more
+temporary workspace, particularly for a single request with long history.
+
 The C4 QLI operator returns compressed-row indices, which must not be divided
 by four again. Orthrus uses non-causal QLI metadata (`sparse_mode=0`) so all
 32 queries can search the complete committed history. Incomplete C4/C128
