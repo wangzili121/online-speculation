@@ -52,7 +52,8 @@ class Window:
         temporary = path.with_suffix(".tmp")
         temporary.write_text(json.dumps(self.report, indent=2) + "\n")
         temporary.replace(path)
-        print(json.dumps({"state": self.report["state"], **fields}), flush=True)
+        print(json.dumps({"state": self.report["state"],
+                          "updated_utc": self.report["updated_utc"], **fields}), flush=True)
 
     def snapshot(self):
         return subprocess.check_output([self.args.npu_smi, "info"], text=True, timeout=10)
@@ -101,12 +102,21 @@ class Window:
     def restart(self):
         subprocess.run(["docker", "restart", "-t", "20", self.args.container],
                        check=True, timeout=90, stdout=subprocess.DEVNULL)
-        # Restart kills only our dedicated container's workers. If somebody
-        # acquired a device meanwhile, do not start the next service over them.
-        self.wait_free(60)
+
+    def finish_service(self, process, *, failed):
+        try:
+            self.restart()
+            process.wait(timeout=30)
+        except Exception as error:
+            self.save(cleanup_error=repr(error))
+            if not failed:
+                raise
 
     def service(self, kind, suffix, *, extended=False):
         name = f"{kind}-{suffix}"
+        # Check before the next launch, not during cleanup: a new external job
+        # must not hide the original service error with an idle-wait timeout.
+        self.wait_free(60)
         self.save("running", phase=name)
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", self.args.port))
@@ -114,6 +124,7 @@ class Window:
         with (self.args.output / f"{name}-server.log").open("w") as log:
             process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
             self.started = True
+            failed = False
             try:
                 deadline = time.monotonic() + 2400
                 url = f"http://127.0.0.1:{self.args.port}"
@@ -141,9 +152,20 @@ class Window:
                                "--base-url", url, "--model", model_name,
                                "--cases", "configs/dsv4/correctness-extended.json", "--include-long",
                                "--output", f"{self.args.container_output}/{name}-long.json"])
+            except BaseException as error:
+                failed = True
+                self.save(service_error=repr(error))
+                try:
+                    (self.args.output / f"{name}-failure-npu.txt").write_text(self.snapshot())
+                    owners = subprocess.check_output(
+                        ["docker", "ps", "--no-trunc", "--format", "{{.ID}} {{.Names}}"],
+                        text=True, timeout=10)
+                    (self.args.output / f"{name}-failure-containers.txt").write_text(owners)
+                except (OSError, subprocess.SubprocessError) as diagnostic_error:
+                    self.save(diagnostic_error=repr(diagnostic_error))
+                raise
             finally:
-                self.restart()
-                process.wait(timeout=30)
+                self.finish_service(process, failed=failed)
 
     def run(self):
         table = subprocess.check_output(["docker", "top", self.args.container, "-eo", "pid,args"], text=True)
