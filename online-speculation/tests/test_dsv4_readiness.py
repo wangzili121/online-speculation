@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -111,3 +112,36 @@ def test_greedy_probe_scores_the_same_causal_position(monkeypatch, tmp_path):
     assert len(prompts[1]) == 4 and len(prompts[2]) == 35
     rows = json.loads(output.read_text())["cases"][0]["echoed_prefills"]
     assert [row["scored_token"] for row in rows] == [4, 4]
+
+
+def test_layer_trace_compares_shapes_and_missing_stages():
+    import torch
+
+    trace = load_script("trace_dsv4_native_layers")
+    left = {"same": torch.tensor([1.0]), "diff": torch.tensor([2.0]),
+            "shape": torch.ones(2), "decode_only": torch.ones(1)}
+    right = {"same": torch.tensor([1.0]), "diff": torch.tensor([2.25]),
+             "shape": torch.ones(3), "prefill_only": torch.ones(1)}
+    report = trace.compare_traces(left, right)
+    assert report["stages"][0]["equal"]
+    assert report["stages"][1]["max_abs"] == 0.25
+    assert report["stages"][2]["shapes"] == [[2], [3]]
+    assert report["only_decode"] == ["decode_only"]
+    assert report["only_prefill"] == ["prefill_only"]
+    empty = trace.compare_traces({"kv": torch.empty(0)}, {"kv": torch.empty(0)})
+    assert empty["stages"][0]["equal"] and empty["stages"][0]["max_abs"] == 0
+    with pytest.raises(ValueError, match="captured activations"):
+        trace.compare_traces({}, {})
+
+
+@pytest.mark.parametrize("invariant", ["0", "1"])
+def test_invariant_launch_uses_consistent_native_prolog(invariant):
+    config = {"other_setting": 123, "multistream_dsv4_dsa_overlap": True}
+    result = subprocess.run(
+        ["bash", "-c", 'source "$1"; configure_dsv4_runtime; printf "%s" "$ADDITIONAL_CONFIG"',
+         "test", str(SCRIPTS / "dsv4_service_env.sh")],
+        env={**os.environ, "VLLM_BATCH_INVARIANT": invariant, "ADDITIONAL_CONFIG": json.dumps(config)},
+        check=True, text=True, capture_output=True)
+    actual = json.loads(result.stdout)
+    assert actual["other_setting"] == 123
+    assert actual["multistream_dsv4_dsa_overlap"] == (invariant == "0")

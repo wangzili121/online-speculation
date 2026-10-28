@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare direct paged C128 FIA with gather + FIA using real DSV4 shapes."""
+"""Compare native C128 paged paths with gather + FIA using DSV4 shapes."""
 
 import json
 import time
@@ -47,7 +47,7 @@ def run(heads, block_size, lengths):
         torch.npu.synchronize()
         timings[name + "_us"] = (time.perf_counter() - start) * 1e6 / 30
     print(json.dumps(dict(heads=heads, block_size=block_size, lengths=lengths,
-                          backend="paged_fia" if block_size % 128 == 0 else "gather_fia",
+                          backend="paged_fia" if block_size % 128 == 0 else "paged_sparse",
                           max_abs_error=float((output - expected).abs().max()),
                           timings=timings, passed=True)), flush=True)
 

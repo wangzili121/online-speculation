@@ -2,9 +2,8 @@
 
 The target owns the complete DSV4 backbone and every historical cache. The
 draft owns only attention/head parameters and reads SWA/C4/C128 history without
-writing it. The first correctness backend gathers paged history and uses FIA so
-that each segment exposes an LSE; the native sparse backend can replace this
-once its A2 kernel returns a valid LSE.
+writing it. FIA handles the local window/block and large-page C128 history;
+native sparse attention handles C4 and small-page C128. Each exposes an LSE.
 """
 
 from __future__ import annotations
@@ -142,11 +141,14 @@ def _query_readonly(
     hidden_states: torch.Tensor,
     cos: torch.Tensor,
     sin: torch.Tensor,
+    *,
+    q_a: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """Project a diffusion query without constructing or updating draft KV."""
     import torch_npu
 
-    q_a = _linear(draft_impl.wq_a, hidden_states)
+    if q_a is None:
+        q_a = _linear(draft_impl.wq_a, hidden_states)
     if _dsa_runtime._is_w8a8_dynamic(draft_impl.wq_b):
         qr, qr_scale = torch.ops._C_ascend.npu_rms_norm_dynamic_quant(
             q_a, draft_impl.q_norm.weight, epsilon=draft_impl.eps
@@ -176,6 +178,36 @@ def _query_readonly(
         partial_slice=[draft_impl.nope_head_dim, draft_impl.head_dim],
     )
     return query, qr, qr_scale
+
+
+def _qkv_readonly(draft_impl, hidden_states, cos, sin):
+    """Share input quantization across Q/KV, without a target-cache write."""
+    import torch_npu
+
+    if (_dsa_runtime._is_w8a8_dynamic(draft_impl.wq_a)
+            and _dsa_runtime._is_w8a8_dynamic(draft_impl.wkv)):
+        hs_int8, hs_scale = torch_npu.npu_dynamic_quant(hidden_states)
+
+        def project(module):
+            return torch_npu.npu_quant_matmul(
+                hs_int8, module.weight, module.weight_scale,
+                pertoken_scale=hs_scale, bias=module.bias,
+                output_dtype=hidden_states.dtype,
+            )
+
+        q_a, kv = project(draft_impl.wq_a), project(draft_impl.wkv)
+    else:
+        q_a = _linear(draft_impl.wq_a, hidden_states)
+        kv = _linear(draft_impl.wkv, hidden_states)
+    query, qr, qr_scale = _query_readonly(
+        draft_impl, hidden_states, cos, sin, q_a=q_a
+    )
+    kv = draft_impl.kv_norm(kv).view(-1, 1, draft_impl.head_dim)
+    torch.ops._C_ascend.inplace_partial_rotary_mul(
+        kv.unsqueeze(1), cos, sin, rotary_mode="interleave",
+        partial_slice=[draft_impl.nope_head_dim, draft_impl.head_dim],
+    )
+    return query, qr, qr_scale, kv
 
 
 class _NoTargetState(nn.Module):
@@ -268,14 +300,23 @@ def _swa_block_segment(query, history, local, lengths, scale):
     )
 
 
-def _c128_segment(query, cache, block_table, lengths, maximum, scale):
-    # The pinned A2 FIA only supports paged blocks divisible by 128.
-    # DSV4 can allocate smaller compressed pages; keep their gather fallback.
-    if 128 <= cache.shape[1] <= 1024 and cache.shape[1] % 128 == 0:
+def _c128_segment(query, cache, block_table, lengths, maximum, scale, *, backend=None):
+    backend = backend or os.environ.get("ORTHRUS_C128_BACKEND", "auto")
+    if backend not in {"auto", "sparse", "gather"}:
+        raise ValueError("ORTHRUS_C128_BACKEND must be auto, sparse or gather")
+    # FIA supports large pages directly; sparse attention also reads the
+    # smaller DSV4 pages without materializing a contiguous history buffer.
+    if backend == "auto" and 128 <= cache.shape[1] <= 1024 and cache.shape[1] % 128 == 0:
         return _fia_segment(
             query, cache, [BLOCK_SIZE] * query.shape[0], lengths, scale,
             allow_empty=True, block_table=block_table,
         )
+    if backend != "gather":
+        width = max(128, (maximum + 127) // 128 * 128)
+        offsets = torch.arange(width, device=lengths.device, dtype=torch.int32)
+        indices = torch.where(offsets[None, None, :] < lengths[:, None, None], offsets, -1)
+        indices = indices.expand(-1, query.shape[1], -1).contiguous()
+        return _sparse_history_segment(query, cache, block_table, indices, lengths, scale)
     offsets = torch.arange(max(maximum, 1), device=lengths.device)
     indices = torch.where(offsets[None, :] < lengths[:, None], offsets[None, :], -1)
     kv = gather_paged_cache(cache, block_table, indices)
@@ -285,12 +326,10 @@ def _c128_segment(query, cache, block_table, lengths, maximum, scale):
 
 
 def _c4_segment(query, cache, block_table, indices, lengths, scale, *, validate=False):
-    import torch_npu
-
     batch, width, heads, dim = query.shape
-    counts = (indices >= 0).sum(-1)
     backend = os.environ.get("ORTHRUS_C4_BACKEND", "sparse")
     if backend == "gather":
+        counts = (indices >= 0).sum(-1)
         kv = gather_paged_cache(cache, block_table, indices, validate=validate)
         out, lse = _fia_segment(
             query.reshape(batch * width, 1, heads, dim),
@@ -308,6 +347,14 @@ def _c4_segment(query, cache, block_table, indices, lengths, scale, *, validate=
         physical = block_table[batch_ids, logical_blocks]
         if bool(((indices >= 0) & ((physical < 0) | (physical >= cache.shape[0]))).any()):
             raise ValueError("C4 index maps to an invalid physical cache block")
+    return _sparse_history_segment(query, cache, block_table, indices, lengths, scale)
+
+
+def _sparse_history_segment(query, cache, block_table, indices, lengths, scale):
+    import torch_npu
+
+    batch, width, heads, _ = query.shape
+    counts = (indices >= 0).sum(-1)
 
     # The MLA API requires a separate RoPE pair. DSV4 already includes RoPE in
     # its 512-d query/key, so a zero auxiliary query preserves q@k exactly.
@@ -657,18 +704,8 @@ class _OrthrusAttentionLayer(nn.Module):
                 if torch.is_tensor(cache):
                     checksums.append((index, cache_checksum(cache, full=full_check)))
 
-        query, qr, qr_scale = _query_readonly(
+        query, qr, qr_scale, local_kv = _qkv_readonly(
             draft_impl, hidden_states, cos, sin
-        )
-        local_kv = draft_impl.kv_norm(draft_impl.wkv(hidden_states)).view(
-            -1, 1, draft_impl.head_dim
-        )
-        torch.ops._C_ascend.inplace_partial_rotary_mul(
-            local_kv.unsqueeze(1),
-            cos,
-            sin,
-            rotary_mode="interleave",
-            partial_slice=[draft_impl.nope_head_dim, draft_impl.head_dim],
         )
         batch = num_tokens // BLOCK_SIZE
         outputs, lses = self._history_segments(

@@ -24,6 +24,19 @@ configure_dsv4_profile() {
 }
 
 configure_dsv4_runtime() {
+  if [[ "${VLLM_BATCH_INVARIANT:-0}" == "1" ]]; then
+    # The pinned multi-stream prolog uses different norm/quant paths in
+    # prefill and decode. Use its existing single-stream path for exact checks.
+    ADDITIONAL_CONFIG="$("${PYTHON_BIN:-python3}" - "${ADDITIONAL_CONFIG:-}" <<'PY'
+import json
+import sys
+config = json.loads(sys.argv[1] or "{}")
+config["multistream_dsv4_dsa_overlap"] = False
+print(json.dumps(config))
+PY
+)"
+    export ADDITIONAL_CONFIG
+  fi
   export OMP_PROC_BIND=false
   export OMP_NUM_THREADS="${OMP_NUM_THREADS:-10}"
   export PYTORCH_NPU_ALLOC_CONF="${PYTORCH_NPU_ALLOC_CONF:-expandable_segments:True}"

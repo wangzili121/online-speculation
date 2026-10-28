@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from validate_dsv4_service import _completion, _json_request, _signature
+from check_dsv4_sampling_replay import first_difference
 from blockspec.vllm_ascend.artifacts import write_private_json
 
 
@@ -81,11 +82,14 @@ def main():
     replay_exact = _signature(replay) == _signature(first)
     report = dict(passed=concurrent_exact and replay_exact,
                   concurrent_greedy_exact=concurrent_exact,
+                  concurrent_first_differences=[first_difference(old, new)
+                      for old, new in zip(cases, records, strict=True)],
+                  concurrent_records=records,
                   concurrent_prompt_lengths=[r["usage"]["prompt_tokens"] for r in records],
                   eos_stop=True, explicit_token_stop=True, cancelled_stream_drained=True,
                   post_cancel_replay_exact=replay_exact)
     write_private_json(args.output, report)
-    print(json.dumps(report, indent=2))
+    print(json.dumps({key: value for key, value in report.items() if key != "concurrent_records"}, indent=2))
     return 0 if report["passed"] else 1
 
 

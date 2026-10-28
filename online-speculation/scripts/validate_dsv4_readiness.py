@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CPU_TESTS = (
     "dsv4_hybrid draft_sampling dsv4_deployment sampling_math sampling_execution "
     "vllm_ascend_proposer dsv4_custom_proposer vllm_trace vllm_artifacts "
-    "vllm_results vllm_workload dsv4_readiness"
+    "vllm_results vllm_workload dsv4_readiness dsv4_prolog"
 ).split()
 
 
@@ -43,7 +43,7 @@ def commands(args):
             *[(f"hybrid-h{heads}", script("smoke_dsv4_hybrid_npu",
                 "--heads", heads, "--iterations", 10)) for heads in (8, 16, 32)],
             *[(f"attention-{case}", script("benchmark_dsv4_attention_paths",
-                "--case", case, "--iterations", 10)) for case in ("joined", "gather", "sparse")],
+                "--case", case, "--iterations", 10)) for case in ("joined", "gather", "sparse", "c128-sparse")],
         ]
     common = ["--base-url", args.base_url, "--model", args.model]
     snapshot = args.output / "snapshot.json"

@@ -19,6 +19,8 @@ python scripts/validate_dsv4_readiness.py --stage npu --output local/check-npu
 
 在同样的 `TP=2`、`VLLM_BATCH_INVARIANT=1`、eager、上下文和并发设置下，依次运行 `serve_dsv4_target.sh` 与 `serve_dsv4_orthrus.sh`。Orthrus 使用 `ORTHRUS_PREFLIGHT_MODE=development`、`ORTHRUS_DRAFT_SAMPLE_METHOD=probabilistic` 和 `ORTHRUS_VERIFY_CACHE_CHECKSUM=1`。
 
+启动脚本在 `VLLM_BATCH_INVARIANT=1` 时同时关闭固定版本的 `multistream_dsv4_dsa_overlap`，两服务必须保持一致。该多流路径的 prefill/decode 使用不同的 norm/quant 顺序，仅设置上游 batch-invariant 开关不足以消除差异；其余 additional config 保留。未开启确定性检查时，不改变原有多流配置。
+
 ```bash
 # target-only 服务启动后
 python scripts/validate_dsv4_readiness.py --stage service \
@@ -41,6 +43,8 @@ EOS 必须取实际模型的配置；本次 0731 权重是 `1`。不要套用其
 固定 seed 跨引擎不要求逐 token 相同；同一服务的批次变化也可能影响量化数值。回放不一致是待分析项，不能直接等同于采样分布错误。当前检查保留严格失败结果，不通过放宽阈值获得“验收通过”。首 token 的分布仅作诊断，不能代替 rejection 分布验证。
 
 若 greedy 不同，可在 target-only 和 Orthrus 服务上分别运行 `scripts/check_dsv4_greedy_divergence.py`，传入 `--base-url`、`--model`、`--baseline`、`--candidate`、`--output`。加 `--replay-original` 同时重放原始请求。该检查比较首处分歧的共同前缀、原生 prefill 的 top-5 logprobs 和未来 token 不可见性，帮助区分主模型路径差异与投机状态问题；不是自动放行条件。
+
+`trace_dsv4_native_layers.py` 可在独立离线 engine 中逐层记录相同位置的激活，接收 `--model`、`--baseline`、`--candidate`、`--output` 和 `--tp`。`--no-dsa-overlap` 做原生配置对照；`--benchmark-prolog` 在移除诊断 hooks 后，比较真实权重下 Q/KV 共用量化前后的结果及耗时。该脚本会加载模型、使用指定 TP 数量的卡，不能与服务同时占用同一组卡。
 
 ## 八卡窗口
 

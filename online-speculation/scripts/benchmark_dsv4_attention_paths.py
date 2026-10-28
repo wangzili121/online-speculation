@@ -14,9 +14,12 @@ import time
 import torch
 import torch_npu
 
-from blockspec.vllm_ascend.dsv4 import _c4_segment, _fia_segment, _swa_block_segment
+from blockspec.vllm_ascend.dsv4 import (
+    _c4_segment, _c128_segment, _fia_segment, _normalize_fia_lse, _swa_block_segment,
+)
 from blockspec.vllm_ascend.dsv4_hybrid import (
-    assert_cache_unchanged, cache_checksum, gather_paged_cache, merge_attention_outputs,
+    assert_cache_unchanged, cache_checksum, gather_paged_cache, history_and_block_mask,
+    merge_attention_outputs,
 )
 
 
@@ -165,12 +168,96 @@ def check_sparse(args):
             raise
 
 
+def check_c128_sparse(args):
+    """Can native sparse attention avoid the small-page C128 gather fallback?"""
+    os.environ["ORTHRUS_C4_BACKEND"] = "sparse"
+    for batch, heads, history in ((1,8,0), (2,32,1), (1,8,128), (2,32,512),
+                                  (1,8,1024), (1,8,4096), (1,8,8192), (4,32,8192)):
+        pages = max((history + 31) // 32, 1)
+        q = torch.randn(batch, 32, heads, 512, device="npu", dtype=torch.bfloat16)
+        cache = torch.randn(batch * pages, 32, 1, 512, device="npu", dtype=q.dtype)
+        table = torch.randperm(batch * pages, device="npu", dtype=torch.int32).view(batch, pages)
+        lengths = torch.tensor([max(history-i, 0) for i in range(batch)], device="npu", dtype=torch.int32)
+        before = cache_checksum(cache, full=True)
+
+        def gathered():
+            return _c128_segment(q, cache, table, lengths, max(history, 1), 512**-0.5, backend="gather")
+
+        def sparse():
+            # Padding and index construction belong in the timed path.
+            offsets = torch.arange(max(128, (history + 127)//128*128), device="npu", dtype=torch.int32)
+            indices = torch.where(offsets[None, None, :] < lengths[:, None, None], offsets, -1)
+            indices = indices.expand(-1, 32, -1).contiguous()
+            return _c4_segment(q, cache, table, indices, lengths, 512**-0.5)
+
+        expected, expected_lse = gathered()
+        output, lse = sparse()
+        torch.testing.assert_close(output, expected, atol=0.015, rtol=0.02)
+        torch.testing.assert_close(lse, expected_lse, atol=0.002, rtol=0.001)
+        offsets = torch.arange(max(history, 1), device="npu")
+        rows = torch.where(offsets[None, :] < lengths[:, None], offsets, -1)
+        kv = gather_paged_cache(cache, table, rows).float()
+        scores = torch.einsum("bqhd,bknd->bqhk", q.float(), kv) * 512**-0.5
+        scores.masked_fill_((rows < 0)[:, None, None, :], -torch.inf)
+        reference = torch.einsum("bqhk,bknd->bqhd", scores.softmax(-1), kv)
+        reference.masked_fill_((lengths == 0)[:, None, None, None], 0)
+        torch.testing.assert_close(output.float(), reference, atol=0.015, rtol=0.02)
+        torch.testing.assert_close(lse, scores.logsumexp(-1, keepdim=True), atol=0.002, rtol=0.001)
+        production, production_lse = _c128_segment(q, cache, table, lengths, max(history, 1), 512**-0.5)
+        torch.testing.assert_close(output, production, atol=0, rtol=0)
+        torch.testing.assert_close(lse, production_lse, atol=0, rtol=0)
+        assert_cache_unchanged(before, cache, "c128-native-sparse")
+        print(json.dumps({"case": "c128_small_page", "batch": batch, "heads": heads,
+                          "history": history, "max_abs": (output-expected).abs().max().item(),
+                          "fp32_max_abs": (output.float()-reference).abs().max().item(),
+                          "gather_fia": measure(gathered, args.iterations),
+                          "native_sparse": measure(sparse, args.iterations), "passed": True}), flush=True)
+
+
+def check_sink_v2(args):
+    """Check fused sink support, including the LSE required for later merging."""
+    for batch, heads, history_len in ((1,8,0), (1,8,128), (2,32,1), (2,32,128)):
+        q = torch.randn(batch, 32, heads, 512, device="npu", dtype=torch.bfloat16)
+        history = torch.randn(batch, 128, 1, 512, device="npu", dtype=q.dtype)
+        local = torch.randn(batch, 32, 1, 512, device="npu", dtype=q.dtype)
+        lengths = torch.full((batch,), history_len, device="npu", dtype=torch.int32)
+        sink = torch.linspace(-1, 5, heads, device="npu")
+        sink_lse = sink.view(1,1,heads,1).expand(batch,32,-1,-1)
+        zero = torch.zeros_like(q)
+
+        def current():
+            o, l = _swa_block_segment(q, history, local, lengths, 512**-0.5)
+            return merge_attention_outputs([o, zero], [l, sink_lse])
+
+        def fused():
+            kv = torch.cat((history, local), dim=1)
+            mask = history_and_block_mask(lengths, 128, 32)
+            o, l = torch_npu.npu_fused_infer_attention_score_v2(
+                q, kv, kv, input_layout="BSND", num_query_heads=heads, num_key_value_heads=1,
+                softmax_scale=512**-0.5, sparse_mode=0, atten_mask=mask,
+                actual_seq_qlen=[32]*batch, actual_seq_kvlen=[160]*batch,
+                learnable_sink=sink.to(q.dtype), return_softmax_lse=True)
+            return o, _normalize_fia_lse(l, batch, 32)
+
+        expected = current()
+        _, old_lse = _swa_block_segment(q, history, local, lengths, 512**-0.5)
+        expected_lse = torch.logaddexp(old_lse, sink_lse)
+        output, lse = fused()
+        torch.testing.assert_close(output, expected, atol=0.015, rtol=0.02)
+        torch.testing.assert_close(lse, expected_lse, atol=0.002, rtol=0.001)
+        print(json.dumps({"case": "sink_v2", "batch": batch, "heads": heads,
+                          "history": history_len, "max_abs": (output-expected).abs().max().item(),
+                          "current": measure(current, args.iterations),
+                          "fused_sink": measure(fused, args.iterations), "passed": True}), flush=True)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--case", choices=("joined", "gather", "sparse"), required=True)
+    parser.add_argument("--case", choices=("joined", "gather", "sparse", "c128-sparse", "sink-v2"), required=True)
     parser.add_argument("--device", default="npu:0")
     parser.add_argument("--iterations", type=int, default=30)
     args = parser.parse_args()
     torch.npu.set_device(args.device)
     torch.manual_seed(20261028)
-    {"joined": check_joined, "gather": check_gather, "sparse": check_sparse}[args.case](args)
+    {"joined": check_joined, "gather": check_gather, "sparse": check_sparse,
+     "c128-sparse": check_c128_sparse, "sink-v2": check_sink_v2}[args.case](args)

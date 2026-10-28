@@ -78,7 +78,37 @@ C4 native 路径需要一个全零的辅助 query RoPE，以及目标 key 的只
 | 第 4 个 token | token 119543，领先另一候选约 0.125 logprob | token 67290，两候选并列 |
 | 第 18 个 token | token 64544，两候选并列 | token 117465，领先约 0.125 logprob |
 
-这说明上述两个反例不依赖 draft 或 Orthrus 的拒绝回滚，在原生主模型路径中就能重现；但尚未逐层定位差异来自哪个量化或 attention kernel，也不能由此证明全部 KV 管理正确。保留严格失败记录。八卡测试应同时复验完整模型的 prefill/decode 一致性，不能把四层截取模型的并列 logits 当作完整模型的精度结论。
+这说明上述两个反例不依赖 draft 或 Orthrus 的拒绝回滚，在原生主模型路径中就能重现；当时尚未逐层定位，后续结果见下一节。保留原失败记录。八卡测试应同时复验完整模型的 prefill/decode 一致性，不能把四层截取模型的并列 logits 当作完整模型的精度结论。
+
+### 逐层定位与现成算子复核
+
+继续使用 167 的 0/1 两卡。`trace_dsv4_native_layers.py` 对同一 causal token 记录输入和模块输出，纯主模型即可重现前述两例；记录时同步复制激活到 CPU，因此这些 trace 不能用于性能结论。
+
+- 第一处差异在第 0 层 `_mla_prolog_multistream` 的 Q 输出，最大绝对差 0.0625–0.078125；此前 embedding、mHC、输入 norm 一致。
+- 固定镜像的该方法在 prefill 先产生 BF16 norm 结果再量化，在 decode 使用 `npu_rms_norm_dynamic_quant`。真实权重的独立测试也确认两者产生不同的 INT8 值和 scale。这不是 Attention 可见范围或 draft cache 写入导致的差异。
+- 用现有配置 `multistream_dsv4_dsa_overlap=false`，在两个案例原先分歧的位置，两个 TP rank、每例每 rank 记录的 175 项中间张量全部逐元素一致，预测 token 也一致。未修改 target 数学或开发新 kernel。此结论只覆盖这些前缀，不能自动放行更长输出和完整模型。
+- 公共启动脚本只在 `VLLM_BATCH_INVARIANT=1` 时强制关闭该多流路径；普通性能配置不被静默更改。
+
+进一步优化及候选筛选：
+
+| 路径 | 实测与选择 |
+| --- | --- |
+| draft Q/KV 前处理 | 复用原生 DSV4 的做法，共用一次输入动态量化，保留各自 projection、norm 和 RoPE。4 层 × batch 1/2/4 × 2 ranks，共 24 组 Q、QR、scale、KV 全部逐元素一致。23 组耗时减少约 1%–3%，1 组约慢 1%；属于小幅局部优化，不能宣称整网提速 |
+| C128 小分页历史 | 复用 C4 已采用的原生 `npu_sparse_flash_attention`，索引覆盖全部有效压缩行，不做 Top-K 截断。8 组包含空历史、1–8192 压缩行、随机物理页、多请求及 32 heads，通过独立 FP32、LSE 和完整 cache 不变检查。多数案例约 1.1–1.3 ms 降至 0.8–0.9 ms，batch=4/heads=32/8192 行约 1.96→1.94 ms，收益基本持平 |
+| C128 大分页 | 仍使用直接分页 FIA；`ORTHRUS_C128_BACKEND=gather` 保留回退。没有为了复用稀疏算子而改动历史选择或 cache 布局 |
+| FIA v2 内置 sink | 当前镜像要求 sink 为 BF16，不能直接接收现有 FP32 sink。转换后，首例 LSE 最大误差约 0.00942，未通过原有 `atol=0.002, rtol=0.001` 门槛；因此没有接入生产路径，仍保留独立 FP32 sink + `npu_attention_update` |
+
+Q/KV 计时移除了所有逐层诊断 hooks，包含 host dispatch 和临时缓冲区；C128 使用合成历史、真实 DSV4 形状。均不是完整模型吞吐结果，也没有证明所有 batch/上下文下已达最优。CPU 回归为 99 passed、3 skipped，head/评估契约自测通过；更新后的单卡十组检查全部通过，包含原有九组及 C128 小分页新路径。原始结果保存在 167 的 `local/native-layer-trace-final/`、`local/c128-sparse-final.log`、`local/sink-v2-bf16-probe.log`、`local/readiness-npu-operators-final/`。
+
+### 更新后服务结果
+
+上述修改已在实际四层 W8A8、TP=2 服务复验。Orthrus 的五组固定 seed 回放共 20/20 一致，停止、取消、取消后重放通过，抽样 cache guard 未报错。但**严格 greedy 仍未通过**：10 个跨服务案例有 2 个不同，首次分歧由第 4/18 个输出推迟至第 43/72 个；混合长度并发也仍有差异。target-only 随机并发仍有 seed=2 在第 11 个 token 不同。
+
+继续对新分歧执行纯主模型逐层对照：两例均无需 draft 即可重现，首次记录到的当前 token 激活差异分别出现在第 2 层 C4、第 1 层 SWA 的原生 `npu_sparse_attn_sharedkv` 输出，最大绝对差约 0.0039–0.0078。进一步抓取实际参与计算的历史后，确认当前 Q、sink 以及 C4 检索索引均一致，但算子接收的历史 KV 已经不同：C4 层局部历史最大差 0.0234375、压缩历史 0.015625；SWA 层历史最大差 0.015625，两个 TP rank 均重现。因此不能把输出差异归咎于 Attention kernel，更不能据此判断 draft 写坏了 cache；下一步应沿历史 token 的生成过程定位最早出现的差异，而非更换 Attention 算子来掩盖问题。证据保存在 `local/native-layer-trace-later/`、`local/native-layer-trace-history/` 和 `local/greedy-later-divergence.json`，一致性门槛没有放宽。
+
+实际服务的 NPU profiler 也确认了现成算子的使用：每 rank 记录到 80 次 FIA、16 次 SparseFlashAttention、64 次 AttentionUpdate，以及原生 QLI、量化 matmul 和融合 MoE。这次服务布局的 C128 使用直接分页 FIA，小分页 sparse 优化是另行测过的兼容路径，不能把它的约三成局部收益套到本服务。该 profile 开启了 cache guard，Slice/AsStrided 等检查开销很大，只用于确认调用路径，不用作生产耗时结论。汇总见 `local/operator-profile-prolog/operator-summary.json`。
+
+本轮结束后，167 的测试容器只剩 `sleep infinity`，0/1 两卡无 NPU 进程；未停止其他用户的任务。原始 trace、局部 benchmark、服务结果和 profiler 汇总另行归档，不提交权重或大体积 profiler 数据到代码仓库。
 
 ## 复现入口
 
@@ -88,7 +118,8 @@ C4 native 路径需要一个全零的辅助 query RoPE，以及目标 key 的只
 - `scripts/check_dsv4_rejection_npu.py`：真实 Ascend sampler 及请求级 seed。
 - `scripts/validate_dsv4_service.py` 配合 `configs/dsv4/correctness-extended.json`：服务快照和对照。
 - `scripts/check_dsv4_lifecycle.py`：混合长度并发、停止、取消和取消后的重放。
-- `scripts/benchmark_dsv4_attention_paths.py --case joined|gather|sparse`：现有算子路径对照；`sparse` 同时检查 FP32 参考、完整缓存和临时峰值内存。
+- `scripts/benchmark_dsv4_attention_paths.py --case joined|gather|sparse|c128-sparse`：现有算子路径对照；`sparse` 同时检查 FP32 参考、完整缓存和临时峰值内存。`sink-v2` 是尚未通过精度门槛的候选探测，不在 readiness 必过集合内。
+- `scripts/trace_dsv4_native_layers.py`：纯主模型逐层 prefill/decode 对照；可加 `--benchmark-prolog` 测试真实权重的 Q/KV 前处理，此计时会先移除诊断 hooks。
 - `scripts/check_dsv4_sampling_replay.py`：区分串行重复、并发换序和并发同 seed，结果逐阶段保存。
 
 服务对照应同时设置相同的 `VLLM_BATCH_INVARIANT`；普通模式的不稳定结果保留，不用确定性测试覆盖或抹去。单看 API 首 token 的分布也不能验证 speculative rejection，因为它通常还没经过投机验证。
