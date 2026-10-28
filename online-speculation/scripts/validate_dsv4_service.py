@@ -46,10 +46,13 @@ def _choice_record(response: dict[str, Any]) -> dict[str, Any]:
     logprobs = choice.get("logprobs") or {}
     tokens = logprobs.get("tokens") or choice.get("token_ids") or []
     return {
+        "request_id": response.get("id"),
         "finish_reason": choice.get("finish_reason"),
         "text": choice.get("text", ""),
         "tokens": tokens,
         "token_ids": choice.get("token_ids"),
+        "token_logprobs": logprobs.get("token_logprobs"),
+        "top_logprobs": logprobs.get("top_logprobs"),
         "usage": response.get("usage", {}),
     }
 
@@ -61,7 +64,7 @@ def _completion(base_url: str, model: str, case: dict[str, Any]) -> dict[str, An
         "prompt": prompt,
         "max_tokens": int(case["max_tokens"]),
         "temperature": float(case.get("temperature", 0.0)),
-        "logprobs": 1,
+        "logprobs": int(case.get("logprobs", 1)),
         "return_token_ids": True,
     }
     for key in ("seed", "top_p"):

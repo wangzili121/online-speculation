@@ -38,6 +38,8 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:8901")
     parser.add_argument("--model", default="dsv4-orthrus")
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--decode-timeout", type=float, default=300.0,
+                        help="allow cold operator compilation after HTTP readiness")
     parser.add_argument("--wait-seconds", type=float, default=0.0)
     args = parser.parse_args()
     base = args.base_url.rstrip("/")
@@ -68,7 +70,7 @@ def main() -> int:
             "max_tokens": 2,
             "temperature": 0,
         },
-        args.timeout,
+        args.decode_timeout,
     )
     if not isinstance(completion, dict) or not completion.get("choices"):
         raise SystemExit("completion smoke request returned no choices")

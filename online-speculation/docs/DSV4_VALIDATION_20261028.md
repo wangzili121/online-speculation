@@ -50,10 +50,35 @@ C4 native 路径需要一个全零的辅助 query RoPE，以及目标 key 的只
 
 ## 仍需验收
 
-1. 继续定位确定性模式下的跨服务 greedy 差异及随机采样并发回放差异。按请求 seed 的独立测试通过，不能代替端到端复现通过。
+1. 继续定位跨服务 greedy 及混合长度并发差异；少卡 seed 回放的修复结果见下节，仍需完整模型和长上下文复验。
 2. 完整 43 层、TP=8 复验，包括长输出、长上下文和服务重启。四层通过不能替代这一项。
 3. 高接受率下的真实 engine KV 提交/回滚；初始化 head 接受率低，单测覆盖所有拒绝位置不等于服务已覆盖整块接受。
 4. 1M 上下文、Ascend graph、训练 head 的性能收益及长时间稳定性。当前不将这些标为通过。
+
+## 167 少卡复验与修复
+
+后续使用 167 的两张 A2 卡、同一镜像 digest，在独立容器重建环境。该机驱动是 26.1.1，与 111 的 25.5.1 不同，结果分别保留。模型仍是实际 W8A8 权重截取的前四层，TP=2、K=32、eager、`VLLM_BATCH_INVARIANT=1`。
+
+- CPU 回归 89 passed、3 skipped；跳过项要求 CUDA graph 硬件。head 契约和评估契约自测通过。111 上完整 43 层初始化 head 的生产 preflight 也通过，但不代表训练或生产推理验收。
+- 单卡九组检查全部通过：QLI、真实 Ascend rejection sampler、分页 FIA、8/16/32 heads 混合 attention，以及 joined/gather/sparse 三条路径。没有开发新 kernel。
+- 确认并修复固定版本 Ascend sampler 的一个问题：`sample_recovered_tokens` 对零候选请求仍生成并丢弃随机数，偏移从 0 变为 12。补丁跳过该请求后，零候选偏移保持 0，正常请求仍为 12；全部拒绝位置、整块接受、混合采样及 8,192 次分布检查通过。补丁保留版本保护、dry-run 和重复应用检查。
+- 修正健康检查的超时设置：HTTP 检查仍为 30 秒，首个 decode 单独允许 300 秒，避免首次算子编译被误报为部署失败。
+- target-only 的 greedy 回放及混合长度并发/停止/取消检查通过；随机回放的一个 seed 在并发情况下从第 11 个 token 开始不同，串行重复和并发后串行回放仍一致。
+- 修复后的 Orthrus 串行、并发、换序、同 seed 并发及并发后回放共五组、每组四个请求全部一致。EOS、显式 stop、SSE 取消及取消后重放通过，抽样 cache guard 未报错。
+- **严格 greedy 门槛仍未通过**：两服务 10 例中 2 例不同，首次分歧在第 4、第 18 个输出 token；Orthrus 混合长度并发与串行仍有差异。这些结果没有因 seed 修复或算子通过而被改为通过。
+
+新增 `validate_dsv4_readiness.py` 分离 CPU、单卡和服务检查，记录源码哈希、环境锁、每项命令、日志和退出码；失败后继续收集证据，整体返回失败。复验命令及八卡窗口清单见 [验证入口](DSV4_VALIDATION_RUNBOOK.md)。测试客户端第一次生命周期检查误用了其他模型的 EOS ID，该次配置错误保留；按本模型 `generation_config.json` 的 EOS=1 重新运行后，target-only 生命周期检查通过。
+
+### Greedy 分歧定位
+
+用 `check_dsv4_greedy_divergence.py` 将两组输出首次分歧前的共同 token 作为新的 prompt，分别测试单独 prefill、追加 31 个未来 token 后该位置的因果 prompt logprobs。**纯 target-only 服务与 Orthrus 服务的新鲜 prefill 结果一致，但与 target-only 的逐 token decode 结果不同。** target-only 重启后原始 64/160-token 输出也逐 token 重现。
+
+| 首处分歧 | target-only decode | target-only 新鲜 prefill |
+| --- | --- | --- |
+| 第 4 个 token | token 119543，领先另一候选约 0.125 logprob | token 67290，两候选并列 |
+| 第 18 个 token | token 64544，两候选并列 | token 117465，领先约 0.125 logprob |
+
+这说明上述两个反例不依赖 draft 或 Orthrus 的拒绝回滚，在原生主模型路径中就能重现；但尚未逐层定位差异来自哪个量化或 attention kernel，也不能由此证明全部 KV 管理正确。保留严格失败记录。八卡测试应同时复验完整模型的 prefill/decode 一致性，不能把四层截取模型的并列 logits 当作完整模型的精度结论。
 
 ## 复现入口
 
