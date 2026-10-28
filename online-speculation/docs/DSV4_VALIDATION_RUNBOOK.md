@@ -81,6 +81,27 @@ python scripts/check_dsv4_engine_state.py \
 
 每 rank 的逐轮证据保存在 `events-rank*.jsonl`。这不覆盖真实训练 head 的接受率、随机采样高接受率的引擎路径、抢占后的换入换出、物理页强制复用或 graph；完整模型必须另跑。不要把小模型测试成功写成完整生产验收。
 
+## 随机采样与 KV 压力
+
+```bash
+PYTHONPATH="$PWD/src:$PWD/scripts:${PYTHONPATH:-}" \
+VLLM_BATCH_INVARIANT=1 ASCEND_RT_VISIBLE_DEVICES=0,1 \
+timeout -k 30s 1800 python scripts/check_dsv4_sampling_state.py \
+  --model local/models/dsv4-4l --head local/models/head-4l --tp 2 \
+  --num-blocks 256 --waves 2 --tokens 512 --require-preemption \
+  --inject-allocation-failure \
+  --output local/check-sampling-state
+```
+
+同样只在独立测试 worker 安装钩子，正式服务不加载这些钩子。主模型和 draft head 仍实际计算，但两端采样前的 logits 被替换为已知的双 token 概率分布；真实概率采样、标准 rejection、scheduler 和 KV 操作不替换。此测试检验推理接线，不检验模型精度或训练 head 的加速效果。
+
+- 随机轮使用四组互不重叠的 token、不同 temperature/seed；draft 概率随请求和候选位置变化。检查整块接受、拒绝后从正差分布补采样，以及请求换序后 verifier 收到的完整 q 是否对齐。
+- 压力轮使用 p=q，让四个请求同时快速增长，每个输出 1536 token。限制实际 KV block 数；加 `--inject-allocation-failure` 时，测试 scheduler 对最多四个请求各返回一次分配失败，之后完全由原生逻辑释放、重算及恢复请求。报告区分故障注入和自然容量压力，不能混称为真实 OOM。
+- 物理页复用依据 scheduler 新分配的 block ID，而不是 worker 可能保留的旧分页表项；null page 不计入。每轮继续检查 anchor、有效历史和各 cache group 分页表，两个 TP rank 的事件轨迹必须一致。
+- 随机轮和 p=q 压力轮分别检查输出频率，逐 token 的接受前缀及补采样支持集另外校验；不能只看 API 输出 token 的频率。cache guard 仍为各层各 batch 首次全量、后续抽样。
+
+`--require-preemption` 未观察到抢占恢复时返回失败，不能将“请求正常完成”当作抢占验证通过。256 blocks 是四层测试用压力配置，不是完整模型的部署建议；这也不是 CPU offload 或长时间稳定性测试。启动失败后须确认本轮 worker 已退出，再启动下一轮，不要让两轮测试占同一组卡。
+
 ## 八卡窗口
 
 1. 确认完整模型和 head 的哈希、固定镜像及代码版本，先确认八卡不被其他任务使用。

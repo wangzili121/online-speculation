@@ -54,8 +54,8 @@ C4 native 路径需要一个全零的辅助 query RoPE，以及目标 key 的只
 
 1. 已测的混合长度并发案例已完成归因，不再阻塞少卡适配验收；完整模型或新增请求出现的未知差异仍需单独判断。少卡 seed 回放的修复仍需完整模型和长上下文复验。
 2. 完整 43 层、TP=8 复验，包括长输出、长上下文和服务重启。四层通过不能替代这一项。
-3. 受控 greedy 候选已在真实 engine 覆盖全部接受长度及整块接受；概率 draft 在 temperature>0 下的高接受率引擎路径、真实训练 head 的表现仍需验收。不能把受控候选等同于训练 head 的质量验证。
-4. 1M 上下文、Ascend graph、训练 head 的性能收益及长时间稳定性。当前不将这些标为通过。
+3. 受控 greedy 候选已覆盖全部接受长度；后续也通过了四层 TP2、temperature>0 的概率 draft、整块接受、KV 页复用及故障注入后的抢占恢复。完整模型和真实请求分布仍需复验，受控候选不能证明 head 质量。
+4. 1M 上下文、Ascend graph、拿到训练好的 head 后的推理加速收益及长时间稳定性。当前不将这些标为通过；这里不涉及训练实现。
 
 ## 167 少卡复验与修复
 
@@ -135,6 +135,32 @@ Q/KV 计时移除了所有逐层诊断 hooks，包含 host dispatch 和临时缓
 最终复跑保存在 167 的 `local/engine-state-v6/`，脚本退出码为 0：`state_checks_passed=true`、`adaptation_reference_passed=true`；`reference_repeat_exact=false` 和 `natural_exact=[false,true,true,true]` 如实保留。每 rank 记录 337 个受控请求验证步、429 个 draft 请求步，覆盖 batch 1–4；两个 rank 状态轨迹一致。CPU 最终回归为 135 passed、3 skipped，head/评估契约自测通过。旧轮次的失败记录没有覆盖，原始结果归档为 `artifacts/dsv4-20261028/engine-state-167.tar.gz`。
 
 结束检查确认 167 的 0/1 卡没有 NPU 进程，测试容器只剩空闲主进程；111 的八卡仍有运行任务，本轮未做完整模型 TP8 验证。
+
+### 概率 Draft、KV 复用与抢占恢复
+
+新增 `check_dsv4_sampling_state.py` 和测试专用的 `dsv4_test_scheduler.py`。仍使用 167 的 0/1 卡、四层真实 W8A8、初始化 head、TP2、eager；正式推理实现、算子和运行时补丁均未修改。
+
+主模型与 head 的 forward 正常执行，测试钩子只在采样前注入已知的 p/q logits。真实 draft 概率采样、概率传递、标准 rejection、scheduler 和 KV 操作保留。因此这是推理集成检查，不是自然模型精度、head 接受率或吞吐测试。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 概率采样 | 两轮随机请求、两轮 p=q 压力请求，共 16 请求、16,384 个输出 token；随机和压力轮分别检查频率，均通过预设统计界限 |
+| 接受与补采样 | 每 rank 1,451 个有效请求采样事件，419 次完整接受 31 个候选、1,012 次拒绝；逐步检查接受前缀及补采样属于正差分布支持集 |
+| q 对齐 | 597 次概率传递检查；覆盖 batch 1–4、请求换序、不同 temperature/seed、随位置变化的 q，以及抢占恢复 |
+| KV 页复用 | 从 scheduler 实际分配记录确认 7 个 cache group 内共 482 个 `(group, block_id)` 被不同请求复用，排除 null page；未声称覆盖第 8 个 group 的跨请求复用 |
+| 抢占恢复 | 对 4 个请求各注入一次 `allocate_slots` 失败；由原生 Ascend scheduler 执行抢占、释放和重算，4/4 恢复后再次进入投机验证，最终完成输出 |
+| 历史与 cache | anchor/MASK、有效历史、分页表检查通过；各层各 batch 首次全量、之后抽样的 cache guard 未报错 |
+| TP 与 CPU | 两个 rank 的采样/状态轨迹哈希相同；CPU 回归 143 passed、3 skipped（CUDA graph 硬件要求），head/评估契约自测通过 |
+
+**抢占由受控分配失败触发，不是实际 NPU OOM，也不是自然压力触发。** 测试 scheduler 继承当前镜像的 `BalanceScheduler`，只注入失败信号和记录事件；不自行实现抢占或恢复。256 blocks 是测试池容量，不是生产配置。
+
+最终结果为 `local/sampling-state-v6/report.json`，`passed=true`，退出码 0；CPU 为 `local/readiness-cpu-sampling-v6/`。测试源码 SHA256 随报告保存，两个 rank 的状态哈希为 `728d1c730a26c31f8ec7a0eddc22651e6528acb8c95c89098ac3be98589ce1ea`。
+
+保留此前所有失败记录：v1 的 128-block 池未通过启动容量检查；v2 在上一轮 worker 尚未完全退出时启动，被内存门槛拒绝，随后清理了本任务残留；v3/v4 未自然触发抢占，按严格门槛返回失败，不能算抢占验证通过；v5 的测试 hook 未透传 `drop_stale_output`，修正并加入回归后完成 v6。没有用本轮结果覆盖旧失败。
+
+原始轮次、日志和 CPU 结果归档为 `artifacts/dsv4-20261028/sampling-state-167.tar.gz`。本轮补齐的是少卡概率采样和调度恢复验证；完整 43 层 TP8、长上下文、自然容量耗尽下的持续负载、graph 及训练好 head 的实际推理收益仍未验收。
+
+结束检查确认测试容器只剩 `sleep infinity`，167 的 0/1 卡均无 NPU 进程；没有停止其他用户的任务。
 
 ## 复现入口
 
