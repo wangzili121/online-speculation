@@ -2,6 +2,8 @@
 
 **还不能宣称“推理已完全验收，只差训练好的 head”。此前完整模型的短 smoke 只证明链路能跑，不能覆盖 draft 语义、长输出和并发状态。**
 
+**验收范围更新：已在纯主模型中复现并归因的数值差异，仅记录为上游限制，不要求我们修复，也不单独阻塞 Orthrus 适配验收。** 下文的严格对照失败仍如实保留；其中已归因的两个 greedy 案例不再继续追查主模型内部原因。未归因的并发差异、真实 engine 的高接受长度提交/回滚，以及完整模型复验仍属于我们的工作，不能因上游也有差异而全部豁免。具体标准见 [验收范围](DSV4_VALIDATION_RUNBOOK.md#验收范围)。
+
 ## 本次修正
 
 - C4 indexer 原来误用 AR 因果模式，使一个 draft 块前面的 query 少看部分历史；改为 `sparse_mode=0`，32 个 query 共用 anchor 前的历史边界。
@@ -50,7 +52,7 @@ C4 native 路径需要一个全零的辅助 query RoPE，以及目标 key 的只
 
 ## 仍需验收
 
-1. 继续定位跨服务 greedy 及混合长度并发差异；少卡 seed 回放的修复结果见下节，仍需完整模型和长上下文复验。
+1. 只继续定位尚未归因的混合长度并发等差异；下文已在纯主模型中复现并归因的两个 greedy 案例不再阻塞适配验收。少卡 seed 回放的修复仍需完整模型和长上下文复验。
 2. 完整 43 层、TP=8 复验，包括长输出、长上下文和服务重启。四层通过不能替代这一项。
 3. 高接受率下的真实 engine KV 提交/回滚；初始化 head 接受率低，单测覆盖所有拒绝位置不等于服务已覆盖整块接受。
 4. 1M 上下文、Ascend graph、训练 head 的性能收益及长时间稳定性。当前不将这些标为通过。
@@ -104,7 +106,7 @@ Q/KV 计时移除了所有逐层诊断 hooks，包含 host dispatch 和临时缓
 
 上述修改已在实际四层 W8A8、TP=2 服务复验。Orthrus 的五组固定 seed 回放共 20/20 一致，停止、取消、取消后重放通过，抽样 cache guard 未报错。但**严格 greedy 仍未通过**：10 个跨服务案例有 2 个不同，首次分歧由第 4/18 个输出推迟至第 43/72 个；混合长度并发也仍有差异。target-only 随机并发仍有 seed=2 在第 11 个 token 不同。
 
-继续对新分歧执行纯主模型逐层对照：两例均无需 draft 即可重现，首次记录到的当前 token 激活差异分别出现在第 2 层 C4、第 1 层 SWA 的原生 `npu_sparse_attn_sharedkv` 输出，最大绝对差约 0.0039–0.0078。进一步抓取实际参与计算的历史后，确认当前 Q、sink 以及 C4 检索索引均一致，但算子接收的历史 KV 已经不同：C4 层局部历史最大差 0.0234375、压缩历史 0.015625；SWA 层历史最大差 0.015625，两个 TP rank 均重现。因此不能把输出差异归咎于 Attention kernel，更不能据此判断 draft 写坏了 cache；下一步应沿历史 token 的生成过程定位最早出现的差异，而非更换 Attention 算子来掩盖问题。证据保存在 `local/native-layer-trace-later/`、`local/native-layer-trace-history/` 和 `local/greedy-later-divergence.json`，一致性门槛没有放宽。
+继续对新分歧执行纯主模型逐层对照：两例均无需 draft 即可重现，首次记录到的当前 token 激活差异分别出现在第 2 层 C4、第 1 层 SWA 的原生 `npu_sparse_attn_sharedkv` 输出，最大绝对差约 0.0039–0.0078。进一步抓取实际参与计算的历史后，确认当前 Q、sink 以及 C4 检索索引均一致，但算子接收的历史 KV 已经不同：C4 层局部历史最大差 0.0234375、压缩历史 0.015625；SWA 层历史最大差 0.015625，两个 TP rank 均重现。因此不能把输出差异归咎于 Attention kernel，更不能据此判断 draft 写坏了 cache。按更新后的验收范围，到此保留上游差异的证据，不继续追查主模型内部根因。证据保存在 `local/native-layer-trace-later/`、`local/native-layer-trace-history/` 和 `local/greedy-later-divergence.json`；原始严格对照结果不变。
 
 实际服务的 NPU profiler 也确认了现成算子的使用：每 rank 记录到 80 次 FIA、16 次 SparseFlashAttention、64 次 AttentionUpdate，以及原生 QLI、量化 matmul 和融合 MoE。这次服务布局的 C128 使用直接分页 FIA，小分页 sparse 优化是另行测过的兼容路径，不能把它的约三成局部收益套到本服务。该 profile 开启了 cache guard，Slice/AsStrided 等检查开销很大，只用于确认调用路径，不用作生产耗时结论。汇总见 `local/operator-profile-prolog/operator-summary.json`。
 
