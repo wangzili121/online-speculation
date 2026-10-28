@@ -221,6 +221,43 @@ def test_export_and_preflight_dsv4_head(tmp_path):
     assert "truncated or oversized safetensors shard" in corrupted.stderr
 
 
+def test_prepare_linked_dsv4_smoke_model(tmp_path):
+    model = tmp_path / "model"
+    smoke = tmp_path / "smoke"
+    _fake_target(model)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/prepare_dsv4_smoke_model.py"),
+            str(model),
+            str(smoke),
+            "--layers",
+            "3",
+            "--materialize",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+    )
+    assert "3-layer DSV4 smoke model" in result.stdout
+    config = json.loads((smoke / "config.json").read_text())
+    assert config["num_hidden_layers"] == 3
+    assert config["compress_ratios"] == [0, 4, 128]
+    index = json.loads(
+        (smoke / "quant_model_weights.safetensors.index.json").read_text()
+    )
+    assert all(
+        not name.startswith("layers.3.") for name in index["weight_map"]
+    )
+    assert not (smoke / next(iter(index["weight_map"].values()))).is_symlink()
+    manifest = json.loads((smoke / "smoke_model_manifest.json").read_text())
+    assert manifest["purpose"].startswith("non-production")
+    assert manifest["selected_layers"] == 3
+    assert manifest["materialized"] is True
+
+
 def test_dsv4_plugin_registers_dedicated_architecture(monkeypatch):
     calls = []
     fake_vllm = SimpleNamespace(
@@ -326,6 +363,8 @@ def test_dsv4_orthrus_rejects_unimplemented_context_parallel():
 def test_dsv4_orthrus_launcher_uses_lossless_sampling_defaults():
     launch = (ROOT / "scripts/serve_dsv4_orthrus.sh").read_text()
     assert 'ORTHRUS_DRAFT_SAMPLE_METHOD:-greedy' in launch
+    assert 'ORTHRUS_PREFLIGHT_MODE:-production' in launch
+    assert 'production) preflight+=(--production)' in launch
     assert '"rejection_sample_method": "standard"' in launch
     assert '"parallel_drafting": True' in launch
     smoke = (ROOT / "scripts/smoke_construct_dsv4_orthrus.py").read_text()

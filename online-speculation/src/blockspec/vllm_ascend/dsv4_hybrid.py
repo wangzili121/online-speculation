@@ -116,9 +116,15 @@ def gather_paged_cache(
 
 
 def cache_checksum(cache: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Cheap device-side checksum used around draft passes in debug mode."""
-    values = cache.float()
-    return values.sum(), values.square().sum()
+    """Memory-bounded sampled fingerprint for draft cache debug checks."""
+    flat = cache.reshape(-1)
+    max_samples = 65_536
+    stride = max((flat.numel() + max_samples - 1) // max_samples, 1)
+    sample = flat[::stride][:max_samples].float()
+    weights = torch.arange(
+        1, sample.numel() + 1, device=sample.device, dtype=torch.float32
+    )
+    return sample.sum(), (sample * weights).sum()
 
 
 def assert_cache_unchanged(

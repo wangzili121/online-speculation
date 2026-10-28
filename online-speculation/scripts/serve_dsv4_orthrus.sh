@@ -69,8 +69,15 @@ preflight=(
   --model "$MODEL"
   --head "$HEAD"
   --tensor-parallel-size "$TP"
-  --production
 )
+case "${ORTHRUS_PREFLIGHT_MODE:-production}" in
+  production) preflight+=(--production) ;;
+  development) ;;
+  *)
+    echo "ORTHRUS_PREFLIGHT_MODE must be production or development" >&2
+    exit 1
+    ;;
+esac
 if [[ "${REQUIRE_TRAINED_HEAD:-0}" == "1" ]]; then
   preflight+=(--require-trained)
 fi

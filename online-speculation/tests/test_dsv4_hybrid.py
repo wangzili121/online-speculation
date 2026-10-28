@@ -4,12 +4,23 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from blockspec.vllm_ascend.dsv4_hybrid import (
+    assert_cache_unchanged,
+    cache_checksum,
     compressed_logical_indices,
     front_pack_indices,
     gather_paged_cache,
     merge_attention_segments,
     tail_logical_indices,
 )
+
+
+def test_cache_checksum_detects_sampled_offsetting_edits():
+    cache = torch.zeros(131_072, dtype=torch.bfloat16)
+    before = cache_checksum(cache)
+    cache[0] = 1
+    cache[1] = -1
+    with pytest.raises(RuntimeError, match="modified target cache"):
+        assert_cache_unchanged(before, cache, "test")
 
 
 def test_attention_segment_merge_matches_one_softmax():

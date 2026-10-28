@@ -297,7 +297,8 @@ across services. Cross-service same-seed equality is diagnostic only because
 valid rejection sampling may consume random values in a different order. The
 default cases cross 127/128/129-token boundaries; `--include-long` adds roughly
 32K and 125K-token prompts. Also exercise consecutive rejections and service
-restart with `ORTHRUS_VERIFY_CACHE_CHECKSUM=1` during bring-up.
+restart with the sampled cache guard `ORTHRUS_VERIFY_CACHE_CHECKSUM=1` during
+bring-up.
 
 Use fewer cards only for implementation checks:
 
@@ -334,7 +335,8 @@ the target backbone. It does a checkpoint-loader round trip at TP1; TP2/TP4
 verify distributed construction and local shard allocation:
 
 ```bash
-torchrun --standalone --nproc-per-node=4 \
+torchrun --nnodes=1 --node-rank=0 --nproc-per-node=4 \
+  --master-addr=127.0.0.1 --master-port=29871 \
   scripts/smoke_construct_dsv4_orthrus.py \
   --model /data/disk/models/Eco-Tech/DeepSeek-V4-Flash-0731-w8a8 \
   --head /data/disk/models/orthrus-dsv4-head-v2-w8a8 \
