@@ -1,34 +1,37 @@
-# Orthrus-DSV4 NPU 推理实现与 PyPTO 算子需求
+# Orthrus-DSV4 NPU 推理适配与 PyPTO 算子设计
 
-## 1. 要支持的计算是什么
+## 1. 技术背景与适配目标
 
-**Orthrus-DSV4 的核心需求，是让 diffusion Attention 一次处理整个待预测块，同时读取主模型已经算好的历史。Attention 公式没有改变，变化在于使用哪套参数、哪些 KV 可见，以及本轮是否更新持久状态。**
+大模型的自回归推理需要依次生成 token：当前 token 确定后，才能继续计算下一个位置。投机解码通过草稿分支提前提出多个候选，再由主模型批量验证，尝试减少主模型逐 token 执行的轮数。能否获得加速，既取决于候选接受率，也取决于草稿生成、验证以及状态管理的额外开销。
 
-本文以 DeepSeek-V4-Flash-0731、Ascend A2 为对象，讨论推理，不涉及训练和在线更新。
-现成算子实现包含 BF16 单层 demo 和基于固定 v0.26 环境的 W8A8 服务路径。
-PyPTO 对照版本固定为 [pypto-lib 4c908f3](https://github.com/hw-native-sys/pypto-lib/tree/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark)，不把它的能力泛化成所有版本的能力。
+Orthrus 采用共享主干的草稿结构，在模型各层增加独立的 diffusion Attention，通过块内双向 Attention 一次预测多个位置。在本文的 DSV4 适配中，embedding、外层 norm、mHC、MoE 和 LM head 与主模型共享，因此它既不是另起一个完整的小模型，也不是只在最终 hidden 后附加一层预测头。草稿分支仍执行各层计算，但不复制整套主干参数，并能够读取主模型已经生成的历史 KV。
 
-### 1.1 从 DSV4 到 Orthrus
+将这一结构用于 DeepSeek-V4，需要处理其混合 Attention：SWA 读取滑动窗口，HCA 还读取 C128 压缩历史，CSA 则通过 indexer 选择 C4 压缩历史。适配工作的重点，是在保留三类历史表示和检索规则的前提下，让 diffusion query 同时读取主模型历史与临时双向块，并避免草稿计算改变目标模型状态。
 
-原生 DSV4 每层先把当前输入投影为 query 和 KV，再根据层类型读取历史。SWA 只使用滑动窗口；HCA 在滑窗之外读取 C128 压缩历史；CSA 用 indexer 从 C4 压缩历史选出相关行，再做 Attention。正常 AR 路径还要更新原始 KV、压缩 KV 和压缩器状态，供下一步解码使用。
+本文限定于 **DeepSeek-V4-Flash-0731、Ascend A2 上的推理计算与引擎接入**，不包含训练和在线更新。现成实现包括 BF16 单层演示和固定 v0.26 环境下的 W8A8 服务路径；PyPTO 能力分析以 [pypto-lib 4c908f3](https://github.com/hw-native-sys/pypto-lib/tree/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark) 为准。当前用于接线验证的 head 是初始化版本，其运行结果不能代表训练后接受率和推理加速收益。
 
-Orthrus 保留这三种层的结构，但每层增加自己的 diffusion Attention 参数。每轮输入不是一个新 token，而是 `anchor + MASK × 31`：anchor 是本轮已知的起始 token，MASK 是未来位置的占位符。当前服务块长 `K=32`，用于提出后续 31 个候选。
+### 1.1 草稿分支与主模型的关系
 
-设 anchor 的位置为 $a$，则本轮读取的历史是位置 $0,\ldots,a-1$。全部 $K$ 个 query 都读取这段固定历史，并且互相读取整个临时块。**“双向”不要求周围位置先生成答案，而是让它们在同一层交换当前中间特征。**
+每轮草稿输入由一个已知的 anchor token 和多个 MASK token 组成。anchor 是本轮预测的起点；MASK 是尚未生成位置的占位符，不是答案 token。当前服务使用块长 $K=32$，即一个 anchor 和 31 个待预测位置。
+
+设 anchor 的绝对位置为 $a$，主模型已经提供位置 $0,\ldots,a-1$ 的历史状态。草稿块中各位置使用自己的 diffusion query，读取这段历史对应的滑窗或压缩表示，同时读取整个临时块。块内位置交换的是当前层的中间特征，因此不需要先等待其他位置生成 token。
 
 ```text
 anchor + MASK × 31
         |
 共享 embedding
         |
-43 层 block，每层：
+43 层 block，每层执行：
   共享 mHC / 外层 norm
         |
-  diffusion Q/KV 投影，产生 K 行 query 和临时块 KV
+  diffusion Q/KV 投影 -> K 行 query + 临时块 KV
         |
-        +-- SWA：滑窗历史 -------------------------+
-        +-- HCA：滑窗历史 + C128 压缩历史 ----------+--> 加入整个临时块
-        +-- CSA：滑窗历史 + indexer 选中的 C4 历史 --+    统一归一化，sink 计一次
+  按该层类型选择一条历史路径：
+    SWA：滑窗历史
+    HCA：滑窗历史 + C128 压缩历史
+    CSA：滑窗历史 + indexer 选中的 C4 历史
+        |
+  历史与整个临时块共同参与 Attention，sink 只计一次
         |
   diffusion 输出投影
         |
@@ -36,70 +39,244 @@ anchor + MASK × 31
         |
 共享 LM head -> 候选 token 及其概率
         |
-主模型按因果 Attention 验证 -> 接受前缀或拒绝补采样
+主模型因果验证 -> 接受前缀或拒绝补采样 -> 更新目标模型状态
 ```
 
-diffusion 分支独立持有 Attention 投影、内部 norm、sink，以及 CSA 的 indexer query/weight 参数；embedding、外层 norm、mHC、MoE 和 LM head 共享主模型参数。共享权重不等于复用本轮激活，draft 仍需经过这些计算。
+每层独立持有 diffusion Q/KV/O 投影、Attention 内部 norm、sink；CSA 层还持有自己的 indexer query/weight 参数。共享的是主干权重和已生成的目标历史，而不是本轮全部激活。由于输入与 Attention 可见性不同，draft 仍需计算自己的中间结果。
 
-主模型历史只读，临时 draft KV 不转正。验证时由主模型重新计算候选的 target KV，再由引擎维护接受前缀和拒绝后的状态。
+草稿阶段产生的 KV 仅用于当前块。主模型验证候选时，会按自身参数和因果规则重新计算 target KV；接受后保留的是这些 target KV，而不是将 draft KV 转为主模型历史。两者的参数和上下文不同，不能相互替代。
 
-### 1.2 为什么不能只改一个 mask 参数
+### 1.2 现有推理路径的适配边界
 
-在能接收完整 Q/K/V 和任意 mask 的 SDPA 接口里，这个可见性规则可以直接表达。但 PyPTO 的 DSV4 实现不是一个接收完整矩阵的通用 SDPA：它把分页读取、因果边界、压缩器和 cache 写回编排成了专门的 decode 路径，有些 Attention 还融合了逆 RoPE 和输出整理。
+从数学上看，Orthrus 的双向计算仍是 scaled dot-product Attention，可见范围可以由 mask 表达。但现有 PyPTO DSV4 路径并非一个接收完整 Q/K/V 和任意 mask 的通用 SDPA 接口：它把分页读取、因果边界、压缩器更新、cache 写回以及部分后处理编排成了专门的 decode 计算图。
 
-因此需要调整的是**数据入口和计算编排**：改用 diffusion 权重，固定历史边界，加入单独存放的临时块，并绕开 AR 写回。不是重新发明 Attention，也不是每个基础算子都重写。
+因此，适配不仅要改变块内 mask，还要改变数据从哪里读取、哪些历史行有效、临时块放在哪里，以及是否执行 AR 状态更新。这些变化不要求重新设计矩阵乘、softmax 或 Top-K，却需要修改已有融合路径的输入和编排。
 
-下面按公共双向块、SWA、HCA、CSA 四个模块说明。**四个模块是需求划分，不是必须新增四个物理 kernel。** 公共块可以融合进历史 Attention，已有合并能力也可以继续使用。
+Attention 侧可分为四个逻辑模块：**公共双向块、SWA、HCA、CSA**。公共块供三类历史路径使用，可以融合到对应计算中；四个逻辑模块不等于必须新增四个独立 kernel。下文以各模块的计算需求为单位，同时说明原有语义、目标语义、PyPTO 实现基础和现成 Torch-NPU 代码。
 
-### 1.3 如何阅读实现
+## 2. Attention 模块设计
 
-每个模块先说明 PyPTO 现有计算，再给出 Orthrus 公式、现成算子实现和开发要求；完整函数放在紧邻的折叠区。源码不是省略参数的伪代码，函数名和实现取自本仓库文件，来源版本为 `360ab06` 所在代码快照。
+### 2.1 双向块 Attention 与联合归一化
 
-W8A8 源码是服务模块中的完整函数或类方法，依赖固定版本 vLLM-Ascend，不是可逐段粘贴运行的独立脚本。第 4 节另附完整 BF16 demo、运行脚本和公共辅助模块，不依赖 vLLM metadata；后面的链接仅用于定位文件。
+#### 2.1.1 可见性变化与计算定义
 
-## 2. 四个计算模块
+普通自回归模型即使一次处理多个位置，第 $i$ 个位置也只能读取本块中 $j\le i$ 的位置，否则会看到未来答案。Orthrus 的块内输入则是 anchor 和 MASK，不包含未来答案，因此可以让每个位置读取整个块，以并行生成候选。
 
-公式以单个 head、反量化后的实数表示。定义可见 KV 行集合 $C$、query $q$、模型缩放 $\alpha$ 和 sink logit $s$：
+仅考虑当前块，原有因果 mask 与 Orthrus mask 的区别为：
+
+$$
+M_{ij}^{AR}=
+\begin{cases}
+0,&j\le i,\\
+-\infty,&j>i,
+\end{cases}
+\qquad
+M_{ij}^{D}=0,\quad 0\le i,j<K.
+\tag{1}
+$$
+
+$M$ 是加在 Attention 分数上的 additive mask，零表示可见，$-\infty$ 表示被屏蔽；上标 $AR$ 和 $D$ 分别表示主模型与 diffusion 分支。这个变化只涉及临时块，历史仍然限定在 anchor 之前，不能读取其他预测块或未来目标状态。
+
+为统一三类历史路径，定义单个 head 的 Attention：
 
 $$
 \mathcal A(q,C;s)=
 \frac{\sum_{c_j\in C}\exp(\alpha q c_j^\top)c_j}
 {\exp(s)+\sum_{c_j\in C}\exp(\alpha q c_j^\top)}.
-\tag{1}
-$$
-
-DSV4 在这里用同一条 shared KV 向量 $c_j$ 作为 key 和 value。sink 仅增加 softmax 分母，等价于一个 value 为零的额外项。$AR$ 和 $D$ 分别表示主模型和 diffusion 分支；下文的拼接符号 $\Vert$ 表示把多组 KV 一起纳入 Attention，不要求物理复制拼接。
-
-### 2.1 公共双向块：让 K 个位置互相可见
-
-**PyPTO 已有什么。** `dspark_attention.py` 已经实现整块双向 Attention：它先把本轮 draft KV 按 slot mapping 写入 DSpark 的私有 cache，再从这个 cache 收集历史滑窗和完整 draft 块。每个 query 都看得到全部块内位置，不使用因果三角遮挡。
-
-计算内部采用分块 QK、softmax、PV：矩阵单元计算 QK/PV，向量单元维护最大值、指数和及累加输出，通过流水线同步连接。块宽来自 `DSPARK_SPEC_TOKENS`，可见行数和临时空间随配置生成。这说明已有可复用的双向计算和 online-softmax，不意味着现有入口已适用于 Orthrus 的 `K=32`、三类目标历史和只读要求。
-
-**Orthrus 要什么。** 由 diffusion 投影生成临时块 $B^D=\{c_0^D,\ldots,c_{K-1}^D\}$，直接作为 Attention 输入，不先提交到持久 cache。每个位置 $i$ 的块内计算为：
-
-$$
-M_{ij}^{D}=0\quad(0\le i,j<K),\qquad
-O_{B,i}=\mathcal A(q_i^D,B^D;-\infty),\qquad
-L_{B,i}=\log\sum_{j=0}^{K-1}\exp\!\left(\alpha q_i^D(c_j^D)^\top\right).
 \tag{2}
 $$
 
-这里 $M$ 是 additive mask，零表示允许读取；$O_{B,i}$ 是只对块内归一化的输出，$L_{B,i}$ 是不含 sink 的 LSE。
+$q$ 是 query，$C$ 是该 query 可见的 KV 行集合，$\alpha$ 是模型规定的缩放，$s$ 是 Attention sink 的 logit。DSV4 在这里使用同一 shared KV 向量 $c_j$ 作为 key 和 value；sink 等价于一个 value 为零的额外项，只增加分母。公式按反量化后的实数表示，低精度实现仍需检查数值误差。
 
-历史与临时块最终必须共享同一个 softmax 分母。现成算子分段计算时，每段返回输出 $O_r$ 和不含 sink 的 $L_r$，随后：
+设本轮临时块为 $B^D=\{c_0^D,\ldots,c_{K-1}^D\}$。若只计算块内部分，则第 $i$ 行返回：
+
+$$
+O_{B,i}=\mathcal A(q_i^D,B^D;-\infty),\qquad
+L_{B,i}=\log\sum_{j=0}^{K-1}
+\exp\!\left(\alpha q_i^D(c_j^D)^\top\right).
+\tag{3}
+$$
+
+这里不在块内单独计入 sink，因为块内输出还要与历史共同归一化。$O_{B,i}$ 是局部归一化输出，$L_{B,i}$ 是该部分的 log-sum-exp，简称 LSE。
+
+历史和块内 Attention 可以融合计算，也可以分别调用现成算子。分开计算时，不能直接相加各自的输出：每部分都除以了不同的 softmax 分母，需要根据其 LSE 恢复相对权重。设第 $r$ 段返回 $O_r,L_r$，共有 $R$ 段，则：
 
 $$
 L=\operatorname{logsumexp}(s,L_1,\ldots,L_R),\qquad
 O=\sum_{r=1}^{R}\exp(L_r-L)O_r.
-\tag{3}
+\tag{4}
 $$
 
-$R$ 是段数；空历史段使用 $O_r=0,L_r=-\infty$。sink 作为 $(0,s)$ 加入一次，不能给每段各加一次。该式在实数计算下等价于式 (1)，实际低精度计算仍需数值容差验证。
+sink 按 $(O_s,L_s)=(0,s)$ 加入一次。空历史段使用 $O_r=0,L_r=-\infty$，对结果没有贡献。在实数计算下，该式与把所有可见 KV 一起代入式 (2) 等价；它是调用多个现成算子时的组合方法，不要求 PyPTO 也必须拆成多个 kernel。
 
-**现成算子怎样做。** BF16 demo 分别调用 FIA 计算滑窗、压缩历史和块内输出，再用 Torch 的 FP32 LSE 运算合并。W8A8 服务把滑窗与块合为一次 FIA，减少一次调用；压缩历史另算，最后用 `npu_attention_update` 合并，避免用多次 Torch 操作完成跨段归一化。
+#### 2.1.2 PyPTO 实现基础与适配方案
 
-这里的 FIA 是完整的 `torch_npu.npu_fused_infer_attention_score` 调用，不是新增 kernel。它返回 Attention 输出和 LSE；`sparse_mode=0` 配合显式 mask/有效长度表达非因果读取。以下是服务实际使用的封装，包含分页布局转换和空历史处理。
+`dspark_attention.py` 已经具备整块双向可见的计算。它先将当前 draft KV 按 slot mapping 写入 DSpark 的私有 cache，再从同一 cache 收集历史滑窗与整个 draft 块。其块内 mask 与 Orthrus 的目标相同，区别主要在参数来源、历史来源以及临时块的存放方式。
+
+该实现采用分块 QK、softmax、PV：矩阵单元计算 QK/PV，向量单元维护最大值、指数和与累加分子，通过流水线同步衔接。块宽取自 `DSPARK_SPEC_TOKENS`，相应的可见行数和临时空间由配置生成。适配 Orthrus 时，可以复用这些计算，但应让临时块直接作为输入，不再依赖“写入私有 cache 后再读取”的流程，并为 K=32 及相应 batch/布局配置临时空间。
+
+归一化合并也有现成基础。PyPTO HCA 已经维护各段 online-softmax 状态 $(m_r,\ell_r,u_r)$，其中 $m_r$ 是最大分数，$\ell_r$ 是减去最大值后的指数和，$u_r$ 是同样缩放的加权 value 分子：
+
+$$
+\ell_r=\sum_j e^{z_{rj}-m_r},\qquad
+u_r=\sum_j e^{z_{rj}-m_r}v_{rj}.
+\tag{5}
+$$
+
+$z_{rj}$ 和 $v_{rj}$ 分别是第 $r$ 段第 $j$ 行的分数和 value。现有 HCA 将滑窗与压缩历史合并；支持 Orthrus 后，只需把临时块也纳入同一组状态：
+
+$$
+m=\max(s,m_1,\ldots,m_R),\qquad
+O=\frac{\sum_r e^{m_r-m}u_r}
+{e^{s-m}+\sum_r e^{m_r-m}\ell_r}.
+\tag{6}
+$$
+
+非空段满足 $L_r=m_r+\log\ell_r$、$O_r=u_r/\ell_r$，因此式 (4) 和式 (6) 是同一归一化的两种接口形式。空段置 $m_r=-\infty,\ell_r=0,u_r=0$。PyPTO 可以直接复用状态合并，不需要先产生 LSE 再调用额外合并 kernel；关键是全部贡献合并后才执行输出后处理，且 sink 不重复计算。
+
+#### 2.1.3 Torch-NPU 实现
+
+BF16 demo 使用 `npu_fused_infer_attention_score`（下文简称 FIA）计算每一段 Attention。输入 query 为 `[batch, K, heads, dim]`，临时 KV 为 `[batch, K, 1, dim]`；调用使用 `sparse_mode=0`，没有块内因果 mask，同时请求返回 LSE。
+
+下面是 demo 中实际使用的完整封装。它不依赖 vLLM metadata，历史段和临时块均调用同一函数，只是 KV 和有效长度不同。
+
+
+<details>
+<summary>完整源码：BF16 demo 的 FIA 调用</summary>
+
+```python
+def _normalize_fia_lse(lse: torch.Tensor, batch: int, queries: int) -> torch.Tensor:
+    if lse.ndim == 4 and lse.shape[0] == batch and lse.shape[2] == queries:
+        return lse.transpose(1, 2)
+    if lse.ndim == 4 and lse.shape[:2] == (batch, queries):
+        return lse
+    raise RuntimeError(f"unexpected FIA LSE shape: {tuple(lse.shape)}")
+
+def _native_fia_segment(
+    query: torch.Tensor,
+    key_value: torch.Tensor,
+    query_lengths: list[int],
+    key_lengths: list[int],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """计算一段历史或块内 Attention，并返回输出和 LSE。"""
+    result = torch_npu.npu_fused_infer_attention_score(
+        query,
+        key_value.contiguous(),
+        key_value.contiguous(),
+        num_heads=query.shape[2],
+        num_key_value_heads=key_value.shape[2],
+        input_layout="BSND",
+        sparse_mode=0,
+        scale=query.shape[-1] ** -0.5,
+        atten_mask=None,
+        block_table=None,
+        block_size=0,
+        actual_seq_lengths=query_lengths,
+        actual_seq_lengths_kv=key_lengths,
+        softmax_lse_flag=True,
+    )
+    if not isinstance(result, tuple) or len(result) < 2:
+        raise RuntimeError("FIA did not return output and softmax LSE")
+    output, lse = result[:2]
+    return output, _normalize_fia_lse(lse, query.shape[0], query.shape[1])
+```
+
+</details>
+
+
+在单层 `forward` 中，历史 Attention 已先加入 `outputs/lses`。随后执行以下代码，补上整个双向块，再加入一次 sink 并完成统一归一化。`local_kv` 是 diffusion 投影生成的临时 KV，`block` 是实际块长，不涉及持久 cache 写回。
+
+
+```python
+# ORTHRUS 改动：不加因果 mask，K 个 draft 位置可以互相读取。
+local_out, local_lse = _native_fia_segment(
+    query, local_kv, query_lengths, [block] * batch
+)
+outputs.append(local_out)
+lses.append(local_lse)
+
+# DSV4 attention sink 与其他部分共享 softmax 分母。
+outputs.append(torch.zeros_like(local_out))
+lses.append(
+    self.attn_sink.view(1, 1, -1, 1).expand(batch, block, -1, -1)
+)
+# ORTHRUS 改动：用 LSE 精确合并只读历史与双向 draft 块。
+attention, _ = merge_attention_segments(outputs, lses)
+```
+
+
+demo 的 `merge_attention_segments` 使用 FP32 Torch 运算完成式 (4)。W8A8 服务则调用原生 `npu_attention_update`，减少组合运算的调度开销；两条路径使用相同的归一化语义。以下函数完整展示了形状校验和两种实现。
+
+
+<details>
+<summary>完整源码：Torch LSE 合并与 npu_attention_update</summary>
+
+```python
+def merge_attention_segments(
+    outputs: Sequence[torch.Tensor],
+    logsumexp: Sequence[torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Merge independently normalized attention segments exactly.
+
+    Every output is ``sum(exp(score) * value) / sum(exp(score))`` for one
+    segment and every LSE is ``log(sum(exp(score)))`` with a final singleton
+    dimension. Empty segments must be omitted by the caller.
+    """
+    if not outputs or len(outputs) != len(logsumexp):
+        raise ValueError("outputs and logsumexp must contain the same non-zero segments")
+    shape = outputs[0].shape
+    lse_shape = logsumexp[0].shape
+    if lse_shape != shape[:-1] + (1,):
+        raise ValueError(f"LSE shape {lse_shape} does not match output shape {shape}")
+    if any(output.shape != shape for output in outputs):
+        raise ValueError("all segment outputs must have the same shape")
+    if any(lse.shape != lse_shape for lse in logsumexp):
+        raise ValueError("all segment LSE tensors must have the same shape")
+
+    lse_stack = torch.stack([lse.float() for lse in logsumexp], dim=0)
+    merged_lse = torch.logsumexp(lse_stack, dim=0)
+    weights = torch.exp(lse_stack - merged_lse.unsqueeze(0))
+    merged = sum(
+        output.float() * weight
+        for output, weight in zip(outputs, weights, strict=True)
+    )
+    return merged.to(outputs[0].dtype), merged_lse
+
+def merge_attention_outputs(
+    outputs: Sequence[torch.Tensor],
+    logsumexp: Sequence[torch.Tensor],
+) -> torch.Tensor:
+    """Merge segmented attention outputs using the native NPU update op."""
+    if not outputs or len(outputs) != len(logsumexp):
+        raise ValueError("outputs and logsumexp must contain the same non-zero segments")
+    shape = outputs[0].shape
+    lse_shape = logsumexp[0].shape
+    if len(shape) < 2 or lse_shape != shape[:-1] + (1,):
+        raise ValueError(f"LSE shape {lse_shape} does not match output shape {shape}")
+    if any(output.shape != shape for output in outputs):
+        raise ValueError("all segment outputs must have the same shape")
+    if any(lse.shape != lse_shape for lse in logsumexp):
+        raise ValueError("all segment LSE tensors must have the same shape")
+
+    if outputs[0].device.type == "npu":
+        import torch_npu
+
+        head_dim = shape[-1]
+        merged, _ = torch_npu.npu_attention_update(
+            [lse.float().reshape(-1) for lse in logsumexp],
+            [output.reshape(-1, head_dim) for output in outputs],
+            0,
+        )
+        return merged.view(shape)
+
+    merged, _ = merge_attention_segments(outputs, logsumexp)
+    return merged
+```
+
+</details>
+
+
+服务侧 FIA 封装还需要处理分页布局、历史 padding 和空段，完整代码如下。三类历史路径会复用这个入口，或调用原生 sparse Attention。双向块在服务中已与 SWA 历史合并为一次 FIA，具体见下一节，不会再额外重复计算一次。
 
 
 <details>
@@ -178,116 +355,53 @@ def _fia_segment(
 </details>
 
 
-LSE 合并函数同时列出 Torch 参考路径和 NPU 路径。Attention 调用方负责把 sink 追加为零输出的一段；它没有混入各个局部 Attention。
+本模块的 PyPTO 开发范围是：将独立临时块接入已有双向计算，适配块形状，并复用统一 softmax 状态。无需新建 Attention 数学或 Top-K 算法，也不必单独落地一个“公共双向 Attention kernel”。
 
+源码定位：[DSpark Attention](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/dspark_attention.py)、[HCA 状态合并](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_sparse_attn_hca.py)。
 
-<details>
-<summary>完整源码：Torch LSE 合并与 npu_attention_update</summary>
+### 2.2 SWA：滑动窗口历史与临时块
 
-```python
-def merge_attention_segments(
-    outputs: Sequence[torch.Tensor],
-    logsumexp: Sequence[torch.Tensor],
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Merge independently normalized attention segments exactly.
+#### 2.2.1 历史边界与计算定义
 
-    Every output is ``sum(exp(score) * value) / sum(exp(score))`` for one
-    segment and every LSE is ``log(sum(exp(score)))`` with a final singleton
-    dimension. Empty segments must be omitted by the caller.
-    """
-    if not outputs or len(outputs) != len(logsumexp):
-        raise ValueError("outputs and logsumexp must contain the same non-zero segments")
-    shape = outputs[0].shape
-    lse_shape = logsumexp[0].shape
-    if lse_shape != shape[:-1] + (1,):
-        raise ValueError(f"LSE shape {lse_shape} does not match output shape {shape}")
-    if any(output.shape != shape for output in outputs):
-        raise ValueError("all segment outputs must have the same shape")
-    if any(lse.shape != lse_shape for lse in logsumexp):
-        raise ValueError("all segment LSE tensors must have the same shape")
+双向块解决当前 K 个位置之间的交互，但候选还需要已有上下文。SWA 提供最近一段原始 KV，因此它既是独立 SWA 层的历史来源，也是 HCA/CSA 路径的局部历史部分。
 
-    lse_stack = torch.stack([lse.float() for lse in logsumexp], dim=0)
-    merged_lse = torch.logsumexp(lse_stack, dim=0)
-    weights = torch.exp(lse_stack - merged_lse.unsqueeze(0))
-    merged = sum(
-        output.float() * weight
-        for output, weight in zip(outputs, weights, strict=True)
-    )
-    return merged.to(outputs[0].dtype), merged_lse
+设 $W(t)$ 表示截至位置 $t$ 的最近至多 $w$ 行原始 KV，DSV4-Flash 的窗口宽度 $w=128$；$p$ 是 AR query 的绝对位置。原有计算与 Orthrus 的区别为：
 
-def merge_attention_outputs(
-    outputs: Sequence[torch.Tensor],
-    logsumexp: Sequence[torch.Tensor],
-) -> torch.Tensor:
-    """Merge segmented attention outputs using the native NPU update op."""
-    if not outputs or len(outputs) != len(logsumexp):
-        raise ValueError("outputs and logsumexp must contain the same non-zero segments")
-    shape = outputs[0].shape
-    lse_shape = logsumexp[0].shape
-    if len(shape) < 2 or lse_shape != shape[:-1] + (1,):
-        raise ValueError(f"LSE shape {lse_shape} does not match output shape {shape}")
-    if any(output.shape != shape for output in outputs):
-        raise ValueError("all segment outputs must have the same shape")
-    if any(lse.shape != lse_shape for lse in logsumexp):
-        raise ValueError("all segment LSE tensors must have the same shape")
-
-    if outputs[0].device.type == "npu":
-        import torch_npu
-
-        head_dim = shape[-1]
-        merged, _ = torch_npu.npu_attention_update(
-            [lse.float().reshape(-1) for lse in logsumexp],
-            [output.reshape(-1, head_dim) for output in outputs],
-            0,
-        )
-        return merged.view(shape)
-
-    merged, _ = merge_attention_segments(outputs, logsumexp)
-    return merged
-```
-
-</details>
-
-
-**PyPTO 应怎样改。** 复用 DSpark 的块内 QK/softmax/PV 计算，把临时块改成独立输入，去掉“先写私有 cache、再读回来”的依赖；将 K、padding 和临时空间纳入形状配置。公共块可以并入 SWA/HCA/CSA 的流水线，不必单独落地一个 kernel。
-
-PyPTO 的 HCA 已经使用 online-softmax 状态合并，因此**不需要为 LSE 公式从零再造一种合并算法**。设一段保存最大值 $m_r$、指数和 $\ell_r$、未归一化分子 $u_r$：
-
-$$
-\ell_r=\sum_j e^{z_{rj}-m_r},\qquad
-u_r=\sum_j e^{z_{rj}-m_r}v_{rj},\qquad
-L_r=m_r+\log\ell_r,\quad O_r=u_r/\ell_r.
-\tag{4}
-$$
-
-$z_{rj}$ 和 $v_{rj}$ 分别是该段第 $j$ 行的注意力分数和 value；式 (4) 的输出转换用于非空段。空段置 $m_r=-\infty,\ell_r=0,u_r=0$，合并时贡献为零。已有状态可以直接扩展到临时块：
-
-$$
-m=\max(s,m_1,\ldots,m_R),\qquad
-O=\frac{\sum_r e^{m_r-m}u_r}
-{e^{s-m}+\sum_r e^{m_r-m}\ell_r}.
-\tag{5}
-$$
-
-式 (3) 是现成算子返回 LSE 时的接口形式，式 (5) 是 PyPTO 融合实现更容易复用的状态形式，两者表达同一计算。
-
-源码定位：[DSpark 双向 Attention](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/dspark_attention.py)、[HCA 合并](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_sparse_attn_hca.py)。
-
-### 2.2 SWA：固定历史窗口，再接上整个临时块
-
-**PyPTO 已有什么。** `decode_sparse_attn_swa.py` 从分页 cache 读取每个 AR query 的滑窗。多 query 验证时，调用方已经写入当前 token 的 KV；Attention 先为第一个 query 收集窗口，再复用这份数据，为后续 query 追加新 token、移出过期 token。每行的可见范围随位置向右移动，仍是因果 Attention。
-
-这里要区分：滑窗 Attention 子函数负责读取，cache 写入发生在它的调用链中，不能笼统地说“所有 Attention kernel 都自己写 cache”。
-
-**Orthrus 要什么。** 设 $W(t)$ 表示截至位置 $t$ 的最近至多 $w$ 行原始 KV，本模型 $w=128$；$p$ 是 AR query 位置。区别是：
-
-| 现有 AR 语义 | Orthrus-SWA 语义 |
+| 原有 AR Attention | Orthrus-SWA |
 | --- | --- |
 | $o_p^{AR}=\mathcal A(q_p^{AR},W(p);s^{AR})$ | $o_i^D=\mathcal A(q_i^D,W(a-1)\Vert B^D;s^D)$ |
 
-所有 draft query 共用 $W(a-1)$，不能因为第 $i$ 行位置更靠右就丢掉更多历史；整个 $B^D$ 对每行开放。只有历史 padding 被遮挡，块内不做因果裁剪。
+$\Vert$ 表示两组 KV 共同参与 Attention，不要求物理拼接。AR 窗口随 query 位置移动，包含当前 query 对应的真实 KV；Orthrus 的 K 个 query 则读取同一个 anchor 前窗口，再读取整块临时 KV。即使第 $i$ 个 draft 位置更靠后，也不能按 AR 规则缩短它可读的 anchor 历史。
 
-**现成算子怎样做。** 服务按每个请求的历史长度生成窗口行号，再经页表读取主模型 SWA cache；随后将这段短历史与临时块 `cat` 成连续 KV，一次调用 FIA。历史窗口最多 128 行，因此这里只收集窗口，不把整个长上下文展开。输出还未包含 sink，稍后和其他历史段一起归一化。
+#### 2.2.2 PyPTO 实现基础与适配方案
+
+`decode_sparse_attn_swa.py` 已经实现分页滑窗读取和 Attention。在多 query 的 AR 验证路径中，调用方先写入待验证 token 的 KV；Attention 为第一个 query 收集窗口，再为后续 query 追加新位置、移出过期位置。该优化避免重复收集整个窗口，但可见范围仍然是逐行因果的。
+
+Orthrus 可以复用分页地址转换、预取和公共历史共享，但不能沿用上述逐行追加/滑移规则。窗口行号应由 anchor 前历史长度统一生成，临时块单独提供，每个 query 都读取完整块。历史不足窗口宽度时还需屏蔽 padding，否则填零的 KV 也会进入 softmax 分母。
+
+cache 写入和 Attention 读取并不总在同一个函数内。现有滑窗子函数主要负责读取，写回由其调用链完成；适配时既要调整读取范围，也要让调用方绕过 draft 的 target KV 写回。仅修改 Attention mask 而保留 AR 写回编排，仍不满足只读要求。
+
+#### 2.2.3 Torch-NPU 实现
+
+BF16 demo 将滑窗历史表示为连续张量 `history.raw_kv`。下面是 `forward` 中实际的滑窗计算，K 个 query 一起读取同一份历史；结果稍后与第 2.1 节的双向块和 sink 合并。
+
+
+```python
+# K 个 query 读取同一份已接受历史，但不修改它。
+raw_out, raw_lse = _native_fia_segment(
+    query,
+    history.raw_kv,
+    query_lengths,
+    [history.raw_kv.shape[1]] * batch,
+)
+outputs.append(raw_out)
+lses.append(raw_lse)
+```
+
+
+服务中的目标历史是分页存储，不能直接当作连续张量使用。W8A8 路径先按请求历史长度生成窗口逻辑行号，再经页表读取最多 128 行历史；将这段短历史与临时块拼接后，一次 FIA 完成“滑窗 + 双向块”。这种组合减少一次 Attention 调用，同时不需要展开整个长上下文。
+
+以下代码依次完成逻辑行号生成、分页读取和 mask 构造。无效行号以 `-1` 表示；布尔 mask 的 `True` 表示屏蔽，与式 (1) 的 additive mask 编码不同。
 
 
 <details>
@@ -363,6 +477,9 @@ def history_and_block_mask(
 </details>
 
 
+联合 FIA 只屏蔽历史 padding，块内 K 行全部开放。其输出仍不含 sink；独立 SWA 层只需再合并 sink，HCA/CSA 层还需加入各自的压缩历史贡献。
+
+
 <details>
 <summary>完整源码：SWA 历史与双向块的一次联合计算</summary>
 
@@ -382,27 +499,51 @@ def _swa_block_segment(query, history, local, lengths, scale):
 </details>
 
 
-上述布尔 mask 中 `True` 表示屏蔽位置，和式 (2) 的 additive mask 不是同一编码。历史长度小于窗口时，补齐的行必须被屏蔽，不能只把 KV 填零，因为零 KV 仍会进入 softmax 分母。
-
-**PyPTO 应怎样改。** 保留分页地址转换和窗口预取，把每行窗口改为统一的 anchor 前窗口；取消 AR 的逐行追加/滑移逻辑，改为读取独立临时块的全部 K 行。可以复用“每请求只取一次公共历史”的优化思路，但不能原样保留因果边界。调用方绕过 draft 的 target KV 写回，Attention 将历史和临时块共同归一化。
+PyPTO 不必照搬 `gather + cat` 的中间张量：可以在融合 kernel 中分别读取分页历史和临时块，维护同一 softmax 状态。需要保持的是固定 anchor 窗口、完整块可见和不写目标 cache 的语义，而不是 Torch demo 的物理拼接方式。
 
 源码定位：[PyPTO SWA](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_sparse_attn_swa.py)。
 
-### 2.3 HCA：在同一窗口之外加入 C128 历史
+### 2.3 HCA：C128 压缩历史 Attention
 
-SWA 解决了近处的历史。HCA 还需要更远的上下文，但读取的是主模型按 ratio-128 生成的压缩行，而不是重新展开全部 token。
+#### 2.3.1 压缩历史范围与计算定义
 
-**PyPTO 已有什么。** `decode_hca.py` 的 AR 路径执行 Q/KV 投影、原始 KV 写回、ratio-128 压缩和状态更新，再启动 Attention。`decode_sparse_attn_hca.py` 分别处理滑窗和有效 C128 行，最后合并两组 online-softmax 状态，加一次 sink，再做逆 RoPE 和输出布局整理。它已经有分页读取、压缩历史 Attention 和归一化合并，不缺这些基础能力。
+SWA 仅保存近处的原始上下文。HCA 在此基础上读取主模型按 ratio-128 生成的压缩行，使 query 能访问更长的历史。Orthrus 不需要对草稿块再运行一次目标 compressor，而是使用已经完成的压缩历史，将草稿块保持为未压缩的临时 KV。
 
-**Orthrus 要什么。** 记 $H_{128}(t)$ 为截至位置 $t$ 已完成的 C128 压缩行：
+记 $H_{128}(t)$ 为截至位置 $t$ 已完成的 C128 压缩行：
 
-| 现有 AR 语义 | Orthrus-HCA 语义 |
+| 原有 AR Attention | Orthrus-HCA |
 | --- | --- |
 | $o_p^{AR}=\mathcal A(q_p^{AR},W(p)\Vert H_{128}(p);s^{AR})$ | $o_i^D=\mathcal A(q_i^D,W(a-1)\Vert H_{128}(a-1)\Vert B^D;s^D)$ |
 
-anchor 前有 $a$ 个历史 token，因此可读完整 C128 行数为 $\lfloor a/128\rfloor$；尚未完成的压缩组仍在目标模型状态中，不让 draft 将它补完。HCA 读取全部有效 C128 行，不做 indexer Top-K。
+anchor 前有 $a$ 个 token，因此读取 $\lfloor a/128\rfloor$ 个已完成压缩行。未完成压缩组仍保存在目标模型的 compressor state 中，draft 不能补完或更新它。这里读取全部有效 C128 行，不通过 indexer 做 Top-K 截断。
 
-**现成算子怎样做。** SWA 和块内部分沿用第 2.2 节。压缩历史采用两种原生入口：页大小满足当前 FIA 条件时直接传页表；否则枚举全部有效压缩行，调用 `npu_sparse_flash_attention`。这里“sparse”是分页读取接口，并不改变 HCA 的全量有效历史语义。只有显式选择 `gather` 回退时才把压缩行收集成连续张量。
+#### 2.3.2 PyPTO 实现基础与适配方案
+
+`decode_hca.py` 的正常 AR 路径执行投影、原始 KV 写回、ratio-128 压缩与状态更新，再启动 Attention。`decode_sparse_attn_hca.py` 分别处理滑窗和 C128 历史，合并各自的 online-softmax 状态，加入一次 sink，然后执行逆 RoPE 和输出布局整理。
+
+因此，HCA 已有分页读取、压缩历史计算和联合归一化。Orthrus 的新增工作是把有效历史长度固定到 anchor 前、加入临时双向块，并绕过本轮草稿的 compressor 和 cache 写回。状态合并可以直接按式 (6) 扩展；应在全部贡献合并后做一次后处理，而不是分别处理各段再相加。
+
+计算图依赖也需相应调整。原有 Attention 可能等待 AR 写回任务完成；跳过该任务后，要把依赖改成“目标历史可读、diffusion Q/KV 已就绪”，不能只删除写回调用而留下失效的同步关系。
+
+#### 2.3.3 Torch-NPU 实现
+
+BF16 demo 的 HCA 分支直接将连续 C128 历史交给 FIA，query 与 SWA/块内计算使用同一份 diffusion 投影结果。以下代码位于单层 `forward` 的 HCA 分支，其输出随后参与统一归一化。
+
+
+```python
+# HCA 额外读取 C128 压缩历史。
+compressed_out, compressed_lse = _native_fia_segment(
+    query,
+    history.c128_kv,
+    query_lengths,
+    [history.c128_kv.shape[1]] * batch,
+)
+outputs.append(compressed_out)
+lses.append(compressed_lse)
+```
+
+
+W8A8 服务使用真实分页 cache。当前实现按布局选择原生入口：FIA 支持的页大小直接传页表；不满足该路径时，枚举全部有效 C128 行并调用 `npu_sparse_flash_attention`。后者虽然使用 sparse 接口，但没有减少 HCA 的历史集合，只是借用该接口从较小分页中读取数据。显式配置 `gather` 时才使用连续展开的回退路径。
 
 
 <details>
@@ -460,40 +601,147 @@ def _sparse_history_segment(query, cache, block_table, indices, lengths, scale):
 </details>
 
 
-`_sparse_history_segment` 同时供 CSA 使用。该算子接口要求分离的 RoPE 参数，但 DSV4 的 512 维 query/KV 已包含 RoPE 分量，因此代码额外传入零 query，让辅助点积为零，避免重复加入位置项；`key_rope` 只是目标 cache 的只读视图。其返回的最大值和指数和通过 $L=m+\log\ell$ 转成统一 LSE。
+`_sparse_history_segment` 同时供 CSA 使用。其原生接口要求独立的 RoPE 参数，而 DSV4 的 512 维 query/KV 已包含 RoPE 分量，因此传入全零辅助 query，使额外点积项为零；`key_rope` 使用目标 cache 的只读视图，不重复分配一份 KV。算子返回的最大值与指数和通过 $L=m+\log\ell$ 转为 LSE，再与滑窗/块的结果合并。
 
-**PyPTO 应怎样改。** 保留 C128 分页读取、QK/PV 和状态合并，将有效长度固定到 anchor 前，增加公共双向块贡献。绕过 draft 的 compressor 和持久状态写回，同时调整任务依赖：Attention 应等待历史可读和 diffusion Q/KV 就绪，不再等待被跳过的 AR 写回任务。完成所有部分的合并后再做一次逆 RoPE/输出整理。主模型的压缩规则不变。
+PyPTO 可直接在已有 HCA 流水线中处理这些贡献，无需模仿这个为适配现成 NPU 接口而加入的辅助参数。其交付要求仍是完整 C128 可见性、目标压缩状态不变，以及包含临时块的正确归一化。
 
 源码定位：[HCA 编排](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_hca.py)、[HCA Attention](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_sparse_attn_hca.py)。
 
-### 2.4 CSA：由 diffusion query 检索 C4 历史
+### 2.4 CSA：C4 检索与稀疏 Attention
 
-CSA 与 HCA 的区别是压缩率更低、可选历史更多，所以先由 indexer 选行。这里包含“选哪些行”和“对选中行做 Attention”两个阶段，但它们属于同一条 CSA 路径，不额外算一种模型层。
+#### 2.4.1 Indexer 与 Attention 的计算定义
 
-**PyPTO 已有什么。** `decode_csa.py` 和 `decode_indexer.py` 使用 AR 低秩 query 生成 indexer query，执行 RoPE、Hadamard 变换和量化，再与历史 index key 评分；各 head 的 ReLU 分数按权重求和，分段 Top-K 后归并。历史不超过 512 行时，现有代码还有直接枚举全部有效行、跳过评分排序的短历史分支。
+C4 的压缩率比 C128 低，同一上下文会保留更多压缩行。CSA 先由 indexer 为每个 query 选择相关历史，再对选中行计算 Attention。适配 Orthrus 时，历史 index key 和 C4 KV 仍来自主模型，query 及其检索权重改由 diffusion 分支生成，以对应本轮 hidden 和交付 head 中的 indexer 参数。
 
-随后 `decode_sparse_attn_csa.py` 读取滑窗和选中的 C4 行，计算 Attention 并处理 sink/逆 RoPE。正常 AR 编排同时更新 C4 compressor、indexer key/scale cache 和原始 KV。检索范围按各 query 的当前位置计算；它不是可以直接套用的“所有 query 共用 anchor 历史”入口。
-
-**Orthrus 要什么。** 历史 index key 和 C4 KV 继续使用主模型已经生成的内容，query 及其 head 权重改用 diffusion 分支参数。令 $k_u^I$ 为历史 index key，$q_{i,h}^{I,D}$ 为第 $i$ 个 draft 位置、第 $h$ 个 indexer head 的 query，$w_{i,h}^D$ 为含模型缩放的权重；$H_I$ 是 indexer head 数：
+设 $k_u^I$ 为历史第 $u$ 行 index key，$q_{i,h}^{I,X}$ 为位置 $i$、head $h$ 的 indexer query，$w_{i,h}^{X}$ 为含模型缩放的 head 权重，$X\in\{AR,D\}$。两种路径共用同一评分形式：
 
 $$
-A_{i,u}^{D}=\sum_{h=1}^{H_I}w_{i,h}^{D}
-\operatorname{ReLU}\!\left(q_{i,h}^{I,D}(k_u^I)^\top\right),\qquad
-I_i^D=\operatorname{TopIdx}_{k_I}
-\{A_{i,u}^D:0\le u<\lfloor a/4\rfloor\}.
-\tag{6}
+A_{i,u}^{X}=
+\sum_{h=1}^{H_I}w_{i,h}^{X}
+\operatorname{ReLU}\!\left(q_{i,h}^{I,X}(k_u^I)^\top\right).
+\tag{7}
 $$
 
-$k_I=512$ 是最多选取的压缩行数，不是 draft 块长 $K=32$；不足 512 行时只使用有效行。各 query 检索的历史范围相同，但 query 不同，选出的 $I_i^D$ 可以不同。临时双向块全部可见，不参与 Top-K。
+$H_I$ 是 indexer head 数。变化在于 query/权重来源和有效历史范围：
 
-| 现有 AR 语义 | Orthrus-CSA 语义 |
+| 原有 AR 检索 | Orthrus 检索 |
 | --- | --- |
-| $I_p^{AR}$ 由 AR query/权重产生，范围为 $0\le u<\lfloor(p+1)/4\rfloor$ | $I_i^D$ 由 diffusion query/权重产生，范围固定为 $0\le u<\lfloor a/4\rfloor$ |
+| $I_p^{AR}=\operatorname{TopIdx}_{k_I}\{A_{p,u}^{AR}:0\le u<\lfloor(p+1)/4\rfloor\}$ | $I_i^D=\operatorname{TopIdx}_{k_I}\{A_{i,u}^{D}:0\le u<\lfloor a/4\rfloor\}$ |
+
+$k_I=512$ 是最多选取的压缩行数，与 draft 块长 $K=32$ 不同；历史不足时仅使用有效行。所有 draft query 的检索范围相同，但 query 不同，选中的行可以不同。当前临时块全量可见，不参与 Top-K。
+
+记 $H_4[I]$ 为行号集合 $I$ 对应的 C4 KV，最终 Attention 为：
+
+| 原有 AR Attention | Orthrus-CSA |
+| --- | --- |
 | $o_p^{AR}=\mathcal A(q_p^{AR},W(p)\Vert H_4[I_p^{AR}];s^{AR})$ | $o_i^D=\mathcal A(q_i^D,W(a-1)\Vert H_4[I_i^D]\Vert B^D;s^D)$ |
 
-$H_4[I]$ 是按行号 $I$ 选出的 C4 压缩 KV。需要替换的是 indexer 参数和查询语义，不是重写 Top-K 排序算法。
+因此，CSA 需要独立 diffusion indexer 参数，但不需要重新设计评分公式或 Top-K 排序算法。参数替换与算子算法复用是两件不同的事。
 
-**现成算子怎样做。** W8A8 服务使用量化 projection、RoPE、Hadamard 和 query 量化，调用原生 `npu_vllm_quant_lightning_indexer`（QLI）。配套 metadata 使用非因果模式，让 K 行都读取完整 anchor 历史，不能沿用 target 验证时的因果 metadata。下面是完整类方法，其中 `indexer` 是 diffusion 分支对象，`target_kv` 是主模型 cache。
+#### 2.4.2 PyPTO 实现基础与适配方案
+
+`decode_indexer.py` 已提供 indexer query 投影、RoPE、Hadamard 变换、量化评分和 Top-K 归并。`decode_csa.py` 还包含一个短历史分支：有效 C4 行不超过 512 时，直接枚举全部有效行，跳过评分排序。随后 `decode_sparse_attn_csa.py` 根据页表读取选中的压缩 KV，与滑窗一起做 Attention，并处理 sink 和逆 RoPE。
+
+正常 AR 编排会同时更新原始 KV、C4 compressor、indexer key 和 scale cache。现有检索边界也根据各 query 的当前位置变化，而不是固定到一个共同 anchor。
+
+Orthrus 可以复用评分、Top-K 归并和分页读取，但需要绑定 diffusion query/weight 投影，批量处理 K 行；完整评分与短历史枚举两个分支都应采用 anchor 前的有效长度。同时跳过草稿侧的 indexer compressor/key/scale 写回，仅运行 query 侧计算。最后将选中的 C4、滑窗和临时块纳入同一个 softmax。
+
+#### 2.4.3 Torch-NPU 实现
+
+BF16 demo 使用 `npu_lightning_indexer`。它对每个 draft 位置生成 indexer query 和 head 权重，用分页历史 index key 评分，返回选中的逻辑行号。下面给出 query 生成、原生 indexer 调用和 C4 收集的完整方法。
+
+
+<details>
+<summary>完整源码：BF16 demo 的 indexer 与 C4 gather</summary>
+
+```python
+def _native_indexer(
+    self,
+    qr: torch.Tensor,
+    hidden_states: torch.Tensor,
+    positions: torch.Tensor,
+    history: SyntheticTargetHistory,
+) -> torch.Tensor:
+    """使用 diffusion query 为每个 draft 位置选择 C4 历史。"""
+    config = self.config
+    batch, block, _ = hidden_states.shape
+    query = self.index_wq_b(qr).view(
+        batch, block, config.index_heads, config.index_head_dim
+    )
+    cos, sin = self._rotary_tables(positions)
+    query = self._partial_rope(query, cos, sin)
+    weights = self.index_weights(hidden_states) * (
+        config.index_head_dim**-0.5 * config.index_heads**-0.5
+    )
+    query_lengths = torch.full(
+        (batch,), block, dtype=torch.int32, device=hidden_states.device
+    )
+    result = torch_npu.npu_lightning_indexer(
+        query=query,
+        key=history.index_key_pages,
+        weights=weights,
+        actual_seq_lengths_query=query_lengths,
+        actual_seq_lengths_key=history.index_key_lengths,
+        block_table=history.index_block_table,
+        layout_query="BSND",
+        layout_key="PA_BSND",
+        sparse_count=config.index_topk,
+        sparse_mode=0,
+    )
+    indices = result[0]
+    if indices.ndim == 4:
+        if indices.shape[2] != 1:
+            raise RuntimeError(f"unexpected indexer output: {tuple(indices.shape)}")
+        indices = indices[:, :, 0]
+    if indices.shape != (batch, block, config.index_topk):
+        raise RuntimeError(f"unexpected indexer output: {tuple(indices.shape)}")
+    return indices.long()
+
+@staticmethod
+def _gather_c4(cache: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    """从 C4 cache 中取出每个 draft query 选中的历史行。"""
+    batch, queries, selected = indices.shape
+    source = cache[:, None].expand(-1, queries, -1, -1, -1)
+    gather_index = indices[..., None, None].expand(
+        batch, queries, selected, cache.shape[2], cache.shape[3]
+    )
+    return torch.gather(source, 2, gather_index)
+```
+
+</details>
+
+
+同一请求的不同 query 可能选中不同 C4 行，因此 demo 将 `batch × K` 展成一组单 query 请求，再调用 FIA。以下是 `forward` 中完整的 CSA 分支计算；`qr` 是低秩 query 表示，`hidden_states` 用于生成 indexer head 权重，二者均来自本轮 diffusion 前处理。
+
+
+```python
+# CSA 为每个 draft 位置选择并读取 C4 历史。
+topk_indices = self._native_indexer(
+    qr, hidden_states, positions, history
+)
+selected_c4 = self._gather_c4(history.c4_kv, topk_indices)
+flat_query = query.reshape(
+    batch * block, 1, config.num_heads, config.head_dim
+)
+flat_c4 = selected_c4.reshape(
+    batch * block, config.index_topk, 1, config.head_dim
+)
+compressed_out, compressed_lse = _native_fia_segment(
+    flat_query,
+    flat_c4,
+    [1] * (batch * block),
+    [config.index_topk] * (batch * block),
+)
+outputs.append(compressed_out.view_as(query))
+lses.append(
+    compressed_lse.view(batch, block, config.num_heads, 1)
+)
+```
+
+
+W8A8 服务不为每个 query 物化大块连续 C4 张量，而是使用量化 QLI（`npu_vllm_quant_lightning_indexer`）和原生分页 sparse Attention。query 经过 diffusion 投影、RoPE、Hadamard 与量化；历史 key/scale 直接使用目标 cache。
+
+QLI 的 metadata 必须采用非因果模式，让 K 行 query 读取完整 anchor 历史。沿用 target 验证的因果 metadata，会错误缩短块内前几行的检索范围。以下是服务实际使用的完整类方法，其中 `indexer` 属于 diffusion 分支，`target_kv` 属于目标模型。
 
 
 <details>
@@ -599,7 +847,7 @@ def _c4_topk_readonly(
 </details>
 
 
-QLI 使用原始 token 历史长度和 `cmp_ratio=4`，返回的是**压缩行号**，不能再除以 4；结果还要按 $\lfloor a/4\rfloor$ 排除无效项，并把有效项排在前面。随后交给 sparse Attention 的有效长度则是压缩行数，不能与 QLI 的长度单位混用。压缩行号经 C4 页表读取对应数据；`gather + FIA` 仅作为兼容回退。
+QLI 接收原始 token 历史长度和 `cmp_ratio=4`，返回的是压缩行号。结果不能再除以 4，而应按 $\lfloor a/4\rfloor$ 过滤越界/未完成行，并将有效项移到前面。随后 sparse Attention 接收的有效长度则是压缩行数，两个接口的单位不能混用。
 
 
 <details>
@@ -626,7 +874,6 @@ def c4_history_indices(
 ```
 
 </details>
-
 
 <details>
 <summary>完整源码：C4 sparse Attention 与 gather 回退</summary>
@@ -660,26 +907,101 @@ def _c4_segment(query, cache, block_table, indices, lengths, scale, *, validate=
 </details>
 
 
-BF16 demo 使用非量化 `npu_lightning_indexer`，将选中的 C4 行 `gather` 后交给 FIA，便于独立阅读计算。W8A8 服务默认直接从分页 cache 做 sparse Attention，避免为每个 query 展开选中的大张量。两者不是同一条性能路径。
+这条 sparse 路径调用第 2.3 节的 `_sparse_history_segment`，从 C4 页表直接读取选中的行；`gather + FIA` 仅保留为兼容回退。实现还需明确区分原始滑窗的物理 slot 和 C4 的逻辑压缩行号，并对齐量化 scale、Hadamard 约定和无效项 `-1`。
 
-**PyPTO 应怎样改。** 复用已有量化评分、Top-K 归并和分页读取，绑定 diffusion indexer 权重，批量处理 K 个 query；将完整评分分支和短历史枚举分支的有效边界都固定到 anchor 前。跳过 draft 的 indexer compressor/key/scale 写回，只保留 query 侧计算，然后将选中 C4、滑窗与公共双向块统一归一化。
-
-实现时还要区分两种地址：原始滑窗的物理 slot 与 C4 的逻辑压缩行号不能混用。量化尺度、Hadamard 约定、无效项 `-1` 和每个请求的有效长度需要与现成实现对齐。
+PyPTO 的主要工作不是补一个新的 Top-K，而是把既有检索路径接到 diffusion 参数和共同历史边界，去除其 AR 写回副作用，并将检索结果与双向块正确合并。
 
 源码定位：[CSA 编排](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_csa.py)、[Indexer](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_indexer.py)、[CSA Attention](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_sparse_attn_csa.py)。
 
 
-## 3. 把四个模块接成一层
+## 3. 层级执行与推理引擎集成
 
-前面回答了“读哪些 KV、怎样计算 Attention”。一层真正运行还需要输入投影、输出投影以及与主模型的衔接；这些不是额外的 Attention 语义，但不能仅凭公式相同就认为已经无条件兼容。
+四个 Attention 模块定义了历史与临时块如何交互。完整的一层还需要先由 diffusion 参数生成 Q/KV，再将 Attention 结果投影回 hidden，继续经过共享主干。前后处理和引擎接入不改变上述公式，但决定权重、布局和状态能否正确连接。
 
-### 3.1 输入与输出投影
+### 3.1 Diffusion 输入投影与输出投影
 
-**输入端。** 对 DSV4-Flash，每行 4096 维 hidden 先经 `wq_a` 降到 1024 维，做内部 RMSNorm，再经 `wq_b` 生成各 head 的 query，执行 head RMSNorm 和 partial RoPE。另一条 `wkv` 生成 512 维 shared KV，再做 norm/partial RoPE，作为本轮临时块。完整模型共有 64 个 Attention head，TP 时使用本 rank 的分片；RoPE 作用于其中的 64 维。
+DSV4-Flash 的每行输入 hidden 为 4096 维。query 侧先经 `wq_a` 降到 1024 维，经过内部 RMSNorm，再由 `wq_b` 生成各 head 的 query，执行 head RMSNorm 和 partial RoPE。KV 侧由 `wkv` 生成 512 维 shared KV，再执行 norm 和 partial RoPE，得到本轮临时块。完整模型有 64 个 Attention head，RoPE 使用其中 64 维；TP 实现使用本 rank 对应的 head 分片。
 
-W8A8 服务在 `wq_a` 和 `wkv` 都使用动态 W8A8 时，共用一次输入动态量化，避免相同 hidden 重复量化。低秩 query 的 norm 和动态量化调用融合算子，matmul 使用 head 自己的权重与 scale；这里没有把主模型的量化 scale 套到 diffusion 权重上。
+BF16 demo 将这些步骤显式写成 Torch-NPU 调用。以下代码包含 RoPE 表构造、正/逆 partial RoPE 和输入投影，不隐含调用目标模型的 KV 写回流程。
 
-PyPTO 的 `qkv_proj_rope.py` 已有这些基础运算。适配重点是绑定 diffusion 参数，接收 K 行输入，匹配 TP/量化布局，并把生成的 KV 作为临时张量交给 Attention，而非送入目标 cache 写回。
+
+<details>
+<summary>完整源码：BF16 demo 的 RoPE 与 diffusion Q/KV 投影</summary>
+
+```python
+def _rotary_tables(self, positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    config = self.config
+    inv_freq = 1.0 / (
+        config.rope_theta
+        ** (
+            torch.arange(
+                0,
+                config.rope_head_dim,
+                2,
+                device=positions.device,
+                dtype=torch.float32,
+            )
+            / config.rope_head_dim
+        )
+    )
+    angles = positions.reshape(-1, 1).float() * inv_freq.view(1, -1)
+    angles = angles.repeat_interleave(2, dim=-1)
+    shape = (positions.numel(), 1, 1, config.rope_head_dim)
+    return angles.cos().view(shape), angles.sin().view(shape)
+
+def _partial_rope(
+    self,
+    value: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    *,
+    inverse: bool = False,
+) -> torch.Tensor:
+    rope_dim = self.config.rope_head_dim
+    flat = value.reshape(-1, value.shape[-2], value.shape[-1])
+    nope, rope = flat[..., :-rope_dim], flat[..., -rope_dim:]
+    rotated = torch_npu.npu_rotary_mul(
+        rope.reshape(rope.shape[0], rope.shape[1], 1, rope_dim).float(),
+        cos,
+        -sin if inverse else sin,
+        rotary_mode="interleave",
+    ).to(value.dtype)
+    return torch.cat((nope, rotated.reshape_as(rope)), dim=-1).view_as(value)
+
+def _project(
+    self, hidden_states: torch.Tensor, positions: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """为 K 个 draft 位置生成 diffusion Q 和块内 K/V。"""
+    config = self.config
+    batch, block, _ = hidden_states.shape
+    q_a = self.wq_a(hidden_states)
+    qr, _ = torch_npu.npu_rms_norm(
+        q_a, self.q_norm, epsilon=config.rms_norm_eps
+    )
+    query = self.wq_b(qr).view(
+        batch, block, config.num_heads, config.head_dim
+    )
+    query, _ = torch_npu.npu_rms_norm(
+        query, self.head_norm, epsilon=config.rms_norm_eps
+    )
+    local_kv = self.wkv(hidden_states)
+    local_kv, _ = torch_npu.npu_rms_norm(
+        local_kv, self.kv_norm, epsilon=config.rms_norm_eps
+    )
+    local_kv = local_kv.view(batch, block, 1, config.head_dim)
+    cos, sin = self._rotary_tables(positions)
+    return (
+        self._partial_rope(query, cos, sin),
+        self._partial_rope(local_kv, cos, sin),
+        qr,
+        hidden_states,
+    )
+```
+
+</details>
+
+
+W8A8 服务采用同一数学结构，但使用量化权重与相应 scale。当 `wq_a` 和 `wkv` 都是动态 W8A8 时，二者共用一次输入动态量化，减少重复计算；低秩 query 的 norm 与动态量化使用融合算子。每套 diffusion 权重使用自身 scale，不直接套用主模型尺度。
 
 
 <details>
@@ -766,29 +1088,161 @@ def _qkv_readonly(draft_impl, hidden_states, cos, sin):
 </details>
 
 
-**输出端。** 三条 Attention 路径完成联合归一化后，先做 inverse partial RoPE，再执行 DSV4 的分组低秩输出投影：按 8 组整理 head，每组投影到 1024 维，再合并映射回 4096 维 hidden。服务复用 diffusion Attention 对象的 `_forward_o_proj`；demo 显式使用 `npu_transpose_batchmatmul` 和 Linear，完整实现见第 4 节。
+Attention 的输出不能直接送回共享 MoE。它先执行 inverse partial RoPE，再按 DSV4 的 8 个组做低秩输出投影：每组投影到 1024 维，合并后映射回 4096 维 hidden。demo 使用 `npu_transpose_batchmatmul` 和 Linear 展示这一过程；服务复用 diffusion Attention 对象的 `_forward_o_proj`。
 
-PyPTO 的 `decode_o_proj.py` 已有输出投影及相关融合。可以沿用计算，但需要核对 K 行的 padding、TP 通信和 mHC 输入输出约定。所对照的 HCA/CSA 等独立运行入口显式限制 TP 为 1/2/4，不能据此承诺 TP8 可直接使用；这是适配和验证项，不代表要另造 matmul。
+
+<details>
+<summary>完整源码：BF16 demo 的逆 RoPE 与分组输出投影</summary>
+
+```python
+def _output_projection(
+    self,
+    attention: torch.Tensor,
+    positions: torch.Tensor,
+) -> torch.Tensor:
+    """执行 DSV4 inverse partial RoPE 和分组输出投影。"""
+    config = self.config
+    batch, block, _, _ = attention.shape
+    cos, sin = self._rotary_tables(positions)
+    attention = self._partial_rope(attention, cos, sin, inverse=True)
+    grouped = attention.reshape(
+        batch * block,
+        config.o_groups,
+        config.num_heads * config.head_dim // config.o_groups,
+    )
+    low_rank = torch_npu.npu_transpose_batchmatmul(
+        grouped,
+        self.wo_a,
+        bias=None,
+        scale=None,
+        perm_x1=(1, 0, 2),
+        perm_x2=(0, 1, 2),
+        perm_y=(1, 0, 2),
+        batch_split_factor=1,
+    )
+    return self.wo_b(low_rank.reshape(batch, block, -1))
+```
+
+</details>
+
+
+PyPTO 的 `qkv_proj_rope.py` 和 `decode_o_proj.py` 已包含相应基础计算。适配重点是绑定 diffusion 权重、匹配 K 行输入输出、TP 分片、量化布局和 mHC 约定，而不是重新设计投影算子。所对照的 HCA/CSA 等独立运行入口显式支持 TP=1/2/4，不能据此认定 TP8 已可直接使用；需要单独检查通信和编译形状。
 
 源码定位：[Q/KV 投影](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/qkv_proj_rope.py)、[输出投影](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_o_proj.py)。
 
-### 3.2 W8A8 服务如何连接这些函数
+### 3.2 单层执行与共享主干
 
-服务中的 `_history_segments` 是三条路径的统一入口。它从 target cache 取出 SWA 和压缩 cache，先计算所有层都需要的“滑窗 + 临时块”，再按 `compress_ratio` 加入 C4 或 C128 段；最后由 `_attention_readonly` 追加一次 sink、合并并做输出投影。
+各模块在 BF16 demo 中由同一个 `forward` 串联：先投影，计算滑窗，根据层类型增加 C128 或 C4 历史，补上临时块与 sink，最后合并并输出投影。第 2 节所列分支均来自下列方法；其中 `history` 是只读模拟历史，不包含主模型 compressor 的执行。
 
-以下计算方法使用的对象和布局如下，避免只看到变量名而不知道它们从哪里来：
 
-| 输入或对象 | 来源与含义 |
+<details>
+<summary>完整源码：BF16 单层 forward</summary>
+
+```python
+def forward(
+    self,
+    hidden_states: torch.Tensor,
+    positions: torch.Tensor,
+    history: SyntheticTargetHistory,
+    kind: AttentionKind,
+) -> NativeLayerOutput:
+    """为 K 位置 draft 块执行一层 SWA、HCA 或 CSA。"""
+    config = self.config
+    batch, block, hidden = hidden_states.shape
+    if hidden != config.hidden_size or positions.shape != (batch, block):
+        raise ValueError("hidden_states or positions have incompatible shapes")
+    query, local_kv, qr, hidden_states = self._project(hidden_states, positions)
+    query_lengths = [block] * batch
+    outputs: list[torch.Tensor] = []
+    lses: list[torch.Tensor] = []
+
+    # K 个 query 读取同一份已接受历史，但不修改它。
+    raw_out, raw_lse = _native_fia_segment(
+        query,
+        history.raw_kv,
+        query_lengths,
+        [history.raw_kv.shape[1]] * batch,
+    )
+    outputs.append(raw_out)
+    lses.append(raw_lse)
+
+    topk_indices: torch.Tensor | None = None
+    if kind == "hca":
+        # HCA 额外读取 C128 压缩历史。
+        compressed_out, compressed_lse = _native_fia_segment(
+            query,
+            history.c128_kv,
+            query_lengths,
+            [history.c128_kv.shape[1]] * batch,
+        )
+        outputs.append(compressed_out)
+        lses.append(compressed_lse)
+    elif kind == "csa":
+        # CSA 为每个 draft 位置选择并读取 C4 历史。
+        topk_indices = self._native_indexer(
+            qr, hidden_states, positions, history
+        )
+        selected_c4 = self._gather_c4(history.c4_kv, topk_indices)
+        flat_query = query.reshape(
+            batch * block, 1, config.num_heads, config.head_dim
+        )
+        flat_c4 = selected_c4.reshape(
+            batch * block, config.index_topk, 1, config.head_dim
+        )
+        compressed_out, compressed_lse = _native_fia_segment(
+            flat_query,
+            flat_c4,
+            [1] * (batch * block),
+            [config.index_topk] * (batch * block),
+        )
+        outputs.append(compressed_out.view_as(query))
+        lses.append(
+            compressed_lse.view(batch, block, config.num_heads, 1)
+        )
+    elif kind != "swa":
+        raise ValueError(f"unknown attention kind: {kind}")
+
+    # ORTHRUS 改动：不加因果 mask，K 个 draft 位置可以互相读取。
+    local_out, local_lse = _native_fia_segment(
+        query, local_kv, query_lengths, [block] * batch
+    )
+    outputs.append(local_out)
+    lses.append(local_lse)
+
+    # DSV4 attention sink 与其他部分共享 softmax 分母。
+    outputs.append(torch.zeros_like(local_out))
+    lses.append(
+        self.attn_sink.view(1, 1, -1, 1).expand(batch, block, -1, -1)
+    )
+    # ORTHRUS 改动：用 LSE 精确合并只读历史与双向 draft 块。
+    attention, _ = merge_attention_segments(outputs, lses)
+
+    # 候选验证以及 cache 提交/回滚由推理引擎负责。
+    output = self._output_projection(attention, positions)
+    return NativeLayerOutput(
+        output=output,
+        topk_indices=topk_indices,
+    )
+```
+
+</details>
+
+
+服务路径还需从真实运行时中找到对应的目标模型层、cache 和 metadata。`_history_segments` 统一组织三条路径：先计算所有层都需要的“滑窗 + 临时块”，再按 `compress_ratio` 添加 C4 或 C128；`_attention_readonly` 负责取得运行上下文，追加一次 sink，完成合并与输出投影。
+
+以下对象是服务函数的输入边界。它们解释了为什么单层 Attention 可以独立演示，而完整服务仍需要 proposer 和模型执行器提供上下文。
+
+| 对象 | 来源与作用 |
 | --- | --- |
-| `self.self_attn` / `draft_impl` | 当前层的 diffusion Attention，持有独立投影、内部 norm、sink 和 CSA indexer 参数 |
-| `target_attention` / `target_kv` | 绑定的主模型层及其持久 cache；用原生布局解包，不复制整个历史 |
-| `hidden_states` / `positions` | 共享 backbone 产生的 `[batch × K, hidden]` 和对应绝对位置；每个请求第一行位置是 anchor |
-| `query` / `local_kv` | 投影结果；Attention 内整理为 `[batch, K, local_heads, 512]` 和 `[batch, K, 1, 512]` |
-| `layer_metadata` | 主模型 cache 的页表、有效长度、RoPE 表等运行时信息；Orthrus 路径要求历史长度对应 anchor 前的前缀 |
-| `_dsa_runtime` / `DeviceOperator` | 固定版本 vLLM-Ascend 的 DSA 量化与 cache 布局适配接口 |
-| `BLOCK_SIZE` | 本服务契约中的 draft 块长 32，不是 KV 分页大小；cache 的页大小由实际张量/页表决定 |
+| `self.self_attn` / `draft_impl` | diffusion Attention 参数对象，包含独立投影、内部 norm、sink 和 CSA indexer |
+| `target_attention` / `target_kv` | 当前层绑定的主模型 Attention 及其持久 cache，使用原生布局，不复制整份历史 |
+| `hidden_states` / `positions` | 共享主干产生的 `[batch × K, hidden]` 与绝对位置，每个请求第一行对应 anchor |
+| `query` / `local_kv` | 在 Attention 内整理为 `[batch, K, local_heads, 512]` 和 `[batch, K, 1, 512]` |
+| `layer_metadata` | 页表、有效历史长度、RoPE 表等信息；Orthrus 的历史边界对应 anchor 前的前缀 |
+| `_dsa_runtime` / `DeviceOperator` | 固定 vLLM-Ascend 版本的量化和 cache 布局适配接口 |
+| `BLOCK_SIZE` | 本服务的 draft 块长 32，不是 KV 分页大小；后者由 cache 布局单独确定 |
 
-下面的函数保留真实调用参数。`_metadata_for_target` 用于不同固定 runtime 布局的兼容；`_build_kv_cache`、`get_forward_context`、设备算子注册及模型构造由 vLLM-Ascend 提供，不是本报告省略的 Attention 算法。
+下面列出完整计算方法。`_build_kv_cache`、`get_forward_context`、设备算子注册和模型构造属于固定版本 vLLM-Ascend 的运行时依赖；这些方法不是可以脱离运行时单独粘贴执行的脚本。独立运行方式见第 4 节。
 
 
 <details>
@@ -838,7 +1292,6 @@ def _target_attention(self) -> nn.Module:
 ```
 
 </details>
-
 
 <details>
 <summary>完整源码：三类历史路径的统一编排</summary>
@@ -949,7 +1402,6 @@ def _history_segments(
 
 </details>
 
-
 <details>
 <summary>完整源码：读取目标状态、Attention 合并和输出投影</summary>
 
@@ -1040,9 +1492,9 @@ def _attention_readonly(
 </details>
 
 
-上面的 cache guard 是可选诊断开关，正常计算不依赖校验张量。代码在无真实 metadata 的初始化/profile 阶段返回占位输出；这不等于执行了一次有效 draft，真实执行必须走完整的 metadata/cache 路径。
+`_attention_readonly` 的 cache guard 是可选诊断功能，用于比较 draft 前后的目标状态；正常计算不依赖这些检查张量。初始化/profile 阶段若没有真实 metadata，代码返回占位输出，这不构成一次有效草稿生成。
 
-Attention 回到 block 后，继续调用共享主模型的 mHC、外层 norm 和 MoE。以下方法把这段衔接也列全：只有中间的 Attention 走 diffusion 分支，外层参数仍来自目标层。
+Attention 计算完成后，block 继续执行共享层的 mHC、外层 norm 和 MoE。下面的方法展示这一衔接：只有 Attention 参数和计算来自 diffusion 分支，外层参数仍取自主模型。
 
 
 <details>
@@ -1082,30 +1534,64 @@ def forward(
 </details>
 
 
-### 3.3 kernel 与引擎各负责什么
+### 3.3 Cache 生命周期与职责边界
 
-kernel/计算图负责正确读取地址、遵守可见范围、不执行未授权写回，并产生 Attention 输出。它收到目标 cache 指针后是否写内存，不能靠框架的“只读意图”自动保证，因此需要绕过 AR 的写回算子。
+目标历史的页分配、回收和请求归属由推理引擎管理；kernel 根据页表读取实际数据，并决定是否执行内存写入。这两个层次不能互相替代：框架把 cache 当作只读输入，并不会自动消除某个 AR 融合入口内部的写回副作用。
 
-引擎负责分配与回收页、保证读写顺序、构造 anchor/MASK、绑定 head、传递候选概率以及验证后的提交/回滚。**被接受的 token 保留的是 verifier 算出的 target KV，不是把 draft KV 复制或转正。** 压缩器状态也属于目标状态，由目标路径维护。
+草稿执行期间，目标 SWA KV、压缩 KV、indexer cache 和 compressor state 都应保持不变；只产生临时 draft KV 和候选概率。候选交给主模型验证后，由目标路径生成新的 target KV，并由验证器与调度器维护接受前缀、拒绝恢复和后续请求状态。
 
-对 PyPTO 的交付可以据此界定：输入是 diffusion 参数、整块 hidden/位置和只读目标历史视图，输出是本层 draft hidden；不把 verifier/scheduler 的职责塞进 Attention kernel，也不能让 draft 顺手执行 AR 的 cache 更新。
+因此，PyPTO 计算侧的输入包括 diffusion 权重、整块 hidden/位置以及只读目标历史视图，输出是对应的 draft hidden。proposer、verifier 和 scheduler 则负责 anchor/MASK 构造、候选传递和状态提交。算子实现无需承担完整调度，但必须保证自身不破坏目标历史。
 
-### 3.4 开发范围归纳
+## 4. 运行示例与实现范围
 
-| 模块 | 已有可复用部分 | 需要实现的适配 |
+单层 demo 使用 DSV4-Flash 的实际结构维度，构造随机 diffusion 参数、一个 K 行 hidden 块和模拟目标历史，依次运行 SWA、HCA、CSA。它包含投影、indexer、Attention、sink 合并及输出投影，调用真实 Torch-NPU 算子，不使用 Python 模拟 FIA 或 indexer。
+
+在匹配的 Torch-NPU/CANN 环境中，进入仓库 `online-speculation` 目录运行：
+
+```bash
+PYTHONPATH=src python scripts/demo_torch_npu_dsv4_layer.py --block-size 32
+```
+
+脚本默认使用 `npu:0`，输出三条路径的输出形状以及 CSA 的 Top-K 形状。它不加载整个主模型，也不依赖 vLLM metadata。参数、输入和历史均为合成数据；RoPE 表采用演示配置，不代表生产长上下文设置，历史长度与位置也不是某条真实序列的 checkpoint 回放。运行成功只能说明对应演示路径可执行，不能单独证明真实模型精度或推理加速。
+
+| 实现 | 用途 | 主要调用方式 |
 | --- | --- | --- |
-| 公共双向块 | DSpark 的整块可见、QK/PV、online-softmax；HCA 的状态合并 | 临时块独立输入、K/布局适配；贡献并入统一 softmax，sink 只计一次 |
-| SWA | 分页滑窗读取、公共历史预取、Attention | 固定 anchor 历史；用全可见临时块替代逐 query 因果追加 |
-| HCA | C128 读取、滑窗/压缩状态合并 | 固定完整压缩行数；加入临时块；绕过 draft compressor/写回并调整依赖 |
-| CSA | query 变换、量化评分/Top-K、C4 分页 Attention | diffusion indexer 参数；两种历史长度分支统一 anchor 边界；跳过 key/cache 写回并加入临时块 |
+| BF16 单层 demo | 展示完整 Attention 数据流，作为模块理解与对照入口 | 各段 FIA、BF16 indexer、C4 gather、Torch LSE 合并 |
+| W8A8 服务 | 接入真实量化 head、分页历史与模型执行器 | 联合 SWA/块 FIA、量化 QLI、分页 sparse Attention、原生 AttentionUpdate |
+| PyPTO 适配目标 | 在现有 DSV4 计算图中实现相同语义 | 复用既有投影、历史读取、Top-K 和状态合并，调整输入、边界、状态更新与融合编排 |
 
-这是四项计算适配，不是四个从零开发的基础算子。公共投影和 backbone 沿用现有数学，但仍要完成权重、shape、TP 和运行时接线。**本文的 Torch-NPU 组合已实现；对应的 PyPTO Orthrus 路径是开发需求，不能当作已交付能力。**
+开发 PyPTO 时，应以公式定义的可见性和归一化为准，而不是照搬 demo 的中间张量物化方式。完整 BF16 源码和运行脚本在附录中原样列出；正文中的分支代码均来自这些文件。W8A8 源码摘录来自本仓库 `360ab06` 所在实现快照，不含省略参数的伪代码。
 
-## 4. 完整 BF16 单层 Demo
+文件入口：[单层模型](../src/blockspec/vllm_ascend/torch_npu_dsv4_layer.py)、[公共辅助模块](../src/blockspec/vllm_ascend/dsv4_hybrid.py)、[运行脚本](../scripts/demo_torch_npu_dsv4_layer.py)、[W8A8 服务计算](../src/blockspec/vllm_ascend/dsv4.py)。完整推理还包含 [proposer](../src/blockspec/vllm_ascend/dsv4_proposer.py) 和 [固定版本补丁](../runtime/vllm_ascend_v0_26/README.md)，启动方法见 [部署说明](DSV4_DEPLOYMENT.md)。
 
-这个 demo 不依赖 PyPTO，也不要求加载整个主模型：它构造一层 diffusion Attention，输入一个 K 行 hidden 块和模拟历史，依次运行 SWA、HCA、CSA，包含输入投影、indexer、Attention、sink 合并、逆 RoPE 和输出投影。它使用 Torch-NPU 的真实算子，不是用 Python 模拟 FIA 或 indexer。
+当前服务契约固定 K=32，Attention 数学本身不要求这个值。调整 K 需要同步 head/调度契约、编译形状和临时空间，并重新验证，不等于重新实现 Attention 算法。
 
-完整源码分为三个现有文件，下面全部列出，不省略函数体：
+## 5. 开发范围与验证要求
+
+### 5.1 PyPTO 开发范围
+
+主要工作是沿现有三条历史路径接入 Orthrus 的参数与状态语义，而不是从零开发全部基础计算。公共双向块可内联到各路径；公共投影和共享主干沿用原有数学，但仍需检查块形状、TP 和运行时接线。
+
+| 模块 | 现有实现基础 | 适配内容 |
+| --- | --- | --- |
+| 公共双向块 | DSpark 块内双向 QK/PV、online-softmax，HCA 状态合并 | 独立临时 KV 输入；K/布局适配；贡献纳入统一归一化，sink 计一次 |
+| SWA | 分页滑窗读取、公共历史预取、Attention | 固定 anchor 前窗口；全可见临时块替代逐行因果追加；绕过目标写回 |
+| HCA | C128 读取、滑窗/压缩状态合并 | 固定完整压缩行数；增加临时块；跳过 draft compressor/写回并调整依赖 |
+| CSA | query 变换、量化评分/Top-K、C4 分页 Attention | diffusion indexer 参数；短/长历史分支统一 anchor 边界；跳过 key/state 写回并加入临时块 |
+
+实现顺序可从公共块与 SWA 开始，再接 HCA 的分页历史和状态合并，最后接 CSA 的量化 query、检索边界和 Top-K。这样每一步都有可独立对照的现成算子路径。具体 kernel 融合数量、流水线和 workspace 策略需要基于 PyPTO 实测确定，不能仅按逻辑模块数估算工作量。
+
+### 5.2 正确性与服务验收
+
+算子层先对照相同权重、输入、精度和布局下的参考输出，检查可见行、LSE/归一化、padding 和空历史；整层再覆盖输入输出投影、不同 batch、分页边界以及目标 cache/压缩状态不变。引擎层最后检查候选接受与拒绝、请求取消、页复用和恢复。仅检查输出形状或服务不崩溃不足以完成验收。
+
+现有 Torch-NPU 实测已覆盖 A2 算子对照、四层 W8A8 TP2、全部候选接受长度、概率传递、拒绝恢复及物理页复用；抢占恢复通过受控分配失败触发。完整 43 层 TP8、graph、1M 上下文和持续负载尚未完成验收。初始化 head 用于检查推理接线，训练 head 的接受率与加速收益需要另行评估，详见 [实测记录](DSV4_VALIDATION_20261028.md) 与 [验证入口](DSV4_VALIDATION_RUNBOOK.md)。
+
+以上证据属于 Torch-NPU 路径，不代表 PyPTO Orthrus 适配已交付。PyPTO 完成实现后，应在同一数学和状态契约下建立对应验证，再进入完整推理服务。
+
+## 附录 A：BF16 单层 Demo 完整源码
+
+以下三个文件与正文中的模块实现一致。完整模型类包含构造参数、随机初始化和模拟 cache，运行脚本负责准备输入并调用三类 Attention。公共辅助模块保留仓库原文件，demo 实际使用其中的 LSE 合并函数。
 
 
 <details>
@@ -1321,7 +1807,6 @@ def assert_cache_unchanged(
 ```
 
 </details>
-
 
 <details>
 <summary>完整源码 2/3：单层模型 torch_npu_dsv4_layer.py</summary>
@@ -1814,7 +2299,6 @@ class TorchNPUOrthrusDSV4Attention(nn.Module):
 
 </details>
 
-
 <details>
 <summary>完整源码 3/3：运行脚本 demo_torch_npu_dsv4_layer.py</summary>
 
@@ -1923,29 +2407,3 @@ if __name__ == "__main__":
 ```
 
 </details>
-
-
-在匹配的 Torch-NPU/CANN 环境中，进入仓库的 `online-speculation` 目录后运行：
-
-```bash
-PYTHONPATH=src python scripts/demo_torch_npu_dsv4_layer.py --block-size 32
-```
-
-运行脚本默认使用 `npu:0`，输出三条路径的输出形状和 CSA 的 Top-K 形状。仓库路径分别为：
-[公共模块](../src/blockspec/vllm_ascend/dsv4_hybrid.py)、
-[单层模型](../src/blockspec/vllm_ascend/torch_npu_dsv4_layer.py)、
-[运行脚本](../scripts/demo_torch_npu_dsv4_layer.py)。
-
-**demo 的边界。** 模型维度取自 DSV4-Flash，但权重、历史内容和输入是随机构造的；RoPE 表使用演示配置，不是生产长上下文配置。模拟历史长度和位置用于覆盖接口，不是某条真实序列的 checkpoint 回放。demo 不包含主模型 compressor、共享 MoE、调度器或验证器，也不能据此判断候选质量、真实长上下文正确性或加速比。
-
-为了阅读直观，demo 分别计算历史与块内 Attention，并将 C4 选中行收集成连续张量。服务路径则使用联合 SWA/块 FIA、量化 QLI、分页 sparse Attention 和原生合并。开发 PyPTO 时以第 2 节数学语义为准，用 demo 理解完整数据流，用服务路径对照实际分页和量化接口，不需要照搬 demo 的中间张量物化方式。
-
-当前服务契约固定 K=32；Attention 数学本身不要求 K=32。调整 K 不必重新发明算法，但需要同步 head/调度契约、编译形状和临时空间，并重新验证。
-
-## 5. 交付与验收边界
-
-完整推理代码还包含 [proposer](../src/blockspec/vllm_ascend/dsv4_proposer.py) 和 [固定版本接入补丁](../runtime/vllm_ascend_v0_26/README.md)，负责把本文计算放进 vLLM-Ascend 的模型执行与验证流程；配置和启动方法见 [部署说明](DSV4_DEPLOYMENT.md)。本文展示的是计算实现，不将单层 demo 等同于完整服务。
-
-已有实测覆盖 A2 算子对照、四层 W8A8 TP2、全部候选接受长度、概率传递、拒绝恢复和物理页复用；抢占恢复使用受控分配失败触发。完整 43 层 TP8、graph、1M 上下文和持续负载尚未完成验收。初始化 head 只能检查推理接线，接受率和加速收益要用训练好的 head 评估，见 [实测记录](DSV4_VALIDATION_20261028.md)。
-
-PyPTO 交付按三层验证即可明确责任：先检查四个计算模块的输出、LSE/归一化和有效行选择；再检查整层投影、分页、空历史、多请求以及目标 cache/压缩状态不变；最后接入引擎检查接受、拒绝和恢复。数值对照应固定权重、输入、精度和布局，不能只检查“能运行”或输出形状。完整检查入口见 [验证说明](DSV4_VALIDATION_RUNBOOK.md)。
