@@ -161,7 +161,8 @@ def generate(branch, prompt, max_new_tokens, *, block_size=None, sampling=Sampli
     while not stopped:
         result.rounds += 1
         expected_history = prompt.shape[1] + len(result.tokens) - 1
-        if cache_length(cache) != expected_history:
+        history_length = getattr(branch, "history_length", cache_length)
+        if history_length(cache) != expected_history:
             raise RuntimeError("history must end immediately before the committed anchor")
         remaining = max_new_tokens - len(result.tokens)
         if remaining == 1:
@@ -194,7 +195,9 @@ def generate(branch, prompt, max_new_tokens, *, block_size=None, sampling=Sampli
         fully_covered = kept == proposal.candidates.numel()
         result.fully_covered_rounds += fully_covered
         committed = prompt.shape[1] + len(result.tokens) - 1
-        cache = crop_cache(verified_cache, committed)
+        commit_history = getattr(branch, "commit_history", None)
+        cache = (crop_cache(verified_cache, committed) if commit_history is None
+                 else commit_history(proposal, verified_cache, committed))
         anchor = prompt.new_tensor([[result.tokens[-1]]])
         if audit_cache:
             full = torch.cat((prompt, prompt.new_tensor([result.tokens[:-1]])), 1)
