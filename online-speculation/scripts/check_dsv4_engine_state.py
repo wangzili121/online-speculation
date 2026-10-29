@@ -35,6 +35,20 @@ def check_scheduled_candidates(scheduled, proposed):
         raise AssertionError("scheduled candidates do not match this request's proposal")
 
 
+def logit_errors(reference, actual):
+    import torch
+
+    if reference.shape != actual.shape or reference.numel() == 0:
+        raise ValueError("logit diagnostics require matching nonempty tensors")
+    delta = (reference.float() - actual.float()).abs()
+    changed = reference.argmax(-1) != actual.argmax(-1)
+    return {"max_abs": delta.max().item(), "first_row_max_abs": delta[0].max().item(),
+            "changed_argmax_rows": int(changed.sum()), "rows": reference.shape[0],
+            "first_row_argmax_changed": bool(changed[0]),
+            "reference_first_token": int(reference[0].argmax()),
+            "actual_first_token": int(actual[0].argmax())}
+
+
 def compare_shadow_logits(events, names=("shadow-real", "shadow-no-head")):
     phases = {}
     for phase in names:
@@ -69,12 +83,13 @@ def assess_shadow_results(workers):
 class EngineStateWorker:
     """Explicit RPC installation; never imported by normal deployment scripts."""
 
-    def state_probe_install(self, directory):
+    def state_probe_install(self, directory, compare_logits=False):
         runner = self.model_runner
         if runner.use_async_scheduling:
             raise ValueError("this probe currently requires synchronous scheduling")
         self._state_probe = dict(directory=directory, phase="initial", controlled=False,
-                                 events=[], pending={}, rounds={}, plans={}, skip_head=False)
+                                 events=[], pending={}, rounds={}, plans={}, skip_head=False,
+                                 compare_logits=compare_logits, logit_references={})
         self._state_wrapped = []
         self._state_wrap(runner, "_sample", self._probe_sample)
         if runner.drafter is not None:
@@ -145,8 +160,20 @@ class EngineStateWorker:
             if raw_logits is not None:
                 import torch
 
-                raw = raw_logits[logit_offset:logit_offset + count + 1].view(torch.uint8).numpy().tobytes()
+                values = raw_logits[logit_offset:logit_offset + count + 1]
+                raw = values.view(torch.uint8).numpy().tobytes()
                 event["raw_logits_sha256"] = hashlib.sha256(raw).hexdigest()
+                if state.get("compare_logits"):
+                    key = (event["prompt_length"], event["computed"], tuple(candidates), event["discarded"])
+                    references = state["logit_references"]
+                    if state["phase"] == "shadow-token-only-1":
+                        references[("target", key)] = values.clone()
+                    else:
+                        event["reference_logit_errors"] = logit_errors(references[("target", key)], values)
+                    if state["phase"] == "shadow-real":
+                        references[("head", key)] = values.clone()
+                    elif state["phase"] == "shadow-no-head":
+                        event["head_logit_errors"] = logit_errors(references[("head", key)], values)
             logit_offset += count + 1
             self._record_state(event)
             if row in discarded:
@@ -172,16 +199,18 @@ class EngineStateWorker:
         original_lengths = kwargs["common_attn_metadata"].seq_lens.cpu().tolist()
         rejected = kwargs.get("num_rejected_tokens_gpu")
         rejected = rejected.cpu().tolist() if rejected is not None else [0] * len(ids)
+        discarded = set(map(int, runner.discard_request_indices.np[:runner.num_discarded_requests]))
         if state["phase"].startswith("shadow-token-only"):
             # No head, block expansion, metadata builder, or cache read. Only
             # the native runner's sampling/scheduling and supplied tokens remain.
             proposed = []
-            for req_id in ids:
+            for row, req_id in enumerate(ids):
                 token = runner.requests[req_id].sampling_params.allowed_token_ids[0]
                 plan = state["plans"][str(token)]
                 index = state["rounds"].get(req_id, 0)
                 proposed.append(make_candidates(token, plan[index % len(plan)]))
-                state["rounds"][req_id] = index + 1
+                if row not in discarded:
+                    state["rounds"][req_id] = index + 1
                 state["pending"][req_id] = proposed[-1]
             return torch.tensor(proposed, dtype=torch.int64, device=kwargs["next_token_ids"].device)
         result = original(**kwargs)
@@ -189,7 +218,6 @@ class EngineStateWorker:
             raise AssertionError(f"unexpected proposal shape: {getattr(result, 'shape', None)}")
         positions = runner.drafter.positions[:len(ids) * 32].view(len(ids), 32).cpu().tolist()
         inputs = runner.drafter.input_ids[:len(ids) * 32].view(len(ids), 32).cpu().tolist()
-        discarded = set(map(int, runner.discard_request_indices.np[:runner.num_discarded_requests]))
         proposed = result.cpu().tolist()
         for row, req_id in enumerate(ids):
             committed = int(runner.input_batch.num_tokens_no_spec[row])
@@ -233,7 +261,8 @@ class EngineStateWorker:
                     and not event["discarded"] and event["controlled"]]
         drafts = [event for event in events if event["kind"] == "draft"]
         signature = [{key: value for key, value in event.items()
-                      if key not in {"rank", "raw_top_logits", "raw_top_ids", "raw_logits_sha256"}}
+                      if key not in {"rank", "raw_top_logits", "raw_top_ids", "raw_logits_sha256",
+                                     "reference_logit_errors", "head_logit_errors"}}
                      for event in events]
         return dict(rank=self.rank, verify_steps=len(verifies), draft_steps=len(drafts),
                     observed_accepted=dict(Counter(len(event["sampled"]) - 1 for event in verifies
@@ -243,6 +272,11 @@ class EngineStateWorker:
                     shadow=compare_shadow_logits(events),
                     token_only_repeat=compare_shadow_logits(events, ("shadow-token-only-1", "shadow-token-only-2")),
                     token_only_vs_real=compare_shadow_logits(events, ("shadow-token-only-1", "shadow-real")),
+                    logit_diagnostics=[{key: event[key] for key in
+                                       ("phase", "prompt_length", "computed", "discarded",
+                                        "reference_logit_errors", "head_logit_errors") if key in event}
+                                       for event in events if any(event.get(key, {}).get("max_abs", 0) > 0
+                                           for key in ("reference_logit_errors", "head_logit_errors"))],
                     kernel_block_sizes=self.model_runner.drafter._per_group_kernel_block_sizes,
                     history_beyond_page=any(event["history"] >= 128 for event in drafts),
                     history_beyond_c128_group=any(event["history"] >= 256 for event in drafts))
@@ -254,7 +288,7 @@ def run_checks(llm, args):
     report = dict(scope="engine state checks, not full-model/head-quality acceptance", state_checks_passed=False,
                   model=args.model, head=args.head, tp=args.tp, kv_cache_mib=args.kv_cache_mib,
                   cache_guard=os.environ.get("ORTHRUS_VERIFY_CACHE_CHECKSUM"))
-    llm.collective_rpc("state_probe_install", args=(str(args.output),))
+    llm.collective_rpc("state_probe_install", args=(str(args.output), args.shadow_logit_errors))
     plans = {"19": list(range(32)), "23": [31], "29": [0, 0, 31, 7, 0, 31], "31": [15, 30, 1, 31]}
     lengths, budgets = [127, 128, 511, 513], [600, 193, 160, 65]
     prompts = [{"prompt_token_ids": [100 + i] * length} for i, length in enumerate(lengths)]
@@ -263,10 +297,12 @@ def run_checks(llm, args):
     for phase, skip in (("shadow-token-only-1", True), ("shadow-token-only-2", True),
                         ("shadow-real", False), ("shadow-no-head", True)):
         llm.collective_rpc("state_probe_phase", args=(phase, plans, skip))
-        output = llm.generate([prompts[0]], [params[0]], use_tqdm=False)[0]
-        if list(output.outputs[0].token_ids) != [19] * budgets[0]:
-            raise AssertionError(f"{phase}: incorrect controlled output")
-        print(json.dumps({"phase": phase, "completed": True}), flush=True)
+        count = args.shadow_batch
+        outputs = llm.generate(prompts[:count], params[:count], use_tqdm=False)
+        for output, param in zip(outputs, params[:count], strict=True):
+            if list(output.outputs[0].token_ids) != [param.allowed_token_ids[0]] * param.max_tokens:
+                raise AssertionError(f"{phase}: incorrect controlled output")
+        print(json.dumps({"phase": phase, "completed": True, "requests": count}), flush=True)
     for phase, order in (("controlled", [0, 1, 2, 3]), ("controlled-reversed", [3, 2, 1, 0])):
         llm.collective_rpc("state_probe_phase", args=(phase, plans))
         outputs = llm.generate([prompts[i] for i in order], [params[i] for i in order], use_tqdm=False)
@@ -325,6 +361,10 @@ def main():
                         help="bounded per-rank KV pool; full debug snapshots need additional memory")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--natural-baseline", type=Path)
+    parser.add_argument("--shadow-batch", type=int, choices=(1, 4), default=1,
+                        help="requests in fixed-candidate target-logit comparisons")
+    parser.add_argument("--shadow-logit-errors", action="store_true",
+                        help="retain CPU reference logits to quantify differences; no threshold changes")
     args = parser.parse_args()
     if args.kv_cache_mib <= 0:
         parser.error("kv-cache-mib must be positive")

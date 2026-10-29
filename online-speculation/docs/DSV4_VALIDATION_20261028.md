@@ -183,6 +183,50 @@ Q/KV 计时移除了所有逐层诊断 hooks，包含 host dispatch 和临时缓
 
 已使用新目录 `window-20261029-retry2` 恢复 12 小时宿主机监控，每 3 秒检查一次完整八卡无进程且 HBM 回落后启动 target/Orthrus/重启对照。等待阶段仅保留宿主机监控和容器 `sleep infinity`，不加载模型、不占 NPU；恢复时状态为等待窗口。旧失败和结果未覆盖。
 
+## 2026-10-29 八卡结果与双卡定位
+
+`window-20261029-retry2` 于北京时间 10:54–12:24 完成完整 43 层、TP8、eager 的 target-only、Orthrus 和 Orthrus 重启测试。三个服务均通过健康检查；主模型和 Orthrus 的 32K/128K 输入均完成 4-token 输出，EOS、显式 stop、SSE 取消后排空及取消后重放通过。Orthrus 重启前后的十组 greedy 快照相同。
+
+**完整模型仍未验收。** target-only 与 Orthrus 的十组 greedy 快照有两组不同；Orthrus 串行和并发后串行回放均 4/4 一致，但三组并发 greedy 回放均 0/4 一致，对应 target-only 的这些 greedy 回放均 4/4 一致。随机并发回放在两种服务中都存在差异。所有原始非零退出码保留，不能把启动或重启成功写成输出正确性通过。
+
+### 概率生命周期修复
+
+上午服务日志出现 `Missing cached draft probabilities`。将告警请求与保存的 API 记录对应，43 个请求中确认 38 个是 greedy 请求，对应 4,248 条告警；另五个请求没有对应的完整记录，不据此断言它们是随机请求。总告警 5,328 条包含八个 TP rank 的重复记录。
+
+Ascend 的 `propose_draft_token_ids` 重写路径没有像上游一样清空上一轮概率。随机请求结束后，下一批 greedy proposal 不产生概率，runner 因而保留了旧请求的概率及 ID，后续验证查询产生告警。补丁仅在 Orthrus proposal 开始时清空这两个字段，再接收本轮实际产生的概率；不改 Attention 或 rejection 算法。
+
+在 111 的物理 0/1 卡上，以真实四层权重、TP2、K32、同步调度、初始化 head 交替运行 greedy、随机和混合批次，取得以下配对结果：
+
+| 检查 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 每 rank 有候选的验证步 | 248 | 248 |
+| greedy 请求遇到旧概率 | 15 次 | 0 次 |
+| 随机候选验证未取得概率 | 0 次 | 0 次 |
+| 批量 greedy 与串行一致 | 4/4 | 4/4 |
+| 并发后串行与原串行一致 | 4/4 | 4/4 |
+
+八个阶段的全部输出 token 在修复前后完全一致。因此这轮确认的是旧概率残留及其修复，不能将告警直接解释为随机采样已经发生分布错误。对应结果为 `baseline-sync-priv/` 和 `fixed-sync/`；修复提交为 `e9ef9f5`。
+
+进一步从原始权重保留前 12 层（2 SWA、5 C4、5 C128），导出匹配的初始化 head，以 TP2、2 GiB/rank KV 池运行相同测试。每 rank 259 个验证步无概率缺失或旧概率残留，批量 greedy 及批量后串行均 4/4 一致，`fixed-12l-v2/report.json` 返回成功。截取模型权重约 77.46 GiB、head 约 1.69 GiB，证明更深模型可用双卡检查，但没有复现完整 43 层的上述文本差异。
+
+### 四请求目标 logits 对照
+
+`check_dsv4_engine_state.py --shadow-batch 4 --shadow-logit-errors` 在四层 TP2 中保持相同受控候选和调度，对照跳过 proposer、真实 draft 及跳过 head 三条路径。接受 0–31 个候选、换序、分块 prefill、跨页、多请求先后结束和取消恢复的状态检查通过；每 rank 449 个有效验证事件、306 个 draft 事件，两 rank 状态哈希相同。
+
+严格数值检查仍返回失败：74 个 shadow 请求验证事件中，完全跳过 draft 的两次原生运行有 15 个事件的全词表 logits 不逐位相同，最大绝对差 0.890625，首行最大差 0.125，首行 argmax 有一次变化。真实 draft 与预先固定的第一组原生参考在相同 15 个事件存在差异，未因此豁免。
+
+真实 draft 与跳过 head 直接对照，仅一个事件的其余验证行不同，最大绝对差 0.125；全部事件的首行 logits 一致，所有行的 argmax 均未变化。这支持已测路径的状态协作，但不满足“所有验证 logits 逐位一致”的门槛，更不能替代完整模型的差异归因。`shadow-batch4-v3/report.json` 中 `state_checks_passed=true`、`adaptation_reference_passed=false`，脚本退出码仍为 1。
+
+上午完整模型的相应 greedy 反例中，串行的 `and` 与 `for` logprob 并列，并发后 `for` 领先约 0.125；这是排序改变的直接证据，尚未逐层定位其来源，不将完整模型差异全部归因于主模型或全部归因于 draft。
+
+### 复现与资源
+
+最终 CPU readiness 为 158 passed、3 skipped（CUDA graph 硬件要求），head/评估契约检查通过。运行时补丁 dry-run 和实际应用均通过，新增修复保留版本保护及重复应用检查。
+
+失败轮次没有覆盖：首次显式启用 async scheduling 被当前 Orthrus 配置保护拒绝；非特权容器在驱动访问阶段失败，后改用上午已有的权限配置并限制可见设备为 0/1；12 层使用 1 GiB KV 池时未通过容量检查，改为 2 GiB；四请求 shadow 首轮的测试出口错误推进了 discarded prefill 行的候选计划，已修正并增加回归，后续才取得相同的 74 事件调度。以上均与正式推理实现的错误分别记录。
+
+本轮仅在 111 的 0/1 卡运行，未使用 4/5，也未恢复八卡监控；结束后两个调试容器均已停止。原始输出保存在独立调试项目的 `local/debug-concurrency/`，包含修复前后、12 层、严格 shadow 对照和 CPU 检查。本地另归档为 `debug-concurrency-20261029.tar.gz`，SHA256 为 `8065f17407a0f5ef5702687d899ab620c6a67f09caa04a4ecd40ba08c2c3860f`。后续完整模型应复用这些诊断入口确认数值差异来源；graph、1M、持续负载和训练 head 的实际收益仍未验收。
+
 ## 复现入口
 
 - `scripts/check_dsv4_indexer_npu.py`：真实 QLI 的历史边界、行号及排序。

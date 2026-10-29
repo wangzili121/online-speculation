@@ -66,3 +66,42 @@ def test_shadow_assessment_rejects_missing_evidence():
         PROBE.assess_shadow_results([])
     with pytest.raises(KeyError):
         PROBE.assess_shadow_results([{}])
+
+
+def test_logit_diagnostics_distinguish_future_rows_and_argmax_changes():
+    import torch
+
+    reference = torch.tensor([[1.0, 1.0], [0.0, 2.0]])
+    future = PROBE.logit_errors(reference, reference + torch.tensor([[0.0, 0.0], [0.0, 0.125]]))
+    assert future["max_abs"] == 0.125 and future["first_row_max_abs"] == 0
+    assert future["changed_argmax_rows"] == 0 and not future["first_row_argmax_changed"]
+    tie = PROBE.logit_errors(reference, reference + torch.tensor([[0.0, 0.125], [0.0, 0.0]]))
+    assert tie["first_row_argmax_changed"] and tie["changed_argmax_rows"] == 1
+    assert tie["reference_first_token"] == 0 and tie["actual_first_token"] == 1
+    with pytest.raises(ValueError, match="matching nonempty"):
+        PROBE.logit_errors(reference, reference[:1])
+
+
+def test_token_only_shadow_does_not_advance_discarded_prefill():
+    from types import SimpleNamespace
+
+    import torch
+
+    worker = PROBE.EngineStateWorker()
+    worker.model_runner = SimpleNamespace(
+        input_batch=SimpleNamespace(req_ids=["a", "b"]),
+        requests={key: SimpleNamespace(sampling_params=SimpleNamespace(allowed_token_ids=[token]))
+                  for key, token in (("a", 19), ("b", 23))},
+        discard_request_indices=SimpleNamespace(np=[1]), num_discarded_requests=1,
+    )
+    worker._state_probe = dict(phase="shadow-token-only-1", plans={"19": [0, 31], "23": [0, 31]},
+                               rounds={}, pending={})
+    kwargs = dict(next_token_ids=torch.tensor([19, 23]),
+                  common_attn_metadata=SimpleNamespace(seq_lens=torch.tensor([127, 128])))
+    worker._probe_propose(None, **kwargs)
+    assert worker._state_probe["rounds"] == {"a": 1}
+    worker.model_runner.num_discarded_requests = 0
+    result = worker._probe_propose(None, **kwargs)
+    assert worker._state_probe["rounds"] == {"a": 2, "b": 1}
+    assert result[0].tolist() == [19] * 31
+    assert result[1].tolist() == [24] + [23] * 30

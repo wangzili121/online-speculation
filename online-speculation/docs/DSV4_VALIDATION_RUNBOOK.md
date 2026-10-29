@@ -58,6 +58,22 @@ EOS 必须取实际模型的配置；本次 0731 权重是 `1`。不要套用其
 
 `trace_dsv4_native_layers.py` 可在独立离线 engine 中逐层记录相同位置的激活，接收 `--model`、`--baseline`、`--candidate`、`--output` 和 `--tp`。`--no-dsa-overlap` 做原生配置对照；`--benchmark-prolog` 在移除诊断 hooks 后，比较真实权重下 Q/KV 共用量化前后的结果及耗时。该脚本会加载模型、使用指定 TP 数量的卡，不能与服务同时占用同一组卡。
 
+## 批次切换与概率生命周期
+
+`check_dsv4_batch_state.py` 在真实模型上交替运行串行 greedy、批量 greedy、随机请求和混合请求。测试 worker 只记录请求 ID、候选概率的保存与读取，不替换模型输出或采样结果。
+
+```bash
+PYTHONPATH="$PWD/src:$PWD/scripts:${PYTHONPATH:-}" \
+VLLM_BATCH_INVARIANT=1 ASCEND_RT_VISIBLE_DEVICES=0,1 \
+python scripts/check_dsv4_batch_state.py \
+  --model local/models/dsv4-4l --head local/models/head-4l --tp 2 \
+  --tokens 16 --kv-cache-mib 1024 --output local/check-batch-state
+```
+
+报告区分 `missing_random_probabilities`（有随机候选待验证却未取得概率）和 `stale_greedy_probability_steps`（greedy 请求遇到前一批请求的概率残留）。记录到 fallback 告警不等于前者，必须结合请求类型判断。还需查看 `greedy_batch_matches` 和 `greedy_post_batch_matches`；随机输出保留原始 token，不能仅凭批次间 token 不同断言采样分布错误。脚本使用同步调度，与当前 Orthrus 正确性路径一致。
+
+12 层截取模型使用 `prepare_dsv4_smoke_model.py --layers 12 --materialize` 和对应初始化 head，可将本测试的 `--kv-cache-mib` 设为 `2048`。少层模型均不能替代完整 43 层 TP8 验收。
+
 ## 真实引擎状态检查
 
 ```bash
@@ -73,9 +89,11 @@ python scripts/check_dsv4_engine_state.py \
 此脚本自行启动和退出离线 engine，不需要 API 服务；仍使用真实模型、Orthrus proposer、验证器和 scheduler。只在测试 worker 中，真实 draft 运行后将候选替换为可控序列，配合 greedy 单 token 白名单，触发 0–31 个候选被接受、连续拒绝和整块接受。四个请求使用不同 token、输入长度和输出预算，并测试换序、取消后的新请求。白名单输出不能证明任意请求的模型数值正确，因此另做两类检查：
 
 - 逐轮核对请求 ID、候选传递、接受数量、anchor/MASK、有效历史长度和各 cache group 的分页表；两个 TP rank 的状态轨迹必须相同。
-- 在同一串行调度及同一候选序列下，对照主模型完整词表 logits 的字节哈希：先运行两次完全绕过 Orthrus proposer 的 token-only 参考，再运行真实 draft，以及仅跳过 head 计算的诊断路径。首次 token-only 运行预先指定为参考，不能事后挑选匹配的一次；同时保留参考路径自身的重复性结果。正式推理代码不变。
+- 在相同调度及同一候选序列下，对照主模型完整词表 logits 的字节哈希：先运行两次完全绕过 Orthrus proposer 的 token-only 参考，再运行真实 draft，以及仅跳过 head 计算的诊断路径。默认使用单请求；加 `--shadow-batch 4` 可检查四个请求共同执行及先后结束时的状态变化。首次 token-only 运行预先指定为参考，不能事后挑选匹配的一次；同时保留参考路径自身的重复性结果。正式推理代码不变。
 
 脚本开启全量 cache guard，每层、每种 batch 大小首次全量快照，随后抽样；默认将每 rank KV 池限制为 1 GiB，避免诊断快照和比较临时张量耗尽显存。这是测试配置，不是生产性能配置。`--natural-baseline` 可选，用于再运行无 token 约束的串行/并发文本请求；其中的输出差异单独记录，不能用受控输出通过掩盖。
+
+`--shadow-logit-errors` 会在 CPU 保留第一组参考和真实 draft 路径的 logits，报告最大绝对差、首行差异和 argmax 变化。它用于区分当前待验证位置与其余验证行的变化，不修改逐位一致性的通过标准。开销不用于性能统计；原始张量仅保留在测试进程内，结果写入 `logit_diagnostics`。测试脚本对分块 prefill 的 discarded 行不推进候选计划，确保 token-only 与真实 draft 使用同一序列。
 
 `state_checks_passed` 代表状态检查，`adaptation_reference_passed` 要求真实路径匹配预定参考且匹配仅跳过 head 的诊断路径；二者通过时脚本返回 0。`reference_repeat_exact`、`all_shadow_logits_exact` 和 `natural_exact` 保留其他对照原始结果，不会因为适配检查通过而改成 true。参考自身不稳定不能豁免适配与预定参考不一致的情况。
 

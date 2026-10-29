@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CPU_TESTS = (
     "dsv4_hybrid draft_sampling dsv4_deployment sampling_math sampling_execution "
     "vllm_ascend_proposer dsv4_custom_proposer vllm_trace vllm_artifacts "
-    "vllm_results vllm_workload dsv4_readiness dsv4_prolog dsv4_engine_state dsv4_sampling_state dsv4_window"
+    "vllm_results vllm_workload dsv4_readiness dsv4_prolog dsv4_engine_state dsv4_sampling_state dsv4_window dsv4_batch_state"
 ).split()
 
 
