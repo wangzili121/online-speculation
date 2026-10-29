@@ -162,6 +162,27 @@ Q/KV 计时移除了所有逐层诊断 hooks，包含 host dispatch 和临时缓
 
 结束检查确认测试容器只剩 `sleep infinity`，167 的 0/1 卡均无 NPU 进程；没有停止其他用户的任务。
 
+## 2026-10-29 完整 TP8 主模型窗口
+
+111 的 `window-20261029-retry1` 曾获得完整八卡窗口，运行完整 43 层 W8A8 主模型、TP8、eager。此次已进入真实 API 推理，不再停留在加载阶段；但尚未执行 Orthrus，不能算完整投机链路通过。
+
+| 检查 | 结果 |
+| --- | --- |
+| 健康检查与基础快照 | 通过，`target-initial-health` 和 service snapshot 返回 0 |
+| Greedy replay | 脚本通过；混合长度并发属于另一个检查，见下行 |
+| 生命周期 | EOS、显式 stop、SSE 取消后排空、取消后重放通过；8/127/2047/4096 输入长度混合并发有 1 例与串行参考不同，因此整项返回 1 |
+| 随机 replay | 串行重复、并发换序、同 seed 并发和并发后串行均 4/4 一致；普通并发中 seed 0、2 不一致，因此返回 1 |
+| 长上下文采集 | 32768 和 131072 输入 token 均完成 4-token 输出，扩展快照命令返回 0；不等于 Orthrus 长上下文对照已通过 |
+| Orthrus 切换 | 启动前端口检查报 `OSError(98, 'Address already in use')`，尚未启动 Orthrus 服务；专用容器已停止 |
+
+这些差异出现在 target-only 路径，没有执行 draft。按既定验收范围保留证据，不修改主模型，也不将未知的 Orthrus 差异一并豁免。原始结果位于宿主机 `/data/disk/wangzili/orthrus-dsv4-validation/window-20261029-retry1/` 及容器持久目录 `validation-20261029/local/tp8-window-20261029-retry1/`。
+
+端口检查未设置 `SO_REUSEADDR`。在 111 上用真实 TCP 连接复现：服务主动关闭连接后，无监听者的端口仍使旧检查报 EADDRINUSE；采用与服务一致的可重用绑定则通过。原始故障时没有监听者快照，不能排除当时另有端口竞争，但旧检查本身确实会误判 TIME_WAIT。已改为 `SO_REUSEADDR` 后探测 `0.0.0.0`，仍拒绝真实监听者；包括这两个回归场景在内的 7 项窗口测试通过。
+
+完整 43 层 W8A8 初始化 head 的 TP8 production preflight 再次通过：SWA/C4/C128 分别为 2/21/20 层，head 约 6.067 GiB。该检查只验证模型/head 契约，不代替执行验证。
+
+已使用新目录 `window-20261029-retry2` 恢复 12 小时宿主机监控，每 3 秒检查一次完整八卡无进程且 HBM 回落后启动 target/Orthrus/重启对照。等待阶段仅保留宿主机监控和容器 `sleep infinity`，不加载模型、不占 NPU；恢复时状态为等待窗口。旧失败和结果未覆盖。
+
 ## 复现入口
 
 - `scripts/check_dsv4_indexer_npu.py`：真实 QLI 的历史边界、行号及排序。

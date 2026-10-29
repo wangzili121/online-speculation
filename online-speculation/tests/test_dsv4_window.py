@@ -1,4 +1,5 @@
 import importlib.util
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +29,34 @@ def test_container_with_other_work_is_not_restarted():
     assert window.container_is_idle("PID COMMAND\n123 sleep infinity\n")
     assert not window.container_is_idle("PID COMMAND\n")
     assert not window.container_is_idle("PID COMMAND\n123 sleep infinity\n456 python train.py\n")
+
+
+def test_port_probe_does_not_claim_a_live_listener():
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        with pytest.raises(OSError):
+            window.check_port_available(port)
+
+
+def test_port_probe_allows_restart_after_server_closes_connection():
+    with socket.socket() as listener, socket.socket() as client:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        client.settimeout(2)
+        client.connect(("127.0.0.1", port))
+        connection, _ = listener.accept()
+        with connection:
+            connection.settimeout(2)
+            connection.shutdown(socket.SHUT_WR)
+            assert client.recv(1) == b""
+            client.close()
+            assert connection.recv(1) == b""
+    window.check_port_available(port)
 
 
 def make_window(tmp_path):

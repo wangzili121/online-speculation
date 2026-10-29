@@ -35,6 +35,13 @@ def container_is_idle(table):
     return bool(rows) and all(re.search(r"\bsleep infinity$", row) for row in rows)
 
 
+def check_port_available(port):
+    # Match the server's bind semantics: TIME_WAIT is reusable, a live listener is not.
+    with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(("0.0.0.0", port))
+
+
 class Window:
     def __init__(self, args):
         self.args = args
@@ -118,8 +125,7 @@ class Window:
         # must not hide the original service error with an idle-wait timeout.
         self.wait_free(60)
         self.save("running", phase=name)
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", self.args.port))
+        check_port_available(self.args.port)
         command = self.exec_command(["bash", f"scripts/serve_dsv4_{kind}.sh"])
         with (self.args.output / f"{name}-server.log").open("w") as log:
             process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
