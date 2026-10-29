@@ -11,6 +11,19 @@ TRACE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(TRACE)
 
 
+def test_operator_snapshot_detaches_and_copies_nested_inputs():
+    original = torch.randn(2, 3, requires_grad=True)
+    snapshot = TRACE.snapshot_tree(dict(args=(original,), kwargs={"scale": 0.5, "metadata": None}))
+    assert not snapshot["args"][0].requires_grad
+    assert torch.equal(snapshot["args"][0], original)
+    with torch.no_grad():
+        original.zero_()
+    assert not torch.equal(snapshot["args"][0], original)
+    assert snapshot["kwargs"] == {"scale": 0.5, "metadata": None}
+    with pytest.raises(TypeError, match="unsupported operator input"):
+        TRACE.snapshot_tree(object())
+
+
 def test_block_trace_selects_request_not_duplicate_position():
     positions = [512, 513, 512, 513, 514]
     assert TRACE.select_trace_rows(positions, 512, [0, 2, 5], [127, 511], 511, 512) == (2, 5, 1)

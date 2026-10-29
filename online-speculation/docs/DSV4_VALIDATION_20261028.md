@@ -243,6 +243,18 @@ Ascend 的 `propose_draft_token_ids` 重写路径没有像上游一样清空上�
 
 本轮没有修改生产 Attention 或采样规则，新增内容为诊断入口及测试入队屏障。逐层张量保存在调试项目 `local/debug-concurrency/layer-block*/layer-trace/`，每 rank 报告和日志另已取回本地 `debug-20261029/evidence/layer-traces/`，不将大张量或模型权重提交仓库。
 
+### C4 独立重放与物理布局因果对照
+
+进一步用 `--trace-c4-inputs` 保存整个 batch 的查询、两类完整 KV 池、页表、索引、长度、sink、metadata 和算子输出。`c4-input512-v1` 的状态检查通过，严格 logits 对照仍失败。与之前只抓取选中请求相比，这次确认完整查询、检索索引、各长度及 sink 相同，页表与 metadata 的一部分不同。
+
+`replay_dsv4_c4_operator.py` 脱离模型及 vLLM 调度，两个原始输入包各重放 5 次，均逐位复现各自捕获输出。随后交叉替换 metadata，输出不变；只反转两个 KV 池的物理页并对应修改页表，两个输入均改变同一个输出元素，差值为 0.001953125；将两个输入统一为规范物理布局后，完整输出逐位相同。原算子 `CopyInKv` 为合并搬运会按较小物理地址开始装载一对 KV；实测逻辑索引 `[0,129]` 在两张页表中装载顺序相反。这将该反例从“原生算子边界不同”进一步定位为物理布局改变装载顺序而导致的数值敏感性，未发现需要据此修改 draft 历史或候选逻辑的依据。
+
+将输入包各从约 2GB 精简至约 12MB、保留物理地址相对顺序后，`c4-compact512-replay-v1` 又各重放 5 次，并重复 metadata、反转页和规范页三组对照，全部保留相同现象。首次独立重放因通用 custom-op 加载策略未注册此算子而失败；改为显式加载被捕获的同一个原生算子后，所有上述重放完成，不切换为其他 Attention 实现。
+
+具体数据、源码位置及复现命令见 `DSV4_C4_LAYOUT_REPRO.md`。未修改原生 kernel，未将诊断用页复制放入生产推理。完整 43 层并发差异仍需独立复核，不能由单个反例推断全部问题已解决。
+
+本轮诊断、重排逻辑、FP64 元素参考、engine state 和 readiness 单元测试共 60 passed。仍只使用 111 的 0/1 卡，未使用 4/5；结果及精简输入包保存在本地 `debug-20261029/evidence/c4-layout-rootcause/`，运行时张量不提交公共仓库。
+
 ## 复现入口
 
 - `scripts/check_dsv4_indexer_npu.py`：真实 QLI 的历史边界、行号及排序。

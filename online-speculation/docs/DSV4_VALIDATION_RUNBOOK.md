@@ -106,6 +106,8 @@ python scripts/check_dsv4_engine_state.py \
 
 追加 `--trace-repeat-attention` 可在选中的原生稀疏 Attention 调用后，用同一组现场输入立即重算，结果单独存入 `attention_replays`，不替换第一次输出。这些开关仅用于诊断，会同步设备并影响时序，不能用于性能统计，也不能用抓取时差异消失作为正确性证明。
 
+四层 C4 诊断还可追加 `--trace-c4-inputs`，在 `layer-trace/` 额外保存每 rank、每阶段的 `.operator.pt`，包含整组算子输入和完整物理 KV 池。`replay_dsv4_c4_operator.py` 可在不加载模型的情况下重放，并以 `--probe-layout` 对照 metadata 替换、物理页反转和规范布局；`--cpu-only --compact-output` 可精简输入包，但必须再重放确认仍保留原现象。详细命令与已定位的物理布局反例见 `DSV4_C4_LAYOUT_REPRO.md`。输入包含运行时激活，不上传公共仓库。
+
 `state_checks_passed` 代表状态检查，`adaptation_reference_passed` 要求真实路径匹配预定参考且匹配仅跳过 head 的诊断路径；二者通过时脚本返回 0。`reference_repeat_exact`、`all_shadow_logits_exact` 和 `natural_exact` 保留其他对照原始结果，不会因为适配检查通过而改成 true。参考自身不稳定不能豁免适配与预定参考不一致的情况。
 
 每 rank 的逐轮证据保存在 `events-rank*.jsonl`。这不覆盖真实训练 head 的接受率、随机采样高接受率的引擎路径、抢占后的换入换出、物理页强制复用或 graph；完整模型必须另跑。不要把小模型测试成功写成完整生产验收。

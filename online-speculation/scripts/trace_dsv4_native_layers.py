@@ -41,6 +41,18 @@ def select_trace_rows(positions, position, starts, lengths, prompt_length=None, 
     return matches[0] if len(matches) == 1 else None
 
 
+def snapshot_tree(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().clone()
+    if isinstance(value, dict):
+        return {key: snapshot_tree(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return type(value)(snapshot_tree(item) for item in value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError(f"unsupported operator input: {type(value).__name__}")
+
+
 def compare_traces(left, right):
     if not left or not right:
         raise ValueError("both traces must contain captured activations")
@@ -175,8 +187,14 @@ class LayerTraceWorker:
             self._save_trace(key + ".input", args[:1])
             if method == "npu_sparse_attn_sharedkv" and state["active"]:
                 self._save_history(key, kwargs)
+                if state.get("capture_c4") and kwargs.get("cmp_ratio") == 4:
+                    state["operator_snapshot"] = dict(args=snapshot_tree(args), kwargs=snapshot_tree(kwargs),
+                                                      request_row=state["request_row"], key=key)
             result = original(*args, **kwargs)
             self._save_trace(key + ".output", result)
+            if method == "npu_sparse_attn_sharedkv" and state["active"] and state.get("capture_c4") \
+                    and kwargs.get("cmp_ratio") == 4:
+                state["operator_snapshot"]["output"] = snapshot_tree(result)
             if method == "npu_sparse_attn_sharedkv" and state["active"] and state.get("repeat_attention"):
                 # Diagnostic replay with exactly the same live inputs and metadata.
                 self._save_trace(key + ".repeat_output", original(*args, **kwargs))
@@ -212,6 +230,8 @@ class LayerTraceWorker:
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{label}-rank{self.rank}.pt"
         torch.save(state["tensors"], path)
+        if "operator_snapshot" in state:
+            torch.save(state.pop("operator_snapshot"), path.with_suffix(".operator.pt"))
         path.with_suffix(".json").write_text(json.dumps(state["shapes"], indent=2) + "\n")
         return str(path)
 
