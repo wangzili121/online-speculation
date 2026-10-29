@@ -18,6 +18,7 @@
 ## 阅读与运行
 
 - [Qwen3.8 推理与在线更新](docs/QWEN38_IMPLEMENTATION.md)：混合层参考执行器、NPU 功能验证、更新层数及服务侧剩余接入。
+- [Qwen3.8-27B 真机验证](docs/QWEN38_REAL_VALIDATION.md)：完整 64 层、两张 NPU、K32、原生 HF 对照、拒绝恢复和在线末层更新。
 - [算法报告](docs/ALGORITHM.md)：NTP 与投机解码、共享注意力视图、位置与缓存不变量、校正证明、蒸馏及在线更新。
 - [性能记录](docs/RESULTS.md)：保留方法的实验条件、吞吐、学习成本和不确定性。
 - [运行说明](docs/RUNNING.md)：环境、资源参数、训练恢复、固定与在线对照。

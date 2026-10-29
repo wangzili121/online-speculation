@@ -10,7 +10,7 @@ from blockspec.feedback import Feedback
 from blockspec.parallel.feedback import OnlineFeedback
 from blockspec.parallel.generation import generate, generate_ar
 from blockspec.parallel.online import SuffixConfig, SuffixLearner
-from blockspec.parallel.qwen38 import Qwen38Branch, Qwen38DualView
+from blockspec.parallel.qwen38 import Qwen38Branch, Qwen38DualView, native_reference_logits
 from blockspec.sampling import SamplingConfig
 
 
@@ -170,3 +170,29 @@ def test_rope_frequencies_remain_float32_during_weight_cast():
     model.bfloat16()
     assert model.rotary.inv_freq.dtype == torch.float32
     torch.testing.assert_close(model.rotary.inv_freq, before, rtol=0, atol=0)
+
+
+@torch.no_grad()
+def test_native_reference_preserves_hf_forward_and_removes_hooks():
+    target, model = make_model()
+    ids = torch.tensor([[3, 5, 8]])
+    expected = target(ids, use_cache=False).logits
+    torch.testing.assert_close(native_reference_logits(target, ids), expected, rtol=0, atol=0)
+    assert not target.lm_head._forward_pre_hooks
+    assert all(not layer._forward_pre_hooks for layer in target.model.layers)
+    torch.testing.assert_close(model(ids).logits, expected, rtol=1e-4, atol=1e-5)
+
+
+@torch.no_grad()
+@pytest.mark.parametrize("layer_index", [0, 3])
+@pytest.mark.parametrize("component", [0, 1])
+def test_matched_chunk_audit_detects_state_corruption(layer_index, component):
+    _, model = make_model()
+    branch = Qwen38Branch(model)
+    ids = torch.tensor([[3, 5, 8, 9]])
+    first = model(ids[:, :2]).cache
+    history = model(ids[:, 2:], cache=first).cache
+    branch.audit_history(history, ids, [2, 2])
+    history[layer_index][component].add_(1.)
+    with pytest.raises(AssertionError, match=f"layer {layer_index} state {component}"):
+        branch.audit_history(history, ids, [2, 2])

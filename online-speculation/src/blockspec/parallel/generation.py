@@ -158,6 +158,8 @@ def generate(branch, prompt, max_new_tokens, *, block_size=None, sampling=Sampli
     elif prompt.shape[1] > 1:
         _, cache = branch.ar(prompt[:, :-1], logits_to_keep=1)
         result.prefill_forwards = 1
+    audit_chunks = ([prompt.shape[1]] if branch.initial_ar_token else
+                    ([prompt.shape[1] - 1] if prompt.shape[1] > 1 else []))
     while not stopped:
         result.rounds += 1
         expected_history = prompt.shape[1] + len(result.tokens) - 1
@@ -201,10 +203,15 @@ def generate(branch, prompt, max_new_tokens, *, block_size=None, sampling=Sampli
         anchor = prompt.new_tensor([[result.tokens[-1]]])
         if audit_cache:
             full = torch.cat((prompt, prompt.new_tensor([result.tokens[:-1]])), 1)
-            _, reference = branch.ar(full)
-            for (key, value), (ref_key, ref_value) in zip(cache, reference, strict=True):
-                torch.testing.assert_close(key, ref_key)
-                torch.testing.assert_close(value, ref_value)
+            audit_chunks.append(committed - expected_history)
+            audit_history = getattr(branch, "audit_history", None)
+            if audit_history is not None:
+                audit_history(cache, full, audit_chunks)
+            else:
+                _, reference = branch.ar(full)
+                for (key, value), (ref_key, ref_value) in zip(cache, reference, strict=True):
+                    torch.testing.assert_close(key, ref_key)
+                    torch.testing.assert_close(value, ref_value)
         if feedback is not None:
             feedback.commit(submitted)
             feedback.observe(proposal, logits[0], target, used=used, fully_covered=fully_covered, done=stopped)

@@ -15,6 +15,32 @@ from .backbone import BackboneOutput, DraftBoundary
 from .branches import MaskedAttentionBranch
 
 
+@torch.no_grad()
+def native_reference_logits(target, tokens):
+    """Run the unchanged HF forward with hooks for manual layer placement."""
+    text = getattr(target.model, "language_model", target.model)
+
+    def dispatch(module, args, kwargs):
+        device = next(module.parameters()).device
+
+        def move(item):
+            if isinstance(item, torch.Tensor):
+                return item.to(device)
+            if isinstance(item, tuple):
+                return tuple(move(x) for x in item)
+            return item
+
+        return tuple(move(x) for x in args), {name: move(x) for name, x in kwargs.items()}
+
+    handles = [layer.register_forward_pre_hook(dispatch, with_kwargs=True) for layer in text.layers]
+    handles.append(target.lm_head.register_forward_pre_hook(dispatch, with_kwargs=True))
+    try:
+        return target(input_ids=tokens, use_cache=False).logits
+    finally:
+        for handle in handles:
+            handle.remove()
+
+
 class HybridHistory(tuple):
     """Owned AR snapshots: full-attention KV or GDN convolution/recurrent state."""
 
@@ -258,3 +284,17 @@ class Qwen38Branch(MaskedAttentionBranch):
             return verified_cache
         _, clean = self.ar(proposal.verifier_inputs[:, :count], cache=proposal.cache, logits_to_keep=1)
         return clean
+
+    def audit_history(self, actual, tokens, chunks):
+        # BF16 recurrent continuation and full recomputation have different
+        # rounding paths. Match AR-only chunk boundaries to isolate corruption.
+        if sum(chunks) != tokens.shape[1] or any(length < 1 for length in chunks):
+            raise ValueError("audit chunks must partition the committed prefix")
+        reference, offset = None, 0
+        for length in chunks:
+            _, reference = self.ar(tokens[:, offset:offset + length], cache=reference, logits_to_keep=1)
+            offset += length
+        for index, (pair, other) in enumerate(zip(actual, reference, strict=True)):
+            for component, (value, expected) in enumerate(zip(pair, other, strict=True)):
+                torch.testing.assert_close(value, expected, rtol=0, atol=0,
+                                           msg=lambda message: f"layer {index} state {component}: {message}")
