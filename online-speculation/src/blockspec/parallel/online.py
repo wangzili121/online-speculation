@@ -65,17 +65,24 @@ class SuffixLearner:
         self.parameters = list(self.master.values())
         self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate, weight_decay=0,
                                            fused=True if self.parameters[0].is_cuda else None)
-        self._frozen = [(p, p._version) for name, p in model.named_parameters() if name not in self.execution]
-        fingerprint = hashlib.sha256()
-        for name, p in model.named_parameters():
-            if name not in self.execution:
-                fingerprint.update(name.encode())
-                fingerprint.update(p.detach().contiguous().cpu().view(torch.uint8).numpy().tobytes())
-        self.frozen_fingerprint = fingerprint.hexdigest()
+        self._frozen = [(p, self.parameter_stamp(p)) for name, p in model.named_parameters() if name not in self.execution]
+        self.frozen_fingerprint = self.fingerprint()
         self._backend = model.backend
         self.replay = deque(maxlen=config.replay_blocks)
         self.rounds = self.updates = self.version = self.feedback_blocks = self.coverage_skips = 0
         self.update_seconds, self.last_loss = 0., None
+
+    @staticmethod
+    def parameter_stamp(parameter):
+        return parameter._version
+
+    def fingerprint(self):
+        fingerprint = hashlib.sha256()
+        for name, p in self.model.named_parameters():
+            if name not in self.execution:
+                fingerprint.update(name.encode())
+                fingerprint.update(p.detach().contiguous().cpu().view(torch.uint8).numpy().tobytes())
+        return fingerprint.hexdigest()
 
     @property
     def trainable_parameters(self):
@@ -87,7 +94,7 @@ class SuffixLearner:
 
     def _check(self):
         if (self.model.backend != self._backend or any(p.requires_grad for p in self.model.parameters())
-                or any(p._version != version for p, version in self._frozen)):
+                or any(self.parameter_stamp(p) != version for p, version in self._frozen)):
             raise RuntimeError("frozen representations or attention execution changed; rebuild the learner")
 
     def _sync(self):
@@ -128,7 +135,11 @@ class SuffixLearner:
                                                    logit_range=(0, item.valid), draft_weights=weights)
                 loss = divergence(output.logits[0], item.teacher_logits, self.config.loss).sum() / positions
                 if not torch.isfinite(loss):
-                    raise FloatingPointError("nonfinite online suffix loss")
+                    student_ok = bool(torch.isfinite(output.logits).all())
+                    teacher_ok = bool(torch.isfinite(item.teacher_logits).all())
+                    teacher_nan = int(item.teacher_logits.isnan().sum())
+                    raise FloatingPointError(f"nonfinite online suffix loss: student_finite={student_ok}, "
+                                             f"teacher_finite={teacher_ok}, teacher_nan={teacher_nan}")
                 loss.backward()
                 total += float(loss.detach())
         return total
@@ -145,7 +156,7 @@ class SuffixLearner:
         self._sync()
         start = time.perf_counter()
         loss = self.backward()
-        norm = torch.nn.utils.clip_grad_norm_(self.parameters, self.config.clip_norm, error_if_nonfinite=True)
+        norm = self.clip_gradients()
         self.optimizer.step()
         self.publish()
         self._sync()
@@ -155,6 +166,9 @@ class SuffixLearner:
         self.update_seconds += elapsed
         self.last_loss = loss
         return {"loss": loss, "gradient_norm": float(norm), "seconds": elapsed, "version": self.version}
+
+    def clip_gradients(self):
+        return torch.nn.utils.clip_grad_norm_(self.parameters, self.config.clip_norm, error_if_nonfinite=True)
 
     def state_dict(self):
         if self.replay:

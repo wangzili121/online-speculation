@@ -101,7 +101,9 @@ class _HybridLayer(nn.Module):
         mixer = original.self_attn if kind == "full_attention" else original.linear_attn
         self.attention = nn.Module()
         self.attention.ar = mixer
-        self.attention.draft = copy.deepcopy(mixer)
+        # Draft 只保留普通参数，不复制 vLLM 分片参数类型及其加载器属性。
+        parameters = {id(p): nn.Parameter(p.detach().clone(), requires_grad=False) for p in mixer.parameters()}
+        self.attention.draft = copy.deepcopy(mixer, parameters)
         self.input_norm = original.input_layernorm
         self.post_norm = original.post_attention_layernorm
         self.mlp = original.mlp
@@ -297,4 +299,4 @@ class Qwen38Branch(MaskedAttentionBranch):
         for index, (pair, other) in enumerate(zip(actual, reference, strict=True)):
             for component, (value, expected) in enumerate(zip(pair, other, strict=True)):
                 torch.testing.assert_close(value, expected, rtol=0, atol=0,
-                                           msg=lambda message: f"layer {index} state {component}: {message}")
+                                           msg=lambda message, i=index, c=component: f"layer {i} state {c}: {message}")
