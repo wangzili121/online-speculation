@@ -24,6 +24,23 @@ def tensor_leaves(value, prefix=""):
             yield from tensor_leaves(item, f"{prefix}/{key}")
 
 
+def select_trace_rows(positions, position, starts, lengths, prompt_length=None, block_start=None):
+    matches = []
+    for request, length in enumerate(lengths):
+        if prompt_length is not None and length != prompt_length:
+            continue
+        start, end = int(starts[request]), int(starts[request + 1])
+        if start == end:
+            continue
+        if block_start is not None:
+            if positions[start] == block_start:
+                matches.append((start, end, request))
+        else:
+            matches.extend((row, row + 1, request) for row in range(start, end)
+                           if positions[row] == position)
+    return matches[0] if len(matches) == 1 else None
+
+
 def compare_traces(left, right):
     if not left or not right:
         raise ValueError("both traces must contain captured activations")
@@ -65,13 +82,14 @@ class LayerTraceWorker:
             setattr(obj, method, original)
         del self._layer_trace
 
-    def trace_arm(self, position):
+    def trace_arm(self, position, prompt_length=None, block_start=None):
         if not hasattr(self, "_layer_trace"):
             self._layer_trace = {"active": False, "tensors": {}, "shapes": {},
                                  "position": position, "layer": "outside", "counts": {},
                                  "handles": [], "wrapped": []}
             self._install_trace()
-        self._layer_trace.update(position=position, active=False, tensors={}, shapes={}, counts={})
+        self._layer_trace.update(position=position, prompt_length=prompt_length, block_start=block_start,
+                                 active=False, tensors={}, shapes={}, counts={})
 
     def _save_trace(self, name, value):
         state = self._layer_trace
@@ -81,7 +99,7 @@ class LayerTraceWorker:
             # Only token-major activations, never weights or persistent cache.
             if tensor.ndim and tensor.shape[0] == state["tokens"]:
                 key = name + suffix
-                state["tensors"][key] = tensor[state["row"]].detach().cpu().clone()
+                state["tensors"][key] = tensor[state["selector"]].detach().cpu().clone()
                 state["shapes"][key] = list(tensor.shape)
 
     def _install_trace(self):
@@ -93,13 +111,26 @@ class LayerTraceWorker:
             state["active"] = False
             if positions is None:
                 return
-            matches = (positions == state["position"]).nonzero().flatten().cpu().tolist()
-            if len(matches) == 1:
-                state.update(active=True, row=matches[0], tokens=positions.numel(), counts={})
+            runner = self.model_runner
+            lengths = [runner.requests[req].num_prompt_tokens for req in runner.input_batch.req_ids]
+            values = positions.cpu().tolist()
+            selected = select_trace_rows(values, state["position"], runner.query_start_loc.np,
+                                         lengths, state["prompt_length"], state["block_start"])
+            if selected is not None:
+                start, end, request = selected
+                selector = start if state["block_start"] is None else slice(start, end)
+                state.update(active=True, row=start, selector=selector, request_row=request,
+                             first_position=values[start], last_position=values[end - 1],
+                             tokens=positions.numel(), counts={})
                 self._save_trace("model.input", kwargs)
+
+        def finish(module, args, kwargs, output):
+            if self._layer_trace["block_start"] is not None:
+                self._layer_trace["active"] = False
 
         handles = self._layer_trace["handles"]
         handles.append(model.register_forward_pre_hook(start, with_kwargs=True))
+        handles.append(model.register_forward_hook(finish, with_kwargs=True))
         for name, module in model.named_modules():
             if not name or ".dsa_attn." in name:
                 continue
@@ -146,23 +177,24 @@ class LayerTraceWorker:
                 self._save_history(key, kwargs)
             result = original(*args, **kwargs)
             self._save_trace(key + ".output", result)
+            if method == "npu_sparse_attn_sharedkv" and state["active"] and state.get("repeat_attention"):
+                # Diagnostic replay with exactly the same live inputs and metadata.
+                self._save_trace(key + ".repeat_output", original(*args, **kwargs))
             return result
 
         setattr(obj, method, wrapped)
 
     def _save_history(self, key, kwargs):
         state = self._layer_trace
-        position = state["position"]
+        position = state["last_position"]
         for kind in ("ori", "cmp"):
             cache, table = kwargs.get(kind + "_kv"), kwargs.get(kind + "_block_table")
             if cache is None:
                 continue
-            if table.shape[0] != 1:
-                raise ValueError("native history tracing requires one real request")
             end = position + 1 if kind == "ori" else (position + 1) // kwargs["cmp_ratio"]
-            start = max(0, end - 128) if kind == "ori" else 0
+            start = max(0, state["first_position"] + 1 - 128) if kind == "ori" else 0
             logical = torch.arange(start, end, device=cache.device)
-            physical = table[0, logical // cache.shape[1]].long()
+            physical = table[state["request_row"], logical // cache.shape[1]].long()
             value = cache[physical, logical % cache.shape[1]].detach().cpu().clone()
             state["tensors"][key + "." + kind + "_history"] = value
             state["shapes"][key + "." + kind + "_history"] = list(value.shape)

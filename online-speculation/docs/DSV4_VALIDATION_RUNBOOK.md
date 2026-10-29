@@ -95,6 +95,17 @@ python scripts/check_dsv4_engine_state.py \
 
 `--shadow-logit-errors` 会在 CPU 保留第一组参考和真实 draft 路径的 logits，报告最大绝对差、首行差异和 argmax 变化。它用于区分当前待验证位置与其余验证行的变化，不修改逐位一致性的通过标准。开销不用于性能统计；原始张量仅保留在测试进程内，结果写入 `logit_diagnostics`。测试脚本对分块 prefill 的 discarded 行不推进候选计划，确保 token-only 与真实 draft 使用同一序列。
 
+出现差异后，可在上述命令追加以下参数，抓取指定请求的一整个验证块：
+
+```bash
+--shadow-batch 4 --shadow-logit-errors \
+--trace-prompt-length 511 --trace-block-start 512
+```
+
+这里选择输入长 511 token、查询起始位置为 512 的请求。`layer-trace/` 保存两次 token-only 参考、真实 draft、跳过 head 四条路径的逐层张量，以及每 rank 的比较报告。四组 shadow 请求均先通过 `sleep(level=0)` 暂停调度、全部入队后再恢复，避免入队时序改变 prefill 切分；此操作不卸载权重或 KV。抓取只覆盖目标模型前向，结束后关闭，避免 draft 复用共享模块时覆盖记录；按请求长度和查询区间定位，遇到歧义不抓取，空记录会使比较报错。记录包含查询、逻辑历史 KV、检索索引、Attention 输出及后续层，可沿报告顺序寻找第一处差异。
+
+追加 `--trace-repeat-attention` 可在选中的原生稀疏 Attention 调用后，用同一组现场输入立即重算，结果单独存入 `attention_replays`，不替换第一次输出。这些开关仅用于诊断，会同步设备并影响时序，不能用于性能统计，也不能用抓取时差异消失作为正确性证明。
+
 `state_checks_passed` 代表状态检查，`adaptation_reference_passed` 要求真实路径匹配预定参考且匹配仅跳过 head 的诊断路径；二者通过时脚本返回 0。`reference_repeat_exact`、`all_shadow_logits_exact` 和 `natural_exact` 保留其他对照原始结果，不会因为适配检查通过而改成 true。参考自身不稳定不能豁免适配与预定参考不一致的情况。
 
 每 rank 的逐轮证据保存在 `events-rank*.jsonl`。这不覆盖真实训练 head 的接受率、随机采样高接受率的引擎路径、抢占后的换入换出、物理页强制复用或 graph；完整模型必须另跑。不要把小模型测试成功写成完整生产验收。

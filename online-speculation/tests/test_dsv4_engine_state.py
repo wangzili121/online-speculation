@@ -10,6 +10,37 @@ PROBE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PROBE)
 
 
+@pytest.mark.parametrize("fail_enqueue", [False, True])
+def test_shadow_batch_pauses_admission_without_offloading(fail_enqueue):
+    calls = []
+
+    class Engine:
+        def sleep(self, **kwargs):
+            calls.append(("sleep", kwargs))
+
+        def enqueue(self, prompts, params, **kwargs):
+            calls.append(("enqueue", prompts, params, kwargs))
+            if fail_enqueue:
+                raise RuntimeError("enqueue failed")
+
+        def wake_up(self, **kwargs):
+            calls.append(("wake", kwargs))
+
+        def wait_for_completion(self, **kwargs):
+            calls.append(("wait", kwargs))
+            return ["output"]
+
+    if fail_enqueue:
+        with pytest.raises(RuntimeError, match="enqueue failed"):
+            PROBE.generate_shadow_batch(Engine(), ["prompt"], ["params"])
+    else:
+        assert PROBE.generate_shadow_batch(Engine(), ["prompt"], ["params"]) == ["output"]
+    assert calls[:3] == [("sleep", {"level": 0, "mode": "keep"}),
+                         ("enqueue", ["prompt"], ["params"], {"use_tqdm": False}),
+                         ("wake", {"tags": ["scheduling"]})]
+    assert len(calls) == (3 if fail_enqueue else 4)
+
+
 @pytest.mark.parametrize("position", range(32))
 def test_controlled_candidates_cover_every_rejection_and_full_acceptance(position):
     candidates = PROBE.make_candidates(19, position)
