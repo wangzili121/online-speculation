@@ -91,6 +91,8 @@ class Qwen38OrthrusProposer:
         self.max_verified_tokens = self.full_blocks = 0
         install_runner_hooks()
         install_attention_hooks()
+        from .qwen38_gdn_backend import install_recurrent_hook
+        install_recurrent_hook()
         if (vllm_config.additional_config or {}).get("qwen38_gdn_prefill_backend") == "cann":
             from .qwen38_gdn_backend import install_cann_gdn_prefill
             install_cann_gdn_prefill()

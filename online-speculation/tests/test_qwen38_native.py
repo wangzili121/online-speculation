@@ -333,6 +333,64 @@ def test_cann_backend_layout_and_readonly_initial_state(monkeypatch):
     assert module.chunk_gated_delta_rule(q, k, value, None, None) == "original"
 
 
+@pytest.mark.parametrize("length,accepted", [(1, 32), (8, 27), (17, 1), (31, 16), (32, 31), (32, 32)])
+def test_recurrent_slices_preserve_all_states_and_previous_accepted_boundary(length, accepted):
+    from blockspec.vllm_ascend.qwen38_gdn_backend import recurrent_slices
+
+    def reference(*, query, key, value, state, actual_seq_lengths, ssm_state_indices,
+                  num_accepted_tokens, g, beta, scale):
+        initial = 0 if num_accepted_tokens is None else int(num_accepted_tokens[0]) - 1
+        hidden = state[ssm_state_indices[initial]].clone()
+        outputs = []
+        for index in range(query.shape[0]):
+            k = key[index].repeat_interleave(2, 0)
+            q = query[index].repeat_interleave(2, 0) * scale
+            hidden = hidden * g[index].exp()[:, None, None]
+            delta = (value[index] - (hidden * k[:, None]).sum(-1)) * beta[index, :, None]
+            hidden = hidden + delta[:, :, None] * k[:, None]
+            state[ssm_state_indices[index]].copy_(hidden)
+            outputs.append((hidden * q[:, None]).sum(-1))
+        return torch.stack(outputs)
+
+    def short_operation(**kwargs):
+        assert kwargs["query"].shape[0] <= 16
+        assert kwargs["num_accepted_tokens"] is None
+        return reference(**kwargs)
+
+    torch.manual_seed(29)
+    q, k = [torch.nn.functional.normalize(torch.randn(length, 2, 8), dim=-1) for _ in range(2)]
+    state = torch.randn(40, 4, 8, 8)
+    expected_state = state.clone()
+    arguments = dict(query=q, key=k, value=torch.randn(length, 4, 8),
+                     actual_seq_lengths=torch.tensor([0, length], dtype=torch.int32),
+                     ssm_state_indices=torch.randperm(40)[:32].int(),
+                     num_accepted_tokens=torch.tensor([accepted], dtype=torch.int32),
+                     g=-torch.rand(length, 4), beta=torch.rand(length, 4), scale=8 ** -.5)
+    expected = reference(**arguments, state=expected_state)
+    actual = recurrent_slices(short_operation, **arguments, state=state)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(state, expected_state, rtol=0, atol=0)
+
+
+def test_recurrent_hook_only_changes_orthrus_speculative_calls(monkeypatch):
+    from blockspec.vllm_ascend import qwen38_gdn_backend as backend
+
+    original = lambda **kwargs: "native"
+    monkeypatch.setattr(torch.ops._C_ascend, "npu_recurrent_gated_delta_rule", original, raising=False)
+    config = NS(speculative_config=None)
+    monkeypatch.setitem(sys.modules, "vllm.config", NS(get_current_vllm_config=lambda: config))
+    monkeypatch.setattr(backend, "recurrent_slices", lambda operation, **kwargs: (operation, "sliced"))
+    backend.install_recurrent_hook()
+    hook = torch.ops._C_ascend.npu_recurrent_gated_delta_rule
+    backend.install_recurrent_hook()
+    assert torch.ops._C_ascend.npu_recurrent_gated_delta_rule is hook
+    assert hook(num_accepted_tokens=torch.tensor([1])) == "native"
+    config.speculative_config = NS(method="custom_class",
+        model="blockspec.vllm_ascend.qwen38_proposer.Qwen38OrthrusProposer")
+    assert hook(num_accepted_tokens=None) == "native"
+    assert hook(num_accepted_tokens=torch.tensor([1])) == (original, "sliced")
+
+
 @pytest.mark.parametrize("length", [17, 31, 32])
 def test_paged_query_slices_preserve_causal_attention(length):
     torch.manual_seed(2)

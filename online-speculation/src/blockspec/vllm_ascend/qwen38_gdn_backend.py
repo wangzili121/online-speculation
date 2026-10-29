@@ -1,6 +1,52 @@
-"""Use the installed CANN GDN prefill op instead of the affected Triton path."""
+"""Adapters for the installed GDN prefill and short recurrent primitives."""
 
 import functools
+
+
+def recurrent_slices(operation, *, query, key, value, state, actual_seq_lengths,
+                     ssm_state_indices, num_accepted_tokens, g, beta, scale, limit=16):
+    """Keep every verifier state while passing at most 16 rows per kernel call."""
+    import torch
+
+    length = query.shape[0]
+    if actual_seq_lengths.numel() != 2 or ssm_state_indices.numel() < length or length < 1:
+        raise ValueError("synchronous batch-one recurrent verification required")
+    # 上轮只接受到哪个位置，就从那个位置的状态开始；先复制，避免被本轮覆盖。
+    selected = ssm_state_indices[num_accepted_tokens.long() - 1].long()
+    initial = state.index_select(0, selected).clone()
+    outputs = []
+    for start in range(0, length, limit):
+        end = min(start + limit, length)
+        slots = ssm_state_indices[start:end].contiguous()
+        state.index_copy_(0, slots[:1].long(), initial)
+        outputs.append(operation(
+            query=query[start:end].contiguous(), key=key[start:end].contiguous(),
+            value=value[start:end].contiguous(), state=state,
+            actual_seq_lengths=actual_seq_lengths.new_tensor([0, end - start]),
+            ssm_state_indices=slots, num_accepted_tokens=None,
+            g=None if g is None else g[start:end].contiguous(),
+            beta=None if beta is None else beta[start:end].contiguous(), scale=scale))
+        initial = state.index_select(0, slots[-1:].long()).clone()
+    return torch.cat(outputs, dim=0)
+
+
+def install_recurrent_hook():
+    import torch
+    from vllm.config import get_current_vllm_config
+    from .qwen38_attention import _enabled
+
+    original = torch.ops._C_ascend.npu_recurrent_gated_delta_rule
+    if getattr(original, "_qwen38_recurrent_hook", False) is True:
+        return
+
+    @functools.wraps(original)
+    def recurrent(**kwargs):
+        if not _enabled(get_current_vllm_config()) or kwargs.get("num_accepted_tokens") is None:
+            return original(**kwargs)
+        return recurrent_slices(original, **kwargs)
+
+    recurrent._qwen38_recurrent_hook = True
+    torch.ops._C_ascend.npu_recurrent_gated_delta_rule = recurrent
 
 
 def install_cann_gdn_prefill():

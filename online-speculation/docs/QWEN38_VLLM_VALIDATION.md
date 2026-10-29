@@ -10,7 +10,7 @@
 
 ## 已验证
 
-CPU 回归：118 passed、17 skipped。跳过项均需 CUDA，不是已通过的 NPU 测试。
+CPU 回归：129 passed、17 skipped。跳过项均需 CUDA，不是已通过的 NPU 测试。
 覆盖 native 参数别名、AR/HF 对照、vLLM 参数类型复制、inference tensor 的冻结输入反向、两进程 TP 前向/梯度/全局裁剪、last-1/last-4 后缀、仅实际到达教师行监督、请求切换和 head 交付格式。
 原有 Qwen3/Qwen3.8 后缀训练、冻结参数及恢复逻辑同时回归。Ruff 和 Python 编译检查通过。
 
@@ -38,6 +38,14 @@ K32 初始化越过了原生 Attention 的 16-query decode 限制，实际调度
 当前增加的是显式 CANN prefill 后端选择，使用镜像已有的 `torch_npu.npu_chunk_gated_delta_rule`，不重写 kernel。
 完整融合后端复测尚未生成成功结果：重新启动时 0、1 卡已由另一组 vLLM worker 占用，空余约 14.59 GiB/卡，低于本次启动要求。
 没有停止其他人的任务。
+
+111 曾短暂出现 0、3 两卡空闲，已尝试启动同后端 target-only 复测，但轮转任务随即重新加载，worker 启动时仅余约 2.26 GiB，未形成可运行的两卡窗口。
+已释放本次临时占用，没有终止对方进程。111 的 4、5 卡不纳入可用设备。
+
+进一步静态检查发现，镜像的 GDN recurrent kernel 有 `MAX_MTP=16`，长度超过 16 时直接返回。
+已加入现有 kernel 的分段编排，CPU 参考覆盖 17/31/32 行和“上轮接受 27/32 行、本轮只剩 8/1 行”的状态边界，输出及全部状态逐项相同。
+组合探测首次调用 recurrent kernel 时遇到原型/二进制匹配错误；脚本已将 AscendC 注册提前到首次 NPU 计算前，仍待复测确认。
+该分段编排不能标记为已在 NPU 通过，更不能以 CPU 等价测试代替完整模型验证。
 
 ## 下次验收
 

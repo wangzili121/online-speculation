@@ -26,6 +26,10 @@ TP 分片的 query/KV 头和 GDN 头数须能整除 TP；27B 首选 TP=2。
 两片均读取该层正式 KV，但第一片的可见 KV 末端停在自身末端，第二片再推进，因此保留整块因果 Attention 的数学含义。
 这不是将 draft 块缩成 K=16，也没有拆成两轮模型验证；GDN 和其他层计算仍处理完整验证块。
 
+镜像的 GDN recurrent kernel 同样将单次长度限制在 16，超过时会直接返回，不能把 K32 整块直接传入。
+`qwen38_gdn_backend.py` 将验证块按最多 16 行分段调用原有算子：首段从上轮接受位置的状态开始，后段接着前段的最终状态计算，并保留每个候选位置的状态供下一轮回滚选择。
+即使下一轮长度缩短，也先按上一轮真实接受位置选取状态，不把接受数量错误地限制为当前段长。
+
 当前镜像的原生 Triton GDN prefill 在关闭 Orthrus 的基线中也出现 NaN，最早见于第一层 GDN 的状态计算。
 因此启动脚本默认显式选择 `--gdn-prefill-backend cann`，将 prefill 切换为镜像自带的 `torch_npu.npu_chunk_gated_delta_rule`；解码和投机验证的 GDN 仍由原生引擎处理。
 适配仅处理布局、归一化和状态返回，不新增 kernel；CANN 接口使用 BF16 初始状态，数值舍入与 Triton 不能视为逐位相同，验收时基线与 Orthrus 必须选择同一后端。
@@ -87,7 +91,7 @@ curl http://127.0.0.1:8000/v1/completions \
 测试时用 `--update-stride 1`，保证短请求覆盖在线更新；正式配置不建议每步训练。
 采样模式不能要求与 target-only 的同种子输出逐 token 一致；greedy 才按同一输入做逐 token 对照。
 
-CPU 测试覆盖权重别名与 AR 对照、原生参数类型复制、inference tensor 输入反向、双 TP 前向与梯度、全局裁剪和 hook 调用顺序。
+CPU 测试覆盖权重别名与 AR 对照、原生参数类型复制、inference tensor 输入反向、双 TP 前向与梯度、全局裁剪、hook 调用顺序和 GDN 分段状态等价性。
 真机验收结果另行记录，不将上述单元测试当作服务或性能验收。
 
 本次详细边界和证据见 [2026-10-30 验证记录](QWEN38_VLLM_VALIDATION.md)。
