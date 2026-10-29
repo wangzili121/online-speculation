@@ -74,11 +74,24 @@ def install_runner_hooks(runner_class=None):
         if not _ours(self) or spec_decode_metadata is None:
             return sample(self, logits, spec_decode_metadata)
         # 保留原生 rejection sampler；在采样约束修改 logits 前取出教师分布。
-        self.input_batch.update_async_output_token_ids()
         proposer = self.drafter
         teacher = proposer.teacher_rows(logits, spec_decode_metadata)
         q = proposer.verification_probs(spec_decode_metadata)
-        output = self.rejection_sampler(spec_decode_metadata, q, logits, self.input_batch.sampling_metadata)
+        native_sampler = self.rejection_sampler
+
+        class WithDraftProbabilities:
+            def __getattr__(self, name):
+                return getattr(native_sampler, name)
+
+            def __call__(self, metadata, draft_probs, *args, **kwargs):
+                return native_sampler(metadata, q, *args, **kwargs)
+
+        # 同步 worker 内临时注入 q，原生 _sample 的裁剪、prepare_sampling 等步骤不变。
+        self.rejection_sampler = WithDraftProbabilities()
+        try:
+            output = sample(self, logits, spec_decode_metadata)
+        finally:
+            self.rejection_sampler = native_sampler
         proposer.observe_verified(spec_decode_metadata, teacher, output.sampled_token_ids)
         return output
 

@@ -17,6 +17,7 @@ def arguments():
     parser.add_argument("--update-stride", type=int, default=16)
     parser.add_argument("--head-dir")
     parser.add_argument("--checkpoint-dir")
+    parser.add_argument("--checkpoint-every", type=int, default=16)
     parser.add_argument("--max-model-len", type=int, default=2048)
     parser.add_argument("--gpu-memory-utilization", type=float, default=.8)
     parser.add_argument("--port", type=int, default=8000)
@@ -36,7 +37,7 @@ def native_options(args):
 
 def speculative_options(args):
     options = dict(mask_token_id=args.mask_token_id, online=args.online, last_layers=args.last_layers,
-                   update_stride=args.update_stride)
+                   update_stride=args.update_stride, checkpoint_every=args.checkpoint_every)
     for name in ("head_dir", "checkpoint_dir"):
         if getattr(args, name, None):
             options[name] = getattr(args, name)

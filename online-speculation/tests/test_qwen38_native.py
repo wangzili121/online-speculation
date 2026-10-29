@@ -153,7 +153,12 @@ def test_scoped_hooks_retain_custom_and_leave_others_unchanged():
             return "ordinary draft"
 
         def _sample(self, logits, spec_decode_metadata):
-            return "ordinary sample"
+            if spec_decode_metadata is None:
+                return "ordinary sample"
+            self.input_batch.update_async_output_token_ids()
+            events.append("native prelude")
+            self.rejection_sampler.prepare_sampling(4)
+            return self.rejection_sampler(spec_decode_metadata, None, logits, self.input_batch.sampling_metadata)
 
     class Proposer:
         qwen38_native_proposer = True
@@ -195,15 +200,29 @@ def test_scoped_hooks_retain_custom_and_leave_others_unchanged():
     assert runner.propose_draft_token_ids([[2]], None) == [[4, 5]]
     runner.input_batch = NS(update_async_output_token_ids=lambda: None, sampling_metadata=None)
 
-    def reject(meta, q, logits, sampling):
-        assert q == "q"
-        events.append("verify")
-        logits.zero_()
-        return NS(sampled_token_ids=torch.tensor([[7, -1]]))
+    class Reject:
+        def prepare_sampling(self, topk):
+            assert topk == 4
+            events.append("prepare")
 
-    runner.rejection_sampler = reject
+        def __call__(self, meta, q, logits, sampling):
+            assert q == "q"
+            events.append("verify")
+            logits.zero_()
+            return NS(sampled_token_ids=torch.tensor([[7, -1]]))
+
+    runner.rejection_sampler = reject = Reject()
     runner._sample(torch.ones(2, 4), NS())
-    assert events == ["bind", "counter", "draft", "teacher", "verify", "update"]
+    assert runner.rejection_sampler is reject
+    assert events == ["bind", "counter", "draft", "teacher", "native prelude", "prepare", "verify", "update"]
+
+    def fail():
+        raise RuntimeError("native sampling failure")
+
+    runner.input_batch.update_async_output_token_ids = fail
+    with pytest.raises(RuntimeError, match="native sampling failure"):
+        runner._sample(torch.ones(2, 4), NS())
+    assert runner.rejection_sampler is reject
 
 
 def test_hooks_reject_incompatible_runner():

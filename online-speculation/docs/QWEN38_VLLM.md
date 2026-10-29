@@ -75,7 +75,7 @@ curl http://127.0.0.1:8000/v1/completions \
   -d '{"model":"/models/Qwen3.8-27B","prompt":"Hello","temperature":0,"max_tokens":8}'
 ```
 
-可选 `--checkpoint-dir /data/heads`：每 16 次更新保存一份按版本分目录的 draft 参数。
+可选 `--checkpoint-dir /data/heads`：每 16 次更新保存一份按版本分目录的 draft 参数，频率由 `--checkpoint-every` 控制。
 在同一 TP 布局下，用 `--head-dir /data/heads/version16` 重启加载；manifest 校验基模 config 和权重索引 SHA256、TP、K、mask ID 和混合层策略。
 这是 draft 权重交付，不是 AdamW 状态的跨进程精确续训；基模文件的完整内容哈希仍需部署侧另行锁定。
 
@@ -83,6 +83,7 @@ curl http://127.0.0.1:8000/v1/completions \
 
 `scripts/validate_qwen38_vllm.py` 使用原生 `vllm.LLM`，分别发送 greedy 和 temperature=1 请求，再通过具名 worker RPC 收集起草、验证、接受和更新计数。
 设置 `ORTHRUS_VALIDATE_TARGET_ONLY=1` 为无投机基线，`ORTHRUS_VALIDATE_OUTPUT=/work/evidence/run.json` 保存结果。
+`ORTHRUS_VALIDATE_EXTENDED=1` 增加较长输出、跨 chunk 的 prefill 和 top-k/top-p 采样；`ORTHRUS_VALIDATE_BASELINE=/work/evidence/target.json` 直接逐 token 比较同后端的 greedy 结果。
 测试时用 `--update-stride 1`，保证短请求覆盖在线更新；正式配置不建议每步训练。
 采样模式不能要求与 target-only 的同种子输出逐 token 一致；greedy 才按同一输入做逐 token 对照。
 
