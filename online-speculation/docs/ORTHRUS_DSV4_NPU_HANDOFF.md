@@ -8,7 +8,7 @@ Orthrus 采用共享主干的草稿结构，在模型各层增加独立的 diffu
 
 将这一结构用于 DeepSeek-V4，需要处理其混合 Attention：SWA 读取滑动窗口，HCA 还读取 C128 压缩历史，CSA 则通过 indexer 选择 C4 压缩历史。适配工作的重点，是在保留三类历史表示和检索规则的前提下，让 diffusion query 同时读取主模型历史与临时双向块，并避免草稿计算改变目标模型状态。
 
-本文限定于 **DeepSeek-V4-Flash-0731、Ascend A2 上的推理计算与引擎接入**，不包含训练和在线更新。现成实现包括 BF16 单层演示和固定 v0.26 环境下的 W8A8 服务路径；PyPTO 能力分析以 [pypto-lib 4c908f3](https://github.com/hw-native-sys/pypto-lib/tree/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark) 为准。当前用于接线验证的 head 是初始化版本，其运行结果不能代表训练后接受率和推理加速收益。
+本文限定于 **DeepSeek-V4-Flash-0731、Ascend A2 上的推理计算与引擎接入**，不包含训练和在线更新。正文以固定 v0.26 环境下的 W8A8 服务实现为主，BF16 单层演示仅作为附录中的算法对照；PyPTO 能力分析以 [pypto-lib 4c908f3](https://github.com/hw-native-sys/pypto-lib/tree/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark) 为准。当前用于接线验证的 head 是初始化版本，其运行结果不能代表训练后接受率和推理加速收益。
 
 ### 1.1 草稿分支与主模型的关系
 
@@ -53,6 +53,21 @@ anchor + MASK × 31
 因此，适配不仅要改变块内 mask，还要改变数据从哪里读取、哪些历史行有效、临时块放在哪里，以及是否执行 AR 状态更新。这些变化不要求重新设计矩阵乘、softmax 或 Top-K，却需要修改已有融合路径的输入和编排。
 
 Attention 侧可分为四个逻辑模块：**公共双向块、SWA、HCA、CSA**。公共块供三类历史路径使用，可以融合到对应计算中；四个逻辑模块不等于必须新增四个独立 kernel。下文以各模块的计算需求为单位，同时说明原有语义、目标语义、PyPTO 实现基础和现成 Torch-NPU 代码。
+
+### 1.3 W8A8 执行精度与实现主线
+
+W8A8 服务版本是实际部署使用的实现，不只是把 BF16 demo 的权重转换成 INT8。除量化投影外，它还使用联合 SWA/块内 FIA、真实分页历史、量化 indexer 和原生 AttentionUpdate，避免演示版中部分重复调用和大块中间张量展开。
+
+W8A8 不表示所有计算和张量都采用 INT8。线性层执行动态激活量化和量化矩阵乘，结果按 `output_dtype=hidden_states.dtype` 返回后续计算所需精度；Attention、norm、RoPE、sink 和 LSE 各有自身精度约定。代码中出现 BF16 或 FP32，并不说明它退回了 BF16 演示路径。
+
+| 计算环节 | W8A8 服务中的实际处理 |
+| --- | --- |
+| Q/KV 等线性投影 | 使用量化权重、动态激活量化及对应 scale；输出恢复为 hidden 的浮点类型 |
+| C4 indexer | 使用量化 query/key、反量化 scale 和原生 QLI，替代 demo 的非量化 indexer |
+| 历史与块内 Attention | 使用 FIA 或分页 sparse Attention，保持各接口要求的 query/KV 类型与布局，不将整条 Attention 强行改成 INT8 |
+| 跨段归一化 | 保持独立 sink 和 FP32 LSE，通过 `npu_attention_update` 合并 |
+
+因此，以下各模块直接展示 W8A8 服务调用的计算函数。BF16 demo 不承担生产实现的角色，完整源码保留在附录 B，用于脱离 vLLM metadata 理解算法。两条路径的差别不仅是精度，也包括分页读取和调用编排；当前实现已有局部优化证据，但不据此宣称所有场景最优。
 
 ## 2. Attention 模块设计
 
@@ -134,150 +149,11 @@ $$
 
 非空段满足 $L_r=m_r+\log\ell_r$、$O_r=u_r/\ell_r$，因此式 (4) 和式 (6) 是同一归一化的两种接口形式。空段置 $m_r=-\infty,\ell_r=0,u_r=0$。PyPTO 可以直接复用状态合并，不需要先产生 LSE 再调用额外合并 kernel；关键是全部贡献合并后才执行输出后处理，且 sink 不重复计算。
 
-#### 2.1.3 Torch-NPU 实现
+#### 2.1.3 W8A8 服务实现
 
-BF16 demo 使用 `npu_fused_infer_attention_score`（下文简称 FIA）计算每一段 Attention。输入 query 为 `[batch, K, heads, dim]`，临时 KV 为 `[batch, K, 1, dim]`；调用使用 `sparse_mode=0`，没有块内因果 mask，同时请求返回 LSE。
+服务使用 `torch_npu.npu_fused_infer_attention_score`（FIA）计算 Attention 分段。query 整理为 `[batch, K, local_heads, dim]`；KV 可以是连续的“滑窗 + 临时块”，也可以是带页表的目标压缩历史。`sparse_mode=0` 配合显式 padding mask 和有效长度，表达 Orthrus 的非因果读取，而不是沿用 AR 的三角 mask。
 
-下面是 demo 中实际使用的完整封装。它不依赖 vLLM metadata，历史段和临时块均调用同一函数，只是 KV 和有效长度不同。
-
-
-<details>
-<summary>完整源码：BF16 demo 的 FIA 调用</summary>
-
-```python
-def _normalize_fia_lse(lse: torch.Tensor, batch: int, queries: int) -> torch.Tensor:
-    if lse.ndim == 4 and lse.shape[0] == batch and lse.shape[2] == queries:
-        return lse.transpose(1, 2)
-    if lse.ndim == 4 and lse.shape[:2] == (batch, queries):
-        return lse
-    raise RuntimeError(f"unexpected FIA LSE shape: {tuple(lse.shape)}")
-
-def _native_fia_segment(
-    query: torch.Tensor,
-    key_value: torch.Tensor,
-    query_lengths: list[int],
-    key_lengths: list[int],
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """计算一段历史或块内 Attention，并返回输出和 LSE。"""
-    result = torch_npu.npu_fused_infer_attention_score(
-        query,
-        key_value.contiguous(),
-        key_value.contiguous(),
-        num_heads=query.shape[2],
-        num_key_value_heads=key_value.shape[2],
-        input_layout="BSND",
-        sparse_mode=0,
-        scale=query.shape[-1] ** -0.5,
-        atten_mask=None,
-        block_table=None,
-        block_size=0,
-        actual_seq_lengths=query_lengths,
-        actual_seq_lengths_kv=key_lengths,
-        softmax_lse_flag=True,
-    )
-    if not isinstance(result, tuple) or len(result) < 2:
-        raise RuntimeError("FIA did not return output and softmax LSE")
-    output, lse = result[:2]
-    return output, _normalize_fia_lse(lse, query.shape[0], query.shape[1])
-```
-
-</details>
-
-
-在单层 `forward` 中，历史 Attention 已先加入 `outputs/lses`。随后执行以下代码，补上整个双向块，再加入一次 sink 并完成统一归一化。`local_kv` 是 diffusion 投影生成的临时 KV，`block` 是实际块长，不涉及持久 cache 写回。
-
-
-```python
-# ORTHRUS 改动：不加因果 mask，K 个 draft 位置可以互相读取。
-local_out, local_lse = _native_fia_segment(
-    query, local_kv, query_lengths, [block] * batch
-)
-outputs.append(local_out)
-lses.append(local_lse)
-
-# DSV4 attention sink 与其他部分共享 softmax 分母。
-outputs.append(torch.zeros_like(local_out))
-lses.append(
-    self.attn_sink.view(1, 1, -1, 1).expand(batch, block, -1, -1)
-)
-# ORTHRUS 改动：用 LSE 精确合并只读历史与双向 draft 块。
-attention, _ = merge_attention_segments(outputs, lses)
-```
-
-
-demo 的 `merge_attention_segments` 使用 FP32 Torch 运算完成式 (4)。W8A8 服务则调用原生 `npu_attention_update`，减少组合运算的调度开销；两条路径使用相同的归一化语义。以下函数完整展示了形状校验和两种实现。
-
-
-<details>
-<summary>完整源码：Torch LSE 合并与 npu_attention_update</summary>
-
-```python
-def merge_attention_segments(
-    outputs: Sequence[torch.Tensor],
-    logsumexp: Sequence[torch.Tensor],
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Merge independently normalized attention segments exactly.
-
-    Every output is ``sum(exp(score) * value) / sum(exp(score))`` for one
-    segment and every LSE is ``log(sum(exp(score)))`` with a final singleton
-    dimension. Empty segments must be omitted by the caller.
-    """
-    if not outputs or len(outputs) != len(logsumexp):
-        raise ValueError("outputs and logsumexp must contain the same non-zero segments")
-    shape = outputs[0].shape
-    lse_shape = logsumexp[0].shape
-    if lse_shape != shape[:-1] + (1,):
-        raise ValueError(f"LSE shape {lse_shape} does not match output shape {shape}")
-    if any(output.shape != shape for output in outputs):
-        raise ValueError("all segment outputs must have the same shape")
-    if any(lse.shape != lse_shape for lse in logsumexp):
-        raise ValueError("all segment LSE tensors must have the same shape")
-
-    lse_stack = torch.stack([lse.float() for lse in logsumexp], dim=0)
-    merged_lse = torch.logsumexp(lse_stack, dim=0)
-    weights = torch.exp(lse_stack - merged_lse.unsqueeze(0))
-    merged = sum(
-        output.float() * weight
-        for output, weight in zip(outputs, weights, strict=True)
-    )
-    return merged.to(outputs[0].dtype), merged_lse
-
-def merge_attention_outputs(
-    outputs: Sequence[torch.Tensor],
-    logsumexp: Sequence[torch.Tensor],
-) -> torch.Tensor:
-    """Merge segmented attention outputs using the native NPU update op."""
-    if not outputs or len(outputs) != len(logsumexp):
-        raise ValueError("outputs and logsumexp must contain the same non-zero segments")
-    shape = outputs[0].shape
-    lse_shape = logsumexp[0].shape
-    if len(shape) < 2 or lse_shape != shape[:-1] + (1,):
-        raise ValueError(f"LSE shape {lse_shape} does not match output shape {shape}")
-    if any(output.shape != shape for output in outputs):
-        raise ValueError("all segment outputs must have the same shape")
-    if any(lse.shape != lse_shape for lse in logsumexp):
-        raise ValueError("all segment LSE tensors must have the same shape")
-
-    if outputs[0].device.type == "npu":
-        import torch_npu
-
-        head_dim = shape[-1]
-        merged, _ = torch_npu.npu_attention_update(
-            [lse.float().reshape(-1) for lse in logsumexp],
-            [output.reshape(-1, head_dim) for output in outputs],
-            0,
-        )
-        return merged.view(shape)
-
-    merged, _ = merge_attention_segments(outputs, logsumexp)
-    return merged
-```
-
-</details>
-
-
-服务侧 FIA 封装还需要处理分页布局、历史 padding 和空段，完整代码如下。三类历史路径会复用这个入口，或调用原生 sparse Attention。双向块在服务中已与 SWA 历史合并为一次 FIA，具体见下一节，不会再额外重复计算一次。
-
+下面是实际服务的完整 FIA 封装，包括分页布局转换、LSE 布局整理和空历史处理。空段必须返回零输出及 $-\infty$ LSE，不能让 padding 进入联合 softmax。
 
 <details>
 <summary>完整源码：FIA 封装与 LSE 布局转换</summary>
@@ -354,8 +230,48 @@ def _fia_segment(
 
 </details>
 
+SWA 历史和临时块已在第 2.2 节合为一次 FIA，不再单独计算一遍块内 Attention。压缩历史按层类型另外返回输出与 LSE；调用方将 sink 追加为零输出的一段，再由下列函数调用原生 `npu_attention_update` 完成式 (4)。
 
-本模块的 PyPTO 开发范围是：将独立临时块接入已有双向计算，适配块形状，并复用统一 softmax 状态。无需新建 Attention 数学或 Top-K 算法，也不必单独落地一个“公共双向 Attention kernel”。
+`merge_attention_outputs` 是 W8A8 服务实际调用的函数。NPU 分支使用原生合并算子；末尾的 Torch 回退仅用于非 NPU 对照，其完整定义收录在附录 A 的公共模块中。
+
+<details>
+<summary>完整源码：W8A8 服务的原生 AttentionUpdate</summary>
+
+```python
+def merge_attention_outputs(
+    outputs: Sequence[torch.Tensor],
+    logsumexp: Sequence[torch.Tensor],
+) -> torch.Tensor:
+    """Merge segmented attention outputs using the native NPU update op."""
+    if not outputs or len(outputs) != len(logsumexp):
+        raise ValueError("outputs and logsumexp must contain the same non-zero segments")
+    shape = outputs[0].shape
+    lse_shape = logsumexp[0].shape
+    if len(shape) < 2 or lse_shape != shape[:-1] + (1,):
+        raise ValueError(f"LSE shape {lse_shape} does not match output shape {shape}")
+    if any(output.shape != shape for output in outputs):
+        raise ValueError("all segment outputs must have the same shape")
+    if any(lse.shape != lse_shape for lse in logsumexp):
+        raise ValueError("all segment LSE tensors must have the same shape")
+
+    if outputs[0].device.type == "npu":
+        import torch_npu
+
+        head_dim = shape[-1]
+        merged, _ = torch_npu.npu_attention_update(
+            [lse.float().reshape(-1) for lse in logsumexp],
+            [output.reshape(-1, head_dim) for output in outputs],
+            0,
+        )
+        return merged.view(shape)
+
+    merged, _ = merge_attention_segments(outputs, logsumexp)
+    return merged
+```
+
+</details>
+
+PyPTO 可以直接沿用式 (6) 的 online-softmax 状态完成同一归一化，无需先输出 LSE 再调用独立 kernel。这里的 FIA/AttentionUpdate 组合，是利用已有 NPU 算子实现数学契约的服务路径，不是对 PyPTO 融合粒度的限制。
 
 源码定位：[DSpark Attention](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/dspark_attention.py)、[HCA 状态合并](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_sparse_attn_hca.py)。
 
@@ -381,28 +297,11 @@ Orthrus 可以复用分页地址转换、预取和公共历史共享，但不能
 
 cache 写入和 Attention 读取并不总在同一个函数内。现有滑窗子函数主要负责读取，写回由其调用链完成；适配时既要调整读取范围，也要让调用方绕过 draft 的 target KV 写回。仅修改 Attention mask 而保留 AR 写回编排，仍不满足只读要求。
 
-#### 2.2.3 Torch-NPU 实现
+#### 2.2.3 W8A8 服务实现
 
-BF16 demo 将滑窗历史表示为连续张量 `history.raw_kv`。下面是 `forward` 中实际的滑窗计算，K 个 query 一起读取同一份历史；结果稍后与第 2.1 节的双向块和 sink 合并。
+服务直接读取主模型的分页 SWA cache。`tail_logical_indices` 根据每个请求的 anchor 前历史长度生成最近窗口的逻辑行号，`gather_paged_cache` 通过页表映射到物理位置，再收集最多 128 行历史。这里只展开短窗口，不展开整个长上下文。
 
-
-```python
-# K 个 query 读取同一份已接受历史，但不修改它。
-raw_out, raw_lse = _native_fia_segment(
-    query,
-    history.raw_kv,
-    query_lengths,
-    [history.raw_kv.shape[1]] * batch,
-)
-outputs.append(raw_out)
-lses.append(raw_lse)
-```
-
-
-服务中的目标历史是分页存储，不能直接当作连续张量使用。W8A8 路径先按请求历史长度生成窗口逻辑行号，再经页表读取最多 128 行历史；将这段短历史与临时块拼接后，一次 FIA 完成“滑窗 + 双向块”。这种组合减少一次 Attention 调用，同时不需要展开整个长上下文。
-
-以下代码依次完成逻辑行号生成、分页读取和 mask 构造。无效行号以 `-1` 表示；布尔 mask 的 `True` 表示屏蔽，与式 (1) 的 additive mask 编码不同。
-
+以下是实际读取和 mask 构造的完整函数。无效行号以 `-1` 表示；布尔 mask 的 `True` 表示屏蔽，与式 (1) 的 additive mask 编码不同。所有 query 使用同一个历史有效长度。
 
 <details>
 <summary>完整源码：滑窗行号、分页读取、padding mask 与联合 FIA</summary>
@@ -476,12 +375,7 @@ def history_and_block_mask(
 
 </details>
 
-
-联合 FIA 只屏蔽历史 padding，块内 K 行全部开放。其输出仍不含 sink；独立 SWA 层只需再合并 sink，HCA/CSA 层还需加入各自的压缩历史贡献。
-
-
-<details>
-<summary>完整源码：SWA 历史与双向块的一次联合计算</summary>
+得到滑窗后，`_swa_block_segment` 将其与本轮浮点临时 KV 拼接，一次 FIA 同时计算两部分。临时 KV 来自 W8A8 diffusion 投影的输出，并非复制 BF16 demo 的随机权重计算。此处减少的是 Attention 调用和后续合并次数；块内仍全量可见，历史 padding 被屏蔽。
 
 ```python
 def _swa_block_segment(query, history, local, lengths, scale):
@@ -496,10 +390,7 @@ def _swa_block_segment(query, history, local, lengths, scale):
     )
 ```
 
-</details>
-
-
-PyPTO 不必照搬 `gather + cat` 的中间张量：可以在融合 kernel 中分别读取分页历史和临时块，维护同一 softmax 状态。需要保持的是固定 anchor 窗口、完整块可见和不写目标 cache 的语义，而不是 Torch demo 的物理拼接方式。
+这一段尚未加入 sink。纯 SWA 层随后只需合并 sink；HCA/CSA 层还会加入压缩历史。PyPTO 可以直接在融合 kernel 中分别读取分页历史与临时块，避免物理 `cat`，但必须保持相同的可见性和全局 softmax。
 
 源码定位：[PyPTO SWA](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_sparse_attn_swa.py)。
 
@@ -525,26 +416,11 @@ anchor 前有 $a$ 个 token，因此读取 $\lfloor a/128\rfloor$ 个已完成�
 
 计算图依赖也需相应调整。原有 Attention 可能等待 AR 写回任务完成；跳过该任务后，要把依赖改成“目标历史可读、diffusion Q/KV 已就绪”，不能只删除写回调用而留下失效的同步关系。
 
-#### 2.3.3 Torch-NPU 实现
+#### 2.3.3 W8A8 服务实现
 
-BF16 demo 的 HCA 分支直接将连续 C128 历史交给 FIA，query 与 SWA/块内计算使用同一份 diffusion 投影结果。以下代码位于单层 `forward` 的 HCA 分支，其输出随后参与统一归一化。
+服务直接使用目标模型的 C128 分页 cache。页大小满足当前 FIA 接口条件时，传入页表做直接分页 Attention；不满足时，枚举全部有效 C128 行，通过 `npu_sparse_flash_attention` 读取较小分页。sparse 接口在这里仅改变读取方式，不做 Top-K，也不减少 HCA 的历史范围。
 
-
-```python
-# HCA 额外读取 C128 压缩历史。
-compressed_out, compressed_lse = _native_fia_segment(
-    query,
-    history.c128_kv,
-    query_lengths,
-    [history.c128_kv.shape[1]] * batch,
-)
-outputs.append(compressed_out)
-lses.append(compressed_lse)
-```
-
-
-W8A8 服务使用真实分页 cache。当前实现按布局选择原生入口：FIA 支持的页大小直接传页表；不满足该路径时，枚举全部有效 C128 行并调用 `npu_sparse_flash_attention`。后者虽然使用 sparse 接口，但没有减少 HCA 的历史集合，只是借用该接口从较小分页中读取数据。显式配置 `gather` 时才使用连续展开的回退路径。
-
+默认选择由 `_c128_segment` 完成。显式配置 `ORTHRUS_C128_BACKEND=gather` 时，才退回连续展开后的 FIA；这是兼容和对照路径，不是服务默认采用的全部历史展开。下面给出选择逻辑与原生 sparse 调用的完整源码。
 
 <details>
 <summary>完整源码：C128 分页 FIA、原生 sparse 路径与 gather 回退</summary>
@@ -600,10 +476,9 @@ def _sparse_history_segment(query, cache, block_table, indices, lengths, scale):
 
 </details>
 
+`_sparse_history_segment` 同时供 CSA 使用。其原生接口要求独立的 RoPE 参数，但 DSV4 的 512 维 query/KV 已包含 RoPE 分量，因此传入全零辅助 query，使额外点积项为零；`key_rope` 是目标 cache 的只读视图。算子返回的最大值和指数和通过 $L=m+\log\ell$ 转成 LSE，再与滑窗/块结果合并。
 
-`_sparse_history_segment` 同时供 CSA 使用。其原生接口要求独立的 RoPE 参数，而 DSV4 的 512 维 query/KV 已包含 RoPE 分量，因此传入全零辅助 query，使额外点积项为零；`key_rope` 使用目标 cache 的只读视图，不重复分配一份 KV。算子返回的最大值与指数和通过 $L=m+\log\ell$ 转为 LSE，再与滑窗/块的结果合并。
-
-PyPTO 可直接在已有 HCA 流水线中处理这些贡献，无需模仿这个为适配现成 NPU 接口而加入的辅助参数。其交付要求仍是完整 C128 可见性、目标压缩状态不变，以及包含临时块的正确归一化。
+PyPTO 不需要模仿为适配现成接口而设置的零辅助参数，可以在已有 HCA 流水线中直接读取这些行并计算同一分数。需要保持的是完整 C128 可见性、目标压缩状态不变，以及包含临时块的正确归一化。
 
 源码定位：[HCA 编排](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_hca.py)、[HCA Attention](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_sparse_attn_hca.py)。
 
@@ -646,103 +521,11 @@ $k_I=512$ 是最多选取的压缩行数，与 draft 块长 $K=32$ 不同；历�
 
 Orthrus 可以复用评分、Top-K 归并和分页读取，但需要绑定 diffusion query/weight 投影，批量处理 K 行；完整评分与短历史枚举两个分支都应采用 anchor 前的有效长度。同时跳过草稿侧的 indexer compressor/key/scale 写回，仅运行 query 侧计算。最后将选中的 C4、滑窗和临时块纳入同一个 softmax。
 
-#### 2.4.3 Torch-NPU 实现
+#### 2.4.3 W8A8 服务实现
 
-BF16 demo 使用 `npu_lightning_indexer`。它对每个 draft 位置生成 indexer query 和 head 权重，用分页历史 index key 评分，返回选中的逻辑行号。下面给出 query 生成、原生 indexer 调用和 C4 收集的完整方法。
+服务使用量化 QLI（`npu_vllm_quant_lightning_indexer`），而不是 BF16 demo 的 `npu_lightning_indexer`。低秩 query 经 diffusion indexer 投影、RoPE、Hadamard 和动态量化生成检索 query；历史 key/scale 直接读取主模型 cache。
 
-
-<details>
-<summary>完整源码：BF16 demo 的 indexer 与 C4 gather</summary>
-
-```python
-def _native_indexer(
-    self,
-    qr: torch.Tensor,
-    hidden_states: torch.Tensor,
-    positions: torch.Tensor,
-    history: SyntheticTargetHistory,
-) -> torch.Tensor:
-    """使用 diffusion query 为每个 draft 位置选择 C4 历史。"""
-    config = self.config
-    batch, block, _ = hidden_states.shape
-    query = self.index_wq_b(qr).view(
-        batch, block, config.index_heads, config.index_head_dim
-    )
-    cos, sin = self._rotary_tables(positions)
-    query = self._partial_rope(query, cos, sin)
-    weights = self.index_weights(hidden_states) * (
-        config.index_head_dim**-0.5 * config.index_heads**-0.5
-    )
-    query_lengths = torch.full(
-        (batch,), block, dtype=torch.int32, device=hidden_states.device
-    )
-    result = torch_npu.npu_lightning_indexer(
-        query=query,
-        key=history.index_key_pages,
-        weights=weights,
-        actual_seq_lengths_query=query_lengths,
-        actual_seq_lengths_key=history.index_key_lengths,
-        block_table=history.index_block_table,
-        layout_query="BSND",
-        layout_key="PA_BSND",
-        sparse_count=config.index_topk,
-        sparse_mode=0,
-    )
-    indices = result[0]
-    if indices.ndim == 4:
-        if indices.shape[2] != 1:
-            raise RuntimeError(f"unexpected indexer output: {tuple(indices.shape)}")
-        indices = indices[:, :, 0]
-    if indices.shape != (batch, block, config.index_topk):
-        raise RuntimeError(f"unexpected indexer output: {tuple(indices.shape)}")
-    return indices.long()
-
-@staticmethod
-def _gather_c4(cache: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
-    """从 C4 cache 中取出每个 draft query 选中的历史行。"""
-    batch, queries, selected = indices.shape
-    source = cache[:, None].expand(-1, queries, -1, -1, -1)
-    gather_index = indices[..., None, None].expand(
-        batch, queries, selected, cache.shape[2], cache.shape[3]
-    )
-    return torch.gather(source, 2, gather_index)
-```
-
-</details>
-
-
-同一请求的不同 query 可能选中不同 C4 行，因此 demo 将 `batch × K` 展成一组单 query 请求，再调用 FIA。以下是 `forward` 中完整的 CSA 分支计算；`qr` 是低秩 query 表示，`hidden_states` 用于生成 indexer head 权重，二者均来自本轮 diffusion 前处理。
-
-
-```python
-# CSA 为每个 draft 位置选择并读取 C4 历史。
-topk_indices = self._native_indexer(
-    qr, hidden_states, positions, history
-)
-selected_c4 = self._gather_c4(history.c4_kv, topk_indices)
-flat_query = query.reshape(
-    batch * block, 1, config.num_heads, config.head_dim
-)
-flat_c4 = selected_c4.reshape(
-    batch * block, config.index_topk, 1, config.head_dim
-)
-compressed_out, compressed_lse = _native_fia_segment(
-    flat_query,
-    flat_c4,
-    [1] * (batch * block),
-    [config.index_topk] * (batch * block),
-)
-outputs.append(compressed_out.view_as(query))
-lses.append(
-    compressed_lse.view(batch, block, config.num_heads, 1)
-)
-```
-
-
-W8A8 服务不为每个 query 物化大块连续 C4 张量，而是使用量化 QLI（`npu_vllm_quant_lightning_indexer`）和原生分页 sparse Attention。query 经过 diffusion 投影、RoPE、Hadamard 与量化；历史 key/scale 直接使用目标 cache。
-
-QLI 的 metadata 必须采用非因果模式，让 K 行 query 读取完整 anchor 历史。沿用 target 验证的因果 metadata，会错误缩短块内前几行的检索范围。以下是服务实际使用的完整类方法，其中 `indexer` 属于 diffusion 分支，`target_kv` 属于目标模型。
-
+配套 metadata 使用非因果模式，让 K 行 query 均读取完整 anchor 历史。若沿用 target 验证的因果 metadata，块内前几行会错误地少看历史。以下是实际调用的完整类方法，其中 `indexer` 是 diffusion 参数对象，`target_kv` 是只读目标 cache；metadata 缓存不是 KV 写回。
 
 <details>
 <summary>完整源码：diffusion indexer 查询、量化及 QLI 调用</summary>
@@ -846,9 +629,7 @@ def _c4_topk_readonly(
 
 </details>
 
-
-QLI 接收原始 token 历史长度和 `cmp_ratio=4`，返回的是压缩行号。结果不能再除以 4，而应按 $\lfloor a/4\rfloor$ 过滤越界/未完成行，并将有效项移到前面。随后 sparse Attention 接收的有效长度则是压缩行数，两个接口的单位不能混用。
-
+QLI 接收原始 token 历史长度和 `cmp_ratio=4`，返回的是压缩行号。结果不能再除以 4，而应按 $\lfloor a/4\rfloor$ 过滤越界/未完成行，并将有效项移到前面。随后 sparse Attention 的有效长度是压缩行数，两个接口的单位不能混用。
 
 <details>
 <summary>完整源码：C4 行号过滤与整理</summary>
@@ -875,8 +656,7 @@ def c4_history_indices(
 
 </details>
 
-<details>
-<summary>完整源码：C4 sparse Attention 与 gather 回退</summary>
+`_c4_segment` 默认把行号和页表直接交给第 2.3 节的原生 sparse Attention，不为每个 query 物化完整的 Top-512 KV 张量。只有选择 `ORTHRUS_C4_BACKEND=gather` 时才走收集后 FIA 的兼容路径。下面是完整分支，保留了默认路径与回退条件。
 
 ```python
 def _c4_segment(query, cache, block_table, indices, lengths, scale, *, validate=False):
@@ -904,105 +684,21 @@ def _c4_segment(query, cache, block_table, indices, lengths, scale, *, validate=
     return _sparse_history_segment(query, cache, block_table, indices, lengths, scale)
 ```
 
-</details>
-
-
-这条 sparse 路径调用第 2.3 节的 `_sparse_history_segment`，从 C4 页表直接读取选中的行；`gather + FIA` 仅保留为兼容回退。实现还需明确区分原始滑窗的物理 slot 和 C4 的逻辑压缩行号，并对齐量化 scale、Hadamard 约定和无效项 `-1`。
-
-PyPTO 的主要工作不是补一个新的 Top-K，而是把既有检索路径接到 diffusion 参数和共同历史边界，去除其 AR 写回副作用，并将检索结果与双向块正确合并。
+相较于演示版的 `gather + FIA`，默认路径减少了中间 KV 展开，但实际 workspace 和耗时仍取决于形状，不能推断所有配置都更省内存。PyPTO 适配时还应区分原始滑窗的物理 slot 与 C4 的逻辑压缩行号，并对齐量化 scale、Hadamard 约定和无效项 `-1`。
 
 源码定位：[CSA 编排](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_csa.py)、[Indexer](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_indexer.py)、[CSA Attention](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_sparse_attn_csa.py)。
-
 
 ## 3. 层级执行与推理引擎集成
 
 四个 Attention 模块定义了历史与临时块如何交互。完整的一层还需要先由 diffusion 参数生成 Q/KV，再将 Attention 结果投影回 hidden，继续经过共享主干。前后处理和引擎接入不改变上述公式，但决定权重、布局和状态能否正确连接。
 
-### 3.1 Diffusion 输入投影与输出投影
+### 3.1 W8A8 Diffusion 输入投影与输出投影
 
-DSV4-Flash 的每行输入 hidden 为 4096 维。query 侧先经 `wq_a` 降到 1024 维，经过内部 RMSNorm，再由 `wq_b` 生成各 head 的 query，执行 head RMSNorm 和 partial RoPE。KV 侧由 `wkv` 生成 512 维 shared KV，再执行 norm 和 partial RoPE，得到本轮临时块。完整模型有 64 个 Attention head，RoPE 使用其中 64 维；TP 实现使用本 rank 对应的 head 分片。
+每行 4096 维 hidden 经 `wq_a` 降到 1024 维，经过内部 RMSNorm，再由 `wq_b` 生成各 head 的 query，执行 head RMSNorm 和 partial RoPE。KV 侧由 `wkv` 生成 512 维 shared KV，再执行 norm/RoPE，得到本轮临时块。完整模型共有 64 个 Attention head，TP 使用对应分片。
 
-BF16 demo 将这些步骤显式写成 Torch-NPU 调用。以下代码包含 RoPE 表构造、正/逆 partial RoPE 和输入投影，不隐含调用目标模型的 KV 写回流程。
+服务没有为演示方便改用独立 BF16 Linear。`_qkv_readonly` 在 Q/KV 投影都为动态 W8A8 时，共用一次 `npu_dynamic_quant`，随后分别调用 `npu_quant_matmul`；低秩 query 的 norm 和量化使用 `npu_rms_norm_dynamic_quant`。量化 matmul 的输出恢复为 `hidden_states.dtype`，供后续 Attention 使用，每套 diffusion 权重采用自身 scale。
 
-
-<details>
-<summary>完整源码：BF16 demo 的 RoPE 与 diffusion Q/KV 投影</summary>
-
-```python
-def _rotary_tables(self, positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    config = self.config
-    inv_freq = 1.0 / (
-        config.rope_theta
-        ** (
-            torch.arange(
-                0,
-                config.rope_head_dim,
-                2,
-                device=positions.device,
-                dtype=torch.float32,
-            )
-            / config.rope_head_dim
-        )
-    )
-    angles = positions.reshape(-1, 1).float() * inv_freq.view(1, -1)
-    angles = angles.repeat_interleave(2, dim=-1)
-    shape = (positions.numel(), 1, 1, config.rope_head_dim)
-    return angles.cos().view(shape), angles.sin().view(shape)
-
-def _partial_rope(
-    self,
-    value: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-    *,
-    inverse: bool = False,
-) -> torch.Tensor:
-    rope_dim = self.config.rope_head_dim
-    flat = value.reshape(-1, value.shape[-2], value.shape[-1])
-    nope, rope = flat[..., :-rope_dim], flat[..., -rope_dim:]
-    rotated = torch_npu.npu_rotary_mul(
-        rope.reshape(rope.shape[0], rope.shape[1], 1, rope_dim).float(),
-        cos,
-        -sin if inverse else sin,
-        rotary_mode="interleave",
-    ).to(value.dtype)
-    return torch.cat((nope, rotated.reshape_as(rope)), dim=-1).view_as(value)
-
-def _project(
-    self, hidden_states: torch.Tensor, positions: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """为 K 个 draft 位置生成 diffusion Q 和块内 K/V。"""
-    config = self.config
-    batch, block, _ = hidden_states.shape
-    q_a = self.wq_a(hidden_states)
-    qr, _ = torch_npu.npu_rms_norm(
-        q_a, self.q_norm, epsilon=config.rms_norm_eps
-    )
-    query = self.wq_b(qr).view(
-        batch, block, config.num_heads, config.head_dim
-    )
-    query, _ = torch_npu.npu_rms_norm(
-        query, self.head_norm, epsilon=config.rms_norm_eps
-    )
-    local_kv = self.wkv(hidden_states)
-    local_kv, _ = torch_npu.npu_rms_norm(
-        local_kv, self.kv_norm, epsilon=config.rms_norm_eps
-    )
-    local_kv = local_kv.view(batch, block, 1, config.head_dim)
-    cos, sin = self._rotary_tables(positions)
-    return (
-        self._partial_rope(query, cos, sin),
-        self._partial_rope(local_kv, cos, sin),
-        qr,
-        hidden_states,
-    )
-```
-
-</details>
-
-
-W8A8 服务采用同一数学结构，但使用量化权重与相应 scale。当 `wq_a` 和 `wkv` 都是动态 W8A8 时，二者共用一次输入动态量化，减少重复计算；低秩 query 的 norm 与动态量化使用融合算子。每套 diffusion 权重使用自身 scale，不直接套用主模型尺度。
-
+下面是完整投影代码。`_linear` 和非量化分支保留为模块接口兼容，不代表 W8A8 head 的默认执行绕过量化。
 
 <details>
 <summary>完整源码：W8A8 Q/KV 投影、norm、量化和 partial RoPE</summary>
@@ -1087,146 +783,15 @@ def _qkv_readonly(draft_impl, hidden_states, cos, sin):
 
 </details>
 
+联合 Attention 输出随后执行 inverse partial RoPE，再由 diffusion 对象的原生 `_forward_o_proj` 完成分组低秩输出投影，映射回 4096 维 hidden。该调用包含在下一节的完整 `_attention_readonly` 中；服务复用固定版本 DSV4 实现，不用 BF16 demo 的输出投影替代。
 
-Attention 的输出不能直接送回共享 MoE。它先执行 inverse partial RoPE，再按 DSV4 的 8 个组做低秩输出投影：每组投影到 1024 维，合并后映射回 4096 维 hidden。demo 使用 `npu_transpose_batchmatmul` 和 Linear 展示这一过程；服务复用 diffusion Attention 对象的 `_forward_o_proj`。
-
-
-<details>
-<summary>完整源码：BF16 demo 的逆 RoPE 与分组输出投影</summary>
-
-```python
-def _output_projection(
-    self,
-    attention: torch.Tensor,
-    positions: torch.Tensor,
-) -> torch.Tensor:
-    """执行 DSV4 inverse partial RoPE 和分组输出投影。"""
-    config = self.config
-    batch, block, _, _ = attention.shape
-    cos, sin = self._rotary_tables(positions)
-    attention = self._partial_rope(attention, cos, sin, inverse=True)
-    grouped = attention.reshape(
-        batch * block,
-        config.o_groups,
-        config.num_heads * config.head_dim // config.o_groups,
-    )
-    low_rank = torch_npu.npu_transpose_batchmatmul(
-        grouped,
-        self.wo_a,
-        bias=None,
-        scale=None,
-        perm_x1=(1, 0, 2),
-        perm_x2=(0, 1, 2),
-        perm_y=(1, 0, 2),
-        batch_split_factor=1,
-    )
-    return self.wo_b(low_rank.reshape(batch, block, -1))
-```
-
-</details>
-
-
-PyPTO 的 `qkv_proj_rope.py` 和 `decode_o_proj.py` 已包含相应基础计算。适配重点是绑定 diffusion 权重、匹配 K 行输入输出、TP 分片、量化布局和 mHC 约定，而不是重新设计投影算子。所对照的 HCA/CSA 等独立运行入口显式支持 TP=1/2/4，不能据此认定 TP8 已可直接使用；需要单独检查通信和编译形状。
+PyPTO 的 `qkv_proj_rope.py` 和 `decode_o_proj.py` 已包含相应基础计算，适配重点是独立权重/scale、K 行形状、TP 分片和 mHC 约定。所对照的 HCA/CSA 等独立入口显式支持 TP=1/2/4，仍需单独检查 TP8 的通信和编译形状。
 
 源码定位：[Q/KV 投影](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/qkv_proj_rope.py)、[输出投影](https://github.com/hw-native-sys/pypto-lib/blob/4c908f3449793a1f90e4297bd3decf6019a11fd8/models/deepseek_v4_flash_dspark/decode_o_proj.py)。
 
-### 3.2 单层执行与共享主干
+### 3.2 W8A8 层执行与共享主干
 
-各模块在 BF16 demo 中由同一个 `forward` 串联：先投影，计算滑窗，根据层类型增加 C128 或 C4 历史，补上临时块与 sink，最后合并并输出投影。第 2 节所列分支均来自下列方法；其中 `history` 是只读模拟历史，不包含主模型 compressor 的执行。
-
-
-<details>
-<summary>完整源码：BF16 单层 forward</summary>
-
-```python
-def forward(
-    self,
-    hidden_states: torch.Tensor,
-    positions: torch.Tensor,
-    history: SyntheticTargetHistory,
-    kind: AttentionKind,
-) -> NativeLayerOutput:
-    """为 K 位置 draft 块执行一层 SWA、HCA 或 CSA。"""
-    config = self.config
-    batch, block, hidden = hidden_states.shape
-    if hidden != config.hidden_size or positions.shape != (batch, block):
-        raise ValueError("hidden_states or positions have incompatible shapes")
-    query, local_kv, qr, hidden_states = self._project(hidden_states, positions)
-    query_lengths = [block] * batch
-    outputs: list[torch.Tensor] = []
-    lses: list[torch.Tensor] = []
-
-    # K 个 query 读取同一份已接受历史，但不修改它。
-    raw_out, raw_lse = _native_fia_segment(
-        query,
-        history.raw_kv,
-        query_lengths,
-        [history.raw_kv.shape[1]] * batch,
-    )
-    outputs.append(raw_out)
-    lses.append(raw_lse)
-
-    topk_indices: torch.Tensor | None = None
-    if kind == "hca":
-        # HCA 额外读取 C128 压缩历史。
-        compressed_out, compressed_lse = _native_fia_segment(
-            query,
-            history.c128_kv,
-            query_lengths,
-            [history.c128_kv.shape[1]] * batch,
-        )
-        outputs.append(compressed_out)
-        lses.append(compressed_lse)
-    elif kind == "csa":
-        # CSA 为每个 draft 位置选择并读取 C4 历史。
-        topk_indices = self._native_indexer(
-            qr, hidden_states, positions, history
-        )
-        selected_c4 = self._gather_c4(history.c4_kv, topk_indices)
-        flat_query = query.reshape(
-            batch * block, 1, config.num_heads, config.head_dim
-        )
-        flat_c4 = selected_c4.reshape(
-            batch * block, config.index_topk, 1, config.head_dim
-        )
-        compressed_out, compressed_lse = _native_fia_segment(
-            flat_query,
-            flat_c4,
-            [1] * (batch * block),
-            [config.index_topk] * (batch * block),
-        )
-        outputs.append(compressed_out.view_as(query))
-        lses.append(
-            compressed_lse.view(batch, block, config.num_heads, 1)
-        )
-    elif kind != "swa":
-        raise ValueError(f"unknown attention kind: {kind}")
-
-    # ORTHRUS 改动：不加因果 mask，K 个 draft 位置可以互相读取。
-    local_out, local_lse = _native_fia_segment(
-        query, local_kv, query_lengths, [block] * batch
-    )
-    outputs.append(local_out)
-    lses.append(local_lse)
-
-    # DSV4 attention sink 与其他部分共享 softmax 分母。
-    outputs.append(torch.zeros_like(local_out))
-    lses.append(
-        self.attn_sink.view(1, 1, -1, 1).expand(batch, block, -1, -1)
-    )
-    # ORTHRUS 改动：用 LSE 精确合并只读历史与双向 draft 块。
-    attention, _ = merge_attention_segments(outputs, lses)
-
-    # 候选验证以及 cache 提交/回滚由推理引擎负责。
-    output = self._output_projection(attention, positions)
-    return NativeLayerOutput(
-        output=output,
-        topk_indices=topk_indices,
-    )
-```
-
-</details>
-
+正文中的模块在服务里按以下顺序执行：量化 diffusion Q/KV 投影，联合 SWA/块内 FIA，按层类型追加 C128 或 C4 历史，原生 AttentionUpdate 合并 sink，最后逆 RoPE 和输出投影。各阶段处理的是同一批 K 行 hidden，没有在中途切换到 BF16 演示模型。
 
 服务路径还需从真实运行时中找到对应的目标模型层、cache 和 metadata。`_history_segments` 统一组织三条路径：先计算所有层都需要的“滑窗 + 临时块”，再按 `compress_ratio` 添加 C4 或 C128；`_attention_readonly` 负责取得运行上下文，追加一次 sink，完成合并与输出投影。
 
@@ -1542,29 +1107,47 @@ def forward(
 
 因此，PyPTO 计算侧的输入包括 diffusion 权重、整块 hidden/位置以及只读目标历史视图，输出是对应的 draft hidden。proposer、verifier 和 scheduler 则负责 anchor/MASK 构造、候选传递和状态提交。算子实现无需承担完整调度，但必须保证自身不破坏目标历史。
 
-## 4. 运行示例与实现范围
+## 4. 运行入口与实现范围
 
-单层 demo 使用 DSV4-Flash 的实际结构维度，构造随机 diffusion 参数、一个 K 行 hidden 块和模拟目标历史，依次运行 SWA、HCA、CSA。它包含投影、indexer、Attention、sink 合并及输出投影，调用真实 Torch-NPU 算子，不使用 Python 模拟 FIA 或 indexer。
+### 4.1 W8A8 服务入口
 
-在匹配的 Torch-NPU/CANN 环境中，进入仓库 `online-speculation` 目录运行：
+实际服务使用真实主模型权重、独立 W8A8 head、目标分页 cache 和 vLLM-Ascend 运行时。附录 A 给出本项目的完整服务计算模块、公共辅助模块和启动脚本；它们依赖固定版本引擎，不能把单个函数复制出来就视为独立量化模型。
+
+完成 [固定版本安装](../runtime/vllm_ascend_v0_26/README.md) 后，在容器中的项目根目录运行：
+
+```bash
+MODEL=/data/disk/models/Eco-Tech/DeepSeek-V4-Flash-0731-w8a8 \
+HEAD=/data/disk/models/orthrus-dsv4-head-v2-w8a8 \
+TP=8 \
+ORTHRUS_PREFLIGHT_MODE=production \
+ORTHRUS_EXECUTION_MODE=eager \
+ORTHRUS_DRAFT_SAMPLE_METHOD=probabilistic \
+bash scripts/serve_dsv4_orthrus.sh
+```
+
+模型和 head 路径需按部署环境指定。`production` preflight 校验完整 43 层模型/head 契约，不表示生产验收已经通过；初始化 head 只用于链路验证。服务始终保留 [target-only 启动路径](../scripts/serve_dsv4_target.sh)，完整部署与回退方法见 [部署说明](DSV4_DEPLOYMENT.md)。
+
+| 环节 | 服务实现 | 相比演示路径的主要变化 |
+| --- | --- | --- |
+| 投影 | 动态 W8A8、共享输入量化、融合 norm/quant | 不使用随机 BF16 Linear 作为真实 head |
+| 滑窗与双向块 | 短窗口 gather 后一次联合 FIA | 减少分段 Attention 调用和合并 |
+| C128 | 大页直接 FIA，小页原生 sparse 接口读取全部有效行 | 不默认展开完整压缩历史 |
+| C4 | 量化 QLI + 原生分页 sparse Attention | 不默认为每个 query 收集 Top-K KV 大张量 |
+| 归一化 | 独立 FP32 sink + 原生 AttentionUpdate | 减少 Torch 组合操作，保留正确精度 |
+
+这些是现有实现选择及局部验证结果，不等同于全模型吞吐最优或八卡验收已完成。W8A8 计算模块源码对应 `360ab06` 所在实现快照，后续文档调整不改变这些计算。
+
+### 4.2 BF16 算法对照
+
+BF16 demo 保留在附录 B，仅用于独立展示投影、三类历史、双向块、sink 和输出投影。它不依赖 vLLM metadata，使用随机权重和模拟历史，不能代替量化服务验证或性能测量。其 RoPE/历史配置也不是生产长上下文的真实序列回放。
 
 ```bash
 PYTHONPATH=src python scripts/demo_torch_npu_dsv4_layer.py --block-size 32
 ```
 
-脚本默认使用 `npu:0`，输出三条路径的输出形状以及 CSA 的 Top-K 形状。它不加载整个主模型，也不依赖 vLLM metadata。参数、输入和历史均为合成数据；RoPE 表采用演示配置，不代表生产长上下文设置，历史长度与位置也不是某条真实序列的 checkpoint 回放。运行成功只能说明对应演示路径可执行，不能单独证明真实模型精度或推理加速。
+实际部署仍以第 4.1 节为准。源码入口：[W8A8 计算模块](../src/blockspec/vllm_ascend/dsv4.py)、[公共辅助模块](../src/blockspec/vllm_ascend/dsv4_hybrid.py)、[proposer](../src/blockspec/vllm_ascend/dsv4_proposer.py)、[BF16 对照模型](../src/blockspec/vllm_ascend/torch_npu_dsv4_layer.py)。
 
-| 实现 | 用途 | 主要调用方式 |
-| --- | --- | --- |
-| BF16 单层 demo | 展示完整 Attention 数据流，作为模块理解与对照入口 | 各段 FIA、BF16 indexer、C4 gather、Torch LSE 合并 |
-| W8A8 服务 | 接入真实量化 head、分页历史与模型执行器 | 联合 SWA/块 FIA、量化 QLI、分页 sparse Attention、原生 AttentionUpdate |
-| PyPTO 适配目标 | 在现有 DSV4 计算图中实现相同语义 | 复用既有投影、历史读取、Top-K 和状态合并，调整输入、边界、状态更新与融合编排 |
-
-开发 PyPTO 时，应以公式定义的可见性和归一化为准，而不是照搬 demo 的中间张量物化方式。完整 BF16 源码和运行脚本在附录中原样列出；正文中的分支代码均来自这些文件。W8A8 源码摘录来自本仓库 `360ab06` 所在实现快照，不含省略参数的伪代码。
-
-文件入口：[单层模型](../src/blockspec/vllm_ascend/torch_npu_dsv4_layer.py)、[公共辅助模块](../src/blockspec/vllm_ascend/dsv4_hybrid.py)、[运行脚本](../scripts/demo_torch_npu_dsv4_layer.py)、[W8A8 服务计算](../src/blockspec/vllm_ascend/dsv4.py)。完整推理还包含 [proposer](../src/blockspec/vllm_ascend/dsv4_proposer.py) 和 [固定版本补丁](../runtime/vllm_ascend_v0_26/README.md)，启动方法见 [部署说明](DSV4_DEPLOYMENT.md)。
-
-当前服务契约固定 K=32，Attention 数学本身不要求这个值。调整 K 需要同步 head/调度契约、编译形状和临时空间，并重新验证，不等于重新实现 Attention 算法。
+当前服务契约固定 K=32。修改 K 不需要重新发明 Attention 数学，但要同步 head/调度契约、编译形状及临时空间，并重新验证。
 
 ## 5. 开发范围与验证要求
 
@@ -1585,13 +1168,1354 @@ PYTHONPATH=src python scripts/demo_torch_npu_dsv4_layer.py --block-size 32
 
 算子层先对照相同权重、输入、精度和布局下的参考输出，检查可见行、LSE/归一化、padding 和空历史；整层再覆盖输入输出投影、不同 batch、分页边界以及目标 cache/压缩状态不变。引擎层最后检查候选接受与拒绝、请求取消、页复用和恢复。仅检查输出形状或服务不崩溃不足以完成验收。
 
-现有 Torch-NPU 实测已覆盖 A2 算子对照、四层 W8A8 TP2、全部候选接受长度、概率传递、拒绝恢复及物理页复用；抢占恢复通过受控分配失败触发。完整 43 层 TP8、graph、1M 上下文和持续负载尚未完成验收。初始化 head 用于检查推理接线，训练 head 的接受率与加速收益需要另行评估，详见 [实测记录](DSV4_VALIDATION_20261028.md) 与 [验证入口](DSV4_VALIDATION_RUNBOOK.md)。
+现有 Torch-NPU 实测已覆盖 A2 算子对照、四层 W8A8 TP2、全部候选接受长度、概率传递、拒绝恢复及物理页复用；抢占恢复通过受控分配失败触发。完整 43 层 TP8 主模型已完成健康检查、串行 greedy 重放及长上下文请求采集，但自身并发随机重放和一个混合长度 greedy 案例存在差异；切换 Orthrus 前被端口检查中断，Orthrus TP8 对照尚未完成。graph、1M 上下文和持续负载也未完成验收。初始化 head 用于检查推理接线，训练 head 的接受率与加速收益需要另行评估，详见 [实测记录](DSV4_VALIDATION_20261028.md) 与 [验证入口](DSV4_VALIDATION_RUNBOOK.md)。
 
 以上证据属于 Torch-NPU 路径，不代表 PyPTO Orthrus 适配已交付。PyPTO 完成实现后，应在同一数学和状态契约下建立对应验证，再进入完整推理服务。
 
-## 附录 A：BF16 单层 Demo 完整源码
+## 附录 A：W8A8 服务完整计算源码
 
-以下三个文件与正文中的模块实现一致。完整模型类包含构造参数、随机初始化和模拟 cache，运行脚本负责准备输入并调用三类 Attention。公共辅助模块保留仓库原文件，demo 实际使用其中的 LSE 合并函数。
+下面给出服务实际加载的完整 `dsv4.py`、公共辅助模块和启动脚本，包含模型构造、共享主干绑定、权重加载及各计算路径。vendor 算子、目标模型类和 proposer 调度仍由固定版本运行时提供，不在这里重新实现。主模型/head 权重和相应量化 scale 是必需输入，不以随机 BF16 参数替代。
+
+<details>
+<summary>W8A8 完整源码 1/3：dsv4.py</summary>
+
+```python
+"""DeepSeek-V4 Orthrus diffusion head for vLLM-Ascend 0.26.
+
+The target owns the complete DSV4 backbone and every historical cache. The
+draft owns only attention/head parameters and reads SWA/C4/C128 history without
+writing it. FIA handles the local window/block and large-page C128 history;
+native sparse attention handles C4 and small-page C128. Each exposes an LSE.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import weakref
+from collections.abc import Iterable, Sequence
+from types import SimpleNamespace
+
+import torch
+from torch import nn
+from vllm.distributed import (
+    get_pp_group,
+    get_tensor_model_parallel_rank,
+    get_tensor_model_parallel_world_size,
+)
+from vllm.forward_context import get_forward_context
+from vllm.model_executor.layers.logits_processor import LogitsProcessor
+from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+from vllm.model_executor.models.utils import PPMissingLayer
+# The 0.26 rc1 monolithic package needs its operator registrations completed
+# before DeviceOperator imports submodules from the same package.
+import vllm_ascend.ops  # noqa: F401
+from vllm_ascend.attention import dsa_v1 as _dsa_runtime
+from vllm_ascend.device.device_op import DeviceOperator
+try:
+    from vllm_ascend.models.deepseek_v4.model import DeepseekV4Attention
+except ImportError:  # 0.26 release image before the package split
+    from vllm_ascend.models.deepseek_v4 import DeepseekV4Attention
+
+try:
+    from vllm_ascend.models.deepseek_v4.dspark import DSparkDeepseekV4ForCausalLM
+except ImportError:  # 0.26 release image before the package split
+    from vllm_ascend.models.deepseek_v4_dspark import DSparkDeepseekV4ForCausalLM
+from vllm_ascend.ops.dsa import _build_kv_cache
+from vllm_ascend.utils import enable_dsa_cp
+
+from .dsv4_hybrid import (
+    assert_cache_unchanged,
+    cache_checksum,
+    c4_history_indices,
+    gather_paged_cache,
+    history_and_block_mask,
+    merge_attention_outputs,
+    tail_logical_indices,
+)
+from .head_contract import BLOCK_SIZE, FORMAT_NAME, NUM_SPECULATIVE_TOKENS
+from .trace import instant
+
+
+_HEAD_WEIGHT = re.compile(
+    r"^(?:model\.)?layers\.(\d+)\.(?:attn|self_attn)\."
+    r"(?:attn_sink|wq_a|q_norm|q_norm_without_weight|wq_b|wkv|kv_norm|"
+    r"wo_a|wo_b|indexer\.(?:wq_b|weights_proj))(?:\.|$)"
+)
+
+
+def _install_orthrus_quant_aliases(quant_config, ratios: list[int]) -> None:
+    if quant_config is None:
+        return
+    description = getattr(quant_config, "quant_description", None)
+    if not isinstance(description, dict):
+        return
+    aliases = {}
+    for name, value in description.items():
+        normalized = name.removeprefix("model.")
+        if _HEAD_WEIGHT.match(normalized):
+            aliases["orthrus." + normalized.replace(".attn.", ".self_attn.", 1)] = value
+    # The vendor DeepseekV4Attention constructor always creates target-side
+    # compressors before Orthrus can detach them. They are absent from the head
+    # artifact by contract, so give only those throwaway constructor modules a
+    # local FLOAT policy. No compressor survives in named_parameters().
+    for layer, ratio in enumerate(ratios):
+        if ratio <= 1:
+            continue
+        roots = [f"orthrus.layers.{layer}.self_attn.compressor"]
+        if ratio == 4:
+            roots.append(f"orthrus.layers.{layer}.self_attn.indexer.compressor")
+        for root in roots:
+            aliases[f"{root}.wkv.weight"] = "FLOAT"
+            aliases[f"{root}.wgate.weight"] = "FLOAT"
+    description.update(aliases)
+
+
+def _alias_cache(module: object | None, target_name: str) -> None:
+    if module is not None:
+        setattr(module, "kv_sharing_target_layer_name", target_name)
+
+
+def _linear(module: nn.Module, value: torch.Tensor) -> torch.Tensor:
+    output = module(value)
+    return output[0] if isinstance(output, tuple) else output
+
+
+def _request_metadata(metadata):
+    helper = getattr(_dsa_runtime, "_require_req_metadata", None)
+    if helper is not None:
+        return helper(metadata)
+    for name in ("prefill", "decode"):
+        request = getattr(metadata, name, None)
+        if request is not None:
+            return request
+    raise RuntimeError("DSV4 metadata has neither a prefill nor decode request view")
+
+
+def _metadata_for_target(target_wrapper, context_metadata, compress_ratio: int):
+    """Normalize the release and nightly DSA metadata layouts."""
+    prefix = target_wrapper.prefix
+    entries = [
+        value
+        for name, value in sorted(context_metadata.items())
+        if name.startswith(prefix)
+    ]
+    expected = 5 if compress_ratio == 4 else 3 if compress_ratio == 128 else 1
+    if len(entries) != expected:
+        raise RuntimeError(
+            f"Orthrus expected {expected} target metadata entries under {prefix!r}, "
+            f"got {len(entries)}"
+        )
+    if compress_ratio == 4:
+        attention, _, _, indexer, swa = entries
+    elif compress_ratio == 128:
+        attention, _, swa = entries
+        indexer = None
+    else:
+        (swa,) = entries
+        attention = None
+        indexer = None
+    return SimpleNamespace(attention=attention, swa=swa, indexer=indexer)
+
+
+def _query_readonly(
+    draft_impl,
+    hidden_states: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    *,
+    q_a: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """Project a diffusion query without constructing or updating draft KV."""
+    import torch_npu
+
+    if q_a is None:
+        q_a = _linear(draft_impl.wq_a, hidden_states)
+    if _dsa_runtime._is_w8a8_dynamic(draft_impl.wq_b):
+        qr, qr_scale = torch.ops._C_ascend.npu_rms_norm_dynamic_quant(
+            q_a, draft_impl.q_norm.weight, epsilon=draft_impl.eps
+        )
+        query = torch_npu.npu_quant_matmul(
+            qr,
+            draft_impl.wq_b.weight,
+            draft_impl.wq_b.weight_scale,
+            pertoken_scale=qr_scale,
+            bias=draft_impl.wq_b.bias,
+            output_dtype=hidden_states.dtype,
+        ).unflatten(-1, (draft_impl.n_local_heads, draft_impl.head_dim))
+    else:
+        qr = _linear(draft_impl.q_norm, q_a)
+        query = _linear(draft_impl.wq_b, qr).unflatten(
+            -1, (draft_impl.n_local_heads, draft_impl.head_dim)
+        )
+        qr_scale = None
+    query = DeviceOperator.apply_dsa_q_rms(
+        query, draft_impl.eps, draft_impl.q_norm_without_weight
+    )
+    torch.ops._C_ascend.inplace_partial_rotary_mul(
+        query.unsqueeze(1),
+        cos,
+        sin,
+        rotary_mode="interleave",
+        partial_slice=[draft_impl.nope_head_dim, draft_impl.head_dim],
+    )
+    return query, qr, qr_scale
+
+
+def _qkv_readonly(draft_impl, hidden_states, cos, sin):
+    """Share input quantization across Q/KV, without a target-cache write."""
+    import torch_npu
+
+    if (_dsa_runtime._is_w8a8_dynamic(draft_impl.wq_a)
+            and _dsa_runtime._is_w8a8_dynamic(draft_impl.wkv)):
+        hs_int8, hs_scale = torch_npu.npu_dynamic_quant(hidden_states)
+
+        def project(module):
+            return torch_npu.npu_quant_matmul(
+                hs_int8, module.weight, module.weight_scale,
+                pertoken_scale=hs_scale, bias=module.bias,
+                output_dtype=hidden_states.dtype,
+            )
+
+        q_a, kv = project(draft_impl.wq_a), project(draft_impl.wkv)
+    else:
+        q_a = _linear(draft_impl.wq_a, hidden_states)
+        kv = _linear(draft_impl.wkv, hidden_states)
+    query, qr, qr_scale = _query_readonly(
+        draft_impl, hidden_states, cos, sin, q_a=q_a
+    )
+    kv = draft_impl.kv_norm(kv).view(-1, 1, draft_impl.head_dim)
+    torch.ops._C_ascend.inplace_partial_rotary_mul(
+        kv.unsqueeze(1), cos, sin, rotary_mode="interleave",
+        partial_slice=[draft_impl.nope_head_dim, draft_impl.head_dim],
+    )
+    return query, qr, qr_scale, kv
+
+
+class _NoTargetState(nn.Module):
+    """Placeholder proving that target compressor state is not in the head."""
+
+    def forward(self, *args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("Orthrus attempted to execute a target-only compressor")
+
+
+def _normalize_fia_lse(lse: torch.Tensor, batch: int, queries: int) -> torch.Tensor:
+    """Normalize Ascend FIA BSND LSE to ``[B,Q,H,1]``."""
+    if lse.ndim == 4 and lse.shape[0] == batch and lse.shape[2] == queries:
+        return lse.transpose(1, 2)
+    if lse.ndim == 4 and lse.shape[:2] == (batch, queries):
+        return lse
+    raise RuntimeError(f"unexpected FIA LSE shape: {tuple(lse.shape)}")
+
+
+def _fia_segment(
+    query: torch.Tensor,
+    key_value: torch.Tensor,
+    query_lengths: Sequence[int] | torch.Tensor,
+    key_lengths: Sequence[int] | torch.Tensor,
+    scale: float,
+    *,
+    allow_empty: bool = False,
+    block_table: torch.Tensor | None = None,
+    atten_mask: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    import torch_npu
+
+    if query.ndim != 4 or key_value.ndim != 4:
+        raise ValueError("Orthrus FIA expects BSND query and key/value")
+    kv_heads = key_value.shape[2]
+    block_size = key_value.shape[1] if block_table is not None else 0
+    # FIA paged KV is [blocks, heads, block_size, dim]. DSV4 has one
+    # KV head, so this transpose only changes the view, without copying KV.
+    if block_table is not None:
+        key_value = key_value.transpose(1, 2)
+    key_value = key_value.contiguous()
+    result = torch_npu.npu_fused_infer_attention_score(
+        query,
+        key_value,
+        key_value,
+        num_heads=query.shape[2],
+        num_key_value_heads=kv_heads,
+        input_layout="BSND",
+        sparse_mode=0,
+        scale=scale,
+        atten_mask=atten_mask,
+        block_table=block_table,
+        block_size=block_size,
+        actual_seq_lengths=query_lengths,
+        actual_seq_lengths_kv=key_lengths,
+        softmax_lse_flag=True,
+    )
+    if not isinstance(result, tuple) or len(result) < 2:
+        raise RuntimeError("Ascend FIA did not return output and LSE")
+    output, lse = result[:2]
+    lse = _normalize_fia_lse(lse, query.shape[0], query.shape[1])
+    empty = None
+    if allow_empty and torch.is_tensor(key_lengths):
+        empty = key_lengths.to(device=output.device) == 0
+    elif not torch.is_tensor(key_lengths) and any(length == 0 for length in key_lengths):
+        empty = torch.tensor(
+            [length == 0 for length in key_lengths], dtype=torch.bool, device=output.device
+        )
+    if empty is not None:
+        output = torch.where(
+            empty.view(-1, 1, 1, 1), torch.zeros_like(output), output
+        )
+        lse = torch.where(
+            empty.view(-1, 1, 1, 1),
+            torch.full_like(lse, float("-inf")),
+            lse,
+        )
+    return output, lse
+
+
+def _swa_block_segment(query, history, local, lengths, scale):
+    # Both branches use the same query and KV format. One softmax avoids two
+    # FIA launches and an intermediate normalized output; only padding is masked.
+    kv = torch.cat((history, local), dim=1)
+    mask = history_and_block_mask(lengths, history.shape[1], local.shape[1])
+    batch = query.shape[0]
+    return _fia_segment(
+        query, kv, [query.shape[1]] * batch, [kv.shape[1]] * batch, scale,
+        atten_mask=mask,
+    )
+
+
+def _c128_segment(query, cache, block_table, lengths, maximum, scale, *, backend=None):
+    backend = backend or os.environ.get("ORTHRUS_C128_BACKEND", "auto")
+    if backend not in {"auto", "sparse", "gather"}:
+        raise ValueError("ORTHRUS_C128_BACKEND must be auto, sparse or gather")
+    # FIA supports large pages directly; sparse attention also reads the
+    # smaller DSV4 pages without materializing a contiguous history buffer.
+    if backend == "auto" and 128 <= cache.shape[1] <= 1024 and cache.shape[1] % 128 == 0:
+        return _fia_segment(
+            query, cache, [BLOCK_SIZE] * query.shape[0], lengths, scale,
+            allow_empty=True, block_table=block_table,
+        )
+    if backend != "gather":
+        width = max(128, (maximum + 127) // 128 * 128)
+        offsets = torch.arange(width, device=lengths.device, dtype=torch.int32)
+        indices = torch.where(offsets[None, None, :] < lengths[:, None, None], offsets, -1)
+        indices = indices.expand(-1, query.shape[1], -1).contiguous()
+        return _sparse_history_segment(query, cache, block_table, indices, lengths, scale)
+    offsets = torch.arange(max(maximum, 1), device=lengths.device)
+    indices = torch.where(offsets[None, :] < lengths[:, None], offsets[None, :], -1)
+    kv = gather_paged_cache(cache, block_table, indices)
+    return _fia_segment(
+        query, kv, [BLOCK_SIZE] * query.shape[0], lengths, scale, allow_empty=True,
+    )
+
+
+def _c4_segment(query, cache, block_table, indices, lengths, scale, *, validate=False):
+    batch, width, heads, dim = query.shape
+    backend = os.environ.get("ORTHRUS_C4_BACKEND", "sparse")
+    if backend == "gather":
+        counts = (indices >= 0).sum(-1)
+        kv = gather_paged_cache(cache, block_table, indices, validate=validate)
+        out, lse = _fia_segment(
+            query.reshape(batch * width, 1, heads, dim),
+            kv.reshape(batch * width, indices.shape[-1], 1, dim),
+            [1] * (batch * width), counts.flatten(), scale, allow_empty=True,
+        )
+        return out.view_as(query), lse.view(batch, width, heads, 1)
+    if backend != "sparse":
+        raise ValueError("ORTHRUS_C4_BACKEND must be sparse or gather")
+    if validate:
+        logical_blocks = indices.clamp_min(0).long() // cache.shape[1]
+        if int(logical_blocks.max()) >= block_table.shape[1]:
+            raise ValueError("C4 index exceeds block table capacity")
+        batch_ids = torch.arange(batch, device=indices.device)[:, None, None]
+        physical = block_table[batch_ids, logical_blocks]
+        if bool(((indices >= 0) & ((physical < 0) | (physical >= cache.shape[0]))).any()):
+            raise ValueError("C4 index maps to an invalid physical cache block")
+    return _sparse_history_segment(query, cache, block_table, indices, lengths, scale)
+
+
+def _sparse_history_segment(query, cache, block_table, indices, lengths, scale):
+    import torch_npu
+
+    batch, width, heads, _ = query.shape
+    counts = (indices >= 0).sum(-1)
+
+    # The MLA API requires a separate RoPE pair. DSV4 already includes RoPE in
+    # its 512-d query/key, so a zero auxiliary query preserves q@k exactly.
+    # key_rope is a strided read-only view, not another KV allocation.
+    auxiliary_query = torch.zeros(batch, width, heads, 64, device=query.device, dtype=query.dtype)
+    out, maximum, total = torch_npu.npu_sparse_flash_attention(
+        query, cache, cache, indices.to(torch.int32).unsqueeze(2), scale,
+        block_table=block_table,
+        actual_seq_lengths_query=torch.full_like(lengths, width),
+        actual_seq_lengths_kv=lengths,
+        query_rope=auxiliary_query, key_rope=cache[..., -64:],
+        sparse_mode=0, attention_mode=2,
+        layout_query="BSND", layout_kv="PA_BSND", return_softmax_lse=True,
+    )
+    lse = (maximum + total.log()).squeeze(1).unsqueeze(-1)
+    empty = (counts == 0)[..., None, None]
+    return out.masked_fill(empty, 0), lse.masked_fill(empty, -torch.inf)
+
+
+class _OrthrusAttentionLayer(nn.Module):
+    def __init__(self, vllm_config, config, layer_idx: int) -> None:
+        super().__init__()
+        self.layer_idx = layer_idx
+        self._full_checked_batches: set[int] = set()
+        self.compress_ratio = int(config.compress_ratios[layer_idx])
+        self.self_attn = DeepseekV4Attention(
+            vllm_config=vllm_config,
+            config=config,
+            max_position_embeddings=config.rope_parameters[
+                "original_max_position_embeddings"
+            ],
+            cache_config=vllm_config.cache_config,
+            quant_config=vllm_config.quant_config,
+            prefix=f"orthrus.layers.{layer_idx}.self_attn",
+        )
+        self._register_target_cache_aliases()
+        self._drop_target_only_modules()
+        self._target_attention_ref: weakref.ReferenceType[nn.Module] | None = None
+
+    @property
+    def _target_prefix(self) -> str:
+        return f"model.layers.{self.layer_idx}.self_attn"
+
+    def _register_target_cache_aliases(self) -> None:
+        attention = self.self_attn
+        wrapper = attention.dsa_attn
+        _alias_cache(wrapper.swa_cache_layer, f"{self._target_prefix}.swa_cache")
+        if self.compress_ratio > 1:
+            _alias_cache(wrapper.dsa_attn, f"{self._target_prefix}.attn")
+            assert attention.compressor is not None
+            _alias_cache(
+                attention.compressor.state_cache,
+                f"{self._target_prefix}.compressor.state_cache",
+            )
+        if self.compress_ratio == 4:
+            assert attention.indexer is not None
+            assert attention.indexer.compressor is not None
+            _alias_cache(attention.indexer.k_cache, f"{self._target_prefix}.indexer.k_cache")
+            _alias_cache(
+                attention.indexer.compressor.state_cache,
+                f"{self._target_prefix}.indexer.compressor.state_cache",
+            )
+
+    def _drop_target_only_modules(self) -> None:
+        """Remove compressor weights while retaining the diffusion-side indexer."""
+        attention = self.self_attn
+        wrapper = attention.dsa_attn
+        impl = wrapper.dsa_attn.impl
+        if self.compress_ratio > 1:
+            missing = _NoTargetState()
+            attention.compressor = missing
+            wrapper.compressor = missing
+            impl.compressor = missing
+            for name in (
+                "compressor_ape",
+                "compressor_wkv",
+                "compressor_wgate",
+                "compressor_norm",
+            ):
+                if hasattr(impl, name):
+                    setattr(impl, name, None)
+        if self.compress_ratio == 4:
+            assert attention.indexer is not None
+            attention.indexer.compressor = _NoTargetState()
+            for name in (
+                "indexer_compress",
+                "indexcom_ape",
+                "indexcom_wkv",
+                "indexcom_wgate",
+                "indexcom_norm",
+            ):
+                if hasattr(impl, name):
+                    setattr(impl, name, None)
+
+    def bind_target(self, target_layer: nn.Module) -> None:
+        target_attention = target_layer.self_attn
+        if int(target_attention.compress_ratio) != self.compress_ratio:
+            raise ValueError(
+                f"layer {self.layer_idx} compress ratio mismatch: "
+                f"head={self.compress_ratio}, target={target_attention.compress_ratio}"
+            )
+        self._target_attention_ref = weakref.ref(target_attention)
+
+    def _target_attention(self) -> nn.Module:
+        target = self._target_attention_ref() if self._target_attention_ref else None
+        if target is None:
+            raise RuntimeError("Orthrus diffusion head is not bound to the DSV4 target")
+        return target
+
+    @staticmethod
+    def _c4_topk_readonly(
+        indexer,
+        hidden_states: torch.Tensor,
+        qr: torch.Tensor,
+        qr_scale: torch.Tensor | None,
+        target_kv: tuple[torch.Tensor, ...],
+        metadata,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run the diffusion-side indexer over all committed C4 history."""
+        import torch_npu
+
+        request = _request_metadata(metadata)
+        indexer_wq_b = indexer.wq_b
+        if _dsa_runtime._is_w8a8_dynamic(indexer_wq_b) and qr_scale is not None:
+            query = torch_npu.npu_quant_matmul(
+                qr,
+                indexer_wq_b.weight,
+                indexer_wq_b.weight_scale,
+                pertoken_scale=qr_scale,
+                bias=indexer_wq_b.bias,
+                output_dtype=hidden_states.dtype,
+            )
+        else:
+            query = _linear(indexer_wq_b, qr)
+        query = query.view(-1, indexer.n_heads, indexer.head_dim)
+        torch.ops._C_ascend.inplace_partial_rotary_mul(
+            query.unsqueeze(1),
+            cos,
+            sin,
+            rotary_mode="interleave",
+            partial_slice=[indexer.head_dim - indexer.rope_head_dim, indexer.head_dim],
+        )
+        query = _dsa_runtime.rotate_activation(query, metadata.hadamard)
+        query, query_scale = DeviceOperator.indexer_quantize_query(query)
+        _, _, _, indexer_key, indexer_scale, _ = DeviceOperator.unpack_dsa_forward_kv_cache(
+            target_kv, 4
+        )
+        weights = _linear(indexer.weights_proj, hidden_states) * (
+            indexer.softmax_scale * indexer.n_heads**-0.5
+        )
+        # Each query reads the same committed prefix. The target's causal QLI
+        # metadata would shorten the history for the first K-1 query rows.
+        qli_metadata = getattr(request, "orthrus_qli_metadata", None)
+        if qli_metadata is None:
+            qli_metadata = torch.ops._C_ascend.npu_vllm_quant_lightning_indexer_metadata(
+                actual_seq_lengths_query=request.query_start_loc[1:],
+                actual_seq_lengths_key=request.seq_lens,
+                num_heads_q=indexer.n_heads,
+                num_heads_k=1,
+                head_dim=indexer.head_dim,
+                query_quant_mode=0,
+                key_quant_mode=0,
+                batch_size=request.seq_lens.shape[0],
+                max_seqlen_q=BLOCK_SIZE,
+                max_seqlen_k=request.max_seq_lens,
+                layout_query="TND",
+                layout_key="PA_BSND",
+                sparse_count=indexer.index_topk,
+                sparse_mode=0,
+                pre_tokens=(1 << 63) - 1,
+                next_tokens=(1 << 63) - 1,
+                cmp_ratio=4,
+                device=str(query.device),
+            )
+            request.orthrus_qli_metadata = qli_metadata
+        topk, _ = torch.ops._C_ascend.npu_vllm_quant_lightning_indexer(
+            query=query,
+            key=indexer_key,
+            weights=DeviceOperator.prepare_dsa_indexer_weights(weights),
+            query_dequant_scale=DeviceOperator.prepare_dsa_indexer_query_scale(
+                query_scale
+            ),
+            key_dequant_scale=DeviceOperator.prepare_dsa_indexer_key_scale(
+                indexer_scale
+            ),
+            actual_seq_lengths_query=request.query_start_loc[1:],
+            actual_seq_lengths_key=request.seq_lens,
+            block_table=request.block_table,
+            metadata=qli_metadata,
+            query_quant_mode=0,
+            key_quant_mode=0,
+            layout_query="TND",
+            layout_key="PA_BSND",
+            sparse_count=indexer.index_topk,
+            sparse_mode=0,
+            pre_tokens=(1 << 63) - 1,
+            next_tokens=(1 << 63) - 1,
+            cmp_ratio=4,
+            return_value=False,
+        )
+        return topk
+
+    def _history_segments(
+        self,
+        query: torch.Tensor,
+        hidden_states: torch.Tensor,
+        qr: torch.Tensor,
+        qr_scale: torch.Tensor | None,
+        target_kv: tuple[torch.Tensor, ...],
+        layer_metadata,
+        layer_name: str,
+        local_kv: torch.Tensor,
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        draft_impl = self.self_attn.dsa_attn.dsa_attn.impl
+        validate_cache = os.environ.get("ORTHRUS_VERIFY_CACHE_CHECKSUM", "0") in {"1", "full"}
+        compress_cache, swa_cache, state_cache, _, _, _ = DeviceOperator.unpack_dsa_forward_kv_cache(
+            target_kv, self.compress_ratio
+        )
+        swa_req = _request_metadata(layer_metadata.swa)
+        seq_lens = swa_req.seq_lens
+        batch = int(seq_lens.shape[0])
+        if query.shape[0] != batch * BLOCK_SIZE:
+            raise RuntimeError(
+                f"Orthrus requires a dense Bx{BLOCK_SIZE} query block, got "
+                f"{query.shape[0]} tokens for {batch} requests"
+            )
+        query_bsnd = query.view(batch, BLOCK_SIZE, query.shape[1], query.shape[2])
+        outputs: list[torch.Tensor] = []
+        lses: list[torch.Tensor] = []
+
+        swa_indices = tail_logical_indices(seq_lens, draft_impl.window_size)
+        swa_lengths = torch.minimum(seq_lens, torch.full_like(seq_lens, draft_impl.window_size))
+        swa_kv = gather_paged_cache(
+            swa_cache,
+            swa_req.block_table,
+            swa_indices,
+            validate=validate_cache,
+        )
+        out, lse = _swa_block_segment(
+            query_bsnd,
+            swa_kv,
+            local_kv.view(batch, BLOCK_SIZE, 1, local_kv.shape[-1]),
+            swa_lengths,
+            draft_impl.softmax_scale,
+        )
+        outputs.append(out)
+        lses.append(lse)
+
+        if self.compress_ratio > 1:
+            common = layer_metadata.attention
+            assert common is not None and compress_cache is not None and state_cache is not None
+            compressed_req = _request_metadata(common)
+            if self.compress_ratio == 4:
+                assert draft_impl.indexer is not None
+                assert layer_metadata.indexer is not None
+                indexer_metadata = layer_metadata.indexer
+                if hasattr(indexer_metadata, "compressor"):
+                    indexer_metadata = indexer_metadata.compressor.cache
+                indexer_req = _request_metadata(indexer_metadata)
+                topk = self._c4_topk_readonly(
+                    draft_impl.indexer,
+                    hidden_states,
+                    qr,
+                    qr_scale,
+                    target_kv,
+                    layer_metadata.indexer,
+                    indexer_req.cos[layer_name][: hidden_states.shape[0]],
+                    indexer_req.sin[layer_name][: hidden_states.shape[0]],
+                )
+                if topk is None:
+                    raise RuntimeError("C4 diffusion-side indexer returned no candidates")
+                if topk.ndim == 3:
+                    if topk.shape[1] != 1:
+                        raise RuntimeError(f"unexpected C4 top-k shape: {tuple(topk.shape)}")
+                    topk = topk[:, 0]
+                topk, _ = c4_history_indices(topk.view(batch, BLOCK_SIZE, -1), seq_lens)
+                out, lse = _c4_segment(
+                    query_bsnd,
+                    compress_cache,
+                    compressed_req.block_table,
+                    topk,
+                    torch.div(seq_lens, 4, rounding_mode="floor"),
+                    draft_impl.softmax_scale,
+                    validate=validate_cache,
+                )
+                outputs.append(out)
+                lses.append(lse)
+            else:
+                compressed_lengths = torch.div(seq_lens, 128, rounding_mode="floor")
+                maximum = getattr(compressed_req, "max_seq_lens", None)
+                maximum = (int(maximum) // 128 if maximum is not None
+                           else compressed_req.block_table.shape[1] * compress_cache.shape[1])
+                out, lse = _c128_segment(
+                    query_bsnd,
+                    compress_cache,
+                    compressed_req.block_table,
+                    compressed_lengths,
+                    maximum,
+                    draft_impl.softmax_scale,
+                )
+                outputs.append(out)
+                lses.append(lse)
+        return outputs, lses
+
+    def _attention_readonly(
+        self, positions: torch.Tensor, hidden_states: torch.Tensor
+    ) -> torch.Tensor:
+        context = get_forward_context()
+        if context is None or context.attn_metadata is None:
+            return torch.zeros_like(hidden_states)
+        target_attention = self._target_attention()
+        target_wrapper = target_attention.dsa_attn
+        target_impl = target_wrapper.dsa_attn.impl
+        draft_impl = self.self_attn.dsa_attn.dsa_attn.impl
+        layer_name = target_wrapper.dsa_attn.layer_name
+        if hasattr(target_impl, "_get_layer_metadata"):
+            layer_metadata = target_impl._get_layer_metadata(
+                layer_name, context.attn_metadata
+            )
+        else:
+            layer_metadata = _metadata_for_target(
+                target_wrapper, context.attn_metadata, self.compress_ratio
+            )
+        target_kv = _build_kv_cache(target_wrapper, context)
+        _, swa_cache, _, _, _, _ = DeviceOperator.unpack_dsa_forward_kv_cache(
+            target_kv, self.compress_ratio
+        )
+        common = layer_metadata.attention or layer_metadata.swa
+        req = _request_metadata(common)
+        swa_req = _request_metadata(layer_metadata.swa)
+        num_tokens = hidden_states.shape[0]
+        cos = req.cos[layer_name][:num_tokens]
+        sin = req.sin[layer_name][:num_tokens]
+        guard_mode = os.environ.get("ORTHRUS_VERIFY_CACHE_CHECKSUM", "0")
+        debug = guard_mode in {"1", "full"}
+        batch = num_tokens // BLOCK_SIZE
+        full_check = guard_mode == "full" and batch not in self._full_checked_batches
+        checksums = []
+        if debug:
+            torch.npu.synchronize()
+            anchors = positions.view(batch, BLOCK_SIZE)[:, 0]
+            if not torch.equal(anchors, swa_req.seq_lens.to(anchors.dtype)):
+                raise RuntimeError("Orthrus history length does not match anchor position")
+            for index, cache in enumerate(target_kv):
+                if torch.is_tensor(cache):
+                    checksums.append((index, cache_checksum(cache, full=full_check)))
+
+        query, qr, qr_scale, local_kv = _qkv_readonly(
+            draft_impl, hidden_states, cos, sin
+        )
+        batch = num_tokens // BLOCK_SIZE
+        outputs, lses = self._history_segments(
+            query, hidden_states, qr, qr_scale, target_kv, layer_metadata, layer_name,
+            local_kv,
+        )
+        sink_lse = draft_impl.attn_sink.view(1, 1, -1, 1).expand(
+            batch, BLOCK_SIZE, -1, -1
+        )
+        outputs.append(torch.zeros_like(outputs[0]))
+        lses.append(sink_lse)
+        merged = merge_attention_outputs(outputs, lses)
+        merged = merged.reshape(num_tokens, query.shape[1], query.shape[2])
+        torch.ops._C_ascend.inplace_partial_rotary_mul(
+            merged.unsqueeze(1),
+            cos,
+            -sin,
+            rotary_mode="interleave",
+            partial_slice=[draft_impl.nope_head_dim, draft_impl.head_dim],
+        )
+        output = torch.empty_like(hidden_states)
+        draft_impl._forward_o_proj(merged, output)
+        if debug:
+            torch.npu.synchronize()
+            for index, before in checksums:
+                assert_cache_unchanged(before, target_kv[index], f"layer-{self.layer_idx}:{index}")
+            if full_check:
+                self._full_checked_batches.add(batch)
+        instant("orthrus.dsv4.attention", {
+            "layer": self.layer_idx, "compress_ratio": self.compress_ratio,
+            "batch": batch, "block_size": BLOCK_SIZE,
+            "query_shape": list(query.shape), "segments": len(outputs),
+            "cache_guard": "full" if full_check else "sampled" if debug else "off",
+            "checked_elements": sum(before.numel() for _, before in checksums),
+        })
+        return output
+
+    def forward(
+        self,
+        positions: torch.Tensor,
+        hidden_states: torch.Tensor,
+        target_layer: nn.Module,
+        input_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        residual = hidden_states.clone()
+        hidden_states, post, comb = target_layer.hc_pre(
+            hidden_states,
+            target_layer.hc_attn_fn,
+            target_layer.hc_attn_scale,
+            target_layer.hc_attn_base,
+        )
+        hidden_states = target_layer.input_layernorm(hidden_states)
+        hidden_states = self._attention_readonly(positions, hidden_states)
+        hidden_states = target_layer.hc_post(hidden_states, residual, post, comb)
+
+        residual = hidden_states.clone()
+        hidden_states, post, comb = target_layer.hc_pre(
+            hidden_states,
+            target_layer.hc_ffn_fn,
+            target_layer.hc_ffn_scale,
+            target_layer.hc_ffn_base,
+        )
+        hidden_states = target_layer.post_attention_layernorm(hidden_states)
+        hidden_states = target_layer.mlp(hidden_states, input_ids)
+        return target_layer.hc_post(hidden_states, residual, post, comb)
+
+
+class _OrthrusDeepseekV4Model(nn.Module):
+    def __init__(self, vllm_config, config) -> None:
+        super().__init__()
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.hc_mult = config.hc_mult
+        self.embed_tokens = PPMissingLayer()
+        self.layers = nn.ModuleList(
+            [_OrthrusAttentionLayer(vllm_config, config, index) for index in range(config.num_hidden_layers)]
+        )
+        self._target_model_ref: weakref.ReferenceType[nn.Module] | None = None
+
+    def bind_shared_backbone(self, target_model: nn.Module) -> None:
+        target_inner = getattr(target_model, "model", None)
+        target_layers = getattr(target_inner, "layers", None)
+        if target_inner is None or target_layers is None or len(target_layers) != len(self.layers):
+            raise ValueError("draft/target DSV4 layer count mismatch")
+        self._target_model_ref = weakref.ref(target_inner)
+        for draft_layer, target_layer in zip(self.layers, target_layers, strict=True):
+            draft_layer.bind_target(target_layer)
+        leaked = [
+            name
+            for name, _ in self.named_parameters()
+            if ".compressor." in name
+        ]
+        if leaked:
+            raise RuntimeError(
+                "target compressor parameters leaked into Orthrus draft: "
+                + ", ".join(leaked[:8])
+            )
+
+    def _target_model(self) -> nn.Module:
+        target = self._target_model_ref() if self._target_model_ref else None
+        if target is None:
+            raise RuntimeError("Orthrus draft is not bound to the live DSV4 target")
+        return target
+
+    def get_draft_kv_cache_layer_names(self) -> list[str]:
+        names = []
+        for layer in self.layers:
+            prefix = layer._target_prefix
+            names.append(f"{prefix}.swa_cache")
+            if layer.compress_ratio > 1:
+                names.extend((f"{prefix}.attn", f"{prefix}.compressor.state_cache"))
+            if layer.compress_ratio == 4:
+                names.extend(
+                    (
+                        f"{prefix}.indexer.k_cache",
+                        f"{prefix}.indexer.compressor.state_cache",
+                    )
+                )
+        return names
+
+    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+        target = self._target_model()
+        hidden_states = target.embed_tokens(input_ids)
+        hidden_states = hidden_states.unsqueeze(1).repeat(1, self.hc_mult, 1)
+        for draft_layer, target_layer in zip(self.layers, target.layers, strict=True):
+            hidden_states = draft_layer(positions, hidden_states, target_layer, input_ids)
+        return target.hc_head(
+            hidden_states, target.hc_head_fn, target.hc_head_scale, target.hc_head_base
+        )
+
+
+class OrthrusDSV4DraftModel(DSparkDeepseekV4ForCausalLM):
+    """Attention-only K32 diffusion head with a shared DSV4 backbone."""
+
+    packed_modules_mapping: dict[str, list[str]] = {}
+
+    def __init__(self, *, vllm_config, prefix: str = "") -> None:
+        del prefix
+        nn.Module.__init__(self)
+        # The decorated DSpark parent installs its compile wrapper in __call__,
+        # but invoking its constructor would allocate a second draft backbone.
+        # Orthrus is intentionally eager, so initialize the inherited wrapper
+        # contract without constructing the parent model.
+        self.vllm_config = vllm_config
+        self.compilation_config = vllm_config.compilation_config
+        self.do_not_compile = True
+        if get_pp_group().world_size != 1:
+            raise NotImplementedError("DSV4 Orthrus currently requires PP=1")
+        additional_config = getattr(vllm_config, "additional_config", None) or {}
+        if additional_config.get("enable_dsa_cp"):
+            raise NotImplementedError(
+                "DSV4 Orthrus does not yet support DSA context parallel; "
+                "remove enable_dsa_cp and use the TP-only correctness backend"
+            )
+        if additional_config.get("enable_flashcomm1"):
+            raise NotImplementedError(
+                "DSV4 Orthrus does not yet support FlashComm1 sequence parallel; "
+                "remove enable_flashcomm1 and use the TP-only correctness backend"
+            )
+        speculative = vllm_config.speculative_config
+        if speculative is None or speculative.num_speculative_tokens != NUM_SPECULATIVE_TOKENS:
+            raise ValueError("DSV4 Orthrus requires exactly 31 speculative tokens")
+        config = speculative.draft_model_config.hf_config
+        if getattr(config, "orthrus_head_format", None) != FORMAT_NAME:
+            raise ValueError("DSV4 Orthrus requires an orthrus-dsv4-head-v2 artifact")
+        ratios = list(getattr(config, "compress_ratios", []))[: config.num_hidden_layers]
+        if len(ratios) != config.num_hidden_layers or any(r not in (0, 1, 4, 128) for r in ratios):
+            raise ValueError("invalid DSV4 hybrid compress_ratios in diffusion head")
+        if getattr(config, "sample_from_anchor", None) is not False:
+            raise ValueError("Orthrus K32 requires sample_from_anchor=false")
+        _install_orthrus_quant_aliases(vllm_config.quant_config, ratios)
+        self.config = config
+        self.has_own_embed_tokens = False
+        self.has_own_lm_head = False
+        self.model = _OrthrusDeepseekV4Model(vllm_config, config)
+        self.lm_head = PPMissingLayer()
+        self.logits_processor = LogitsProcessor(config.vocab_size)
+        self.expert_weights = []
+        self.moe_layers = []
+        self.moe_mlp_layers = []
+        self.num_expert_groups = getattr(config, "n_group", 1)
+        self._target_ref: weakref.ReferenceType[nn.Module] | None = None
+
+    def bind_shared_backbone(self, target_model: nn.Module) -> None:
+        self._target_ref = weakref.ref(target_model)
+        self.model.bind_shared_backbone(target_model)
+        for name in (
+            "expert_weights",
+            "moe_layers",
+            "moe_mlp_layers",
+            "num_expert_groups",
+            "num_moe_layers",
+            "num_logical_experts",
+            "num_physical_experts",
+            "num_local_physical_experts",
+            "num_routed_experts",
+            "num_shared_experts",
+            "num_redundant_experts",
+        ):
+            if hasattr(target_model, name):
+                setattr(self, name, getattr(target_model, name))
+
+    def get_draft_kv_cache_layer_names(self) -> list[str]:
+        return self.model.get_draft_kv_cache_layer_names()
+
+    def get_draft_attn_causal(self) -> list[bool]:
+        return [False]
+
+    def combine_hidden_states(self, states: torch.Tensor) -> torch.Tensor:
+        return states[..., : self.config.hidden_size].contiguous()
+
+    def precompute_and_store_context_kv(self, *args, **kwargs) -> None:
+        del args, kwargs
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        inputs_embeds: torch.Tensor | None = None,
+        hidden_states: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        del hidden_states
+        if inputs_embeds is not None:
+            raise ValueError("DSV4 Orthrus does not accept separate inputs_embeds")
+        return self.model(input_ids=input_ids, positions=positions)
+
+    def compute_logits(self, hidden_states: torch.Tensor, spec_step_idx: int = 0) -> torch.Tensor:
+        del spec_step_idx
+        target = self._target_ref() if self._target_ref else None
+        if target is None:
+            raise RuntimeError("Orthrus draft is not bound to the target LM head")
+        return self.logits_processor(target.lm_head, target.model.norm(hidden_states))
+
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+        params = dict(self.named_parameters())
+        loaded: set[str] = set()
+        tp_rank = get_tensor_model_parallel_rank()
+        tp_size = get_tensor_model_parallel_world_size()
+        heads_per_rank = self.config.num_attention_heads // tp_size
+        for source_name, loaded_weight in weights:
+            normalized = source_name.removeprefix("model.")
+            if normalized.startswith("orthrus.layers."):
+                normalized = normalized.removeprefix("orthrus.")
+            if not _HEAD_WEIGHT.match(normalized):
+                continue
+            name = "model." + normalized.replace(".attn.", ".self_attn.", 1)
+            if name.endswith(".scale"):
+                name = name.removesuffix(".scale") + ".weight_scale"
+            param = params.get(name)
+            if param is None:
+                continue
+            if name.endswith(".attn_sink") and not enable_dsa_cp():
+                param.data.copy_(loaded_weight.narrow(0, tp_rank * heads_per_rank, heads_per_rank))
+            else:
+                loader = getattr(param, "weight_loader", default_weight_loader)
+                loader(param, loaded_weight)
+            loaded.add(name)
+        expected = {
+            name
+            for name in params
+            if name.startswith("model.layers.") and _HEAD_WEIGHT.match(name.removeprefix("model."))
+        }
+        missing = sorted(expected - loaded)
+        if missing:
+            raise RuntimeError(
+                f"Orthrus head is missing {len(missing)} parameters: {', '.join(missing[:8])}"
+            )
+        return loaded
+
+
+# Kept as an import-time error message for stale deployment scripts.
+OrthrusDSparkDeepseekV4ForCausalLM = OrthrusDSV4DraftModel
+```
+
+</details>
+
+<details>
+<summary>W8A8 完整源码 2/3：dsv4_hybrid.py</summary>
+
+```python
+"""Exact read-only attention primitives for the DSV4 Orthrus backend."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+import torch
+
+
+def front_pack_indices(indices: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Move valid non-negative indices to the front of the last dimension."""
+    if indices.ndim < 1:
+        raise ValueError("indices must have at least one dimension")
+    valid = indices >= 0
+    order = torch.argsort((~valid).to(torch.int8), dim=-1, stable=True)
+    packed = torch.gather(indices, -1, order)
+    packed_valid = torch.gather(valid, -1, order)
+    return torch.where(packed_valid, packed, -1), packed_valid
+
+
+def c4_history_indices(
+    indices: torch.Tensor, history_lengths: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """QLI returns compressed row IDs, not original-token positions."""
+    complete_rows = torch.div(history_lengths, 4, rounding_mode="floor")
+    valid = (indices >= 0) & (indices < complete_rows[:, None, None])
+    return front_pack_indices(torch.where(valid, indices, -1))
+
+
+def merge_attention_segments(
+    outputs: Sequence[torch.Tensor],
+    logsumexp: Sequence[torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Merge independently normalized attention segments exactly.
+
+    Every output is ``sum(exp(score) * value) / sum(exp(score))`` for one
+    segment and every LSE is ``log(sum(exp(score)))`` with a final singleton
+    dimension. Empty segments must be omitted by the caller.
+    """
+    if not outputs or len(outputs) != len(logsumexp):
+        raise ValueError("outputs and logsumexp must contain the same non-zero segments")
+    shape = outputs[0].shape
+    lse_shape = logsumexp[0].shape
+    if lse_shape != shape[:-1] + (1,):
+        raise ValueError(f"LSE shape {lse_shape} does not match output shape {shape}")
+    if any(output.shape != shape for output in outputs):
+        raise ValueError("all segment outputs must have the same shape")
+    if any(lse.shape != lse_shape for lse in logsumexp):
+        raise ValueError("all segment LSE tensors must have the same shape")
+
+    lse_stack = torch.stack([lse.float() for lse in logsumexp], dim=0)
+    merged_lse = torch.logsumexp(lse_stack, dim=0)
+    weights = torch.exp(lse_stack - merged_lse.unsqueeze(0))
+    merged = sum(
+        output.float() * weight
+        for output, weight in zip(outputs, weights, strict=True)
+    )
+    return merged.to(outputs[0].dtype), merged_lse
+
+
+def merge_attention_outputs(
+    outputs: Sequence[torch.Tensor],
+    logsumexp: Sequence[torch.Tensor],
+) -> torch.Tensor:
+    """Merge segmented attention outputs using the native NPU update op."""
+    if not outputs or len(outputs) != len(logsumexp):
+        raise ValueError("outputs and logsumexp must contain the same non-zero segments")
+    shape = outputs[0].shape
+    lse_shape = logsumexp[0].shape
+    if len(shape) < 2 or lse_shape != shape[:-1] + (1,):
+        raise ValueError(f"LSE shape {lse_shape} does not match output shape {shape}")
+    if any(output.shape != shape for output in outputs):
+        raise ValueError("all segment outputs must have the same shape")
+    if any(lse.shape != lse_shape for lse in logsumexp):
+        raise ValueError("all segment LSE tensors must have the same shape")
+
+    if outputs[0].device.type == "npu":
+        import torch_npu
+
+        head_dim = shape[-1]
+        merged, _ = torch_npu.npu_attention_update(
+            [lse.float().reshape(-1) for lse in logsumexp],
+            [output.reshape(-1, head_dim) for output in outputs],
+            0,
+        )
+        return merged.view(shape)
+
+    merged, _ = merge_attention_segments(outputs, logsumexp)
+    return merged
+
+
+def tail_logical_indices(seq_lens: torch.Tensor, width: int) -> torch.Tensor:
+    """Build front-packed logical indices for each request's trailing window."""
+    if seq_lens.ndim != 1 or width <= 0:
+        raise ValueError("seq_lens must be rank one and width must be positive")
+    lengths = torch.minimum(seq_lens, torch.full_like(seq_lens, width))
+    starts = seq_lens - lengths
+    offsets = torch.arange(width, device=seq_lens.device, dtype=seq_lens.dtype)
+    indices = starts[:, None] + offsets[None, :]
+    return torch.where(offsets[None, :] < lengths[:, None], indices, -1)
+
+
+def history_and_block_mask(
+    history_lengths: torch.Tensor, history_width: int, block_width: int
+) -> torch.Tensor:
+    """Mask padded history, while all queries see the entire temporary block."""
+    offsets = torch.arange(history_width + block_width, device=history_lengths.device)
+    masked = (offsets[None, :] >= history_lengths[:, None]) & (offsets[None, :] < history_width)
+    return masked[:, None, None, :].expand(-1, 1, block_width, -1).contiguous()
+
+
+def compressed_logical_indices(
+    seq_lens: torch.Tensor, ratio: int, maximum: int | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return complete C4/C128 cache rows and their per-request lengths.
+
+    DSV4 keeps an incomplete compression group in the target state cache. It
+    becomes a readable compressed KV row only after ``ratio`` source tokens.
+    """
+    if ratio not in (4, 128):
+        raise ValueError("compressed history ratio must be 4 or 128")
+    lengths = torch.div(seq_lens, ratio, rounding_mode="floor")
+    width = int(maximum or max(int(lengths.max().item()), 1))
+    offsets = torch.arange(width, device=seq_lens.device, dtype=seq_lens.dtype)
+    indices = offsets[None, :].expand(seq_lens.shape[0], -1)
+    return torch.where(offsets[None, :] < lengths[:, None], indices, -1), lengths
+
+
+def gather_paged_cache(
+    cache: torch.Tensor,
+    block_table: torch.Tensor,
+    logical_indices: torch.Tensor,
+    *,
+    validate: bool = False,
+) -> torch.Tensor:
+    """Gather logical token indices from ``[blocks, block, heads, dim]`` cache.
+
+    ``logical_indices`` may be ``[batch, tokens]`` or
+    ``[batch, queries, tokens]``. Invalid ``-1`` entries are returned as zero;
+    their lengths must also be supplied to the attention kernel.
+    """
+    if cache.ndim not in (3, 4):
+        raise ValueError(f"unsupported paged cache shape: {tuple(cache.shape)}")
+    if block_table.ndim != 2 or logical_indices.ndim not in (2, 3):
+        raise ValueError("block_table and logical_indices have invalid rank")
+    if block_table.shape[0] != logical_indices.shape[0]:
+        raise ValueError("cache gather batch dimensions differ")
+    block_size = cache.shape[1]
+    valid = logical_indices >= 0
+    safe = logical_indices.clamp_min(0).long()
+    logical_blocks = torch.div(safe, block_size, rounding_mode="floor")
+    if validate and logical_blocks.numel():
+        if int(logical_blocks.max().item()) >= block_table.shape[1]:
+            raise ValueError("logical index exceeds block table capacity")
+    batch_shape = logical_indices.shape
+    batch_ids = torch.arange(
+        batch_shape[0], device=logical_indices.device, dtype=torch.long
+    ).view((batch_shape[0],) + (1,) * (logical_indices.ndim - 1))
+    physical_blocks = block_table[batch_ids, logical_blocks]
+    if validate and torch.any(valid & (physical_blocks < 0)):
+        raise ValueError("logical index maps to an unallocated cache block")
+    physical_blocks = physical_blocks.clamp_min(0).long()
+    offsets = safe % block_size
+    if logical_indices.ndim == 3 and logical_indices.shape[0] > 1 and cache.is_contiguous():
+        # C4 has a different sparse list per query. A single row index avoids
+        # materializing the much larger two-index gather on the NPU.
+        rows = physical_blocks * block_size + offsets
+        gathered = cache.flatten(0, 1).index_select(0, rows.flatten()).view(
+            *logical_indices.shape, *cache.shape[2:])
+        mask = ~valid.view(valid.shape + (1,) * (gathered.ndim - valid.ndim))
+        return gathered.masked_fill(mask, 0)
+    gathered = cache[physical_blocks, offsets]
+    mask = valid.view(valid.shape + (1,) * (gathered.ndim - valid.ndim))
+    return torch.where(mask, gathered, torch.zeros_like(gathered))
+
+
+def cache_checksum(cache: torch.Tensor, *, full: bool = False) -> torch.Tensor:
+    """Snapshot a bounded sample, or all elements for explicit debug checks."""
+    flat = cache.reshape(-1)
+    if full:
+        return flat.clone()
+    max_samples = 65_536
+    stride = max((flat.numel() + max_samples - 1) // max_samples, 1)
+    return flat[::stride][:max_samples].clone()
+
+
+def assert_cache_unchanged(
+    before: torch.Tensor, cache: torch.Tensor, name: str
+) -> None:
+    after = cache.reshape(-1) if before.numel() == cache.numel() else cache_checksum(cache)
+    equal = before == after
+    if before.is_floating_point():
+        equal = equal | (torch.isnan(before) & torch.isnan(after))
+    if not bool(torch.all(equal).item()):
+        changed = ~equal
+        changed_count = int(changed.sum().item())
+        finite = changed & torch.isfinite(before) & torch.isfinite(after)
+        max_abs = 0.0
+        if bool(torch.any(finite).item()):
+            max_abs = float(
+                (before[finite].float() - after[finite].float()).abs().max().item()
+            )
+        raise RuntimeError(
+            f"Orthrus draft modified target cache {name}: "
+            f"sample_changed={changed_count}/{before.numel()}, max_abs={max_abs}"
+        )
+```
+
+</details>
+
+<details>
+<summary>W8A8 完整源码 3/3：serve_dsv4_orthrus.sh</summary>
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python_bin="${PYTHON_BIN:-python3}"
+source "$repo_root/scripts/dsv4_service_env.sh"
+
+: "${MODEL:=/data/disk/models/Eco-Tech/DeepSeek-V4-Flash-0731-w8a8}"
+: "${HEAD:=/data/disk/models/orthrus-dsv4-head-v2-w8a8}"
+PORT="${PORT:-8901}"
+TP="${TP:-8}"
+MEMORY="${MEMORY:-0.90}"
+DRAFT_SAMPLE_METHOD="${ORTHRUS_DRAFT_SAMPLE_METHOD:-greedy}"
+DEFAULT_ADDITIONAL_CONFIG='{"ascend_compilation_config":{"enable_npugraph_ex":true,"enable_static_kernel":false},"enable_cpu_binding":true,"multistream_overlap_shared_expert":true}'
+ADDITIONAL_CONFIG="${ADDITIONAL_CONFIG:-$DEFAULT_ADDITIONAL_CONFIG}"
+
+case "$DRAFT_SAMPLE_METHOD" in
+  greedy|probabilistic) ;;
+  *)
+    echo "ORTHRUS_DRAFT_SAMPLE_METHOD must be greedy or probabilistic" >&2
+    exit 1
+    ;;
+esac
+
+execution_args=()
+case "${ORTHRUS_EXECUTION_MODE:-eager}" in
+  eager)
+    DEFAULT_COMPILATION_CONFIG='{"cudagraph_mode":"NONE"}'
+    execution_args+=(--enforce-eager)
+    ;;
+  graph)
+    if [[ "${ORTHRUS_GRAPH_VALIDATED:-0}" != "1" ]]; then
+      echo "Graph mode is gated; set ORTHRUS_GRAPH_VALIDATED=1 only after the NPU correctness matrix passes" >&2
+      exit 1
+    fi
+    DEFAULT_COMPILATION_CONFIG='{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+    ;;
+  *)
+    echo "ORTHRUS_EXECUTION_MODE must be eager or graph" >&2
+    exit 1
+    ;;
+esac
+COMPILATION_CONFIG="${COMPILATION_CONFIG:-$DEFAULT_COMPILATION_CONFIG}"
+
+profile_args=()
+if [[ -n "${ORTHRUS_TORCH_PROFILE_DIR:-}" ]]; then
+  profiler_config="$("$python_bin" - "$ORTHRUS_TORCH_PROFILE_DIR" <<'PY'
+import json
+import sys
+
+print(json.dumps({
+    "profiler": "torch",
+    "torch_profiler_dir": sys.argv[1],
+    "torch_profiler_with_stack": False,
+    "torch_profiler_with_memory": False,
+    "ignore_frontend": False,
+}))
+PY
+)"
+  profile_args+=(--profiler-config "$profiler_config")
+fi
+
+configure_dsv4_profile
+configure_dsv4_runtime
+export PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}"
+
+preflight=(
+  "$python_bin" "$repo_root/scripts/preflight_dsv4_orthrus.py"
+  --model "$MODEL"
+  --head "$HEAD"
+  --tensor-parallel-size "$TP"
+)
+case "${ORTHRUS_PREFLIGHT_MODE:-production}" in
+  production) preflight+=(--production) ;;
+  development) ;;
+  *)
+    echo "ORTHRUS_PREFLIGHT_MODE must be production or development" >&2
+    exit 1
+    ;;
+esac
+if [[ "${REQUIRE_TRAINED_HEAD:-0}" == "1" ]]; then
+  preflight+=(--require-trained)
+fi
+"${preflight[@]}"
+
+SPECULATIVE_CONFIG="$("$python_bin" - "$HEAD" "$DRAFT_SAMPLE_METHOD" <<'PY'
+import json
+import sys
+
+print(json.dumps({
+    "method": "orthrus",
+    "model": sys.argv[1],
+    "num_speculative_tokens": 31,
+    "parallel_drafting": True,
+    "draft_sample_method": sys.argv[2],
+    "rejection_sample_method": "standard",
+    "quantization": "ascend",
+    "enforce_eager": True,
+}))
+PY
+)"
+
+exec vllm serve "$MODEL" \
+  --host 0.0.0.0 \
+  --port "$PORT" \
+  --served-model-name dsv4-orthrus \
+  --max-model-len "$MAX_MODEL_LEN" \
+  --max-num-seqs "$MAX_NUM_SEQS" \
+  --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS" \
+  --gpu-memory-utilization "$MEMORY" \
+  --tensor-parallel-size "$TP" \
+  --data-parallel-size 1 \
+  --enable-expert-parallel \
+  --tokenizer-mode deepseek_v4 \
+  --tool-call-parser deepseek_v4 \
+  --enable-auto-tool-choice \
+  --reasoning-parser deepseek_v4 \
+  --no-enable-prefix-caching \
+  --no-disable-hybrid-kv-cache-manager \
+  --quantization ascend \
+  --block-size "$BLOCK_SIZE" \
+  --model-loader-extra-config '{"enable_multithread_load":true,"num_threads":128}' \
+  "${execution_args[@]}" \
+  "${profile_args[@]}" \
+  --speculative-config "$SPECULATIVE_CONFIG" \
+  --compilation-config "$COMPILATION_CONFIG" \
+  --additional-config "$ADDITIONAL_CONFIG"
+```
+
+</details>
+
+## 附录 B：BF16 算法对照完整源码
+
+以下代码仅用于 BF16 算法对照，不是正文 W8A8 服务的实际执行链。模型类包含随机初始化和模拟 cache，运行脚本依次调用三类 Attention；公共辅助模块与服务共用，demo 使用其中的 Torch LSE 合并函数。
 
 
 <details>
