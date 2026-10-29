@@ -1,0 +1,108 @@
+{
+  "executor": "transformers_hybrid_reference",
+  "model": "tiny_random",
+  "device": "npu:0",
+  "dtype": "bfloat16",
+  "hybrid_policy": "orthrus_qwen35_reference",
+  "layer_devices": [
+    "npu:0"
+  ],
+  "ar": {
+    "tokens": 40,
+    "seconds": 2.085711697116494,
+    "prefill_forwards": 1,
+    "prefill_output_tokens": 1,
+    "draft_forwards": 0,
+    "verifier_forwards": 0,
+    "tail_ar_forwards": 39,
+    "accepted_per_round": [],
+    "proposed_per_round": [],
+    "rounds": 40,
+    "fully_covered_rounds": 0,
+    "updates": 0,
+    "update_seconds": 0.0,
+    "feedback_blocks": 0,
+    "coverage_skips": 0,
+    "prefix_tokens": 0,
+    "prefix_seconds": null,
+    "prefix_capture_seconds": 0.0,
+    "tps": 19.178105993891762,
+    "decode_forwards": 39,
+    "decode_tpf": 1.0
+  },
+  "fixed": {
+    "tokens": 40,
+    "seconds": 0.8468724857084453,
+    "prefill_forwards": 1,
+    "prefill_output_tokens": 1,
+    "draft_forwards": 3,
+    "verifier_forwards": 3,
+    "tail_ar_forwards": 0,
+    "accepted_per_round": [
+      4,
+      31,
+      2
+    ],
+    "proposed_per_round": [
+      31,
+      31,
+      2
+    ],
+    "rounds": 3,
+    "fully_covered_rounds": 2,
+    "updates": 0,
+    "update_seconds": 0.0,
+    "feedback_blocks": 0,
+    "coverage_skips": 0,
+    "prefix_tokens": 0,
+    "prefix_seconds": null,
+    "prefix_capture_seconds": 0.0,
+    "tps": 47.232612553870226,
+    "decode_forwards": 6,
+    "decode_tpf": 6.5
+  },
+  "greedy_equal": null,
+  "temperature": 1.0,
+  "torch_version": "2.10.0+cpu",
+  "layer_types": [
+    "linear_attention",
+    "linear_attention",
+    "linear_attention",
+    "full_attention"
+  ],
+  "head_dim": 256,
+  "linear_head_dim": 128,
+  "block_size": 32,
+  "online": {
+    "tokens": 40,
+    "seconds": 1.72423759335652,
+    "prefill_forwards": 1,
+    "prefill_output_tokens": 1,
+    "draft_forwards": 2,
+    "verifier_forwards": 2,
+    "tail_ar_forwards": 0,
+    "accepted_per_round": [
+      18,
+      20
+    ],
+    "proposed_per_round": [
+      31,
+      20
+    ],
+    "rounds": 2,
+    "fully_covered_rounds": 1,
+    "updates": 1,
+    "update_seconds": 1.1295588188804686,
+    "feedback_blocks": 2,
+    "coverage_skips": 0,
+    "prefix_tokens": 0,
+    "prefix_seconds": null,
+    "prefix_capture_seconds": 0.0,
+    "tps": 23.198659021308796,
+    "decode_forwards": 4,
+    "decode_tpf": 9.75
+  },
+  "last_loss": 0.09220728278160095,
+  "trainable_parameters": 335500,
+  "last_layers": 4
+}
