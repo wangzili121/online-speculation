@@ -5,7 +5,6 @@ import json
 
 import torch
 import torch_npu
-from transformers.models.qwen3_5.modeling_qwen3_5 import torch_chunk_gated_delta_rule
 
 
 def probe_recurrent():
@@ -54,6 +53,7 @@ def main():
     # 与 worker 一致，必须在首次 NPU 计算前注册镜像自带的 AscendC 算子。
     if not enable_custom_op():
         raise RuntimeError("native recurrent GDN op is unavailable")
+    from transformers.models.qwen3_5.modeling_qwen3_5 import torch_chunk_gated_delta_rule
     torch.manual_seed(11)
     device = "npu:0"
     results = []
