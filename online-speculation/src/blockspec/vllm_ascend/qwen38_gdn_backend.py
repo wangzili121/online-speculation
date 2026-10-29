@@ -30,7 +30,7 @@ def recurrent_slices(operation, *, query, key, value, state, actual_seq_lengths,
     return torch.cat(outputs, dim=0)
 
 
-def install_recurrent_hook():
+def install_recurrent_hook(vllm_config=None):
     import torch
     from vllm.config import get_current_vllm_config
     from .qwen38_attention import _enabled
@@ -38,10 +38,11 @@ def install_recurrent_hook():
     original = torch.ops._C_ascend.npu_recurrent_gated_delta_rule
     if getattr(original, "_qwen38_recurrent_hook", False) is True:
         return
+    config = get_current_vllm_config() if vllm_config is None else vllm_config
 
     @functools.wraps(original)
     def recurrent(**kwargs):
-        if not _enabled(get_current_vllm_config()) or kwargs.get("num_accepted_tokens") is None:
+        if not _enabled(config) or kwargs.get("num_accepted_tokens") is None:
             return original(**kwargs)
         return recurrent_slices(original, **kwargs)
 
@@ -49,7 +50,7 @@ def install_recurrent_hook():
     torch.ops._C_ascend.npu_recurrent_gated_delta_rule = recurrent
 
 
-def install_cann_gdn_prefill():
+def install_cann_gdn_prefill(vllm_config=None):
     import torch
     import torch_npu
     from vllm.config import get_current_vllm_config
@@ -61,11 +62,12 @@ def install_cann_gdn_prefill():
         return
     if not hasattr(torch_npu, "npu_chunk_gated_delta_rule"):
         raise RuntimeError("this torch_npu build does not provide the CANN GDN prefill op")
+    # 每个 worker 绑定一个模型；forward/RPC 不保证存在配置上下文。
+    config = get_current_vllm_config() if vllm_config is None else vllm_config
 
     @functools.wraps(original)
     def prefill(q, k, v, g, beta, *, initial_state=None, output_final_state=False,
                 cu_seqlens=None, head_first=False, use_qk_l2norm_in_kernel=False, **kwargs):
-        config = get_current_vllm_config()
         enabled = (config.additional_config or {}).get("qwen38_gdn_prefill_backend") == "cann"
         if not enabled:
             return original(q=q, k=k, v=v, g=g, beta=beta, initial_state=initial_state,

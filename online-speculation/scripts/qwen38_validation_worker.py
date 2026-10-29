@@ -26,6 +26,7 @@ def _gdn_metadata(module, args):
     print("GDN_AUDIT", {"spec_masks": None if masks is None else masks.cpu().tolist(),
                         "prefills": metadata.num_prefills, "decodes": metadata.num_decodes,
                         "state_shape": tuple(module.kv_cache[1].shape),
+                        "state_dtype": str(module.kv_cache[1].dtype),
                         "state_indices": None if metadata.non_spec_state_indices_tensor is None
                         else metadata.non_spec_state_indices_tensor.cpu().tolist()}, flush=True)
 

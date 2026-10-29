@@ -14,8 +14,8 @@ from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
 from blockspec.feedback import Feedback
 from blockspec.parallel.online import SuffixConfig
 from blockspec.vllm_ascend.qwen38_runtime import install_runner_hooks
-from blockspec.vllm_ascend.qwen38_attention import verification_chunks
-from blockspec.vllm_ascend.qwen38_proposer import Qwen38OrthrusProposer
+from blockspec.vllm_ascend.qwen38_attention import install_attention_hooks, verification_chunks
+from blockspec.vllm_ascend.qwen38_proposer import OrthrusWorkerExtension, Qwen38OrthrusProposer
 from blockspec.vllm_ascend.qwen38_weights import (
     NativeSuffixLearner, ParallelLinear, TensorParallel, from_native_model,
 )
@@ -287,12 +287,21 @@ def test_native_head_checkpoint_roundtrip_and_contract(tmp_path):
     proposer.learner.version = 1
     before = {name: p.clone() for name, p in proposer._draft_parameters().items()}
     proposer._save_head(tmp_path / "heads")
+    with pytest.raises(ValueError, match="refusing to overwrite"):
+        proposer._save_head(tmp_path / "heads")
     with torch.no_grad():
         for parameter in proposer._draft_parameters().values():
             parameter.add_(1)
         proposer._load_head(tmp_path / "heads/version1")
     for name, parameter in proposer._draft_parameters().items():
         torch.testing.assert_close(parameter, before[name], rtol=0, atol=0)
+    worker = OrthrusWorkerExtension()
+    worker.model_runner = NS(drafter=proposer)
+    with pytest.raises(RuntimeError, match="checkpoint requires"):
+        worker.orthrus_checkpoint()
+    proposer.options["checkpoint_dir"] = str(tmp_path / "rpc")
+    proposer.learner.updates = 1
+    assert worker.orthrus_checkpoint()["directory"] == str(tmp_path / "rpc/version1")
     proposer.block_size = 8
     with pytest.raises(ValueError, match="head must match"):
         proposer._load_head(tmp_path / "heads/version1")
@@ -315,7 +324,8 @@ def test_cann_backend_layout_and_readonly_initial_state(monkeypatch):
     module = NS(chunk_gated_delta_rule=lambda **kw: "original")
     config = NS(additional_config={"qwen38_gdn_prefill_backend": "cann"})
     monkeypatch.setitem(sys.modules, "torch_npu", NS(npu_chunk_gated_delta_rule=primitive))
-    monkeypatch.setitem(sys.modules, "vllm.config", NS(get_current_vllm_config=lambda: config))
+    configurations = iter([config])
+    monkeypatch.setitem(sys.modules, "vllm.config", NS(get_current_vllm_config=lambda: next(configurations)))
     monkeypatch.setitem(sys.modules, "vllm.third_party.flash_linear_attention.ops.l2norm", NS(l2norm_fwd=l2norm))
     monkeypatch.setitem(sys.modules, "vllm_ascend.ops", NS(gdn=module))
     install_cann_gdn_prefill()
@@ -378,7 +388,8 @@ def test_recurrent_hook_only_changes_orthrus_speculative_calls(monkeypatch):
     original = lambda **kwargs: "native"
     monkeypatch.setattr(torch.ops._C_ascend, "npu_recurrent_gated_delta_rule", original, raising=False)
     config = NS(speculative_config=None)
-    monkeypatch.setitem(sys.modules, "vllm.config", NS(get_current_vllm_config=lambda: config))
+    configurations = iter([config])
+    monkeypatch.setitem(sys.modules, "vllm.config", NS(get_current_vllm_config=lambda: next(configurations)))
     monkeypatch.setattr(backend, "recurrent_slices", lambda operation, **kwargs: (operation, "sliced"))
     backend.install_recurrent_hook()
     hook = torch.ops._C_ascend.npu_recurrent_gated_delta_rule
@@ -409,6 +420,27 @@ def test_paged_query_slices_preserve_causal_attention(length):
             query[:, :, rows], key[:, :, :end], value[:, :, :end], attn_mask=mask[rows, :end]))
     torch.testing.assert_close(torch.cat(parts, dim=2), expected)
     assert metadata.seq_lens_list == [past + length]
+
+
+def test_attention_builder_keeps_actual_block_length_for_metadata():
+    class Builder:
+        def __init__(self, kv_cache_spec, layer_names, vllm_config, device):
+            self.constructed_with = vllm_config.speculative_config.num_speculative_tokens + 1
+            assert self.constructed_with <= 16
+            self.decode_threshold = self.reorder_batch_threshold = self.constructed_with
+
+    class Implementation:
+        def forward_fused_infer_attention(self, query, key, value, attn_metadata, output, kv_cache=None):
+            return output
+
+    install_attention_hooks(Builder, Implementation, spec_state="spec")
+    config = NS(speculative_config=NS(method="custom_class", num_speculative_tokens=31,
+        model="blockspec.vllm_ascend.qwen38_proposer.Qwen38OrthrusProposer"))
+    builder = Builder(None, [], config, "cpu")
+    assert builder.constructed_with == 16
+    assert builder.decode_threshold == builder.reorder_batch_threshold == 32
+    assert builder.vllm_config is config and builder.speculative_config is config.speculative_config
+    assert config.speculative_config.num_speculative_tokens == 31
 
 
 def _tp_worker(rank, rendezvous, last_layers):

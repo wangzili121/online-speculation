@@ -3,7 +3,7 @@
 2026-10-30 更新：完整 27B 已在两张 NPU 上完成短请求推理和最后一层在线更新，见 [真机验证记录](QWEN38_REAL_VALIDATION.md)。下方 2026-10-29 的缩小模型及资源失败记录保留为历史；不代表当前仍未完成真实前向。
 
 同日新增 [原生 vLLM 接入代码与启动入口](QWEN38_VLLM.md)，包括 TP 权重别名、验证回调和同步后缀更新。
-它与本页已验的独立 Torch 路径不同：原生端到端验收仍受 GDN prefill 异常及两卡窗口限制，见 [验证记录](QWEN38_VLLM_VALIDATION.md)。
+它与本页的独立 Torch 路径不同：原生 TP2/K32、last-1/last-4 更新、head 重载和 OpenAI API 已通过真实 27B 功能检查，见 [验证记录](QWEN38_VLLM_VALIDATION.md)。原生服务部署优先阅读上述入口。
 
 ## 当前范围
 
@@ -34,7 +34,7 @@
 
 直接复用 `SuffixLearner`：仅为选中的 draft 后缀保留 FP32 master 和 AdamW 状态；从 verifier 收集实际到达位置的完整词表 logits；detach 前段表示，重放后缀并更新；本轮校正结束后发布参数。不会根据未到达的候选路径训练，也不更新 AR 参数。
 
-后续比较最后 1 层与最后 4 层。最后 4 层包括三个 GDN 和一个 Full Attention，收益必须覆盖额外训练成本。小模型反向通过不代表 27B 上已获得接受率或吞吐收益。服务并发中的 head 版本切换、预算控制和候选发布门控尚未实现。
+最后 1 层与最后 4 层的真实 27B 原生更新均已通过功能检查，性能收益比较仍待完成。最后 4 层包括三个 GDN 和一个 Full Attention，收益必须覆盖额外训练成本。反向通过不代表已获得接受率或吞吐收益。服务并发中的 head 版本切换、预算控制和候选发布门控尚未实现。
 
 ## 运行
 
@@ -55,7 +55,7 @@ PYTHONPATH=src python scripts/run_qwen38_orthrus.py \
 
 ## 下一阶段
 
-真实 27B 的加载、跨设备前向和最后一层后缀更新已通过短请求检查。下一步落实 MASK/head 交付契约，扩展请求覆盖，并单独接 vLLM-Ascend 的 Full Attention KV 和 GDN 状态读取、原生状态 checkpoint/恢复、并发调度及 head 版本发布。已有的 DSV4 proposer 绑定了该模型的缓存结构，不能直接注册一个 Qwen 名字就当作适配完成。
+真实 27B 的原生 vLLM 服务与同步在线更新已完成首轮功能验收。下一步是训练 head 的交付与收益验证、直接读取 native Full Attention KV/GDN 状态，随后再处理批量调度和预算控制。当前原生 verifier 管理正式缓存及拒绝恢复，插件仍通过共享 AR 权重重放自己的历史快照；不要把两种缓存路径混为一谈。已有的 DSV4 proposer 仍绑定该模型的缓存结构。
 
 ## 验证记录（2026-10-29）
 
@@ -71,6 +71,6 @@ Ascend 910B3 上，缩小混合模型完成了以下实测，均使用真实 Ful
 
 这些是功能检查，不是接受率、采样分布或吞吐验收。当前环境明确回退到 Transformers 的 Torch GDN 实现；没有将其描述为已有的高性能 NPU GDN 后端。实验使用本地镜像 `sha256:b55dc48044273052387facc05879e512f9b33bb6e882cafcb145e4988f73f2d5`。
 
-2026-10-29，真实 Qwen3.8-27B 的 BF16 checkpoint 已成功加载，独立 draft mixer 已复制，但三次尝试均在搬权重阶段因共享设备被其他任务占用而 OOM：单卡＋CPU 时本进程仅分配约 2.37GiB 就只剩约 1.95GiB；双卡时本进程分配约 29.10GiB 后设备耗尽；进一步缩减为 NPU 前 8 层、CPU 后 56 层时，搬第一个 embedding 前设备仅剩约 907MiB。当时未完成真实前向；2026-10-30 的成功结果见文首链接。vLLM 服务仍未验收。实验容器以 `--rm` 运行，结束后不保留占卡进程，不停止他人任务。
+2026-10-29，真实 Qwen3.8-27B 的 BF16 checkpoint 已成功加载，独立 draft mixer 已复制，但三次尝试均在搬权重阶段因共享设备被其他任务占用而 OOM：单卡＋CPU 时本进程仅分配约 2.37GiB 就只剩约 1.95GiB；双卡时本进程分配约 29.10GiB 后设备耗尽；进一步缩减为 NPU 前 8 层、CPU 后 56 层时，搬第一个 embedding 前设备仅剩约 907MiB。当时未完成真实前向或 vLLM 服务验收；2026-10-30 的成功结果见文首链接。实验容器以 `--rm` 运行，结束后不保留占卡进程，不停止他人任务。
 
 缩小模型的原始结果：[NPU K32 greedy](validation/qwen38/npu-k32-greedy-last1.json)、[NPU K32 采样及 GDN 反向](validation/qwen38/npu-k32-sampling-last4.json)、[NPU＋CPU 分层](validation/qwen38/npu-cpu-k32-greedy-last1.json)。

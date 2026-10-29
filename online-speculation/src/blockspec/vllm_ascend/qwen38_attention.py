@@ -59,6 +59,7 @@ def install_attention_hooks(builder_class=None, impl_class=None, spec_state=None
         bounded_config.speculative_config = bounded_spec
         initialize(self, kv_cache_spec, layer_names, bounded_config, device)
         self.vllm_config, self.speculative_config = vllm_config, vllm_config.speculative_config
+        self.decode_threshold = self.reorder_batch_threshold = self.speculative_config.num_speculative_tokens + 1
 
     @functools.wraps(forward)
     def sliced(self, query, key, value, attn_metadata, output, kv_cache=None):

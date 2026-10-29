@@ -26,7 +26,7 @@ class OrthrusWorkerExtension:
 
     def orthrus_use_cann_gdn_prefill(self):
         from .qwen38_gdn_backend import install_cann_gdn_prefill
-        install_cann_gdn_prefill()
+        install_cann_gdn_prefill(self.model_runner.vllm_config)
         return "cann"
 
     def orthrus_stats(self):
@@ -37,7 +37,18 @@ class OrthrusWorkerExtension:
                 "verified": draft.verified, "accepted": draft.accepted,
                 "max_verified_tokens": draft.max_verified_tokens, "full_blocks": draft.full_blocks,
                 "updates": 0 if draft.learner is None else draft.learner.updates,
-                "loss": None if draft.learner is None else draft.learner.last_loss}
+                "loss": None if draft.learner is None else draft.learner.last_loss,
+                "head_dir": draft.options.get("head_dir")}
+
+    def orthrus_checkpoint(self):
+        draft = self.model_runner.drafter
+        if (not getattr(draft, "qwen38_native_proposer", False) or draft.learner is None
+                or not draft.learner.updates or not draft.options.get("checkpoint_dir")):
+            raise RuntimeError("checkpoint requires an updated Orthrus learner and checkpoint_dir")
+        root = Path(draft.options["checkpoint_dir"])
+        draft._save_head(root)
+        return {"rank": draft.tp.rank, "version": draft.learner.version,
+                "directory": str(root / f"version{draft.learner.version}")}
 
 
 class Qwen38OrthrusProposer:
@@ -92,10 +103,10 @@ class Qwen38OrthrusProposer:
         install_runner_hooks()
         install_attention_hooks()
         from .qwen38_gdn_backend import install_recurrent_hook
-        install_recurrent_hook()
+        install_recurrent_hook(vllm_config)
         if (vllm_config.additional_config or {}).get("qwen38_gdn_prefill_backend") == "cann":
             from .qwen38_gdn_backend import install_cann_gdn_prefill
-            install_cann_gdn_prefill()
+            install_cann_gdn_prefill(vllm_config)
 
     def bind_runner(self, runner):
         self.runner = runner
@@ -278,9 +289,15 @@ class Qwen38OrthrusProposer:
         # 每版独立保存；全部 TP 分片写完后，rank 0 才发布 manifest。
         directory = directory / f"version{self.learner.version}"
         directory.mkdir(parents=True, exist_ok=True)
+        if (directory / "manifest.json").exists():
+            raise ValueError(f"refusing to overwrite a published head: {directory}")
+        shard = directory / f"rank{self.tp.rank}.safetensors"
         save_file({name: p.detach().cpu().contiguous() for name, p in self._draft_parameters().items()},
-                  str(directory / f"rank{self.tp.rank}.safetensors"))
+                  str(shard.with_suffix(".tmp")))
+        shard.with_suffix(".tmp").replace(shard)
         if self.tp.size > 1:
             torch.distributed.barrier(group=self.tp.group)
         if self.tp.rank == 0:
-            (directory / "manifest.json").write_text(json.dumps(self._head_identity(), indent=2) + "\n")
+            manifest = directory / "manifest.json"
+            manifest.with_suffix(".tmp").write_text(json.dumps(self._head_identity(), indent=2) + "\n")
+            manifest.with_suffix(".tmp").replace(manifest)

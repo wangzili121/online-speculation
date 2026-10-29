@@ -1,7 +1,7 @@
 # Qwen3.8 Orthrus 原生 vLLM 接入
 
-**状态：原生接入和在线更新代码已实现，尚未通过真实 27B 的完整端到端验收。**
-TP/梯度/反馈等单元测试已通过；原生基线首先遇到 GDN prefill NaN，切换现有 CANN 后端后的完整复测因两卡被其他任务占用而中断。
+**状态：真实 27B 的 TP2 推理、K32 验证、last-1/last-4 在线更新及 head 保存重载已通过功能检查。**
+原生 OpenAI API 的流式、排队、取消恢复及跨页输入检查均通过；当前不宣称生产吞吐收益。具体证据见文末验证记录。
 
 该入口使用 vLLM-Ascend 加载和执行真实 Qwen3.8 主模型，插件负责 Orthrus 起草和在线续训。
 主模型验证候选、执行 rejection sampling、维护正式缓存，均走原生引擎；不是将 Torch 参考执行器包装成服务。
@@ -34,6 +34,7 @@ TP 分片的 query/KV 头和 GDN 头数须能整除 TP；27B 首选 TP=2。
 因此启动脚本默认显式选择 `--gdn-prefill-backend cann`，将 prefill 切换为镜像自带的 `torch_npu.npu_chunk_gated_delta_rule`；解码和投机验证的 GDN 仍由原生引擎处理。
 适配仅处理布局、归一化和状态返回，不新增 kernel；CANN 接口使用 BF16 初始状态，数值舍入与 Triton 不能视为逐位相同，验收时基线与 Orthrus 必须选择同一后端。
 `--gdn-prefill-backend native` 可恢复镜像原路径，但不应在已复现 NaN 的环境中直接作为生产配置。
+启动脚本默认 `--gpu-memory-utilization 0.65`，为 CANN 工作空间和在线重放留出显存；原有 profiling 不覆盖其全部开销，不能直接把 KV 池开满。
 
 ## 在线更新
 
@@ -82,6 +83,7 @@ curl http://127.0.0.1:8000/v1/completions \
 可选 `--checkpoint-dir /data/heads`：每 16 次更新保存一份按版本分目录的 draft 参数，频率由 `--checkpoint-every` 控制。
 在同一 TP 布局下，用 `--head-dir /data/heads/version16` 重启加载；manifest 校验基模 config 和权重索引 SHA256、TP、K、mask ID 和混合层策略。
 这是 draft 权重交付，不是 AdamW 状态的跨进程精确续训；基模文件的完整内容哈希仍需部署侧另行锁定。
+已经发布的版本不允许覆盖。验证脚本可将 `--checkpoint-every` 设得较大，在请求全部完成后通过 worker RPC 仅导出一次。
 
 ## 验证方式
 
@@ -90,6 +92,9 @@ curl http://127.0.0.1:8000/v1/completions \
 `ORTHRUS_VALIDATE_EXTENDED=1` 增加较长输出、跨 chunk 的 prefill 和 top-k/top-p 采样；`ORTHRUS_VALIDATE_BASELINE=/work/evidence/target.json` 直接逐 token 比较同后端的 greedy 结果。
 测试时用 `--update-stride 1`，保证短请求覆盖在线更新；正式配置不建议每步训练。
 采样模式不能要求与 target-only 的同种子输出逐 token 一致；greedy 才按同一输入做逐 token 对照。
+
+服务启动后，可运行 `scripts/validate_qwen38_api.py --base-url http://127.0.0.1:8000 --model /models/Qwen3.8-27B --baseline /work/evidence/target.json --output /work/evidence/api.json`。
+该脚本覆盖普通请求、流式输出、两个客户端排队、取消后恢复及 1804-token 跨页输入；服务的 `--max-model-len` 至少为 2048。
 
 CPU 测试覆盖权重别名与 AR 对照、原生参数类型复制、inference tensor 输入反向、双 TP 前向与梯度、全局裁剪、hook 调用顺序和 GDN 分段状态等价性。
 真机验收结果另行记录，不将上述单元测试当作服务或性能验收。

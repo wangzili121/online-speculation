@@ -68,6 +68,8 @@ def main():
         assert all(item["max_verified_tokens"] == args.block_size - 1 for item in stats), stats
         if len({(item["proposals"], item["verified"], item["accepted"], item["updates"]) for item in stats}) != 1:
             raise AssertionError(f"TP worker counters diverged: {stats}")
+        if args.online and args.checkpoint_dir:
+            evidence["checkpoint"] = llm.collective_rpc("orthrus_checkpoint")
     destination = os.environ.get("ORTHRUS_VALIDATE_OUTPUT")
     if destination:
         Path(destination).write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n")
