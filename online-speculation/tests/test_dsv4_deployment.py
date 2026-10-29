@@ -353,6 +353,56 @@ def test_rejection_rng_patch_is_guarded_and_idempotent(tmp_path):
         module.patch_rejection_rng(tmp_path, False)
 
 
+def test_orthrus_probability_reset_between_proposals(tmp_path):
+    from types import SimpleNamespace
+
+    module, _ = _load_runtime_patcher()
+    path = tmp_path / "vllm_ascend/worker/model_runner_v1.py"
+    path.parent.mkdir(parents=True)
+    original = '''class Runner:
+    def propose(self, spec_decode_metadata=None, num_scheduled_tokens=0):
+        self._log_propose_draft_token_ids_entry(spec_decode_metadata, num_scheduled_tokens)
+
+        if not self.drafter:
+            return None
+        if self.drafter.probs is not None:
+            self._draft_probs = self.drafter.probs
+            self._draft_prob_req_ids = self.drafter.req_ids.copy()
+        return self.drafter.tokens
+'''
+    path.write_text(original)
+    assert module.patch_orthrus_probability_reset(tmp_path, True) == "would apply"
+    assert path.read_text() == original
+    assert module.patch_orthrus_probability_reset(tmp_path, False) == "applied"
+    assert module.patch_orthrus_probability_reset(tmp_path, False) == "already applied"
+    namespace = {}
+    exec(compile(path.read_text(), str(path), "exec"), namespace)
+    runner = namespace["Runner"]()
+    runner.speculative_config = SimpleNamespace(method="orthrus")
+    runner._log_propose_draft_token_ids_entry = lambda *args: None
+    first = object()
+    runner.drafter = SimpleNamespace(probs=first, req_ids=["random-a"], tokens=[1])
+    runner.propose()
+    assert runner._draft_probs is first
+    assert runner._draft_prob_req_ids == ["random-a"]
+    runner.drafter = SimpleNamespace(probs=None, req_ids=["greedy-b"], tokens=[2])
+    runner.propose()
+    assert runner._draft_probs is None
+    assert runner._draft_prob_req_ids is None
+    second = object()
+    runner.drafter = SimpleNamespace(probs=second, req_ids=["random-c"], tokens=[3])
+    runner.propose()
+    assert runner._draft_probs is second
+    assert runner._draft_prob_req_ids == ["random-c"]
+    runner.drafter = None
+    runner.propose()
+    assert runner._draft_probs is None
+    assert runner._draft_prob_req_ids is None
+    path.write_text("unsupported runtime")
+    with pytest.raises(SystemExit, match="version guard failed"):
+        module.patch_orthrus_probability_reset(tmp_path, False)
+
+
 def test_dsv4_target_compressors_are_not_registered_in_draft():
     source = (ROOT / "src/blockspec/vllm_ascend/dsv4.py").read_text()
     assert 'object.__setattr__(draft_impl, "compressor"' not in source

@@ -153,6 +153,21 @@ def patch_rejection_rng(root: Path, dry_run: bool) -> str:
     )
 
 
+def patch_orthrus_probability_reset(root: Path, dry_run: bool) -> str:
+    return replace_once(
+        root / "vllm_ascend/worker/model_runner_v1.py",
+        "        self._log_propose_draft_token_ids_entry(spec_decode_metadata, num_scheduled_tokens)\n\n"
+        "        if not self.drafter:\n",
+        "        self._log_propose_draft_token_ids_entry(spec_decode_metadata, num_scheduled_tokens)\n\n"
+        '        if self.speculative_config.method == "orthrus":\n'
+        "            # Probabilities belong to this proposal, never a previous batch.\n"
+        "            self._draft_probs = None\n"
+        "            self._draft_prob_req_ids = None\n\n"
+        "        if not self.drafter:\n",
+        dry_run,
+    )
+
+
 def patch_vllm(root: Path, dry_run: bool) -> list[str]:
     path = root / "vllm/config/speculative.py"
     changes = []
@@ -582,6 +597,7 @@ def main() -> int:
     api_family = validate_dsv4_runtime(roots[1])
     changes = patch_vllm(roots[0], args.dry_run) + patch_ascend(roots[1], args.dry_run)
     changes.append(patch_rejection_rng(roots[1], args.dry_run))
+    changes.append(patch_orthrus_probability_reset(roots[1], args.dry_run))
     action = "Dry-run passed" if args.dry_run else "Applied"
     print(f"{action}: {len(changes)} guarded Orthrus edits ({api_family})")
     return 0
