@@ -10,10 +10,11 @@ from trace_dsv4_native_layers import LayerTraceWorker, compare_traces
 
 
 class BatchLayerWorker(EngineStateWorker, LayerTraceWorker):
-    def batch_trace_configure(self, directory, block_start, prompt_length, repeat_attention=False, capture_c4=False):
+    def batch_trace_configure(self, directory, block_start, prompt_length, repeat_attention=False, capture_c4=False,
+                              canonical_c4=False):
         self._batch_trace = dict(directory=directory, start=block_start,
                                  length=prompt_length, previous=None, paths={},
-                                 repeat_attention=repeat_attention, capture_c4=capture_c4)
+                                 repeat_attention=repeat_attention, capture_c4=capture_c4, canonical_c4=canonical_c4)
 
     def state_probe_phase(self, name, plans=None, skip_head=False):
         config = self._batch_trace
@@ -26,6 +27,7 @@ class BatchLayerWorker(EngineStateWorker, LayerTraceWorker):
             self.trace_arm(config["start"], config["length"], config["start"])
             self._layer_trace["repeat_attention"] = config["repeat_attention"]
             self._layer_trace["capture_c4"] = config["capture_c4"]
+            self._layer_trace["canonical_c4"] = config["canonical_c4"]
             config["previous"] = name
         elif hasattr(self, "_layer_trace"):
             self.trace_disable()
@@ -41,7 +43,7 @@ class BatchLayerWorker(EngineStateWorker, LayerTraceWorker):
             result = compare_traces(traces[left], traces[right])
             comparisons[name] = result
         report = dict(rank=self.rank, block_start=config["start"], prompt_length=config["length"],
-                      paths=config["paths"], comparisons=comparisons)
+                      paths=config["paths"], comparisons=comparisons, canonical_c4=config["canonical_c4"])
         if config["repeat_attention"]:
             report["attention_replays"] = {}
             for phase, tensors in traces.items():

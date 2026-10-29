@@ -24,6 +24,25 @@ def test_operator_snapshot_detaches_and_copies_nested_inputs():
         TRACE.snapshot_tree(object())
 
 
+def test_canonical_c4_call_preserves_logical_pages_without_writing_cache():
+    cache = torch.arange(20).reshape(5, 2, 1, 2)
+    table = torch.tensor([[3, 1, -1], [4, 3, 1]], dtype=torch.int32)
+    kwargs = dict(cmp_ratio=4, layout_kv="PA_ND", cmp_kv=cache, cmp_block_table=table,
+                  metadata=torch.tensor([17]), ori_kv=torch.ones(1))
+    before = cache.clone()
+    transformed = TRACE.canonical_c4_call(kwargs)
+    valid = table >= 0
+    assert torch.equal(cache, before)
+    assert transformed["cmp_kv"].shape == (6, 2, 1, 2)
+    assert torch.equal(cache[table[valid].long()],
+                       transformed["cmp_kv"][transformed["cmp_block_table"][valid].long()])
+    assert transformed["cmp_block_table"][0, 2] == -1
+    assert transformed["ori_kv"] is kwargs["ori_kv"]
+    assert transformed["metadata"] is kwargs["metadata"]
+    assert TRACE.canonical_c4_call(dict(kwargs, cmp_ratio=128))["cmp_kv"] is cache
+    assert TRACE.canonical_c4_call(dict(kwargs, layout_kv="TND"))["cmp_kv"] is cache
+
+
 def test_block_trace_selects_request_not_duplicate_position():
     positions = [512, 513, 512, 513, 514]
     assert TRACE.select_trace_rows(positions, 512, [0, 2, 5], [127, 511], 511, 512) == (2, 5, 1)

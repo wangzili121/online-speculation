@@ -53,6 +53,17 @@ def snapshot_tree(value):
     raise TypeError(f"unsupported operator input: {type(value).__name__}")
 
 
+def canonical_c4_call(kwargs):
+    """Diagnostic only: give each logical compressed page a fixed physical slot."""
+    if kwargs.get("cmp_ratio") != 4 or kwargs.get("layout_kv") != "PA_ND":
+        return kwargs
+    table, cache = kwargs["cmp_block_table"], kwargs["cmp_kv"]
+    pages = table.flatten().long()
+    packed = cache.index_select(0, pages.clamp_min(0))
+    canonical = torch.arange(table.numel(), device=table.device, dtype=table.dtype).reshape(table.shape)
+    return dict(kwargs, cmp_kv=packed, cmp_block_table=torch.where(table >= 0, canonical, table))
+
+
 def compare_traces(left, right):
     if not left or not right:
         raise ValueError("both traces must contain captured activations")
@@ -179,6 +190,8 @@ class LayerTraceWorker:
         @functools.wraps(original)
         def wrapped(*args, **kwargs):
             state = self._layer_trace
+            if method == "npu_sparse_attn_sharedkv" and state.get("canonical_c4"):
+                kwargs = canonical_c4_call(kwargs)
             label = f"{state['layer']}.{name}" if name.startswith("op.") else name
             count = state["counts"].get(label, 0)
             state["counts"][label] = count + 1

@@ -298,12 +298,14 @@ def run_checks(llm, args):
 
     report = dict(scope="engine state checks, not full-model/head-quality acceptance", state_checks_passed=False,
                   model=args.model, head=args.head, tp=args.tp, kv_cache_mib=args.kv_cache_mib,
-                  cache_guard=os.environ.get("ORTHRUS_VERIFY_CACHE_CHECKSUM"))
+                  cache_guard=os.environ.get("ORTHRUS_VERIFY_CACHE_CHECKSUM"),
+                  target_layout="canonical_c4_diagnostic" if args.trace_canonical_c4 else "native")
     llm.collective_rpc("state_probe_install", args=(str(args.output), args.shadow_logit_errors))
     if args.trace_block_start is not None:
         llm.collective_rpc("batch_trace_configure", args=(str(args.output / "layer-trace"),
                                                          args.trace_block_start, args.trace_prompt_length,
-                                                         args.trace_repeat_attention, args.trace_c4_inputs))
+                                                         args.trace_repeat_attention, args.trace_c4_inputs,
+                                                         args.trace_canonical_c4))
     plans = {"19": list(range(32)), "23": [31], "29": [0, 0, 31, 7, 0, 31], "31": [15, 30, 1, 31]}
     lengths, budgets = [127, 128, 511, 513], [600, 193, 160, 65]
     prompts = [{"prompt_token_ids": [100 + i] * length} for i, length in enumerate(lengths)]
@@ -388,6 +390,8 @@ def main():
                         help="diagnostic only: replay selected native Attention with identical live inputs")
     parser.add_argument("--trace-c4-inputs", action="store_true",
                         help="save complete selected C4 call inputs, including full physical KV pools")
+    parser.add_argument("--trace-canonical-c4", action="store_true",
+                        help="diagnostic only: canonicalize target compressed page layout in shadow phases")
     args = parser.parse_args()
     if args.kv_cache_mib <= 0:
         parser.error("kv-cache-mib must be positive")
@@ -397,6 +401,8 @@ def main():
         parser.error("Attention replay requires layer tracing")
     if args.trace_c4_inputs and args.trace_block_start is None:
         parser.error("C4 snapshots require layer tracing")
+    if args.trace_canonical_c4 and args.trace_block_start is None:
+        parser.error("canonical C4 diagnostics require layer tracing")
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=False)
     # Full cache snapshots once per layer/batch size, sampled guards afterwards.
