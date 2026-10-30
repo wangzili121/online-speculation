@@ -26,7 +26,9 @@ last-1、stride=16 的在线边界检查已完成：14 个 greedy 请求合计 2
 两个 rank 各验证 111 轮、更新 6 次，计数及最终 loss 一致；head 哈希改变，主模型全量权重哈希不变，每 rank 52 次缓存只读抽查通过。
 五类请求边界各运行三轮，第二、三轮活跃内存的最大增长为 4,136,448 字节，低于 64 MiB 门槛；这是有界复测，不是长时间无泄漏证明。
 两个分片及 manifest 已导出到 version6。见 [last-1 原始记录](validation/qwen38/acceptance-1031-last1-online.json)。
-last-4、重载和 API 的扩展验收仍在进行；以下为 2026-10-30 及之前已完成的验证范围。
+last-4 的第一次扩展运行在固定反馈验收失败：沿用已有 AdamW 状态重复更新 8 次，TV loss 从 0.51410162 升至 0.51602209，25 个执行参数变化，缓存仍按字节不变。
+这是未通过项，不将“参数能更新”当成“loss 已下降”；完整记录见 [失败摘要](validation/qwen38/acceptance-1031-replay8-failed.json)及 [原始日志](validation/qwen38/acceptance-1031-replay8-failed.log.gz)。
+32 步固定反馈复测、重载及 API 的扩展验收仍在进行；以下为 2026-10-30 及之前已完成的验证范围。
 
 日期：2026-10-30。对象为真实 Qwen3.8-27B BF16 checkpoint，不是缩小模型。
 
