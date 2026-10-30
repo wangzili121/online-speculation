@@ -55,6 +55,56 @@ def _cache_snapshot(reader):
 
 
 class ValidationWorker(OrthrusWorkerExtension):
+    def orthrus_enable_logits_audit(self):
+        runner = self.model_runner
+        metadata, sample = runner._build_attention_metadata, runner._sample
+        self._logit_trace, self._logit_boundary = [], None
+
+        def capture(*args, **kwargs):
+            result = metadata(*args, **kwargs)
+            full = next((item for item in result[0].values()
+                         if hasattr(item, "seq_lens_list")), None)
+            self._logit_boundary = None if full is None else (full.seq_lens_list, full.actual_seq_lengths_q)
+            return result
+
+        def traced(logits, spec_decode_metadata):
+            if (logits is not None and self._logit_boundary is not None
+                    and self._logit_boundary[0][0] >= 3000 and len(self._logit_trace) < 64):
+                values, indices = logits.float().topk(4, dim=-1)
+                self._logit_trace.append(dict(seq_lens=list(self._logit_boundary[0]),
+                                             query_lens=list(self._logit_boundary[1]),
+                                             tokens=indices.cpu().tolist(), values=values.cpu().tolist()))
+            return sample(logits, spec_decode_metadata)
+
+        runner._build_attention_metadata, runner._sample = capture, traced
+        return "enabled"
+
+    def orthrus_validate_online_replay(self, steps):
+        """Repeat one reached training block; this is not a serving throughput test."""
+        draft = self.model_runner.drafter
+        learner = draft.learner
+        if type(steps) is not int or not 1 <= steps <= 64 or learner is None or not learner.replay:
+            raise ValueError("1..64 steps and an online learner with reached feedback required")
+        with torch.inference_mode(False), torch.no_grad():
+            before = {name: parameter.detach().clone() for name, parameter in learner.execution.items()}
+            cache = _cache_snapshot(draft.history_reader)
+            initial = learner.backward()
+            start = learner.updates
+            losses = [learner.update()["loss"] for _ in range(steps)]
+            final = learner.backward()
+            learner.optimizer.zero_grad(set_to_none=True)
+            changed = [name for name, parameter in learner.execution.items()
+                       if not torch.equal(parameter, before[name])]
+            unchanged = all(torch.equal(a.view(torch.uint8), b.view(torch.uint8))
+                            for a, b in zip(cache, _cache_snapshot(draft.history_reader), strict=True))
+            learner._check()
+        if not changed or not unchanged or not final < initial:
+            raise AssertionError(f"fixed replay failed: loss={initial}->{final}, "
+                                 f"changed={len(changed)}, cache_unchanged={unchanged}")
+        return dict(rank=draft.tp.rank, steps=learner.updates - start, initial_loss=initial,
+                    final_loss=final, losses=losses, changed_parameters=changed,
+                    trainable_parameters=learner.trainable_parameters, cache_unchanged=unchanged)
+
     def orthrus_enable_cache_audit(self):
         draft = self.model_runner.drafter
         self._cache_audited = set()
@@ -86,6 +136,8 @@ class ValidationWorker(OrthrusWorkerExtension):
     def orthrus_stats(self):
         result = super().orthrus_stats()
         result["cache_readonly_checks"] = len(getattr(self, "_cache_audited", ()))
+        if hasattr(self, "_logit_trace"):
+            result["logit_trace"] = self._logit_trace
         return result
 
     def orthrus_enable_numeric_audit(self):

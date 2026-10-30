@@ -1,0 +1,60 @@
+{
+  "model": "/models/Qwen3.8-27B",
+  "passed": true,
+  "checks": [
+    {
+      "case": "health_and_model",
+      "passed": true
+    },
+    {
+      "case": "greedy",
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1,
+        "total_tokens": 9,
+        "completion_tokens": 8,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "case": "sampling_topk",
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1,
+        "total_tokens": 9,
+        "completion_tokens": 8,
+        "prompt_tokens_details": null
+      },
+      "text": ", I am new to the forum,"
+    },
+    {
+      "case": "streaming",
+      "passed": true,
+      "chunks": 6
+    },
+    {
+      "case": "queued_requests",
+      "passed": true,
+      "requests": 2,
+      "engine_max_num_seqs": 1
+    },
+    {
+      "case": "cancel_then_new_request",
+      "passed": true
+    },
+    {
+      "case": "cross_page_prefill",
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1804,
+        "total_tokens": 1812,
+        "completion_tokens": 8,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "case": "history_reset_after_long_request",
+      "passed": true
+    }
+  ]
+}

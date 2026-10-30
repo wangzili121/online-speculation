@@ -141,7 +141,8 @@ def test_scoped_hooks_retain_custom_and_leave_others_unchanged():
     events = []
 
     class Runner:
-        def _build_attention_metadata(self, num_tokens, num_reqs, max_query_len):
+        def _build_attention_metadata(self, num_tokens, num_reqs, max_query_len, use_spec_decode=False):
+            self.gdn_spec_decode = use_spec_decode
             return {"layer": num_tokens}, None
 
         def _prepare_inputs(self, scheduler_output):
@@ -199,16 +200,23 @@ def test_scoped_hooks_retain_custom_and_leave_others_unchanged():
     runner.drafter = plugin
     runner._set_up_drafter()
     assert runner.drafter is plugin
-    runner.input_batch = NS(num_reqs=1, req_ids=["r1"])
+    runner.input_batch = NS(num_reqs=1, req_ids=["r1"],
+                            num_computed_tokens_cpu=np.array([0]), num_prompt_tokens=np.array([3]))
     captured = []
     plugin.history_reader = NS(capture=lambda meta, req: captured.append((meta, req)))
     runner._build_attention_metadata(3, 1, 3)
     assert captured == [({"layer": 3}, "r1")]
+    assert not runner.gdn_spec_decode
     assert ordinary._build_attention_metadata(2, 1, 2) == ({"layer": 2}, None)
     counter = NS(np=np.zeros(1), copy_to_gpu=lambda: events.append("counter"))
     runner.num_decode_draft_tokens = counter
     runner._prepare_inputs(None)
     assert counter.np.tolist() == [-1]
+    runner.input_batch.num_computed_tokens_cpu[0] = 3
+    runner._prepare_inputs(None)
+    assert counter.np.tolist() == [0]  # No new candidates does not mean no previous speculative state.
+    runner._build_attention_metadata(1, 1, 1, use_spec_decode=False)
+    assert runner.gdn_spec_decode
     runner._prepare_inputs(NS())
     assert runner.propose_draft_token_ids([[2]], None) == [[4, 5]]
     runner.input_batch = NS(update_async_output_token_ids=lambda: None, sampling_metadata=None)
@@ -227,7 +235,7 @@ def test_scoped_hooks_retain_custom_and_leave_others_unchanged():
     runner.rejection_sampler = reject = Reject()
     runner._sample(torch.ones(2, 4), NS())
     assert runner.rejection_sampler is reject
-    assert events == ["bind", "counter", "draft", "teacher", "native prelude", "prepare", "verify", "update"]
+    assert events == ["bind", "counter", "counter", "draft", "teacher", "native prelude", "prepare", "verify", "update"]
 
     def fail():
         raise RuntimeError("native sampling failure")
@@ -419,6 +427,58 @@ def test_native_feedback_uses_only_reached_rows_and_clears_old_request():
         assert proposer.pending["request_id"] == "r2"
 
 
+def test_fixed_native_replay_updates_only_suffix_and_keeps_target_cache(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from qwen38_validation_worker import ValidationWorker
+    proposer = proposer_fixture()
+    candidates = proposer.propose_batch([[9]], NS())[0]
+    metadata = NS(num_draft_tokens=[3], draft_token_ids=torch.tensor(candidates),
+                  target_logits_indices=torch.arange(3))
+    teacher = torch.randn(3, 48)
+    proposer.observe_verified(metadata, teacher, torch.tensor([[17, -1, -1, -1]]))
+    frozen = {name: parameter.clone() for name, parameter in proposer.model.named_parameters()
+              if name not in proposer.learner.execution}
+    worker = ValidationWorker()
+    worker.model_runner = NS(drafter=proposer)
+    with torch.inference_mode():
+        result = worker.orthrus_validate_online_replay(4)
+    assert result["steps"] == 4 and result["final_loss"] < result["initial_loss"]
+    assert result["changed_parameters"] and result["cache_unchanged"]
+    for name, parameter in proposer.model.named_parameters():
+        if name in frozen:
+            torch.testing.assert_close(parameter, frozen[name], rtol=0, atol=0)
+    for value in (0, 65, True):
+        with pytest.raises(ValueError, match="1..64"):
+            worker.orthrus_validate_online_replay(value)
+
+
+def test_logits_audit_keeps_native_sampling_and_owns_metadata(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from qwen38_validation_worker import ValidationWorker
+    full = NS(seq_lens_list=[4096], actual_seq_lengths_q=[4])
+    logits, marker = torch.randn(4, 8), object()
+    seen = []
+
+    def sample(value, metadata):
+        seen.append((value, metadata))
+        return marker
+
+    runner = NS(_build_attention_metadata=lambda: ({"full": full}, None), _sample=sample,
+                drafter=NS(qwen38_native_proposer=False))
+    worker = ValidationWorker()
+    worker.model_runner = runner
+    worker.orthrus_enable_logits_audit()
+    assert runner._build_attention_metadata()[0]["full"] is full
+    before = logits.clone()
+    assert runner._sample(logits, None) is marker
+    full.seq_lens_list[0] = 4097
+    trace = worker.orthrus_stats()["logit_trace"]
+    assert trace[0]["seq_lens"] == [4096]
+    assert trace[0]["tokens"] == logits.topk(4).indices.tolist()
+    assert seen[0][0] is logits and seen[0][1] is None
+    torch.testing.assert_close(logits, before, rtol=0, atol=0)
+
+
 def test_native_verifier_rejects_misaligned_pending_tokens():
     proposer = proposer_fixture()
     candidates = proposer.propose_batch([[9]], NS())[0]
@@ -456,6 +516,42 @@ def test_native_head_checkpoint_roundtrip_and_contract(tmp_path):
     proposer.block_size = 8
     with pytest.raises(ValueError, match="head must match"):
         proposer._load_head(tmp_path / "heads/version1")
+
+
+@pytest.mark.parametrize("corruption", ["missing", "extra", "shape", "dtype", "nonfinite", "tp"])
+def test_native_head_rejects_invalid_shards_before_changing_weights(tmp_path, corruption):
+    from safetensors.torch import load_file, save_file
+    proposer = proposer_fixture()
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "config.json").write_text('{"model_type":"qwen3_5"}')
+    (base / "model.safetensors.index.json").write_text('{"weight_map":{}}')
+    proposer.config.model_config = NS(model=str(base))
+    proposer.learner.version = 1
+    proposer._save_head(tmp_path / "heads")
+    directory = tmp_path / "heads/version1"
+    shard = directory / "rank0.safetensors"
+    tensors = load_file(str(shard))
+    name = next(iter(tensors))
+    if corruption == "missing":
+        tensors.pop(name)
+    elif corruption == "extra":
+        tensors["unexpected.weight"] = torch.zeros(1)
+    elif corruption == "shape":
+        tensors[name] = tensors[name].flatten()[:-1].contiguous()
+    elif corruption == "dtype":
+        tensors[name] = tensors[name].double()
+    elif corruption == "nonfinite":
+        tensors[name].flatten()[0] = float("nan")
+    else:
+        proposer.tp.size = 2
+    save_file(tensors, str(shard))
+    before = {key: parameter.clone() for key, parameter in proposer._draft_parameters().items()}
+    with pytest.raises(ValueError):
+        with torch.no_grad():
+            proposer._load_head(directory)
+    for key, parameter in proposer._draft_parameters().items():
+        torch.testing.assert_close(parameter, before[key], rtol=0, atol=0)
 
 
 def test_cann_backend_layout_and_readonly_initial_state(monkeypatch):

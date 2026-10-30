@@ -4,9 +4,40 @@
 
 ## 当前判断
 
-**真实 27B 的原生 vLLM 起草、验证、拒绝恢复、在线更新和 head 保存重载已通过功能验证。**
+**真实 27B 在 BF16、TP2、K32、eager、同步单请求调度下，原生 vLLM 起草、验证、拒绝恢复、在线更新和 head 保存重载已通过功能验证。**
 不是将独立 Torch 执行器包装成 HTTP：主模型、正式缓存和 rejection sampler 均由原生 vLLM-Ascend 执行。
 原生 OpenAI API 的 8 类接口检查也全部通过。本记录不代表生产性能验收。
+
+## 扩展边界与修复
+
+2026-10-30 的扩展检查使用 61 的 4、5、6、7 卡运行两组 TP2，不是 TP4。
+新增 128-token 输出、4092-token 输入加 4-token 输出、停止后重新请求，以及固定反馈的重复更新检查。
+
+修复后的完整 last-4 在线回归通过：7 个 greedy 用例共 220 个输出 token 与 target-only 逐 token 相同，另含 temperature=1 和 top-k/top-p 采样请求。
+每 rank 起草及读取历史 120 次，验证 110 轮，其中 109 轮为完整 K32；实际请求触发 110 次更新，固定反馈再更新 8 次，共 118 次，两个 rank 的计数及 loss 一致。
+每 rank 的 28 次抽查均确认主模型 cache 按字节不变；固定反馈更新前后的 cache 检查也通过。
+同一反馈的 TV loss 从 0.5937114 降至 0.5093935，选中的 draft 参数发生变化；中间 loss 并不单调，这只是固定样本更新检查，不是业务收敛或吞吐收益证据。
+更新后的两个 head 分片与 manifest 已保存为 `heads-final-61/version118`。
+原始结果见 [完整边界基线](validation/qwen38/acceptance-soak-target-61.json)和 [last-4 在线回归](validation/qwen38/acceptance-final-last4-61.json)。
+
+重启服务加载 version47，使用最后 1 层、默认 `stride=16`，两个 rank 各实际更新 3 次，计数、loss 和梯度范数一致。
+[API 8 类检查](validation/qwen38/acceptance-api-final-61.json)全部通过：health/model、greedy、top-k/top-p、SSE、两个客户端排队、取消后恢复、1804-token 跨页输入及后续请求隔离。
+两个客户端仍是在 `max_num_seqs=1` 下排队，不代表动态批处理已实现。
+
+4K 边界检查发现并修复了 runner 适配问题：发生拒绝后，下一轮可能不再有候选，只有一个普通 decode token。
+原适配把它与 prefill 一起标为 -1；原生 metadata 调用又因本轮没有候选而不传上轮接受位置，导致 GDN 从错误的状态槽继续。
+修复后，prefill 保持 -1，无候选 decode 使用 0，并继续向 GDN builder 传递接受位置；没有修改 Attention、卷积或 GDN kernel。
+
+固定 head、关闭在线更新时，修复前的边界输出为 `[3,3,3,3]`，修复后为 `[3,3,3,271]`，与 target-only 和原生 n-gram 对照一致。
+最后一步目标 logits 的首选 token 也恢复为 271；因此这次差异不能归因于在线训练或普通舍入误差。
+对应原始结果为 [修复前](validation/qwen38/acceptance-context-fixed-61.json)、[原生 n-gram 对照](validation/qwen38/acceptance-context-ngram-61.json)和 [修复后](validation/qwen38/acceptance-context-fixed-repaired-v2-61.json)。
+
+一次服务启动的自动 KV 预算为 -5.14 GiB，尚未进入请求执行。该估值的根因未独立确认；扩展部署改用 vLLM 原有的显式 KV 预算，每 rank 12 GiB，仍执行 profiling forward，不修改预算算法。
+此配置已完成固定 head 重载和服务启动。它仅适用于本次 TP2/4K/单请求配置，不能直接外推到其他规模。
+
+修复后的 CPU 回归为 182 passed、7 个 CUDA 专用测试 skipped，Ruff 与 `git diff --check` 通过。
+新增回归覆盖无候选 decode 的 GDN 标记及 metadata 传递、head 缺失/多余 tensor、形状、精度、非有限值和 TP 不匹配的拒绝，并确认加载失败前不改动任何 draft 权重。
+部署边界仍为 eager、同步、`max_num_seqs=1`；未将有界测试描述为长时间稳定性或生产性能验收。
 
 ## 主模型缓存复用验证
 

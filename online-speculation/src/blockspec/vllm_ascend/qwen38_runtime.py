@@ -23,7 +23,7 @@ def install_runner_hooks(runner_class=None):
         "_set_up_drafter": {"self"},
         "_get_drafter": {"self"},
         "_prepare_inputs": {"self", "scheduler_output"},
-        "_build_attention_metadata": {"self", "num_tokens", "num_reqs", "max_query_len"},
+        "_build_attention_metadata": {"self", "num_tokens", "num_reqs", "max_query_len", "use_spec_decode"},
         "propose_draft_token_ids": {"self", "valid_sampled_token_ids", "scheduler_output"},
         "_sample": {"self", "logits", "spec_decode_metadata"},
     }
@@ -38,6 +38,7 @@ def install_runner_hooks(runner_class=None):
     prepare_inputs = runner_class._prepare_inputs
     build_metadata = runner_class._build_attention_metadata
     propose_signature = inspect.signature(propose)
+    metadata_signature = inspect.signature(build_metadata)
 
     @functools.wraps(setup)
     def retain(self):
@@ -65,7 +66,12 @@ def install_runner_hooks(runner_class=None):
 
     @functools.wraps(build_metadata)
     def metadata(self, *args, **kwargs):
-        result = build_metadata(self, *args, **kwargs)
+        arguments = metadata_signature.bind(self, *args, **kwargs)
+        if (_ours(self) and self.input_batch.num_reqs == 1
+                and self.input_batch.num_computed_tokens_cpu[0] >= self.input_batch.num_prompt_tokens[0]):
+            # 即使本轮没有候选，也要向 GDN builder 传入上轮接受位置。
+            arguments.arguments["use_spec_decode"] = True
+        result = build_metadata(*arguments.args, **arguments.kwargs)
         if _ours(self) and self.drafter.history_reader is not None and self.input_batch.num_reqs == 1:
             self.drafter.history_reader.capture(result[0], self.input_batch.req_ids[0])
         return result
@@ -74,8 +80,11 @@ def install_runner_hooks(runner_class=None):
     def prepare(self, *args, **kwargs):
         result = prepare_inputs(self, *args, **kwargs)
         if _ours(self) and result[1] is None:
-            # 无候选的 prefill 不能沿用 profiling/上一轮的 GDN 投机计数。
+            # Prefill 用 -1；无候选的 decode 仍用 0，让 GDN 从上轮接受状态继续。
             self.num_decode_draft_tokens.np.fill(-1)
+            for index in range(self.input_batch.num_reqs):
+                if self.input_batch.num_computed_tokens_cpu[index] >= self.input_batch.num_prompt_tokens[index]:
+                    self.num_decode_draft_tokens.np[index] = 0
             self.num_decode_draft_tokens.copy_to_gpu()
         return result
 

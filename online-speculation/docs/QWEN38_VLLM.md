@@ -23,7 +23,8 @@ TP 分片的 query/KV 头和 GDN 头数须能整除 TP；27B 首选 TP=2。
 
 算法插件通过 `custom_class` 加载，但普通 custom proposer 接口不提供神经网络生命周期和验证反馈。
 `qwen38_runtime.py` 因此为 v0.26 NPU runner 安装范围受限的兼容 hook：保留和取得 proposer、输入准备、目标缓存元数据、起草调度、验证反馈。
-其中，无候选的 prefill 会将 GDN draft-token 计数清为 -1，避免沿用 profiling 或上一轮的计数、误走投机状态读取。
+其中，无候选的 prefill 将 GDN draft-token 计数清为 -1；已经进入 decode 的请求则设为 0，并继续向 GDN metadata builder 传递上轮接受位置。
+没有新候选不代表没有上轮投机状态：拒绝后的最后一个普通 decode 仍须从接受前缀继续，不能退回第一个状态槽。
 这些 hook 只处理本插件，其他 proposer 仍调用原方法；遇到不匹配的方法签名立即报错。
 **这是插件加内部兼容适配，不是仅靠上游公开接口即可运行的纯插件。** 本入口不修改安装目录内的 vLLM/vLLM-Ascend 源文件。
 
@@ -40,6 +41,8 @@ TP 分片的 query/KV 头和 GDN 头数须能整除 TP；27B 首选 TP=2。
 适配仅处理布局、归一化和状态返回，不新增 kernel；CANN 接口使用 BF16 初始状态，数值舍入与 Triton 不能视为逐位相同，验收时基线与 Orthrus 必须选择同一后端。
 `--gdn-prefill-backend native` 可恢复镜像原路径，但不应在已复现 NaN 的环境中直接作为生产配置。
 启动脚本默认 `--gpu-memory-utilization 0.65`，为 CANN 工作空间和在线重放留出显存；原有 profiling 不覆盖其全部开销，不能直接把 KV 池开满。
+也可使用 vLLM 已有的 `--kv-cache-memory-bytes` 固定每 rank 的 KV 预算，仍执行 profiling forward，但不采用自动预算估值。
+真实 27B、TP2、4K、单请求的扩展验收使用每 rank 12 GiB；这不是其他 TP、上下文长度或并发配置的通用预算。
 
 ## 在线更新
 
@@ -70,7 +73,8 @@ python -m pip install --no-deps --no-build-isolation -e .
 python scripts/run_qwen38_vllm.py \
   --model /models/Qwen3.8-27B --tp 2 \
   --mask-token-id 1 --block-size 32 \
-  --online --last-layers 1 --update-stride 16 --port 8000
+  --online --last-layers 1 --update-stride 16 \
+  --max-model-len 4096 --kv-cache-memory-bytes 12884901888 --port 8000
 ```
 
 `mask-token-id=1` 仅对应当前复制 AR 参数的功能测试初始化，真实训练 head 必须使用训练时约定的 mask ID。
@@ -97,6 +101,11 @@ curl http://127.0.0.1:8000/v1/completions \
 `ORTHRUS_VALIDATE_EXTENDED=1` 增加较长输出、跨 chunk 的 prefill 和 top-k/top-p 采样；`ORTHRUS_VALIDATE_BASELINE=/work/evidence/target.json` 直接逐 token 比较同后端的 greedy 结果。
 测试时用 `--update-stride 1`，保证短请求覆盖在线更新；正式配置不建议每步训练。
 采样模式不能要求与 target-only 的同种子输出逐 token 一致；greedy 才按同一输入做逐 token 对照。
+
+`ORTHRUS_VALIDATE_SOAK=1` 增加 128-token 输出、精确填满上下文的输入、停止 token 和停止后的请求隔离检查；这是一组有界边界测试，不是长时间稳定性验收。
+同时设置 `ORTHRUS_VALIDATE_AUDIT=1`、`ORTHRUS_VALIDATE_REPLAY_STEPS=8`，可在在线测试后对同一份已到达反馈再更新八次，检查 loss 下降、draft 参数变化和主模型 cache 不变；它不是业务接受率或吞吐收益测试。
+定位单个用例可设置 `ORTHRUS_VALIDATE_CASES=context-tail`，`ORTHRUS_VALIDATE_LOGITS=1` 保存原始目标 logits 的前四项。
+`ORTHRUS_VALIDATE_NGRAM_CONTROL=1 --block-size 4` 运行不加载 Orthrus head 的原生 n-gram 对照。
 
 服务启动后，可运行 `scripts/validate_qwen38_api.py --base-url http://127.0.0.1:8000 --model /models/Qwen3.8-27B --baseline /work/evidence/target.json --output /work/evidence/api.json`。
 该脚本覆盖普通请求、流式输出、两个客户端排队、取消后恢复及 1804-token 跨页输入；服务的 `--max-model-len` 至少为 2048。

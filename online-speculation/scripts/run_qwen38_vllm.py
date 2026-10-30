@@ -20,19 +20,26 @@ def arguments():
     parser.add_argument("--checkpoint-every", type=int, default=16)
     parser.add_argument("--max-model-len", type=int, default=2048)
     parser.add_argument("--gpu-memory-utilization", type=float, default=.65)
+    parser.add_argument("--kv-cache-memory-bytes", type=int)
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--gdn-prefill-backend", choices=("native", "cann"), default="cann")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.kv_cache_memory_bytes is not None and args.kv_cache_memory_bytes < 1:
+        parser.error("--kv-cache-memory-bytes must be positive")
+    return args
 
 
 def native_options(args):
-    return dict(model=args.model, tensor_parallel_size=args.tp, dtype="bfloat16",
+    options = dict(model=args.model, tensor_parallel_size=args.tp, dtype="bfloat16",
                 enforce_eager=True, max_num_seqs=1, max_model_len=args.max_model_len,
                 max_num_batched_tokens=256, gpu_memory_utilization=args.gpu_memory_utilization,
                 enable_prefix_caching=False, async_scheduling=False, language_model_only=True,
                 additional_config={"qwen38_gdn_prefill_backend": args.gdn_prefill_backend},
                 worker_extension_cls="blockspec.vllm_ascend.qwen38_proposer.OrthrusWorkerExtension")
+    if getattr(args, "kv_cache_memory_bytes", None) is not None:
+        options["kv_cache_memory_bytes"] = args.kv_cache_memory_bytes
+    return options
 
 
 def speculative_options(args):
