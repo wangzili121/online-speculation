@@ -1,0 +1,54 @@
+{
+  "operator": "torch.nn.functional.linear",
+  "dtype": "bfloat16",
+  "seed": 7,
+  "weight_shape": [
+    8192,
+    5120
+  ],
+  "rows": [
+    {
+      "width": 1,
+      "equal": true,
+      "max_abs": 0.0,
+      "changed_elements": 0
+    },
+    {
+      "width": 2,
+      "equal": true,
+      "max_abs": 0.0,
+      "changed_elements": 0
+    },
+    {
+      "width": 8,
+      "equal": true,
+      "max_abs": 0.0,
+      "changed_elements": 0
+    },
+    {
+      "width": 16,
+      "equal": false,
+      "max_abs": 2.86102294921875e-06,
+      "changed_elements": 3
+    },
+    {
+      "width": 17,
+      "equal": false,
+      "max_abs": 4.76837158203125e-07,
+      "changed_elements": 2
+    },
+    {
+      "width": 18,
+      "equal": false,
+      "max_abs": 4.76837158203125e-07,
+      "changed_elements": 2
+    },
+    {
+      "width": 32,
+      "equal": false,
+      "max_abs": 4.76837158203125e-07,
+      "changed_elements": 2
+    }
+  ],
+  "diagnostic_only": true
+}

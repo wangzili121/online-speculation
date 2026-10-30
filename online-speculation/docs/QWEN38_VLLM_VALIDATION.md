@@ -16,8 +16,12 @@
 映射 AR 视图与原生验证的额外数值对照未达到预设 TV<=0.05：31 行最大 TV=0.09108947，首行 TV=0.02189109。
 这项诊断不能登记为通过，也不能仅凭阈值超出便认定参数映射有误；需与目标后端的块长度数值差异一同分析。
 
-相关回归为 223 passed、16 个 CUDA 专用测试 skipped。
+相关回归为 224 passed、16 个 CUDA 专用测试 skipped。
 原始记录：[K32 严格对照](validation/qwen38/acceptance-1031-k32-fixed-strict.json)、[同模型块宽度对照](validation/qwen38/acceptance-1031-json-width.json)、[原生投影与独立 linear](validation/qwen38/acceptance-1031-json-projection.json)、[回归结果](validation/qwen38/acceptance-1031-final-v2-cpu.xml)。
+
+另有不加载模型的单卡数值复现：`python scripts/probe_npu_linear_batch.py --device 0`。
+本机随机矩阵的 batch 差异最大为 2.86e-6，见 [单算子记录](validation/qwen38/acceptance-1031-linear-synthetic.json)；真实模型投影的 0.03125 来自另一组权重和输入，不把二者当作同一误差指标。
+新增回归另覆盖固定反馈失败仍返回诊断结果、保存 checkpoint 和验收门槛保持有效，见 [最新回归记录](validation/qwen38/acceptance-1031-final-v3-cpu.xml)。
 
 镜像内原生 sampler 的 31 个拒绝位置、全接受 bonus 和 32768 次分布抽样通过；另一个混合 batch 的零候选 RNG 检查失败，未登记为通过。
 该失败由直接调用原生 sampler 复现，不经过本插件，且不属于当前 `max_num_seqs=1` 的声明范围；本轮未修改它。
@@ -26,7 +30,7 @@ last-1、stride=16 的在线边界检查已完成：14 个 greedy 请求合计 2
 两个 rank 各验证 111 轮、更新 6 次，计数及最终 loss 一致；head 哈希改变，主模型全量权重哈希不变，每 rank 52 次缓存只读抽查通过。
 五类请求边界各运行三轮，第二、三轮活跃内存的最大增长为 4,136,448 字节，低于 64 MiB 门槛；这是有界复测，不是长时间无泄漏证明。
 两个分片及 manifest 已导出到 version6。见 [last-1 原始记录](validation/qwen38/acceptance-1031-last1-online.json)。
-last-4 的第一次扩展运行在固定反馈验收失败：沿用已有 AdamW 状态重复更新 8 次，TV loss 从 0.51410162 升至 0.51602209，25 个执行参数变化，缓存仍按字节不变。
+last-4 的第一次扩展运行在固定反馈验收失败：沿用已有 AdamW 状态重复更新 8 次，TV loss 从 0.51410162 升至 0.51602209，两 rank 分别有 25、26 个执行参数变化，缓存仍按字节不变。
 这是未通过项，不将“参数能更新”当成“loss 已下降”；完整记录见 [失败摘要](validation/qwen38/acceptance-1031-replay8-failed.json)及 [原始日志](validation/qwen38/acceptance-1031-replay8-failed.log.gz)。
 32 步固定反馈复测、重载及 API 的扩展验收仍在进行；以下为 2026-10-30 及之前已完成的验证范围。
 
