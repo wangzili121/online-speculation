@@ -1,0 +1,452 @@
+{
+  "model": "/models/Qwen3.8-27B",
+  "target_only": false,
+  "tp": 2,
+  "block_size": 32,
+  "gdn_prefill_backend": "cann",
+  "max_model_len": 8192,
+  "online": true,
+  "last_layers": 4,
+  "update_stride": 1,
+  "native_ngram_control": false,
+  "proposal_fixture": null,
+  "outputs": [
+    {
+      "case": "short-greedy",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "sampling-topk",
+      "reference_case": "sampling-topk",
+      "temperature": 0.7,
+      "tokens": [
+        11751,
+        13,
+        271,
+        4639,
+        579,
+        4252,
+        13,
+        11751,
+        369,
+        279,
+        6511,
+        314,
+        9338,
+        13,
+        1049,
+        369
+      ],
+      "text": " Paris.\n\nThat's correct. Paris is the capital of France. It is"
+    },
+    {
+      "case": "short-greedy-repeat1",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "sampling-topk-repeat1",
+      "reference_case": "sampling-topk",
+      "temperature": 0.7,
+      "tokens": [
+        11751,
+        13,
+        271,
+        760,
+        6511,
+        314,
+        9564,
+        369,
+        19241,
+        13,
+        271,
+        760,
+        6511,
+        314,
+        14898,
+        369
+      ],
+      "text": " Paris.\n\nThe capital of Germany is Berlin.\n\nThe capital of Italy is"
+    },
+    {
+      "case": "short-greedy-repeat2",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "sampling-topk-repeat2",
+      "reference_case": "sampling-topk",
+      "temperature": 0.7,
+      "tokens": [
+        11751,
+        13,
+        198,
+        32,
+        13,
+        2912,
+        198,
+        33,
+        13,
+        3439,
+        271,
+        248068,
+        198,
+        760,
+        1156,
+        369
+      ],
+      "text": " Paris.\nA. True\nB. False\n\n<think>\nThe user is"
+    },
+    {
+      "case": "short-greedy-repeat3",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "sampling-topk-repeat3",
+      "reference_case": "sampling-topk",
+      "temperature": 0.7,
+      "tokens": [
+        11751,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        9564,
+        369,
+        19241,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        14898,
+        369
+      ],
+      "text": " Paris.\nThe capital of Germany is Berlin.\nThe capital of Italy is"
+    },
+    {
+      "case": "short-greedy-repeat4",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "sampling-topk-repeat4",
+      "reference_case": "sampling-topk",
+      "temperature": 0.7,
+      "tokens": [
+        11751,
+        13,
+        11751,
+        369,
+        279,
+        7526,
+        3177,
+        303,
+        9338,
+        321,
+        279,
+        10407,
+        314,
+        279,
+        8323,
+        2936
+      ],
+      "text": " Paris. Paris is the largest city in France and the seat of the French government"
+    }
+  ],
+  "workers": [
+    {
+      "orthrus": true,
+      "rank": 0,
+      "proposals": 111,
+      "verified": 85,
+      "accepted": 73,
+      "max_verified_tokens": 31,
+      "full_blocks": 85,
+      "updates": 85,
+      "loss": 0.425234317779541,
+      "head_dir": "/work/evidence/acceptance-1031-functional-r2-167/head-last4/version254",
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 111,
+      "cache_readonly_checks": 78
+    },
+    {
+      "orthrus": true,
+      "rank": 1,
+      "proposals": 111,
+      "verified": 85,
+      "accepted": 73,
+      "max_verified_tokens": 31,
+      "full_blocks": 85,
+      "updates": 85,
+      "loss": 0.425234317779541,
+      "head_dir": "/work/evidence/acceptance-1031-functional-r2-167/head-last4/version254",
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 111,
+      "cache_readonly_checks": 78
+    }
+  ],
+  "seconds": 400.2295392281376,
+  "completed": true,
+  "sampling_calibration": {
+    "trials": 16,
+    "speculative_rows": 32,
+    "allowed": [
+      357,
+      417,
+      351
+    ],
+    "observed": {
+      "357": 2.0,
+      "417": 15.0,
+      "351": 15.0
+    },
+    "expected": {
+      "357": 2.7438356741331518,
+      "417": 13.373444257769734,
+      "351": 15.882718758657575
+    },
+    "variance": {
+      "357": 1.9951854854898716,
+      "417": 2.915501642677021,
+      "351": 1.8173359427628093
+    },
+    "probability_source": "native_pre_sampling_logits",
+    "repeated_seed_tokens": null,
+    "passed": true
+  },
+  "target_weights": {
+    "before": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "after": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "unchanged": true
+  },
+  "head_before": [
+    {
+      "sha256": "331efeae20038d553860649c3013589016d3f1799f22d699c9b8d5f1f9d846d6",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "d0b90d4733c47d8e43f99fd5d2efd30935a1b203fae355599eb4aa937ceb4cb7",
+      "bytes": 7239797504
+    }
+  ],
+  "head_after": [
+    {
+      "sha256": "a9aba3b33ea05af18e4f5bd883d1f1a1296617608ee0faf871b04344fc278e13",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "7a53f657b8a4905dfc161e140c6eea08a029341189733cb18e95e59254b6cec4",
+      "bytes": 7239797504
+    }
+  ],
+  "memory": [
+    {
+      "case": "short-greedy",
+      "workers": [
+        {
+          "allocated": 50840007168,
+          "reserved": 55887003648
+        },
+        {
+          "allocated": 50840007168,
+          "reserved": 55887003648
+        }
+      ]
+    },
+    {
+      "case": "sampling-topk",
+      "workers": [
+        {
+          "allocated": 50871183872,
+          "reserved": 56264491008
+        },
+        {
+          "allocated": 50871183872,
+          "reserved": 56264491008
+        }
+      ]
+    },
+    {
+      "case": "short-greedy-repeat1",
+      "workers": [
+        {
+          "allocated": 50840007168,
+          "reserved": 56270782464
+        },
+        {
+          "allocated": 50840007168,
+          "reserved": 56270782464
+        }
+      ]
+    },
+    {
+      "case": "sampling-topk-repeat1",
+      "workers": [
+        {
+          "allocated": 50871183872,
+          "reserved": 56270782464
+        },
+        {
+          "allocated": 50871183872,
+          "reserved": 56270782464
+        }
+      ]
+    },
+    {
+      "case": "short-greedy-repeat2",
+      "workers": [
+        {
+          "allocated": 50840007168,
+          "reserved": 56270782464
+        },
+        {
+          "allocated": 50840007168,
+          "reserved": 56270782464
+        }
+      ]
+    },
+    {
+      "case": "sampling-topk-repeat2",
+      "workers": [
+        {
+          "allocated": 50871183872,
+          "reserved": 56270782464
+        },
+        {
+          "allocated": 50871183872,
+          "reserved": 56270782464
+        }
+      ]
+    },
+    {
+      "case": "short-greedy-repeat3",
+      "workers": [
+        {
+          "allocated": 50840007168,
+          "reserved": 56270782464
+        },
+        {
+          "allocated": 50840007168,
+          "reserved": 56270782464
+        }
+      ]
+    },
+    {
+      "case": "sampling-topk-repeat3",
+      "workers": [
+        {
+          "allocated": 50871748096,
+          "reserved": 56270782464
+        },
+        {
+          "allocated": 50871748096,
+          "reserved": 56270782464
+        }
+      ]
+    },
+    {
+      "case": "short-greedy-repeat4",
+      "workers": [
+        {
+          "allocated": 50840007168,
+          "reserved": 56270782464
+        },
+        {
+          "allocated": 50840007168,
+          "reserved": 56270782464
+        }
+      ]
+    },
+    {
+      "case": "sampling-topk-repeat4",
+      "workers": [
+        {
+          "allocated": 50871218688,
+          "reserved": 56270782464
+        },
+        {
+          "allocated": 50871218688,
+          "reserved": 56270782464
+        }
+      ]
+    }
+  ],
+  "greedy_matches_baseline": true
+}

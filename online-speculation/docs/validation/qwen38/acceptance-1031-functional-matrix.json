@@ -1,0 +1,94 @@
+[
+  {
+    "case": "last4-online",
+    "returncode": 0,
+    "seconds": 687.8704798002727,
+    "baseline_comparison": "external strict token comparison; no mismatch is waived",
+    "engine_checks_passed": true,
+    "greedy_matches_baseline": false,
+    "greedy_mismatches": [
+      {
+        "case": "json",
+        "expected": [
+          271,
+          71093,
+          2164,
+          198,
+          90,
+          198,
+          220,
+          328,
+          591,
+          763,
+          328,
+          59605,
+          487,
+          198,
+          220,
+          328
+        ],
+        "actual": [
+          271,
+          90,
+          198,
+          220,
+          328,
+          591,
+          763,
+          328,
+          59605,
+          487,
+          198,
+          220,
+          328,
+          416,
+          763,
+          220
+        ]
+      }
+    ],
+    "memory_check": {
+      "passed": false,
+      "max_live_growth_bytes": 184753152,
+      "tolerance_bytes": 67108864
+    },
+    "source_commit": "8449a6d"
+  },
+  {
+    "case": "head-reload-and-memory-fixed",
+    "returncode": 0,
+    "engine_checks_passed": true,
+    "head_reload_exact": true,
+    "greedy_matches_baseline": true,
+    "memory_check": {
+      "max_live_growth_bytes": 0,
+      "tolerance_bytes": 67108864,
+      "repeated_boundaries": 2,
+      "post_warmup_spread_bytes": [
+        0,
+        0,
+        564224,
+        564224
+      ]
+    },
+    "source_commit": "dbe50cd"
+  },
+  {
+    "case": "branch-oracle",
+    "returncode": 0,
+    "seconds": 85.3879582779482,
+    "baseline_comparison": "external strict token comparison; no mismatch is waived",
+    "engine_checks_passed": true,
+    "greedy_mismatches": [],
+    "greedy_matches_baseline": true
+  },
+  {
+    "case": "branch-reject",
+    "returncode": 0,
+    "seconds": 240.74925474915653,
+    "baseline_comparison": "external strict token comparison; no mismatch is waived",
+    "engine_checks_passed": true,
+    "greedy_mismatches": [],
+    "greedy_matches_baseline": true
+  }
+]

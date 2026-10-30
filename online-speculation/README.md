@@ -17,6 +17,7 @@
 
 ## 阅读与运行
 
+- [Qwen3.8 验收摘要](docs/QWEN38_ACCEPTANCE_SUMMARY.md)：真实 27B 的已验范围、K32 数值边界、head 重载及资源释放。
 - [Qwen3.8 推理与在线更新](docs/QWEN38_IMPLEMENTATION.md)：混合层参考执行器、NPU 功能验证、更新层数及服务侧剩余接入。
 - [Qwen3.8-27B 真机验证](docs/QWEN38_REAL_VALIDATION.md)：完整 64 层、两张 NPU、K32、原生 HF 对照、拒绝恢复和在线末层更新。
 - [Qwen3.8 原生 vLLM 接入](docs/QWEN38_VLLM.md)：TP 权重共享、验证反馈、在线更新、兼容 hook 与服务启动。

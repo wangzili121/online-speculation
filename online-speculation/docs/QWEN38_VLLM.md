@@ -3,6 +3,7 @@
 **状态：真实 27B 的 TP2 推理、在线更新及 head 交付链路已打通；扩展验收发现 K32 的数值一致性边界，尚不能宣称全部 greedy 用例逐 token 等价。**
 原生 OpenAI API 的流式、排队、取消恢复及跨页输入已通过已有功能检查；当前不宣称生产吞吐收益。具体证据见文末验证记录。
 主模型缓存复用已接入；固定 head 和最后四层在线更新已在新缓存路径重新验证，不再通过 AR 重放生成历史。
+本轮结论与未通过项见 [验收摘要](QWEN38_ACCEPTANCE_SUMMARY.md)。
 
 PyPTO 的计算路径、算子适配与在线反向边界见 [Orthrus-Qwen3.8 算子需求报告](ORTHRUS_QWEN38_PYPTO_REPORT.md)。
 
@@ -11,7 +12,7 @@ PyPTO 的计算路径、算子适配与在线反向边界见 [Orthrus-Qwen3.8 �
 
 ## 实现边界
 
-当前入口首先用于打通功能：BF16/FP32、eager、同步调度、`max_num_seqs=1`，不支持量化、PP、DP、DCP、PCP、LoRA、图模式或多模态输入。CANN prefill 选项只接收 BF16。
+当前真机验收覆盖 BF16、eager、同步调度、`max_num_seqs=1`，不支持量化、PP、DP、DCP、PCP、LoRA、图模式或多模态输入。整模型 FP32 尚未真机验收；CANN prefill 选项只接收 BF16。
 TP 分片的 query/KV 头和 GDN 头数须能整除 TP；27B 首选 TP=2。
 
 - Embedding、norm、MLP 和 LM head 引用当前 TP rank 已加载的主模型参数，不重新加载完整 checkpoint。

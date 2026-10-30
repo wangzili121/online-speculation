@@ -1,0 +1,1385 @@
+{
+  "model": "/models/Qwen3.8-27B",
+  "target_only": false,
+  "tp": 2,
+  "block_size": 32,
+  "gdn_prefill_backend": "cann",
+  "max_model_len": 8192,
+  "online": true,
+  "last_layers": 4,
+  "update_stride": 1,
+  "native_ngram_control": false,
+  "proposal_fixture": null,
+  "outputs": [
+    {
+      "case": "short-greedy",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "short-sampling",
+      "reference_case": "short-sampling",
+      "temperature": 1.0,
+      "tokens": [
+        729,
+        88786,
+        44,
+        29852,
+        351,
+        3024,
+        828,
+        271
+      ],
+      "text": " !、“MAGIC CUP”\n\n"
+    },
+    {
+      "case": "reject-rounds",
+      "reference_case": "reject-rounds",
+      "temperature": 0.0,
+      "tokens": [
+        220,
+        16,
+        11,
+        220,
+        17,
+        11,
+        220,
+        18,
+        11,
+        220,
+        19,
+        11,
+        220,
+        20,
+        11,
+        220,
+        21,
+        11,
+        220,
+        22,
+        11,
+        220,
+        23,
+        11,
+        220,
+        24,
+        11,
+        220,
+        16,
+        15,
+        11,
+        220,
+        16,
+        16,
+        11,
+        220,
+        16,
+        17,
+        11,
+        220,
+        16,
+        18,
+        11,
+        220,
+        16,
+        19,
+        11,
+        220
+      ],
+      "text": " 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, "
+    },
+    {
+      "case": "chunked-prefill",
+      "reference_case": "chunked-prefill",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        760,
+        1414,
+        16661,
+        314,
+        279,
+        3074,
+        11316,
+        328,
+        32,
+        4757,
+        682,
+        5983,
+        10583,
+        1,
+        11173
+      ],
+      "text": "\n\nThe text consists of the single sentence \"A tree has green leaves\" repeated"
+    },
+    {
+      "case": "sampling-topk",
+      "reference_case": "sampling-topk",
+      "temperature": 0.7,
+      "tokens": [
+        11751,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        279,
+        3516,
+        14634,
+        369,
+        6924,
+        13,
+        198,
+        760,
+        6511,
+        314
+      ],
+      "text": " Paris.\nThe capital of the United Kingdom is London.\nThe capital of"
+    },
+    {
+      "case": "long-decode",
+      "reference_case": "long-decode",
+      "temperature": 0.0,
+      "tokens": [
+        1204,
+        1599,
+        314,
+        1070,
+        6435,
+        279,
+        15262,
+        220,
+        24,
+        30,
+        271,
+        1206,
+        1698,
+        279,
+        24959,
+        494,
+        220,
+        16,
+        310,
+        220,
+        16,
+        15,
+        15,
+        421,
+        6435,
+        279,
+        15262,
+        220,
+        24,
+        11,
+        567,
+        628,
+        1387,
+        424,
+        1441,
+        1083,
+        1330,
+        4886,
+        25,
+        4947,
+        1332,
+        220,
+        24,
+        7701,
+        303,
+        279,
+        7896,
+        1925,
+        321,
+        4947,
+        1332,
+        220,
+        24,
+        7701,
+        303,
+        279,
+        21330,
+        1925,
+        13,
+        1690,
+        279,
+        7896,
+        1925,
+        11,
+        279,
+        4947,
+        513,
+        220,
+        24,
+        11,
+        220,
+        16,
+        24,
+        11,
+        220,
+        17,
+        24,
+        11,
+        220,
+        18,
+        24,
+        11,
+        220,
+        19,
+        24,
+        11,
+        220,
+        20,
+        24,
+        11,
+        220,
+        21,
+        24,
+        11,
+        220,
+        22,
+        24,
+        11,
+        220,
+        23,
+        24,
+        11,
+        321,
+        220,
+        24,
+        24,
+        11,
+        864,
+        6486,
+        586,
+        220,
+        16,
+        15,
+        4947,
+        13,
+        1690,
+        279,
+        21330,
+        1925,
+        11,
+        279,
+        4947,
+        513,
+        220,
+        24,
+        15,
+        11,
+        220
+      ],
+      "text": " how many of them contain the digit 9?\n\nTo count the integers from 1 to 100 that contain the digit 9, we can break it down into two cases: numbers where 9 appears in the units place and numbers where 9 appears in the tens place. For the units place, the numbers are 9, 19, 29, 39, 49, 59, 69, 79, 89, and 99, which gives us 10 numbers. For the tens place, the numbers are 90, "
+    },
+    {
+      "case": "context-tail",
+      "reference_case": "context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        2,
+        220,
+        16
+      ],
+      "text": "\n\n# 1"
+    },
+    {
+      "case": "after-context-tail",
+      "reference_case": "after-context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "length-1",
+      "reference_case": "length-1",
+      "temperature": 0.0,
+      "tokens": [
+        11
+      ],
+      "text": ","
+    },
+    {
+      "case": "length-2",
+      "reference_case": "length-2",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353
+      ],
+      "text": ", I"
+    },
+    {
+      "case": "length-31",
+      "reference_case": "length-31",
+      "temperature": 0.0,
+      "tokens": [
+        220,
+        16,
+        11,
+        220,
+        17,
+        11,
+        220,
+        18,
+        11,
+        220,
+        19,
+        11,
+        220,
+        20,
+        11,
+        220,
+        21,
+        11,
+        220,
+        22,
+        11,
+        220,
+        23,
+        11,
+        220,
+        24,
+        11,
+        220,
+        16,
+        15,
+        11
+      ],
+      "text": " 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,"
+    },
+    {
+      "case": "length-32",
+      "reference_case": "length-32",
+      "temperature": 0.0,
+      "tokens": [
+        220,
+        16,
+        11,
+        220,
+        17,
+        11,
+        220,
+        18,
+        11,
+        220,
+        19,
+        11,
+        220,
+        20,
+        11,
+        220,
+        21,
+        11,
+        220,
+        22,
+        11,
+        220,
+        23,
+        11,
+        220,
+        24,
+        11,
+        220,
+        16,
+        15,
+        11,
+        220
+      ],
+      "text": " 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "
+    },
+    {
+      "case": "length-33",
+      "reference_case": "length-33",
+      "temperature": 0.0,
+      "tokens": [
+        220,
+        16,
+        11,
+        220,
+        17,
+        11,
+        220,
+        18,
+        11,
+        220,
+        19,
+        11,
+        220,
+        20,
+        11,
+        220,
+        21,
+        11,
+        220,
+        22,
+        11,
+        220,
+        23,
+        11,
+        220,
+        24,
+        11,
+        220,
+        16,
+        15,
+        11,
+        220,
+        16
+      ],
+      "text": " 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 1"
+    },
+    {
+      "case": "code",
+      "reference_case": "code",
+      "temperature": 0.0,
+      "tokens": [
+        264,
+        478,
+        292,
+        271,
+        727,
+        1146,
+        2784,
+        11,
+        292,
+        1590,
+        198,
+        262,
+        460,
+        264,
+        471,
+        292
+      ],
+      "text": " a + b\n\ndef sub(a, b):\n    return a - b"
+    },
+    {
+      "case": "json",
+      "reference_case": "json",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        90,
+        198,
+        220,
+        328,
+        591,
+        763,
+        328,
+        59605,
+        487,
+        198,
+        220,
+        328,
+        416,
+        763,
+        220
+      ],
+      "text": "\n\n{\n  \"name\": \"Alice\",\n  \"age\": "
+    },
+    {
+      "case": "unicode",
+      "reference_case": "unicode",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        98116,
+        108820,
+        102357,
+        95983,
+        3709,
+        97117,
+        97701,
+        112195,
+        5205,
+        96655,
+        5205,
+        97274,
+        104562,
+        95793,
+        109895
+      ],
+      "text": "\n\n北京是中国的首都，也是全国的政治、文化、国际交往和科技创新"
+    },
+    {
+      "case": "page-edge",
+      "reference_case": "page-edge",
+      "temperature": 0.0,
+      "tokens": [
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046
+      ],
+      "text": "\n\n\n\n\n\n\n\n\n\n\n"
+    },
+    {
+      "case": "short-greedy-repeat1",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "sampling-topk-repeat1",
+      "reference_case": "sampling-topk",
+      "temperature": 0.7,
+      "tokens": [
+        11751,
+        13,
+        271,
+        2,
+        561,
+        6511,
+        314,
+        9338,
+        369,
+        11751,
+        13,
+        271,
+        57590,
+        11,
+        279,
+        6511
+      ],
+      "text": " Paris.\n\n# The capital of France is Paris.\n\nParis, the capital"
+    },
+    {
+      "case": "context-tail-repeat1",
+      "reference_case": "context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        2,
+        220,
+        16
+      ],
+      "text": "\n\n# 1"
+    },
+    {
+      "case": "after-context-tail-repeat1",
+      "reference_case": "after-context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "page-edge-repeat1",
+      "reference_case": "page-edge",
+      "temperature": 0.0,
+      "tokens": [
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046
+      ],
+      "text": "\n\n\n\n\n\n\n\n\n\n\n"
+    },
+    {
+      "case": "short-greedy-repeat2",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "sampling-topk-repeat2",
+      "reference_case": "sampling-topk",
+      "temperature": 0.7,
+      "tokens": [
+        11751,
+        13,
+        271,
+        2,
+        561,
+        6511,
+        314,
+        9338,
+        369,
+        11751,
+        13,
+        271,
+        760,
+        6511,
+        314,
+        9338
+      ],
+      "text": " Paris.\n\n# The capital of France is Paris.\n\nThe capital of France"
+    },
+    {
+      "case": "context-tail-repeat2",
+      "reference_case": "context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        2,
+        220,
+        16
+      ],
+      "text": "\n\n# 1"
+    },
+    {
+      "case": "after-context-tail-repeat2",
+      "reference_case": "after-context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "page-edge-repeat2",
+      "reference_case": "page-edge",
+      "temperature": 0.0,
+      "tokens": [
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046
+      ],
+      "text": "\n\n\n\n\n\n\n\n\n\n\n"
+    },
+    {
+      "case": "after-stop",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    }
+  ],
+  "workers": [
+    {
+      "orthrus": true,
+      "rank": 0,
+      "proposals": 251,
+      "verified": 222,
+      "accepted": 331,
+      "max_verified_tokens": 31,
+      "full_blocks": 219,
+      "updates": 254,
+      "loss": 0.49695083498954773,
+      "head_dir": null,
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 251,
+      "cache_readonly_checks": 83
+    },
+    {
+      "orthrus": true,
+      "rank": 1,
+      "proposals": 251,
+      "verified": 222,
+      "accepted": 331,
+      "max_verified_tokens": 31,
+      "full_blocks": 219,
+      "updates": 254,
+      "loss": 0.49695083498954773,
+      "head_dir": null,
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 251,
+      "cache_readonly_checks": 83
+    }
+  ],
+  "seconds": 658.5847761440091,
+  "completed": true,
+  "target_weights": {
+    "before": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "after": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "unchanged": true
+  },
+  "head_before": [
+    {
+      "sha256": "b64f7340d8114ba5448b302998ee34eb6e15ee0c22165f645c14cfeba226ed5b",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "bd47f4fc5705c53fbcb4c484a1454904ec10b1a51a87c618c643b31a943e2bbf",
+      "bytes": 7239797504
+    }
+  ],
+  "head_after": [
+    {
+      "sha256": "331efeae20038d553860649c3013589016d3f1799f22d699c9b8d5f1f9d846d6",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "d0b90d4733c47d8e43f99fd5d2efd30935a1b203fae355599eb4aa937ceb4cb7",
+      "bytes": 7239797504
+    }
+  ],
+  "memory": [
+    {
+      "case": "short-greedy",
+      "workers": [
+        {
+          "allocated": 50840007168,
+          "reserved": 55887003648
+        },
+        {
+          "allocated": 50840007168,
+          "reserved": 55887003648
+        }
+      ]
+    },
+    {
+      "case": "short-sampling",
+      "workers": [
+        {
+          "allocated": 50964694528,
+          "reserved": 56270782464
+        },
+        {
+          "allocated": 50964694528,
+          "reserved": 56270782464
+        }
+      ]
+    },
+    {
+      "case": "reject-rounds",
+      "workers": [
+        {
+          "allocated": 50842778624,
+          "reserved": 56270782464
+        },
+        {
+          "allocated": 50842778624,
+          "reserved": 56270782464
+        }
+      ]
+    },
+    {
+      "case": "chunked-prefill",
+      "workers": [
+        {
+          "allocated": 50857164800,
+          "reserved": 56298045440
+        },
+        {
+          "allocated": 50857164800,
+          "reserved": 56298045440
+        }
+      ]
+    },
+    {
+      "case": "sampling-topk",
+      "workers": [
+        {
+          "allocated": 51086729216,
+          "reserved": 56298045440
+        },
+        {
+          "allocated": 51086729216,
+          "reserved": 56402903040
+        }
+      ]
+    },
+    {
+      "case": "long-decode",
+      "workers": [
+        {
+          "allocated": 50844550144,
+          "reserved": 56570675200
+        },
+        {
+          "allocated": 50844550144,
+          "reserved": 56486789120
+        }
+      ]
+    },
+    {
+      "case": "context-tail",
+      "workers": [
+        {
+          "allocated": 51124264960,
+          "reserved": 56780390400
+        },
+        {
+          "allocated": 51124264960,
+          "reserved": 56759418880
+        }
+      ]
+    },
+    {
+      "case": "after-context-tail",
+      "workers": [
+        {
+          "allocated": 50839477760,
+          "reserved": 56780390400
+        },
+        {
+          "allocated": 50839477760,
+          "reserved": 56759418880
+        }
+      ]
+    },
+    {
+      "case": "length-1",
+      "workers": [
+        {
+          "allocated": 50837770240,
+          "reserved": 56780390400
+        },
+        {
+          "allocated": 50837770240,
+          "reserved": 56759418880
+        }
+      ]
+    },
+    {
+      "case": "length-2",
+      "workers": [
+        {
+          "allocated": 50840057856,
+          "reserved": 56780390400
+        },
+        {
+          "allocated": 50840057856,
+          "reserved": 56759418880
+        }
+      ]
+    },
+    {
+      "case": "length-31",
+      "workers": [
+        {
+          "allocated": 50840950784,
+          "reserved": 56780390400
+        },
+        {
+          "allocated": 50840950784,
+          "reserved": 56759418880
+        }
+      ]
+    },
+    {
+      "case": "length-32",
+      "workers": [
+        {
+          "allocated": 50841480192,
+          "reserved": 56780390400
+        },
+        {
+          "allocated": 50841480192,
+          "reserved": 56759418880
+        }
+      ]
+    },
+    {
+      "case": "length-33",
+      "workers": [
+        {
+          "allocated": 50842009600,
+          "reserved": 56780390400
+        },
+        {
+          "allocated": 50842009600,
+          "reserved": 56759418880
+        }
+      ]
+    },
+    {
+      "case": "code",
+      "workers": [
+        {
+          "allocated": 50841060864,
+          "reserved": 56780390400
+        },
+        {
+          "allocated": 50841060864,
+          "reserved": 56759418880
+        }
+      ]
+    },
+    {
+      "case": "json",
+      "workers": [
+        {
+          "allocated": 50841165824,
+          "reserved": 56780390400
+        },
+        {
+          "allocated": 50841165824,
+          "reserved": 56759418880
+        }
+      ]
+    },
+    {
+      "case": "unicode",
+      "workers": [
+        {
+          "allocated": 50840461312,
+          "reserved": 56780390400
+        },
+        {
+          "allocated": 50840461312,
+          "reserved": 56759418880
+        }
+      ]
+    },
+    {
+      "case": "page-edge",
+      "workers": [
+        {
+          "allocated": 50894979584,
+          "reserved": 56780390400
+        },
+        {
+          "allocated": 50894979584,
+          "reserved": 56759418880
+        }
+      ]
+    },
+    {
+      "case": "short-greedy-repeat1",
+      "workers": [
+        {
+          "allocated": 50840007168,
+          "reserved": 56780390400
+        },
+        {
+          "allocated": 50840007168,
+          "reserved": 56759418880
+        }
+      ]
+    },
+    {
+      "case": "sampling-topk-repeat1",
+      "workers": [
+        {
+          "allocated": 50963595264,
+          "reserved": 56780390400
+        },
+        {
+          "allocated": 50932803072,
+          "reserved": 56759418880
+        }
+      ]
+    },
+    {
+      "case": "context-tail-repeat1",
+      "workers": [
+        {
+          "allocated": 51216641536,
+          "reserved": 56843304960
+        },
+        {
+          "allocated": 51185849344,
+          "reserved": 56822333440
+        }
+      ]
+    },
+    {
+      "case": "after-context-tail-repeat1",
+      "workers": [
+        {
+          "allocated": 50932348928,
+          "reserved": 56843304960
+        },
+        {
+          "allocated": 50901556736,
+          "reserved": 56822333440
+        }
+      ]
+    },
+    {
+      "case": "page-edge-repeat1",
+      "workers": [
+        {
+          "allocated": 50926301184,
+          "reserved": 56843304960
+        },
+        {
+          "allocated": 50926301184,
+          "reserved": 56822333440
+        }
+      ]
+    },
+    {
+      "case": "short-greedy-repeat2",
+      "workers": [
+        {
+          "allocated": 50870764544,
+          "reserved": 56843304960
+        },
+        {
+          "allocated": 50870764544,
+          "reserved": 56822333440
+        }
+      ]
+    },
+    {
+      "case": "sampling-topk-repeat2",
+      "workers": [
+        {
+          "allocated": 51117556224,
+          "reserved": 56843304960
+        },
+        {
+          "allocated": 51117556224,
+          "reserved": 56822333440
+        }
+      ]
+    },
+    {
+      "case": "context-tail-repeat2",
+      "workers": [
+        {
+          "allocated": 51155057152,
+          "reserved": 56843304960
+        },
+        {
+          "allocated": 51370602496,
+          "reserved": 57011077120
+        }
+      ]
+    },
+    {
+      "case": "after-context-tail-repeat2",
+      "workers": [
+        {
+          "allocated": 50870799360,
+          "reserved": 56843304960
+        },
+        {
+          "allocated": 50870799360,
+          "reserved": 57011077120
+        }
+      ]
+    },
+    {
+      "case": "page-edge-repeat2",
+      "workers": [
+        {
+          "allocated": 50925736448,
+          "reserved": 56843304960
+        },
+        {
+          "allocated": 50925736448,
+          "reserved": 57011077120
+        }
+      ]
+    }
+  ],
+  "fixed_replay": [
+    {
+      "rank": 0,
+      "steps": 32,
+      "initial_loss": 0.5141016244888306,
+      "final_loss": 0.5085848569869995,
+      "losses": [
+        0.5141016244888306,
+        0.538662314414978,
+        0.5514915585517883,
+        0.5386541485786438,
+        0.5044602155685425,
+        0.5228735208511353,
+        0.5333840847015381,
+        0.5347738265991211,
+        0.5160220861434937,
+        0.51173996925354,
+        0.5316999554634094,
+        0.5222095251083374,
+        0.5011008381843567,
+        0.49977293610572815,
+        0.504593551158905,
+        0.5017333030700684,
+        0.496911883354187,
+        0.4984297752380371,
+        0.5008441805839539,
+        0.4976177215576172,
+        0.4986882507801056,
+        0.5014092922210693,
+        0.5077061057090759,
+        0.4954991340637207,
+        0.5005780458450317,
+        0.5103150606155396,
+        0.5206835865974426,
+        0.5107015371322632,
+        0.4982070028781891,
+        0.4976174831390381,
+        0.4937021732330322,
+        0.49695083498954773
+      ],
+      "changed_parameters": [
+        "layers.60.attention.draft.A_log",
+        "layers.60.attention.draft.conv1d.weight",
+        "layers.60.attention.draft.out_proj.weight",
+        "layers.60.attention.draft.in_proj_qkv.weight",
+        "layers.60.attention.draft.in_proj_z.weight",
+        "layers.60.attention.draft.in_proj_b.weight",
+        "layers.60.attention.draft.in_proj_a.weight",
+        "layers.61.attention.draft.A_log",
+        "layers.61.attention.draft.conv1d.weight",
+        "layers.61.attention.draft.out_proj.weight",
+        "layers.61.attention.draft.in_proj_qkv.weight",
+        "layers.61.attention.draft.in_proj_z.weight",
+        "layers.61.attention.draft.in_proj_b.weight",
+        "layers.61.attention.draft.in_proj_a.weight",
+        "layers.62.attention.draft.A_log",
+        "layers.62.attention.draft.conv1d.weight",
+        "layers.62.attention.draft.out_proj.weight",
+        "layers.62.attention.draft.in_proj_qkv.weight",
+        "layers.62.attention.draft.in_proj_z.weight",
+        "layers.62.attention.draft.in_proj_b.weight",
+        "layers.62.attention.draft.in_proj_a.weight",
+        "layers.63.attention.draft.q_proj.weight",
+        "layers.63.attention.draft.k_proj.weight",
+        "layers.63.attention.draft.v_proj.weight",
+        "layers.63.attention.draft.o_proj.weight"
+      ],
+      "trainable_parameters": 226243600,
+      "cache_unchanged": true,
+      "passed": true
+    },
+    {
+      "rank": 1,
+      "steps": 32,
+      "initial_loss": 0.5141016244888306,
+      "final_loss": 0.5085848569869995,
+      "losses": [
+        0.5141016244888306,
+        0.538662314414978,
+        0.5514915585517883,
+        0.5386541485786438,
+        0.5044602155685425,
+        0.5228735208511353,
+        0.5333840847015381,
+        0.5347738265991211,
+        0.5160220861434937,
+        0.51173996925354,
+        0.5316999554634094,
+        0.5222095251083374,
+        0.5011008381843567,
+        0.49977293610572815,
+        0.504593551158905,
+        0.5017333030700684,
+        0.496911883354187,
+        0.4984297752380371,
+        0.5008441805839539,
+        0.4976177215576172,
+        0.4986882507801056,
+        0.5014092922210693,
+        0.5077061057090759,
+        0.4954991340637207,
+        0.5005780458450317,
+        0.5103150606155396,
+        0.5206835865974426,
+        0.5107015371322632,
+        0.4982070028781891,
+        0.4976174831390381,
+        0.4937021732330322,
+        0.49695083498954773
+      ],
+      "changed_parameters": [
+        "layers.60.attention.draft.dt_bias",
+        "layers.60.attention.draft.A_log",
+        "layers.60.attention.draft.conv1d.weight",
+        "layers.60.attention.draft.out_proj.weight",
+        "layers.60.attention.draft.in_proj_qkv.weight",
+        "layers.60.attention.draft.in_proj_z.weight",
+        "layers.60.attention.draft.in_proj_b.weight",
+        "layers.60.attention.draft.in_proj_a.weight",
+        "layers.61.attention.draft.A_log",
+        "layers.61.attention.draft.conv1d.weight",
+        "layers.61.attention.draft.out_proj.weight",
+        "layers.61.attention.draft.in_proj_qkv.weight",
+        "layers.61.attention.draft.in_proj_z.weight",
+        "layers.61.attention.draft.in_proj_b.weight",
+        "layers.61.attention.draft.in_proj_a.weight",
+        "layers.62.attention.draft.A_log",
+        "layers.62.attention.draft.conv1d.weight",
+        "layers.62.attention.draft.out_proj.weight",
+        "layers.62.attention.draft.in_proj_qkv.weight",
+        "layers.62.attention.draft.in_proj_z.weight",
+        "layers.62.attention.draft.in_proj_b.weight",
+        "layers.62.attention.draft.in_proj_a.weight",
+        "layers.63.attention.draft.q_proj.weight",
+        "layers.63.attention.draft.k_proj.weight",
+        "layers.63.attention.draft.v_proj.weight",
+        "layers.63.attention.draft.o_proj.weight"
+      ],
+      "trainable_parameters": 226243600,
+      "cache_unchanged": true,
+      "passed": true
+    }
+  ],
+  "checkpoint": [
+    {
+      "rank": 0,
+      "version": 254,
+      "directory": "/work/evidence/acceptance-1031-functional-r2-167/head-last4/version254"
+    },
+    {
+      "rank": 1,
+      "version": 254,
+      "directory": "/work/evidence/acceptance-1031-functional-r2-167/head-last4/version254"
+    }
+  ]
+}

@@ -17,11 +17,11 @@
 这项诊断不能登记为通过，也不能仅凭阈值超出便认定参数映射有误；需与目标后端的块长度数值差异一同分析。
 
 相关回归为 224 passed、16 个 CUDA 专用测试 skipped。
-原始记录：[K32 严格对照](validation/qwen38/acceptance-1031-k32-fixed-strict.json)、[同模型块宽度对照](validation/qwen38/acceptance-1031-json-width.json)、[原生投影与独立 linear](validation/qwen38/acceptance-1031-json-projection.json)、[回归结果](validation/qwen38/acceptance-1031-final-v2-cpu.xml)。
+原始记录：[K32 严格对照](validation/qwen38/acceptance-1031-k32-fixed-strict.json)、[同模型块宽度对照](validation/qwen38/acceptance-1031-json-width.json)、[原生投影与独立 linear](validation/qwen38/acceptance-1031-json-projection.json)、[最新回归结果](validation/qwen38/acceptance-1031-final-v4-cpu.xml)。
 
 另有不加载模型的单卡数值复现：`python scripts/probe_npu_linear_batch.py --device 0`。
 本机随机矩阵的 batch 差异最大为 2.86e-6，见 [单算子记录](validation/qwen38/acceptance-1031-linear-synthetic.json)；真实模型投影的 0.03125 来自另一组权重和输入，不把二者当作同一误差指标。
-新增回归另覆盖固定反馈失败仍返回诊断结果、保存 checkpoint 和验收门槛保持有效，见 [最新回归记录](validation/qwen38/acceptance-1031-final-v3-cpu.xml)。
+新增回归覆盖固定反馈失败仍返回诊断结果；验证入口先保存 checkpoint，再执行最终门槛，保留诊断失败时的状态。
 
 镜像内原生 sampler 的 31 个拒绝位置、全接受 bonus 和 32768 次分布抽样通过；另一个混合 batch 的零候选 RNG 检查失败，未登记为通过。
 该失败由直接调用原生 sampler 复现，不经过本插件，且不属于当前 `max_num_seqs=1` 的声明范围；本轮未修改它。
@@ -32,7 +32,28 @@ last-1、stride=16 的在线边界检查已完成：14 个 greedy 请求合计 2
 两个分片及 manifest 已导出到 version6。见 [last-1 原始记录](validation/qwen38/acceptance-1031-last1-online.json)。
 last-4 的第一次扩展运行在固定反馈验收失败：沿用已有 AdamW 状态重复更新 8 次，TV loss 从 0.51410162 升至 0.51602209，两 rank 分别有 25、26 个执行参数变化，缓存仍按字节不变。
 这是未通过项，不将“参数能更新”当成“loss 已下降”；完整记录见 [失败摘要](validation/qwen38/acceptance-1031-replay8-failed.json)及 [原始日志](validation/qwen38/acceptance-1031-replay8-failed.log.gz)。
-32 步固定反馈复测、重载及 API 的扩展验收仍在进行；以下为 2026-10-30 及之前已完成的验证范围。
+32 步复测完成：两 rank 各有 222 次请求触发更新和 32 次固定反馈更新，TV loss 从 0.51410162 降至 0.50858486；两 rank loss 序列一致，缓存不变。
+8 步处的 0.51602209 在复测曲线中精确复现，后续 loss 仍有波动，不将单样本改善称为业务收敛。
+该运行的主模型全量参数哈希不变，每 rank 83 次缓存只读抽查通过；24 个 greedy 请求中，除同一 JSON 数值边界外其余 23 个对齐。
+见 [last-4 引擎执行记录](validation/qwen38/acceptance-1031-last4-online.json)及 [分项判定](validation/qwen38/acceptance-1031-functional-matrix.json)。引擎执行完成不代表外部数值或内存门槛全部通过。
+
+此运行的重复请求内存门槛未过：最大增长 184,753,152 字节。定位到采样适配每轮定义局部类，其闭包让完整 q 表等待循环 GC。
+改用模块级代理后，关闭循环 GC 的弱引用回归通过；临时换回旧实现可稳定复现失败，没有靠强制 GC 或放宽 64 MiB 门槛处理。
+新进程加载 version254，两个 TP 分片内容哈希与导出时完全相同，再执行 85 次在线更新、五轮交替请求及采样校验；主模型哈希不变，每 rank 78 次缓存只读抽查通过。
+最后两轮同类请求边界的活跃内存增长为 0；暖机后最大波动为 564,224 字节。
+见 [修复后真机记录](validation/qwen38/acceptance-1031-memory-fixed-online.json)和 [内存判定](validation/qwen38/acceptance-1031-memory-fixed-check.json)。
+
+受控全接受及拒绝分支均通过：全接受 4 轮、124 个候选，四次从接受 32 个输入的位置继续；连续拒绝 127 轮、接受 0 个候选，均从接受 1 个输入的位置继续。
+两组各 128 个输出 token 均与无投机基线一致，见 [全接受](validation/qwen38/acceptance-1031-branch-oracle.json)、[连续拒绝](validation/qwen38/acceptance-1031-branch-reject.json)。这些候选是验收夹具，不是训练 head 的接受率证据。
+
+原生 OpenAI API 的 15 项检查通过，包含 chat、普通 logprobs、SSE、两个客户端排队、1804-token 跨页输入及五轮取消/非法请求后恢复。
+加载 version254 后使用 last-1、stride=16，两 rank 各实际更新 4 次，计数、loss、梯度范数一致。
+最终服务的 JSON 数值探针仍与 target-only 不同，保留为未通过项；停服退出码为 0，关闭期出现原生异步 output-handler 错误和 resource-tracker 警告，不声称停服零报错。
+本次专用服务及容器已停止，实查 167 的 0、4 卡没有运行进程；61、111 没有本次仍在运行的验收容器。临时 pre-replay version222 已清理，最终 version254 和 last-1 version6 保留。
+见 [API 检查](validation/qwen38/acceptance-1031-api-167.json)、[服务在线更新](validation/qwen38/acceptance-1031-api-online-updates.json)、[最终 JSON 探针](validation/qwen38/acceptance-1031-api-json-diagnostic.json)及 [资源释放检查](validation/qwen38/acceptance-1031-resource-release.json)。
+最终代码、框架 commit、镜像和 67 个源文件的 SHA256 见 [版本锁定](validation/qwen38/acceptance-1031-runtime-lock-final.json)；实际部署源码与本地逐文件一致，三个关键框架源文件哈希未改变。
+
+以下为 2026-10-30 及之前已完成的验证范围。
 
 日期：2026-10-30。对象为真实 Qwen3.8-27B BF16 checkpoint，不是缩小模型。
 
