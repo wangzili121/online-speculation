@@ -46,18 +46,6 @@ def check_calibration(observed, expected, variance):
         raise AssertionError(f"sampling calibration failed: {failures}")
 
 
-def restricted_probabilities(logprobs, allowed):
-    # At temperature=1, renormalizing raw logprobs over the allowlist gives the
-    # exact constrained distribution. Some backends return raw requested-ID scores.
-    scores = {token: logprobs[token].logprob for token in allowed}
-    maximum = max(scores.values())
-    if not math.isfinite(maximum) or any(math.isnan(value) for value in scores.values()):
-        raise AssertionError("nonfinite constrained target distribution")
-    weights = {token: math.exp(value - maximum) for token, value in scores.items()}
-    total = sum(weights.values())
-    return {token: weight / total for token, weight in weights.items()}
-
-
 def sampling_calibration(llm, trials, *, check_repeat=False):
     from vllm import SamplingParams
 
@@ -68,23 +56,29 @@ def sampling_calibration(llm, trials, *, check_repeat=False):
     if any(len(ids) != 1 for ids in allowed):
         raise ValueError("calibration choices must each be one token")
     allowed = [ids[0] for ids in allowed]
+    llm.collective_rpc("orthrus_enable_sampling_calibration", args=(allowed,))
     observed, expected, variance = ({token: 0. for token in allowed} for _ in range(3))
     rows = 0
     repeated = None
     for seed in range(trials):
         params = SamplingParams(temperature=1., seed=10000 + seed, max_tokens=3, ignore_eos=True,
-                                allowed_token_ids=allowed, logprobs=3)
+                                allowed_token_ids=allowed)
         output = llm.generate(["Choose A, B, or C:"], params, use_tqdm=False)[0].outputs[0]
-        if len(output.token_ids) != 3 or len(output.logprobs) != 3:
+        traces = llm.collective_rpc("orthrus_sampling_rows")
+        traces = [trace[:3] for trace in traces]  # Engine output limits can discard surplus bonus tokens.
+        if (len(output.token_ids) != 3 or not traces or any(trace != traces[0] for trace in traces)
+                or [row["token"] for row in traces[0]] != list(output.token_ids)):
             raise AssertionError("calibration output is truncated")
         if seed == 0 and check_repeat:
             again = llm.generate(["Choose A, B, or C:"], params, use_tqdm=False)[0].outputs[0]
             if list(again.token_ids) != list(output.token_ids):
                 raise AssertionError("fixed-head requests with the same seed are not repeatable")
+            llm.collective_rpc("orthrus_sampling_rows")
             repeated = list(output.token_ids)
         # The first token is sampled by AR before drafting; only later rows test speculation.
-        for token, probabilities in zip(output.token_ids[1:], output.logprobs[1:], strict=True):
-            p = restricted_probabilities(probabilities, allowed)
+        for row in traces[0][1:]:
+            token = row["token"]
+            p = dict(zip(allowed, row["probabilities"], strict=True))
             if token not in p:
                 raise AssertionError("sampling escaped the allowed vocabulary")
             rows += 1
@@ -95,6 +89,7 @@ def sampling_calibration(llm, trials, *, check_repeat=False):
     check_calibration(observed, expected, variance)
     return dict(trials=trials, speculative_rows=rows, allowed=allowed,
                 observed=observed, expected=expected, variance=variance,
+                probability_source="native_pre_sampling_logits",
                 repeated_seed_tokens=repeated, passed=True)
 
 
@@ -134,9 +129,7 @@ def main():
     if not 1 <= repeats <= 100:
         raise ValueError("validation repeats must be in 1..100")
     calibration = int(os.environ.get("ORTHRUS_VALIDATE_SAMPLING_TRIALS", "0"))
-    if calibration:
-        options["logprobs_mode"] = "processed_logprobs"
-    if audit or trace or freeze or ar_view or head_digest or proposal_fixture or repeats > 1:
+    if audit or trace or freeze or ar_view or head_digest or proposal_fixture or calibration or repeats > 1:
         options["worker_extension_cls"] = "qwen38_validation_worker.ValidationWorker"
     start = time.perf_counter()
     llm = LLM(**options)
@@ -172,8 +165,12 @@ def main():
         if names - {case[0] for case in cases}:
             raise ValueError("unknown validation cases")
         cases = [case for case in cases if case[0] in names]
+    repeat_names = set(filter(None, os.environ.get("ORTHRUS_VALIDATE_REPEAT_CASES", "").split(",")))
+    if repeat_names - {case[0] for case in cases}:
+        raise ValueError("unknown repeated validation cases")
     cases = [(name if index == 0 else f"{name}-repeat{index}", name, prompt, temperature, length)
-             for index in range(repeats) for name, prompt, temperature, length in cases]
+             for index in range(repeats) for name, prompt, temperature, length in cases
+             if index == 0 or not repeat_names or name in repeat_names]
     outputs = []
     memory = []
     for name, reference, prompt, temperature, length in cases:

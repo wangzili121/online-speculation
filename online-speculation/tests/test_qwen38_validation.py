@@ -96,16 +96,6 @@ def test_sampling_calibration_detects_biased_counts(monkeypatch):
         check_calibration({1: 200, 2: 0}, {1: 100., 2: 100.}, {1: 50., 2: 50.})
 
 
-def test_calibration_normalizes_requested_raw_scores_without_underflow(monkeypatch):
-    import math
-    from types import SimpleNamespace
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
-    from validate_qwen38_vllm import restricted_probabilities
-    raw = {token: SimpleNamespace(logprob=math.log(probability) - 1000)
-           for token, probability in ((1, .1), (2, .2), (3, .3))}
-    assert restricted_probabilities(raw, [1, 2, 3]) == pytest.approx({1: 1/6, 2: 1/3, 3: 1/2})
-
-
 def test_runtime_environment_preserves_project_and_adds_cann(monkeypatch, tmp_path):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
     from run_qwen38_vllm import prepare_runtime_environment
@@ -142,3 +132,28 @@ def test_weight_fingerprint_tracks_values_not_tensor_identity(monkeypatch):
     assert before == _fingerprint([("weight", parameter.clone())])
     parameter[0] = 3
     assert before != _fingerprint([("weight", parameter)])
+
+
+@pytest.mark.parametrize("speculative", [False, True])
+def test_sampling_audit_captures_reached_rows_before_logit_mutation(monkeypatch, speculative):
+    import torch
+    from types import SimpleNamespace as NS
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from qwen38_validation_worker import ValidationWorker
+    logits = torch.tensor([[1., 2., 3.], [3., 1., 2.], [0., 0., 0.]])
+    expected = logits[:, [0, 2]].softmax(-1)
+    tokens = torch.tensor([[2, 0, -1]])
+
+    def sample(logits, metadata):
+        logits.fill_(-torch.inf)
+        return NS(sampled_token_ids=tokens)
+
+    worker = ValidationWorker()
+    worker.model_runner = NS(_sample=sample)
+    worker.orthrus_enable_sampling_calibration([0, 2])
+    metadata = NS(target_logits_indices=torch.tensor([0, 1]), bonus_logits_indices=torch.tensor([2]))
+    worker.model_runner._sample(logits, metadata if speculative else None)
+    rows = worker.orthrus_sampling_rows()
+    assert [row["token"] for row in rows] == [2, 0]
+    torch.testing.assert_close(torch.tensor([row["probabilities"] for row in rows]), expected[:2])
+    assert worker.orthrus_sampling_rows() == []

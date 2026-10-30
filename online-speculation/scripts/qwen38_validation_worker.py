@@ -67,6 +67,28 @@ def _fingerprint(parameters):
 
 
 class ValidationWorker(OrthrusWorkerExtension):
+    def orthrus_enable_sampling_calibration(self, allowed):
+        """Capture conditional probabilities before native sampling mutates logits."""
+        runner, self._sampling_rows = self.model_runner, []
+        sample = runner._sample
+
+        def checked(logits, metadata):
+            rows = logits if metadata is None else torch.cat(
+                (logits[metadata.target_logits_indices], logits[metadata.bonus_logits_indices]))
+            probabilities = rows[:, allowed].float().softmax(-1).cpu().tolist()
+            result = sample(logits, metadata)
+            tokens = result.sampled_token_ids[0].cpu().tolist()
+            self._sampling_rows.extend(dict(token=token, probabilities=probability)
+                for token, probability in zip(tokens, probabilities) if token >= 0)
+            return result
+
+        runner._sample = checked
+        return "enabled"
+
+    def orthrus_sampling_rows(self):
+        rows, self._sampling_rows = self._sampling_rows, []
+        return rows
+
     def orthrus_set_proposal_fixture(self, tokens, mode):
         """Drive cache branches using deterministic proposals, not a trained head."""
         if mode not in {"oracle", "reject"} or len(tokens) < 64:

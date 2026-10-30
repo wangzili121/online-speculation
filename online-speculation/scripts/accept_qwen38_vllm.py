@@ -95,13 +95,28 @@ def main():
                                   ORTHRUS_VALIDATE_FROZEN="1") if block == 32 else {})
         run(f"k{block}-fixed", ["--block-size", str(block)], flags)
     for last, stride in ((1, 16), (4, 1)):
-        run(f"last{last}-online", ["--block-size", "32", "--online", "--last-layers", str(last),
+        flags = candidate | {"ORTHRUS_VALIDATE_REPEATS": str(args.repeats), "ORTHRUS_VALIDATE_FROZEN": "1",
+            "ORTHRUS_VALIDATE_REPEAT_CASES": "short-greedy,sampling-topk,page-edge,context-tail,after-context-tail"}
+        if last == 4:
+            flags.update(ORTHRUS_VALIDATE_AR_VIEW="1", ORTHRUS_VALIDATE_REPLAY_STEPS="8")
+        report = run(f"last{last}-online", ["--block-size", "32", "--online", "--last-layers", str(last),
             "--update-stride", str(stride), "--checkpoint-dir", str(args.output_dir / f"head-last{last}"),
-            "--checkpoint-every", "1000000"], candidate | {"ORTHRUS_VALIDATE_REPEATS": str(args.repeats),
-                                                          "ORTHRUS_VALIDATE_FROZEN": "1"})
+            "--checkpoint-every", "1000000"], flags)
+        if report["head_before"] == report["head_after"]:
+            raise AssertionError("online updates did not change the head")
     last4 = json.loads((args.output_dir / "last4-online.json").read_text())
-    run("head-reload", ["--block-size", "32", "--online", "--last-layers", "1", "--head-dir",
+    reloaded = run("head-reload", ["--block-size", "32", "--online", "--last-layers", "1", "--head-dir",
         last4["checkpoint"][0]["directory"]], candidate)
+    if last4["head_after"] != reloaded["head_before"]:
+        raise AssertionError("reloaded head differs from the exported tensors")
+    reference = json.loads(baseline.read_text())
+    reference["outputs"] = [row for row in reference["outputs"] if row["case"] == "long-decode"]
+    branch_baseline = args.output_dir / "branch-baseline.json"
+    branch_baseline.write_text(json.dumps(reference, indent=2) + "\n")
+    for mode in ("oracle", "reject"):
+        run(f"branch-{mode}", ["--block-size", "32"], candidate | {
+            "ORTHRUS_VALIDATE_CASES": "long-decode", "ORTHRUS_VALIDATE_PROPOSAL_FIXTURE": mode,
+            "ORTHRUS_VALIDATE_BASELINE": str(branch_baseline)})
     print(f"ACCEPTANCE PASSED: {args.output_dir / 'matrix.json'}", flush=True)
 
 
