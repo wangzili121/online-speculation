@@ -6,7 +6,9 @@
 真实 27B、TP2、8K 上下文的 K32 检查中，16 个 greedy 用例有 15 个逐 token 一致，JSON 提示在第二个输出 token 处分叉。
 同一模型、同一提示、同一 draft head，只改变实际提交的候选数：0/1/7/15/16 个候选均与无投机一致，31 个候选出现分叉。
 无投机该位置的前两名目标 logits 为 16.625 和 16.5；32 行验证时出现三个 16.625 的并列值，原生 argmax 选择发生变化。
-目前证据说明差异出现在目标验证 logits 中，尚不据此断言具体 kernel 根因。
+进一步固定第一层原生投影的输入和权重，直接调用 `torch.nn.functional.linear`，仅改变 batch 行数，也复现了最大 0.03125 的输出变化。
+实测各块长度进入第一层投影的输入按字节相同；原生调用与独立 linear 检查均出现该变化。
+这确认了目标后端的 batch 形状相关数值变化是一个明确来源，不涉及 draft mask 或历史缓存读取；尚未逐层归因全部最终 logit 误差。
 
 同一 K32 运行的 64 种子、128 个投机输出位置的采样统计通过；参考概率直接取自原生采样前 logits。
 固定 head 的相同 seed 请求复现检查通过；两个 TP rank 的计数一致，每 rank 248 次缓存只读抽查通过。
@@ -14,7 +16,12 @@
 映射 AR 视图与原生验证的额外数值对照未达到预设 TV<=0.05：31 行最大 TV=0.09108947，首行 TV=0.02189109。
 这项诊断不能登记为通过，也不能仅凭阈值超出便认定参数映射有误；需与目标后端的块长度数值差异一同分析。
 
-相关回归为 221 passed、16 个 CUDA 专用测试 skipped，另新增的两项诊断工具单测通过。
+相关回归为 223 passed、16 个 CUDA 专用测试 skipped。
+原始记录：[K32 严格对照](validation/qwen38/acceptance-1031-k32-fixed-strict.json)、[同模型块宽度对照](validation/qwen38/acceptance-1031-json-width.json)、[原生投影与独立 linear](validation/qwen38/acceptance-1031-json-projection.json)、[回归结果](validation/qwen38/acceptance-1031-final-v2-cpu.xml)。
+
+镜像内原生 sampler 的 31 个拒绝位置、全接受 bonus 和 32768 次分布抽样通过；另一个混合 batch 的零候选 RNG 检查失败，未登记为通过。
+该失败由直接调用原生 sampler 复现，不经过本插件，且不属于当前 `max_num_seqs=1` 的声明范围；本轮未修改它。
+`logprob_token_ids` 与投机组合、受限词表的 processed-logprobs 也未纳入已支持范围，镜像内实测出现过 bonus shape 错误或返回项不完整。
 后续在线更新、保存重载和 API 的扩展结果将单独补齐；以下为 2026-10-30 及之前已完成的验证范围。
 
 日期：2026-10-30。对象为真实 Qwen3.8-27B BF16 checkpoint，不是缩小模型。
