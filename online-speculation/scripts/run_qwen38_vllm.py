@@ -4,6 +4,21 @@
 import argparse
 import json
 import os
+from pathlib import Path
+import sys
+
+
+def prepare_runtime_environment():
+    """Keep CANN Python bindings visible when Docker overrides PYTHONPATH."""
+    home = os.environ.get("ASCEND_HOME_PATH") or os.environ.get("ASCEND_TOOLKIT_HOME")
+    if home:
+        site = str(Path(home) / "python" / "site-packages")
+        if Path(site).is_dir():
+            if site not in sys.path:
+                sys.path.append(site)
+            paths = [path for path in os.environ.get("PYTHONPATH", "").split(os.pathsep) if path]
+            if site not in paths:
+                os.environ["PYTHONPATH"] = os.pathsep.join([*paths, site])
 
 
 def arguments():
@@ -56,6 +71,7 @@ def speculative_options(args):
 
 
 def main():
+    prepare_runtime_environment()
     args = arguments()
     settings = native_options(args) | speculative_options(args)
     model = settings.pop("model")

@@ -28,6 +28,15 @@ def test_greedy_comparison_requires_all_cases_and_exact_tokens(validation, candi
         validation(report(), candidate)
 
 
+def test_repeated_greedy_checks_every_repetition(validation):
+    candidate = report()
+    candidate["outputs"].append(dict(case="repeat", reference_case="greedy", temperature=0., tokens=[2, 3]))
+    validation(report(), candidate)
+    candidate["outputs"][-1]["tokens"] = [2, 4]
+    with pytest.raises(AssertionError, match="greedy mismatch"):
+        validation(report(), candidate)
+
+
 def test_checkpoint_frequency_is_forwarded(monkeypatch):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
     from run_qwen38_vllm import arguments, speculative_options
@@ -67,3 +76,58 @@ def test_explicit_kv_budget_must_be_positive(monkeypatch):
                                      "--kv-cache-memory-bytes", "0"])
     with pytest.raises(SystemExit):
         arguments()
+
+
+def test_comprehensive_cases_cover_lengths_and_physical_page_boundary(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from validate_qwen38_vllm import validation_cases
+    cases = {name: (prompt, length) for name, prompt, _, length
+             in validation_cases(comprehensive=True, max_model_len=4096)}
+    assert [cases[f"length-{length}"][1] for length in (1, 2, 31, 32, 33)] == [1, 2, 31, 32, 33]
+    assert len(cases["page-edge"][0]["prompt_token_ids"]) == 1535
+    assert {"code", "json", "unicode"} <= cases.keys()
+
+
+def test_sampling_calibration_detects_biased_counts(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from validate_qwen38_vllm import check_calibration
+    check_calibration({1: 101, 2: 99}, {1: 100., 2: 100.}, {1: 50., 2: 50.})
+    with pytest.raises(AssertionError, match="calibration failed"):
+        check_calibration({1: 200, 2: 0}, {1: 100., 2: 100.}, {1: 50., 2: 50.})
+
+
+def test_calibration_normalizes_requested_raw_scores_without_underflow(monkeypatch):
+    import math
+    from types import SimpleNamespace
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from validate_qwen38_vllm import restricted_probabilities
+    raw = {token: SimpleNamespace(logprob=math.log(probability) - 1000)
+           for token, probability in ((1, .1), (2, .2), (3, .3))}
+    assert restricted_probabilities(raw, [1, 2, 3]) == pytest.approx({1: 1/6, 2: 1/3, 3: 1/2})
+
+
+def test_runtime_environment_preserves_project_and_adds_cann(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from run_qwen38_vllm import prepare_runtime_environment
+    site = tmp_path / "python" / "site-packages"
+    site.mkdir(parents=True)
+    monkeypatch.setenv("ASCEND_HOME_PATH", str(tmp_path))
+    monkeypatch.setenv("PYTHONPATH", "/work/src:/work/scripts")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    prepare_runtime_environment()
+    prepare_runtime_environment()
+    import os
+    assert os.environ["PYTHONPATH"].split(":") == ["/work/src", "/work/scripts", str(site)]
+    assert sys.path.count(str(site)) == 1
+
+
+def test_memory_check_compares_matching_boundaries_after_warmup(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from accept_qwen38_vllm import memory_growth
+    report = dict(outputs=[dict(case=f"run{i}", reference_case="same") for i in range(3)],
+                  memory=[dict(case=f"run{i}", workers=[dict(allocated=size)])
+                          for i, size in enumerate((10, 200, 201))])
+    assert memory_growth(report, tolerance=2)["max_live_growth_bytes"] == 1
+    report["memory"][-1]["workers"][0]["allocated"] = 300
+    with pytest.raises(AssertionError, match="allocation grew"):
+        memory_growth(report, tolerance=2)

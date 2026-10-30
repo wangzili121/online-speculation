@@ -38,6 +38,35 @@ def fixture():
     return Qwen3_5ForCausalLM(config).eval().requires_grad_(False)
 
 
+@pytest.mark.parametrize("section,field,value", [
+    ("model_config", "enforce_eager", False),
+    ("model_config", "dtype", torch.float16),
+    ("scheduler_config", "max_num_seqs", 2),
+    ("scheduler_config", "async_scheduling", True),
+    ("parallel_config", "pipeline_parallel_size", 2),
+    ("parallel_config", "data_parallel_size", 2),
+    ("parallel_config", "decode_context_parallel_size", 2),
+    ("parallel_config", "prefill_context_parallel_size", 2),
+    (None, "quant_config", NS()),
+    (None, "lora_config", NS()),
+    ("speculative_config", "method", "eagle"),
+    ("speculative_config", "num_speculative_tokens", 32),
+    ("speculative_config", "num_speculative_tokens", 0),
+    ("speculative_config", "draft_sample_method", "unsupported"),
+    ("speculative_config", "rejection_sample_method", "approximate"),
+])
+def test_native_rejects_unsupported_execution_before_installing_hooks(section, field, value):
+    config = NS(model_config=NS(dtype=torch.bfloat16, enforce_eager=True, multimodal_config=None),
+                scheduler_config=NS(max_num_seqs=1, async_scheduling=False),
+                parallel_config=NS(pipeline_parallel_size=1, data_parallel_size=1),
+                quant_config=None, lora_config=None, additional_config={"qwen38_orthrus": {"mask_token_id": 1}},
+                speculative_config=NS(method="custom_class", num_speculative_tokens=31,
+                                      draft_sample_method="probabilistic", rejection_sample_method="standard"))
+    setattr(config if section is None else getattr(config, section), field, value)
+    with pytest.raises(ValueError):
+        Qwen38OrthrusProposer(config)
+
+
 def native_fixture(hf, rank=0, size=1, inference=False):
     def tensor(value, axis=None):
         value = value if axis is None else value.chunk(size, dim=axis)[rank]

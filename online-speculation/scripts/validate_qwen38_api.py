@@ -5,6 +5,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+import urllib.error
 import urllib.request
 
 
@@ -57,7 +58,10 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--recovery-rounds", type=int, default=1)
     args = parser.parse_args()
+    if not 1 <= args.recovery_rounds <= 100:
+        parser.error("--recovery-rounds must be in 1..100")
     client = Client(args.base_url, args.model)
     expected = {item["case"]: item["text"] for item in json.loads(args.baseline.read_text())["outputs"]}
     checks = []
@@ -99,6 +103,19 @@ def main():
     text, _ = client.complete(hello)
     assert text == expected["short-greedy"], text
     record("history_reset_after_long_request")
+    for index in range(args.recovery_rounds):
+        client.stream(dict(hello, max_tokens=128), cancel=True)
+        try:
+            client.request("/v1/completions", dict(hello, max_tokens=-1))
+        except urllib.error.HTTPError as error:
+            if error.code not in (400, 422):
+                raise
+        else:
+            raise AssertionError("invalid max_tokens was accepted")
+        text, _ = client.complete(hello)
+        if text != expected["short-greedy"]:
+            raise AssertionError("cancelled or invalid request contaminated the next request")
+        record("cancel_invalid_recover", round=index)
     args.output.write_text(json.dumps(dict(model=args.model, passed=True, checks=checks),
                                       ensure_ascii=False, indent=2) + "\n")
 

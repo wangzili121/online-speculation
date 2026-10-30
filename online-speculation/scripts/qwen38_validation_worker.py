@@ -1,6 +1,7 @@
 """Opt-in numerical boundary audit for native-engine validation only."""
 
 import functools
+import hashlib
 
 import torch
 
@@ -55,6 +56,21 @@ def _cache_snapshot(reader):
 
 
 class ValidationWorker(OrthrusWorkerExtension):
+    def orthrus_memory(self):
+        torch.npu.synchronize()
+        return dict(allocated=torch.npu.memory_allocated(), reserved=torch.npu.memory_reserved())
+
+    def orthrus_target_fingerprint(self):
+        """Hash actual native weights, not pointer identity or draft parameters."""
+        digest = hashlib.sha256()
+        size = 0
+        for name, parameter in self.model_runner.get_model().named_parameters():
+            raw = parameter.detach().contiguous().view(torch.uint8).cpu().numpy()
+            digest.update(name.encode())
+            digest.update(memoryview(raw))
+            size += raw.nbytes
+        return dict(sha256=digest.hexdigest(), bytes=size)
+
     def orthrus_enable_logits_audit(self):
         runner = self.model_runner
         metadata, sample = runner._build_attention_metadata, runner._sample
