@@ -4,6 +4,8 @@
 原生 OpenAI API 的流式、排队、取消恢复及跨页输入检查均通过；当前不宣称生产吞吐收益。具体证据见文末验证记录。
 主模型缓存复用已接入；固定 head 和最后四层在线更新已在新缓存路径重新验证，不再通过 AR 重放生成历史。
 
+PyPTO 的计算路径、算子适配与在线反向边界见 [Orthrus-Qwen3.8 算子需求报告](ORTHRUS_QWEN38_PYPTO_REPORT.md)。
+
 该入口使用 vLLM-Ascend 加载和执行真实 Qwen3.8 主模型，插件负责 Orthrus 起草和在线续训。
 主模型验证候选、执行 rejection sampling、维护正式缓存，均走原生引擎；不是将 Torch 参考执行器包装成服务。
 
