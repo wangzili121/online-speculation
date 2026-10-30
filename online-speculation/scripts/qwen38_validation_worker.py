@@ -67,6 +67,60 @@ def _fingerprint(parameters):
 
 
 class ValidationWorker(OrthrusWorkerExtension):
+    def orthrus_enable_projection_audit(self):
+        target = self.model_runner.get_model()
+        module = getattr(target, "language_model", target).model.layers[0].linear_attn.in_proj_qkvz
+        self._projection_rows, seen = [], set()
+
+        def capture(module, args, output):
+            boundary = self._logit_boundary
+            request = self.model_runner.input_batch.req_ids[0]
+            if boundary is None or boundary[0][0] - boundary[1][0] != 11 or request in seen:
+                return
+            seen.add(request)
+            value = output[0] if isinstance(output, tuple) else output
+            self._projection_rows.append((args[0].shape[0], args[0][0].detach().cpu(), value[0].detach().cpu()))
+
+        module.register_forward_hook(capture)
+        self._projection_module = module
+        return "enabled"
+
+    def orthrus_projection_audit(self):
+        module = self._projection_module
+        rows = self._projection_rows
+        if not rows:
+            raise AssertionError("no first-decode projection input captured")
+        reference = rows[0][1].to(module.weight.device)
+        direct, baseline = [], None
+        # 完全相同的输入和主模型权重，只改变已有 linear 算子的 batch 行数。
+        for width in (2, 8, 16, 18, 32):
+            value = torch.nn.functional.linear(reference[None].expand(width, -1).contiguous(), module.weight)[0].cpu()
+            if baseline is None:
+                baseline = value
+            direct.append(dict(width=width, max_abs=float((value.float() - baseline.float()).abs().max()),
+                               equal=torch.equal(value, baseline)))
+        return dict(native_calls=[dict(width=width, input_equal=torch.equal(x, rows[0][1]),
+            output_max_abs=float((y.float() - rows[0][2].float()).abs().max())) for width, x, y in rows],
+            direct_linear=direct)
+
+    def orthrus_set_proposal_limit(self, limit):
+        draft = self.model_runner.drafter
+        if not 0 <= limit < draft.block_size:
+            raise ValueError("proposal limit must fit the configured block")
+        self._proposal_limit = limit
+        if not hasattr(self, "_unlimited_propose"):
+            self._unlimited_propose = draft.propose_batch
+
+            def limited(*args, **kwargs):
+                return [row[:self._proposal_limit] for row in self._unlimited_propose(*args, **kwargs)]
+
+            draft.propose_batch = limited
+        return limit
+
+    def orthrus_take_logits_audit(self):
+        rows, self._logit_trace = self._logit_trace, []
+        return rows
+
     def orthrus_enable_sampling_calibration(self, allowed):
         """Capture conditional probabilities before native sampling mutates logits."""
         runner, self._sampling_rows = self.model_runner, []
@@ -150,11 +204,14 @@ class ValidationWorker(OrthrusWorkerExtension):
                         raise AssertionError("mapped AR view has invalid logits")
                     tv = (actual.softmax(-1) - expected.softmax(-1)).abs().sum(-1) / 2
                     maximum = float(tv.max())
-                    if maximum > .05:
-                        raise AssertionError(f"mapped AR view differs from native verifier: TV={maximum}")
                     self._ar_view_checks.append(dict(history=pending["cache"].length, rows=count,
                         max_tv=maximum, max_logit_abs=float((actual - expected).abs().max()),
-                        top1_matches=int((actual.argmax(-1) == expected.argmax(-1)).sum())))
+                        top1_matches=int((actual.argmax(-1) == expected.argmax(-1)).sum()),
+                        passed=maximum <= .05, row_tv=tv.cpu().tolist(),
+                        first_native_tokens=expected[0].topk(4).indices.cpu().tolist(),
+                        first_native_logits=expected[0].topk(4).values.cpu().tolist(),
+                        first_mapped_tokens=actual[0].topk(4).indices.cpu().tolist(),
+                        first_mapped_logits=actual[0].topk(4).values.cpu().tolist()))
                     requests.add(pending["request_id"])
             return observe(metadata, target, sampled)
 
@@ -173,7 +230,7 @@ class ValidationWorker(OrthrusWorkerExtension):
     def orthrus_head_fingerprint(self):
         return _fingerprint(self.model_runner.drafter._draft_parameters().items())
 
-    def orthrus_enable_logits_audit(self):
+    def orthrus_enable_logits_audit(self, min_seq_len=3000):
         runner = self.model_runner
         metadata, sample = runner._build_attention_metadata, runner._sample
         self._logit_trace, self._logit_boundary = [], None
@@ -187,7 +244,7 @@ class ValidationWorker(OrthrusWorkerExtension):
 
         def traced(logits, spec_decode_metadata):
             if (logits is not None and self._logit_boundary is not None
-                    and self._logit_boundary[0][0] >= 3000 and len(self._logit_trace) < 64):
+                    and self._logit_boundary[0][0] >= min_seq_len and len(self._logit_trace) < 64):
                 values, indices = logits.float().topk(4, dim=-1)
                 self._logit_trace.append(dict(seq_lens=list(self._logit_boundary[0]),
                                              query_lens=list(self._logit_boundary[1]),

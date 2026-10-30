@@ -184,3 +184,39 @@ def test_proposal_fixture_starts_after_the_committed_anchor(monkeypatch, mode):
     assert draft.pending["q"] is None
     assert draft.history_reader.read(draft_count=31, sampled_count=32) == "history"
     assert worker._fixture_reads == [32]
+
+
+def test_width_diagnostic_only_limits_returned_candidates(monkeypatch):
+    from types import SimpleNamespace as NS
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from qwen38_validation_worker import ValidationWorker
+    draft = NS(block_size=32, propose_batch=lambda: [[2, 3, 4]])
+    worker = ValidationWorker()
+    worker.model_runner = NS(drafter=draft)
+    worker.orthrus_set_proposal_limit(1)
+    assert draft.propose_batch() == [[2]]
+    worker.orthrus_set_proposal_limit(0)
+    assert draft.propose_batch() == [[]]
+    worker.orthrus_set_proposal_limit(31)
+    assert draft.propose_batch() == [[2, 3, 4]]
+    with pytest.raises(ValueError, match="fit"):
+        worker.orthrus_set_proposal_limit(32)
+
+
+def test_projection_diagnostic_preserves_native_weights(monkeypatch):
+    import torch
+    from types import SimpleNamespace as NS
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from qwen38_validation_worker import ValidationWorker
+    module = torch.nn.Linear(4, 8, bias=False).to(torch.bfloat16).requires_grad_(False)
+    original = module.weight.clone()
+    model = NS(model=NS(layers=[NS(linear_attn=NS(in_proj_qkvz=module))]))
+    worker = ValidationWorker()
+    worker.model_runner = NS(get_model=lambda: model, input_batch=NS(req_ids=["r1"]))
+    worker._logit_boundary = ([12], [1])
+    worker.orthrus_enable_projection_audit()
+    module(torch.ones(2, 4, dtype=torch.bfloat16))
+    result = worker.orthrus_projection_audit()
+    assert [row["width"] for row in result["direct_linear"]] == [2, 8, 16, 18, 32]
+    assert result["native_calls"][0]["input_equal"]
+    torch.testing.assert_close(module.weight, original, rtol=0, atol=0)

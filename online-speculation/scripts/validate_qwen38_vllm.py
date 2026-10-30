@@ -139,7 +139,8 @@ def main():
     if args.gdn_prefill_backend == "cann":
         llm.collective_rpc("orthrus_use_cann_gdn_prefill")
     if trace:
-        llm.collective_rpc("orthrus_enable_logits_audit")
+        llm.collective_rpc("orthrus_enable_logits_audit",
+                          args=(int(os.environ.get("ORTHRUS_VALIDATE_LOGITS_MIN_LEN", "3000")),))
     if ar_view:
         if target_only:
             raise ValueError("AR view audit requires Orthrus")
@@ -256,7 +257,8 @@ def main():
         if args.online:
             assert all(item["updates"] > 0 for item in stats), stats
         if ar_view:
-            assert all(item["ar_view_checks"] for item in stats), stats
+            assert all(item["ar_view_checks"] and all(check["passed"] for check in item["ar_view_checks"])
+                       for item in stats), stats
         if proposal_fixture == "oracle":
             assert all(args.block_size in item["fixture_accepted_reads"] for item in stats), stats
         elif proposal_fixture == "reject":
