@@ -94,6 +94,8 @@ def test_sampling_calibration_detects_biased_counts(monkeypatch):
     check_calibration({1: 101, 2: 99}, {1: 100., 2: 100.}, {1: 50., 2: 50.})
     with pytest.raises(AssertionError, match="calibration failed"):
         check_calibration({1: 200, 2: 0}, {1: 100., 2: 100.}, {1: 50., 2: 50.})
+    with pytest.raises(AssertionError, match="nonfinite"):
+        check_calibration({1: 10}, {1: float("nan")}, {1: 1.})
 
 
 def test_runtime_environment_preserves_project_and_adds_cann(monkeypatch, tmp_path):
@@ -157,3 +159,28 @@ def test_sampling_audit_captures_reached_rows_before_logit_mutation(monkeypatch,
     assert [row["token"] for row in rows] == [2, 0]
     torch.testing.assert_close(torch.tensor([row["probabilities"] for row in rows]), expected[:2])
     assert worker.orthrus_sampling_rows() == []
+
+
+@pytest.mark.parametrize("mode", ["oracle", "reject"])
+def test_proposal_fixture_starts_after_the_committed_anchor(monkeypatch, mode):
+    import torch
+    from types import SimpleNamespace as NS
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from qwen38_validation_worker import ValidationWorker
+    draft = NS(runner=NS(input_batch=NS(num_tokens_no_spec=[11], num_prompt_tokens=[10])),
+               model=NS(config=NS(vocab_size=256)),
+               history_reader=NS(read=lambda **kwargs: "history"))
+
+    def propose():
+        draft.pending = dict(candidates=torch.zeros(31, dtype=torch.long), q=torch.ones(31, 256) / 256)
+        return [[0] * 31]
+
+    draft.propose_batch = propose
+    worker = ValidationWorker()
+    worker.model_runner = NS(drafter=draft)
+    worker.orthrus_set_proposal_fixture(list(range(128)), mode)
+    expected = list(range(1, 32)) if mode == "oracle" else list(range(2, 33))
+    assert draft.propose_batch() == [expected]
+    assert draft.pending["q"] is None
+    assert draft.history_reader.read(draft_count=31, sampled_count=32) == "history"
+    assert worker._fixture_reads == [32]

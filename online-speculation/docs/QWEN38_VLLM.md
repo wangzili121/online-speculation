@@ -19,6 +19,10 @@ TP 分片的 query/KV 头和 GDN 头数须能整除 TP；27B 首选 TP=2。
 - 历史来源为 `shared_target_snapshot`：从原生主模型的分页 KV、GDN 卷积及递推状态读取接受前缀，**不再执行 AR 历史重放，也不维护另一套持续追加的 AR cache。** Full Attention 将有效物理页整理为 SDPA 的连续输入；GDN 仅提取接受位置的工作状态。这里仍有布局转换和临时复制，不是分页 KV 的零拷贝直读。
 - 候选及其真实生成分布 q 交给原生 rejection sampler；拒绝后的 token 不进入可读历史，draft KV 也不会成为正式 KV。
 
+draft 默认跟随请求的 temperature、top-k 和 top-p；greedy 请求直接起草最高概率 token。
+有显式 seed 的新请求会独立初始化 draft RNG，避免沿用上一个请求的起草随机状态。
+固定 head 下可检查同种子请求复现，但不能要求投机与无投机使用同种子得到相同的采样序列；在线更新改变 head 后也不作这一要求。
+
 `qwen38_history.py` 负责缓存边界：当前最后一个采样 token 是下一轮 anchor，尚未经过主模型，不属于已计算历史。
 整块验证后，KV 虽可能已写入被拒绝的位置，draft 只能读到接受前缀末尾；GDN 则从本轮接受位置的 checkpoint 取递推状态，并从卷积行提取对应的历史输入，不能沿用上一轮接受数或读取块末状态。
 得到的快照不与主模型缓存共享可写存储。它们既供本轮 draft 使用，也让在线后缀重放不受下一轮验证或请求切换时的 cache 复用影响。
@@ -111,6 +115,22 @@ curl http://127.0.0.1:8000/v1/completions \
 
 服务启动后，可运行 `scripts/validate_qwen38_api.py --base-url http://127.0.0.1:8000 --model /models/Qwen3.8-27B --baseline /work/evidence/target.json --output /work/evidence/api.json`。
 该脚本覆盖普通请求、流式输出、两个客户端排队、取消后恢复及 1804-token 跨页输入；服务的 `--max-model-len` 至少为 2048。
+
+可用以下入口连续运行原生引擎验收，每个配置使用独立进程，分别保留日志和 JSON：
+
+```bash
+python scripts/accept_qwen38_vllm.py \
+  --model /models/Qwen3.8-27B --mask-token-id 1 --tp 2 \
+  --max-model-len 8192 --output-dir /work/evidence/acceptance
+```
+
+该入口覆盖无投机基线、K=2/8/17/32、last-1/last-4 在线更新、head 导出重载，以及受控的整块接受和连续拒绝。
+每个主配置先完整运行输出长度、跨页、上下文末端、代码、JSON 和中文用例，再对五种请求边界重复检查在线状态及活跃内存。
+采样检查直接记录主模型采样前的 logits，在三个受限 token 上计算参考分布，按条件概率累计期望频数；不依赖 API logprobs 作为独立真值。
+last-4 还检查映射的 AR 参数与原生验证 logits 的偏差，并在固定反馈上更新八次；主模型全量权重哈希和缓存只读审计独立检查。
+受控候选只用于覆盖接受/拒绝分支，不能据其接受率评价真实 head。
+输出目录必须是新目录；已有目标基线可用 `--baseline` 复用，`--blocks 32` 可缩短重复验证。
+API 可增加 `--recovery-rounds 5`，连续检查取消、非法请求及后续正常请求恢复。
 
 CPU 测试覆盖权重别名与 AR 对照、原生参数类型复制、inference tensor 输入反向、双 TP 前向与梯度、全局裁剪、hook 调用顺序和 GDN 分段状态等价性。
 缓存测试另外覆盖乱序物理页、跨页读取、所有接受位置的选择、全接受与拒绝后的 draft 对照、请求边界校验，以及引擎复用缓存后在线快照仍保持不变；proposer 测试明确禁止调用 AR forward。

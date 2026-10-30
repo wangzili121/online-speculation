@@ -75,7 +75,10 @@ class ValidationWorker(OrthrusWorkerExtension):
         def checked(logits, metadata):
             rows = logits if metadata is None else torch.cat(
                 (logits[metadata.target_logits_indices], logits[metadata.bonus_logits_indices]))
-            probabilities = rows[:, allowed].float().softmax(-1).cpu().tolist()
+            probabilities = rows[:, allowed].float().softmax(-1)
+            if not torch.isfinite(probabilities).all():
+                raise AssertionError("nonfinite native calibration probabilities")
+            probabilities = probabilities.cpu().tolist()
             result = sample(logits, metadata)
             tokens = result.sampled_token_ids[0].cpu().tolist()
             self._sampling_rows.extend(dict(token=token, probabilities=probability)

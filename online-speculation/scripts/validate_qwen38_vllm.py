@@ -38,6 +38,9 @@ def check_calibration(observed, expected, variance):
     """Six-sigma bounded check against per-prefix target probabilities."""
     failures = []
     for token in expected:
+        if any(not math.isfinite(value) or value < 0
+               for value in (observed.get(token, 0), expected[token], variance[token])):
+            raise AssertionError("nonfinite or negative calibration statistics")
         deviation = abs(observed.get(token, 0) - expected[token])
         limit = 6 * math.sqrt(variance[token]) + 1
         if deviation > limit:
@@ -68,7 +71,7 @@ def sampling_calibration(llm, trials, *, check_repeat=False):
         traces = [trace[:3] for trace in traces]  # Engine output limits can discard surplus bonus tokens.
         if (len(output.token_ids) != 3 or not traces or any(trace != traces[0] for trace in traces)
                 or [row["token"] for row in traces[0]] != list(output.token_ids)):
-            raise AssertionError("calibration output is truncated")
+            raise AssertionError("native sampling rows do not match returned tokens or TP ranks")
         if seed == 0 and check_repeat:
             again = llm.generate(["Choose A, B, or C:"], params, use_tqdm=False)[0].outputs[0]
             if list(again.token_ids) != list(output.token_ids):
