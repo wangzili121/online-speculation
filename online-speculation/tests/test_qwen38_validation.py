@@ -220,3 +220,27 @@ def test_projection_diagnostic_preserves_native_weights(monkeypatch):
     assert [row["width"] for row in result["direct_linear"]] == [2, 8, 16, 18, 32]
     assert result["native_calls"][0]["input_equal"]
     torch.testing.assert_close(module.weight, original, rtol=0, atol=0)
+
+
+def test_fixed_replay_failure_is_returned_for_evidence_collection(monkeypatch):
+    import torch
+    from types import SimpleNamespace as NS
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import qwen38_validation_worker as audit
+    parameter = torch.ones(1)
+    losses = iter((.5, .6))
+    learner = NS(execution={"weight": parameter}, replay=True, updates=0, trainable_parameters=1,
+                 backward=lambda: next(losses), optimizer=NS(zero_grad=lambda **kwargs: None), _check=lambda: None)
+
+    def update():
+        parameter.add_(1)
+        learner.updates += 1
+        return {"loss": .55}
+
+    learner.update = update
+    worker = audit.ValidationWorker()
+    worker.model_runner = NS(drafter=NS(learner=learner, history_reader=None, tp=NS(rank=0)))
+    monkeypatch.setattr(audit, "_cache_snapshot", lambda reader: [torch.ones(1)])
+    result = worker.orthrus_validate_online_replay(1)
+    assert result["passed"] is False and result["cache_unchanged"]
+    assert result["steps"] == 1 and result["changed_parameters"] == ["weight"]

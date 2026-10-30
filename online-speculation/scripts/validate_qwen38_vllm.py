@@ -203,6 +203,13 @@ def main():
         outputs.append({"case": "after-stop", "temperature": 0.,
                         "tokens": list(recovered.token_ids), "text": recovered.text})
     replay = None
+    if args.online and args.checkpoint_dir and os.environ.get("ORTHRUS_VALIDATE_REPLAY_STEPS"):
+        checkpoint = llm.collective_rpc("orthrus_checkpoint")
+        if os.environ.get("ORTHRUS_VALIDATE_OUTPUT"):
+            Path(os.environ["ORTHRUS_VALIDATE_OUTPUT"]).write_text(json.dumps(dict(
+                completed=False, stage="before_fixed_replay", outputs=outputs,
+                workers=llm.collective_rpc("orthrus_stats"), checkpoint=checkpoint),
+                ensure_ascii=False, indent=2) + "\n")
     if os.environ.get("ORTHRUS_VALIDATE_REPLAY_STEPS"):
         if target_only or not args.online or os.environ.get("ORTHRUS_VALIDATE_AUDIT") != "1":
             raise ValueError("fixed replay validation requires the online validation worker")
@@ -273,6 +280,10 @@ def main():
             raise AssertionError(f"TP worker online losses diverged: {stats}")
         if args.online and args.checkpoint_dir:
             evidence["checkpoint"] = llm.collective_rpc("orthrus_checkpoint")
+    if replay is not None and not all(item["passed"] for item in replay):
+        if destination:
+            Path(destination).write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n")
+        raise AssertionError(f"fixed feedback did not meet its acceptance gate: {replay}")
     if destination:
         evidence["completed"] = True
         evidence["seconds"] = time.perf_counter() - start

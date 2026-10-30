@@ -273,12 +273,10 @@ class ValidationWorker(OrthrusWorkerExtension):
             unchanged = all(torch.equal(a.view(torch.uint8), b.view(torch.uint8))
                             for a, b in zip(cache, _cache_snapshot(draft.history_reader), strict=True))
             learner._check()
-        if not changed or not unchanged or not final < initial:
-            raise AssertionError(f"fixed replay failed: loss={initial}->{final}, "
-                                 f"changed={len(changed)}, cache_unchanged={unchanged}")
         return dict(rank=draft.tp.rank, steps=learner.updates - start, initial_loss=initial,
                     final_loss=final, losses=losses, changed_parameters=changed,
-                    trainable_parameters=learner.trainable_parameters, cache_unchanged=unchanged)
+                    trainable_parameters=learner.trainable_parameters, cache_unchanged=unchanged,
+                    passed=bool(changed) and unchanged and final < initial)
 
     def orthrus_enable_cache_audit(self):
         draft = self.model_runner.drafter
