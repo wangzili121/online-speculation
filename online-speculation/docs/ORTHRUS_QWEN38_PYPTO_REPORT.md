@@ -1,6 +1,7 @@
 # Orthrus-Qwen3.8：PyPTO 算子适配需求
 
-评估日期：2026-10-30。对象：Qwen3.8-27B 文本模型；以当前 Torch/NPU 实现的计算语义为准。
+评估日期：2026-10-30。对象：Qwen3.8-27B 文本模型；范围仅为 PyPTO 推理，不包含训练、在线更新或反向算子。
+以下 GDN 需求对应当前混合模型参考策略，不代表原始普通 Qwen3 算法已经定义了 GDN。
 PyPTO 代码核对版本：`pypto-lib@ab0fcd333d71701d063db4b9218ad2422f891ec4`。
 
 ## 1. 模型结构与适配范围
@@ -17,7 +18,9 @@ Embedding -> [GDN -> GDN -> GDN -> Full Attention] × 16 -> Norm -> LM head
 Full Attention 保存逐 token 的历史 K/V；GDN 保存卷积尾部输入和递推状态矩阵，不保存同样的历史 KV。
 Orthrus 在每层增加独立的 draft mixer 参数，复用并冻结 embedding、层外 norm、MLP 和 LM head；复用参数不等于复用计算结果，draft 仍须执行这些共享模块。
 
-当前适配沿用 Orthrus Qwen3.5 的混合模型定义：**Full Attention 块内双向，GDN 块内仍因果递推**，不把 GDN 替换成 SDPA。
+原始普通 Qwen3 实现的所有 mixer 都是 Full Attention，draft 块内双向；它没有 GDN，也没有定义 GDN 应如何扩展。
+当前适配沿用 Orthrus Qwen3.5 的混合模型参考：**Full Attention 块内双向，GDN 块内仍因果递推**，不把 GDN 替换成 SDPA。
+这是跨架构的扩展选择，不是原始算法推出的唯一方案；交付 head 必须与该策略一致。不能仅因当前方案输出通过校正检查，就认定它与“每层局部双向”的设计等价或接受率相同。
 一次输入为 `anchor + (K-1) 个 MASK`：anchor 是已知的最后一个 token，MASK 是待预测位置的占位符；主模型历史截止到 anchor 之前。
 当前服务使用 K=32，即一次提出 31 个候选。K 是配置，不是算法固定常数；改变 K 不改变公式，但可能需要新的编译规格和 tiling。
 
@@ -81,6 +84,11 @@ mixed = draft_o_proj(flatten_heads(o) * sigmoid(gate))
 
 ### 计算要求
 
+**本节实现的是当前混合参考策略，不是声称 GDN 天生不能双向或算法必然不需要双向。**
+一次整块起草不要求每个 mixer 局部双向：各位置输入在前向前已由 anchor/MASK 确定，因果 GDN 不依赖前面实际采样出的候选。
+Full Attention 会让各位置交换整块信息，后续 GDN 的输入也可能已包含右侧信息；这仍不同于 GDN 自身直接进行双向混合。
+如果另行要求 GDN 层自身也双向，则必须先定义新的块内卷积/状态传播及历史初值语义，并使用匹配的 head；不能仅修改 mask，也不能把下面的单向递推当作该需求的实现。
+
 **GDN 不是 softmax Attention，不能靠改 attention mask 支持。** 它先做宽度为 4 的逐通道因果卷积，再用门控 Delta Rule 更新历史状态。
 Qwen3.8 的 Q/K 有 16 个 head，V 有 48 个 head，维度均为 128；一组 Q/K 对应三个 V head。
 
@@ -141,7 +149,7 @@ mixed = draft_out_proj(draft_rmsnorm(o) * silu(z))
 | --- | --- | --- |
 | Full Attention 前后处理 | 适配 head_dim=256、GQA=6、部分 RoPE、Q/gate 布局、norm 和输出门控；不限于改 mask | Qwen3.8 基模适配 |
 | Full Attention 块计算 | 在已有分页 Attention 基础上增加多 query、同一历史前缀和临时双向 K/V 的入口，不 append 目标 cache | Orthrus 特有 |
-| GDN 前后处理及递推 | 从 KDA/PTO 实现复用可用部分，按 Qwen GDN 公式适配卷积、head 分组、门控、递推和精度；draft 接收 AR 状态副本 | 基模适配 + Orthrus 状态入口 |
+| GDN 前后处理及递推 | 按当前因果 GDN 策略，从 KDA/PTO 复用可用部分，适配卷积、head 分组、门控、递推和精度；draft 接收 AR 状态副本。不含另行设计双向 GDN | 基模适配 + 混合模型状态入口 |
 | 验证后的状态恢复 | 仅替换 draft 时沿用原生 verifier；若主模型也移入 PyPTO，则须支持接受前缀的 GDN 状态选择或等价的正确恢复 | 算子输出契约 + 引擎编排 |
 
 这些是能力交付项，**不是四个必须单独编译的 kernel**。投影、卷积、递推、输出可以按性能需求融合或拆分。
@@ -153,31 +161,20 @@ Embedding、GEMM、Dense MLP、残差等已有基础可复用，但仍要适配�
 可以保留逐位置 checkpoint，也可以正确重算接受前缀；不能使用第 K 行的状态，更不能把 draft 状态转正。
 分配/回收缓存、选择 checkpoint、request ID、版本和接受长度管理属于引擎，不要求算子自行完成调度。
 
-## 5. 在线更新是另一份反向需求
+## 5. 实现顺序与验证依据
 
-**前向推理支持，不代表在线更新已经由 PyPTO 支持。** 可以先让 PyPTO 跑 draft 前向，保留 Torch 后缀重放和优化器；发布时同步权重版本，并验证两侧前向/重放一致。
-如果连更新也迁入 PyPTO，则需单列反向实现和 autograd/运行时接入：
-
-- 最后 1 层是 Full Attention：需要其投影、Q/K norm、RoPE、Attention 和 gate 的反向；后缀内冻结的 MLP、norm、LM head 仍需要输入梯度。
-- 最后 4 层包含 3 个 GDN 和 1 个 Full Attention：额外需要卷积、GDN 递推、门控和输出 norm 的反向。
-
-还需接入词表 softmax/TV loss、梯度裁剪、优化器和 TP 梯度归并，不能只补 Attention backward。
-当前训练策略在后缀入口 detach，因此不要求对前面所有层反传；AR 历史状态也作为常量。
-不能根据当前前向 DSL 文件就声称这些反向已经具备，也不能据此断言 PyPTO 本身无法承载训练。
-
-## 6. 实现顺序与验证依据
-
-建议先固定文本、单请求、K32 的前向语义，用现有 Torch 实现作参照：先分别对齐 Full Attention 和 GDN，再接完整层和整块验证，最后处理分页直读、融合及在线反向。
+建议先确认 head 采用当前混合策略，再固定文本、单请求、K32 的前向语义，用现有 Torch 实现作参照：先分别对齐 Full Attention 和 GDN，再接完整层和整块验证，最后处理分页直读与融合。
 算子检查应包含非零初始状态、跨页/乱序页、不同 K 和有效长度、只读历史；引擎检查需遍历接受位置，并覆盖拒绝后只剩一个普通 decode token 的状态恢复。
 
-现有 **Torch/NPU + 原生 vLLM-Ascend** 已在真实 27B、TP2、K32、eager、同步单请求下验证起草、验证、拒绝恢复、缓存隔离、last-1/last-4 更新及 head 重载。
-扩展检查的 7 个 greedy 用例共 220 token 与同后端基线相同；固定反馈的 TV loss 从 0.5937 降至 0.5094。
+现有 **Torch/NPU + 原生 vLLM-Ascend** 已在真实 27B、TP2、K32、eager、同步单请求下验证起草、验证、拒绝恢复、缓存隔离及 head 重载。
+扩展检查的 7 个 greedy 用例共 220 token 与同后端基线相同；该检查验证校正和状态管理，不用于证明因果 GDN 是唯一算法选择或最优 draft 结构。
 这提供可运行参照，**不代表 PyPTO 已验证，也不代表已有训练 head 的吞吐收益**。当前 Full Attention draft 会先 gather 分页历史再用 SDPA，GDN draft 使用 Torch 组合路径，仍有可替换的性能空间。
 
 ## 依据与代码
 
 - [Qwen3.8-27B 官方配置](https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/config.json)：层数、层型及 head 规格。
+- [原始普通 Qwen3 双视图实现](https://github.com/xchang1121/inference_scaling/blob/main/online-speculation/src/blockspec/parallel/backbone.py)：`from_public` 限定 Full Attention，未定义 GDN。
 - [Orthrus 混合模型定义，固定版本](https://github.com/chiennv2000/orthrus/blob/4dceab65156b3dfb5dadbb11181a0e65d0ad314d/src/models/modeling_orthrus_qwen3_5.py)：Full Attention 可见性与 GDN 状态种子。
 - [PyPTO Qwen Attention，固定版本](https://github.com/hw-native-sys/pypto-lib/blob/ab0fcd333d71701d063db4b9218ad2422f891ec4/models/qwen3_14b/paged_attention_pypto.py)、[KDA](https://github.com/hw-native-sys/pypto-lib/blob/ab0fcd333d71701d063db4b9218ad2422f891ec4/models/glm5_3_flash/kda.py)：现有实现基础，未发现完整 Qwen3.8 模型入口。
-- 本仓库：[双视图执行器](../src/blockspec/parallel/qwen38.py)、[主模型历史读取](../src/blockspec/vllm_ascend/qwen38_history.py)、[TP 权重与更新](../src/blockspec/vllm_ascend/qwen38_weights.py)。
+- 本仓库：[双视图执行器](../src/blockspec/parallel/qwen38.py)、[主模型历史读取](../src/blockspec/vllm_ascend/qwen38_history.py)、[TP 权重映射](../src/blockspec/vllm_ascend/qwen38_weights.py)。
 - [原生部署入口](QWEN38_VLLM.md)与[完整验证记录](QWEN38_VLLM_VALIDATION.md)。
