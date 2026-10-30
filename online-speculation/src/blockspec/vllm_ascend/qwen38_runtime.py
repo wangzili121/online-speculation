@@ -9,6 +9,20 @@ import functools
 import inspect
 
 
+class _DraftProbabilities:
+    # 局部类的闭包会让整块 q 等待循环 GC；模块级代理可在验证后立即释放引用。
+    __slots__ = ("sampler", "probabilities")
+
+    def __init__(self, sampler, probabilities):
+        self.sampler, self.probabilities = sampler, probabilities
+
+    def __getattr__(self, name):
+        return getattr(self.sampler, name)
+
+    def __call__(self, metadata, draft_probs, *args, **kwargs):
+        return self.sampler(metadata, self.probabilities, *args, **kwargs)
+
+
 def _ours(runner):
     return getattr(getattr(runner, "drafter", None), "qwen38_native_proposer", False)
 
@@ -98,15 +112,8 @@ def install_runner_hooks(runner_class=None):
         q = proposer.verification_probs(spec_decode_metadata)
         native_sampler = self.rejection_sampler
 
-        class WithDraftProbabilities:
-            def __getattr__(self, name):
-                return getattr(native_sampler, name)
-
-            def __call__(self, metadata, draft_probs, *args, **kwargs):
-                return native_sampler(metadata, q, *args, **kwargs)
-
         # 同步 worker 内临时注入 q，原生 _sample 的裁剪、prepare_sampling 等步骤不变。
-        self.rejection_sampler = WithDraftProbabilities()
+        self.rejection_sampler = _DraftProbabilities(native_sampler, q)
         try:
             output = sample(self, logits, spec_decode_metadata)
         finally:

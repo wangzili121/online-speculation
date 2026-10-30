@@ -274,6 +274,36 @@ def test_scoped_hooks_retain_custom_and_leave_others_unchanged():
         runner._sample(torch.ones(2, 4), NS())
     assert runner.rejection_sampler is reject
 
+    import gc
+    import weakref
+    references = []
+
+    def transient(metadata):
+        q = torch.ones(2, 4)
+        references.append(weakref.ref(q))
+        return q
+
+    class TensorReject:
+        def prepare_sampling(self, topk):
+            assert topk == 4
+
+        def __call__(self, meta, q, logits, sampling):
+            assert q.shape == (2, 4)
+            return NS(sampled_token_ids=torch.tensor([[7, -1]]))
+
+    runner.input_batch.update_async_output_token_ids = lambda: None
+    runner.rejection_sampler = TensorReject()
+    plugin.verification_probs = transient
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        runner._sample(torch.ones(2, 4), NS())
+        assert references[0]() is None, "sampler retained q until cyclic garbage collection"
+    finally:
+        if enabled:
+            gc.enable()
+        gc.collect()
+
 
 def test_hooks_reject_incompatible_runner():
     with pytest.raises(RuntimeError, match="unsupported Ascend"):
