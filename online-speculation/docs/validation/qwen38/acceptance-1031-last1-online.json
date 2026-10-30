@@ -1,0 +1,712 @@
+{
+  "model": "/models/Qwen3.8-27B",
+  "target_only": false,
+  "tp": 2,
+  "block_size": 32,
+  "gdn_prefill_backend": "cann",
+  "max_model_len": 8192,
+  "online": true,
+  "last_layers": 1,
+  "update_stride": 16,
+  "native_ngram_control": false,
+  "proposal_fixture": null,
+  "outputs": [
+    {
+      "case": "short-greedy",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "reject-rounds",
+      "reference_case": "reject-rounds",
+      "temperature": 0.0,
+      "tokens": [
+        220,
+        16,
+        11,
+        220,
+        17,
+        11,
+        220,
+        18,
+        11,
+        220,
+        19,
+        11,
+        220,
+        20,
+        11,
+        220,
+        21,
+        11,
+        220,
+        22,
+        11,
+        220,
+        23,
+        11,
+        220,
+        24,
+        11,
+        220,
+        16,
+        15,
+        11,
+        220,
+        16,
+        16,
+        11,
+        220,
+        16,
+        17,
+        11,
+        220,
+        16,
+        18,
+        11,
+        220,
+        16,
+        19,
+        11,
+        220
+      ],
+      "text": " 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, "
+    },
+    {
+      "case": "sampling-topk",
+      "reference_case": "sampling-topk",
+      "temperature": 0.7,
+      "tokens": [
+        11751,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        279,
+        3516,
+        14634,
+        369,
+        6924,
+        13,
+        198,
+        760,
+        6511,
+        314
+      ],
+      "text": " Paris.\nThe capital of the United Kingdom is London.\nThe capital of"
+    },
+    {
+      "case": "context-tail",
+      "reference_case": "context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        2,
+        220,
+        16
+      ],
+      "text": "\n\n# 1"
+    },
+    {
+      "case": "after-context-tail",
+      "reference_case": "after-context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "page-edge",
+      "reference_case": "page-edge",
+      "temperature": 0.0,
+      "tokens": [
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046
+      ],
+      "text": "\n\n\n\n\n\n\n\n\n\n\n"
+    },
+    {
+      "case": "short-greedy-repeat1",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "sampling-topk-repeat1",
+      "reference_case": "sampling-topk",
+      "temperature": 0.7,
+      "tokens": [
+        11751,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        279,
+        3516,
+        14634,
+        369,
+        6924,
+        13,
+        198,
+        760,
+        6511,
+        314
+      ],
+      "text": " Paris.\nThe capital of the United Kingdom is London.\nThe capital of"
+    },
+    {
+      "case": "context-tail-repeat1",
+      "reference_case": "context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        2,
+        220,
+        16
+      ],
+      "text": "\n\n# 1"
+    },
+    {
+      "case": "after-context-tail-repeat1",
+      "reference_case": "after-context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "page-edge-repeat1",
+      "reference_case": "page-edge",
+      "temperature": 0.0,
+      "tokens": [
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046
+      ],
+      "text": "\n\n\n\n\n\n\n\n\n\n\n"
+    },
+    {
+      "case": "short-greedy-repeat2",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "sampling-topk-repeat2",
+      "reference_case": "sampling-topk",
+      "temperature": 0.7,
+      "tokens": [
+        11751,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        279,
+        3516,
+        14634,
+        369,
+        6924,
+        13,
+        198,
+        760,
+        6511,
+        314
+      ],
+      "text": " Paris.\nThe capital of the United Kingdom is London.\nThe capital of"
+    },
+    {
+      "case": "context-tail-repeat2",
+      "reference_case": "context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        2,
+        220,
+        16
+      ],
+      "text": "\n\n# 1"
+    },
+    {
+      "case": "after-context-tail-repeat2",
+      "reference_case": "after-context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "page-edge-repeat2",
+      "reference_case": "page-edge",
+      "temperature": 0.0,
+      "tokens": [
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046
+      ],
+      "text": "\n\n\n\n\n\n\n\n\n\n\n"
+    },
+    {
+      "case": "after-stop",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    }
+  ],
+  "workers": [
+    {
+      "orthrus": true,
+      "rank": 0,
+      "proposals": 129,
+      "verified": 111,
+      "accepted": 143,
+      "max_verified_tokens": 31,
+      "full_blocks": 108,
+      "updates": 6,
+      "loss": 0.5745015144348145,
+      "head_dir": null,
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 129,
+      "cache_readonly_checks": 52
+    },
+    {
+      "orthrus": true,
+      "rank": 1,
+      "proposals": 129,
+      "verified": 111,
+      "accepted": 143,
+      "max_verified_tokens": 31,
+      "full_blocks": 108,
+      "updates": 6,
+      "loss": 0.5745015144348145,
+      "head_dir": null,
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 129,
+      "cache_readonly_checks": 52
+    }
+  ],
+  "seconds": 387.88718726299703,
+  "completed": true,
+  "target_weights": {
+    "before": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "after": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "unchanged": true
+  },
+  "head_before": [
+    {
+      "sha256": "b64f7340d8114ba5448b302998ee34eb6e15ee0c22165f645c14cfeba226ed5b",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "bd47f4fc5705c53fbcb4c484a1454904ec10b1a51a87c618c643b31a943e2bbf",
+      "bytes": 7239797504
+    }
+  ],
+  "head_after": [
+    {
+      "sha256": "07faa8a4554cc57f83c375b9bc12250906feeed1e49f52700e92b4c0d2f14e20",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "24c61b6e96881219e324a7dc92658b13c6dbd0119b5a48f2a944a6cb48704aee",
+      "bytes": 7239797504
+    }
+  ],
+  "memory": [
+    {
+      "case": "short-greedy",
+      "workers": [
+        {
+          "allocated": 47423229952,
+          "reserved": 52407828480
+        },
+        {
+          "allocated": 47423229952,
+          "reserved": 52407828480
+        }
+      ]
+    },
+    {
+      "case": "reject-rounds",
+      "workers": [
+        {
+          "allocated": 48055436288,
+          "reserved": 52428800000
+        },
+        {
+          "allocated": 48055436288,
+          "reserved": 52428800000
+        }
+      ]
+    },
+    {
+      "case": "sampling-topk",
+      "workers": [
+        {
+          "allocated": 48084905984,
+          "reserved": 53141831680
+        },
+        {
+          "allocated": 48084905984,
+          "reserved": 53141831680
+        }
+      ]
+    },
+    {
+      "case": "context-tail",
+      "workers": [
+        {
+          "allocated": 48320464896,
+          "reserved": 53812920320
+        },
+        {
+          "allocated": 48320464896,
+          "reserved": 53812920320
+        }
+      ]
+    },
+    {
+      "case": "after-context-tail",
+      "workers": [
+        {
+          "allocated": 48052390912,
+          "reserved": 53812920320
+        },
+        {
+          "allocated": 48052390912,
+          "reserved": 53812920320
+        }
+      ]
+    },
+    {
+      "case": "page-edge",
+      "workers": [
+        {
+          "allocated": 48108594176,
+          "reserved": 53812920320
+        },
+        {
+          "allocated": 48108594176,
+          "reserved": 53812920320
+        }
+      ]
+    },
+    {
+      "case": "short-greedy-repeat1",
+      "workers": [
+        {
+          "allocated": 48052390912,
+          "reserved": 53812920320
+        },
+        {
+          "allocated": 48052390912,
+          "reserved": 53812920320
+        }
+      ]
+    },
+    {
+      "case": "sampling-topk-repeat1",
+      "workers": [
+        {
+          "allocated": 48299088896,
+          "reserved": 53812920320
+        },
+        {
+          "allocated": 48299088896,
+          "reserved": 53812920320
+        }
+      ]
+    },
+    {
+      "case": "context-tail-repeat1",
+      "workers": [
+        {
+          "allocated": 48320464896,
+          "reserved": 53812920320
+        },
+        {
+          "allocated": 48320464896,
+          "reserved": 53812920320
+        }
+      ]
+    },
+    {
+      "case": "after-context-tail-repeat1",
+      "workers": [
+        {
+          "allocated": 48053988352,
+          "reserved": 53815017472
+        },
+        {
+          "allocated": 48053988352,
+          "reserved": 53815017472
+        }
+      ]
+    },
+    {
+      "case": "page-edge-repeat1",
+      "workers": [
+        {
+          "allocated": 48103916544,
+          "reserved": 53815017472
+        },
+        {
+          "allocated": 48103916544,
+          "reserved": 53815017472
+        }
+      ]
+    },
+    {
+      "case": "short-greedy-repeat2",
+      "workers": [
+        {
+          "allocated": 48053988352,
+          "reserved": 53815017472
+        },
+        {
+          "allocated": 48053988352,
+          "reserved": 53815017472
+        }
+      ]
+    },
+    {
+      "case": "sampling-topk-repeat2",
+      "workers": [
+        {
+          "allocated": 48299088896,
+          "reserved": 53815017472
+        },
+        {
+          "allocated": 48299088896,
+          "reserved": 53815017472
+        }
+      ]
+    },
+    {
+      "case": "context-tail-repeat2",
+      "workers": [
+        {
+          "allocated": 48320464896,
+          "reserved": 53815017472
+        },
+        {
+          "allocated": 48320464896,
+          "reserved": 53815017472
+        }
+      ]
+    },
+    {
+      "case": "after-context-tail-repeat2",
+      "workers": [
+        {
+          "allocated": 48052731392,
+          "reserved": 53815017472
+        },
+        {
+          "allocated": 48052731392,
+          "reserved": 53815017472
+        }
+      ]
+    },
+    {
+      "case": "page-edge-repeat2",
+      "workers": [
+        {
+          "allocated": 48108052992,
+          "reserved": 53815017472
+        },
+        {
+          "allocated": 48108052992,
+          "reserved": 53815017472
+        }
+      ]
+    }
+  ],
+  "checkpoint": [
+    {
+      "rank": 0,
+      "version": 6,
+      "directory": "/work/evidence/acceptance-1031-functional-167/head-last1/version6"
+    },
+    {
+      "rank": 1,
+      "version": 6,
+      "directory": "/work/evidence/acceptance-1031-functional-167/head-last1/version6"
+    }
+  ]
+}

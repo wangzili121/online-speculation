@@ -22,7 +22,11 @@
 镜像内原生 sampler 的 31 个拒绝位置、全接受 bonus 和 32768 次分布抽样通过；另一个混合 batch 的零候选 RNG 检查失败，未登记为通过。
 该失败由直接调用原生 sampler 复现，不经过本插件，且不属于当前 `max_num_seqs=1` 的声明范围；本轮未修改它。
 `logprob_token_ids` 与投机组合、受限词表的 processed-logprobs 也未纳入已支持范围，镜像内实测出现过 bonus shape 错误或返回项不完整。
-后续在线更新、保存重载和 API 的扩展结果将单独补齐；以下为 2026-10-30 及之前已完成的验证范围。
+last-1、stride=16 的在线边界检查已完成：14 个 greedy 请求合计 215 token 与基线一致，另含 3 个 top-k/top-p 请求。
+两个 rank 各验证 111 轮、更新 6 次，计数及最终 loss 一致；head 哈希改变，主模型全量权重哈希不变，每 rank 52 次缓存只读抽查通过。
+五类请求边界各运行三轮，第二、三轮活跃内存的最大增长为 4,136,448 字节，低于 64 MiB 门槛；这是有界复测，不是长时间无泄漏证明。
+两个分片及 manifest 已导出到 version6。见 [last-1 原始记录](validation/qwen38/acceptance-1031-last1-online.json)。
+last-4、重载和 API 的扩展验收仍在进行；以下为 2026-10-30 及之前已完成的验证范围。
 
 日期：2026-10-30。对象为真实 Qwen3.8-27B BF16 checkpoint，不是缩小模型。
 
