@@ -220,7 +220,7 @@ def from_native_model(target, config, *, tp, block_size, mask_token_id):
     if any(p.is_meta for p in model.parameters()):
         raise ValueError("native weight mapping left unmapped meta parameters")
     model.source = {"model": str(getattr(target, "prefix", "native-vllm")),
-                    "tp_size": tp.size, "tp_rank": tp.rank, "history_backend": "replay_native_weights"}
+                    "tp_size": tp.size, "tp_rank": tp.rank, "history_backend": "unbound"}
     return model
 
 

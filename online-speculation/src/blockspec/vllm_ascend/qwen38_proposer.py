@@ -1,8 +1,7 @@
 """Qwen3.8 Orthrus on the native vLLM target, with serialized online replay.
 
-Initial integration: eager, synchronous batch-one text generation, BF16/FP32,
-TP-sharded target weights. History is replayed from committed tokens into a
-private snapshot; native paged KV/GDN cache sharing is not implemented here.
+Eager, synchronous batch-one text generation, BF16/FP32, TP-sharded target
+weights. History is read from the native target cache, never recomputed by AR.
 """
 
 import json
@@ -16,6 +15,7 @@ from ..parallel.online import SuffixConfig
 from .qwen38_runtime import install_runner_hooks
 from .qwen38_attention import install_attention_hooks
 from .qwen38_weights import NativeSuffixLearner, TensorParallel, from_native_model
+from .qwen38_history import NativeHybridHistory
 
 
 logger = logging.getLogger("vllm.blockspec.qwen38")
@@ -38,7 +38,8 @@ class OrthrusWorkerExtension:
                 "max_verified_tokens": draft.max_verified_tokens, "full_blocks": draft.full_blocks,
                 "updates": 0 if draft.learner is None else draft.learner.updates,
                 "loss": None if draft.learner is None else draft.learner.last_loss,
-                "head_dir": draft.options.get("head_dir")}
+                "head_dir": draft.options.get("head_dir"),
+                "history_backend": draft.history_reader.backend, "history_reads": draft.history_reader.reads}
 
     def orthrus_checkpoint(self):
         draft = self.model_runner.drafter
@@ -97,7 +98,7 @@ class Qwen38OrthrusProposer:
             raise ValueError("standard exact rejection sampling required")
         self.block_size = spec.num_speculative_tokens + 1
         self.runner = self.model = self.learner = None
-        self.history = self.prefix = self.pending = self.request_id = None
+        self.history = self.history_reader = self.pending = self.request_id = None
         self.proposals = self.verified = self.accepted = 0
         self.max_verified_tokens = self.full_blocks = 0
         install_runner_hooks()
@@ -120,6 +121,8 @@ class Qwen38OrthrusProposer:
             self.model = from_native_model(target_model, text_config, tp=self.tp,
                                           block_size=self.block_size,
                                           mask_token_id=self.options["mask_token_id"])
+            self.history_reader = NativeHybridHistory(target_model, self.runner, self.model.layer_types)
+            self.model.source["history_backend"] = self.history_reader.backend
             self.generator = torch.Generator(device=self.model.embedding.weight.device)
             self.generator.manual_seed(self.config.model_config.seed + 1337)
             if self.options.get("head_dir"):
@@ -129,7 +132,7 @@ class Qwen38OrthrusProposer:
                                       stride=self.options.get("update_stride", 16), loss="tv",
                                       learning_rate=self.options.get("learning_rate", 1e-5))
                 self.learner = NativeSuffixLearner(self.model, policy, self.tp)
-        logger.info("Orthrus native target ready: TP=%d, K=%d, online=%s, history=replay_native_weights",
+        logger.info("Orthrus native target ready: TP=%d, K=%d, online=%s, history=shared_target_snapshot",
                     self.tp.size, self.block_size, self.learner is not None)
 
     def propose(self, *args, **kwargs):
@@ -137,16 +140,16 @@ class Qwen38OrthrusProposer:
 
     def dummy_run(self, **kwargs):
         # Weights and FP32 optimizer masters are allocated before KV profiling.
-        # Correctness-only replay is bounded by max_model_len, not graph-captured.
+        # History snapshots are bounded by max_model_len, not graph-captured.
         pass
 
     def _clear_request(self, request_id):
         self.request_id = request_id
-        self.prefix = self.history = self.pending = None
+        self.history = self.pending = None
         if self.learner is not None:
             self.learner.clear_replay()
 
-    def propose_batch(self, sampled, scheduler_output):
+    def propose_batch(self, sampled, scheduler_output, *, verification=None):
         if self.model is None:
             raise RuntimeError("draft weights have not been bound to the native target")
         runner = self.runner
@@ -160,26 +163,22 @@ class Qwen38OrthrusProposer:
         if not sampled[0]:
             return [[]]
         count = int(runner.input_batch.num_tokens_no_spec[0])
-        committed = runner.input_batch.token_ids_cpu[0, :count].tolist()
-        if not committed or committed[-1] != sampled[0][-1]:
+        anchor = int(runner.input_batch.token_ids_cpu[0, count - 1]) if count else None
+        if anchor is None or anchor != sampled[0][-1]:
             raise RuntimeError("draft must run after native synchronous token bookkeeping")
-        prefix = committed[:-1]
+        past = count - 1
         device = self.model.embedding.weight.device
         with torch.inference_mode(False), torch.no_grad():
-            if self.prefix is None or prefix[:len(self.prefix)] != self.prefix:
-                self.history, self.prefix = None, []
-            new = prefix[len(self.prefix):]
-            if new:
-                ids = torch.tensor([new], device=device)
-                self.history = self.model(ids, view="ar", cache=self.history, logits_to_keep=1).cache
-            self.prefix = prefix
             # Anchor 后一次预测整个 MASK 块；所有位置共享同一份已提交的 AR 历史。
-            width = min(self.block_size, runner.max_model_len - len(prefix))
+            width = min(self.block_size, runner.max_model_len - past)
             if width < 2:
                 self.pending = None
                 return [[]]
+            draft_count = 0 if verification is None else verification.num_draft_tokens[0]
+            self.history = self.history_reader.read(request_id, past, sampled_count=len(sampled[0]),
+                                                    draft_count=draft_count)
             inputs = torch.full((1, width), self.options["mask_token_id"], device=device, dtype=torch.long)
-            inputs[0, 0] = committed[-1]
+            inputs[0, 0] = anchor
             capture = (self.learner.capture_layer if self.learner is not None
                        and self.learner.needs_decoder_feedback else None)
             output = self.model(inputs, view="draft", cache=self.history, capture_layer=capture)

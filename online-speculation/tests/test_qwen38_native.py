@@ -1,6 +1,7 @@
 """Native weight aliases, inference-mode replay, TP gradients and runner hooks."""
 
 import sys
+from pathlib import Path
 from types import SimpleNamespace as NS
 
 import numpy as np
@@ -16,6 +17,7 @@ from blockspec.parallel.online import SuffixConfig
 from blockspec.vllm_ascend.qwen38_runtime import install_runner_hooks
 from blockspec.vllm_ascend.qwen38_attention import install_attention_hooks, verification_chunks
 from blockspec.vllm_ascend.qwen38_proposer import OrthrusWorkerExtension, Qwen38OrthrusProposer
+from blockspec.vllm_ascend.qwen38_history import NativeHybridHistory
 from blockspec.vllm_ascend.qwen38_weights import (
     NativeSuffixLearner, ParallelLinear, TensorParallel, from_native_model,
 )
@@ -139,6 +141,9 @@ def test_scoped_hooks_retain_custom_and_leave_others_unchanged():
     events = []
 
     class Runner:
+        def _build_attention_metadata(self, num_tokens, num_reqs, max_query_len):
+            return {"layer": num_tokens}, None
+
         def _prepare_inputs(self, scheduler_output):
             return None, scheduler_output, None
 
@@ -162,11 +167,13 @@ def test_scoped_hooks_retain_custom_and_leave_others_unchanged():
 
     class Proposer:
         qwen38_native_proposer = True
+        history_reader = None
 
         def bind_runner(self, runner):
             events.append("bind")
 
-        def propose_batch(self, sampled, scheduler):
+        def propose_batch(self, sampled, scheduler, *, verification=None):
+            assert verification is None
             events.append("draft")
             return [[4, 5]]
 
@@ -192,6 +199,12 @@ def test_scoped_hooks_retain_custom_and_leave_others_unchanged():
     runner.drafter = plugin
     runner._set_up_drafter()
     assert runner.drafter is plugin
+    runner.input_batch = NS(num_reqs=1, req_ids=["r1"])
+    captured = []
+    plugin.history_reader = NS(capture=lambda meta, req: captured.append((meta, req)))
+    runner._build_attention_metadata(3, 1, 3)
+    assert captured == [({"layer": 3}, "r1")]
+    assert ordinary._build_attention_metadata(2, 1, 2) == ({"layer": 2}, None)
     counter = NS(np=np.zeros(1), copy_to_gpu=lambda: events.append("counter"))
     runner.num_decode_draft_tokens = counter
     runner._prepare_inputs(None)
@@ -234,7 +247,8 @@ def proposer_fixture():
     hf = fixture()
     proposer = Qwen38OrthrusProposer.__new__(Qwen38OrthrusProposer)
     proposer.tp = TensorParallel()
-    proposer.model = from_native_model(native_fixture(hf, inference=True), hf.config,
+    native = native_fixture(hf, inference=True)
+    proposer.model = from_native_model(native, hf.config,
                                        tp=proposer.tp, block_size=4, mask_token_id=1)
     proposer.learner = NativeSuffixLearner(proposer.model, SuffixConfig(stride=1, loss="tv"), proposer.tp)
     proposer.config = NS(speculative_config=NS(draft_sample_method="probabilistic"))
@@ -245,7 +259,143 @@ def proposer_fixture():
     proposer.max_verified_tokens = proposer.full_blocks = 0
     proposer.runner = NS(input_batch=NS(num_reqs=1, req_ids=["r1"], num_tokens_no_spec=[4],
                                         token_ids_cpu=torch.tensor([[3, 5, 8, 9]])), max_model_len=128)
+    with torch.no_grad():
+        history = proposer.model(torch.tensor([[3, 5, 8]])).cache
+    proposer.history_reader = bind_native_cache(native, history, hf.config.layer_types)
+    # Native proposer is never allowed to recompute AR history.
+    forward = proposer.model.forward
+
+    def draft_only(*args, **kwargs):
+        assert kwargs.get("view") == "draft"
+        return forward(*args, **kwargs)
+
+    proposer.model.forward = draft_only
     return proposer
+
+
+def bind_native_cache(native, history, kinds):
+    """Pack real HF prefix states into the native ND cache layout."""
+    context, metadata = {}, {}
+    for i, (layer, kind, pair) in enumerate(zip(native.model.layers, kinds, history, strict=True)):
+        name = f"layer{i}"
+        if kind == "full_attention":
+            pages = []
+            for value in pair:
+                tensor = torch.randn(4, 2, value.shape[1], value.shape[-1])
+                flat = value[0].transpose(0, 1)
+                for pos in range(history.length):
+                    tensor[[2, 0, 3, 1][pos // 2], pos % 2] = flat[pos]
+                pages.append(tensor)
+            module = layer.self_attn.attn = NS(kv_cache=tuple(pages))
+            metadata[name] = NS(seq_lens_list=[history.length], actual_seq_lengths_q=[history.length],
+                                block_tables=torch.tensor([[2, 0, 3, 1]]))
+        else:
+            module = layer.linear_attn
+            conv = torch.randn(7, 34, pair[0].shape[1])
+            recurrent = torch.randn(7, *pair[1].shape[1:][:-2], pair[1].shape[-1], pair[1].shape[-2])
+            conv[5, :3] = pair[0][0, :, -3:].T
+            recurrent[5] = pair[1][0].transpose(-1, -2)
+            module.kv_cache, module.conv_kernel_size = (conv, recurrent), 4
+            metadata[name] = NS(spec_sequence_masks=None, non_spec_state_indices_tensor=torch.tensor([5]),
+                                num_prefills=1, non_spec_prefill_metadata=NS(
+                                    causal_conv1d=NS(cache_indices=torch.tensor([[5, 6]]))))
+        context[name] = module
+    runner = NS(compilation_config=NS(static_forward_context=context))
+    reader = NativeHybridHistory(native, runner, kinds)
+    reader.capture(metadata, "r1")
+    return reader
+
+
+@pytest.mark.parametrize("last_layers", [1, 4])
+def test_native_history_matches_reference_and_owns_online_replay(last_layers):
+    hf = fixture()
+    native = native_fixture(hf, inference=True)
+    model = from_native_model(native, hf.config, tp=TensorParallel(), block_size=4, mask_token_id=1)
+    with torch.no_grad():
+        reference = model(torch.tensor([[3, 5, 8]])).cache
+        reader = bind_native_cache(native, reference, hf.config.layer_types)
+        history = reader.read("r1", 3, sampled_count=1, draft_count=0)
+        inputs = torch.tensor([[9, 1, 1, 1]])
+        learner = NativeSuffixLearner(model, SuffixConfig(last_layers=last_layers, stride=1, loss="tv"), TensorParallel())
+        a = model(inputs, view="draft", cache=reference).logits
+        b = model(inputs, view="draft", cache=history, capture_layer=learner.capture_layer)
+        torch.testing.assert_close(a, b.logits, rtol=0, atol=0)
+        teacher = model(torch.tensor([[9, 11, 12, 13]]), cache=reference).logits[0, :3]
+        frozen = [tuple(x.clone() for x in module.kv_cache) for _, module, _ in reader.layers]
+    learner.observe(Feedback(inputs, history, teacher, 3, b.boundary))
+    assert learner.updates == 1
+    for (_, module, _), expected in zip(reader.layers, frozen, strict=True):
+        for actual, value in zip(module.kv_cache, expected, strict=True):
+            torch.testing.assert_close(actual, value, rtol=0, atol=0)
+            actual.zero_()  # Simulate the engine reusing all cache slots for another request.
+    with torch.no_grad():
+        after_reuse = model(inputs, view="draft", cache=history).logits
+        after_reference = model(inputs, view="draft", cache=reference).logits
+    torch.testing.assert_close(after_reuse, after_reference, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("accepted", [1, 2, 3, 4])
+def test_native_hybrid_history_after_rejection_and_all_acceptance(accepted):
+    hf = fixture()
+    native = native_fixture(hf, inference=True)
+    model = from_native_model(native, hf.config, tp=TensorParallel(), block_size=4, mask_token_id=1)
+    with torch.no_grad():
+        base = model(torch.tensor([[3, 5, 8]])).cache
+        inputs = torch.tensor([[9, 11, 12, 13]])
+        prefixes = [model(inputs[:, :n], cache=base).cache for n in range(1, 5)]
+        reader = bind_native_cache(native, prefixes[-1], hf.config.layer_types)
+        for i, (kind, module, name) in enumerate(reader.layers):
+            meta = reader.metadata[name]
+            if kind == "full_attention":
+                meta.actual_seq_lengths_q = [4]
+                continue
+            indices = torch.tensor([[2, 4, 1, 6]])
+            conv, ssm = module.kv_cache
+            # Speculative bank = two previous inputs + all four current inputs.
+            conv[2, :2] = base[i][0][0, :, -2:].T
+            conv[2, 2:6] = prefixes[-1][i][0][0].T
+            for n in range(4):
+                ssm[indices[0, n]] = prefixes[n][i][1][0].transpose(-1, -2)
+            reader.metadata[name] = NS(spec_sequence_masks=torch.tensor([True]),
+                                       spec_state_indices_tensor=indices, spec_decode_metadata=NS(
+                                           spec_causal_conv1d=NS(cache_indices=indices,
+                                                               num_accepted_tokens=torch.tensor([3]))))
+        history = reader.read("r1", 3 + accepted, sampled_count=accepted, draft_count=3)
+        draft = torch.tensor([[17, 1, 1, 1]])
+        actual = model(draft, view="draft", cache=history).logits
+        expected = model(draft, view="draft", cache=prefixes[accepted - 1]).logits
+        # Full-block verification and a short-prefix reference use different GEMM shapes.
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-7)
+        assert reader.reads == 1
+        with pytest.raises(RuntimeError, match="current-request"):
+            reader.read("other-request", 3 + accepted, sampled_count=accepted, draft_count=3)
+        with pytest.raises(RuntimeError, match="cache boundary"):
+            reader.read("r1", 2 + accepted, sampled_count=accepted, draft_count=3)
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_native_cache_audit_detects_writes(monkeypatch, corrupt):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from qwen38_validation_worker import ValidationWorker
+    proposer = proposer_fixture()
+    if corrupt:
+        original = proposer.propose_batch
+
+        def bad(*args, **kwargs):
+            result = original(*args, **kwargs)
+            proposer.history_reader.layers[0][1].kv_cache[0].add_(1)
+            return result
+
+        proposer.propose_batch = bad
+    worker = ValidationWorker()
+    worker.model_runner = NS(drafter=proposer)
+    worker.orthrus_enable_cache_audit()
+    if corrupt:
+        with pytest.raises(AssertionError, match="modified native target cache"):
+            proposer.propose_batch([[9]], NS())
+    else:
+        proposer.propose_batch([[9]], NS())
+        assert worker.orthrus_stats()["cache_readonly_checks"] == 1
 
 
 def test_native_feedback_uses_only_reached_rows_and_clears_old_request():
@@ -263,6 +413,7 @@ def test_native_feedback_uses_only_reached_rows_and_clears_old_request():
         torch.testing.assert_close(q.sum(-1), torch.ones(3))
         assert proposer.history.length == 3  # Candidate/draft KV did not enter AR history.
         proposer.runner.input_batch.req_ids = ["r2"]
+        proposer.history_reader.capture(proposer.history_reader.metadata, "r2")
         proposer.propose_batch([[9]], NS())
         assert not proposer.learner.replay
         assert proposer.pending["request_id"] == "r2"

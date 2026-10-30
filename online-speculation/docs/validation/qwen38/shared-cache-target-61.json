@@ -1,0 +1,149 @@
+{
+  "model": "/models/Qwen3.8-27B",
+  "target_only": true,
+  "tp": 2,
+  "block_size": 32,
+  "gdn_prefill_backend": "cann",
+  "outputs": [
+    {
+      "case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "short-sampling",
+      "temperature": 1.0,
+      "tokens": [
+        729,
+        45440,
+        383,
+        264,
+        19092,
+        5992,
+        17533,
+        4145
+      ],
+      "text": " ! Nous on a fait une macro simple"
+    },
+    {
+      "case": "reject-rounds",
+      "temperature": 0.0,
+      "tokens": [
+        220,
+        16,
+        11,
+        220,
+        17,
+        11,
+        220,
+        18,
+        11,
+        220,
+        19,
+        11,
+        220,
+        20,
+        11,
+        220,
+        21,
+        11,
+        220,
+        22,
+        11,
+        220,
+        23,
+        11,
+        220,
+        24,
+        11,
+        220,
+        16,
+        15,
+        11,
+        220,
+        16,
+        16,
+        11,
+        220,
+        16,
+        17,
+        11,
+        220,
+        16,
+        18,
+        11,
+        220,
+        16,
+        19,
+        11,
+        220
+      ],
+      "text": " 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, "
+    },
+    {
+      "case": "chunked-prefill",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        760,
+        1414,
+        16661,
+        314,
+        279,
+        3074,
+        11316,
+        328,
+        32,
+        4757,
+        682,
+        5983,
+        10583,
+        1,
+        11173
+      ],
+      "text": "\n\nThe text consists of the single sentence \"A tree has green leaves\" repeated"
+    },
+    {
+      "case": "sampling-topk",
+      "temperature": 0.7,
+      "tokens": [
+        11751,
+        13,
+        198,
+        32,
+        13,
+        35495,
+        198,
+        33,
+        13,
+        57651,
+        271,
+        248068,
+        271,
+        248069,
+        271,
+        57590
+      ],
+      "text": " Paris.\nA. Fact\nB. Opinion\n\n<think>\n\n</think>\n\nParis"
+    }
+  ],
+  "workers": [
+    {
+      "orthrus": false
+    },
+    {
+      "orthrus": false
+    }
+  ],
+  "seconds": 73.41682773799403
+}

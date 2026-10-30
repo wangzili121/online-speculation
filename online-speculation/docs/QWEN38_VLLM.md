@@ -2,6 +2,7 @@
 
 **状态：真实 27B 的 TP2 推理、K32 验证、last-1/last-4 在线更新及 head 保存重载已通过功能检查。**
 原生 OpenAI API 的流式、排队、取消恢复及跨页输入检查均通过；当前不宣称生产吞吐收益。具体证据见文末验证记录。
+主模型缓存复用已接入；固定 head 和最后四层在线更新已在新缓存路径重新验证，不再通过 AR 重放生成历史。
 
 该入口使用 vLLM-Ascend 加载和执行真实 Qwen3.8 主模型，插件负责 Orthrus 起草和在线续训。
 主模型验证候选、执行 rejection sampling、维护正式缓存，均走原生引擎；不是将 Torch 参考执行器包装成服务。
@@ -13,11 +14,15 @@ TP 分片的 query/KV 头和 GDN 头数须能整除 TP；27B 首选 TP=2。
 
 - Embedding、norm、MLP 和 LM head 引用当前 TP rank 已加载的主模型参数，不重新加载完整 checkpoint。
 - 每层独立复制 draft mixer。Full Attention 块内双向；GDN 按 Orthrus Qwen3.5 扩展，在块内执行因果递推。
-- 现阶段历史来源为 `replay_native_weights`：用共享 AR 权重重放已提交 token，生成插件自己的只读历史快照。**尚未直接共享原生分页 KV/GDN cache，因此存在额外历史计算和存储。**
-- 候选及其真实生成分布 q 交给原生 rejection sampler；拒绝后的 token 不进入插件历史，draft KV 也不会成为正式 KV。
+- 历史来源为 `shared_target_snapshot`：从原生主模型的分页 KV、GDN 卷积及递推状态读取接受前缀，**不再执行 AR 历史重放，也不维护另一套持续追加的 AR cache。** Full Attention 将有效物理页整理为 SDPA 的连续输入；GDN 仅提取接受位置的工作状态。这里仍有布局转换和临时复制，不是分页 KV 的零拷贝直读。
+- 候选及其真实生成分布 q 交给原生 rejection sampler；拒绝后的 token 不进入可读历史，draft KV 也不会成为正式 KV。
+
+`qwen38_history.py` 负责缓存边界：当前最后一个采样 token 是下一轮 anchor，尚未经过主模型，不属于已计算历史。
+整块验证后，KV 虽可能已写入被拒绝的位置，draft 只能读到接受前缀末尾；GDN 则从本轮接受位置的 checkpoint 取递推状态，并从卷积行提取对应的历史输入，不能沿用上一轮接受数或读取块末状态。
+得到的快照不与主模型缓存共享可写存储。它们既供本轮 draft 使用，也让在线后缀重放不受下一轮验证或请求切换时的 cache 复用影响。
 
 算法插件通过 `custom_class` 加载，但普通 custom proposer 接口不提供神经网络生命周期和验证反馈。
-`qwen38_runtime.py` 因此为 v0.26 NPU runner 安装范围受限的兼容 hook：保留和取得 proposer、输入准备、起草调度、验证反馈。
+`qwen38_runtime.py` 因此为 v0.26 NPU runner 安装范围受限的兼容 hook：保留和取得 proposer、输入准备、目标缓存元数据、起草调度、验证反馈。
 其中，无候选的 prefill 会将 GDN draft-token 计数清为 -1，避免沿用 profiling 或上一轮的计数、误走投机状态读取。
 这些 hook 只处理本插件，其他 proposer 仍调用原方法；遇到不匹配的方法签名立即报错。
 **这是插件加内部兼容适配，不是仅靠上游公开接口即可运行的纯插件。** 本入口不修改安装目录内的 vLLM/vLLM-Ascend 源文件。
@@ -97,6 +102,7 @@ curl http://127.0.0.1:8000/v1/completions \
 该脚本覆盖普通请求、流式输出、两个客户端排队、取消后恢复及 1804-token 跨页输入；服务的 `--max-model-len` 至少为 2048。
 
 CPU 测试覆盖权重别名与 AR 对照、原生参数类型复制、inference tensor 输入反向、双 TP 前向与梯度、全局裁剪、hook 调用顺序和 GDN 分段状态等价性。
+缓存测试另外覆盖乱序物理页、跨页读取、所有接受位置的选择、全接受与拒绝后的 draft 对照、请求边界校验，以及引擎复用缓存后在线快照仍保持不变；proposer 测试明确禁止调用 AR forward。
 真机验收结果另行记录，不将上述单元测试当作服务或性能验收。
 
 本次详细边界和证据见 [2026-10-30 验证记录](QWEN38_VLLM_VALIDATION.md)。

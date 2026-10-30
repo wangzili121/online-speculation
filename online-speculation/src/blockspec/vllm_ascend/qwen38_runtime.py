@@ -23,6 +23,7 @@ def install_runner_hooks(runner_class=None):
         "_set_up_drafter": {"self"},
         "_get_drafter": {"self"},
         "_prepare_inputs": {"self", "scheduler_output"},
+        "_build_attention_metadata": {"self", "num_tokens", "num_reqs", "max_query_len"},
         "propose_draft_token_ids": {"self", "valid_sampled_token_ids", "scheduler_output"},
         "_sample": {"self", "logits", "spec_decode_metadata"},
     }
@@ -35,6 +36,7 @@ def install_runner_hooks(runner_class=None):
     propose = runner_class.propose_draft_token_ids
     sample = runner_class._sample
     prepare_inputs = runner_class._prepare_inputs
+    build_metadata = runner_class._build_attention_metadata
     propose_signature = inspect.signature(propose)
 
     @functools.wraps(setup)
@@ -58,7 +60,15 @@ def install_runner_hooks(runner_class=None):
         if not _ours(self):
             return propose(self, *args, **kwargs)
         arguments = propose_signature.bind(self, *args, **kwargs).arguments
-        return self.drafter.propose_batch(arguments["valid_sampled_token_ids"], arguments["scheduler_output"])
+        return self.drafter.propose_batch(arguments["valid_sampled_token_ids"], arguments["scheduler_output"],
+                                         verification=arguments.get("spec_decode_metadata"))
+
+    @functools.wraps(build_metadata)
+    def metadata(self, *args, **kwargs):
+        result = build_metadata(self, *args, **kwargs)
+        if _ours(self) and self.drafter.history_reader is not None and self.input_batch.num_reqs == 1:
+            self.drafter.history_reader.capture(result[0], self.input_batch.req_ids[0])
+        return result
 
     @functools.wraps(prepare_inputs)
     def prepare(self, *args, **kwargs):
@@ -99,5 +109,6 @@ def install_runner_hooks(runner_class=None):
     runner_class._get_drafter = create
     runner_class.propose_draft_token_ids = draft
     runner_class._prepare_inputs = prepare
+    runner_class._build_attention_metadata = metadata
     runner_class._sample = verify
     runner_class._qwen38_orthrus_hooks = True

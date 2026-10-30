@@ -32,6 +32,8 @@ def main():
         llm.collective_rpc("orthrus_use_cann_gdn_prefill")
     if os.environ.get("ORTHRUS_VALIDATE_AUDIT") == "1":
         llm.collective_rpc("orthrus_enable_numeric_audit")
+        if not target_only:
+            llm.collective_rpc("orthrus_enable_cache_audit")
     cases = [("short-greedy", "Hello", 0., 8), ("short-sampling", "Hello", 1., 8)]
     if os.environ.get("ORTHRUS_VALIDATE_EXTENDED") == "1":
         cases += [("reject-rounds", "Count the integers from 1 to 20:", 0., 48),
@@ -63,6 +65,10 @@ def main():
         evidence["greedy_matches_baseline"] = True
     if not target_only:
         assert all(item["orthrus"] and item["verified"] > 0 for item in stats), stats
+        assert all(item["history_backend"] == "shared_target_snapshot"
+                   and item["history_reads"] == item["proposals"] for item in stats), stats
+        if os.environ.get("ORTHRUS_VALIDATE_AUDIT") == "1":
+            assert all(item["cache_readonly_checks"] > 0 for item in stats), stats
         if args.online:
             assert all(item["updates"] > 0 for item in stats), stats
         assert all(item["max_verified_tokens"] == args.block_size - 1 for item in stats), stats

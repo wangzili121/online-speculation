@@ -8,7 +8,36 @@
 不是将独立 Torch 执行器包装成 HTTP：主模型、正式缓存和 rejection sampler 均由原生 vLLM-Ascend 执行。
 原生 OpenAI API 的 8 类接口检查也全部通过。本记录不代表生产性能验收。
 
-## 真实模型验证
+## 主模型缓存复用验证
+
+原生入口现使用 `shared_target_snapshot`，直接读取 target 的分页 KV 和 GDN 接受前缀状态，不再调用 AR forward 重建历史。
+现有 draft 执行器接收连续布局，因此分页 KV 仍需 gather，GDN 使用独立工作状态；这不是零拷贝分页 Attention。
+
+本轮重新运行无投机基线，并在 61 的双卡上验证新路径，配置为 TP=2、K=32、eager、同步 batch-one。
+固定 head 使用 max_model_len=2048，最后四层在线更新使用 1024；两者均与同后端基线对照。
+
+| 检查 | 结果 |
+| --- | --- |
+| 固定 head、原生缓存 | 每 rank 55 次缓存读取与起草、50 轮完整 K32 验证、46 个接受候选；greedy 三个用例共 72 个输出 token 与基线完全一致 |
+| 最后 4 层在线更新 | 每 rank 52 次读取与起草、47 轮完整 K32 验证、47 次更新、50 个接受候选；两个 rank 计数与 loss 一致，greedy 再次对齐 |
+| 主模型缓存只读 | 在线测试每 rank 抽查 15 次，覆盖各请求的首次有效 prefill 起草、投机起草及在线更新；参与本轮的 KV 物理页、卷积行和候选递推状态前后按字节相同 |
+| 原生 GDN 接受位置 | 单卡调用真实卷积及 recurrent 算子，连续三轮从上轮接受 1/17/32 个输入的位置继续；本轮全部 32 个接受位置均正确，合计 96 次选择，FP32 状态最大绝对误差 1.2e-7，读取前后原缓存不变 |
+| 在线 head 导出与重载 | 两个 TP 分片和 manifest 保存到 `heads-shared-cache-61/version47`，重启服务成功加载，不复制 backbone |
+| API 与最后 1 层在线更新 | 加载 version47 后每 rank 完成 52 次更新；8 项接口检查全部通过，包括 SSE、两个客户端排队、断开流后恢复、1804-token 跨页 prefill 及后续请求隔离 |
+
+本轮最后四层测试的最终 TV loss 为 0.4607100487。这里只证明更新链路与冻结约束，不据此宣称收敛或加速。
+API 测试使用 max_model_len=2048，最后一层测试的最终日志为 TV loss=0.5171158、梯度范数=0.9754444，两个 rank 一致。
+CPU 回归为 154 passed、17 个 CUDA 专用测试 skipped；新增覆盖乱序页、跨页、接受边界、拒绝与全接受、缓存复用后的快照生命周期，以及只读审计能够检出故意写入。
+proposer 单元测试明确禁止 AR forward，避免静默回退到历史重放。
+
+一次在线启动在 profiling 阶段得到负 KV 预算，未进入请求执行；清理本次 worker 后重试通过，profiling 波动的根因未单独确认。
+
+本轮记录为 `shared-cache-target-61.json`、`shared-cache-fixed-61.json`、`shared-cache-last4-61.json`、`shared-cache-api-61.json` 和 `shared-cache-gdn-61.log`。
+[无投机基线](validation/qwen38/shared-cache-target-61.json)、[固定 head](validation/qwen38/shared-cache-fixed-61.json)、[共享缓存在线更新](validation/qwen38/shared-cache-last4-61.json)、[API](validation/qwen38/shared-cache-api-61.json) 的原始 JSON 随代码提供。
+日志已保存在实验机和本地；结束后已停止本次 61、167 的专用容器，实查 61 的 2、3 卡无 NPU 进程，没有停止其他用户任务。安装目录的三个原生源码文件哈希与文末锁定值一致。
+以下记录保留为缓存改造前的功能及底层算子证据，不将它们冒充新缓存路径的测试。
+
+## 缓存改造前的验证
 
 实验机 61 的两张 Ascend 910B3，TP=2、K=32、eager、同步调度、max_num_seqs=1。
 离线 LLM 接口测试使用 max_model_len=1024，HTTP 服务使用 2048。
@@ -43,12 +72,12 @@ head 由 AR 参数复制初始化；此次没有完成离线 head 训练，也�
 
 ## 回归与部署边界
 
-CPU 回归 130 passed、17 skipped，跳过项为 CUDA 专用测试，不是 NPU 通过记录。
+缓存改造前 CPU 回归 130 passed、17 skipped，跳过项为 CUDA 专用测试，不是 NPU 通过记录。
 覆盖权重共享、AR/HF 对照、原生参数复制、冻结权重输入反向、TP 前向与梯度、全局裁剪、last-1/last-4、到达行监督、请求切换、K32 元数据和 head 交付。
 PIP_NO_INDEX=1 下 editable 安装通过；Ruff 检查通过。
 
 当前不覆盖图模式、动态批处理、量化、PP/DP、超长上下文或生产 goodput。
-插件仍通过共享 AR 权重重放已提交历史，未直接读取 native paged KV/GDN cache；这是功能路径，不是最终高效共享缓存实现。
+当前插件复用 native cache 的内容，但仍有临时布局快照，不宣称已完成零拷贝或生产吞吐优化。
 head 文件交付不含 AdamW 状态，重启不保证精确续接优化器轨迹。
 
 本镜像原生 Triton prefill 在 target-only 中也出现过首层 GDN NaN，因而显式选择已有 CANN 后端；并非修改该算子的内核。
@@ -56,7 +85,7 @@ GDN 和分页 FIA 的 16-query 限制由现有算子的分段调用解决，K �
 KV 预算需给 CANN 工作空间留余量，不能将原有 prefill profiling 数字直接当作新后端的完整峰值。
 
 运行入口和限制见 [部署说明](QWEN38_VLLM.md)。
-测试结束已停止本次三台机器的专用容器。释放后实查 61 八卡均无 NPU 进程，没有停止他人的任务。
+缓存改造前的测试结束时曾停止三台机器的专用容器，当时实查 61 八卡均无 NPU 进程；这不是当前共享机器的占用情况。
 
 ## 版本标识
 

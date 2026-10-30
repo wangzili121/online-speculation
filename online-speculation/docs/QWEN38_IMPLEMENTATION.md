@@ -55,7 +55,7 @@ PYTHONPATH=src python scripts/run_qwen38_orthrus.py \
 
 ## 下一阶段
 
-真实 27B 的原生 vLLM 服务与同步在线更新已完成首轮功能验收。下一步是训练 head 的交付与收益验证、直接读取 native Full Attention KV/GDN 状态，随后再处理批量调度和预算控制。当前原生 verifier 管理正式缓存及拒绝恢复，插件仍通过共享 AR 权重重放自己的历史快照；不要把两种缓存路径混为一谈。已有的 DSV4 proposer 仍绑定该模型的缓存结构。
+真实 27B 的原生 vLLM 服务与同步在线更新已完成首轮功能验收。原生入口现已从 target Full Attention KV/GDN 状态提取接受前缀，不再重放 AR 历史；目前通过连续布局快照连接现有 draft 算子，尚非零拷贝分页读取。后续需要训练 head 的交付与收益验证，再处理批量调度和预算控制。上述独立 Torch 参考路径仍保留重放恢复，不应与原生入口混为一谈。已有的 DSV4 proposer 仍绑定该模型的缓存结构。
 
 ## 验证记录（2026-10-29）
 
