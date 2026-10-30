@@ -81,6 +81,19 @@ def main():
     sampled = dict(hello, temperature=.7, top_k=20, top_p=.9, seed=7)
     text, usage = client.complete(sampled)
     record("sampling_topk", usage=usage, text=text)
+    scored = client.request("/v1/completions", dict(hello, logprobs=3))
+    if len(scored["choices"][0]["logprobs"]["token_logprobs"]) != 8:
+        raise AssertionError("ordinary token logprobs are missing")
+    record("ordinary_logprobs")
+    chat = dict(model=args.model, messages=[dict(role="user", content="Reply with exactly: OK")],
+                max_tokens=8, temperature=0, ignore_eos=True,
+                chat_template_kwargs=dict(enable_thinking=False))
+    first = client.request("/v1/chat/completions", chat)
+    second = client.request("/v1/chat/completions", chat)
+    if (first["usage"]["completion_tokens"] != 8 or second["usage"]["completion_tokens"] != 8
+            or first["choices"][0]["message"]["content"] != second["choices"][0]["message"]["content"]):
+        raise AssertionError("chat request length or greedy repeatability failed")
+    record("chat_completions")
     text, chunks = client.stream(hello)
     assert text == expected["short-greedy"], text
     record("streaming", chunks=chunks)

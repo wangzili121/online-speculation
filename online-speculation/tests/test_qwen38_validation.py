@@ -131,3 +131,14 @@ def test_memory_check_compares_matching_boundaries_after_warmup(monkeypatch):
     report["memory"][-1]["workers"][0]["allocated"] = 300
     with pytest.raises(AssertionError, match="allocation grew"):
         memory_growth(report, tolerance=2)
+
+
+def test_weight_fingerprint_tracks_values_not_tensor_identity(monkeypatch):
+    import torch
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from qwen38_validation_worker import _fingerprint
+    parameter = torch.tensor([1., 2.], dtype=torch.bfloat16)
+    before = _fingerprint([("weight", parameter)])
+    assert before == _fingerprint([("weight", parameter.clone())])
+    parameter[0] = 3
+    assert before != _fingerprint([("weight", parameter)])

@@ -12,6 +12,8 @@ import torch
 
 from ..feedback import Feedback
 from ..parallel.online import SuffixConfig
+from ..parallel.sampling import ProposalSampler
+from ..sampling import SamplingConfig
 from .qwen38_runtime import install_runner_hooks
 from .qwen38_attention import install_attention_hooks
 from .qwen38_weights import NativeSuffixLearner, TensorParallel, from_native_model
@@ -146,8 +148,19 @@ class Qwen38OrthrusProposer:
     def _clear_request(self, request_id):
         self.request_id = request_id
         self.history = self.pending = None
+        generators = self.runner.input_batch.sampling_metadata.generators
+        if 0 in generators:
+            self.generator.manual_seed((generators[0].initial_seed() + 1337) % (2**64))
         if self.learner is not None:
             self.learner.clear_replay()
+
+    def _draft_sampling(self):
+        metadata = self.runner.input_batch.sampling_metadata
+        if self.config.speculative_config.draft_sample_method == "greedy" or metadata.all_greedy:
+            return SamplingConfig()
+        return SamplingConfig(temperature=float(metadata.temperature[0]),
+                              top_k=0 if metadata.top_k is None else max(0, int(metadata.top_k[0])),
+                              top_p=1. if metadata.top_p is None else float(metadata.top_p[0]))
 
     def propose_batch(self, sampled, scheduler_output, *, verification=None):
         if self.model is None:
@@ -183,12 +196,8 @@ class Qwen38OrthrusProposer:
                        and self.learner.needs_decoder_feedback else None)
             output = self.model(inputs, view="draft", cache=self.history, capture_layer=capture)
             logits = output.logits[0, :-1].float()
-            q = None
-            if self.config.speculative_config.draft_sample_method == "probabilistic":
-                q = logits.softmax(-1)
-                candidates = torch.multinomial(q, 1, generator=self.generator).squeeze(-1)
-            else:
-                candidates = logits.argmax(-1)
+            # 与参考算法使用相同的温度/top-k/top-p；传给 verifier 的 q 必须是真实起草分布。
+            candidates, q, _ = ProposalSampler(self._draft_sampling()).propose(logits, self.generator)
             self.tp.broadcast(candidates)
             self.pending = {"request_id": request_id, "inputs": inputs, "cache": self.history,
                             "boundary": output.boundary, "q": q, "candidates": candidates}

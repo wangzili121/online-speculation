@@ -295,7 +295,9 @@ def proposer_fixture():
     proposer.proposals = proposer.verified = proposer.accepted = 0
     proposer.max_verified_tokens = proposer.full_blocks = 0
     proposer.runner = NS(input_batch=NS(num_reqs=1, req_ids=["r1"], num_tokens_no_spec=[4],
-                                        token_ids_cpu=torch.tensor([[3, 5, 8, 9]])), max_model_len=128)
+                                        token_ids_cpu=torch.tensor([[3, 5, 8, 9]]),
+                                        sampling_metadata=NS(all_greedy=False, temperature=torch.ones(1),
+                                                             top_k=None, top_p=None, generators={})), max_model_len=128)
     with torch.no_grad():
         history = proposer.model(torch.tensor([[3, 5, 8]])).cache
     proposer.history_reader = bind_native_cache(native, history, hf.config.layer_types)
@@ -308,6 +310,31 @@ def proposer_fixture():
 
     proposer.model.forward = draft_only
     return proposer
+
+
+def test_native_draft_respects_request_sampling_and_resets_seed():
+    from blockspec.sampling import probabilities
+    proposer = proposer_fixture()
+    sampling = proposer.runner.input_batch.sampling_metadata
+    sampling.temperature = torch.tensor([.75])
+    sampling.top_k = torch.tensor([3])
+    sampling.top_p = torch.tensor([.8])
+    sampling.generators = {0: torch.Generator().manual_seed(17)}
+    first = proposer.propose_batch([[9]], None)
+    pending = proposer.pending
+    output = proposer.model(pending["inputs"], view="draft", cache=pending["cache"])
+    expected = probabilities(output.logits[0, :-1], proposer._draft_sampling())
+    torch.testing.assert_close(pending["q"], expected)
+    assert (pending["q"] > 0).sum(-1).max() <= 3
+    proposer.runner.input_batch.req_ids[0] = "r2"
+    proposer.history_reader.capture(proposer.history_reader.metadata, "r2")
+    assert proposer.propose_batch([[9]], None) == first
+    sampling.all_greedy = True
+    proposer.runner.input_batch.req_ids[0] = "r3"
+    proposer.history_reader.capture(proposer.history_reader.metadata, "r3")
+    proposed = proposer.propose_batch([[9]], None)
+    assert proposer.pending["q"] is None
+    assert proposed[0] == output.logits[0, :-1].argmax(-1).tolist()
 
 
 def bind_native_cache(native, history, kinds):

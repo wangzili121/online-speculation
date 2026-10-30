@@ -58,7 +58,7 @@ def restricted_probabilities(logprobs, allowed):
     return {token: weight / total for token, weight in weights.items()}
 
 
-def sampling_calibration(llm, trials):
+def sampling_calibration(llm, trials, *, check_repeat=False):
     from vllm import SamplingParams
 
     if not 16 <= trials <= 4096:
@@ -70,12 +70,18 @@ def sampling_calibration(llm, trials):
     allowed = [ids[0] for ids in allowed]
     observed, expected, variance = ({token: 0. for token in allowed} for _ in range(3))
     rows = 0
+    repeated = None
     for seed in range(trials):
         params = SamplingParams(temperature=1., seed=10000 + seed, max_tokens=3, ignore_eos=True,
-                                allowed_token_ids=allowed, logprobs=3, logprob_token_ids=allowed)
+                                allowed_token_ids=allowed, logprobs=3)
         output = llm.generate(["Choose A, B, or C:"], params, use_tqdm=False)[0].outputs[0]
         if len(output.token_ids) != 3 or len(output.logprobs) != 3:
             raise AssertionError("calibration output is truncated")
+        if seed == 0 and check_repeat:
+            again = llm.generate(["Choose A, B, or C:"], params, use_tqdm=False)[0].outputs[0]
+            if list(again.token_ids) != list(output.token_ids):
+                raise AssertionError("fixed-head requests with the same seed are not repeatable")
+            repeated = list(output.token_ids)
         # The first token is sampled by AR before drafting; only later rows test speculation.
         for token, probabilities in zip(output.token_ids[1:], output.logprobs[1:], strict=True):
             p = restricted_probabilities(probabilities, allowed)
@@ -88,7 +94,8 @@ def sampling_calibration(llm, trials):
                 variance[choice] += probability * (1 - probability)
     check_calibration(observed, expected, variance)
     return dict(trials=trials, speculative_rows=rows, allowed=allowed,
-                observed=observed, expected=expected, variance=variance, passed=True)
+                observed=observed, expected=expected, variance=variance,
+                repeated_seed_tokens=repeated, passed=True)
 
 
 def compare_greedy(baseline, candidate):
@@ -120,13 +127,16 @@ def main():
     audit = os.environ.get("ORTHRUS_VALIDATE_AUDIT") == "1"
     trace = os.environ.get("ORTHRUS_VALIDATE_LOGITS") == "1"
     freeze = os.environ.get("ORTHRUS_VALIDATE_FROZEN") == "1"
+    ar_view = os.environ.get("ORTHRUS_VALIDATE_AR_VIEW") == "1"
+    proposal_fixture = os.environ.get("ORTHRUS_VALIDATE_PROPOSAL_FIXTURE")
+    head_digest = args.online or bool(args.head_dir)
     repeats = int(os.environ.get("ORTHRUS_VALIDATE_REPEATS", "1"))
     if not 1 <= repeats <= 100:
         raise ValueError("validation repeats must be in 1..100")
     calibration = int(os.environ.get("ORTHRUS_VALIDATE_SAMPLING_TRIALS", "0"))
     if calibration:
         options["logprobs_mode"] = "processed_logprobs"
-    if audit or trace or freeze or repeats > 1:
+    if audit or trace or freeze or ar_view or head_digest or proposal_fixture or repeats > 1:
         options["worker_extension_cls"] = "qwen38_validation_worker.ValidationWorker"
     start = time.perf_counter()
     llm = LLM(**options)
@@ -134,12 +144,24 @@ def main():
         llm.collective_rpc("orthrus_use_cann_gdn_prefill")
     if trace:
         llm.collective_rpc("orthrus_enable_logits_audit")
+    if ar_view:
+        if target_only:
+            raise ValueError("AR view audit requires Orthrus")
+        llm.collective_rpc("orthrus_enable_ar_view_audit")
+    if proposal_fixture:
+        if (target_only or args.online or os.environ.get("ORTHRUS_VALIDATE_CASES") != "long-decode"
+                or not os.environ.get("ORTHRUS_VALIDATE_BASELINE")):
+            raise ValueError("proposal fixture requires fixed-head long-decode and its matching baseline")
+        reference = json.loads(Path(os.environ["ORTHRUS_VALIDATE_BASELINE"]).read_text())
+        tokens = next(row["tokens"] for row in reference["outputs"] if row["case"] == "long-decode")
+        llm.collective_rpc("orthrus_set_proposal_fixture", args=(tokens, proposal_fixture))
     if audit:
         if os.environ.get("ORTHRUS_VALIDATE_NUMERIC", "1") == "1":
             llm.collective_rpc("orthrus_enable_numeric_audit")
         if not target_only and not ngram_control:
             llm.collective_rpc("orthrus_enable_cache_audit")
     frozen_before = llm.collective_rpc("orthrus_target_fingerprint") if freeze else None
+    head_before = llm.collective_rpc("orthrus_head_fingerprint") if head_digest else None
     soak = os.environ.get("ORTHRUS_VALIDATE_SOAK") == "1"
     cases = validation_cases(extended=os.environ.get("ORTHRUS_VALIDATE_EXTENDED") == "1",
                              soak=soak, comprehensive=os.environ.get("ORTHRUS_VALIDATE_COMPREHENSIVE") == "1",
@@ -191,6 +213,7 @@ def main():
                 "max_model_len": args.max_model_len, "online": args.online,
                 "last_layers": args.last_layers, "update_stride": args.update_stride,
                 "native_ngram_control": ngram_control,
+                "proposal_fixture": proposal_fixture,
                 "outputs": outputs, "workers": stats,
                 "seconds": time.perf_counter() - start}
     destination = os.environ.get("ORTHRUS_VALIDATE_OUTPUT")
@@ -198,13 +221,16 @@ def main():
         evidence["completed"] = False
         Path(destination).write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n")
     if calibration:
-        evidence["sampling_calibration"] = sampling_calibration(llm, calibration)
+        evidence["sampling_calibration"] = sampling_calibration(llm, calibration, check_repeat=not args.online)
         stats = evidence["workers"] = llm.collective_rpc("orthrus_stats")
     if frozen_before is not None:
         frozen_after = llm.collective_rpc("orthrus_target_fingerprint")
         if frozen_after != frozen_before:
             raise AssertionError("native target weights changed during inference or online updates")
         evidence["target_weights"] = dict(before=frozen_before, after=frozen_after, unchanged=True)
+    if head_before is not None:
+        evidence["head_before"] = head_before
+        evidence["head_after"] = llm.collective_rpc("orthrus_head_fingerprint")
     if memory:
         evidence["memory"] = memory
     if replay is not None:
@@ -229,6 +255,13 @@ def main():
             assert all(item["cache_readonly_checks"] > 0 for item in stats), stats
         if args.online:
             assert all(item["updates"] > 0 for item in stats), stats
+        if ar_view:
+            assert all(item["ar_view_checks"] for item in stats), stats
+        if proposal_fixture == "oracle":
+            assert all(args.block_size in item["fixture_accepted_reads"] for item in stats), stats
+        elif proposal_fixture == "reject":
+            assert all(item["accepted"] == 0 and item["fixture_accepted_reads"]
+                       and set(item["fixture_accepted_reads"]) == {1} for item in stats), stats
         if not selected:
             assert all(item["max_verified_tokens"] == args.block_size - 1 for item in stats), stats
         if len({(item["proposals"], item["verified"], item["accepted"], item["updates"]) for item in stats}) != 1:

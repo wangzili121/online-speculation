@@ -55,21 +55,98 @@ def _cache_snapshot(reader):
     return values
 
 
+def _fingerprint(parameters):
+    digest = hashlib.sha256()
+    size = 0
+    for name, parameter in parameters:
+        raw = parameter.detach().contiguous().view(torch.uint8).cpu().numpy()
+        digest.update(name.encode())
+        digest.update(memoryview(raw))
+        size += raw.nbytes
+    return dict(sha256=digest.hexdigest(), bytes=size)
+
+
 class ValidationWorker(OrthrusWorkerExtension):
+    def orthrus_set_proposal_fixture(self, tokens, mode):
+        """Drive cache branches using deterministic proposals, not a trained head."""
+        if mode not in {"oracle", "reject"} or len(tokens) < 64:
+            raise ValueError("oracle/reject fixture requires a known long greedy continuation")
+        draft = self.model_runner.drafter
+        propose, read = draft.propose_batch, draft.history_reader.read
+        self._fixture_mode, self._fixture_reads = mode, []
+
+        def history(*args, **kwargs):
+            if kwargs["draft_count"]:
+                self._fixture_reads.append(kwargs["sampled_count"])
+            return read(*args, **kwargs)
+
+        def controlled(*args, **kwargs):
+            result = propose(*args, **kwargs)
+            pending = draft.pending
+            if pending is None:
+                return result
+            batch = draft.runner.input_batch
+            generated = int(batch.num_tokens_no_spec[0] - batch.num_prompt_tokens[0])
+            width = pending["candidates"].numel()
+            values = tokens[generated:generated + width]
+            values += [tokens[-1]] * (width - len(values))
+            if mode == "reject":
+                values = [(token + 1) % draft.model.config.vocab_size for token in values]
+            pending["candidates"] = pending["candidates"].new_tensor(values)
+            pending["q"] = None  # The fixture proposes deterministically; the target is greedy.
+            return [values]
+
+        draft.propose_batch, draft.history_reader.read = controlled, history
+        return mode
+
+    def orthrus_enable_ar_view_audit(self):
+        """Compare mapped AR weights with native verifier logits on real prefixes."""
+        draft = self.model_runner.drafter
+        self._ar_view_checks = []
+        requests = set()
+        observe = draft.observe_verified
+
+        def teacher(logits, metadata):
+            count = draft._verification_count(metadata)
+            if not count:
+                return None
+            with torch.inference_mode(False), torch.no_grad():
+                return logits[metadata.target_logits_indices].detach().clone()
+
+        def checked(metadata, target, sampled):
+            pending = draft.pending
+            if pending is not None and pending["request_id"] not in requests and len(requests) < 4:
+                count = metadata.num_draft_tokens[0]
+                with torch.inference_mode(False), torch.no_grad():
+                    tokens = torch.cat((pending["inputs"][:, :1], pending["candidates"][None, :count-1]), 1)
+                    actual = draft.model(tokens, view="ar", cache=pending["cache"]).logits[0].float()
+                    expected = target[:count].float()
+                    if actual.shape != expected.shape or not torch.isfinite(actual).all():
+                        raise AssertionError("mapped AR view has invalid logits")
+                    tv = (actual.softmax(-1) - expected.softmax(-1)).abs().sum(-1) / 2
+                    maximum = float(tv.max())
+                    if maximum > .05:
+                        raise AssertionError(f"mapped AR view differs from native verifier: TV={maximum}")
+                    self._ar_view_checks.append(dict(history=pending["cache"].length, rows=count,
+                        max_tv=maximum, max_logit_abs=float((actual - expected).abs().max()),
+                        top1_matches=int((actual.argmax(-1) == expected.argmax(-1)).sum())))
+                    requests.add(pending["request_id"])
+            return observe(metadata, target, sampled)
+
+        draft.teacher_rows = teacher
+        draft.observe_verified = checked
+        return "enabled"
+
     def orthrus_memory(self):
         torch.npu.synchronize()
         return dict(allocated=torch.npu.memory_allocated(), reserved=torch.npu.memory_reserved())
 
     def orthrus_target_fingerprint(self):
         """Hash actual native weights, not pointer identity or draft parameters."""
-        digest = hashlib.sha256()
-        size = 0
-        for name, parameter in self.model_runner.get_model().named_parameters():
-            raw = parameter.detach().contiguous().view(torch.uint8).cpu().numpy()
-            digest.update(name.encode())
-            digest.update(memoryview(raw))
-            size += raw.nbytes
-        return dict(sha256=digest.hexdigest(), bytes=size)
+        return _fingerprint(self.model_runner.get_model().named_parameters())
+
+    def orthrus_head_fingerprint(self):
+        return _fingerprint(self.model_runner.drafter._draft_parameters().items())
 
     def orthrus_enable_logits_audit(self):
         runner = self.model_runner
@@ -154,6 +231,11 @@ class ValidationWorker(OrthrusWorkerExtension):
         result["cache_readonly_checks"] = len(getattr(self, "_cache_audited", ()))
         if hasattr(self, "_logit_trace"):
             result["logit_trace"] = self._logit_trace
+        if hasattr(self, "_ar_view_checks"):
+            result["ar_view_checks"] = self._ar_view_checks
+        if hasattr(self, "_fixture_mode"):
+            result["proposal_fixture"] = self._fixture_mode
+            result["fixture_accepted_reads"] = self._fixture_reads
         return result
 
     def orthrus_enable_numeric_audit(self):
