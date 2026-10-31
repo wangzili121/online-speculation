@@ -78,6 +78,131 @@ def test_layerwise_metrics_detect_drift_and_preserve_source(monkeypatch):
         differences(source, source.flatten())
 
 
+def test_module_replay_expands_native_gqa_without_changing_operands(monkeypatch):
+    import torch
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from probe_qwen38_module_replay import compare, expand_query_heads
+
+    query = torch.arange(24.).reshape(2, 3, 4)
+    value = torch.empty(2, 9, 4)
+    expanded = expand_query_heads(query, value)
+    assert expanded.shape == value.shape
+    assert torch.equal(expanded[:, ::3], query)
+    assert torch.equal(expanded[:, 1::3], query)
+    assert torch.equal(query, torch.arange(24.).reshape(2, 3, 4))
+    assert compare(expanded, expanded)["equal"]
+    assert not compare(expanded + .5, expanded)["equal"]
+    with pytest.raises(ValueError, match="multiple of query heads"):
+        expand_query_heads(query, torch.empty(2, 8, 4))
+
+
+def test_module_precision_diagnostic_uses_fp32_and_restores_functions(monkeypatch):
+    import torch
+    from types import SimpleNamespace as NS
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from probe_qwen38_module_replay import ModuleReplayWorker
+
+    seen = {}
+
+    def chunk(q, k, v, **kwargs):
+        seen.update(q=q, k=k, **kwargs)
+        return v
+
+    original_norm = lambda x, gate: x
+    norm = NS(weight=torch.tensor([1.1, .9], dtype=torch.bfloat16), variance_epsilon=1e-6,
+              forward=original_norm)
+    mixer = NS(norm=norm, chunk_gated_delta_rule=chunk, causal_conv1d_fn=None)
+    layer = NS(kind="linear_attention", attention=NS(ar=mixer), mlp=NS(forward=lambda x: x))
+    worker = ModuleReplayWorker()
+    worker.model_runner = NS(drafter=NS(model=NS(layers=[layer])), get_model=lambda: NS(model=NS(layers=[NS()])))
+    source = torch.tensor([[.12, 1.31]], dtype=torch.bfloat16)
+    worker.orthrus_module_precision("fp32_l2")
+    mixer.chunk_gated_delta_rule(source, source, source, use_qk_l2norm_in_kernel=True)
+    expected = (source.float() * torch.rsqrt(source.float().square().sum(-1, keepdim=True) + 1e-6)).bfloat16()
+    assert torch.equal(seen["q"], expected) and seen["use_qk_l2norm_in_kernel"] is False
+    worker.orthrus_module_precision("fp32_gate_norm")
+    assert mixer.chunk_gated_delta_rule is chunk
+    expected = source.float() * torch.rsqrt(source.float().square().mean(-1, keepdim=True) + 1e-6)
+    expected = (expected * norm.weight.float() * torch.nn.functional.silu(source.float())).bfloat16()
+    assert torch.equal(norm.forward(source, source), expected)
+    worker.orthrus_module_precision("original")
+    assert norm.forward is original_norm and mixer.causal_conv1d_fn is None
+    with pytest.raises(ValueError, match="unknown module precision"):
+        worker.orthrus_module_precision("invalid")
+
+
+def test_native_projection_diagnostic_preserves_token_and_head_order(monkeypatch):
+    import torch
+    from types import SimpleNamespace as NS
+    from torch.nn import functional as F
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from probe_qwen38_module_replay import ModuleReplayWorker
+
+    torch.manual_seed(8)
+    weights, inputs = torch.randn(24, 4), torch.randn(1, 3, 4)
+    seen = {}
+
+    def project(packed, positions):
+        seen["positions"] = positions
+        q, k, v, gate = packed.split((8, 4, 4, 8), dim=-1)
+        return q, k, v, gate
+
+    def update(k, v, index):
+        seen.update(k=k, v=v)
+        return k, v
+
+    original = lambda *args, **kwargs: None
+    mixer = NS(forward=original, layer_idx=0, o_proj=lambda x: x)
+    layer = NS(kind="full_attention", attention=NS(ar=mixer), mlp=NS(forward=lambda x: x, down_proj=lambda x: x))
+    source = NS(qkv_proj=NS(weight=weights), _project_qkv_gate=project, num_heads=4,
+                num_kv_heads=2, head_dim=2, scaling=.7)
+    native = NS(model=NS(layers=[NS(self_attn=source, mlp=NS(gate_up_proj=NS(weight=torch.empty(2, 4))))]))
+    worker = ModuleReplayWorker()
+    worker.model_runner = NS(drafter=NS(model=NS(layers=[layer]), pending={"cache": NS(length=7)}),
+                            get_model=lambda: native)
+    worker.orthrus_module_precision("combined_native_projection")
+    output, _ = mixer.forward(inputs, position_embeddings=None, attention_mask=None, past_key_values=NS(update=update))
+    q, k, v, gate = project(F.linear(inputs[0], weights), torch.arange(7, 10))
+    expected_v = v.reshape(1, 3, 2, 2).transpose(1, 2)
+    assert torch.equal(seen["v"], expected_v)
+    q = q.reshape(1, 3, 4, 2).transpose(1, 2)
+    k = k.reshape(1, 3, 2, 2).transpose(1, 2)
+    expected = F.scaled_dot_product_attention(q, k.repeat_interleave(2, 1),
+        expected_v.repeat_interleave(2, 1), scale=.7).transpose(1, 2).reshape(1, 3, 8) * gate.sigmoid()[None]
+    assert torch.equal(output, expected)
+    assert torch.equal(seen["positions"], torch.arange(7, 10))
+    worker.orthrus_module_precision("original")
+    assert mixer.forward is original
+
+
+def test_native_conv_diagnostic_owns_its_state_and_preserves_context(monkeypatch):
+    import torch
+    from torch.nn import functional as F
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from probe_qwen38_module_replay import native_cached_conv
+
+    source = torch.randn(1, 8, 36)
+    original = source.clone()
+    weight = torch.randn(8, 4)
+
+    def operation(output, inputs, weights, *, conv_state, **kwargs):
+        assert torch.equal(conv_state[0, :3], source[0, :, 1:4].T)
+        assert kwargs["cache_indices_opt"].count_nonzero() == 0
+        assert kwargs["query_start_loc_opt"].tolist() == [0, 32]
+        context = torch.cat((conv_state[0, :3], inputs), dim=0).T[None]
+        output.copy_(F.silu(F.conv1d(context, weights.T[:, None], groups=8))[0].T)
+        conv_state.fill_(999)
+
+    monkeypatch.setattr(torch.ops._C_ascend, "npu_causal_conv1d_custom", operation, raising=False)
+    actual = native_cached_conv(source, weight, None, "silu")
+    expected = F.silu(F.conv1d(source, weight[:, None], padding=3, groups=8))[..., :36]
+    torch.testing.assert_close(actual[..., 4:], expected[..., 4:])
+    assert torch.equal(source, original)
+    assert torch.equal(actual[..., :4], original[..., :4])
+    with pytest.raises(ValueError, match="cached K32"):
+        native_cached_conv(source[..., :-1], weight, None, "silu")
+
+
 @pytest.mark.parametrize("mode", ["gamma_bf16", "both_bf16"])
 def test_norm_diagnostic_is_scoped_and_restorable(monkeypatch, mode):
     import torch
