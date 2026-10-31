@@ -1,0 +1,94 @@
+{
+  "created_utc": "2026-10-31T17:59:59.972659+00:00",
+  "scope": "real 27B BF16 TP2 K32 eager synchronous batch-one, inference integration and last-4 online updates",
+  "functional_checks_passed": true,
+  "strict_greedy_matches_target_only": false,
+  "greedy_comparison": [
+    {
+      "case": "short-greedy",
+      "passed": true,
+      "tokens": 8
+    },
+    {
+      "case": "length-32",
+      "passed": true,
+      "tokens": 32
+    },
+    {
+      "case": "json",
+      "passed": false,
+      "tokens": 16
+    },
+    {
+      "case": "page-edge",
+      "passed": true,
+      "tokens": 33
+    }
+  ],
+  "native_projection_only_reproduces_json": true,
+  "native_projection_restore_logits_hashes_equal": true,
+  "native_control_has_orthrus": false,
+  "core_update_count_per_rank": 75,
+  "history_reads_per_rank": 97,
+  "readonly_checks_per_rank": 66,
+  "sampling_calibration": {
+    "trials": 16,
+    "speculative_rows": 32,
+    "allowed": [
+      357,
+      417,
+      351
+    ],
+    "observed": {
+      "357": 2.0,
+      "417": 15.0,
+      "351": 15.0
+    },
+    "expected": {
+      "357": 2.7438356741331518,
+      "417": 13.373444257769734,
+      "351": 15.882718758657575
+    },
+    "variance": {
+      "357": 1.9951854854898716,
+      "417": 2.915501642677021,
+      "351": 1.8173359427628093
+    },
+    "probability_source": "native_pre_sampling_logits",
+    "repeated_seed_tokens": null,
+    "passed": true
+  },
+  "target_unchanged": true,
+  "head_changed": true,
+  "cpu": {
+    "passed": 220,
+    "skipped": 6,
+    "failures": 0
+  },
+  "mapped_ar_diagnostic": {
+    "source": "acceptance-1101-gqa-last4.json",
+    "max_tv": 0.0853448137640953,
+    "threshold": 0.05,
+    "passed": false,
+    "used_for_production_teacher": false,
+    "used_for_production_verification": false,
+    "fully_attributed": false
+  },
+  "exploratory_multirequest_control": {
+    "returncode": 1,
+    "status": "nonfinite logits followed by AICore error outside batch-one scope; not used as attribution evidence"
+  },
+  "new_checkpoint_exported": false,
+  "input_sha256": {
+    "acceptance-1101-functional-audit-online.json": "60542578b19fb9633d842adde2d488c0e9e6112278bd024aed1b4b57aedc4e6f",
+    "acceptance-1031-fused-final-target.json": "f14cc1f94ed62dc9618224c695a33c9a2716891b2c69482a8bc53dab6be179b2",
+    "acceptance-1101-native-linear-final.json": "f1b08172ac17213a0862ee85d233ad2019e2b171d490954c04b5e2c492444b45",
+    "acceptance-1101-native-linear-width.json": "a66843f8fabc65a52dba232200f7a580579b026817e046349e296330525c5fc5",
+    "acceptance-1101-functional-final-cpu.xml": "3e11b4f63dcd99ce3bc10a3e6fa561ce1776d95dce300013351fd60550c06e22",
+    "acceptance-1101-functional-audit-runtime.json": "94265fc0262e59a4072ec704e9dd10c8498cbb957abd95517635e7172ea7dd3f",
+    "acceptance-1101-native-batch.json.gz": "522700b0ca88469b488f4508f1922ca674ff28bc5fc95449c75b3e915fa0024b",
+    "acceptance-1101-native-batch.log.gz": "76fc6638390ad201cd410f0ad5003dd4fb589053824adce0ed46b1ecb24fa122",
+    "acceptance-1101-functional-audit-release.json": "efb218410d05e1671fca0600873bee0bd843ea9553e4ee8ead71905c505ff7dc"
+  },
+  "experiment_resources_released": true
+}

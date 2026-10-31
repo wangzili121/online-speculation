@@ -6,6 +6,43 @@ import sys
 import pytest
 
 
+def test_native_batch_logit_summary_uses_argmax_not_topk_tie_order(monkeypatch):
+    import torch
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from probe_qwen38_native_batch import logit_summary
+
+    row = torch.tensor([1., 3., 3., 0., -1.])
+    before = row.clone()
+    summary = logit_summary(row)
+    assert summary["argmax"] == 1
+    assert summary["values"][:2] == [3., 3.]
+    assert summary["sha256"] == logit_summary(row.clone())["sha256"]
+    assert summary["sha256"] != logit_summary(row + .01)["sha256"]
+    assert torch.equal(row, before)
+    with pytest.raises(FloatingPointError, match="nonfinite"):
+        logit_summary(torch.full((5,), float("nan")))
+
+
+def test_native_linear_width_control_keeps_bias_and_non_single_rows(monkeypatch):
+    import torch
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from probe_qwen38_native_batch import linear_width_call
+
+    value, weight, bias = torch.randn(1, 8), torch.randn(4, 8), torch.randn(4)
+    seen = []
+
+    def linear(x, scale):
+        seen.append(x.shape[0])
+        return torch.nn.functional.linear(x, weight) * scale, bias
+
+    actual, actual_bias = linear_width_call(linear, value, 32, scale=2)
+    torch.testing.assert_close(actual, torch.nn.functional.linear(value, weight) * 2)
+    assert actual_bias is bias and seen == [32]
+    linear_width_call(linear, value.expand(11, -1), 32, scale=2)
+    linear_width_call(linear, value, 0, scale=2)
+    assert seen == [32, 11, 1]
+
+
 def test_failed_ar_gate_preserves_final_sampling_evidence(monkeypatch, tmp_path):
     import json
     import os

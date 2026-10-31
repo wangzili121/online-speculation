@@ -550,6 +550,47 @@ def test_native_feedback_uses_only_reached_rows_and_clears_old_request():
         assert proposer.pending["request_id"] == "r2"
 
 
+@pytest.mark.parametrize("accepted", range(32))
+def test_k32_native_teacher_alignment_at_every_rejection_position(accepted):
+    proposer = Qwen38OrthrusProposer.__new__(Qwen38OrthrusProposer)
+    candidates = torch.arange(31)
+    q = torch.full((31, 48), 1 / 48)
+    boundary, cache = object(), object()
+    inputs = torch.tensor([[9] + [1] * 31])
+    proposer.pending = dict(request_id="r1", candidates=candidates, q=q,
+                            inputs=inputs, cache=cache, boundary=boundary)
+    proposer.runner = NS(input_batch=NS(req_ids=["r1"]))
+    proposer.block_size = 32
+    proposer.verified = proposer.accepted = proposer.max_verified_tokens = proposer.full_blocks = 0
+    feedback = []
+    proposer.learner = NS(observe=lambda item: feedback.append(item))
+    # 非连续行号检验按 verifier metadata 取教师，不能假设 logits 的前 31 行就是答案。
+    indices = torch.arange(1, 63, 2)
+    logits = torch.arange(64 * 48, dtype=torch.float32).reshape(64, 48).requires_grad_()
+    metadata = NS(num_draft_tokens=[31], draft_token_ids=candidates,
+                  target_logits_indices=indices)
+    expected = logits.detach()[indices].clone()
+    with torch.inference_mode():
+        teacher = proposer.teacher_rows(logits, metadata)
+        assert not teacher.requires_grad and not torch.is_inference(teacher)
+        actual_q = proposer.verification_probs(metadata)
+        torch.testing.assert_close(actual_q, q, rtol=0, atol=0)
+        assert actual_q.data_ptr() == q.data_ptr()
+        with torch.no_grad():
+            logits.zero_()  # 原生采样后会原地修改 logits；教师必须提前拥有自己的副本。
+        sampled = torch.full((1, 32), -1)
+        sampled[0, :accepted] = candidates[:accepted]
+        sampled[0, accepted] = 47  # 拒绝位置的补采样；全接受时是 bonus token。
+        proposer.observe_verified(metadata, teacher, sampled)
+    used = min(accepted + 1, 31)
+    assert len(feedback) == 1 and feedback[0].valid == used
+    torch.testing.assert_close(feedback[0].teacher_logits, expected[:used], rtol=0, atol=0)
+    assert feedback[0].inputs is inputs and feedback[0].cache is cache
+    assert feedback[0].boundary is boundary
+    assert proposer.pending is None and proposer.accepted == accepted
+    assert proposer.verified == 1 and proposer.full_blocks == 1
+
+
 def test_fixed_native_replay_updates_only_suffix_and_keeps_target_cache(monkeypatch):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
     from qwen38_validation_worker import ValidationWorker

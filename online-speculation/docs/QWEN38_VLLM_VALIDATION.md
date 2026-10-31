@@ -1,5 +1,42 @@
 # Qwen3.8 原生 vLLM 验证记录
 
+## 2026-11-01 推理与在线更新功能复核
+
+本轮区分三件事：推理与在线更新功能、不同执行形状的数值一致性、head 的训练效果。功能验收要求实际起草分布 q 正确交给原生 sampler，缓存和接受位置正确，教师来自原生主模型且监督位置对齐，只更新指定后缀的 draft 参数；不要求初始化 head 已经带来加速。
+
+代码复核确认，q 在起草时保存，原生验证和采样使用主模型实际 logits；教师在采样约束原地修改 logits 前按 `target_logits_indices` 复制。接受 a 个候选后拒绝，监督 a+1 行；全接受时只监督候选对应的行，不把 bonus 或拒绝后的行加入训练。
+新增 K32 的 31 个拒绝位置及全接受分支测试，同时检查非连续教师索引、原始 logits 被修改后的教师独立性，以及验证后 pending 释放。共享 backbone 仍传递输入梯度，但优化器及发布过程只处理所选 draft 参数。
+
+同一生产代码在 167 的 4/5 卡重新加载真实 27B 和 version254，BF16、TP2、K32、8K、eager、同步单请求，更新最后四层、stride=1。六类请求覆盖 greedy、随机采样、top-k/top-p、32-token 输出、JSON 和跨页输入；两个 rank 各完成 75 次更新、97 次起草与历史读取、75 个完整验证块、66 次缓存只读检查，最终 TV loss 均为 `0.26185691`。
+主模型每 rank 的全部加载参数约 26.90 GB，运行前后内容哈希不变，两个 head 分片哈希均改变。16 种子、32 个投机位置的采样校准通过。四个 greedy 用例仍保留 JSON 不同这一项，其他三个与同后端原基线一致；该次程序退出码 0 表示功能检查通过，不表示全部数值对照通过。没有开启附加 AR 重放诊断，也没有改动原有门槛。
+最终源码的相关 CPU 回归为 220 passed、6 个 CUDA 专用测试 skipped。部署代码及镜像框架源文件哈希与上一轮一致；本轮仅增加诊断工具、回归测试和记录。更新后的临时 head 未另行导出，原 version254 保留。
+
+[功能与数值检查汇总](validation/qwen38/acceptance-1101-functional-audit-summary.json) · [真实模型在线结果](validation/qwen38/acceptance-1101-functional-audit-online.json) · [运行日志](validation/qwen38/acceptance-1101-functional-audit-online.log.gz) · [CPU 回归](validation/qwen38/acceptance-1101-functional-final-cpu.xml)
+
+### JSON 分叉的独立对照
+
+`probe_qwen38_native_batch.py` 只启动单请求、无投机的原生主模型。运行时检查 drafter 为空，Orthrus 的 runner、Attention、GDN recurrent hook 均未安装；prefill 使用与原基线相同的 CANN 后端。
+诊断时只把 decode 的原生线性投影及 LM head 的输入复制为多行，执行原有算子后取第一行；Attention、GDN 递推和正式缓存始终只处理原来的一行。复制行之间的线性计算互相独立，数学结果应相同，这样能单独观察矩阵形状造成的低精度数值变化。
+
+| 原生线性计算行数 | JSON 第二个 token | 16-token 输出 |
+| --- | ---: | --- |
+| 不补齐、2、8、16 | 71093 | 与原无投机基线相同 |
+| 32 | 90 | 与 Orthrus K32 的 JSON 输出相同 |
+| 恢复不补齐 | 71093 | 恢复原输出，前两个位置的原始 logits 哈希也恢复 |
+
+32 行时，71093、90 和 248068 的目标 logits 同为 16.625，原生 greedy 选择 90。该对照没有 draft、候选验证或拒绝回滚，因此确认原生矩阵形状变化本身足以复现这条分叉；不是依赖猜测把差异归给舍入。补齐没有进入正式代码，也不是性能建议，更不证明所有其他数值误差已完成归因。
+
+[完整行数扫描](validation/qwen38/acceptance-1101-native-linear-width.json) · [最终源码重跑的 0/32/0 对照](validation/qwen38/acceptance-1101-native-linear-final.json) · [运行版本与源码哈希](validation/qwen38/acceptance-1101-functional-audit-runtime.json)
+
+探索阶段还尝试了真正的多请求 batch。8/16 请求出现非有限 logits，32 请求出现设备错误；这超出当前单请求适配范围，不能用它证明 JSON 分叉的原因，也未将其列为通过。最终工具只保留上述单请求矩阵形状对照。[探索原始输出](validation/qwen38/acceptance-1101-native-batch.json.gz)
+
+### AR 诊断的含义
+
+在线 TV loss 比较 draft 分布与原生主模型教师分布；`0.085345` 则来自另一项比较：将 AR 权重映射到 Torch 执行器后，与原生 verifier 比较。生产起草不调用这条 AR 重放路径，在线教师也不来自它。
+该附加诊断的 `0.05` 门槛仍未通过，保留原记录及非零退出状态，不放宽门槛，也不把诊断误差当作在线 loss 或接入故障。不同形状下 greedy 逐 token 不一致的记录也照实保留，不宣称所有数值检查通过。
+
+验证进程全部退出后停止专用容器，2/3/4/5 卡均无本次 NPU 进程，原模型和 version254 保留，其他用户任务未操作。[资源释放记录](validation/qwen38/acceptance-1101-functional-audit-release.json)
+
 ## 2026-11-01 GQA 与受控数值对照
 
 draft 的 Full Attention 直接将原始 KV 头传给现成 FAS。真实 27B 的 TP2 配置中，12 个 Q 头共享 2 个 KV 头，原先会先将整段 KV 复制成 12 头；现在取消这一步，不改变 attention mask 或 head 参数。

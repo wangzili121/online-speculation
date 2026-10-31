@@ -1,0 +1,57 @@
+{
+  "created_utc": "2026-10-31T17:56:23.164455+00:00",
+  "base_commit": "672cc47b1f0b716956a6909ed06e4111ce7077f0",
+  "source_sha256": {
+    "src/blockspec/vllm_ascend/qwen38_weights.py": "a86dc8c5ab8976f580078cd0c76ff8b5ba67ec9fc3ff70f413fa9bf06396f3df",
+    "src/blockspec/vllm_ascend/qwen38_attention.py": "909b5ac2e48d4d356ac797d912ee8ab68aa3f5ae9b522154f90d3ef2f6899a5d",
+    "src/blockspec/vllm_ascend/qwen38_gdn_backend.py": "2a886bbdb5462254a8ee747c42c2d3f572de6c51b455312ffbfc39b5f65cc6fe",
+    "src/blockspec/vllm_ascend/qwen38_history.py": "8fe67be56206bae021c4b0e0ff26ee1f2ef58c691f056b2a10328d34b62df114",
+    "src/blockspec/vllm_ascend/qwen38_proposer.py": "b611c1e8df8913cb4000c31b616f8a96b76281227d6cce8a0ea201e7fd557c87",
+    "src/blockspec/vllm_ascend/qwen38_runtime.py": "87cf5a44247b9f1805773f0aa485e953d405908404c69bff7bb507e66e1c202e",
+    "src/blockspec/vllm_ascend/qwen38_ops.py": "85e2c11c49b90b3e6c6af3e243cad5b4d10a715530a922379893ca0eb6785fe7",
+    "src/blockspec/parallel/online.py": "3ded1eabcfe26ff702d0d6b0930b57cfe210b79552edc896d6fcf25b9d8924b4",
+    "src/blockspec/parallel/qwen38.py": "d77a057342c66cface5c67dde32d69e749c88424a3ce132a03d495791b67ecea",
+    "src/blockspec/losses.py": "f22bee26fd4e96476f5d33297e5032efeac71c51cfe0e0804208cf40d7916d33",
+    "scripts/probe_qwen38_native_batch.py": "93921c51c883863aa88b6f6042d8b7fe936261356369a7a0af7d81bbaddf81dc",
+    "scripts/validate_qwen38_vllm.py": "0065fb99653412aa8933748c60e4b4b71553abb7640819d76919d4d83d1109b2",
+    "tests/test_qwen38_native.py": "50fa34554240d1e7e5ecbcea3b85de0405554c0b8df008a30ee5cbb24f7aed18",
+    "tests/test_qwen38_validation.py": "e0b68ce470c2fa038ff49c12f5ae98517a3e7d0705c60cf38d3d818363655bf9"
+  },
+  "installed_sha256": {
+    "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py": "c99d5172383c0bc3ef0f8b5722e87f558aa9e3d5f2e523b273bb1ff11e88a2e4",
+    "/vllm-workspace/vllm-ascend/vllm_ascend/attention/attention_v1.py": "4ba903ee8afb23012e78870034b1280039ccf81edb41b8e16f00e6e5bbc4c076",
+    "/vllm-workspace/vllm-ascend/vllm_ascend/ops/gdn.py": "4e0663d014503b49ce68e36b95a4dd728e33671983d4d8788db0dbfb9cea64f6"
+  },
+  "packages": {
+    "torch": "2.10.0+cpu",
+    "torch-npu": "2.10.0.post4",
+    "transformers": "5.14.1",
+    "vllm": "0.26.0+empty",
+    "vllm-ascend": "0.19.1rc2.dev1398+g85625bd77"
+  },
+  "framework_commits": {
+    "vllm": "568afb3a13806beb53bb2e6bd518269357b237c0",
+    "vllm_ascend": "85625bd772f27a4a13bc8e548f131af5ce3ff734"
+  },
+  "online_devices": [
+    4,
+    5
+  ],
+  "native_control_devices": [
+    2,
+    3
+  ],
+  "configuration": {
+    "dtype": "bfloat16",
+    "tp": 2,
+    "block_size": 32,
+    "max_model_len": 8192,
+    "max_num_seqs": 1,
+    "enforce_eager": true,
+    "async_scheduling": false,
+    "last_layers": 4,
+    "update_stride": 1,
+    "gdn_prefill_backend": "cann"
+  },
+  "image_digest": "sha256:0bc946247f2ae008fdf73838e597404fbbfebac4692c703eba531c05a9b5c58a"
+}
