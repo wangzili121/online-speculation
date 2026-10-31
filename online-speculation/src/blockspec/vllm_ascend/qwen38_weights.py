@@ -15,6 +15,7 @@ from torch.nn import functional as F
 
 from ..parallel.online import SuffixLearner
 from ..parallel.qwen38 import Qwen38DualView
+from .qwen38_ops import configure_attention, configure_gdn, swiglu
 
 
 class TensorParallel:
@@ -136,6 +137,16 @@ class SharedRMSNorm(nn.Module):
         return (normalized * (1 + weight.float())).to(value.dtype)
 
 
+class SharedMLP(nn.Module):
+    def __init__(self, gate_up, down, tp):
+        super().__init__()
+        self.gate_up_proj = ParallelLinear(gate_up, tp, "column")
+        self.down_proj = ParallelLinear(down, tp, "row")
+
+    def forward(self, value):
+        return self.down_proj(swiglu(self.gate_up_proj(value)))
+
+
 class SharedEmbedding(nn.Module):
     def __init__(self, original, tp, vocab_size):
         super().__init__()
@@ -199,10 +210,7 @@ def from_native_model(target, config, *, tp, block_size, mask_token_id):
                                              native_residual=index > 0)
         layer.post_attention_layernorm = SharedRMSNorm(source.post_attention_layernorm.weight, config.rms_norm_eps,
                                                       native_residual=True)
-        gate, up = _weight(source.mlp.gate_up_proj).chunk(2)
-        layer.mlp.gate_proj = ParallelLinear(gate, tp, "column")
-        layer.mlp.up_proj = ParallelLinear(up, tp, "column")
-        layer.mlp.down_proj = ParallelLinear(_weight(source.mlp.down_proj), tp, "row")
+        layer.mlp = SharedMLP(_weight(source.mlp.gate_up_proj), _weight(source.mlp.down_proj), tp)
         if config.layer_types[index] == "full_attention":
             mixer, ar = layer.self_attn, source.self_attn
             q = local.num_attention_heads * local.head_dim * 2
@@ -213,6 +221,7 @@ def from_native_model(target, config, *, tp, block_size, mask_token_id):
             mixer.o_proj = ParallelLinear(_weight(ar.o_proj), tp, "row")
             mixer.q_norm = SharedRMSNorm(ar.q_norm.weight, config.rms_norm_eps)
             mixer.k_norm = SharedRMSNorm(ar.k_norm.weight, config.rms_norm_eps)
+            configure_attention(mixer, getattr(ar, "rotary_emb", None))
         else:
             mixer, ar = layer.linear_attn, source.linear_attn
             if getattr(ar, "gqa_interleaved_layout", False) or getattr(ar, "disable_tp_for_ba_proj", False):
@@ -229,6 +238,7 @@ def from_native_model(target, config, *, tp, block_size, mask_token_id):
             mixer.conv1d.weight = ar.conv1d.weight
             mixer.A_log, mixer.dt_bias = ar.A_log, ar.dt_bias
             mixer.norm.weight = ar.norm.weight
+            configure_gdn(mixer)
     model = Qwen38DualView(shaped, block_size=block_size, mask_token_id=mask_token_id,
                            hybrid_policy="orthrus_qwen35_reference")
     # 映射不完整就报错，不能用随机参数掩盖缺失的权重。

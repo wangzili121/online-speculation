@@ -191,6 +191,18 @@ def test_draft_copies_custom_loader_parameters_as_plain_parameters():
     torch.testing.assert_close(ar, draft, rtol=0, atol=0)
 
 
+def test_native_attention_callbacks_bind_to_their_own_ar_or_draft_module():
+    hf = fixture()
+    native = native_fixture(hf)
+    model = from_native_model(native, hf.config, tp=TensorParallel(), block_size=4, mask_token_id=1)
+    attention = model.layers[-1].attention
+    for mixer in (attention.ar, attention.draft):
+        assert mixer.forward.__self__ is mixer
+        assert mixer._reference_forward.__self__ is mixer
+    assert attention.draft.q_proj.weight.data_ptr() != attention.ar.q_proj.weight.data_ptr()
+    assert model.layers[0].attention.draft.norm.weight.data_ptr() != model.layers[0].attention.ar.norm.weight.data_ptr()
+
+
 def test_scoped_hooks_retain_custom_and_leave_others_unchanged():
     events = []
 

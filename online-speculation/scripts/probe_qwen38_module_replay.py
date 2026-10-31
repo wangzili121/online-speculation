@@ -46,6 +46,15 @@ def native_cached_conv(x, weight, bias, activation, seq_idx=None):
 
 
 class ModuleReplayWorker(LayerwiseWorker):
+    def orthrus_set_fixed_module_candidates(self, values):
+        draft = self.model_runner.drafter
+        if (len(values) != 31 or any(type(x) is not int or not 0 <= x < draft.model.config.vocab_size
+                                    for x in values)):
+            raise ValueError("31 valid fixed candidates required")
+        self._layerwise_fixed_candidates = torch.tensor(values, device=draft.model.embedding.weight.device)
+        self.orthrus_diagnostic_candidates("fixed")
+        return values
+
     def orthrus_module_precision(self, mode):
         modes = {"original", "fp32_l2", "fp32_gate_norm", "fused_mlp", "fp32_conv", "combined",
                  "combined_no_conv", "combined_native_projection", "combined_native_conv", "combined_native_ops",
@@ -188,6 +197,15 @@ class ModuleReplayWorker(LayerwiseWorker):
                 self._module_inputs.setdefault(index, {})["core"] = args[0].detach().clone()
                 self._module_inputs[index]["z"] = args[1].detach().clone()
 
+        def full_inputs(index, module, args):
+            if self._layerwise_active and self._layerwise_label == "k32":
+                self._module_inputs.setdefault(index, {}).update({name: value.detach().clone()
+                    for name, value in zip(("full_query", "full_key", "full_value"), args, strict=True)})
+
+        def norm_input(index, name, module, args):
+            if self._layerwise_active and self._layerwise_label == "k32":
+                self._module_inputs.setdefault(index, {})[name] = args[0].detach().clone()
+
         for index, layer in enumerate(native.layers):
             layer.register_forward_pre_hook(partial(active_layer, index), with_kwargs=True)
             for name, module in (("input_norm", layer.input_layernorm),
@@ -195,6 +213,14 @@ class ModuleReplayWorker(LayerwiseWorker):
                 module.register_forward_hook(partial(capture, index, name))
             if draft.model.layer_types[index] == "linear_attention":
                 layer.linear_attn.norm.register_forward_pre_hook(partial(capture_core, index))
+            else:
+                layer.self_attn.attn.register_forward_pre_hook(partial(full_inputs, index))
+                layer.self_attn.attn.register_forward_hook(partial(capture, index, "full_output"))
+                layer.self_attn.qkv_proj.register_forward_hook(partial(capture, index, "full_packed"))
+                for name in ("q_norm", "k_norm"):
+                    module = getattr(layer.self_attn, name)
+                    module.register_forward_pre_hook(partial(norm_input, index, name + "_input"))
+                    module.register_forward_hook(partial(capture, index, name + "_output"))
 
         recurrent = torch.ops._C_ascend.npu_recurrent_gated_delta_rule
 
@@ -249,9 +275,10 @@ class ModuleReplayWorker(LayerwiseWorker):
             row["mlp_same_input"] = compare(actual_mlp, captured["mlp"])
             packed = source.mlp.gate_up_proj(captured["post_norm"])[0]
             gate, up = packed.chunk(2, dim=-1)
-            row["mlp_packed_projection"] = compare(
-                torch.cat((layer.mlp.gate_proj(captured["post_norm"]),
-                           layer.mlp.up_proj(captured["post_norm"])), dim=-1), packed)
+            actual_projection = (layer.mlp.gate_up_proj(captured["post_norm"])
+                if hasattr(layer.mlp, "gate_up_proj") else torch.cat((
+                    layer.mlp.gate_proj(captured["post_norm"]), layer.mlp.up_proj(captured["post_norm"])), dim=-1))
+            row["mlp_packed_projection"] = compare(actual_projection, packed)
             row["mlp_activation"] = compare(F.silu(gate) * up, source.mlp.act_fn(packed))
             mixer = layer.attention.ar
             if layer.kind == "linear_attention":
@@ -308,8 +335,48 @@ class ModuleReplayWorker(LayerwiseWorker):
                                                                               captured["core"])
                     row[f"gdn_{name}_state_finite"] = bool(torch.isfinite(state).all())
             else:
-                mixed, _ = mixer(inputs, position_embeddings=rotary, attention_mask=allowed,
-                                 past_key_values=scratch)
+                import torch_npu
+                operation = torch_npu.npu_fusion_attention
+                full = {}
+
+                def observed_full(q, k, v, *args, captured_full=full, original=operation, **kwargs):
+                    captured_full.update(query=q.clone(), key=k.clone(), value=v.clone())
+                    result = original(q, k, v, *args, **kwargs)
+                    captured_full["output"] = result[0].clone()
+                    return result
+
+                torch_npu.npu_fusion_attention = observed_full
+                try:
+                    mixed, _ = mixer(inputs, position_embeddings=rotary, attention_mask=allowed,
+                                     past_key_values=scratch)
+                finally:
+                    torch_npu.npu_fusion_attention = operation
+                for name in ("query", "key", "value"):
+                    actual = full[name][:, :, -length:].transpose(1, 2).reshape(length, -1)
+                    expected = captured[f"full_{name}"]
+                    if actual.shape[-1] != expected.shape[-1]:
+                        expected = expected.reshape(length, -1, mixer.head_dim).repeat_interleave(
+                            mixer.num_key_value_groups, dim=1).reshape(length, -1)
+                    row[f"full_{name}"] = compare(actual, expected)
+                row["full_output"] = compare(full["output"].transpose(1, 2).reshape(length, -1),
+                                              captured["full_output"])
+                q = captured["full_query"].reshape(length, -1, mixer.head_dim).transpose(0, 1)[None]
+                history = pending["cache"][index]
+                kv = [torch.cat((history[i], captured[f"full_{name}"].reshape(length, -1, mixer.head_dim)
+                      .transpose(0, 1)[None]), dim=2).repeat_interleave(mixer.num_key_value_groups, dim=1)
+                      for i, name in enumerate(("key", "value"))]
+                direct = operation(q.contiguous(), kv[0].contiguous(), kv[1].contiguous(), q.shape[1],
+                    input_layout="BNSD", atten_mask=torch.isneginf(allowed), scale=mixer.scaling,
+                    keep_prob=1., sparse_mode=0)[0].transpose(1, 2).reshape(length, -1)
+                row["full_kernel_same_operands"] = compare(direct, captured["full_output"])
+                for name in ("q_norm", "k_norm"):
+                    if name + "_input" in captured:
+                        row[name + "_same_input"] = compare(getattr(mixer, name)(captured[name + "_input"]),
+                                                            captured[name + "_output"])
+                    else:
+                        row[name + "_bypassed_by_native_fusion"] = True
+                qkv = torch.cat((mixer.q_proj(inputs), mixer.k_proj(inputs), mixer.v_proj(inputs)), dim=-1)[0]
+                row["full_packed_projection"] = compare(qkv, captured["full_packed"])
             row["mixer_same_input"] = compare(mixed[0], captured["mixed"])
             self._module_results[str(index)] = row
         self._module_inputs.clear()
@@ -347,6 +414,11 @@ def main():
     llm.collective_rpc("orthrus_capture_mixer_outputs")
     report = dict(diagnostic_only=True, model=args.model, history=history, tp=args.tp, outputs=[],
                   source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+    fixed_source = os.environ.get("ORTHRUS_MODULE_FIXED_SOURCE")
+    fixed_candidates = None
+    if fixed_source:
+        fixed_candidates = json.loads(Path(fixed_source).read_text())["workers"][0]["candidates"]
+        report["fixed_source_sha256"] = hashlib.sha256(Path(fixed_source).read_bytes()).hexdigest()
     matrix = [("decode", 0), ("k32", 31)]
     if os.environ.get("ORTHRUS_MODULE_VARIANTS") == "1":
         matrix.extend((name, 31) for name in ("fp32_l2", "fp32_gate_norm", "fused_mlp", "fp32_conv", "combined"))
@@ -360,6 +432,8 @@ def main():
         llm.collective_rpc("orthrus_set_proposal_limit", args=(limit,))
         llm.collective_rpc("orthrus_module_precision", args=(label if label not in {"decode", "k32"} else "original",))
         llm.collective_rpc("orthrus_diagnostic_candidates", args=("head" if label in {"decode", "k32"} else "fixed",))
+        if label == "k32" and fixed_candidates is not None:
+            llm.collective_rpc("orthrus_set_fixed_module_candidates", args=(fixed_candidates,))
         llm.collective_rpc("orthrus_arm_layerwise", args=(label,))
         output = llm.generate([prompt], SamplingParams(temperature=0, seed=7,
             max_tokens=2, ignore_eos=True), use_tqdm=False)[0].outputs[0]
