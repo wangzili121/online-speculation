@@ -24,7 +24,9 @@ class _DraftProbabilities:
 
 
 def _ours(runner):
-    return getattr(getattr(runner, "drafter", None), "qwen38_native_proposer", False)
+    draft = getattr(runner, "drafter", None)
+    return (getattr(draft, "qwen38_native_proposer", False)
+            or getattr(draft, "glm53_native_proposer", False))
 
 
 def install_runner_hooks(runner_class=None):
@@ -57,7 +59,8 @@ def install_runner_hooks(runner_class=None):
     @functools.wraps(setup)
     def retain(self):
         custom = getattr(self, "drafter", None)
-        if getattr(custom, "qwen38_native_proposer", False):
+        if (getattr(custom, "qwen38_native_proposer", False)
+                or getattr(custom, "glm53_native_proposer", False)):
             self._qwen38_custom = custom
         setup(self)
         if _ours(self):

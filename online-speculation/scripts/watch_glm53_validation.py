@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Wait for verified weights, a validated runtime and eight idle NPUs.
+
+No reservation kernels. Only this monitor's uniquely named containers are
+stopped. Jobs have a wall-time bound and release devices on success or failure.
+"""
+
+import argparse
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import subprocess
+import time
+
+
+def write_json(path, data):
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(data, indent=2) + "\n")
+    temp.replace(path)
+
+
+def idle_devices(snapshot):
+    memories = {int(i): int(m) for i, m in re.findall(
+        r"^\|\s*(\d+)\s+910\w*\s*\|[^\n]*\n\|\s*\d+\s*\|[^\n]*?\b(\d+)\s*/\s*65536\s*\|",
+        snapshot, re.M)}
+    empty = set(map(int, re.findall(r"No running processes found in NPU (\d+)\b", snapshot)))
+    if set(memories) != set(range(8)):
+        raise ValueError("incomplete eight-card NPU snapshot")
+    return sorted(i for i in empty if i in memories and memories[i] < 8192)
+
+
+def weights_ready(path, directory):
+    state = json.loads(path.read_text())
+    if state.get("state") in {"failed", "cancelled"}:
+        raise RuntimeError(f"checkpoint download is {state['state']}: {state.get('error', '')}")
+    if state.get("state") != "complete":
+        return False
+    if (state.get("model_id") != "Eco-Tech/GLM-5.3-Flash-w8a8"
+            or Path(state["directory"]).resolve() != directory.resolve()
+            or state.get("verified_files") != state["files"]
+            or state.get("verified_bytes") != state["total_bytes"]):
+        raise ValueError("download completion is not a fully verified GLM-Flash snapshot")
+    manifest = path.with_name("source_manifest.json")
+    if hashlib.sha256(manifest.read_bytes()).hexdigest() != state["source_manifest_sha256"]:
+        raise ValueError("download manifest has changed")
+    return True
+
+
+def runtime_ready(path, source, image):
+    if not path.is_file():
+        return False
+    state = json.loads(path.read_text())
+    if state.get("status") != "passed" or state.get("image") != image:
+        return False
+    required = {"src/blockspec/vllm_ascend/glm53_ops.py", "src/blockspec/vllm_ascend/glm53_native.py",
+                "src/blockspec/vllm_ascend/glm53_proposer.py", "src/blockspec/vllm_ascend/qwen38_runtime.py",
+                "scripts/run_glm53_vllm.py"}
+    hashes = state.get("sha256", {})
+    if set(hashes) != required:
+        return False
+    return all(hashlib.sha256((source / name).read_bytes()).hexdigest() == sha for name, sha in hashes.items())
+
+
+def run_job(args, mode):
+    name = f"wangzili-glm53-{mode}-{os.getpid()}-{int(time.time())}"
+    log = args.output / f"{mode}.log"
+    command = ["docker", "run", "-d", "--name", name, "--label", "owner=wangzili",
+               "--label", "experiment=orthrus-glm53", "--network=host", "--shm-size=32g",
+               "--device", "/dev/davinci_manager", "--device", "/dev/devmm_svm",
+               "--device", "/dev/hisi_hdc", "-e", "PYTHONPATH=/work/src",
+               "-e", "VLLM_USE_V2_MODEL_RUNNER=0", "-e", "VLLM_ASCEND_ENABLE_FLASHCOMM=0",
+               "-e", "HCCL_BUFFSIZE=200", "-e", "PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+               "-v", "/usr/local/Ascend/driver:/usr/local/Ascend/driver:ro",
+               "-v", "/usr/local/dcmi:/usr/local/dcmi:ro",
+               "-v", "/etc/ascend_install.info:/etc/ascend_install.info:ro",
+               "-v", f"{args.source}:/work:ro", "-v", f"{args.output}:/results",
+               "-v", f"{args.model}:/models/glm53:ro", "-w", "/work"]
+    for device in range(8):
+        command.extend(["--device", f"/dev/davinci{device}"])
+    command.extend(["--entrypoint", "python3", args.image, "scripts/run_glm53_vllm.py",
+                    "--model", "/models/glm53", "--output", f"/results/{mode}.json", "--mode", mode])
+    if mode == "orthrus":
+        command.extend(["--initialize-from-target", "--mask-token-id", "154820",
+                        "--experimental-hybrid-policy"])
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        result = subprocess.run(["docker", "wait", name], text=True, capture_output=True, timeout=args.job_timeout)
+        if result.returncode or result.stdout.strip() != "0":
+            raise RuntimeError(f"{mode} container failed: {result.stdout.strip()} {result.stderr.strip()}")
+    finally:
+        # Bound to this exact container; never stop a competing user's worker.
+        subprocess.run(["docker", "stop", "--time", "15", name], capture_output=True, timeout=60)
+        with log.open("wb") as stream:
+            subprocess.run(["docker", "logs", name], stdout=stream, stderr=subprocess.STDOUT, timeout=60)
+        subprocess.run(["docker", "rm", name], capture_output=True, timeout=60)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--download-status", type=Path, required=True)
+    parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--image", required=True)
+    parser.add_argument("--poll-seconds", type=int, default=30)
+    parser.add_argument("--wait-hours", type=float, default=48)
+    parser.add_argument("--job-timeout", type=int, default=2400)
+    args = parser.parse_args()
+    if "@sha256:" not in args.image:
+        parser.error("pin the validated runtime image by digest")
+    args.output.mkdir(parents=True, exist_ok=True)
+    lock = (args.output / "watch.lock").open("a")
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    def stop(signum, frame):
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    status_path = args.output / "watch-status.json"
+    state = dict(pid=os.getpid(), started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
+    deadline = time.monotonic() + args.wait_hours * 3600
+    previous = None
+    completed_modes = set()
+    try:
+        while time.monotonic() < deadline:
+            try:
+                snapshot = subprocess.check_output(["/usr/local/bin/npu-smi", "info"], text=True, timeout=20)
+                idle = idle_devices(snapshot)
+            except (subprocess.SubprocessError, ValueError, OSError) as error:
+                state.update(state="waiting_resource_probe", error=repr(error))
+                write_json(status_path, state)
+                time.sleep(args.poll_seconds)
+                continue
+            weights = weights_ready(args.download_status, args.model)
+            ready = runtime_ready(args.output / "runtime-ready.json", args.source, args.image)
+            state.update(state="waiting", idle=idle, weights_verified=weights, runtime_validated=ready)
+            summary = (idle, weights, ready)
+            if summary != previous:
+                write_json(status_path, state)
+                print(json.dumps(state), flush=True)
+                previous = summary
+            if weights and ready and idle == list(range(8)):
+                for mode in ("baseline", "orthrus"):
+                    if mode in completed_modes:
+                        continue
+                    # Baseline exits before Orthrus starts; recheck that no one claimed a card.
+                    if idle_devices(subprocess.check_output(
+                            ["/usr/local/bin/npu-smi", "info"], text=True, timeout=20)) != list(range(8)):
+                        break
+                    state.update(state="running", mode=mode)
+                    write_json(status_path, state)
+                    run_job(args, mode)
+                    completed_modes.add(mode)
+                else:
+                    state.update(state="smoke_complete", finished_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
+                    write_json(status_path, state)
+                    return
+            time.sleep(args.poll_seconds)
+        state.update(state="expired")
+        write_json(status_path, state)
+    except BaseException as error:
+        state.update(state="stopped" if isinstance(error, SystemExit) else "failed", error=repr(error))
+        write_json(status_path, state)
+        raise
+
+
+if __name__ == "__main__":
+    main()
