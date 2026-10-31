@@ -1,5 +1,59 @@
 # Qwen3.8 原生 vLLM 验证记录
 
+## 2026-10-31 同宽度数值复查
+
+在 167 的 0、4 卡恢复真实 27B、TP2、K32、8K、eager 单请求验证。固定复制初始化的 head，不进行在线更新。
+同模型宽度对照再次复现：0/1/7/15/16 个候选保持原输出，31 个候选在同一 JSON 位置分叉。
+逐层记录表明，普通 decode 与 K32 的首行 embedding、第一处 input norm 输出相同；第 0 层 GDN 后的 post norm 首次出现可见差异，最大绝对误差为 0.000732421875。
+这比单独比较最终 logits 更接近差异来源，但还不能据此把全部最终误差归因于某一个 kernel。
+
+修正 AR 对照的输入宽度：原脚本只重放 anchor 和前 30 个候选，现包含全部 31 个候选，与原生 verifier 同为 32 行，再比较前 31 行 logits。
+同宽度最大 TV=0.11111507，首行 TV=0.03195545；预设的 0.05 门槛仍未通过，没有用放宽阈值处理。
+诊断还覆盖第 15、16、26 行，不再只观察首行。旧的 0.09108947 记录保留为不同输入宽度下的历史结果。
+
+在相同的原生输入上分别控制 gamma 和归一化中间结果的舍入，128 处 norm 中有 121 处与“两处均先舍入到 BF16”的表达式逐元素一致；第一处非残差 norm 则与 HF 表达式一致。
+这说明原生 fused 分支与参考表达式确有数值路径区别，不代表直接把所有 norm 换成某个 fused 调用就能消除全网误差。
+
+固定修复前 head 提出的候选块，四种归一化实验的原生 verifier logits 完全相同。只对齐残差 norm 的舍入时，AR 最大 TV 从 0.111115 降到 0.047429；
+直接对所有 norm 使用 `npu_rms_norm(x, 1+w)` 则为 0.052653。这是同一候选块的受控实验，不是通用通过结论。
+把候选全部改为另一组 token，原生前一位置的 320 处逐层记录仍逐元素相同；该用例未发现候选未来信息泄漏。
+
+随后将共享残差 norm 接到现成的 `torch_npu.npu_rms_norm(x, ones)`，再乘 BF16 的 `1+w`；第一层输入及 Q/K norm 保留原路径。
+1/16/32 行、隐藏维度 5120 的单算子前向与目标舍入表达式逐元素一致，输入梯度相对 L2 误差为 0.00266--0.00311，在预设容差内。
+只增加非持久的单位 gamma buffer，不改变共享主模型参数、head tensor 格式、Attention、cache 或 rejection sampler；未开发新 kernel。
+
+**扩大验证后，AR 数值门槛仍未通过。** 新执行路径会改变 draft 提出的候选，不能与前一段固定候选实验直接比较最大 TV。
+复制初始化 head 的 JSON K32 对照最大 TV=0.298912；加载 version254 的扩展测试中，四个前缀的最大 TV 分别为 0.176190、0.030569、0.032436、0.290049。
+不能把单个受控块的 0.047429 登记为整个执行器通过，也不能把所有误差都归因于 norm；后续仍需隔离 GDN 与 packed/split projection 的数值路径。
+
+加载 version254 后，两个 rank 各完成 195 次最后四层更新、194 个完整验证块和 101 次缓存只读检查，计数及最终 loss 一致。
+16 个 greedy 用例共 400 token，仍只有同一 JSON 用例与 target-only 不同；其他 15 个用例逐 token 一致。
+第一次扩展运行的 JSON 在采样校准前落盘，因此其中计数为 163；195 次更新和最终失败门槛见原始日志，不把中间快照当作最终结果。
+验收工具现会在最终断言前保存采样统计及权重哈希，另有回归确认失败文件仍包含这些字段。
+修正保存逻辑后再次加载 version254，四个请求加 16 种子采样校准，两 rank 各完成 53 次更新、53 个完整验证块和 60 次缓存只读检查。
+主模型两分片合计 53,793,351,168 字节的参数哈希不变，head 内容哈希改变；32 个投机输出位置的条件概率频数检查通过。
+这四个请求中，实际到达行的最大 AR TV 为 0.028735；但全部候选行的最大 TV 仍为 0.176190，因此程序保持非零退出和 `completed=false`，没有用到达行结果替代原门槛。
+相关回归为 225 passed、7 个 CUDA 专用测试 skipped；Ruff 与 `git diff --check` 通过。
+
+复现入口（与部署环境和版本锁定文件配合使用）：
+
+```bash
+ORTHRUS_LAYERWISE_VARIANTS=1 ORTHRUS_LAYERWISE_OUTPUT=/work/evidence/layerwise.json \
+python scripts/probe_qwen38_layerwise.py \
+  --model /models/Qwen3.8-27B --mask-token-id 1 --tp 2 --block-size 32 \
+  --max-model-len 8192 --kv-cache-memory-bytes 12884901888
+```
+
+[宽度复测](validation/qwen38/acceptance-1031-resume-width.json) · [修复前逐层记录](validation/qwen38/acceptance-1031-layerwise-aligned.json.gz) · [固定候选受控实验](validation/qwen38/acceptance-1031-layerwise-variants-v3.json.gz) · [现成 RMSNorm 前后向](validation/qwen38/acceptance-1031-norm-op.log.gz)
+
+[新路径逐层记录](validation/qwen38/acceptance-1031-norm-layerwise.json.gz) · [195 次更新及失败门槛的原始日志](validation/qwen38/acceptance-1031-norm-last4.log.gz) · [最终回归](validation/qwen38/acceptance-1031-norm-release-cpu.xml) · [版本锁定](validation/qwen38/acceptance-1031-norm-runtime-lock.json)
+
+[53 次更新、冻结哈希、采样及未通过门槛的完整结果](validation/qwen38/acceptance-1031-norm-final-last4.json)
+
+本轮结束后已停止专用容器；最终使用的 167 的 4、5 卡实查没有 NPU 进程，只剩基础显存占用，模型及 version254 保留。
+验证脚本因数值门槛返回 1；容器的 137 则来自随后主动停止 `sleep infinity`，`OOMKilled=false`，不将二者混为模型 OOM。
+[资源释放记录](validation/qwen38/acceptance-1031-norm-resource-release.json)
+
 ## 2026-10-31 扩展验收
 
 **扩展验收尚未全部通过，不能用下方较早的通过记录代替新用例的结果。**
