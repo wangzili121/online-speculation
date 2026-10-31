@@ -6,6 +6,147 @@ import sys
 import pytest
 
 
+def test_failed_ar_gate_preserves_final_sampling_evidence(monkeypatch, tmp_path):
+    import json
+    import os
+    from types import SimpleNamespace
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import validate_qwen38_vllm as validation
+
+    stats = dict(orthrus=True, verified=1, proposals=1, history_reads=1, updates=0,
+                 accepted=0, history_backend="shared_target_snapshot", ar_view_checks=[dict(passed=False)])
+
+    class Engine:
+        def __init__(self, **kwargs):
+            pass
+
+        def collective_rpc(self, name, **kwargs):
+            return [stats.copy()] if name == "orthrus_stats" else None
+
+        def generate(self, *args, **kwargs):
+            return [SimpleNamespace(outputs=[SimpleNamespace(token_ids=list(range(8)), text="test")])]
+
+    for name in tuple(os.environ):
+        if name.startswith("ORTHRUS_VALIDATE_"):
+            monkeypatch.delenv(name)
+    destination = tmp_path / "failed.json"
+    monkeypatch.setenv("ORTHRUS_VALIDATE_OUTPUT", str(destination))
+    monkeypatch.setenv("ORTHRUS_VALIDATE_AR_VIEW", "1")
+    monkeypatch.setenv("ORTHRUS_VALIDATE_SAMPLING_TRIALS", "16")
+    monkeypatch.setenv("ORTHRUS_VALIDATE_CASES", "short-greedy")
+    monkeypatch.setattr(sys, "argv", ["run", "--model", "/model", "--mask-token-id", "1"])
+    monkeypatch.setattr(validation, "prepare_runtime_environment", lambda: None)
+    monkeypatch.setattr(validation, "native_options", lambda args: {})
+    monkeypatch.setattr(validation, "speculative_options", lambda args: {})
+    monkeypatch.setattr(validation, "sampling_calibration", lambda *args, **kwargs: {"passed": True})
+    monkeypatch.setitem(sys.modules, "vllm", SimpleNamespace(LLM=Engine, SamplingParams=SimpleNamespace))
+    with pytest.raises(AssertionError):
+        validation.main()
+    report = json.loads(destination.read_text())
+    assert report["sampling_calibration"] == {"passed": True}
+    assert report["completed"] is False
+
+
+@pytest.mark.parametrize("count", [1, 15, 16, 31])
+def test_ar_audit_replays_verifier_width_including_bonus_input(monkeypatch, count):
+    import torch
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from qwen38_validation_worker import ar_verifier_inputs
+
+    pending = {"inputs": torch.tensor([[8] + [1] * 31]), "candidates": torch.arange(100, 131)}
+    actual = ar_verifier_inputs(pending, count)
+    assert actual.shape == (1, count + 1)
+    assert actual.tolist() == [[8] + list(range(100, 100 + count))]
+    assert pending["inputs"][0, -1] == 1
+    with pytest.raises(ValueError, match="verification count"):
+        ar_verifier_inputs(pending, 32)
+
+
+def test_layerwise_metrics_detect_drift_and_preserve_source(monkeypatch):
+    import torch
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from probe_qwen38_layerwise import differences, first_row
+
+    source = torch.tensor([[[1., 2.], [3., 4.]]])
+    row = first_row(source)
+    row[0] = 9
+    assert source[0, 0, 0] == 1
+    assert differences(source, source) == dict(equal=True, max_abs=0., relative_l2=0.)
+    metrics = differences(source + .25, source)
+    assert not metrics["equal"] and metrics["max_abs"] == .25 and metrics["relative_l2"] > 0
+    with pytest.raises(ValueError, match="boundary shapes differ"):
+        differences(source, source.flatten())
+
+
+@pytest.mark.parametrize("mode", ["gamma_bf16", "both_bf16"])
+def test_norm_diagnostic_is_scoped_and_restorable(monkeypatch, mode):
+    import torch
+    from types import SimpleNamespace
+    from blockspec.vllm_ascend.qwen38_weights import SharedRMSNorm
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from probe_qwen38_layerwise import LayerwiseWorker
+
+    model = torch.nn.ModuleList([SharedRMSNorm(torch.nn.Parameter(torch.full((8,), weight,
+        dtype=torch.bfloat16), requires_grad=False), 1e-6) for weight in (.125, .25)])
+    worker = LayerwiseWorker()
+    worker.model_runner = SimpleNamespace(drafter=SimpleNamespace(model=model))
+    source = torch.arange(1, 9, dtype=torch.bfloat16)[None]
+    originals = [norm(source).clone() for norm in model]
+    worker.orthrus_set_norm_diagnostic(mode)
+    for norm in model:
+        normalized = source.float() * torch.rsqrt(source.float().square().mean(-1, keepdim=True) + norm.eps)
+        if mode == "both_bf16":
+            normalized = normalized.bfloat16().float()
+        expected = (normalized * (1 + norm.weight).float()).bfloat16()
+        torch.testing.assert_close(norm(source), expected, rtol=0, atol=0)
+    worker.orthrus_set_norm_diagnostic("original")
+    for norm, expected in zip(model, originals, strict=True):
+        torch.testing.assert_close(norm(source), expected, rtol=0, atol=0)
+    with pytest.raises(ValueError, match="unknown diagnostic norm"):
+        worker.orthrus_set_norm_diagnostic("invalid")
+
+
+def test_candidate_diagnostic_preserves_proposal_width(monkeypatch):
+    import torch
+    from types import SimpleNamespace
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from probe_qwen38_layerwise import LayerwiseWorker
+
+    draft = SimpleNamespace(block_size=32, model=SimpleNamespace(config=SimpleNamespace(vocab_size=200)))
+
+    def propose():
+        draft.pending = dict(candidates=torch.arange(100, 131), q=torch.ones(31, 200))
+        return [draft.pending["candidates"].tolist()]
+
+    draft.propose_batch = propose
+    worker = LayerwiseWorker()
+    worker.model_runner = SimpleNamespace(drafter=draft)
+    worker._layerwise_fixed_candidates = torch.arange(100, 131)
+    for width, shifted in ((0, False), (1, False), (15, False), (31, True), (31, False)):
+        worker.orthrus_set_proposal_limit(width)
+        worker.orthrus_diagnostic_candidates("shifted" if shifted else "head")
+        actual = draft.propose_batch()[0]
+        assert len(actual) == width
+        assert actual == list(range(137 if shifted else 100, (137 if shifted else 100) + width))
+        if shifted:
+            assert draft.pending["q"] is None
+    worker._layerwise_fixed_candidates.add_(2)
+    worker.orthrus_diagnostic_candidates("fixed")
+    assert draft.propose_batch()[0] == list(range(102, 133))
+
+
+def test_layerwise_report_rejects_mislabeled_native_width(monkeypatch):
+    import torch
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from probe_qwen38_layerwise import LayerwiseWorker
+
+    worker = LayerwiseWorker()
+    worker._layerwise = dict(decode=dict(query_rows=1, native={"0.input": torch.ones(1, 2)}),
+                            k2=dict(query_rows=32, native={"0.input": torch.ones(32, 2)}))
+    with pytest.raises(AssertionError, match="k2 scheduled 32 rows, expected 2"):
+        worker.orthrus_layerwise_report()
+
+
 @pytest.fixture
 def validation(monkeypatch):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))

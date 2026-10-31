@@ -111,14 +111,27 @@ class ParallelLinear(nn.Module):
 
 
 class SharedRMSNorm(nn.Module):
-    def __init__(self, weight, eps):
+    def __init__(self, weight, eps, *, native_residual=False):
         super().__init__()
         self.weight, self.eps = weight, eps
+        self.native_residual = native_residual
+        with torch.inference_mode(False):
+            self.register_buffer("_unit_weight", torch.ones_like(weight) if native_residual else None,
+                                 persistent=False)
 
     def forward(self, value):
         weight = self.weight
         if torch.is_inference(weight) and torch.is_grad_enabled() and value.requires_grad:
             weight = weight.clone()
+        if self.native_residual and value.dtype == torch.bfloat16:
+            # 对齐原生残差 norm：归一化结果和 1+weight 各先舍入一次；首层及 Q/K norm 不走此分支。
+            if value.device.type == "npu":
+                import torch_npu
+                normalized = torch_npu.npu_rms_norm(value, self._unit_weight, self.eps)[0]
+            else:
+                normalized = (value.float() * torch.rsqrt(
+                    value.float().square().mean(-1, keepdim=True) + self.eps)).to(value.dtype)
+            return normalized * (1 + weight)
         normalized = value.float() * torch.rsqrt(value.float().square().mean(-1, keepdim=True) + self.eps)
         return (normalized * (1 + weight.float())).to(value.dtype)
 
@@ -177,13 +190,15 @@ def from_native_model(target, config, *, tp, block_size, mask_token_id):
         shaped = Qwen3_5ForCausalLM(local)
     text = shaped.model
     text.embed_tokens = SharedEmbedding(native.embed_tokens, tp, config.vocab_size)
-    text.norm = SharedRMSNorm(native.norm.weight, config.rms_norm_eps)
+    text.norm = SharedRMSNorm(native.norm.weight, config.rms_norm_eps, native_residual=True)
     shaped.lm_head = SharedHead(_weight(language.lm_head), tp, config.vocab_size)
     # 只新建很小的 RoPE 缓冲；backbone 参数均引用当前 TP rank 的原生权重。
     text.rotary_emb = type(text.rotary_emb)(local).to(native.norm.weight.device)
     for index, (layer, source) in enumerate(zip(text.layers, native.layers, strict=True)):
-        layer.input_layernorm = SharedRMSNorm(source.input_layernorm.weight, config.rms_norm_eps)
-        layer.post_attention_layernorm = SharedRMSNorm(source.post_attention_layernorm.weight, config.rms_norm_eps)
+        layer.input_layernorm = SharedRMSNorm(source.input_layernorm.weight, config.rms_norm_eps,
+                                             native_residual=index > 0)
+        layer.post_attention_layernorm = SharedRMSNorm(source.post_attention_layernorm.weight, config.rms_norm_eps,
+                                                      native_residual=True)
         gate, up = _weight(source.mlp.gate_up_proj).chunk(2)
         layer.mlp.gate_proj = ParallelLinear(gate, tp, "column")
         layer.mlp.up_proj = ParallelLinear(up, tp, "column")

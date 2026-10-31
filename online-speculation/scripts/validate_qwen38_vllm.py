@@ -243,6 +243,9 @@ def main():
         evidence["memory"] = memory
     if replay is not None:
         evidence["fixed_replay"] = replay
+    # 后续严格断言失败时，也保留校准后的计数、权重哈希和内存检查。
+    if destination:
+        Path(destination).write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n")
     baseline = os.environ.get("ORTHRUS_VALIDATE_BASELINE")
     destination = os.environ.get("ORTHRUS_VALIDATE_OUTPUT")
     if baseline:

@@ -19,7 +19,7 @@ from blockspec.vllm_ascend.qwen38_attention import install_attention_hooks, veri
 from blockspec.vllm_ascend.qwen38_proposer import OrthrusWorkerExtension, Qwen38OrthrusProposer
 from blockspec.vllm_ascend.qwen38_history import NativeHybridHistory
 from blockspec.vllm_ascend.qwen38_weights import (
-    NativeSuffixLearner, ParallelLinear, TensorParallel, from_native_model,
+    NativeSuffixLearner, ParallelLinear, SharedRMSNorm, TensorParallel, from_native_model,
 )
 
 
@@ -116,6 +116,9 @@ def test_native_aliases_ar_and_online_update(inference):
         assert model.embedding.weight is native.model.embed_tokens.weight
         assert model.layers[-1].mlp.down_proj.weight is native.model.layers[-1].mlp.down_proj.weight
         assert not torch.is_inference(model.layers[-1].attention.draft.o_proj.weight)
+        assert model.norm.native_residual and model.layers[-1].post_norm.native_residual
+        assert not model.layers[0].input_norm.native_residual and model.layers[1].input_norm.native_residual
+        assert not model.layers[-1].attention.ar.q_norm.native_residual
         ids = torch.tensor([[3, 5, 8]])
         with torch.no_grad():
             torch.testing.assert_close(model(ids).logits, hf(ids, use_cache=False).logits, rtol=1e-4, atol=1e-5)
@@ -134,6 +137,28 @@ def test_native_aliases_ar_and_online_update(inference):
         assert learner.updates == 1
         assert not torch.equal(before, model.layers[-1].attention.draft.o_proj.weight)
         torch.testing.assert_close(native.lm_head.weight, frozen, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("inference", [False, True])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_native_residual_norm_rounding_and_frozen_input_gradient(inference, dtype):
+    torch.manual_seed(49)
+    with torch.inference_mode(inference):
+        weight = nn.Parameter(torch.randn(8, dtype=dtype) * .1, requires_grad=False)
+        norm = SharedRMSNorm(weight, 1e-6, native_residual=True)
+    assert not torch.is_inference(norm._unit_weight)
+    assert "_unit_weight" not in norm.state_dict()
+    value = torch.randn(1, 4, 8, dtype=dtype, requires_grad=True)
+    actual = norm(value)
+    reference = value.detach().clone().requires_grad_()
+    normalized = reference.float() * torch.rsqrt(reference.float().square().mean(-1, keepdim=True) + 1e-6)
+    expected = (normalized.to(dtype) * (1 + weight.clone()) if dtype == torch.bfloat16
+                else (normalized * (1 + weight.clone().float())).to(dtype))
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    actual.float().square().sum().backward()
+    expected.float().square().sum().backward()
+    torch.testing.assert_close(value.grad, reference.grad, rtol=0, atol=0)
+    assert weight.grad is None
 
 
 def test_inference_frozen_linear_has_exact_input_gradient():

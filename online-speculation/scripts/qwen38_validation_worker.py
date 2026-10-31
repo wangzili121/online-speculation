@@ -8,6 +8,13 @@ import torch
 from blockspec.vllm_ascend.qwen38_proposer import OrthrusWorkerExtension
 
 
+def ar_verifier_inputs(pending, count):
+    """Replay anchor plus every verified candidate, including the bonus input."""
+    if not 0 < count <= pending["candidates"].numel():
+        raise ValueError("verification count must fit pending candidates")
+    return torch.cat((pending["inputs"][:, :1], pending["candidates"][None, :count]), 1)
+
+
 def _check(name, module, args, output):
     values = output if isinstance(output, tuple) else (output,)
     for value in values:
@@ -197,14 +204,18 @@ class ValidationWorker(OrthrusWorkerExtension):
             if pending is not None and pending["request_id"] not in requests and len(requests) < 4:
                 count = metadata.num_draft_tokens[0]
                 with torch.inference_mode(False), torch.no_grad():
-                    tokens = torch.cat((pending["inputs"][:, :1], pending["candidates"][None, :count-1]), 1)
-                    actual = draft.model(tokens, view="ar", cache=pending["cache"]).logits[0].float()
+                    # 与 verifier 保持相同矩阵行数，最后一行是 bonus；只比较前 count 行。
+                    tokens = ar_verifier_inputs(pending, count)
+                    actual = draft.model(tokens, view="ar", cache=pending["cache"]).logits[0, :count].float()
                     expected = target[:count].float()
                     if actual.shape != expected.shape or not torch.isfinite(actual).all():
                         raise AssertionError("mapped AR view has invalid logits")
                     tv = (actual.softmax(-1) - expected.softmax(-1)).abs().sum(-1) / 2
                     maximum = float(tv.max())
+                    reached = min(int((sampled[0] >= 0).sum()), count)
                     self._ar_view_checks.append(dict(history=pending["cache"].length, rows=count,
+                        input_rows=tokens.shape[1],
+                        reached_rows=reached, reached_max_tv=float(tv[:reached].max()),
                         max_tv=maximum, max_logit_abs=float((actual - expected).abs().max()),
                         top1_matches=int((actual.argmax(-1) == expected.argmax(-1)).sum()),
                         passed=maximum <= .05, row_tv=tv.cpu().tolist(),
