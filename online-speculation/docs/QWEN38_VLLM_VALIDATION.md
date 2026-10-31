@@ -1,5 +1,55 @@
 # Qwen3.8 原生 vLLM 验证记录
 
+## 2026-11-01 GQA 与受控数值对照
+
+draft 的 Full Attention 直接将原始 KV 头传给现成 FAS。真实 27B 的 TP2 配置中，12 个 Q 头共享 2 个 KV 头，原先会先将整段 KV 复制成 12 头；现在取消这一步，不改变 attention mask 或 head 参数。
+同时移除无梯度 RoPE 分支未使用的系数展开。未开发新 kernel，主模型及原生 verifier 的执行路径不变。
+
+NPU 对照覆盖 0/11/491/4096 个历史位置、K32、因果和双向 mask，共八组：原始 GQA 与显式复制 KV 的前向逐元素一致，Q/K/V 梯度相对 L2 误差上限为 `0.00276`，在预设 `0.01` 容差内。
+单层 Full Attention 对 CPU FP32 的输出及投影、Q/K norm 梯度检查通过；原生融合推理和可微分分支输出仍逐元素一致，历史缓存不变。相关 CPU 回归为 215 passed、7 个 CUDA 专用测试 skipped。
+
+单卡微基准使用真实的头数及维度、K32 双向块，每种情况预热后交替测量五轮，每轮 100 次。下表为每次调用的中位耗时，不是整网 TPOT：
+
+| 历史位置数 | 复制 KV 后计算 | 直接 GQA |
+| ---: | ---: | ---: |
+| 0 | 0.160 ms | 0.094 ms |
+| 491 | 0.148 ms | 0.084 ms |
+| 4096 | 0.165 ms | 0.141 ms |
+| 8160 | 0.280 ms | 0.237 ms |
+
+8160 个历史位置加 32 个当前位置时，Torch allocator 记录的单次临时分配峰值由 `127.2 MiB` 降为 `31.2 MiB`。这不是模型总 HBM，也不是业务吞吐提升；微基准在共享机器上运行，保留全部测量值。
+
+数值定位继续固定同一组候选。以下对照中，原生 verifier logits 均逐元素不变；仅替换映射 AR 对照的计算，不修改正式 draft：
+
+| 对照路径 | 最大 TV |
+| --- | ---: |
+| 原执行路径 | 0.059093 |
+| Full Attention 使用整块投影形状 | 0.167937 |
+| 再加入 GDN 整块投影 | 0.249569 |
+| 再加入原生 GDN 门控 | 0.311801 |
+| 仅保留两个残差分量并使用原生融合 norm | 0.147055 |
+| 整块投影、门控及融合残差组合 | 0.178292 |
+
+这些替换没有改善全网数值误差，没有作为默认实现。另在真实 5120 维、32 行上调用原生残差 norm：当前先舍入残差和的路径与它逐元素一致，改为保留未舍入 FP32 和的表达式则产生约 `0.00291` 的相对 L2 误差。
+因此不能只凭某个 kernel 源码分支推断实际执行的舍入顺序，现有残差路径保持不变；这些反例也不能代替剩余误差的完整归因。
+
+GQA 正式路径又在真实 27B、TP2、K32、8K 上加载 version254，两个 rank 各完成 195 次最后四层更新、230 次历史读取、194 个完整验证块和 101 次缓存只读检查。最终 TV loss `0.23841257` 在两 rank 一致，head 哈希改变，主模型加载参数哈希不变；16 种子、32 个投机位置的采样校准通过。
+对照同镜像、同 CANN 后端的已保存无投机基线，16 个 greedy 用例共 400 token，仍为 15 个逐 token 一致，仅 JSON 在第二个 token 分叉。
+
+**严格 AR 对照仍未通过：** 四个前缀的最大 TV 为 `0.085345`、`0.025647`、`0.021200`、`0.035092`，程序返回非零，保留 `completed=false`，门槛未放宽。
+固定同一组旧候选后，新 GQA 路径的最大 TV 仍为 `0.059093`，与复制 KV 的路径完全相同；不能把在线更新后候选发生变化时某项 TV 的降低，解释成数值问题已经修复。
+
+另用 `ORTHRUS_MODULE_PROMPT=Hello`、同一 version254 固定 head 重放真正未通过的短历史请求，两个 rank 均复现最大 TV `0.085345`。
+96 个 GDN 初始递推状态逐元素一致；第 0 层的输入、norm、MLP 和输出在全部 32 行上一致，第 1 层输入 norm 仍一致，随后在 GDN 投影和前处理中出现最早局部差异。
+该层 GDN 输出的同输入相对 L2 误差为 `1.38e-4`；之后全网差异逐层累积。这一请求没有发现初始递推状态偏移，不能把剩余误差全部归因于缓存边界；投影等数值路径仍需进一步对齐和归因。
+
+[GQA 前后向与残差 norm](validation/qwen38/acceptance-1101-gqa-final-ops.json) · [微基准](validation/qwen38/acceptance-1101-gqa-bench.json) · [CPU 回归](validation/qwen38/acceptance-1101-gqa-cpu.xml) · [投影与门控对照](validation/qwen38/acceptance-1101-packed-projections.json.gz) · [融合残差对照](validation/qwen38/acceptance-1101-residual-only.json.gz)
+
+[真实模型在线回归](validation/qwen38/acceptance-1101-gqa-last4.json) · [greedy 对照](validation/qwen38/acceptance-1101-gqa-greedy-comparison.json) · [固定旧候选复测](validation/qwen38/acceptance-1101-gqa-fixed-block.json.gz) · [短历史定位](validation/qwen38/acceptance-1101-hello-stage.json.gz) · [运行版本与源码哈希](validation/qwen38/acceptance-1101-gqa-runtime-lock.json)
+
+全部实验结束后停止专用容器，使用过的 2、3、4、5 卡均无本次 NPU 任务，模型和 head 保留。
+[在线回归日志](validation/qwen38/acceptance-1101-gqa-last4.log.gz) · [资源释放](validation/qwen38/acceptance-1101-gqa-resource-release.json)
+
 ## 2026-10-31 原生算子执行路径与在线反向
 
 将逐模块定位得到的改动接入实际 draft 执行器，不再仅通过诊断开关替换。共享 MLP 使用 packed gate/up 投影和 `npu_swiglu`；GDN 使用现成卷积、L2 norm、递推及门控 norm，状态始终为自有临时存储。

@@ -21,6 +21,7 @@ TP 分片的 query/KV 头和 GDN 头数须能整除 TP；27B 首选 TP=2。
 - 候选及其真实生成分布 q 交给原生 rejection sampler；拒绝后的 token 不进入可读历史，draft KV 也不会成为正式 KV。
 
 `qwen38_ops.py` 为 draft 绑定镜像已有算子：Full Attention 的无梯度分支使用原生 QKV 拆分、Q/K norm、RoPE 融合算子，再以 `npu_fusion_attention` 计算历史与双向块；共享 MLP 使用 packed gate/up 投影和 `npu_swiglu`。
+FAS 直接接收 GQA 的原始 KV 头，不先复制为 Q 的头数；无梯度 RoPE 分支也不再重复展开融合算子没有使用的系数。
 GDN 使用已有 causal convolution、L2 norm、递推和门控 norm，所有工作状态均为自有临时存储。在线反向中不支持 autograd 的融合步骤改用可微分表达式，保持相同的中间精度和舍入位置；Attention 本身仍调用支持反向的融合算子。
 这些适配不改变 head 的参数名或交付格式，不新增 NPU kernel，也不表示性能已经最优。
 
