@@ -114,7 +114,8 @@ def test_module_precision_diagnostic_uses_fp32_and_restores_functions(monkeypatc
     mixer = NS(norm=norm, chunk_gated_delta_rule=chunk, causal_conv1d_fn=None)
     layer = NS(kind="linear_attention", attention=NS(ar=mixer), mlp=NS(forward=lambda x: x))
     worker = ModuleReplayWorker()
-    worker.model_runner = NS(drafter=NS(model=NS(layers=[layer])), get_model=lambda: NS(model=NS(layers=[NS()])))
+    worker.model_runner = NS(drafter=NS(model=NS(layers=[layer], forward=lambda *args, **kwargs: None)),
+                            get_model=lambda: NS(model=NS(layers=[NS()])))
     source = torch.tensor([[.12, 1.31]], dtype=torch.bfloat16)
     worker.orthrus_module_precision("fp32_l2")
     mixer.chunk_gated_delta_rule(source, source, source, use_qk_l2norm_in_kernel=True)
@@ -158,7 +159,8 @@ def test_native_projection_diagnostic_preserves_token_and_head_order(monkeypatch
                 num_kv_heads=2, head_dim=2, scaling=.7)
     native = NS(model=NS(layers=[NS(self_attn=source, mlp=NS(gate_up_proj=NS(weight=torch.empty(2, 4))))]))
     worker = ModuleReplayWorker()
-    worker.model_runner = NS(drafter=NS(model=NS(layers=[layer]), pending={"cache": NS(length=7)}),
+    worker.model_runner = NS(drafter=NS(model=NS(layers=[layer], forward=lambda *args, **kwargs: None),
+                                      pending={"cache": NS(length=7)}),
                             get_model=lambda: native)
     worker.orthrus_module_precision("combined_native_projection")
     output, _ = mixer.forward(inputs, position_embeddings=None, attention_mask=None, past_key_values=NS(update=update))
@@ -201,6 +203,68 @@ def test_native_conv_diagnostic_owns_its_state_and_preserves_context(monkeypatch
     assert torch.equal(actual[..., :4], original[..., :4])
     with pytest.raises(ValueError, match="cached K32"):
         native_cached_conv(source[..., :-1], weight, None, "silu")
+
+
+def test_fused_residual_diagnostic_is_ar_only_and_restorable(monkeypatch):
+    import torch
+    from types import SimpleNamespace as NS
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from probe_qwen38_module_replay import ModuleReplayWorker
+
+    original = lambda *args, **kwargs: "original draft"
+    model = NS(layers=[], forward=original)
+    worker = ModuleReplayWorker()
+    worker.model_runner = NS(drafter=NS(model=model), get_model=lambda: NS(model=NS(layers=[])))
+    worker.orthrus_module_precision("combined_native_residual")
+    assert model.forward(torch.ones(1, 4), view="draft") == "original draft"
+    with torch.no_grad(), pytest.raises(ValueError, match="cached K32"):
+        model.forward(torch.ones(1, 4), cache=NS())
+    worker.orthrus_module_precision("original")
+    assert model.forward is original
+
+
+def test_fused_residual_diagnostic_does_not_add_final_residual_twice(monkeypatch):
+    import torch
+    from types import SimpleNamespace as NS
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from probe_qwen38_module_replay import ModuleReplayWorker
+
+    class Mixer:
+        chunk_gated_delta_rule = causal_conv1d_fn = None
+        norm = NS(forward=lambda x, gate: x)
+
+        def __call__(self, x, **kwargs):
+            return x * .1
+
+    def norm(x, residual=None):
+        return x if residual is None else (x + residual, x + residual)
+
+    original = lambda *args, **kwargs: None
+    layer = NS(kind="linear_attention", attention=NS(ar=Mixer()),
+               mlp=NS(forward=original, down_proj=lambda x: x))
+    model = NS(layers=[layer], forward=original, embedding=lambda t: t.float()[..., None].expand(-1, -1, 2),
+               _cache=lambda cache: None, rotary=lambda *args: None, head=lambda x: x)
+    source = NS(input_layernorm=norm, post_attention_layernorm=norm, linear_attn=NS(norm=Mixer.norm),
+                mlp=NS(gate_up_proj=NS(weight=torch.cat((torch.eye(2), torch.eye(2))))))
+    # 这里只核对双残差 bookkeeping；MLP 替身保留前半投影，不测试 SwiGLU 数值。
+    monkeypatch.setitem(sys.modules, "torch_npu", NS(npu_swiglu=lambda x: x[..., :2]))
+
+    class MLP:
+        forward = original
+        down_proj = staticmethod(lambda x: x)
+
+        def __call__(self, x):
+            return self.forward(x)
+
+    layer.mlp = MLP()
+    worker = ModuleReplayWorker()
+    worker.model_runner = NS(drafter=NS(model=model), get_model=lambda: NS(model=NS(layers=[source], norm=norm)))
+    worker.orthrus_module_precision("combined_native_residual")
+    tokens = torch.ones(1, 32, dtype=torch.long)
+    with torch.no_grad():
+        output = model.forward(tokens, view="ar", cache=NS(length=3))
+    torch.testing.assert_close(output.hidden, torch.full((1, 32, 2), 2.2))
+    torch.testing.assert_close(output.logits, output.hidden)
 
 
 @pytest.mark.parametrize("mode", ["gamma_bf16", "both_bf16"])

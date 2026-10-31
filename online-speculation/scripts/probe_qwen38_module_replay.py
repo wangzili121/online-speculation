@@ -48,13 +48,14 @@ def native_cached_conv(x, weight, bias, activation, seq_idx=None):
 class ModuleReplayWorker(LayerwiseWorker):
     def orthrus_module_precision(self, mode):
         modes = {"original", "fp32_l2", "fp32_gate_norm", "fused_mlp", "fp32_conv", "combined",
-                 "combined_no_conv", "combined_native_projection", "combined_native_conv", "combined_native_ops"}
+                 "combined_no_conv", "combined_native_projection", "combined_native_conv", "combined_native_ops",
+                 "combined_native_residual"}
         if mode not in modes:
             raise ValueError("unknown module precision diagnostic")
         model = self.model_runner.drafter.model
         native = getattr(self.model_runner.get_model(), "language_model", self.model_runner.get_model()).model
         if not hasattr(self, "_module_originals"):
-            self._module_originals = []
+            self._module_originals = [(model, "forward", model.forward)]
             for index, layer in enumerate(model.layers):
                 self._module_originals.append((layer.mlp, "forward", layer.mlp.forward))
                 if layer.kind == "linear_attention":
@@ -75,7 +76,7 @@ class ModuleReplayWorker(LayerwiseWorker):
 
                 layer.mlp.forward = mlp
             if layer.kind != "linear_attention":
-                if mode in {"combined_native_projection", "combined_native_ops"}:
+                if mode in {"combined_native_projection", "combined_native_ops", "combined_native_residual"}:
                     def full(value, position_embeddings, attention_mask, past_key_values,
                              source=native.layers[index].self_attn, mixer=layer.attention.ar):
                         length = value.shape[1]
@@ -99,7 +100,7 @@ class ModuleReplayWorker(LayerwiseWorker):
             if mode == "fp32_l2" or combined:
                 def chunk(q, k, v, operation=mixer.chunk_gated_delta_rule, **kwargs):
                     def normalize(value):
-                        if mode == "combined_native_ops":
+                        if mode in {"combined_native_ops", "combined_native_residual"}:
                             from vllm.third_party.flash_linear_attention.ops.l2norm import l2norm_fwd
                             return l2norm_fwd(value)
                         full = value.float()
@@ -125,10 +126,46 @@ class ModuleReplayWorker(LayerwiseWorker):
                     return F.silu(output).to(x.dtype)
 
                 mixer.causal_conv1d_fn = conv
-            if mode in {"combined_native_conv", "combined_native_ops"}:
+            if mode in {"combined_native_conv", "combined_native_ops", "combined_native_residual"}:
                 mixer.causal_conv1d_fn = native_cached_conv
-            if mode == "combined_native_ops":
+            if mode in {"combined_native_ops", "combined_native_residual"}:
                 mixer.norm.forward = native.layers[index].linear_attn.norm.forward
+        if mode == "combined_native_residual":
+            original = model.forward
+
+            def fused_ar(tokens, **kwargs):
+                if kwargs.get("view", "ar") != "ar":
+                    return original(tokens, **kwargs)
+                from blockspec.parallel.backbone import BackboneOutput
+                cache = kwargs["cache"]
+                if tokens.shape != (1, 32) or torch.is_grad_enabled():
+                    raise ValueError("fused AR diagnostic requires no-grad cached K32")
+                scratch = model._cache(cache)
+                hidden, residual = model.embedding(tokens)[0], None
+                positions = torch.arange(cache.length, cache.length + 32, device=tokens.device)[None]
+                rotary = model.rotary(hidden, positions[None].expand(3, -1, -1))
+                allowed = hidden.new_zeros((1, 1, 32, cache.length + 32))
+                allowed.masked_fill_(torch.arange(cache.length + 32, device=tokens.device)[None]
+                                     > positions[0, :, None], float("-inf"))
+                for layer, source in zip(model.layers, native.layers, strict=True):
+                    # 保留两个残差分量直到融合 norm，不预先生成已舍入的相加结果。
+                    if residual is None:
+                        residual = hidden
+                        normalized = source.input_layernorm(hidden)
+                    else:
+                        normalized, residual = source.input_layernorm(hidden, residual)
+                    mixer = layer.attention.ar
+                    if layer.kind == "full_attention":
+                        mixed, _ = mixer(normalized[None], position_embeddings=rotary,
+                            attention_mask=allowed, past_key_values=scratch)
+                    else:
+                        mixed = mixer(normalized[None], cache_params=scratch, attention_mask=None)
+                    normalized, residual = source.post_attention_layernorm(mixed[0], residual)
+                    hidden = layer.mlp(normalized[None])[0]
+                normalized, residual = native.norm(hidden, residual)
+                return BackboneOutput(residual[None], None, model.head(normalized[None]), None)
+
+            model.forward = fused_ar
         return mode
 
     def orthrus_enable_module_replay(self, history):
@@ -317,6 +354,8 @@ def main():
         matrix.extend((name, 31) for name in ("combined", "combined_no_conv", "combined_native_projection"))
     if os.environ.get("ORTHRUS_MODULE_NATIVE_OPS") == "1":
         matrix.extend((name, 31) for name in ("combined_native_conv", "combined_native_ops"))
+    if os.environ.get("ORTHRUS_MODULE_RESIDUAL") == "1":
+        matrix.extend((name, 31) for name in ("combined_native_ops", "combined_native_residual"))
     for label, limit in matrix:
         llm.collective_rpc("orthrus_set_proposal_limit", args=(limit,))
         llm.collective_rpc("orthrus_module_precision", args=(label if label not in {"decode", "k32"} else "original",))

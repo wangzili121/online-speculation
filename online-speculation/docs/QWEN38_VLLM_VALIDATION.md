@@ -1,5 +1,53 @@
 # Qwen3.8 原生 vLLM 验证记录
 
+## 2026-10-31 同操作数逐模块定位
+
+使用 167 的 2、3 卡运行真实 27B、TP2、K32、8K、eager 对照，不进行在线更新。
+先记录原生验证器每一层的输入，再让映射模块直接使用这些输入和同一份历史；这样局部误差不会混入前面各层累积的偏差。
+两 rank 共 96 个 GDN 层的初始递推状态逐元素一致。相同真实 Q/K/V、门控和初始状态下，原生递推输出与 PyTorch 递推/分块公式输出的最大相对 L2 误差分别为 `4.58e-5`、`5.09e-5`。
+这批输入没有发现历史状态偏移或 GDN 递推公式、K32 分片边界的明显错误；不据此排除所有请求和状态组合的问题。
+
+更大的局部误差出现在前后处理：Q/K L2 归一化约 `0.0033`，GDN 门控输出 norm 约 `0.0047`，MLP 约 `0.0042`，均为同输入下的相对 L2 误差上限。
+HF 组合路径会在部分中间量上先舍入到 BF16；原生融合实现的计算和舍入顺序不同。
+packed/split projection 的局部误差约 `1e-4` 或更小，也不是全网偏差的唯一来源。
+
+随后固定同一组 31 个候选及 32 行输入，分别替换映射 AR 的计算路径。各组原生 verifier logits 逐元素相同，最大 TV 如下：
+
+| 映射 AR 对照方式 | 最大 TV |
+| --- | ---: |
+| 当前执行路径 | 0.298912 |
+| 仅 Q/K 使用 FP32 归一化中间量 | 0.297735 |
+| 仅 GDN 门控输出 norm 保留 FP32 中间量 | 0.251562 |
+| 仅 MLP 使用 packed projection 和现成 `npu_swiglu` | 0.291641 |
+| 仅卷积与 SiLU 保留 FP32 中间量 | 0.305654 |
+| 上述四项同时使用 | 0.058304 |
+| 四项中不替换卷积路径 | 0.341542 |
+| 四项再复用原生 Full Attention 投影、Q/K norm 和 RoPE | 0.055403 |
+| 使用现成融合卷积、L2 norm、GDN 输出 norm 及原生 Full Attention 投影路径 | 0.055403 |
+| 上一项再改为跨层保留两个残差分量并调用原生融合 norm | 0.233497 |
+
+现成融合卷积仅使用自有临时状态，不借用主模型的持久 cache；单算子随机输入还与 FP32 卷积加 SiLU 参考结果逐元素一致。
+这些结果证明前后处理的计算精度和融合方式是明确的偏差来源，但还未完全解释剩余误差。
+单项替换可能变差，组合后的改善也不是各项贡献的简单相加；融合残差这组反例同样保留。
+`0.05` 门槛没有放宽，以上均为诊断选项，没有设为生产默认，也没有验证这些无梯度诊断组合的在线反向或性能收益。
+
+各组仍复现 JSON 的原生 greedy 分叉：decode 输出 `[271, 71093]`，K32 输出 `[271, 90]`。
+原生不同 batch 宽度的数值变化与映射 AR 对照偏差是两个问题；对齐后者不能宣称修复前者。
+本轮未改动 vLLM/vLLM-Ascend 源码及生产 proposer，未开发新 kernel。
+
+复现入口：`scripts/probe_qwen38_module_replay.py`，参数与下节相同。
+设置 `ORTHRUS_MODULE_REPLAY_OUTPUT` 指定结果文件；`ORTHRUS_MODULE_VARIANTS=1` 运行逐项替换，
+`ORTHRUS_MODULE_FOLLOWUP=1`、`ORTHRUS_MODULE_NATIVE_OPS=1`、`ORTHRUS_MODULE_RESIDUAL=1` 分别运行后续三组对照。
+JSON 同时保存候选 token、逐层局部误差、原生 logits 不变检查及诊断源码 SHA256；局部模块的 `flattened_rows` 指展平后的行，早期文件中同一字段名为 `rows`，不能当作 token 行号。
+相关回归为 230 passed、7 个 CUDA 专用测试 skipped；最后新增的诊断 bookkeeping 检查随工具用例另验 37 passed，两组存在重叠，不相加计数。
+
+[逐项替换](validation/qwen38/acceptance-1031-module-precision.json.gz) · [卷积及投影对照](validation/qwen38/acceptance-1031-module-followup.json.gz) · [现成融合算子](validation/qwen38/acceptance-1031-module-native-ops.json.gz) · [融合残差反例](validation/qwen38/acceptance-1031-module-residual.json.gz)
+
+[相关回归](validation/qwen38/acceptance-1031-module-complete-cpu.xml) · [诊断工具回归](validation/qwen38/acceptance-1031-module-tools-cpu.xml)
+
+本次定位结束后停止专用容器，2、3 卡均无 NPU 进程，未停止其他用户的任务，模型和 head 保留。
+[资源释放](validation/qwen38/acceptance-1031-module-resource-release.json) · [融合卷积单算子前向](validation/qwen38/acceptance-1031-module-conv-op.json)
+
 ## 2026-10-31 同宽度数值复查
 
 在 167 的 0、4 卡恢复真实 27B、TP2、K32、8K、eager 单请求验证。固定复制初始化的 head，不进行在线更新。

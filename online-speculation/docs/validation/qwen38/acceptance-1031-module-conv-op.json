@@ -1,0 +1,16 @@
+{
+  "host": "189.1.227.167",
+  "physical_npu": 2,
+  "seed": 19,
+  "input_shape": [1, 128, 36],
+  "weight_shape": [128, 4],
+  "input_dtype": "bfloat16",
+  "history_rows": 4,
+  "query_rows": 32,
+  "operation": "native_cached_conv using installed npu_causal_conv1d_custom and owned temporary state",
+  "reference": "FP32 grouped conv1d, padding=3, then FP32 SiLU and one BF16 output cast; compare final 32 rows",
+  "output_max_abs": 0.0,
+  "output_relative_l2": 0.0,
+  "passed": true,
+  "scope": "One random forward-only operator check, not a backward or performance result."
+}
