@@ -17,8 +17,12 @@ TP 分片的 query/KV 头和 GDN 头数须能整除 TP；27B 首选 TP=2。
 
 - Embedding、norm、MLP 和 LM head 引用当前 TP rank 已加载的主模型参数，不重新加载完整 checkpoint。
 - 每层独立复制 draft mixer。Full Attention 块内双向；GDN 按 Orthrus Qwen3.5 扩展，在块内执行因果递推。
-- 历史来源为 `shared_target_snapshot`：从原生主模型的分页 KV、GDN 卷积及递推状态读取接受前缀，**不再执行 AR 历史重放，也不维护另一套持续追加的 AR cache。** Full Attention 将有效物理页整理为 SDPA 的连续输入；GDN 仅提取接受位置的工作状态。这里仍有布局转换和临时复制，不是分页 KV 的零拷贝直读。
+- 历史来源为 `shared_target_snapshot`：从原生主模型的分页 KV、GDN 卷积及递推状态读取接受前缀，**不再执行 AR 历史重放，也不维护另一套持续追加的 AR cache。** Full Attention 将有效物理页整理为融合 Attention 的连续输入；GDN 仅提取接受位置的工作状态。这里仍有布局转换和临时复制，不是分页 KV 的零拷贝直读。
 - 候选及其真实生成分布 q 交给原生 rejection sampler；拒绝后的 token 不进入可读历史，draft KV 也不会成为正式 KV。
+
+`qwen38_ops.py` 为 draft 绑定镜像已有算子：Full Attention 的无梯度分支使用原生 QKV 拆分、Q/K norm、RoPE 融合算子，再以 `npu_fusion_attention` 计算历史与双向块；共享 MLP 使用 packed gate/up 投影和 `npu_swiglu`。
+GDN 使用已有 causal convolution、L2 norm、递推和门控 norm，所有工作状态均为自有临时存储。在线反向中不支持 autograd 的融合步骤改用可微分表达式，保持相同的中间精度和舍入位置；Attention 本身仍调用支持反向的融合算子。
+这些适配不改变 head 的参数名或交付格式，不新增 NPU kernel，也不表示性能已经最优。
 
 draft 默认跟随请求的 temperature、top-k 和 top-p；greedy 请求直接起草最高概率 token。
 有显式 seed 的新请求会独立初始化 draft RNG，避免沿用上一个请求的起草随机状态。

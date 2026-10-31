@@ -1,5 +1,47 @@
 # Qwen3.8 原生 vLLM 验证记录
 
+## 2026-10-31 原生算子执行路径与在线反向
+
+将逐模块定位得到的改动接入实际 draft 执行器，不再仅通过诊断开关替换。共享 MLP 使用 packed gate/up 投影和 `npu_swiglu`；GDN 使用现成卷积、L2 norm、递推及门控 norm，状态始终为自有临时存储。
+在线更新需要反向时，保留可微分表达式，并对齐融合实现的中间精度。没有新增 kernel，也没有修改安装目录内的框架源码。
+
+进一步发现，镜像的 `patch_qwen3_5.py` 已将 Full Attention 的 QKV 拆分、Q/K norm 和 RoPE 融为一个算子，实际不会经过独立的 Q/K norm 模块。
+其 gamma 先以 BF16 计算 `1 + weight`，norm 与 RoPE 之间则保留 FP32 中间结果；将两步分开并提前转回 BF16 会产生额外舍入。
+无梯度路径现复用该原生融合算子，在线反向按相同顺序计算，再调用支持反向的 `npu_fusion_attention`。RoPE 仅共享只读系数表，不共享有状态的执行模块。
+
+固定同一组旧候选块，接入卷积、MLP 和 GDN 适配后最大 AR TV 为 `0.150247`；接入上述 Full Attention 融合路径后为 `0.059093`，原路径为 `0.298912`。
+Full Attention 同输入 Q/K 的最大相对 L2 误差分别降至 `9.17e-5`、`1.70e-4`，V 逐元素一致。
+将完全相同的原生 Q/K/V 交给 FAS，Attention 输出与原生验证器的最大相对 L2 误差为 `3.90e-5`。剩余全网差异仍不能据此全部归因于某个算子，`0.05` 门槛不变。
+
+NPU 单算子验证覆盖：
+
+- 卷积长度 1/4/17/32/36/65，包含超过一个分片的输入；融合前向与 FP32 卷积加 SiLU 参考逐元素一致，输入和权重梯度有限且非零。
+- GDN 长度 1/8/17/32，包含非零历史状态；前向相对 L2 误差不超过 `1.82e-5`，最终状态不超过 `8.37e-7`，Q/K/V、g、beta 均有有效梯度，历史未被改写。
+- Full Attention 同时覆盖因果和块内双向 mask、11 个历史位置、32 个当前位置、GQA 和部分 RoPE。原生融合前向与可微分分支输出逐元素一致；对 CPU FP32 参考，输出相对 L2 误差不超过 `0.00474`，各投影及 Q/K norm 权重梯度不超过 `0.00891`，历史未被改写。
+- SwiGLU、L2 norm、门控 norm 覆盖 1/16/32 行；前向对照及反向检查通过。
+
+相关 CPU 回归为 214 passed、7 个 CUDA 专用测试 skipped，不与其他批次累加。
+head 参数名和交付格式不变；上述数值对照不是业务接受率、吞吐收益或最优 kernel 的证明。
+
+真实 27B 再次加载 version254，更新最后四层，TP2、K32、8K、eager，覆盖短请求、跨页、分块 prefill、接近上下文上限、128-token decode 和 1/2/31/32/33-token 输出。
+两个 rank 各完成 193 次更新、228 次历史读取、192 个完整验证块、101 次缓存只读检查；计数及最终 TV loss `0.36623648` 一致。
+head 内容哈希改变，主模型全部加载参数的哈希不变。16 种子、32 个投机输出位置的条件概率频数检查通过。
+新跑的无投机基线与在线测试对照，16 个 greedy 用例共 400 token，15 个逐 token 相同，仍只有 JSON 在第二个 token 分叉。
+
+**严格 AR 对照仍未通过，运行返回非零且 `completed=false`。** 四个前缀的最大 TV 分别为 `0.085345`、`0.025647`、`0.021200`、`0.067469`；实际到达行均不超过 `0.028181`，但不能用到达行结果替代全部候选行的 `0.05` 门槛。
+此项比较的是映射 AR 与原生 verifier 的执行数值；实际验证、采样及在线监督的教师 logits 都来自原生主模型，不使用映射 AR 对照的分布。
+剩余差异尚未完全定位，不将它全部归因于主模型；JSON 的原生不同宽度问题也仍单独保留。
+
+同一代码重新启动 OpenAI API，加载原 head、最后四层更新、stride=16。15 项接口检查通过，覆盖普通生成、top-k/top-p、logprobs、chat、SSE、双客户端排队、1804-token 跨页输入，以及五轮取消、非法请求后恢复。
+服务期间两个 rank 各实际更新 4 次，计数、loss 和梯度范数一致；完成后向本次服务发送 SIGTERM，主动停服退出码为 0。关闭日志仍出现原生异步输出任务的 `EngineDeadError` 和 resource tracker 提示，不将退出码为 0 描述为零报错。
+
+[融合 Q/K 前的固定块](validation/qwen38/acceptance-1031-adapted-fixed-candidates.json.gz) · [融合后的固定块](validation/qwen38/acceptance-1031-adapted-fused-qk.json.gz) · [NPU 前向与反向](validation/qwen38/acceptance-1031-fused-execution-ops.json) · [CPU 回归](validation/qwen38/acceptance-1031-fused-final-cpu.xml)
+
+[新无投机基线](validation/qwen38/acceptance-1031-fused-final-target.json) · [最后四层更新及失败门槛](validation/qwen38/acceptance-1031-fused-final-last4.json) · [greedy 逐用例对照](validation/qwen38/acceptance-1031-fused-greedy-comparison.json) · [API](validation/qwen38/acceptance-1031-fused-api.json) · [运行版本和源码哈希](validation/qwen38/acceptance-1031-fused-runtime-lock.json)
+
+本轮测试后已停止专用容器，实查使用过的 2、3、4、5 卡无 NPU 进程，模型及 head 保留，未停止其他用户任务。
+[在线测试日志](validation/qwen38/acceptance-1031-fused-final-last4.log.gz) · [API 与停服日志](validation/qwen38/acceptance-1031-fused-api-server.log.gz) · [资源释放](validation/qwen38/acceptance-1031-fused-resource-release.json)
+
 ## 2026-10-31 同操作数逐模块定位
 
 使用 167 的 2、3 卡运行真实 27B、TP2、K32、8K、eager 对照，不进行在线更新。
