@@ -465,12 +465,15 @@ def main():
     options = native_options(args) | speculative_options(args)
     options["worker_extension_cls"] = "probe_qwen38_module_replay.ModuleReplayWorker"
     llm = LLM(**options)
-    prompt = 'Return JSON with keys "name" and "age":'
+    prompt = os.environ.get("ORTHRUS_MODULE_PROMPT", 'Return JSON with keys "name" and "age":')
     history = len(llm.get_tokenizer().encode(prompt))
+    if not history:
+        raise ValueError("a nonempty diagnostic prefix is required")
     llm.collective_rpc("orthrus_enable_logits_audit", args=(0,))
     llm.collective_rpc("orthrus_enable_module_replay", args=(history,))
     llm.collective_rpc("orthrus_capture_mixer_outputs")
-    report = dict(diagnostic_only=True, model=args.model, history=history, tp=args.tp, outputs=[],
+    report = dict(diagnostic_only=True, model=args.model, prompt=prompt, head_dir=args.head_dir,
+                  history=history, tp=args.tp, outputs=[],
                   source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     fixed_source = os.environ.get("ORTHRUS_MODULE_FIXED_SOURCE")
     fixed_candidates = None
