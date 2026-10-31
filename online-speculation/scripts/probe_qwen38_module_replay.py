@@ -46,6 +46,64 @@ def native_cached_conv(x, weight, bias, activation, seq_idx=None):
 
 
 class ModuleReplayWorker(LayerwiseWorker):
+    def orthrus_projection_diagnostic(self, mode):
+        if mode not in {"original", "packed_full", "packed_all", "packed_all_gates"}:
+            raise ValueError("unknown packed projection diagnostic")
+        model = self.model_runner.drafter.model
+        native = getattr(self.model_runner.get_model(), "language_model", self.model_runner.get_model()).model
+        if not hasattr(self, "_projection_originals"):
+            self._projection_originals = []
+            for layer in model.layers:
+                mixer = layer.attention.ar
+                names = (("q_proj", "k_proj", "v_proj") if layer.kind == "full_attention"
+                         else ("in_proj_qkv", "in_proj_z"))
+                self._projection_originals.extend((getattr(mixer, name), "forward", getattr(mixer, name).forward)
+                                                  for name in names)
+                if layer.kind == "linear_attention":
+                    self._projection_originals.append((mixer, "chunk_gated_delta_rule", mixer.chunk_gated_delta_rule))
+            self._projection_handles = []
+        for module, name, original in self._projection_originals:
+            setattr(module, name, original)
+        for handle in self._projection_handles:
+            handle.remove()
+        self._projection_handles.clear()
+        if mode == "original":
+            return mode
+        for index, layer in enumerate(model.layers):
+            mixer = layer.attention.ar
+            source = native.layers[index]
+            if layer.kind == "full_attention":
+                names, weight = ("q_proj", "k_proj", "v_proj"), source.self_attn.qkv_proj.weight
+            elif mode != "packed_full":
+                names, weight = ("in_proj_qkv", "in_proj_z"), source.linear_attn.in_proj_qkvz.weight
+            else:
+                continue
+            sizes = [getattr(mixer, name).weight.shape[0] for name in names]
+            for part, name in enumerate(names):
+                def projected(value, packed_weight=weight, splits=sizes, position=part):
+                    # 仅用于 AR 对照：读取同一份冻结权重，保持原生 GEMM 的整块形状。
+                    return F.linear(value[0], packed_weight).split(splits, dim=-1)[position][None]
+
+                getattr(mixer, name).forward = projected
+            if layer.kind == "linear_attention" and mode == "packed_all_gates":
+                captured = {}
+
+                def inputs(module, args, saved=captured):
+                    saved["input"] = args[0]
+
+                self._projection_handles.append(mixer.register_forward_pre_hook(inputs))
+                original = mixer.chunk_gated_delta_rule
+
+                def gated(q, k, v, operation=original, owner=mixer, saved=captured, **kwargs):
+                    from vllm_ascend.device.device_op import DeviceOperator
+                    value = saved.pop("input")
+                    a, b = owner.in_proj_a(value)[0], owner.in_proj_b(value)[0]
+                    kwargs["g"], kwargs["beta"] = DeviceOperator.fused_gdn_gating(owner.A_log, a, b, owner.dt_bias)
+                    return operation(q, k, v, **kwargs)
+
+                mixer.chunk_gated_delta_rule = gated
+        return mode
+
     def orthrus_set_fixed_module_candidates(self, values):
         draft = self.model_runner.drafter
         if (len(values) != 31 or any(type(x) is not int or not 0 <= x < draft.model.config.vocab_size
@@ -58,7 +116,7 @@ class ModuleReplayWorker(LayerwiseWorker):
     def orthrus_module_precision(self, mode):
         modes = {"original", "fp32_l2", "fp32_gate_norm", "fused_mlp", "fp32_conv", "combined",
                  "combined_no_conv", "combined_native_projection", "combined_native_conv", "combined_native_ops",
-                 "combined_native_residual"}
+                 "combined_native_residual", "residual_only"}
         if mode not in modes:
             raise ValueError("unknown module precision diagnostic")
         model = self.model_runner.drafter.model
@@ -139,7 +197,7 @@ class ModuleReplayWorker(LayerwiseWorker):
                 mixer.causal_conv1d_fn = native_cached_conv
             if mode in {"combined_native_ops", "combined_native_residual"}:
                 mixer.norm.forward = native.layers[index].linear_attn.norm.forward
-        if mode == "combined_native_residual":
+        if mode in {"combined_native_residual", "residual_only"}:
             original = model.forward
 
             def fused_ar(tokens, **kwargs):
@@ -428,9 +486,19 @@ def main():
         matrix.extend((name, 31) for name in ("combined_native_conv", "combined_native_ops"))
     if os.environ.get("ORTHRUS_MODULE_RESIDUAL") == "1":
         matrix.extend((name, 31) for name in ("combined_native_ops", "combined_native_residual"))
+    projection_modes = {"packed_full", "packed_all", "packed_all_gates"}
+    if os.environ.get("ORTHRUS_MODULE_PROJECTIONS") == "1":
+        matrix.extend((name, 31) for name in ("packed_full", "packed_all", "packed_all_gates"))
+    if os.environ.get("ORTHRUS_MODULE_RESIDUAL_ONLY") == "1":
+        matrix.extend((name, 31) for name in ("residual_only", "packed_residual"))
     for label, limit in matrix:
         llm.collective_rpc("orthrus_set_proposal_limit", args=(limit,))
-        llm.collective_rpc("orthrus_module_precision", args=(label if label not in {"decode", "k32"} else "original",))
+        precision = ("residual_only" if label == "packed_residual" else label
+                     if label not in {"decode", "k32"} | projection_modes else "original")
+        projection = ("packed_all_gates" if label == "packed_residual" else label
+                      if label in projection_modes else "original")
+        llm.collective_rpc("orthrus_module_precision", args=(precision,))
+        llm.collective_rpc("orthrus_projection_diagnostic", args=(projection,))
         llm.collective_rpc("orthrus_diagnostic_candidates", args=("head" if label in {"decode", "k32"} else "fixed",))
         if label == "k32" and fixed_candidates is not None:
             llm.collective_rpc("orthrus_set_fixed_module_candidates", args=(fixed_candidates,))

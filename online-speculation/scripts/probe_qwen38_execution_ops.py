@@ -29,7 +29,7 @@ def main():
     import vllm_ascend.ops.triton.linearnorm.split_qkv_rmsnorm_mrope  # noqa: F401
     init_device_properties_triton()
     torch.manual_seed(71)
-    device, report = "npu:0", {"convolution": [], "gdn": [], "activations": [], "attention": []}
+    device, report = "npu:0", {"convolution": [], "gdn": [], "activations": [], "attention": [], "gqa": []}
     for length in (1, 4, 17, 32, 36, 65):
         x = torch.randn(1, 128, length, device=device, dtype=torch.bfloat16, requires_grad=True)
         weight = torch.randn(128, 4, device=device, dtype=torch.bfloat16, requires_grad=True)
@@ -83,6 +83,51 @@ def main():
                    for p in (x, gate, norm.weight))
         report["activations"].append(dict(length=length, swiglu=error(actual, expected),
                                           norm=error(forward, differentiable), backward=True))
+    # 原生 GQA 与显式复制 KV 的数学含义一致；反向允许 BF16 归并顺序带来的舍入差异。
+    for past in (0, 11, 491, 4096):
+        for causal in (False, True):
+            q = torch.randn(1, 12, 32, 256, device=device, dtype=torch.bfloat16, requires_grad=True)
+            k, v = [torch.randn(1, 2, past + 32, 256, device=device, dtype=torch.bfloat16,
+                               requires_grad=True) for _ in range(2)]
+            blocked = torch.zeros(1, 1, 32, past + 32, device=device, dtype=torch.bool)
+            if causal:
+                blocked |= torch.arange(past + 32, device=device)[None] > torch.arange(past, past + 32,
+                                                                                     device=device)[:, None]
+            def attention(key, value, query=q, mask=blocked):
+                return torch_npu.npu_fusion_attention(query, key, value, 12, input_layout="BNSD",
+                    atten_mask=mask, scale=256 ** -.5, keep_prob=1., sparse_mode=0)[0]
+            direct = attention(k, v)
+            expanded = attention(k.repeat_interleave(6, dim=1), v.repeat_interleave(6, dim=1))
+            forward = error(direct, expanded)
+            if forward["relative_l2"] > .001:
+                raise AssertionError(f"GQA forward differs: {forward}")
+            direct_grad = torch.autograd.grad(direct.float().square().mean(), (q, k, v))
+            expanded_grad = torch.autograd.grad(expanded.float().square().mean(), (q, k, v))
+            gradients = [error(a, b) for a, b in zip(direct_grad, expanded_grad, strict=True)]
+            if any(not torch.isfinite(g).all() for g in direct_grad) or any(
+                    g["relative_l2"] > .01 for g in gradients):
+                raise AssertionError(f"GQA backward differs: {gradients}")
+            report["gqa"].append(dict(past=past, causal=causal, forward=forward, gradients=gradients))
+    from blockspec.vllm_ascend.qwen38_weights import SharedRMSNorm
+    x, residual = [torch.randn(32, 5120, device=device, dtype=torch.bfloat16, requires_grad=True)
+                   for _ in range(2)]
+    weight = nn.Parameter(torch.randn(5120, device=device, dtype=torch.bfloat16) * .1, requires_grad=False)
+    norm = SharedRMSNorm(weight, 1e-6, native_residual=True)
+    with torch.no_grad():
+        expected, _, saved = torch.ops._C_ascend.npu_add_rms_norm_bias(x, residual, 1 + weight, None, 1e-6)
+        actual = norm(x + residual)
+        full = x.float() + residual.float()
+        unrounded = torch_npu.npu_rms_norm(full, torch.ones_like(weight, dtype=torch.float32), 1e-6)[0]
+        unrounded = unrounded.bfloat16() * (1 + weight)
+        metrics = error(actual, expected)
+        if metrics["relative_l2"] > .001:
+            raise AssertionError(f"residual norm differs from native: {metrics}")
+        assert torch.equal(saved, x + residual)
+    norm(x + residual).float().square().mean().backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() and p.grad.count_nonzero() for p in (x, residual))
+    report["residual_norm"] = dict(width=5120, rounded=metrics, unrounded=error(unrounded, expected),
+                                   residual_equal=True, backward=True)
+
     import copy
     from transformers import Qwen3_5TextConfig
     from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5Attention

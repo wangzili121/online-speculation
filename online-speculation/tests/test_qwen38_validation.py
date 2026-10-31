@@ -177,6 +177,42 @@ def test_native_projection_diagnostic_preserves_token_and_head_order(monkeypatch
     assert mixer.forward is original
 
 
+def test_packed_projection_diagnostic_restores_modules_and_hooks(monkeypatch):
+    import copy
+    import torch
+    from torch import nn
+    from types import SimpleNamespace as NS
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from probe_qwen38_module_replay import ModuleReplayWorker
+
+    full, gdn = nn.Module(), nn.Module()
+    full.q_proj, full.k_proj, full.v_proj = [nn.Linear(4, n, bias=False) for n in (8, 4, 4)]
+    gdn.in_proj_qkv, gdn.in_proj_z = [nn.Linear(4, n, bias=False) for n in (12, 4)]
+    gdn.chunk_gated_delta_rule = lambda *args, **kwargs: None
+    layers = [NS(kind=kind, attention=NS(ar=mixer, draft=copy.deepcopy(mixer))) for kind, mixer in
+              (("full_attention", full), ("linear_attention", gdn))]
+    groups = ((full, ("q_proj", "k_proj", "v_proj")), (gdn, ("in_proj_qkv", "in_proj_z")))
+    packed = [torch.cat([getattr(m, name).weight for name in names]).detach() for m, names in groups]
+    native = NS(model=NS(layers=[NS(self_attn=NS(qkv_proj=NS(weight=packed[0]))),
+                                NS(linear_attn=NS(in_proj_qkvz=NS(weight=packed[1])))]))
+    worker = ModuleReplayWorker()
+    worker.model_runner = NS(drafter=NS(model=NS(layers=layers)), get_model=lambda: native)
+    inputs = torch.randn(1, 3, 4)
+    originals = [(getattr(m, name), getattr(m, name).forward) for m, names in groups for name in names]
+    before = [p.clone() for layer in layers for p in layer.attention.draft.parameters()]
+    for mode in ("packed_full", "packed_all", "packed_all_gates", "original"):
+        worker.orthrus_projection_diagnostic(mode)
+        for (mixer, names), weight in zip(groups, packed, strict=True):
+            actual = torch.cat([getattr(mixer, name)(inputs) for name in names], dim=-1)
+            torch.testing.assert_close(actual, torch.nn.functional.linear(inputs, weight))
+        assert len(gdn._forward_pre_hooks) == int(mode == "packed_all_gates")
+    assert all(module.forward == original for module, original in originals)
+    assert all(torch.equal(p, saved) for p, saved in zip(
+        (p for layer in layers for p in layer.attention.draft.parameters()), before, strict=True))
+    with pytest.raises(ValueError, match="unknown packed"):
+        worker.orthrus_projection_diagnostic("invalid")
+
+
 def test_native_conv_diagnostic_owns_its_state_and_preserves_context(monkeypatch):
     import torch
     from torch.nn import functional as F

@@ -156,10 +156,6 @@ def full_attention(self, hidden_states, position_embeddings, attention_mask, pas
         row = None if past_key_values is None else past_key_values.layers[self.layer_idx].keys
         past = 0 if row is None else row.shape[2]
         positions = native_rope.positions(past, length, hidden_states.device)
-        cos, sin = native_rope.coefficients(positions, query.dtype)
-    else:
-        cos, sin = (component[:, None].contiguous() for component in position_embeddings)
-    rotary_dim = cos.shape[-1]
 
     if native_rope is not None and not torch.is_grad_enabled():
         packed = torch.cat((projected_q, projected_k, projected_v), dim=-1).reshape(length, -1)
@@ -173,6 +169,10 @@ def full_attention(self, hidden_states, position_embeddings, attention_mask, pas
         key, value = (part.reshape(shape).transpose(1, 2) for part in (k, v))
         gate = raw_gate.reshape(batch, length, -1)
     else:
+        cos, sin = (native_rope.coefficients(positions, query.dtype) if native_rope is not None
+                    else tuple(component[:, None].contiguous() for component in position_embeddings))
+        rotary_dim = cos.shape[-1]
+
         def normalize_rotate(value, weight):
             full = value.float()
             # 原生融合分支先形成 BF16 gamma，但 norm 与 RoPE 之间不舍入。
@@ -185,8 +185,7 @@ def full_attention(self, hidden_states, position_embeddings, attention_mask, pas
         key = normalize_rotate(key, self.k_norm.weight)
     if past_key_values is not None:
         key, value = past_key_values.update(key, value, self.layer_idx)
-    copies = self.num_key_value_groups
-    key, value = key.repeat_interleave(copies, dim=1), value.repeat_interleave(copies, dim=1)
+    # FAS 直接支持 GQA；保留少量 KV 头，避免复制整段历史。
     # PyTorch 加性 mask 中的 -inf 对应 Ascend FAS 的 True（禁止读取）。
     blocked = (None if attention_mask is None else (~attention_mask if attention_mask.dtype == torch.bool
                else torch.isneginf(attention_mask)).contiguous())
