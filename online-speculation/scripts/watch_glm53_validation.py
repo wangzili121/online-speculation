@@ -51,19 +51,24 @@ def weights_ready(path, directory):
     return True
 
 
+def runtime_sources(source):
+    paths = set((source / "src" / "blockspec").rglob("*.py"))
+    paths.update((source / "scripts").glob("*glm53*.py"))
+    paths.add(source / "scripts" / "run_in_runtime.py")
+    return {str(path.relative_to(source)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(paths)}
+
+
 def runtime_ready(path, source, image):
     if not path.is_file():
         return False
     state = json.loads(path.read_text())
     if state.get("status") != "passed" or state.get("image") != image:
         return False
-    required = {"src/blockspec/vllm_ascend/glm53_ops.py", "src/blockspec/vllm_ascend/glm53_native.py",
-                "src/blockspec/vllm_ascend/glm53_proposer.py", "src/blockspec/vllm_ascend/qwen38_runtime.py",
-                "scripts/run_glm53_vllm.py", "scripts/run_in_runtime.py"}
-    hashes = state.get("sha256", {})
-    if set(hashes) != required:
+    try:
+        return state.get("sha256") == runtime_sources(source)
+    except OSError:
         return False
-    return all(hashlib.sha256((source / name).read_bytes()).hexdigest() == sha for name, sha in hashes.items())
 
 
 def run_job(args, mode, *, label=None, extra=()):

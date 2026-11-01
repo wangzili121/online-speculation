@@ -37,6 +37,21 @@ def test_no_runtime_attestation_means_no_automatic_job(tmp_path):
     assert not watch.runtime_ready(tmp_path / "absent.json", tmp_path, "image@sha256:123")
 
 
+def test_runtime_attestation_includes_inherited_proposer_dependencies(tmp_path):
+    package, scripts = tmp_path / "src" / "blockspec", tmp_path / "scripts"
+    package.mkdir(parents=True)
+    scripts.mkdir()
+    dependency = package / "sampling.py"
+    dependency.write_text("version = 1\n")
+    (scripts / "run_in_runtime.py").write_text("pass\n")
+    path = tmp_path / "ready.json"
+    path.write_text(json.dumps(dict(status="passed", image="image@sha256:123",
+                                   sha256=watch.runtime_sources(tmp_path))))
+    assert watch.runtime_ready(path, tmp_path, "image@sha256:123")
+    dependency.write_text("version = 2\n")
+    assert not watch.runtime_ready(path, tmp_path, "image@sha256:123")
+
+
 def completion_fixture(root):
     model = root / "model"
     model.mkdir()

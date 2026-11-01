@@ -2,10 +2,11 @@
 """Check model/runner/KDA interfaces before arming a full-model smoke run."""
 
 import argparse
-import hashlib
 import importlib.metadata
 import json
 from pathlib import Path
+
+from watch_glm53_validation import runtime_sources
 
 
 def main():
@@ -36,10 +37,7 @@ def main():
             probe()
         finally:
             sys.argv = original
-        names = ("src/blockspec/vllm_ascend/glm53_ops.py", "src/blockspec/vllm_ascend/glm53_native.py",
-                 "src/blockspec/vllm_ascend/glm53_proposer.py", "src/blockspec/vllm_ascend/qwen38_runtime.py",
-                 "scripts/run_glm53_vllm.py", "scripts/run_in_runtime.py")
-        report["sha256"] = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names}
+        report["sha256"] = runtime_sources(root)
         report["status"] = "passed"
     except Exception as error:
         report["error"] = repr(error)

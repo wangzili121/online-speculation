@@ -59,7 +59,7 @@ def main():
     parser.add_argument("--audit-cache", action="store_true")
     parser.add_argument("--save-head", type=Path)
     parser.add_argument("--baseline", type=Path)
-    # TP1 uses 4352-token MLA pages and 2048-token KDA pages in this runtime.
+    # The pinned runtime's NoPE metadata rejects the 2K smoke configuration.
     parser.add_argument("--max-model-len", type=int, default=34816)
     parser.add_argument("--max-num-batched-tokens", type=int, default=256)
     parser.add_argument("--max-output-tokens", type=int, default=64)

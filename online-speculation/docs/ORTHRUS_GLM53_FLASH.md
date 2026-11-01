@@ -58,9 +58,24 @@ draft 只持有注意力投影和内部归一化等参数。执行时临时替�
 
 ## 验证与启动
 
-已完成 64 项定向测试，覆盖双低秩基底 Attention 与显式 SDPA 等价、完整块双向可见、KPool 历史边界、分页读取、临时状态隔离、共用 runner hook，以及运行时初始化、下载校验和测试超时释放卡的保护逻辑。
+验证分为数学与适配器回归、单卡 NPU 算子检查、原生引擎闭环三层。90 项定向回归通过，覆盖 Attention 与显式 SDPA 等价、双向信息流、KPool 边界、接受位置的状态选取、分页寻址、head 契约和异常恢复。NPU 检查覆盖 MLA 的 K=2/8/32、KDA 的 K=1/2/8；MLA 对 FP32 的相对 RMS 误差约 0.3%，KDA 输出及逐位置状态的相对 RMS 误差不超过 7e-8。
 
-在 vLLM/vLLM-Ascend 0.30.0 镜像中，单卡 NPU 已跑通 MLA 的 K=2/8/32 和 KDA 的 K=1/2/8，目标历史及初始递推状态均未被改写。MLA 对照 FP32 的相对 RMS 误差约 0.3%；KDA 对照参考递推的输出及逐位置状态，相对 RMS 误差不超过 7e-8。当前镜像的 runner hook 接口检查也已通过。实测结果和镜像、代码哈希保存在 `docs/validation/glm53/operators-npu-v030.json` 和 `runtime-v030.json`。这些是计算模块和适配器验证，不是 320B 整模型验收，也不是完整 K=32 支持的证明。
+原生引擎测试使用源权重的前 5 层，保留原始宽度、W8A8 权重、4 层 KDA、1 层 MLA、mHC，以及 dense/MoE 两类 FFN；不是随机缩小网络，也不是官方小模型。截层模型的回答没有语义评测价值，此处只检查推理执行和缓存协作。
+
+| 实测范围 | 结果 |
+| --- | --- |
+| 单卡，因果 KDA + 双向 MLA | 3 条请求共 96 个 greedy token 与 target-only 完全相同；50 轮整块验证，53 次 draft 缓存审计通过。 |
+| 单卡，非零门控双向 KDA + 双向 MLA | 同样 96 个 token 完全相同；53 轮验证，56 次缓存审计通过，反向 KDA 实际调用 224 次。 |
+| 单卡，两种 head 保存与重启加载 | 重载后全部参数 SHA256 与导出值一致，greedy 输出仍与 target-only 一致。 |
+| 双卡，双向版本及 head 重载 | 两个 rank 的验证计数一致；各 rank 的参数哈希重载一致，greedy 输出与同 TP 的原生基线一致。 |
+| 单卡，4911-token 前缀 | 跨越 MLA 缓存页并超过 indexer 的 Top-K 上限；双向版本与对应原生基线输出相同，54 次缓存审计通过。 |
+| 单卡，temperature=0.7 | 真实起草、原生 rejection sampling 和后续生成通过，57 次缓存审计通过；这不是采样分布等价的统计验收。 |
+
+每轮审计逐字节比较当前请求的有效 MLA latent、indexer 池和尾部环形缓存、KDA 卷积及验证 checkpoint。上述测试实际经历了候选的部分接受、拒绝以及多条请求依次复用引擎。审计不覆盖未分配给当前请求的整个缓存池，也不代替并发隔离测试。
+
+联调中修复了插件配置被后端严格校验拒绝、NoPE 空 RoPE 占位未识别，以及带 padding 的大缓存被整体物化等适配问题。后者已加入 NPU 内存回归：复制 512 KiB 的选中状态，额外峰值为 513 KiB。2K 测试配置曾触发原生 SFA 元数据容量检查；当前单卡使用实测通过的 34816 上限，双卡为 18432。一次 4 号卡原生 worker 初始化异常发生在请求执行前，换 3 号卡重试通过；该启动异常尚未定位，不归因于长上下文或 draft 计算。
+
+结果、运行参数和代码哈希见 `docs/validation/glm53/native-5l-tp1/`、`native-5l-tp2/`、`native-5l-long/`、`operators-cache-20261101.json` 和 `runtime-native-20261101.json`。测试结束后相关容器已删除。
 
 单卡算子检查：
 
@@ -68,10 +83,12 @@ draft 只持有注意力投影和内部归一化等参数。执行时临时替�
 PYTHONPATH=src python scripts/probe_glm53_ops.py --output artifacts/operators.json
 ```
 
-八卡真实模型测试由 `watch_glm53_validation.py` 组织：等完整权重通过逐文件 SHA256 校验、运行时通过前置检查、八卡都没有 NPU 进程后，先运行 target-only，再运行初始化 draft 的实验路径，比较 greedy token 并检查真实 propose/verify 计数。每阶段有超时限制，结束后删除本实验容器释放卡；不运行空占卡任务，不停止其他人的任务。
+原生闭环可用 `prepare_glm53_smoke_model.py` 生成截层权重，再用 `validate_glm53_native.py` 指定物理卡、模型和输出目录运行；它依次完成基线、两种起草、重载及采样。`--max-model-len` 和 `--long-prompt-repeats` 可指定上下文测试档位。日志和 JSON 留在输出目录，head 文件留在独立子目录，不提交权重到代码仓。
+
+八卡完整模型测试由 `watch_glm53_validation.py` 组织：等完整权重通过逐文件 SHA256 校验、运行时通过前置检查、八卡都没有 NPU 进程且 HBM 低占用后，先运行 target-only，再运行两种初始化 draft，比较 greedy token 并检查真实 propose/verify 计数及缓存审计。前置检查记录整套插件源码哈希，源码改变后必须重新检查。每阶段有超时限制，结束后删除本实验容器释放卡；不运行空占卡任务，不停止其他人的任务。
 
 各节点可独立运行 `watch_npu_resources.py --output /path/to/status.json`，每 30 秒记录一次空卡和心跳，发现完整八卡窗口后继续监控。它仅查询资源，不预留设备或启动模型；进程列表为空但 HBM 仍高占用的卡也不会被判为空闲。资源监控和模型测试是两件事，某个节点具备空卡后，仍须在该节点准备并校验权重及运行镜像。
 
-目前仍需完成真实模型闭环、拒绝回滚、量化 head 加载和采样分布验收。完整权重已完成逐文件 SHA256 校验；八卡监控在运行时自检通过后才会启动真实模型实验。没有训练好的 GLM head，不能给出接受率或加速结论。
+**当前通过的是原始宽度、真实权重截层模型的 eager、同步、单请求、K=8 推理验收。完整 45 层 TP8 尚未验收，并发、图模式和训练/在线更新未接入。** 采样分布统计与真实训练 head 的性能还需单独评测；不能用上述初始化 head、重复文本或截层模型的接受计数推断实际 GLM 的加速收益。
 
 参考：[GLM-5.3-Flash 官方模型卡](https://huggingface.co/zai-org/GLM-5.3-Flash)、[Ascend 部署说明](https://docs.vllm.ai/projects/ascend/en/main/tutorials/models/GLM5.3-Flash.html)、[PyPTO GLM 模型目录](https://github.com/hw-native-sys/pypto-lib/tree/main/models/glm5_3_flash)。
