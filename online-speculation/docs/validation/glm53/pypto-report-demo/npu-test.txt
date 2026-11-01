@@ -1,0 +1,32 @@
+.........INFO 11-01 16:20:05 [__init__.py:52] Available plugins for group vllm.platform_plugins:
+INFO 11-01 16:20:05 [__init__.py:54] - ascend -> vllm_ascend:register
+INFO 11-01 16:20:05 [__init__.py:57] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 11-01 16:20:05 [__init__.py:272] Platform plugin ascend is activated
+INFO 11-01 16:20:07 [platform.py:74] Breakable CUDAGraph on Ascend is opt-in; using VLLM_USE_BREAKABLE_CUDAGRAPH=0.
+[W1101 16:20:10.097425203 NPUCachingAllocator.cpp:204] Warning: The current CANN and HDK(driver) versions require processing for 32 padding size, with memory allocation. (function operator())
+{"width": 2, "prefix": 0, "bidirectional": false, "errors": {"mla": {"max_abs": 0.006829500198364258, "rms": 0.0018364621791988611, "relative_rms": 0.004256475251168013}, "kda": {"max_abs": 0.0010112300515174866, "rms": 0.0002454199711792171, "relative_rms": 0.004326889291405678}}}
+.{"width": 8, "prefix": 3, "bidirectional": false, "errors": {"mla": {"max_abs": 0.003886580467224121, "rms": 0.0008327534305863082, "relative_rms": 0.0046508535742759705}, "kda": {"max_abs": 0.0010112300515174866, "rms": 0.0002141916920663789, "relative_rms": 0.0047774240374565125}}}
+.{"width": 8, "prefix": 2055, "bidirectional": false, "errors": {"mla": {"max_abs": 3.1230971217155457e-05, "rms": 6.992777798586758e-06, "relative_rms": 0.004130546469241381}, "kda": {"max_abs": 0.0010112300515174866, "rms": 0.0002141916920663789, "relative_rms": 0.0047774240374565125}}}
+.{"width": 2, "prefix": 0, "bidirectional": true, "errors": {"mla": {"max_abs": 0.006829500198364258, "rms": 0.0018364621791988611, "relative_rms": 0.004256475251168013}, "kda": {"max_abs": 0.001032799482345581, "rms": 0.00027438130928203464, "relative_rms": 0.004802312236279249}}}
+.{"width": 8, "prefix": 3, "bidirectional": true, "errors": {"mla": {"max_abs": 0.003886580467224121, "rms": 0.0008327534305863082, "relative_rms": 0.0046508535742759705}, "kda": {"max_abs": 0.0012530125677585602, "rms": 0.00023285044881049544, "relative_rms": 0.0051367501728236675}}}
+.{"width": 8, "prefix": 2055, "bidirectional": true, "errors": {"mla": {"max_abs": 3.1230971217155457e-05, "rms": 6.992777798586758e-06, "relative_rms": 0.004130546469241381}, "kda": {"max_abs": 0.0012530125677585602, "rms": 0.00023285044881049544, "relative_rms": 0.0051367501728236675}}}
+.
+=============================== warnings summary ===============================
+tests/test_glm53_orthrus_demo.py::test_npu_complete_branches_match_fp32_reference[False-2-0]
+  /usr/local/python3.12.16/lib/python3.12/site-packages/triton/language/extra/cann/extension/math_ops.py:13: FutureWarning: triton.language.extra.cann.extension.atan2 is deprecated and will be removed in the next release; use triton.language.extra.cann.libdevice.atan2 instead.
+    @_deprecated(replacement="triton.language.extra.cann.libdevice.atan2")
+
+tests/test_glm53_orthrus_demo.py::test_npu_complete_branches_match_fp32_reference[False-2-0]
+  /usr/local/python3.12.16/lib/python3.12/site-packages/triton/language/extra/cann/extension/math_ops.py:35: FutureWarning: triton.language.extra.cann.extension.isfinited is deprecated and will be removed in the next release; use triton.language.extra.cann.libdevice.isfinited instead.
+    @_deprecated(replacement="triton.language.extra.cann.libdevice.isfinited")
+
+tests/test_glm53_orthrus_demo.py::test_npu_complete_branches_match_fp32_reference[False-2-0]
+  /usr/local/python3.12.16/lib/python3.12/site-packages/triton/language/extra/cann/extension/math_ops.py:49: FutureWarning: triton.language.extra.cann.extension.finitef is deprecated and will be removed in the next release; use triton.language.extra.cann.libdevice.finitef instead.
+    @_deprecated(replacement="triton.language.extra.cann.libdevice.finitef")
+
+tests/test_glm53_orthrus_demo.py::test_npu_complete_branches_match_fp32_reference[False-2-0]
+  /usr/local/python3.12.16/lib/python3.12/site-packages/torch_npu/utils/storage.py:55: UserWarning: TypedStorage is deprecated. It will be removed in the future and UntypedStorage will be the only storage class. This should only matter to you if you are using storages directly.  To access UntypedStorage directly, use tensor.untyped_storage() instead of tensor.storage()
+    if self.device.type != 'cpu':
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+15 passed, 4 warnings in 22.18s

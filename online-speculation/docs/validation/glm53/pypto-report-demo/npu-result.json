@@ -1,0 +1,123 @@
+{
+  "status": "passed",
+  "exit_code": 0,
+  "observed_utc": "2026-11-01T16:20:33.137048+00:00",
+  "host": "159.138.5.111",
+  "physical_devices": [
+    0
+  ],
+  "image": "quay.io/ascend/vllm-ascend@sha256:61584d790fa3668e7c43f0eb50a3e3a86d94b3eed15bce5ac82391ed383df229",
+  "privileged_runtime": true,
+  "results": [
+    {
+      "width": 2,
+      "prefix": 0,
+      "bidirectional": false,
+      "errors": {
+        "mla": {
+          "max_abs": 0.006829500198364258,
+          "rms": 0.0018364621791988611,
+          "relative_rms": 0.004256475251168013
+        },
+        "kda": {
+          "max_abs": 0.0010112300515174866,
+          "rms": 0.0002454199711792171,
+          "relative_rms": 0.004326889291405678
+        }
+      }
+    },
+    {
+      "width": 8,
+      "prefix": 3,
+      "bidirectional": false,
+      "errors": {
+        "mla": {
+          "max_abs": 0.003886580467224121,
+          "rms": 0.0008327534305863082,
+          "relative_rms": 0.0046508535742759705
+        },
+        "kda": {
+          "max_abs": 0.0010112300515174866,
+          "rms": 0.0002141916920663789,
+          "relative_rms": 0.0047774240374565125
+        }
+      }
+    },
+    {
+      "width": 8,
+      "prefix": 2055,
+      "bidirectional": false,
+      "errors": {
+        "mla": {
+          "max_abs": 3.1230971217155457e-05,
+          "rms": 6.992777798586758e-06,
+          "relative_rms": 0.004130546469241381
+        },
+        "kda": {
+          "max_abs": 0.0010112300515174866,
+          "rms": 0.0002141916920663789,
+          "relative_rms": 0.0047774240374565125
+        }
+      }
+    },
+    {
+      "width": 2,
+      "prefix": 0,
+      "bidirectional": true,
+      "errors": {
+        "mla": {
+          "max_abs": 0.006829500198364258,
+          "rms": 0.0018364621791988611,
+          "relative_rms": 0.004256475251168013
+        },
+        "kda": {
+          "max_abs": 0.001032799482345581,
+          "rms": 0.00027438130928203464,
+          "relative_rms": 0.004802312236279249
+        }
+      }
+    },
+    {
+      "width": 8,
+      "prefix": 3,
+      "bidirectional": true,
+      "errors": {
+        "mla": {
+          "max_abs": 0.003886580467224121,
+          "rms": 0.0008327534305863082,
+          "relative_rms": 0.0046508535742759705
+        },
+        "kda": {
+          "max_abs": 0.0012530125677585602,
+          "rms": 0.00023285044881049544,
+          "relative_rms": 0.0051367501728236675
+        }
+      }
+    },
+    {
+      "width": 8,
+      "prefix": 2055,
+      "bidirectional": true,
+      "errors": {
+        "mla": {
+          "max_abs": 3.1230971217155457e-05,
+          "rms": 6.992777798586758e-06,
+          "relative_rms": 0.004130546469241381
+        },
+        "kda": {
+          "max_abs": 0.0012530125677585602,
+          "rms": 0.00023285044881049544,
+          "relative_rms": 0.0051367501728236675
+        }
+      }
+    }
+  ],
+  "source_sha256": {
+    "benchmarks/glm53_orthrus_demo.py": "ffbca141e8ec7b1926ec928529504fe963061370fb5711990c6cb3bdffcb84df",
+    "tests/test_glm53_orthrus_demo.py": "454a09516ad43c2663fd66040404fc2dbd8748a92055d221627b8133f57326e5",
+    "src/blockspec/vllm_ascend/glm53_ops.py": "653f55f2e890a283e82c6b8ed8dd100e010cd3a28f456e65b9a806bb1e8b652d",
+    "src/blockspec/vllm_ascend/dsv4_hybrid.py": "62cc09b4116872c22d0db895c1c09f6a0b59919b880ed2b0f0165a22f1f3847e"
+  },
+  "scope": "synthetic complete attention branches; not PyPTO execution or full-model acceptance",
+  "pytest_passed": 15
+}
