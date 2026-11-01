@@ -63,7 +63,7 @@ def main():
     def rand(*shape):
         return (torch.randn(*shape, device="npu", dtype=torch.bfloat16) * .15).contiguous()
 
-    for width in ((2, 8, 32) if args.case in {"mla", "all"} else ()):
+    for width in ((*range(2, 9), 32) if args.case in {"mla", "all"} else ()):
         q, history, block = rand(width, 8, 256), rand(131, 512), rand(width, 512)
         iq, iw, pools = rand(width, 32, 128), rand(width, 32), rand(32, 128)
         indices = select_history(iq, iw, pools, 131, topk=128)
@@ -78,7 +78,7 @@ def main():
         if error["relative_rms"] > .04:
             raise AssertionError(f"MLA BF16 error: {error}")
         results[f"mla_k{width}"] = error
-    for width in ((1, 2, 8) if args.case in {"kda", "all"} else ()):
+    for width in (range(1, 9) if args.case in {"kda", "all"} else ()):
         q, k, v, gate = [rand(width, 8, 128) for _ in range(4)]
         beta = rand(width, 8)
         initial = torch.randn(8, 128, 128, device="npu") * .02

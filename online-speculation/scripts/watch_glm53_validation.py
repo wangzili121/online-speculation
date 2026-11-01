@@ -71,6 +71,30 @@ def runtime_ready(path, source, image):
         return False
 
 
+def acquire_devices(source, devices):
+    # 仅协调本项目的测试，不能代替 npu-smi，也不预留其他用户的设备。
+    directory = source / "validation" / "device-locks"
+    directory.mkdir(parents=True, exist_ok=True)
+    locks = []
+    try:
+        for card in sorted(devices):
+            lock = (directory / f"npu{card}.lock").open("a")
+            locks.append(lock)
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return locks
+    except BlockingIOError:
+        release_devices(locks)
+        return None
+    except BaseException:
+        release_devices(locks)
+        raise
+
+
+def release_devices(locks):
+    for lock in locks:
+        lock.close()
+
+
 def run_job(args, mode, *, label=None, extra=()):
     label = label or mode
     if not re.fullmatch(r"[a-z0-9-]+", label):
@@ -162,24 +186,31 @@ def main():
                 print(json.dumps(state), flush=True)
                 previous = summary
             if weights and ready and idle == list(range(8)):
-                for mode, label, extra in (("baseline", "baseline", ()),
-                        ("orthrus", "orthrus", ("--audit-cache",)),
-                        ("orthrus", "orthrus-bidir", ("--audit-cache", "--kda-mode", "bidirectional",
-                                                       "--kda-backward-weight", "0.25"))):
-                    if label in completed_modes:
-                        continue
-                    # Baseline exits before Orthrus starts; recheck that no one claimed a card.
-                    if idle_devices(subprocess.check_output(
-                            ["/usr/local/bin/npu-smi", "info"], text=True, timeout=20)) != list(range(8)):
-                        break
-                    state.update(state="running", mode=label)
-                    write_json(status_path, state)
-                    run_job(args, mode, label=label, extra=extra)
-                    completed_modes.add(label)
-                else:
-                    state.update(state="smoke_complete", finished_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
-                    write_json(status_path, state)
-                    return
+                locks = acquire_devices(args.source, range(8))
+                if locks is None:
+                    time.sleep(args.poll_seconds)
+                    continue
+                try:
+                    for mode, label, extra in (("baseline", "baseline", ()),
+                            ("orthrus", "orthrus", ("--audit-cache",)),
+                            ("orthrus", "orthrus-bidir", ("--audit-cache", "--kda-mode", "bidirectional",
+                                                           "--kda-backward-weight", "0.25"))):
+                        if label in completed_modes:
+                            continue
+                        # Baseline exits before Orthrus starts; recheck that no one claimed a card.
+                        if idle_devices(subprocess.check_output(
+                                ["/usr/local/bin/npu-smi", "info"], text=True, timeout=20)) != list(range(8)):
+                            break
+                        state.update(state="running", mode=label)
+                        write_json(status_path, state)
+                        run_job(args, mode, label=label, extra=extra)
+                        completed_modes.add(label)
+                    else:
+                        state.update(state="smoke_complete", finished_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
+                        write_json(status_path, state)
+                        return
+                finally:
+                    release_devices(locks)
             time.sleep(args.poll_seconds)
         state.update(state="expired")
         write_json(status_path, state)

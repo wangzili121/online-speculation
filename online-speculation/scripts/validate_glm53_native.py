@@ -9,7 +9,7 @@ import signal
 import subprocess
 import time
 
-from watch_glm53_validation import idle_devices, run_job, write_json
+from watch_glm53_validation import acquire_devices, idle_devices, release_devices, run_job, write_json
 
 
 def stages():
@@ -22,15 +22,16 @@ def stages():
                                              "--save-head", "/results/head-bidir")),
         ("orthrus", "reload-causal", audit + ("--head-dir", "/results/head-causal")),
         ("orthrus", "reload-bidir", audit + ("--head-dir", "/results/head-bidir", "--kda-mode", "bidirectional")),
+        ("orthrus", "sampling-causal", audit + ("--head-dir", "/results/head-causal", "--temperature", "0.7")),
         ("orthrus", "sampling-bidir", audit + ("--head-dir", "/results/head-bidir", "--kda-mode", "bidirectional",
                                              "--temperature", "0.7")),
     ]
 
 
 def check_reloaded(output, label):
-    if label not in {"reload-causal", "reload-bidir", "sampling-bidir"}:
+    if label not in {"reload-causal", "reload-bidir", "sampling-causal", "sampling-bidir"}:
         return
-    original = "orthrus" if label == "reload-causal" else "orthrus-bidir"
+    original = "orthrus" if label.endswith("-causal") else "orthrus-bidir"
     expected = json.loads((output / f"{original}.json").read_text())["head_exports"]
     loaded = json.loads((output / f"{label}.json").read_text())["head_digests"]
     if sorted(expected, key=lambda x: x["rank"]) != sorted(loaded, key=lambda x: x["rank"]):
@@ -48,6 +49,7 @@ def main():
     parser.add_argument("--wait-hours", type=float, default=1)
     parser.add_argument("--max-model-len", type=int)
     parser.add_argument("--long-prompt-repeats", type=int)
+    parser.add_argument("--block-size", type=int, choices=range(2, 9), default=8)
     parser.add_argument("--stages", nargs="+", choices=[label for _, label, _ in stages()])
     args = parser.parse_args()
     if (len(set(args.devices)) != len(args.devices) or not set(args.devices) <= set(range(8))
@@ -62,10 +64,19 @@ def main():
     signal.signal(signal.SIGINT, stop)
     status = dict(state="starting", model=str(args.model), devices=args.devices, completed=[])
     status_path = args.output / "native-status.json"
+    locks = None
     try:
+        deadline = time.monotonic() + args.wait_hours * 3600
+        while (locks := acquire_devices(args.source, args.devices)) is None:
+            status.update(state="waiting_test_lease")
+            write_json(status_path, status)
+            if time.monotonic() >= deadline:
+                raise TimeoutError("another validation still owns the requested test devices")
+            time.sleep(30)
         for mode, label, extra in stages():
             if args.stages and label not in args.stages:
                 continue
+            extra += ("--block-size", str(args.block_size))
             for option in ("max_model_len", "long_prompt_repeats"):
                 value = getattr(args, option)
                 if value is not None:
@@ -96,6 +107,7 @@ def main():
         status.update(state="failed", error=repr(error))
         raise
     finally:
+        release_devices(locks or [])
         write_json(status_path, status)
 
 

@@ -33,6 +33,19 @@ def test_idle_requires_no_process_and_low_memory_not_only_zero_compute():
         watch.idle_devices("")
 
 
+def test_device_leases_are_atomic_and_released_without_reserving_npus(tmp_path):
+    original = watch.acquire_devices(tmp_path, [6, 7])
+    assert original is not None
+    assert watch.acquire_devices(tmp_path, [4, 5, 6, 7]) is None
+    separate = watch.acquire_devices(tmp_path, [4, 5])
+    assert separate is not None
+    watch.release_devices(separate)
+    watch.release_devices(original)
+    complete = watch.acquire_devices(tmp_path, range(8))
+    assert complete is not None
+    watch.release_devices(complete)
+
+
 def test_no_runtime_attestation_means_no_automatic_job(tmp_path):
     assert not watch.runtime_ready(tmp_path / "absent.json", tmp_path, "image@sha256:123")
 

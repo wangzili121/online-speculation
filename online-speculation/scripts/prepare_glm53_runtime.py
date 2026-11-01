@@ -9,7 +9,7 @@ import signal
 import subprocess
 import time
 
-from watch_glm53_validation import idle_devices, write_json
+from watch_glm53_validation import acquire_devices, idle_devices, release_devices, write_json
 
 
 def main():
@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--pull-image", action="store_true")
+    parser.add_argument("--devices", type=int, nargs="+", choices=range(8))
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     lock = (args.output / "prepare.lock").open("a")
@@ -53,11 +54,17 @@ def main():
             continue
         snapshot = subprocess.check_output(["/usr/local/bin/npu-smi", "info"], text=True, timeout=20)
         idle = idle_devices(snapshot)
-        if not idle:
+        if args.devices is not None:
+            idle = [card for card in idle if card in args.devices]
+        locks = None
+        for card in idle:
+            locks = acquire_devices(args.source, [card])
+            if locks is not None:
+                break
+        if locks is None:
             write_json(state_path, dict(state="waiting_one_idle_card"))
             time.sleep(30)
             continue
-        card = idle[0]
         name = f"wangzili-glm53-preflight-{os.getpid()}"
         runtime_cache = args.source / "validation" / "runtime-cache" / args.image.rsplit(":", 1)[-1][:12]
         command = ["docker", "run", "-d", "--name", name, "--network=none",
@@ -92,6 +99,7 @@ def main():
             with (args.output / "prepare-runtime.log").open("wb") as log:
                 subprocess.run(["docker", "logs", name], stdout=log, stderr=subprocess.STDOUT, timeout=60)
             subprocess.run(["docker", "rm", name], capture_output=True, timeout=60)
+            release_devices(locks)
         return
     write_json(state_path, dict(state="expired"))
 
