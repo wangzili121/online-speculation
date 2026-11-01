@@ -49,7 +49,7 @@ def check_calibration(observed, expected, variance):
         raise AssertionError(f"sampling calibration failed: {failures}")
 
 
-def sampling_calibration(llm, trials, *, check_repeat=False):
+def sampling_calibration(llm, trials, *, check_repeat=False, uniform=False):
     from vllm import SamplingParams
 
     if not 16 <= trials <= 4096:
@@ -59,6 +59,10 @@ def sampling_calibration(llm, trials, *, check_repeat=False):
     if any(len(ids) != 1 for ids in allowed):
         raise ValueError("calibration choices must each be one token")
     allowed = [ids[0] for ids in allowed]
+    before = None
+    if uniform:
+        llm.collective_rpc("orthrus_enable_uniform_proposals", args=(allowed,))
+        before = llm.collective_rpc("orthrus_stats")
     llm.collective_rpc("orthrus_enable_sampling_calibration", args=(allowed,))
     observed, expected, variance = ({token: 0. for token in allowed} for _ in range(3))
     rows = 0
@@ -90,10 +94,17 @@ def sampling_calibration(llm, trials, *, check_repeat=False):
                 expected[choice] += probability
                 variance[choice] += probability * (1 - probability)
     check_calibration(observed, expected, variance)
-    return dict(trials=trials, speculative_rows=rows, allowed=allowed,
+    report = dict(trials=trials, speculative_rows=rows, allowed=allowed,
                 observed=observed, expected=expected, variance=variance,
                 probability_source="native_pre_sampling_logits",
                 repeated_seed_tokens=repeated, passed=True)
+    if uniform:
+        after = llm.collective_rpc("orthrus_stats")
+        accepted = [b["accepted"] - a["accepted"] for a, b in zip(before, after, strict=True)]
+        if not accepted or min(accepted) < 1 or len(set(accepted)) != 1:
+            raise AssertionError(f"sampling fixture did not exercise accepted drafts on every rank: {accepted}")
+        report.update(draft_distribution="uniform_validation_fixture", accepted_per_rank=accepted)
+    return report
 
 
 def compare_greedy(baseline, candidate):
@@ -132,6 +143,9 @@ def main():
     if not 1 <= repeats <= 100:
         raise ValueError("validation repeats must be in 1..100")
     calibration = int(os.environ.get("ORTHRUS_VALIDATE_SAMPLING_TRIALS", "0"))
+    uniform_calibration = os.environ.get("ORTHRUS_VALIDATE_UNIFORM_CALIBRATION") == "1"
+    if uniform_calibration and (target_only or ngram_control or args.online or proposal_fixture or not calibration):
+        raise ValueError("uniform calibration requires fixed-head Orthrus with sampling trials")
     if audit or trace or freeze or ar_view or head_digest or proposal_fixture or calibration or repeats > 1:
         options["worker_extension_cls"] = "qwen38_validation_worker.ValidationWorker"
     start = time.perf_counter()
@@ -229,7 +243,8 @@ def main():
         evidence["completed"] = False
         Path(destination).write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n")
     if calibration:
-        evidence["sampling_calibration"] = sampling_calibration(llm, calibration, check_repeat=not args.online)
+        evidence["sampling_calibration"] = sampling_calibration(
+            llm, calibration, check_repeat=not args.online, uniform=uniform_calibration)
         stats = evidence["workers"] = llm.collective_rpc("orthrus_stats")
     if frozen_before is not None:
         frozen_after = llm.collective_rpc("orthrus_target_fingerprint")

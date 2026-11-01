@@ -45,6 +45,18 @@ def test_pair_can_yield_a_complete_window_to_the_pending_full_model(window, monk
     assert not window.eight_card_job_waiting(tmp_path, list(range(8)))
 
 
+def test_uniform_fixture_runs_separate_bounded_calibration(window, tmp_path):
+    args = NS(devices=[2, 3], source=tmp_path, model=tmp_path, output=tmp_path,
+              image="runtime@sha256:123", max_model_len=8192, acceptance_args=["--block-size", "32"],
+              uniform_calibration=True)
+    command = window.container_command(args, "ours")
+    assert "/work/scripts/validate_qwen38_vllm.py" in command
+    assert "/work/scripts/accept_qwen38_vllm.py" not in command
+    assert "ORTHRUS_VALIDATE_UNIFORM_CALIBRATION=1" in command
+    assert "ORTHRUS_VALIDATE_SAMPLING_TRIALS=128" in command
+    assert "--output-dir" not in command
+
+
 def test_failed_container_creation_still_cleans_only_our_name(window, monkeypatch, tmp_path):
     calls, released = [], []
     snapshot = "\n".join(

@@ -501,6 +501,32 @@ def test_sampling_calibration_detects_biased_counts(monkeypatch):
         check_calibration({1: 10}, {1: float("nan")}, {1: 1.})
 
 
+def test_uniform_sampling_fixture_keeps_q_consistent_with_proposed_tokens(monkeypatch):
+    from types import SimpleNamespace as NS
+    import torch
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from qwen38_validation_worker import ValidationWorker
+
+    inputs = torch.ones(1, 8, dtype=torch.long)
+    pending = dict(inputs=inputs, candidates=torch.zeros(7, dtype=torch.long), q=None)
+    draft = NS(model=NS(config=NS(vocab_size=11)), pending=pending,
+               generator=torch.Generator().manual_seed(77), tp=NS(broadcast=lambda value: None),
+               propose_batch=lambda *args, **kwargs: [[0] * 7])
+    worker = ValidationWorker()
+    worker.model_runner = NS(drafter=draft)
+    assert worker.orthrus_enable_uniform_proposals([2, 5, 9]) == "uniform_validation_fixture"
+    result = draft.propose_batch()
+    assert set(result[0]) <= {2, 5, 9}
+    assert result[0] == pending["candidates"].tolist()
+    assert pending["inputs"] is inputs
+    torch.testing.assert_close(pending["q"].sum(-1), torch.ones(7))
+    torch.testing.assert_close(pending["q"][:, [2, 5, 9]], torch.full((7, 3), 1. / 3))
+    assert pending["q"][:, [0, 1, 3, 4, 6, 7, 8, 10]].count_nonzero() == 0
+    with pytest.raises(ValueError):
+        worker.orthrus_enable_uniform_proposals([2, 5, 9])
+
+
 def test_runtime_environment_preserves_project_and_adds_cann(monkeypatch, tmp_path):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
     from run_qwen38_vllm import prepare_runtime_environment

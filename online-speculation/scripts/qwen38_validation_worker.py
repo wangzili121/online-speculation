@@ -153,6 +153,33 @@ class ValidationWorker(OrthrusWorkerExtension):
         rows, self._sampling_rows = self._sampling_rows, []
         return rows
 
+    def orthrus_enable_uniform_proposals(self, allowed):
+        """Test-only q with nonzero overlap; do not infer neural-head acceptance from it."""
+        draft = self.model_runner.drafter
+        vocab = draft.model.config.vocab_size
+        if (hasattr(self, "_uniform_propose") or not allowed or len(set(allowed)) != len(allowed)
+                or any(type(token) is not int or not 0 <= token < vocab for token in allowed)):
+            raise ValueError("one uniform fixture with distinct in-vocabulary token IDs required")
+        self._uniform_propose = draft.propose_batch
+
+        def controlled(*args, **kwargs):
+            result = self._uniform_propose(*args, **kwargs)
+            pending = draft.pending
+            if pending is None or not result[0]:
+                return result
+            device = pending["candidates"].device
+            choices = torch.tensor(allowed, device=device)
+            candidates = choices[torch.randint(len(allowed), pending["candidates"].shape,
+                                               device=device, generator=draft.generator)]
+            draft.tp.broadcast(candidates)
+            q = torch.zeros((candidates.numel(), vocab), device=device, dtype=torch.float32)
+            q[:, choices] = 1. / len(allowed)
+            pending["candidates"], pending["q"] = candidates, q
+            return [candidates.cpu().tolist()]
+
+        draft.propose_batch = controlled
+        return "uniform_validation_fixture"
+
     def orthrus_set_proposal_fixture(self, tokens, mode):
         """Drive cache branches using deterministic proposals, not a trained head."""
         if mode not in {"oracle", "reject"} or len(tokens) < 64:

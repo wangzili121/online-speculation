@@ -39,6 +39,12 @@ def container_command(args, name):
                        PYTORCH_NPU_ALLOC_CONF="expandable_segments:True", OMP_NUM_THREADS="4",
                        TORCH_EXTENSIONS_DIR="/results/runtime-cache",
                        TRITON_CACHE_DIR="/results/runtime-cache/triton") | runtime_network_environment()
+    uniform = getattr(args, "uniform_calibration", False)
+    if uniform:
+        environment.update(ORTHRUS_VALIDATE_OUTPUT="/results/uniform.json",
+                           ORTHRUS_VALIDATE_CASES="short-sampling", ORTHRUS_VALIDATE_SAMPLING_TRIALS="128",
+                           ORTHRUS_VALIDATE_UNIFORM_CALIBRATION="1", ORTHRUS_VALIDATE_AUDIT="1",
+                           ORTHRUS_VALIDATE_FROZEN="1")
     for key, value in environment.items():
         command.extend(["-e", f"{key}={value}"])
     for host, target in (("/usr/local/Ascend/driver", "/usr/local/Ascend/driver"),
@@ -46,10 +52,12 @@ def container_command(args, name):
                          ("/etc/ascend_install.info", "/etc/ascend_install.info"),
                          (args.source, "/work"), (args.model, "/models/qwen38")):
         command.extend(["-v", f"{host}:{target}:ro"])
+    script = "validate_qwen38_vllm.py" if uniform else "accept_qwen38_vllm.py"
+    destination = [] if uniform else ["--output-dir", "/results/matrix"]
     command.extend(["-v", f"{args.output}:/results", "-w", "/results", "--entrypoint", "python3",
-                    args.image, "/work/scripts/run_in_runtime.py", "/work/scripts/accept_qwen38_vllm.py",
+                    args.image, "/work/scripts/run_in_runtime.py", f"/work/scripts/{script}",
                     "--model", "/models/qwen38", "--mask-token-id", "1", "--tp", str(len(args.devices)),
-                    "--output-dir", "/results/matrix", "--max-model-len", str(args.max_model_len), *args.acceptance_args])
+                    *destination, "--max-model-len", str(args.max_model_len), *args.acceptance_args])
     return command
 
 
@@ -63,6 +71,8 @@ def main():
     parser.add_argument("--devices", type=int, nargs="+", required=True)
     parser.add_argument("--max-model-len", type=int, default=8192)
     parser.add_argument("--yield-to-eight-card", action="store_true")
+    parser.add_argument("--uniform-calibration", action="store_true",
+                        help="test-only known-q acceptance calibration, not a neural-head quality test")
     parser.add_argument("--wait-hours", type=float, default=24)
     parser.add_argument("--timeout", type=int, default=10800)
     parser.add_argument("acceptance_args", nargs=argparse.REMAINDER)
