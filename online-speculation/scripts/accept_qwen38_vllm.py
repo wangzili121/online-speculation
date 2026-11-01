@@ -9,6 +9,16 @@ import subprocess
 import sys
 import time
 
+from validate_qwen38_vllm import validation_cases
+
+
+def selected_cases(names, max_model_len):
+    available = {case[0] for case in validation_cases(
+        extended=True, soak=True, comprehensive=True, max_model_len=max_model_len)}
+    if names is not None and (not names or len(set(names)) != len(names) or set(names) - available):
+        raise ValueError("acceptance cases must be unique known validation case names")
+    return available if names is None else set(names)
+
 
 def memory_growth(report, tolerance=64 * 1024**2):
     """Compare matching request boundaries after the first warm-up cycle."""
@@ -41,17 +51,30 @@ def main():
     parser.add_argument("--blocks", type=int, nargs="+", default=[2, 8, 17, 32])
     parser.add_argument("--sampling-trials", type=int, default=64)
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--cases", nargs="+", help="explicit subset; omitted cases are not accepted by this run")
+    parser.add_argument("--skip-ar-view-audit", action="store_true",
+                        help="omit the separate mapped-AR numerical diagnostic, not native verification")
+    parser.add_argument("--replay-steps", type=int, default=8)
     args = parser.parse_args()
     if (args.max_model_len < 2048 or args.repeats < 3 or any(k < 2 or k > 32 for k in args.blocks)
-            or not 16 <= args.sampling_trials <= 4096):
+            or not 16 <= args.sampling_trials <= 4096 or not 0 <= args.replay_steps <= 256):
         parser.error("require context >=2048, repeats >=3, blocks 2..32, sampling trials 16..4096")
+    try:
+        cases = selected_cases(args.cases, args.max_model_len)
+    except ValueError as error:
+        parser.error(str(error))
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    (args.output_dir / "scope.json").write_text(json.dumps(dict(
+        cases=sorted(cases), ar_view_audit=not args.skip_ar_view_audit,
+        replay_steps=args.replay_steps, full_case_matrix=args.cases is None), indent=2) + "\n")
     command = [sys.executable, "-u", str(Path(__file__).with_name("validate_qwen38_vllm.py")),
                "--model", args.model, "--mask-token-id", str(args.mask_token_id), "--tp", str(args.tp),
                "--max-model-len", str(args.max_model_len),
                "--kv-cache-memory-bytes", str(args.kv_cache_memory_bytes)]
     common = dict(ORTHRUS_VALIDATE_EXTENDED="1", ORTHRUS_VALIDATE_SOAK="1",
                   ORTHRUS_VALIDATE_COMPREHENSIVE="1")
+    if args.cases is not None:
+        common["ORTHRUS_VALIDATE_CASES"] = ",".join(args.cases)
     results = []
 
     def run(name, extra, flags):
@@ -96,9 +119,13 @@ def main():
         run(f"k{block}-fixed", ["--block-size", str(block)], flags)
     for last, stride in ((1, 16), (4, 1)):
         flags = candidate | {"ORTHRUS_VALIDATE_REPEATS": str(args.repeats), "ORTHRUS_VALIDATE_FROZEN": "1",
-            "ORTHRUS_VALIDATE_REPEAT_CASES": "short-greedy,sampling-topk,page-edge,context-tail,after-context-tail"}
+            "ORTHRUS_VALIDATE_REPEAT_CASES": ",".join(sorted(cases & {
+                "short-greedy", "sampling-topk", "page-edge", "context-tail", "after-context-tail"}))}
         if last == 4:
-            flags.update(ORTHRUS_VALIDATE_AR_VIEW="1", ORTHRUS_VALIDATE_REPLAY_STEPS="8")
+            if not args.skip_ar_view_audit:
+                flags["ORTHRUS_VALIDATE_AR_VIEW"] = "1"
+            if args.replay_steps:
+                flags["ORTHRUS_VALIDATE_REPLAY_STEPS"] = str(args.replay_steps)
         report = run(f"last{last}-online", ["--block-size", "32", "--online", "--last-layers", str(last),
             "--update-stride", str(stride), "--checkpoint-dir", str(args.output_dir / f"head-last{last}"),
             "--checkpoint-every", "1000000"], flags)
@@ -110,6 +137,10 @@ def main():
     if last4["head_after"] != reloaded["head_before"]:
         raise AssertionError("reloaded head differs from the exported tensors")
     reference = json.loads(baseline.read_text())
+    if "long-decode" not in cases:
+        print("ACCEPTANCE SUBSET PASSED (no forced accept/reject cells): "
+              f"{args.output_dir / 'matrix.json'}", flush=True)
+        return
     reference["outputs"] = [row for row in reference["outputs"] if row["case"] == "long-decode"]
     branch_baseline = args.output_dir / "branch-baseline.json"
     branch_baseline.write_text(json.dumps(reference, indent=2) + "\n")

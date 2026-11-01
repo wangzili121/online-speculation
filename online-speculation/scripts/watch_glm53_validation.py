@@ -139,6 +139,20 @@ def check_reloaded(output, label):
         raise RuntimeError("reloaded GLM head tensors differ from the exported parameters")
 
 
+def retry_attempt(state, output, *, max_attempts):
+    """Keep failed evidence separate; a retry must rerun the baseline and every head stage."""
+    failed = dict(attempt=state["attempt"], results=state["results"],
+                  completed=list(state["completed"]), error=state["error"])
+    state.setdefault("failed_attempts", []).append(failed)
+    if state["attempt"] >= max_attempts:
+        return None
+    directory = output / f"full-tp8-retry-{time.time_ns()}"
+    directory.mkdir()
+    state.update(state="retry_wait", attempt=state["attempt"] + 1, completed=[], results=str(directory))
+    state.pop("error", None)
+    return directory
+
+
 def run_job(args, mode, *, label=None, extra=()):
     label = label or mode
     if not re.fullmatch(r"[a-z0-9-]+", label):
@@ -200,11 +214,16 @@ def main():
     parser.add_argument("--poll-seconds", type=int, default=30)
     parser.add_argument("--wait-hours", type=float, default=48)
     parser.add_argument("--job-timeout", type=int, default=2400)
+    parser.add_argument("--max-attempts", type=int, default=1)
+    parser.add_argument("--retry-seconds", type=float, default=300)
     parser.add_argument("--privileged-runtime", action="store_true",
                         help="explicit trusted-node workaround for driver container-access conflicts; exposes all devices")
     args = parser.parse_args()
     if "@sha256:" not in args.image:
         parser.error("pin the validated runtime image by digest")
+    if (args.poll_seconds <= 0 or args.wait_hours <= 0 or args.job_timeout <= 0
+            or not 1 <= args.max_attempts <= 3 or args.retry_seconds < 0):
+        parser.error("positive time limits, 1..3 attempts and nonnegative retry delay required")
     args.output.mkdir(parents=True, exist_ok=True)
     lock = (args.output / "watch.lock").open("a")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -217,7 +236,7 @@ def main():
     job_output.mkdir()
     job_args = argparse.Namespace(**(vars(args) | {"output": job_output}))
     state = dict(pid=os.getpid(), started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                 results=str(job_output), completed=[], privileged_runtime=args.privileged_runtime)
+                 results=str(job_output), completed=[], attempt=1, privileged_runtime=args.privileged_runtime)
     deadline = time.monotonic() + args.wait_hours * 3600
     previous = None
     completed_modes = set()
@@ -269,8 +288,20 @@ def main():
                         state.update(state="validation_complete", finished_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
                         write_json(status_path, state)
                         return
+                except Exception as error:
+                    state.update(state="attempt_failed", error=repr(error))
+                    next_output = retry_attempt(state, args.output, max_attempts=args.max_attempts)
+                    write_json(status_path, state)
+                    if next_output is None:
+                        raise
+                    job_output = next_output
+                    job_args.output = job_output
+                    completed_modes.clear()
+                    previous = None
                 finally:
                     release_devices(locks)
+                if state["state"] == "retry_wait":
+                    time.sleep(args.retry_seconds)
             time.sleep(args.poll_seconds)
         state.update(state="expired")
         write_json(status_path, state)

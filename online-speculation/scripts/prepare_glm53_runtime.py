@@ -29,11 +29,13 @@ def main():
     parser.add_argument("--devices", type=int, nargs="+", choices=range(8))
     parser.add_argument("--all-devices", action="store_true")
     parser.add_argument("--retry-seconds", type=int, default=0)
+    parser.add_argument("--poll-seconds", type=float, default=30)
     parser.add_argument("--wait-hours", type=float, default=48)
     parser.add_argument("--privileged-runtime", action="store_true",
                         help="explicit trusted-node workaround; disables device isolation, never enabled automatically")
     args = parser.parse_args()
-    if args.retry_seconds < 0 or args.wait_hours <= 0 or args.all_devices and args.devices is not None:
+    if (args.retry_seconds < 0 or args.wait_hours <= 0 or args.poll_seconds <= 0
+            or args.all_devices and args.devices is not None):
         parser.error("positive wait, nonnegative retry, and either --devices or --all-devices required")
     if args.privileged_runtime and not args.all_devices and args.devices != [0]:
         parser.error("privileged preflight requires --devices 0 or --all-devices")
@@ -67,7 +69,7 @@ def main():
                                        timeout=7200, check=False)
                     except subprocess.TimeoutExpired:
                         write_json(state_path, dict(state="image_pull_timeout", image=args.image))
-            time.sleep(30)
+            time.sleep(args.poll_seconds)
             continue
         snapshot = subprocess.check_output(["/usr/local/bin/npu-smi", "info"], text=True, timeout=20)
         idle = idle_devices(snapshot)
@@ -78,7 +80,7 @@ def main():
                 break
         if locks is None:
             write_json(state_path, dict(state="waiting_eight_idle_cards" if args.all_devices else "waiting_one_idle_card"))
-            time.sleep(30)
+            time.sleep(args.poll_seconds)
             continue
         name = f"wangzili-glm53-preflight-{os.getpid()}"
         runtime_cache = args.source / "validation" / "runtime-cache" / args.image.rsplit(":", 1)[-1][:12]

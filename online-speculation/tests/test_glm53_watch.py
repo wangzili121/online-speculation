@@ -65,6 +65,19 @@ def test_runtime_attestation_includes_inherited_proposer_dependencies(tmp_path):
     assert not watch.runtime_ready(path, tmp_path, "image@sha256:123")
 
 
+def test_failed_attempt_retry_preserves_evidence_and_restarts_all_stages(tmp_path):
+    state = dict(attempt=1, results="first", completed=["baseline", "orthrus"], error="worker exited")
+    next_output = watch.retry_attempt(state, tmp_path, max_attempts=2)
+    assert next_output.is_dir()
+    assert state["attempt"] == 2 and state["completed"] == []
+    assert state["results"] == str(next_output)
+    assert state["failed_attempts"] == [dict(attempt=1, results="first", completed=["baseline", "orthrus"],
+                                             error="worker exited")]
+    state.update(completed=["baseline"], error="failed again")
+    assert watch.retry_attempt(state, tmp_path, max_attempts=2) is None
+    assert len(state["failed_attempts"]) == 2
+
+
 def test_full_model_requires_all_eight_native_devices(tmp_path):
     (tmp_path / "scripts").mkdir()
     (tmp_path / "scripts" / "run_in_runtime.py").write_text("pass\n")

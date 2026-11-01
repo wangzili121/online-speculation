@@ -528,6 +528,17 @@ def test_memory_check_compares_matching_boundaries_after_warmup(monkeypatch):
         memory_growth(report, tolerance=2)
 
 
+def test_acceptance_subset_is_explicit_and_rejects_unknown_cases(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from accept_qwen38_vllm import selected_cases
+
+    assert "json" in selected_cases(None, 8192)
+    assert selected_cases(["short-greedy", "long-decode"], 8192) == {"short-greedy", "long-decode"}
+    for names in ([], ["json", "json"], ["missing"]):
+        with pytest.raises(ValueError, match="unique known"):
+            selected_cases(names, 8192)
+
+
 def test_weight_fingerprint_tracks_values_not_tensor_identity(monkeypatch):
     import torch
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
