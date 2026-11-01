@@ -57,8 +57,8 @@ def main():
     parser.add_argument("--replay-steps", type=int, default=8)
     args = parser.parse_args()
     if (args.max_model_len < 2048 or args.repeats < 3 or any(k < 2 or k > 32 for k in args.blocks)
-            or not 16 <= args.sampling_trials <= 4096 or not 0 <= args.replay_steps <= 256):
-        parser.error("require context >=2048, repeats >=3, blocks 2..32, sampling trials 16..4096")
+            or not 16 <= args.sampling_trials <= 4096 or not 0 <= args.replay_steps <= 64):
+        parser.error("require context >=2048, repeats >=3, blocks 2..32, sampling trials 16..4096, replay steps 0..64")
     try:
         cases = selected_cases(args.cases, args.max_model_len)
     except ValueError as error:

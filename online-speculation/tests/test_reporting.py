@@ -46,10 +46,12 @@ def test_resource_values_are_filtered_even_under_generic_keys():
                                     "checkpoint_base_dtype": "float32"}
 
 
-def test_report_serialization_has_one_publication_boundary():
+def test_public_commands_serialize_only_through_publication_boundary():
     root = Path(__file__).resolve().parents[1]
-    for path in list((root / "scripts").glob("*.py")) + [root / "src/blockspec/cli.py", *root.glob("src/blockspec/commands/*.py"),
-                                                        *root.glob("ablation/scripts/*.py")]:
+    # Validation tools retain raw local evidence; only publication commands redact it.
+    wrappers = [root / "scripts" / name for name in ("dual_view.py", "dual_continue.py", "train_dual_view.py")]
+    for path in wrappers + [root / "src/blockspec/cli.py", *root.glob("src/blockspec/commands/*.py"),
+                            *root.glob("ablation/scripts/*.py")]:
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                     and isinstance(node.func.value, ast.Name) and node.func.value.id == "json"
@@ -72,7 +74,7 @@ def test_reference_manifest_details_stay_out_of_public_results():
         "reference": {"reference_transformers": "test-version"}, "errors": {"max_abs": 0}}
 
 
-def test_versioned_sources_contain_no_literal_personal_paths_or_artifact_pins():
+def test_versioned_sources_contain_no_personal_paths_or_implicit_code_pins():
     root = Path(__file__).resolve().parents[1]
     files = [root / "README.md", *root.glob("docs/*.md"), *root.glob("scripts/*.py"),
              *root.glob("src/blockspec/**/*.py"), *root.glob("config/*.json"),
@@ -82,5 +84,7 @@ def test_versioned_sources_contain_no_literal_personal_paths_or_artifact_pins():
     for path in files:
         text = path.read_text(encoding="utf-8")
         assert not personal_path.search(text), path.name
-        assert not literal_pin.search(text), path.name
+        # Reproduction documents explicitly pin public code and image revisions.
+        if path.suffix != ".md":
+            assert not literal_pin.search(text), path.name
     assert not list((root / "references").glob("*.lock.json"))

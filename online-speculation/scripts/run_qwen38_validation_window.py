@@ -3,6 +3,8 @@
 
 import argparse
 import datetime
+import json
+import os
 from pathlib import Path
 import signal
 import subprocess
@@ -11,6 +13,17 @@ import time
 from watch_glm53_validation import (
     acquire_devices, idle_devices, release_devices, runtime_network_environment, write_json,
 )
+
+
+def eight_card_job_waiting(root, idle):
+    if set(idle) != set(range(8)):
+        return False
+    try:
+        state = json.loads((root / "validation" / "watch-status.json").read_text())
+        os.kill(state["pid"], 0)
+        return state["state"] == "waiting" and state.get("weights_verified") is True
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def container_command(args, name):
@@ -36,7 +49,7 @@ def container_command(args, name):
     command.extend(["-v", f"{args.output}:/results", "-w", "/results", "--entrypoint", "python3",
                     args.image, "/work/scripts/run_in_runtime.py", "/work/scripts/accept_qwen38_vllm.py",
                     "--model", "/models/qwen38", "--mask-token-id", "1", "--tp", str(len(args.devices)),
-                    "--output-dir", "/results/matrix", "--max-model-len", "8192", *args.acceptance_args])
+                    "--output-dir", "/results/matrix", "--max-model-len", str(args.max_model_len), *args.acceptance_args])
     return command
 
 
@@ -48,18 +61,20 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--devices", type=int, nargs="+", required=True)
+    parser.add_argument("--max-model-len", type=int, default=8192)
+    parser.add_argument("--yield-to-eight-card", action="store_true")
     parser.add_argument("--wait-hours", type=float, default=24)
     parser.add_argument("--timeout", type=int, default=10800)
     parser.add_argument("acceptance_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if (len(args.devices) not in {2, 4} or len(set(args.devices)) != len(args.devices)
             or not set(args.devices) <= set(range(8)) or "@sha256:" not in args.image
-            or args.wait_hours <= 0 or args.timeout <= 0):
+            or args.wait_hours <= 0 or args.timeout <= 0 or args.max_model_len < 2048):
         parser.error("require 2/4 distinct devices, a pinned image and positive time limits")
     if args.acceptance_args[:1] == ["--"]:
         args.acceptance_args = args.acceptance_args[1:]
     args.output.mkdir(parents=True, exist_ok=False)
-    name = f"wangzili-qwen38-validation-{int(time.time())}"
+    name = f"wangzili-qwen38-validation-{os.getpid()}-{time.time_ns()}"
     state = dict(state="waiting", devices=args.devices, container=name,
                  started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
     status = args.output / "status.json"
@@ -78,7 +93,8 @@ def main():
             idle = idle_devices(snapshot)
             state.update(idle=idle)
             write_json(status, state)
-            if set(args.devices) <= set(idle):
+            defer = args.yield_to_eight_card and eight_card_job_waiting(args.lease_root, idle)
+            if set(args.devices) <= set(idle) and not defer:
                 locks = acquire_devices(args.lease_root, args.devices)
                 if locks is not None:
                     break
@@ -108,7 +124,7 @@ def main():
             subprocess.run(["docker", "stop", "--time", "15", name], capture_output=True, timeout=60)
             with (args.output / "container.log").open("wb") as stream:
                 subprocess.run(["docker", "logs", name], stdout=stream, stderr=subprocess.STDOUT, timeout=60)
-            subprocess.run(["docker", "rm", name], capture_output=True, timeout=60)
+            subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=60)
         release_devices(locks or [])
         state["finished_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         write_json(status, state)

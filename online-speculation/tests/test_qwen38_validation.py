@@ -539,6 +539,17 @@ def test_acceptance_subset_is_explicit_and_rejects_unknown_cases(monkeypatch):
             selected_cases(names, 8192)
 
 
+def test_acceptance_replay_bound_matches_worker_rpc(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import accept_qwen38_vllm as acceptance
+
+    monkeypatch.setattr(sys, "argv", ["accept", "--model", "/model", "--mask-token-id", "1",
+        "--output-dir", str(tmp_path / "result"), "--replay-steps", "65"])
+    with pytest.raises(SystemExit) as failure:
+        acceptance.main()
+    assert failure.value.code == 2
+
+
 def test_weight_fingerprint_tracks_values_not_tensor_identity(monkeypatch):
     import torch
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
