@@ -58,10 +58,19 @@ def test_runtime_attestation_includes_inherited_proposer_dependencies(tmp_path):
     dependency.write_text("version = 1\n")
     (scripts / "run_in_runtime.py").write_text("pass\n")
     path = tmp_path / "ready.json"
-    path.write_text(json.dumps(dict(status="passed", image="image@sha256:123",
+    path.write_text(json.dumps(dict(status="passed", image="image@sha256:123", native_worker_imported=True,
                                    sha256=watch.runtime_sources(tmp_path))))
     assert watch.runtime_ready(path, tmp_path, "image@sha256:123")
     dependency.write_text("version = 2\n")
+    assert not watch.runtime_ready(path, tmp_path, "image@sha256:123")
+
+
+def test_operator_only_attestation_cannot_arm_native_jobs(tmp_path):
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "run_in_runtime.py").write_text("pass\n")
+    path = tmp_path / "ready.json"
+    path.write_text(json.dumps(dict(status="passed", image="image@sha256:123",
+                                   sha256=watch.runtime_sources(tmp_path))))
     assert not watch.runtime_ready(path, tmp_path, "image@sha256:123")
 
 

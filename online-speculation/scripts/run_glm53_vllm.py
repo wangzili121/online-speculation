@@ -16,6 +16,10 @@ def settings(args):
                   gpu_memory_utilization=.90, enable_expert_parallel=True,
                   enable_prefix_caching=False, async_scheduling=False,
                   language_model_only=True, trust_remote_code=False, seed=1024)
+    if args.mode == "ngram":
+        # 原生 token-only 对照：不加载 head，也不安装本项目的 runner hooks。
+        values.update(speculative_config=dict(method="ngram", num_speculative_tokens=args.block_size - 1,
+                                             prompt_lookup_min=1, prompt_lookup_max=3), disable_log_stats=False)
     if args.mode == "orthrus":
         if not args.experimental_hybrid_policy:
             raise ValueError("GLM hybrid draft policy requires explicit experimental opt-in")
@@ -47,7 +51,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--mode", choices=("baseline", "orthrus"), default="baseline")
+    parser.add_argument("--mode", choices=("baseline", "orthrus", "ngram"), default="baseline")
     parser.add_argument("--tp", type=int, default=8)
     parser.add_argument("--block-size", type=int, default=8)
     parser.add_argument("--mask-token-id", type=int)
@@ -109,6 +113,13 @@ def main():
                 "orthrus_save_head", args=(str(args.save_head),))
         if args.head_dir:
             report["head_digests"] = engine.llm_engine.engine_core.collective_rpc("orthrus_head_digest")
+    if args.mode == "ngram":
+        report["speculation_metrics"] = [dict(name=metric.name, value=metric.value)
+            for metric in engine.get_metrics() if "spec_decode" in metric.name and hasattr(metric, "value")]
+        if not any("num_drafts" in metric["name"] and metric["value"] > 0
+                   for metric in report["speculation_metrics"]):
+            report["status"] = "no_native_ngram_drafts"
+    if args.mode != "baseline":
         if args.temperature == 0:
             baseline = json.loads((args.baseline or args.output.with_name("baseline.json")).read_text())
             if (baseline.get("temperature", 0) != 0 or baseline["model_identity"] != identity

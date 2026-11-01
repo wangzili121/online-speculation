@@ -263,3 +263,14 @@ def test_cli_selects_bidirectional_policy_and_audit():
     args.head_dir, args.initialize_from_target = "/head", False
     with pytest.raises(ValueError, match="backward weight"):
         cli.settings(args)
+
+
+def test_ngram_control_does_not_install_neural_proposer_or_worker_extension():
+    cli = load_script("run_glm53_vllm")
+    args = NS(model="/model", tp=4, mode="ngram", max_model_len=18432,
+              max_num_batched_tokens=256, block_size=8)
+    options = cli.settings(args)
+    assert options["speculative_config"]["method"] == "ngram"
+    assert options["speculative_config"]["num_speculative_tokens"] == 7
+    assert "worker_extension_cls" not in options and "hf_overrides" not in options
+    assert not options["disable_log_stats"]

@@ -3,10 +3,9 @@
 
 import argparse
 import importlib.metadata
-import json
 from pathlib import Path
 
-from watch_glm53_validation import runtime_sources
+from watch_glm53_validation import runtime_sources, write_json
 
 
 def main():
@@ -16,12 +15,17 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     report = dict(status="failed", image=args.image)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    # 原生扩展可能直接 abort；先撤销旧 ready，不能依赖 Python finally。
+    write_json(args.output, report)
     try:
         import vllm_ascend.ops  # noqa: F401
         from vllm_ascend.models.glm5next.model import Glm5NextForCausalLM
         from blockspec.vllm_ascend.qwen38_runtime import install_runner_hooks
         from probe_glm53_ops import initialize_npu_runtime, main as probe
 
+        importlib.import_module("vllm_ascend.worker.worker")
+        report["native_worker_imported"] = True
         report["versions"] = {name: importlib.metadata.version(name)
                               for name in ("vllm", "vllm-ascend", "torch", "torch-npu", "transformers")}
         initialize_npu_runtime()
@@ -43,10 +47,7 @@ def main():
         report["error"] = repr(error)
         raise
     finally:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        temporary = args.output.with_suffix(".tmp")
-        temporary.write_text(json.dumps(report, indent=2) + "\n")
-        temporary.replace(args.output)
+        write_json(args.output, report)
 
 
 if __name__ == "__main__":

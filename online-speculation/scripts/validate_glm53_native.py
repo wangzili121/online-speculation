@@ -9,7 +9,7 @@ import signal
 import subprocess
 import time
 
-from watch_glm53_validation import acquire_devices, idle_devices, release_devices, run_job, write_json
+from watch_glm53_validation import acquire_devices, idle_devices, release_devices, run_job, runtime_ready, write_json
 
 
 def stages():
@@ -66,6 +66,8 @@ def main():
     status_path = args.output / "native-status.json"
     locks = None
     try:
+        if not runtime_ready(args.source / "validation" / "runtime-ready.json", args.source, args.image):
+            raise RuntimeError("validate the current native GLM runtime before loading model weights")
         deadline = time.monotonic() + args.wait_hours * 3600
         while (locks := acquire_devices(args.source, args.devices)) is None:
             status.update(state="waiting_test_lease")

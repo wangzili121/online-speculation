@@ -45,6 +45,7 @@ def test_controller_passes_block_width_to_native_job(controller, tmp_path, monke
         "--devices", "2", "--block-size", "4", "--stages", "baseline"])
     monkeypatch.setattr(controller.subprocess, "check_output", lambda *a, **kw: "snapshot")
     monkeypatch.setattr(controller, "idle_devices", lambda snapshot: [2])
+    monkeypatch.setattr(controller, "runtime_ready", lambda *args: True)
 
     def run(args, mode, *, label, extra):
         calls.append(extra)
@@ -76,3 +77,25 @@ def test_replica_verifier_checks_manifest_and_file_bytes(controller, tmp_path):
     path.write_text(json.dumps(dict(model_id="Eco-Tech/GLM-5.3-Flash-w8a8", files=[item])))
     with pytest.raises(ValueError, match="manifest entry"):
         verify.load_manifest(path, hashlib.sha256(path.read_bytes()).hexdigest())
+
+
+def test_native_preflight_revokes_ready_before_importing_extensions(controller, tmp_path, monkeypatch):
+    import builtins
+    import preflight_glm53_runtime as preflight
+
+    path = tmp_path / "runtime-ready.json"
+    path.write_text('{"status":"passed"}')
+    monkeypatch.setattr(sys, "argv", ["preflight_glm53_runtime", "--output", str(path),
+                                     "--image", "runtime@sha256:123"])
+    original = builtins.__import__
+
+    def fail(name, *args, **kwargs):
+        if name == "vllm_ascend.ops":
+            assert json.loads(path.read_text())["status"] == "failed"
+            raise SystemExit("native extension aborted")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail)
+    with pytest.raises(SystemExit, match="extension aborted"):
+        preflight.main()
+    assert json.loads(path.read_text())["status"] == "failed"
