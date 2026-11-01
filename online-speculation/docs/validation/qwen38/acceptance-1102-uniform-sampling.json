@@ -1,0 +1,124 @@
+{
+  "model": "/models/qwen38",
+  "target_only": false,
+  "tp": 2,
+  "block_size": 32,
+  "gdn_prefill_backend": "cann",
+  "max_model_len": 8192,
+  "online": false,
+  "last_layers": 1,
+  "update_stride": 16,
+  "native_ngram_control": false,
+  "proposal_fixture": null,
+  "outputs": [
+    {
+      "case": "short-sampling",
+      "reference_case": "short-sampling",
+      "temperature": 1.0,
+      "tokens": [
+        729,
+        88786,
+        44,
+        29852,
+        351,
+        3024,
+        220,
+        17
+      ],
+      "text": " !、“MAGIC CUP 2"
+    }
+  ],
+  "workers": [
+    {
+      "orthrus": true,
+      "rank": 0,
+      "proposals": 327,
+      "verified": 197,
+      "accepted": 421,
+      "max_verified_tokens": 31,
+      "full_blocks": 197,
+      "updates": 0,
+      "loss": null,
+      "head_dir": null,
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 327,
+      "cache_readonly_checks": 390
+    },
+    {
+      "orthrus": true,
+      "rank": 1,
+      "proposals": 327,
+      "verified": 197,
+      "accepted": 421,
+      "max_verified_tokens": 31,
+      "full_blocks": 197,
+      "updates": 0,
+      "loss": null,
+      "head_dir": null,
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 327,
+      "cache_readonly_checks": 390
+    }
+  ],
+  "seconds": 634.6510105039924,
+  "completed": true,
+  "sampling_calibration": {
+    "trials": 128,
+    "speculative_rows": 256,
+    "allowed": [
+      357,
+      417,
+      351
+    ],
+    "observed": {
+      "357": 27.0,
+      "417": 112.0,
+      "351": 117.0
+    },
+    "expected": {
+      "357": 23.24157733330503,
+      "417": 114.20910894451663,
+      "351": 118.54930343851447
+    },
+    "variance": {
+      "357": 17.18632652265639,
+      "417": 24.469853405224022,
+      "351": 15.49230636462971
+    },
+    "probability_source": "native_pre_sampling_logits",
+    "repeated_seed_tokens": [
+      357,
+      417,
+      351
+    ],
+    "passed": true,
+    "draft_distribution": "uniform_validation_fixture",
+    "accepted_per_rank": [
+      417,
+      417
+    ]
+  },
+  "target_weights": {
+    "before": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "after": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "unchanged": true
+  }
+}

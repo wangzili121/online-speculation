@@ -1,0 +1,533 @@
+{
+  "model": "/models/qwen38",
+  "target_only": false,
+  "tp": 2,
+  "block_size": 32,
+  "gdn_prefill_backend": "cann",
+  "max_model_len": 32768,
+  "online": true,
+  "last_layers": 1,
+  "update_stride": 16,
+  "native_ngram_control": false,
+  "proposal_fixture": null,
+  "outputs": [
+    {
+      "case": "short-greedy",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "context-tail",
+      "reference_case": "context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        2,
+        220,
+        16
+      ],
+      "text": "\n\n# 1"
+    },
+    {
+      "case": "after-context-tail",
+      "reference_case": "after-context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "page-edge",
+      "reference_case": "page-edge",
+      "temperature": 0.0,
+      "tokens": [
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046
+      ],
+      "text": "\n\n\n\n\n\n\n\n\n\n\n"
+    },
+    {
+      "case": "short-greedy-repeat1",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "context-tail-repeat1",
+      "reference_case": "context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        2,
+        220,
+        16
+      ],
+      "text": "\n\n# 1"
+    },
+    {
+      "case": "after-context-tail-repeat1",
+      "reference_case": "after-context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "page-edge-repeat1",
+      "reference_case": "page-edge",
+      "temperature": 0.0,
+      "tokens": [
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046
+      ],
+      "text": "\n\n\n\n\n\n\n\n\n\n\n"
+    },
+    {
+      "case": "short-greedy-repeat2",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "context-tail-repeat2",
+      "reference_case": "context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        2,
+        220,
+        16
+      ],
+      "text": "\n\n# 1"
+    },
+    {
+      "case": "after-context-tail-repeat2",
+      "reference_case": "after-context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "page-edge-repeat2",
+      "reference_case": "page-edge",
+      "temperature": 0.0,
+      "tokens": [
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046
+      ],
+      "text": "\n\n\n\n\n\n\n\n\n\n\n"
+    },
+    {
+      "case": "after-stop",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    }
+  ],
+  "workers": [
+    {
+      "orthrus": true,
+      "rank": 0,
+      "proposals": 84,
+      "verified": 70,
+      "accepted": 91,
+      "max_verified_tokens": 31,
+      "full_blocks": 67,
+      "updates": 4,
+      "loss": 0.34041884541511536,
+      "head_dir": null,
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 84,
+      "cache_readonly_checks": 40
+    },
+    {
+      "orthrus": true,
+      "rank": 1,
+      "proposals": 84,
+      "verified": 70,
+      "accepted": 91,
+      "max_verified_tokens": 31,
+      "full_blocks": 67,
+      "updates": 4,
+      "loss": 0.34041884541511536,
+      "head_dir": null,
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 84,
+      "cache_readonly_checks": 40
+    }
+  ],
+  "seconds": 478.8594648609869,
+  "completed": true,
+  "target_weights": {
+    "before": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "after": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "unchanged": true
+  },
+  "head_before": [
+    {
+      "sha256": "b64f7340d8114ba5448b302998ee34eb6e15ee0c22165f645c14cfeba226ed5b",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "bd47f4fc5705c53fbcb4c484a1454904ec10b1a51a87c618c643b31a943e2bbf",
+      "bytes": 7239797504
+    }
+  ],
+  "head_after": [
+    {
+      "sha256": "7d0472b3a5bdab9f1eb62140699361cdca72b6582abcee38d7bf75580640914c",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "1b2ed33bc3b8ba6e376f48cd081997c2fb2eaec66e820d36e07e9561dfe97248",
+      "bytes": 7239797504
+    }
+  ],
+  "memory": [
+    {
+      "case": "short-greedy",
+      "workers": [
+        {
+          "allocated": 47424607232,
+          "reserved": 52409925632
+        },
+        {
+          "allocated": 47424607232,
+          "reserved": 52409925632
+        }
+      ]
+    },
+    {
+      "case": "context-tail",
+      "workers": [
+        {
+          "allocated": 48497987584,
+          "reserved": 55618568192
+        },
+        {
+          "allocated": 48497987584,
+          "reserved": 55618568192
+        }
+      ]
+    },
+    {
+      "case": "after-context-tail",
+      "workers": [
+        {
+          "allocated": 47424607232,
+          "reserved": 55618568192
+        },
+        {
+          "allocated": 47424607232,
+          "reserved": 55618568192
+        }
+      ]
+    },
+    {
+      "case": "page-edge",
+      "workers": [
+        {
+          "allocated": 48109952512,
+          "reserved": 55618568192
+        },
+        {
+          "allocated": 48109952512,
+          "reserved": 55618568192
+        }
+      ]
+    },
+    {
+      "case": "short-greedy-repeat1",
+      "workers": [
+        {
+          "allocated": 48053768192,
+          "reserved": 55618568192
+        },
+        {
+          "allocated": 48053768192,
+          "reserved": 55618568192
+        }
+      ]
+    },
+    {
+      "case": "context-tail-repeat1",
+      "workers": [
+        {
+          "allocated": 49127148544,
+          "reserved": 56247713792
+        },
+        {
+          "allocated": 49127148544,
+          "reserved": 56247713792
+        }
+      ]
+    },
+    {
+      "case": "after-context-tail-repeat1",
+      "workers": [
+        {
+          "allocated": 48054108672,
+          "reserved": 56247713792
+        },
+        {
+          "allocated": 48054108672,
+          "reserved": 56247713792
+        }
+      ]
+    },
+    {
+      "case": "page-edge-repeat1",
+      "workers": [
+        {
+          "allocated": 48109430272,
+          "reserved": 56247713792
+        },
+        {
+          "allocated": 48109430272,
+          "reserved": 56247713792
+        }
+      ]
+    },
+    {
+      "case": "short-greedy-repeat2",
+      "workers": [
+        {
+          "allocated": 48055117824,
+          "reserved": 56247713792
+        },
+        {
+          "allocated": 48055117824,
+          "reserved": 56247713792
+        }
+      ]
+    },
+    {
+      "case": "context-tail-repeat2",
+      "workers": [
+        {
+          "allocated": 49127148544,
+          "reserved": 56310628352
+        },
+        {
+          "allocated": 49127148544,
+          "reserved": 56310628352
+        }
+      ]
+    },
+    {
+      "case": "after-context-tail-repeat2",
+      "workers": [
+        {
+          "allocated": 48053768192,
+          "reserved": 56310628352
+        },
+        {
+          "allocated": 48053768192,
+          "reserved": 56310628352
+        }
+      ]
+    },
+    {
+      "case": "page-edge-repeat2",
+      "workers": [
+        {
+          "allocated": 48109977600,
+          "reserved": 56310628352
+        },
+        {
+          "allocated": 48109977600,
+          "reserved": 56310628352
+        }
+      ]
+    }
+  ],
+  "greedy_matches_baseline": true,
+  "checkpoint": [
+    {
+      "rank": 0,
+      "version": 4,
+      "directory": "/results/matrix/head-last1/version4"
+    },
+    {
+      "rank": 1,
+      "version": 4,
+      "directory": "/results/matrix/head-last1/version4"
+    }
+  ]
+}

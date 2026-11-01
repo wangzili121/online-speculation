@@ -2,6 +2,24 @@
 
 更新：2026-11-02。DSV4、GLM-5.3 暂不接训练或在线更新；Qwen3.8 继续验证现有推理和在线更新。PyPTO 只整理推理需求，不开发新 kernel。
 
+## 本轮验证结果
+
+Qwen 使用真实 27B 权重，两卡 TP2、eager、同步单请求；不是缩小结构的替代模型。
+
+| 验证 | 结果 | 记录 |
+| --- | --- | --- |
+| CPU 全套回归 | 620 项通过，32 项硬件专项跳过。 | [测试报告](validation/qwen38/acceptance-1102-all-cpu.xml) |
+| Qwen 8K 上下文 | 10 个阶段全部通过：target-only、K=2/8/17/32、末1层/末4层更新、head 重载、连续整块接受和连续拒绝。 | [阶段结果](validation/qwen38/acceptance-1102-matrix-8k.json)、[用例范围](validation/qwen38/acceptance-1102-scope-8k.json) |
+| Qwen 32K 上下文 | 5 个阶段全部通过：target-only、K=32、末1层/末4层更新、head 重载；覆盖上下文末端、后续短请求及分页边界。 | [阶段结果](validation/qwen38/acceptance-1102-matrix-32k.json)、[用例范围](validation/qwen38/acceptance-1102-scope-32k.json) |
+| 随机采样接受分支 | 128 个种子、256 个输出位置通过频次检查；两个 rank 均实际接受过候选，同种子重跑一致。 | [独立校准](validation/qwen38/acceptance-1102-uniform-sampling.json) |
+| GLM 单卡算子 demo | 6 项通过：因果/门控双向 KDA、MLA、空历史和不同历史长度；历史不变，输出相对 RMS 误差最大约 0.00514，门槛为 0.04。不是完整模型验收。 | [数值结果](validation/glm53/demo-npu-20261102.json)、[测试报告](validation/glm53/demo-npu-20261102.xml) |
+
+在线测试确认 head 参数发生更新、主模型权重不变、两个 rank 的更新计数和 loss 一致，重复请求的活跃内存通过检查。导出后在独立进程重载，参数哈希与导出时一致，推理及继续更新均通过。8K 的末4层测试包含 32 步固定反馈补测，loss 从 0.5044 降至 0.4929；这不是训练 head 的业务接受率或加速结论。
+
+这些结果只覆盖表中的 TP2/eager/单请求用例。8K 矩阵未纳入已知的 JSON 数值分叉，映射 AR 的额外数值诊断未重验；图模式、动态 batch 和正式训练 head 的收益不在本轮范围。
+
+CPU 参考测试在临时容器中移除 `torch-npu` 后运行，避免无设备时初始化 ACL；NPU 镜像没有修改。CPU 跳过的 6 项 GLM NPU demo 已单独补验，其余 CUDA 专项不记为 NPU 通过。上述有限测试容器均已删除、设备锁已释放；八卡准备与监控进程继续保留。
+
 ## 不等待八卡的工作
 
 | 工作 | 资源 | 验收内容 |

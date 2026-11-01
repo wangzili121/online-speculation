@@ -1,0 +1,170 @@
+{
+  "model": "/models/qwen38",
+  "target_only": false,
+  "tp": 2,
+  "block_size": 32,
+  "gdn_prefill_backend": "cann",
+  "max_model_len": 32768,
+  "online": true,
+  "last_layers": 1,
+  "update_stride": 16,
+  "native_ngram_control": false,
+  "proposal_fixture": null,
+  "outputs": [
+    {
+      "case": "short-greedy",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "context-tail",
+      "reference_case": "context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        2,
+        220,
+        16
+      ],
+      "text": "\n\n# 1"
+    },
+    {
+      "case": "after-context-tail",
+      "reference_case": "after-context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "page-edge",
+      "reference_case": "page-edge",
+      "temperature": 0.0,
+      "tokens": [
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046
+      ],
+      "text": "\n\n\n\n\n\n\n\n\n\n\n"
+    },
+    {
+      "case": "after-stop",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    }
+  ],
+  "workers": [
+    {
+      "orthrus": true,
+      "rank": 0,
+      "proposals": 27,
+      "verified": 21,
+      "accepted": 34,
+      "max_verified_tokens": 31,
+      "full_blocks": 20,
+      "updates": 1,
+      "loss": 0.3356049954891205,
+      "head_dir": "/results/matrix/head-last4/version65",
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 27,
+      "cache_readonly_checks": 16
+    },
+    {
+      "orthrus": true,
+      "rank": 1,
+      "proposals": 27,
+      "verified": 21,
+      "accepted": 34,
+      "max_verified_tokens": 31,
+      "full_blocks": 20,
+      "updates": 1,
+      "loss": 0.3356049954891205,
+      "head_dir": "/results/matrix/head-last4/version65",
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 27,
+      "cache_readonly_checks": 16
+    }
+  ],
+  "seconds": 185.67621479788795,
+  "completed": true,
+  "head_before": [
+    {
+      "sha256": "7be2b17cd5296ef12db8531f889bf8a30710abaf4f46bca5b1138dec0e31454c",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "40f40e49213aea29fdcd6f1dc0aecb11599b41650252433cc0434d0e7a5f5cea",
+      "bytes": 7239797504
+    }
+  ],
+  "head_after": [
+    {
+      "sha256": "9ac56ac8a2e6bc7dc52cc9e8735a133175c8639791dc03a7dc9c0d4c9bf6c8c4",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "3f587207a51db70aa39606d32df03c7b026c5fb7dab91a6441bd93a34b1b2881",
+      "bytes": 7239797504
+    }
+  ],
+  "greedy_matches_baseline": true
+}

@@ -1,0 +1,112 @@
+{
+  "image": "quay.io/ascend/vllm-ascend@sha256:61584d790fa3668e7c43f0eb50a3e3a86d94b3eed15bce5ac82391ed383df229",
+  "test": "tests/test_glm53_orthrus_demo.py::test_npu_complete_branches_match_fp32_reference",
+  "passed": 6,
+  "reference": "FP32 single-layer torch composition, not full-model generation",
+  "history_preserved": true,
+  "relative_rms_limit": 0.04,
+  "measurements": [
+    {
+      "width": 2,
+      "prefix": 0,
+      "bidirectional": false,
+      "errors": {
+        "mla": {
+          "max_abs": 0.006829500198364258,
+          "rms": 0.0018364621791988611,
+          "relative_rms": 0.004256475251168013
+        },
+        "kda": {
+          "max_abs": 0.0010112300515174866,
+          "rms": 0.0002454199711792171,
+          "relative_rms": 0.004326889291405678
+        }
+      }
+    },
+    {
+      "width": 8,
+      "prefix": 3,
+      "bidirectional": false,
+      "errors": {
+        "mla": {
+          "max_abs": 0.003886580467224121,
+          "rms": 0.0008327534305863082,
+          "relative_rms": 0.0046508535742759705
+        },
+        "kda": {
+          "max_abs": 0.0010112300515174866,
+          "rms": 0.0002141916920663789,
+          "relative_rms": 0.0047774240374565125
+        }
+      }
+    },
+    {
+      "width": 8,
+      "prefix": 2055,
+      "bidirectional": false,
+      "errors": {
+        "mla": {
+          "max_abs": 0.000031230971217155457,
+          "rms": 0.000006992777798586758,
+          "relative_rms": 0.004130546469241381
+        },
+        "kda": {
+          "max_abs": 0.0010112300515174866,
+          "rms": 0.0002141916920663789,
+          "relative_rms": 0.0047774240374565125
+        }
+      }
+    },
+    {
+      "width": 2,
+      "prefix": 0,
+      "bidirectional": true,
+      "errors": {
+        "mla": {
+          "max_abs": 0.006829500198364258,
+          "rms": 0.0018364621791988611,
+          "relative_rms": 0.004256475251168013
+        },
+        "kda": {
+          "max_abs": 0.001032799482345581,
+          "rms": 0.00027438130928203464,
+          "relative_rms": 0.004802312236279249
+        }
+      }
+    },
+    {
+      "width": 8,
+      "prefix": 3,
+      "bidirectional": true,
+      "errors": {
+        "mla": {
+          "max_abs": 0.003886580467224121,
+          "rms": 0.0008327534305863082,
+          "relative_rms": 0.0046508535742759705
+        },
+        "kda": {
+          "max_abs": 0.0012530125677585602,
+          "rms": 0.00023285044881049544,
+          "relative_rms": 0.0051367501728236675
+        }
+      }
+    },
+    {
+      "width": 8,
+      "prefix": 2055,
+      "bidirectional": true,
+      "errors": {
+        "mla": {
+          "max_abs": 0.000031230971217155457,
+          "rms": 0.000006992777798586758,
+          "relative_rms": 0.004130546469241381
+        },
+        "kda": {
+          "max_abs": 0.0012530125677585602,
+          "rms": 0.00023285044881049544,
+          "relative_rms": 0.0051367501728236675
+        }
+      }
+    }
+  ]
+}
