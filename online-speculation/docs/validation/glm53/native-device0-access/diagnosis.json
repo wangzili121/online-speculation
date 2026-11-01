@@ -1,0 +1,43 @@
+{
+  "host": "159.138.5.111",
+  "physical_device": 0,
+  "driver_version": "25.5.1",
+  "image": "quay.io/ascend/vllm-ascend@sha256:61584d790fa3668e7c43f0eb50a3e3a86d94b3eed15bce5ac82391ed383df229",
+  "isolated_control": {
+    "model_loaded": false,
+    "project_hooks_loaded": false,
+    "acl_init_code": 500000,
+    "device_count": 0,
+    "device_count_code": 507899,
+    "soc_name": null,
+    "driver_return_code": 87,
+    "kernel_messages": [
+      "[ascend] [uda] [ERROR] [uda_occupy_dev_by_ns 932] Conflict open udevid. (udevid=0)",
+      "[ascend] [uda] [ERROR] [_uda_setup_ns_node 1366] Dev num not match. (dev_num=100; node_dev_num=0)"
+    ]
+  },
+  "privileged_control": {
+    "acl_init_code": 0,
+    "device_count": 1,
+    "device_count_code": 0,
+    "soc_name": "Ascend910B3",
+    "aclrtGetPhyDevIdByUserDevId_return_code": 0,
+    "resolved_physical_device": 0,
+    "sixteen_ones_sum": 16.0,
+    "native_worker_imported": true,
+    "operator_preflight": "passed"
+  },
+  "startup_change": {
+    "cann_checked_before_native_extension_import": true,
+    "isolated_preflight_exit_code_after_change": 1,
+    "default_privileged": false,
+    "privileged_mode_explicit_and_attested": true,
+    "hccl_communicator_and_single_rank_all_reduce_in_preflight": true,
+    "network_environment_forwarded_and_attested": true
+  },
+  "scope": "Container-access workaround and fail-closed startup diagnostics; not a driver repair or full-model TP8 acceptance.",
+  "conflicting_container_owner_identified": false,
+  "other_user_containers_stopped": false,
+  "devices_reset": false,
+  "upstream_container_conflict_reference": "https://github.com/vllm-project/vllm-ascend/issues/632"
+}

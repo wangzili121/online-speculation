@@ -58,7 +58,7 @@ draft 只持有注意力投影和内部归一化等参数。执行时临时替�
 
 ## 验证与启动
 
-验证分为数学与适配器回归、单卡 NPU 算子检查、原生引擎闭环三层。103 项定向回归通过，覆盖 Attention 与显式 SDPA 等价、双向信息流、KPool 边界、接受位置的状态选取、分页寻址、head 契约和异常恢复。NPU 检查覆盖 MLA 的 K=2 至 8 及 K=32、KDA 的 K=1 至 8；MLA 对 FP32 的相对 RMS 误差约 0.3%，KDA 输出及逐位置状态的相对 RMS 误差不超过 1.2e-5。
+验证分为数学与适配器回归、单卡 NPU 算子检查、原生引擎闭环三层。114 项定向回归通过，覆盖 Attention 与显式 SDPA 等价、双向信息流、KPool 边界、接受位置的状态选取、分页寻址、head 契约、异常恢复，以及启动环境检查。NPU 检查覆盖 MLA 的 K=2 至 8 及 K=32、KDA 的 K=1 至 8；MLA 对 FP32 的相对 RMS 误差约 0.3%，KDA 输出及逐位置状态的相对 RMS 误差不超过 1.2e-5。
 
 原生引擎测试使用源权重的前 5 层和前 9 层，保留原始宽度、W8A8 权重、mHC 及 dense/MoE。前 5 层有 4 层 KDA、1 层 MLA；前 9 层有 7 层 KDA、2 层 MLA，用于继续检查多层历史状态和 TP 分片。它们不是随机缩小网络，也不是官方小模型；截层后的回答不用于语义或加速收益评测。
 
@@ -69,6 +69,7 @@ draft 只持有注意力投影和内部归一化等参数。执行时临时替�
 | 5 层，双卡，K=8，两种模式 | Greedy 对齐；各 rank 的 head 参数重载哈希一致，计数一致；两种模式的原生 rejection sampling 均运行通过。 |
 | 5 层，单卡，4911-token 前缀 | 两种模式均 greedy 对齐，覆盖缓存跨页和超过 Top-K 上限的稀疏检索；因果版本另通过该长前缀的重载及采样。 |
 | 单卡，加载后投影权重生效 | 实测 KDA QKV/O、MLA QKV/O、indexer Q 五类原生投影：修改 head 权重会改变输出，恢复后固定输入的误差均为 0，主模型权重和投影输出不受影响。 |
+| 111 物理 0，5 层，单卡，K=8，两种模式 | 调整容器访问与网络配置后重新跑通 target-only、因果及双向 draft；每种 96 个 greedy token 与本机基线一致，缓存审计分别通过 53/56 轮。双向模式实际执行 224 次反向 KDA。 |
 | 9 层，四卡，K=8，两种模式 | 起草、验证、缓存审计、四分片 head 保存/重载和采样通过。双向初始化运行每 rank 378 次反向 KDA，重载后运行 385 次。Greedy 验收尚未通过，见下文。 |
 | 完整 45 层，八卡 | 已在 111 节点实际尝试 target-only；worker 在导入原生 `camem` 扩展时中止，尚未进入 Orthrus，也未验证完整模型的显存和输出。 |
 
@@ -78,9 +79,13 @@ draft 只持有注意力投影和内部归一化等参数。执行时临时替�
 
 联调中修复了插件配置被后端严格校验拒绝、NoPE 空 RoPE 占位未识别，以及带 padding 的大缓存被整体物化等适配问题。后者已有 NPU 内存回归：复制 512 KiB 的选中状态，额外峰值为 513 KiB。单卡测试使用实测通过的 34816 上限，双卡和四卡使用 18432；不将这些测试参数作为任意 TP 配置的通用容量公式。
 
-111 的完整权重已逐文件校验 SHA256。该节点原生 TP8 两次在 `camem.py` 导入 `vllm_ascend_C` 时出现 `basic_string::_S_construct null not valid`；单独使用 0 号卡也复现，切到可写运行目录后仍然失败，3 号卡则通过单卡预检。具体底层原因尚未定位，不能归因于模型装不下或 draft Attention。监控不会把没有 NPU 进程直接当成运行时健康。
+111 的完整权重已逐文件校验 SHA256。该节点原生 TP8 两次在 `camem.py` 导入 `vllm_ascend_C` 时出现 `basic_string::_S_construct null not valid`，当时尚未加载模型。后续仅调用 CANN 的单卡对照确认：默认隔离容器访问 0 号卡时，`acl.init()` 返回 500000，设备枚举返回 507899，芯片名为空；内核同时记录 `Conflict open udevid`。同镜像换到 3 号卡正常，因此不能将该异常归因于模型大小或 draft Attention。
 
-结果、参数和代码哈希保存在 `docs/validation/glm53/`；`native-5l-*` 为五层测试，`native-9l-tp4/` 与 `native-9l-repeat/` 保留四卡差异及独立对照，`native-45l-tp8/` 和 `native-device0/` 保留原生启动失败记录。测试容器在结束或失败后删除，不提交模型或 head 权重。
+`camem` 是 sleep/wake 使用的设备内存池模块，worker 即使未开启 sleep 也会导入它。当前处理不是删除该模块或屏蔽异常，而是先检查 CANN 初始化、可见设备数量和芯片信息；失败时保存错误并退出，不再进入会中止进程的原生扩展导入。在 111 的显式特权测试容器内，已确认使用的物理卡为 0，小张量计算、worker 导入以及 MLA/KDA/缓存预检均通过。这是绕过该节点容器访问冲突的启动方式，不代表已清理冲突来源、修复驱动，或完成八卡模型验收。
+
+继续加载 target-only 时还发现该节点自动选择通信网卡会使 `hcclGetRootInfo` 报错 19。独立的单 rank 对照也复现；显式指定业务网卡及 IP 后，communicator 创建和 AllReduce 通过。脚本现在透传启动环境中的 `HCCL_SOCKET_IFNAME`、`HCCL_IF_IP`、`GLOO_SOCKET_IFNAME`、`VLLM_HOST_IP` 和 `TP_SOCKET_IFNAME`，不在代码内硬编码节点地址；预检与模型使用同一组网络配置。预检增加真实 HCCL communicator 创建和单 rank AllReduce，避免把张量分配成功等同于通信可用；这仍不代替 TP8 的多 rank 通信验收。
+
+结果、参数和代码哈希保存在 `docs/validation/glm53/`；`native-5l-*` 为五层测试，`native-9l-tp4/` 与 `native-9l-repeat/` 保留四卡差异及独立对照，`native-45l-tp8/` 和 `native-device0/` 保留原生启动失败记录。`native-device0-access/` 记录 CANN/HCCL 对照及启动处理，`native-5l-device0-validated/` 是在 111 物理 0 上重跑通过的模型测试。测试容器在结束或失败后删除，不提交模型或 head 权重。
 
 单卡算子检查：
 
@@ -90,9 +95,11 @@ PYTHONPATH=src python scripts/probe_glm53_ops.py --output artifacts/operators.js
 
 原生闭环先运行 `prepare_glm53_runtime.py`，再用 `validate_glm53_native.py` 指定物理卡、模型和输出目录；它依次完成基线、两种起草、重载及采样，任一阶段不通过则停止。`--block-size`、`--max-model-len` 和 `--long-prompt-repeats` 指定测试档位。`run_glm53_vllm.py --mode ngram` 提供不加载本项目 head/hooks 的独立原生对照；`--check-head-replacement` 只在明确加载 head 后启用验证专用 worker 扩展，使用具名 RPC，不放开函数序列化。
 
-八卡准备使用 `prepare_glm53_runtime.py --all-devices --retry-seconds 300`：等待八卡空闲，检查原生 worker 导入和每张卡的初始化、小张量计算，最后检查 draft 算子；失败后先释放容器，再等待重试。`watch_glm53_validation.py` 在完整权重校验、八卡预检和资源检查通过后，依次运行 target-only、两种 draft、两种 head 重载和两种采样，并核对各 rank 的 head 哈希。每次监控使用独立结果目录。单卡预检不能授权八卡任务；源码变化后必须重新预检并重启验收。本地文件锁只协调本项目，不预留其他用户的资源。
+八卡准备使用 `prepare_glm53_runtime.py --all-devices --retry-seconds 300`：等待八卡空闲，检查 CANN、原生 worker 导入、每张卡的小张量计算、单 rank HCCL 建链及 draft 算子；失败后先释放容器，再等待重试。`watch_glm53_validation.py` 在完整权重校验、八卡预检和资源检查通过后，依次运行 target-only、两种 draft、两种 head 重载和两种采样，并核对各 rank 的 head 哈希。每次监控使用独立结果目录。单卡预检不能授权八卡任务；源码或网络配置变化后必须重新预检。源码变化后还须重启验收进程。本地文件锁只协调本项目，不预留其他用户的资源。
 
 模型和代码始终只读挂载，容器在独立的可写缓存目录运行，Torch、Triton 和 CANN 按需编译产物留在该目录。这样新增输入形状或检查算子不需要向源码目录写入文件。
+
+默认仍使用设备隔离容器。对受信任、已协调资源的测试节点，可在准备、验证和监控命令中同时显式加入 `--privileged-runtime`；预检记录必须与实际启动模式一致。该选项会传递 Docker `--privileged`，扩大宿主权限并使全部设备可见，不适合作为多租户默认配置，也不能替代卡的分配。程序仍只计算指定的可见设备，拒绝特权模式下的非恒等设备重排，八卡任务仍须等八卡空闲。生产环境应优先协调独占分配并解除冲突，不停止其他用户容器、不重置设备。
 
 各节点可独立运行 `watch_npu_resources.py --output /path/to/status.json`，每 30 秒记录一次空卡和心跳，发现完整八卡窗口后继续监控。它仅查询资源，不预留设备或启动模型；进程列表为空但 HBM 仍高占用的卡也不会被判为空闲。资源监控和模型测试是两件事，某个节点具备空卡后，仍须在该节点准备并校验权重及运行镜像。
 

@@ -79,6 +79,43 @@ def test_full_model_requires_all_eight_native_devices(tmp_path):
     assert watch.runtime_ready(path, tmp_path, "image@sha256:123", 8)
 
 
+def test_privileged_attestation_cannot_authorize_an_isolated_container(tmp_path):
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "run_in_runtime.py").write_text("pass\n")
+    path = tmp_path / "ready.json"
+    path.write_text(json.dumps(dict(status="passed", image="image@sha256:123", native_worker_imported=True,
+                                   checked_devices=[0], privileged_runtime=True, sha256=watch.runtime_sources(tmp_path))))
+    assert not watch.runtime_ready(path, tmp_path, "image@sha256:123")
+    assert watch.runtime_ready(path, tmp_path, "image@sha256:123", privileged_runtime=True)
+
+
+def test_privileged_runtime_is_explicit_and_cannot_remap_physical_cards():
+    assert watch.container_access_args([2, 3]) == []
+    assert watch.container_access_args([0], True) == ["--privileged"]
+    assert watch.container_access_args(list(range(8)), True) == ["--privileged"]
+    with pytest.raises(ValueError, match="identity-mapped"):
+        watch.container_access_args([2, 3], True)
+
+
+def test_network_environment_is_explicit_and_part_of_the_attestation(tmp_path, monkeypatch):
+    for key in watch.runtime_network_environment():
+        monkeypatch.delenv(key)
+    monkeypatch.setenv("HCCL_SOCKET_IFNAME", "eth0")
+    monkeypatch.setenv("VLLM_HOST_IP", "192.0.2.1")
+    monkeypatch.setenv("UNRELATED_SECRET", "not forwarded")
+    environment = dict(HCCL_SOCKET_IFNAME="eth0", VLLM_HOST_IP="192.0.2.1")
+    assert watch.runtime_network_environment() == environment
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "run_in_runtime.py").write_text("pass\n")
+    path = tmp_path / "ready.json"
+    path.write_text(json.dumps(dict(status="passed", image="image@sha256:123", native_worker_imported=True,
+                                   checked_devices=[0], network_environment=environment,
+                                   sha256=watch.runtime_sources(tmp_path))))
+    assert watch.runtime_ready(path, tmp_path, "image@sha256:123")
+    monkeypatch.setenv("VLLM_HOST_IP", "192.0.2.2")
+    assert not watch.runtime_ready(path, tmp_path, "image@sha256:123")
+
+
 def test_operator_only_attestation_cannot_arm_native_jobs(tmp_path):
     (tmp_path / "scripts").mkdir()
     (tmp_path / "scripts" / "run_in_runtime.py").write_text("pass\n")
@@ -167,3 +204,19 @@ def test_native_job_remaps_cards_and_preserves_runtime_environment(tmp_path, mon
     assert f"{tmp_path}:/work:ro" in command
     assert "PYTHONPATH=/work/src" not in command
     assert "--initialize-from-target" not in command
+    assert "--privileged" not in command
+
+
+def test_native_job_only_uses_privilege_after_explicit_selection(tmp_path, monkeypatch):
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return NS(returncode=0, stdout="0", stderr="")
+    monkeypatch.setattr(watch.subprocess, "run", run)
+    monkeypatch.setenv("HCCL_SOCKET_IFNAME", "eth0")
+    args = NS(output=tmp_path, source=tmp_path, model=tmp_path, devices=[0],
+              image="runtime@sha256:123", job_timeout=1, privileged_runtime=True)
+    watch.run_job(args, "baseline")
+    assert "--privileged" in calls[0]
+    assert "/dev/davinci0:/dev/davinci0" in calls[0]
+    assert "HCCL_SOCKET_IFNAME=eth0" in calls[0]

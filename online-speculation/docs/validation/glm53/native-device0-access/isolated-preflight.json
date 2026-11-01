@@ -1,0 +1,10 @@
+{
+  "status": "failed",
+  "image": "quay.io/ascend/vllm-ascend@sha256:61584d790fa3668e7c43f0eb50a3e3a86d94b3eed15bce5ac82391ed383df229",
+  "checked_devices": [],
+  "privileged_runtime": false,
+  "cann": {
+    "init_code": 500000
+  },
+  "error": "RuntimeError(\"CANN initialization failed before native worker import: {'init_code': 500000}; [PID: 1] 2026-11-01-15:36:01.232.370 Resource_Busy(EL0005): The resources are busy.\\n        Possible Cause: 1. The resources have been occupied. 2. The device is being reset. 3. Software is not ready.\\n        Solution: 1. Close applications not in use. 2. Wait for a while and try again.\\nTraceBack (most recent call last):\\n        rtGetDeviceCount execution failed, reason=driver error:internal error[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:76]\\n        get hardware version fail[FUNC:InitPara][FILE:PlatformInfo.cpp][LINE:89]\\n        [Init][Version]init SoC version failed.[FUNC:ReportInnerError][FILE:log_inner.cpp][LINE:133]\\n        chipType=CHIP_MINI(0) does not support get device msg feature.[FUNC:GetDevMsg][FILE:api_impl_standard_soc.cc][LINE:883]\\n        The argument is invalid. Reason: rtGetDevMsg execution failed, the feature is not supported.\\n\")"
+}

@@ -9,7 +9,9 @@ import signal
 import subprocess
 import time
 
-from watch_glm53_validation import acquire_devices, idle_devices, release_devices, write_json
+from watch_glm53_validation import (
+    acquire_devices, container_access_args, idle_devices, release_devices, runtime_network_environment, write_json,
+)
 
 
 def candidate_groups(idle, *, all_devices=False, allowed=None):
@@ -28,9 +30,13 @@ def main():
     parser.add_argument("--all-devices", action="store_true")
     parser.add_argument("--retry-seconds", type=int, default=0)
     parser.add_argument("--wait-hours", type=float, default=48)
+    parser.add_argument("--privileged-runtime", action="store_true",
+                        help="explicit trusted-node workaround; disables device isolation, never enabled automatically")
     args = parser.parse_args()
     if args.retry_seconds < 0 or args.wait_hours <= 0 or args.all_devices and args.devices is not None:
         parser.error("positive wait, nonnegative retry, and either --devices or --all-devices required")
+    if args.privileged_runtime and not args.all_devices and args.devices != [0]:
+        parser.error("privileged preflight requires --devices 0 or --all-devices")
     args.output.mkdir(parents=True, exist_ok=True)
     lock = (args.output / ("prepare-all.lock" if args.all_devices else "prepare.lock")).open("a")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -76,7 +82,7 @@ def main():
             continue
         name = f"wangzili-glm53-preflight-{os.getpid()}"
         runtime_cache = args.source / "validation" / "runtime-cache" / args.image.rsplit(":", 1)[-1][:12]
-        command = ["docker", "run", "-d", "--name", name, "--network=none",
+        command = ["docker", "run", "-d", "--name", name, "--network=host",
                    "--label", "owner=wangzili", "--label", "experiment=orthrus-glm53",
                    "--device", "/dev/davinci_manager", "--device", "/dev/devmm_svm",
                    "--device", "/dev/hisi_hdc", "-e", "ASCEND_RT_VISIBLE_DEVICES=" + ",".join(map(str, range(len(devices)))),
@@ -89,13 +95,19 @@ def main():
                    "-v", "/etc/ascend_install.info:/etc/ascend_install.info:ro",
                    "-v", f"{args.source}:/work:ro", "-v", f"{args.output}:/results",
                    "-v", f"{runtime_cache}:/runtime-cache"]
+        command.extend(container_access_args(devices, args.privileged_runtime))
+        for key, value in runtime_network_environment().items():
+            command.extend(["-e", f"{key}={value}"])
         for logical, physical in enumerate(devices):
             command.extend(["--device", f"/dev/davinci{physical}:/dev/davinci{logical}"])
         command.extend(["-w", "/runtime-cache", "--entrypoint", "python3", args.image,
                    "/work/scripts/run_in_runtime.py", "/work/scripts/preflight_glm53_runtime.py",
                    "--output", "/results/runtime-ready.json",
                    "--image", args.image, "--num-devices", str(len(devices))])
-        write_json(state_path, dict(state="running", devices=devices, container=name))
+        if args.privileged_runtime:
+            command.append("--privileged-runtime")
+        write_json(state_path, dict(state="running", devices=devices, container=name,
+                                   privileged_runtime=args.privileged_runtime))
         passed = False
         try:
             subprocess.run(command, check=True, capture_output=True, timeout=120)

@@ -59,11 +59,18 @@ def runtime_sources(source):
             for path in sorted(paths)}
 
 
-def runtime_ready(path, source, image, min_devices=1):
+def runtime_network_environment():
+    names = ("HCCL_SOCKET_IFNAME", "HCCL_IF_IP", "GLOO_SOCKET_IFNAME", "VLLM_HOST_IP", "TP_SOCKET_IFNAME")
+    return {name: os.environ[name] for name in names if os.environ.get(name)}
+
+
+def runtime_ready(path, source, image, min_devices=1, *, privileged_runtime=False):
     if not path.is_file():
         return False
     state = json.loads(path.read_text())
     if (state.get("status") != "passed" or state.get("image") != image
+            or state.get("privileged_runtime", False) != privileged_runtime
+            or state.get("network_environment", {}) != runtime_network_environment()
             or state.get("native_worker_imported") is not True
             or state.get("checked_devices", [])[:min_devices] != list(range(min_devices))):
         return False
@@ -71,6 +78,15 @@ def runtime_ready(path, source, image, min_devices=1):
         return state.get("sha256") == runtime_sources(source)
     except OSError:
         return False
+
+
+def container_access_args(devices, privileged_runtime=False):
+    if not privileged_runtime:
+        return []
+    # 特权模式可见全部物理设备，不允许继续按局部容器序号重排。
+    if list(devices) != list(range(len(devices))):
+        raise ValueError("privileged runtime requires identity-mapped cards starting at physical 0")
+    return ["--privileged"]
 
 
 def acquire_devices(source, devices):
@@ -148,6 +164,9 @@ def run_job(args, mode, *, label=None, extra=()):
                "-v", f"{args.source}:/work:ro", "-v", f"{args.output}:/results",
                "-v", f"{runtime_cache}:/runtime-cache",
                "-v", f"{args.model}:/models/glm53:ro", "-w", "/runtime-cache"]
+    command.extend(container_access_args(devices, getattr(args, "privileged_runtime", False)))
+    for key, value in runtime_network_environment().items():
+        command.extend(["-e", f"{key}={value}"])
     for logical, physical in enumerate(devices):
         command.extend(["--device", f"/dev/davinci{physical}:/dev/davinci{logical}"])
     command.extend(["--entrypoint", "python3", args.image, "/work/scripts/run_in_runtime.py", "/work/scripts/run_glm53_vllm.py",
@@ -181,6 +200,8 @@ def main():
     parser.add_argument("--poll-seconds", type=int, default=30)
     parser.add_argument("--wait-hours", type=float, default=48)
     parser.add_argument("--job-timeout", type=int, default=2400)
+    parser.add_argument("--privileged-runtime", action="store_true",
+                        help="explicit trusted-node workaround for driver container-access conflicts; exposes all devices")
     args = parser.parse_args()
     if "@sha256:" not in args.image:
         parser.error("pin the validated runtime image by digest")
@@ -196,7 +217,7 @@ def main():
     job_output.mkdir()
     job_args = argparse.Namespace(**(vars(args) | {"output": job_output}))
     state = dict(pid=os.getpid(), started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                 results=str(job_output), completed=[])
+                 results=str(job_output), completed=[], privileged_runtime=args.privileged_runtime)
     deadline = time.monotonic() + args.wait_hours * 3600
     previous = None
     completed_modes = set()
@@ -211,7 +232,8 @@ def main():
                 time.sleep(args.poll_seconds)
                 continue
             weights = weights_ready(args.download_status, args.model)
-            ready = runtime_ready(args.output / "runtime-ready.json", args.source, args.image, 8)
+            ready = runtime_ready(args.output / "runtime-ready.json", args.source, args.image, 8,
+                                  privileged_runtime=args.privileged_runtime)
             state.update(state="waiting", idle=idle, weights_verified=weights, runtime_validated=ready)
             summary = (idle, weights, ready)
             if summary != previous:
@@ -227,7 +249,8 @@ def main():
                     for mode, label, extra in stages():
                         if label in completed_modes:
                             continue
-                        if not runtime_ready(args.output / "runtime-ready.json", args.source, args.image, 8):
+                        if not runtime_ready(args.output / "runtime-ready.json", args.source, args.image, 8,
+                                             privileged_runtime=args.privileged_runtime):
                             raise RuntimeError("native runtime or source changed; restart validation after preflight")
                         # Baseline exits before Orthrus starts; recheck that no one claimed a card.
                         if idle_devices(subprocess.check_output(
@@ -236,7 +259,8 @@ def main():
                         state.update(state="running", mode=label)
                         write_json(status_path, state)
                         run_job(job_args, mode, label=label, extra=extra)
-                        if not runtime_ready(args.output / "runtime-ready.json", args.source, args.image, 8):
+                        if not runtime_ready(args.output / "runtime-ready.json", args.source, args.image, 8,
+                                             privileged_runtime=args.privileged_runtime):
                             raise RuntimeError("source changed during full-model validation")
                         check_reloaded(job_output, label)
                         completed_modes.add(label)

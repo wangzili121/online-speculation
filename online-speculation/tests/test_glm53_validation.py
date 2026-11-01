@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace as NS
 
 import pytest
 
@@ -45,7 +46,7 @@ def test_controller_passes_block_width_to_native_job(controller, tmp_path, monke
         "--devices", "2", "--block-size", "4", "--stages", "baseline"])
     monkeypatch.setattr(controller.subprocess, "check_output", lambda *a, **kw: "snapshot")
     monkeypatch.setattr(controller, "idle_devices", lambda snapshot: [2])
-    monkeypatch.setattr(controller, "runtime_ready", lambda *args: True)
+    monkeypatch.setattr(controller, "runtime_ready", lambda *args, **kwargs: True)
 
     def run(args, mode, *, label, extra):
         calls.append(extra)
@@ -88,6 +89,8 @@ def test_native_preflight_revokes_ready_before_importing_extensions(controller, 
     monkeypatch.setattr(sys, "argv", ["preflight_glm53_runtime", "--output", str(path),
                                      "--image", "runtime@sha256:123"])
     original = builtins.__import__
+    monkeypatch.setitem(sys.modules, "acl", object())
+    monkeypatch.setattr(preflight, "check_cann_runtime", lambda *args: None)
 
     def fail(name, *args, **kwargs):
         if name == "vllm_ascend.ops":
@@ -99,6 +102,61 @@ def test_native_preflight_revokes_ready_before_importing_extensions(controller, 
     with pytest.raises(SystemExit, match="extension aborted"):
         preflight.main()
     assert json.loads(path.read_text())["status"] == "failed"
+
+
+@pytest.mark.parametrize("init,count,soc,error", [
+    (500000, (0, 507899), None, "initialization failed"),
+    (0, (0, 507899), None, "enumeration failed"),
+    (0, (1, 0), "Ascend910B3", "enumeration failed"),
+    (0, (8, 0), None, "no chip type"),
+])
+def test_cann_access_failure_is_reported_before_loading_extensions(controller, init, count, soc, error):
+    import preflight_glm53_runtime as preflight
+
+    report = {}
+    acl = NS(init=lambda: init, rt=NS(get_device_count=lambda: count), get_soc_name=lambda: soc,
+             get_recent_err_msg=lambda: "driver resource busy")
+    with pytest.raises(RuntimeError, match=error):
+        preflight.check_cann_runtime(acl, 8, report)
+    assert report["cann"]["init_code"] == init
+
+
+def test_cann_access_requires_visible_count_and_chip_type(controller):
+    import preflight_glm53_runtime as preflight
+
+    report = {}
+    acl = NS(init=lambda: 0, rt=NS(get_device_count=lambda: (8, 0)), get_soc_name=lambda: "Ascend910B3")
+    preflight.check_cann_runtime(acl, 8, report)
+    assert report["cann"] == dict(init_code=0, device_count=8, device_count_code=0, soc_name="Ascend910B3")
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_hccl_preflight_forces_communicator_creation_and_cleans_up(controller, monkeypatch, fail):
+    import preflight_glm53_runtime as preflight
+    import torch
+    import torch.distributed as dist
+
+    events = []
+    def communicator(device):
+        events.append("communicator")
+        if fail:
+            raise RuntimeError("network initialization failed")
+
+    backend = NS(get_hccl_comm_name=communicator)
+    monkeypatch.setattr(dist, "init_process_group", lambda *a, **kw: events.append("init"))
+    monkeypatch.setattr(dist.distributed_c10d, "_get_default_group", lambda: NS(_get_backend=lambda device: backend))
+    monkeypatch.setattr(dist, "all_reduce", lambda value: events.append("all_reduce"))
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "destroy_process_group", lambda: events.append("destroy"))
+    tensors = NS(device=lambda device: device, ones=lambda n, **kw: torch.ones(n),
+                 npu=NS(synchronize=lambda: None), testing=torch.testing)
+    if fail:
+        with pytest.raises(RuntimeError, match="network initialization failed"):
+            preflight.check_hccl_runtime(tensors)
+        assert events == ["init", "communicator", "destroy"]
+    else:
+        assert preflight.check_hccl_runtime(tensors)["status"] == "passed"
+        assert events == ["init", "communicator", "all_reduce", "destroy"]
 
 
 def test_eight_card_preflight_never_uses_a_partial_window(controller):

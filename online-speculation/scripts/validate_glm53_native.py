@@ -26,6 +26,8 @@ def main():
     parser.add_argument("--max-model-len", type=int)
     parser.add_argument("--long-prompt-repeats", type=int)
     parser.add_argument("--block-size", type=int, choices=range(2, 9), default=8)
+    parser.add_argument("--privileged-runtime", action="store_true",
+                        help="explicit trusted-node workaround; use the same mode in runtime preflight")
     parser.add_argument("--stages", nargs="+", choices=[label for _, label, _ in stages()])
     args = parser.parse_args()
     if (len(set(args.devices)) != len(args.devices) or not set(args.devices) <= set(range(8))
@@ -38,12 +40,13 @@ def main():
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    status = dict(state="starting", model=str(args.model), devices=args.devices, completed=[])
+    status = dict(state="starting", model=str(args.model), devices=args.devices, completed=[],
+                  privileged_runtime=args.privileged_runtime)
     status_path = args.output / "native-status.json"
     locks = None
     try:
         if not runtime_ready(args.source / "validation" / "runtime-ready.json", args.source, args.image,
-                             8 if len(args.devices) == 8 else 1):
+                             8 if len(args.devices) == 8 else 1, privileged_runtime=args.privileged_runtime):
             raise RuntimeError("validate the current native GLM runtime before loading model weights")
         deadline = time.monotonic() + args.wait_hours * 3600
         while (locks := acquire_devices(args.source, args.devices)) is None:
@@ -56,7 +59,7 @@ def main():
             if args.stages and label not in args.stages:
                 continue
             if not runtime_ready(args.source / "validation" / "runtime-ready.json", args.source, args.image,
-                                 8 if len(args.devices) == 8 else 1):
+                                 8 if len(args.devices) == 8 else 1, privileged_runtime=args.privileged_runtime):
                 raise RuntimeError("native runtime or source changed; repeat preflight")
             extra += ("--block-size", str(args.block_size))
             for option in ("max_model_len", "long_prompt_repeats"):
@@ -79,7 +82,7 @@ def main():
             write_json(status_path, status)
             run_job(args, mode, label=label, extra=extra)
             if not runtime_ready(args.source / "validation" / "runtime-ready.json", args.source, args.image,
-                                 8 if len(args.devices) == 8 else 1):
+                                 8 if len(args.devices) == 8 else 1, privileged_runtime=args.privileged_runtime):
                 raise RuntimeError("source changed during native validation")
             report = json.loads((args.output / f"{label}.json").read_text())
             if report.get("status") != "passed":
