@@ -274,3 +274,40 @@ def test_ngram_control_does_not_install_neural_proposer_or_worker_extension():
     assert options["speculative_config"]["num_speculative_tokens"] == 7
     assert "worker_extension_cls" not in options and "hf_overrides" not in options
     assert not options["disable_log_stats"]
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_head_replacement_probe_restores_parameters_and_detects_aliases(monkeypatch, alias):
+    import copy
+    from contextlib import nullcontext
+    import sys
+    from blockspec.vllm_ascend.glm53_validation import probe_head_replacement
+
+    monkeypatch.setitem(sys.modules, "vllm_ascend.ascend_forward_context",
+                        NS(set_ascend_forward_context=lambda *a, **kw: nullcontext()))
+
+    def projection():
+        layer = Linear(4, 4, bias=False)
+        layer.input_size = 4
+        return layer
+
+    ar_kda = NS(in_proj_qkvbfg_a=projection(), o_proj=projection())
+    ar_mla = NS(fused_qkv_a_proj=projection(), o_proj=projection(), indexer=NS(wq_b=projection()))
+    draft_kda = copy.deepcopy(ar_kda)
+    draft_mla = NS(fused_qkv_a_proj=copy.deepcopy(ar_mla.fused_qkv_a_proj),
+                   o_proj=copy.deepcopy(ar_mla.o_proj), index_query=copy.deepcopy(ar_mla.indexer.wq_b))
+    if alias:
+        draft_kda.in_proj_qkvbfg_a = ar_kda.in_proj_qkvbfg_a
+    target = NS(model=NS(layers=[NS(layer_kind="kda", self_attn=ar_kda),
+                                NS(layer_kind="mla", self_attn=ar_mla)]))
+    model = NS(target=target, layers=[draft_kda, draft_mla], embedding=nn.Embedding(8, 4), vllm_config=NS())
+    worker = NS(model_runner=NS(drafter=NS(model=model, tp=NS(rank=0))))
+    original = ar_kda.in_proj_qkvbfg_a.weight.detach().clone()
+    if alias:
+        with pytest.raises(AssertionError, match="aliases target"):
+            probe_head_replacement(worker)
+    else:
+        result = probe_head_replacement(worker)
+        assert len(result["projections"]) == 5
+        assert all(p["changed"] and p["restored"] and p["target_unchanged"] for p in result["projections"])
+    torch.testing.assert_close(ar_kda.in_proj_qkvbfg_a.weight, original, rtol=0, atol=0)

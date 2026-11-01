@@ -58,11 +58,25 @@ def test_runtime_attestation_includes_inherited_proposer_dependencies(tmp_path):
     dependency.write_text("version = 1\n")
     (scripts / "run_in_runtime.py").write_text("pass\n")
     path = tmp_path / "ready.json"
-    path.write_text(json.dumps(dict(status="passed", image="image@sha256:123", native_worker_imported=True,
+    path.write_text(json.dumps(dict(status="passed", image="image@sha256:123", native_worker_imported=True, checked_devices=[0],
                                    sha256=watch.runtime_sources(tmp_path))))
     assert watch.runtime_ready(path, tmp_path, "image@sha256:123")
     dependency.write_text("version = 2\n")
     assert not watch.runtime_ready(path, tmp_path, "image@sha256:123")
+
+
+def test_full_model_requires_all_eight_native_devices(tmp_path):
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "run_in_runtime.py").write_text("pass\n")
+    path = tmp_path / "ready.json"
+    state = dict(status="passed", image="image@sha256:123", native_worker_imported=True,
+                 checked_devices=[0], sha256=watch.runtime_sources(tmp_path))
+    path.write_text(json.dumps(state))
+    assert watch.runtime_ready(path, tmp_path, "image@sha256:123")
+    assert not watch.runtime_ready(path, tmp_path, "image@sha256:123", 8)
+    state["checked_devices"] = list(range(8))
+    path.write_text(json.dumps(state))
+    assert watch.runtime_ready(path, tmp_path, "image@sha256:123", 8)
 
 
 def test_operator_only_attestation_cannot_arm_native_jobs(tmp_path):
@@ -148,6 +162,8 @@ def test_native_job_remaps_cards_and_preserves_runtime_environment(tmp_path, mon
     assert "/dev/davinci2:/dev/davinci0" in command
     assert "/dev/davinci3:/dev/davinci1" in command
     assert command[command.index("--tp") + 1] == "2"
-    assert "scripts/run_in_runtime.py" in command
+    assert "/work/scripts/run_in_runtime.py" in command
+    assert command[command.index("-w") + 1] == "/runtime-cache"
+    assert f"{tmp_path}:/work:ro" in command
     assert "PYTHONPATH=/work/src" not in command
     assert "--initialize-from-target" not in command

@@ -43,7 +43,9 @@ def settings(args):
             "num_speculative_tokens": args.block_size - 1,
             "draft_sample_method": "probabilistic", "disable_padded_drafter_batch": True,
         }, hf_overrides={"orthrus_glm53": extra},
-            worker_extension_cls="blockspec.vllm_ascend.glm53_proposer.GLM53WorkerExtension")
+            worker_extension_cls=("blockspec.vllm_ascend.glm53_validation.GLM53ValidationWorkerExtension"
+                                  if getattr(args, "check_head_replacement", False) else
+                                  "blockspec.vllm_ascend.glm53_proposer.GLM53WorkerExtension"))
     return values
 
 
@@ -70,7 +72,10 @@ def main():
     parser.add_argument("--long-prompt-repeats", type=int, default=80)
     parser.add_argument("--ignore-eos", action="store_true")
     parser.add_argument("--temperature", type=float, default=0.)
+    parser.add_argument("--check-head-replacement", action="store_true")
     args = parser.parse_args()
+    if args.check_head_replacement and (args.mode != "orthrus" or not args.head_dir):
+        parser.error("head replacement checks require an explicitly loaded Orthrus head")
     identity = {name: hashlib.sha256((Path(args.model) / name).read_bytes()).hexdigest() for name in
                 ("config.json", "quant_model_weights.safetensors.index.json", "quant_model_description.json")}
     os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "0")
@@ -113,6 +118,8 @@ def main():
                 "orthrus_save_head", args=(str(args.save_head),))
         if args.head_dir:
             report["head_digests"] = engine.llm_engine.engine_core.collective_rpc("orthrus_head_digest")
+        if args.check_head_replacement:
+            report["head_replacement"] = engine.collective_rpc("orthrus_probe_head_replacement")
     if args.mode == "ngram":
         report["speculation_metrics"] = [dict(name=metric.name, value=metric.value)
             for metric in engine.get_metrics() if "spec_decode" in metric.name and hasattr(metric, "value")]

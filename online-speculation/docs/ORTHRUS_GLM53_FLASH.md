@@ -58,24 +58,29 @@ draft 只持有注意力投影和内部归一化等参数。执行时临时替�
 
 ## 验证与启动
 
-验证分为数学与适配器回归、单卡 NPU 算子检查、原生引擎闭环三层。90 项定向回归通过，覆盖 Attention 与显式 SDPA 等价、双向信息流、KPool 边界、接受位置的状态选取、分页寻址、head 契约和异常恢复。NPU 检查覆盖 MLA 的 K=2/8/32、KDA 的 K=1/2/8；MLA 对 FP32 的相对 RMS 误差约 0.3%，KDA 输出及逐位置状态的相对 RMS 误差不超过 7e-8。
+验证分为数学与适配器回归、单卡 NPU 算子检查、原生引擎闭环三层。103 项定向回归通过，覆盖 Attention 与显式 SDPA 等价、双向信息流、KPool 边界、接受位置的状态选取、分页寻址、head 契约和异常恢复。NPU 检查覆盖 MLA 的 K=2 至 8 及 K=32、KDA 的 K=1 至 8；MLA 对 FP32 的相对 RMS 误差约 0.3%，KDA 输出及逐位置状态的相对 RMS 误差不超过 1.2e-5。
 
-原生引擎测试使用源权重的前 5 层，保留原始宽度、W8A8 权重、4 层 KDA、1 层 MLA、mHC，以及 dense/MoE 两类 FFN；不是随机缩小网络，也不是官方小模型。截层模型的回答没有语义评测价值，此处只检查推理执行和缓存协作。
+原生引擎测试使用源权重的前 5 层和前 9 层，保留原始宽度、W8A8 权重、mHC 及 dense/MoE。前 5 层有 4 层 KDA、1 层 MLA；前 9 层有 7 层 KDA、2 层 MLA，用于继续检查多层历史状态和 TP 分片。它们不是随机缩小网络，也不是官方小模型；截层后的回答不用于语义或加速收益评测。
 
 | 实测范围 | 结果 |
 | --- | --- |
-| 单卡，因果 KDA + 双向 MLA | 3 条请求共 96 个 greedy token 与 target-only 完全相同；50 轮整块验证，53 次 draft 缓存审计通过。 |
-| 单卡，非零门控双向 KDA + 双向 MLA | 同样 96 个 token 完全相同；53 轮验证，56 次缓存审计通过，反向 KDA 实际调用 224 次。 |
-| 单卡，两种 head 保存与重启加载 | 重载后全部参数 SHA256 与导出值一致，greedy 输出仍与 target-only 一致。 |
-| 双卡，双向版本及 head 重载 | 两个 rank 的验证计数一致；各 rank 的参数哈希重载一致，greedy 输出与同 TP 的原生基线一致。 |
-| 单卡，4911-token 前缀 | 跨越 MLA 缓存页并超过 indexer 的 Top-K 上限；双向版本与对应原生基线输出相同，54 次缓存审计通过。 |
-| 单卡，temperature=0.7 | 真实起草、原生 rejection sampling 和后续生成通过，57 次缓存审计通过；这不是采样分布等价的统计验收。 |
+| 5 层，单卡，K=8，两种 KDA 模式 | 每种均有 96 个 greedy token 与 target-only 相同；真实整块验证、接受/拒绝、缓存审计、head 保存及重载通过。双向分支使用非零门控。 |
+| 5 层，单卡，K=2/4，两种模式 | Greedy、重载和 temperature=0.7 采样通过；K=2 实际经历了整块接受，也覆盖部分接受及拒绝。 |
+| 5 层，双卡，K=8，两种模式 | Greedy 对齐；各 rank 的 head 参数重载哈希一致，计数一致；两种模式的原生 rejection sampling 均运行通过。 |
+| 5 层，单卡，4911-token 前缀 | 两种模式均 greedy 对齐，覆盖缓存跨页和超过 Top-K 上限的稀疏检索；因果版本另通过该长前缀的重载及采样。 |
+| 单卡，加载后投影权重生效 | 实测 KDA QKV/O、MLA QKV/O、indexer Q 五类原生投影：修改 head 权重会改变输出，恢复后固定输入的误差均为 0，主模型权重和投影输出不受影响。 |
+| 9 层，四卡，K=8，两种模式 | 起草、验证、缓存审计、四分片 head 保存/重载和采样通过。双向初始化运行每 rank 378 次反向 KDA，重载后运行 385 次。Greedy 验收尚未通过，见下文。 |
+| 完整 45 层，八卡 | 已在 111 节点实际尝试 target-only；worker 在导入原生 `camem` 扩展时中止，尚未进入 Orthrus，也未验证完整模型的显存和输出。 |
 
-每轮审计逐字节比较当前请求的有效 MLA latent、indexer 池和尾部环形缓存、KDA 卷积及验证 checkpoint。上述测试实际经历了候选的部分接受、拒绝以及多条请求依次复用引擎。审计不覆盖未分配给当前请求的整个缓存池，也不代替并发隔离测试。
+9 层四卡的逐 token 验收暂不能通过：两个相同配置、固定种子的 target-only 运行本身不一致；不加载神经 head、不安装本项目 hooks 的原生 n-gram 对照也出现差异，实际进行了 12 轮投机、接受 18 个候选。因此差异并非只在神经 draft 路径出现，但这不证明适配器不存在其他问题，也不能把该项标记为通过。采样跑通和重载哈希一致只证明相应功能，不替代分布等价验收。
 
-联调中修复了插件配置被后端严格校验拒绝、NoPE 空 RoPE 占位未识别，以及带 padding 的大缓存被整体物化等适配问题。后者已加入 NPU 内存回归：复制 512 KiB 的选中状态，额外峰值为 513 KiB。2K 测试配置曾触发原生 SFA 元数据容量检查；当前单卡使用实测通过的 34816 上限，双卡为 18432。一次 4 号卡原生 worker 初始化异常发生在请求执行前，换 3 号卡重试通过；该启动异常尚未定位，不归因于长上下文或 draft 计算。
+每轮审计逐字节比较当前请求的有效 MLA latent、indexer 池和尾部环形缓存、KDA 卷积及验证 checkpoint。测试实际经历了整块接受、部分接受、拒绝和多条请求依次复用引擎。审计检查的是 draft 前后的状态，不覆盖未分配给当前请求的整个缓存池，也不代替验证器的提交/回滚正确性或并发隔离验收。
 
-结果、运行参数和代码哈希见 `docs/validation/glm53/native-5l-tp1/`、`native-5l-tp2/`、`native-5l-long/`、`operators-cache-20261101.json` 和 `runtime-native-20261101.json`。测试结束后相关容器已删除。
+联调中修复了插件配置被后端严格校验拒绝、NoPE 空 RoPE 占位未识别，以及带 padding 的大缓存被整体物化等适配问题。后者已有 NPU 内存回归：复制 512 KiB 的选中状态，额外峰值为 513 KiB。单卡测试使用实测通过的 34816 上限，双卡和四卡使用 18432；不将这些测试参数作为任意 TP 配置的通用容量公式。
+
+111 的完整权重已逐文件校验 SHA256。该节点原生 TP8 两次在 `camem.py` 导入 `vllm_ascend_C` 时出现 `basic_string::_S_construct null not valid`；单独使用 0 号卡也复现，切到可写运行目录后仍然失败，3 号卡则通过单卡预检。具体底层原因尚未定位，不能归因于模型装不下或 draft Attention。监控不会把没有 NPU 进程直接当成运行时健康。
+
+结果、参数和代码哈希保存在 `docs/validation/glm53/`；`native-5l-*` 为五层测试，`native-9l-tp4/` 与 `native-9l-repeat/` 保留四卡差异及独立对照，`native-45l-tp8/` 和 `native-device0/` 保留原生启动失败记录。测试容器在结束或失败后删除，不提交模型或 head 权重。
 
 单卡算子检查：
 
@@ -83,12 +88,14 @@ draft 只持有注意力投影和内部归一化等参数。执行时临时替�
 PYTHONPATH=src python scripts/probe_glm53_ops.py --output artifacts/operators.json
 ```
 
-原生闭环可用 `prepare_glm53_smoke_model.py` 生成截层权重，再用 `validate_glm53_native.py` 指定物理卡、模型和输出目录运行；它依次完成基线、两种起草、重载及采样。`--max-model-len` 和 `--long-prompt-repeats` 可指定上下文测试档位。日志和 JSON 留在输出目录，head 文件留在独立子目录，不提交权重到代码仓。
+原生闭环先运行 `prepare_glm53_runtime.py`，再用 `validate_glm53_native.py` 指定物理卡、模型和输出目录；它依次完成基线、两种起草、重载及采样，任一阶段不通过则停止。`--block-size`、`--max-model-len` 和 `--long-prompt-repeats` 指定测试档位。`run_glm53_vllm.py --mode ngram` 提供不加载本项目 head/hooks 的独立原生对照；`--check-head-replacement` 只在明确加载 head 后启用验证专用 worker 扩展，使用具名 RPC，不放开函数序列化。
 
-八卡完整模型测试由 `watch_glm53_validation.py` 组织：等完整权重通过逐文件 SHA256 校验、运行时通过前置检查、八卡都没有 NPU 进程且 HBM 低占用后，先运行 target-only，再运行两种初始化 draft，比较 greedy token 并检查真实 propose/verify 计数及缓存审计。前置检查记录整套插件源码哈希，源码改变后必须重新检查。每阶段有超时限制，结束后删除本实验容器释放卡；不运行空占卡任务，不停止其他人的任务。
+八卡准备使用 `prepare_glm53_runtime.py --all-devices --retry-seconds 300`：等待八卡空闲，检查原生 worker 导入和每张卡的初始化、小张量计算，最后检查 draft 算子；失败后先释放容器，再等待重试。`watch_glm53_validation.py` 在完整权重校验、八卡预检和资源检查通过后，依次运行 target-only、两种 draft、两种 head 重载和两种采样，并核对各 rank 的 head 哈希。每次监控使用独立结果目录。单卡预检不能授权八卡任务；源码变化后必须重新预检并重启验收。本地文件锁只协调本项目，不预留其他用户的资源。
+
+模型和代码始终只读挂载，容器在独立的可写缓存目录运行，Torch、Triton 和 CANN 按需编译产物留在该目录。这样新增输入形状或检查算子不需要向源码目录写入文件。
 
 各节点可独立运行 `watch_npu_resources.py --output /path/to/status.json`，每 30 秒记录一次空卡和心跳，发现完整八卡窗口后继续监控。它仅查询资源，不预留设备或启动模型；进程列表为空但 HBM 仍高占用的卡也不会被判为空闲。资源监控和模型测试是两件事，某个节点具备空卡后，仍须在该节点准备并校验权重及运行镜像。
 
-**当前通过的是原始宽度、真实权重截层模型的 eager、同步、单请求、K=8 推理验收。完整 45 层 TP8 尚未验收，并发、图模式和训练/在线更新未接入。** 采样分布统计与真实训练 head 的性能还需单独评测；不能用上述初始化 head、重复文本或截层模型的接受计数推断实际 GLM 的加速收益。
+**当前五层模型通过了 eager、同步、单请求、K=2/4/8 的相应推理测试；九层四卡通过功能链路，但 greedy 尚未验收；完整 45 层 TP8 尚未验收。** 并发、图模式和训练/在线更新未接入。采样分布统计与真实训练 head 的性能需另行评测，不能由初始化 head 或截层模型推断实际加速收益。
 
 参考：[GLM-5.3-Flash 官方模型卡](https://huggingface.co/zai-org/GLM-5.3-Flash)、[Ascend 部署说明](https://docs.vllm.ai/projects/ascend/en/main/tutorials/models/GLM5.3-Flash.html)、[PyPTO GLM 模型目录](https://github.com/hw-native-sys/pypto-lib/tree/main/models/glm5_3_flash)。

@@ -59,12 +59,13 @@ def runtime_sources(source):
             for path in sorted(paths)}
 
 
-def runtime_ready(path, source, image):
+def runtime_ready(path, source, image, min_devices=1):
     if not path.is_file():
         return False
     state = json.loads(path.read_text())
     if (state.get("status") != "passed" or state.get("image") != image
-            or state.get("native_worker_imported") is not True):
+            or state.get("native_worker_imported") is not True
+            or state.get("checked_devices", [])[:min_devices] != list(range(min_devices))):
         return False
     try:
         return state.get("sha256") == runtime_sources(source)
@@ -96,6 +97,32 @@ def release_devices(locks):
         lock.close()
 
 
+def stages():
+    common = ("--max-output-tokens", "32", "--ignore-eos")
+    audit = common + ("--audit-cache",)
+    return [
+        ("baseline", "baseline", common),
+        ("orthrus", "orthrus", audit + ("--save-head", "/results/head-causal")),
+        ("orthrus", "orthrus-bidir", audit + ("--kda-mode", "bidirectional", "--kda-backward-weight", "0.25",
+                                             "--save-head", "/results/head-bidir")),
+        ("orthrus", "reload-causal", audit + ("--head-dir", "/results/head-causal")),
+        ("orthrus", "reload-bidir", audit + ("--head-dir", "/results/head-bidir", "--kda-mode", "bidirectional")),
+        ("orthrus", "sampling-causal", audit + ("--head-dir", "/results/head-causal", "--temperature", "0.7")),
+        ("orthrus", "sampling-bidir", audit + ("--head-dir", "/results/head-bidir", "--kda-mode", "bidirectional",
+                                             "--temperature", "0.7")),
+    ]
+
+
+def check_reloaded(output, label):
+    if label not in {"reload-causal", "reload-bidir", "sampling-causal", "sampling-bidir"}:
+        return
+    original = "orthrus" if label.endswith("-causal") else "orthrus-bidir"
+    expected = json.loads((output / f"{original}.json").read_text())["head_exports"]
+    loaded = json.loads((output / f"{label}.json").read_text())["head_digests"]
+    if sorted(expected, key=lambda x: x["rank"]) != sorted(loaded, key=lambda x: x["rank"]):
+        raise RuntimeError("reloaded GLM head tensors differ from the exported parameters")
+
+
 def run_job(args, mode, *, label=None, extra=()):
     label = label or mode
     if not re.fullmatch(r"[a-z0-9-]+", label):
@@ -120,10 +147,10 @@ def run_job(args, mode, *, label=None, extra=()):
                "-v", "/etc/ascend_install.info:/etc/ascend_install.info:ro",
                "-v", f"{args.source}:/work:ro", "-v", f"{args.output}:/results",
                "-v", f"{runtime_cache}:/runtime-cache",
-               "-v", f"{args.model}:/models/glm53:ro", "-w", "/work"]
+               "-v", f"{args.model}:/models/glm53:ro", "-w", "/runtime-cache"]
     for logical, physical in enumerate(devices):
         command.extend(["--device", f"/dev/davinci{physical}:/dev/davinci{logical}"])
-    command.extend(["--entrypoint", "python3", args.image, "scripts/run_in_runtime.py", "scripts/run_glm53_vllm.py",
+    command.extend(["--entrypoint", "python3", args.image, "/work/scripts/run_in_runtime.py", "/work/scripts/run_glm53_vllm.py",
                     "--model", "/models/glm53", "--output", f"/results/{label}.json", "--mode", mode,
                     "--tp", str(len(devices))])
     if mode == "orthrus":
@@ -165,7 +192,11 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     status_path = args.output / "watch-status.json"
-    state = dict(pid=os.getpid(), started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
+    job_output = args.output / f"full-tp8-{os.getpid()}-{time.time_ns()}"
+    job_output.mkdir()
+    job_args = argparse.Namespace(**(vars(args) | {"output": job_output}))
+    state = dict(pid=os.getpid(), started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                 results=str(job_output), completed=[])
     deadline = time.monotonic() + args.wait_hours * 3600
     previous = None
     completed_modes = set()
@@ -180,7 +211,7 @@ def main():
                 time.sleep(args.poll_seconds)
                 continue
             weights = weights_ready(args.download_status, args.model)
-            ready = runtime_ready(args.output / "runtime-ready.json", args.source, args.image)
+            ready = runtime_ready(args.output / "runtime-ready.json", args.source, args.image, 8)
             state.update(state="waiting", idle=idle, weights_verified=weights, runtime_validated=ready)
             summary = (idle, weights, ready)
             if summary != previous:
@@ -193,22 +224,25 @@ def main():
                     time.sleep(args.poll_seconds)
                     continue
                 try:
-                    for mode, label, extra in (("baseline", "baseline", ()),
-                            ("orthrus", "orthrus", ("--audit-cache",)),
-                            ("orthrus", "orthrus-bidir", ("--audit-cache", "--kda-mode", "bidirectional",
-                                                           "--kda-backward-weight", "0.25"))):
+                    for mode, label, extra in stages():
                         if label in completed_modes:
                             continue
+                        if not runtime_ready(args.output / "runtime-ready.json", args.source, args.image, 8):
+                            raise RuntimeError("native runtime or source changed; restart validation after preflight")
                         # Baseline exits before Orthrus starts; recheck that no one claimed a card.
                         if idle_devices(subprocess.check_output(
                                 ["/usr/local/bin/npu-smi", "info"], text=True, timeout=20)) != list(range(8)):
                             break
                         state.update(state="running", mode=label)
                         write_json(status_path, state)
-                        run_job(args, mode, label=label, extra=extra)
+                        run_job(job_args, mode, label=label, extra=extra)
+                        if not runtime_ready(args.output / "runtime-ready.json", args.source, args.image, 8):
+                            raise RuntimeError("source changed during full-model validation")
+                        check_reloaded(job_output, label)
                         completed_modes.add(label)
+                        state["completed"].append(label)
                     else:
-                        state.update(state="smoke_complete", finished_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
+                        state.update(state="validation_complete", finished_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
                         write_json(status_path, state)
                         return
                 finally:

@@ -1,0 +1,180 @@
+{
+  "mode": "orthrus",
+  "greedy": [
+    {
+      "prompt": "请用一句话解释什么是缓存。",
+      "tokens": [
+        99811,
+        99246,
+        51355,
+        52412,
+        111573,
+        13439,
+        27306,
+        1229
+      ],
+      "text": "休止AnimationFrameodic应有的Dict twinning"
+    },
+    {
+      "prompt": "What is 17 times 23?",
+      "tokens": [
+        2160,
+        34788,
+        34788,
+        19638,
+        121094,
+        127147,
+        62263,
+        85308
+      ],
+      "text": " Isolationolation burning在全就不用 Tribe supper"
+    },
+    {
+      "prompt": "Summarize the following notes in one sentence.\nThe server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. The server caches previously computed states. ",
+      "tokens": [
+        41989,
+        24210,
+        10662,
+        65692,
+        113358,
+        132221,
+        35555,
+        85308
+      ],
+      "text": "akinetics forget Forgot遗忘tajuku supper"
+    }
+  ],
+  "temperature": 0.7,
+  "model_identity": {
+    "config.json": "a3dfc73192536042f3dab664dafa02c219a5a58f5ae9adaa399245707132cc1f",
+    "quant_model_weights.safetensors.index.json": "9232cc37a17566586c418e0a534a6ddfbd2ba6cb962f0988372d475f1c7a6f9f",
+    "quant_model_description.json": "4f9ea2d129edca150ccf7e3cd6f5c6343d5300588b88ff69528e411099262022"
+  },
+  "generation": {
+    "max_tokens": 8,
+    "ignore_eos": true,
+    "seed": 1024,
+    "temperature": 0.7
+  },
+  "elapsed_seconds": 122.44097942486405,
+  "settings": {
+    "model": "/models/glm53",
+    "tensor_parallel_size": 1,
+    "dtype": "bfloat16",
+    "quantization": "ascend",
+    "enforce_eager": true,
+    "max_num_seqs": 1,
+    "max_model_len": 34816,
+    "max_num_batched_tokens": 256,
+    "gpu_memory_utilization": 0.9,
+    "enable_expert_parallel": true,
+    "enable_prefix_caching": false,
+    "async_scheduling": false,
+    "language_model_only": true,
+    "trust_remote_code": false,
+    "seed": 1024,
+    "speculative_config": {
+      "method": "custom_class",
+      "model": "blockspec.vllm_ascend.glm53_proposer.GLM53OrthrusProposer",
+      "num_speculative_tokens": 7,
+      "draft_sample_method": "probabilistic",
+      "disable_padded_drafter_batch": true
+    },
+    "hf_overrides": {
+      "orthrus_glm53": {
+        "mask_token_id": 154820,
+        "hybrid_policy": "experimental_causal_kda_bidirectional_mla_v1",
+        "head_dir": "/results/head-causal",
+        "initialize_from_target": false,
+        "audit_cache": true
+      }
+    },
+    "worker_extension_cls": "blockspec.vllm_ascend.glm53_validation.GLM53ValidationWorkerExtension"
+  },
+  "status": "passed",
+  "code_sha256": {
+    "scripts/run_glm53_vllm.py": "25b2fcfdd806b30b2615864865819c470331ffeac9322002f6cbd2083547f8d0",
+    "scripts/run_in_runtime.py": "ff7821a16add18513f59a8a2e7c8a94b02dd8501c897b05de6aacccf1904a473",
+    "src/blockspec/vllm_ascend/glm53_proposer.py": "0928a059b15e50aff4e5b0c8b9b15b4cb1629b3dd1e8422fba843aa8d6c329fd",
+    "src/blockspec/vllm_ascend/glm53_native.py": "9bfc7983c3932ea673483b01df79d7b75be4296b8ff75abc588966b8d046b160",
+    "src/blockspec/vllm_ascend/glm53_ops.py": "653f55f2e890a283e82c6b8ed8dd100e010cd3a28f456e65b9a806bb1e8b652d",
+    "src/blockspec/vllm_ascend/qwen38_runtime.py": "a20d604daa8024a22554950498bc0fc766d7f935b7eee9779e57d6c93f1402cc",
+    "src/blockspec/vllm_ascend/qwen38_proposer.py": "b611c1e8df8913cb4000c31b616f8a96b76281227d6cce8a0ea201e7fd557c87"
+  },
+  "workers": [
+    {
+      "orthrus": true,
+      "rank": 0,
+      "proposals": 14,
+      "verified": 11,
+      "accepted": 12,
+      "full_blocks": 11,
+      "max_verified_tokens": 7,
+      "history_reads": 14,
+      "hybrid_policy": "experimental_causal_kda_bidirectional_mla_v1",
+      "rejected_rounds": 11,
+      "cache_audits": 14,
+      "kda_reverse_calls": 0,
+      "draft_parameter_bytes": 1249871872
+    }
+  ],
+  "head_digests": [
+    {
+      "rank": 0,
+      "sha256": "2167e5addd30d5f2ea62c9472d020d3ba5579aac9968ea29a982f6782d2f2f91"
+    }
+  ],
+  "head_replacement": [
+    {
+      "rank": 0,
+      "projections": [
+        {
+          "name": "kda_qkv",
+          "projection": "_Glm5NextMergedColumnParallelLinear",
+          "dtype": "torch.bfloat16",
+          "changed": true,
+          "restored": true,
+          "target_unchanged": true,
+          "restore_max_abs": 0.0
+        },
+        {
+          "name": "kda_o",
+          "projection": "AscendRowParallelLinear",
+          "dtype": "torch.bfloat16",
+          "changed": true,
+          "restored": true,
+          "target_unchanged": true,
+          "restore_max_abs": 0.0
+        },
+        {
+          "name": "mla_qkv",
+          "projection": "DeepSeekV2FusedQkvAProjLinear",
+          "dtype": "torch.int8",
+          "changed": true,
+          "restored": true,
+          "target_unchanged": true,
+          "restore_max_abs": 0.0
+        },
+        {
+          "name": "mla_o",
+          "projection": "AscendRowParallelLinear",
+          "dtype": "torch.int8",
+          "changed": true,
+          "restored": true,
+          "target_unchanged": true,
+          "restore_max_abs": 0.0
+        },
+        {
+          "name": "indexer_q",
+          "projection": "AscendReplicatedLinear",
+          "dtype": "torch.bfloat16",
+          "changed": true,
+          "restored": true,
+          "target_unchanged": true,
+          "restore_max_abs": 0.0
+        }
+      ]
+    }
+  ],
+  "sampling_scope": "native propose/verify smoke only, not a distribution-equivalence test"
+}

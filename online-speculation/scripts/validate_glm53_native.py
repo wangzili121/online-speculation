@@ -9,33 +9,9 @@ import signal
 import subprocess
 import time
 
-from watch_glm53_validation import acquire_devices, idle_devices, release_devices, run_job, runtime_ready, write_json
-
-
-def stages():
-    common = ("--max-output-tokens", "32", "--ignore-eos")
-    audit = common + ("--audit-cache",)
-    return [
-        ("baseline", "baseline", common),
-        ("orthrus", "orthrus", audit + ("--save-head", "/results/head-causal")),
-        ("orthrus", "orthrus-bidir", audit + ("--kda-mode", "bidirectional", "--kda-backward-weight", "0.25",
-                                             "--save-head", "/results/head-bidir")),
-        ("orthrus", "reload-causal", audit + ("--head-dir", "/results/head-causal")),
-        ("orthrus", "reload-bidir", audit + ("--head-dir", "/results/head-bidir", "--kda-mode", "bidirectional")),
-        ("orthrus", "sampling-causal", audit + ("--head-dir", "/results/head-causal", "--temperature", "0.7")),
-        ("orthrus", "sampling-bidir", audit + ("--head-dir", "/results/head-bidir", "--kda-mode", "bidirectional",
-                                             "--temperature", "0.7")),
-    ]
-
-
-def check_reloaded(output, label):
-    if label not in {"reload-causal", "reload-bidir", "sampling-causal", "sampling-bidir"}:
-        return
-    original = "orthrus" if label.endswith("-causal") else "orthrus-bidir"
-    expected = json.loads((output / f"{original}.json").read_text())["head_exports"]
-    loaded = json.loads((output / f"{label}.json").read_text())["head_digests"]
-    if sorted(expected, key=lambda x: x["rank"]) != sorted(loaded, key=lambda x: x["rank"]):
-        raise RuntimeError("reloaded GLM head tensors differ from the exported parameters")
+from watch_glm53_validation import (
+    acquire_devices, check_reloaded, idle_devices, release_devices, run_job, runtime_ready, stages, write_json,
+)
 
 
 def main():
@@ -66,7 +42,8 @@ def main():
     status_path = args.output / "native-status.json"
     locks = None
     try:
-        if not runtime_ready(args.source / "validation" / "runtime-ready.json", args.source, args.image):
+        if not runtime_ready(args.source / "validation" / "runtime-ready.json", args.source, args.image,
+                             8 if len(args.devices) == 8 else 1):
             raise RuntimeError("validate the current native GLM runtime before loading model weights")
         deadline = time.monotonic() + args.wait_hours * 3600
         while (locks := acquire_devices(args.source, args.devices)) is None:
@@ -78,6 +55,9 @@ def main():
         for mode, label, extra in stages():
             if args.stages and label not in args.stages:
                 continue
+            if not runtime_ready(args.source / "validation" / "runtime-ready.json", args.source, args.image,
+                                 8 if len(args.devices) == 8 else 1):
+                raise RuntimeError("native runtime or source changed; repeat preflight")
             extra += ("--block-size", str(args.block_size))
             for option in ("max_model_len", "long_prompt_repeats"):
                 value = getattr(args, option)
@@ -98,6 +78,9 @@ def main():
             status.update(state="running", stage=label)
             write_json(status_path, status)
             run_job(args, mode, label=label, extra=extra)
+            if not runtime_ready(args.source / "validation" / "runtime-ready.json", args.source, args.image,
+                                 8 if len(args.devices) == 8 else 1):
+                raise RuntimeError("source changed during native validation")
             report = json.loads((args.output / f"{label}.json").read_text())
             if report.get("status") != "passed":
                 raise RuntimeError(f"native validation stage did not pass: {label}")

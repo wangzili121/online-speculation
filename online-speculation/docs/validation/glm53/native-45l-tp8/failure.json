@@ -1,0 +1,19 @@
+{
+  "status": "not_accepted",
+  "host": "159.138.5.111",
+  "model": "Eco-Tech/GLM-5.3-Flash-w8a8",
+  "tensor_parallel_size": 8,
+  "speculative_config": null,
+  "image": "quay.io/ascend/vllm-ascend@sha256:61584d790fa3668e7c43f0eb50a3e3a86d94b3eed15bce5ac82391ed383df229",
+  "phase": "native worker import, before model weight loading",
+  "exception": "std::logic_error: basic_string::_S_construct null not valid",
+  "python_stack": [
+    "vllm_ascend/device_allocator/camem.py:58 in <module>",
+    "vllm_ascend/worker/worker.py:84 in <module>",
+    "vllm/v1/worker/worker_base.py:275 in init_worker"
+  ],
+  "full_model_memory_validated": false,
+  "orthrus_executed": false,
+  "root_cause": null,
+  "server_log": "/data/disk1/wangzili/orthrus-glm53-flash-20261101/validation/native-45l-tp8/baseline.log"
+}

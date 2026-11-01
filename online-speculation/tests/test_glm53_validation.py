@@ -99,3 +99,11 @@ def test_native_preflight_revokes_ready_before_importing_extensions(controller, 
     with pytest.raises(SystemExit, match="extension aborted"):
         preflight.main()
     assert json.loads(path.read_text())["status"] == "failed"
+
+
+def test_eight_card_preflight_never_uses_a_partial_window(controller):
+    import prepare_glm53_runtime as prepare
+
+    assert prepare.candidate_groups([2, 3, 6, 7], all_devices=True) == []
+    assert prepare.candidate_groups(list(range(8)), all_devices=True) == [list(range(8))]
+    assert prepare.candidate_groups([2, 3, 4], allowed=[3]) == [[3]]
