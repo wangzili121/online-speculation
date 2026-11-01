@@ -81,6 +81,7 @@ def run_job(args, mode, *, label=None, extra=()):
                "-e", "VLLM_USE_V2_MODEL_RUNNER=0", "-e", "VLLM_ASCEND_ENABLE_FLASHCOMM=0",
                "-e", "VLLM_WORKER_MULTIPROC_METHOD=spawn",
                "-e", "TORCH_EXTENSIONS_DIR=/runtime-cache",
+               "-e", "TRITON_CACHE_DIR=/runtime-cache/triton",
                "-e", "ASCEND_RT_VISIBLE_DEVICES=" + ",".join(map(str, range(len(devices)))),
                "-e", "HCCL_BUFFSIZE=200", "-e", "PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
                "-v", "/usr/local/Ascend/driver:/usr/local/Ascend/driver:ro",

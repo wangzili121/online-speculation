@@ -46,6 +46,8 @@ def main():
     parser.add_argument("--devices", type=int, nargs="+", required=True)
     parser.add_argument("--job-timeout", type=int, default=1200)
     parser.add_argument("--wait-hours", type=float, default=1)
+    parser.add_argument("--max-model-len", type=int)
+    parser.add_argument("--long-prompt-repeats", type=int)
     parser.add_argument("--stages", nargs="+", choices=[label for _, label, _ in stages()])
     args = parser.parse_args()
     if (len(set(args.devices)) != len(args.devices) or not set(args.devices) <= set(range(8))
@@ -64,6 +66,12 @@ def main():
         for mode, label, extra in stages():
             if args.stages and label not in args.stages:
                 continue
+            for option in ("max_model_len", "long_prompt_repeats"):
+                value = getattr(args, option)
+                if value is not None:
+                    if value < 1:
+                        raise ValueError(f"{option} must be positive")
+                    extra += ("--" + option.replace("_", "-"), str(value))
             deadline = time.monotonic() + args.wait_hours * 3600
             while True:
                 snapshot = subprocess.check_output(["/usr/local/bin/npu-smi", "info"], text=True, timeout=20)

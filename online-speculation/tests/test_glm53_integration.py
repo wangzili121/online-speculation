@@ -229,6 +229,15 @@ def test_expanded_operator_table_reads_subpages_of_padded_physical_cache(monkeyp
     assert cache[2].count_nonzero() > 0
 
 
+def test_nope_cache_accepts_only_an_empty_rope_placeholder():
+    latent = torch.zeros(2, 4, 1, 16, dtype=torch.bfloat16)
+    assert native.cache_tensor([(latent, torch.empty(2, 4, 1, 0))]) is latent
+    with pytest.raises(ValueError, match="BF16"):
+        native.cache_tensor((latent, torch.ones(2, 4, 1, 2)))
+    with pytest.raises(ValueError, match="BF16"):
+        native.cache_tensor(latent.to(torch.int8))
+
+
 def test_runtime_bootstrap_preserves_image_pythonpath(monkeypatch):
     runtime = load_script("run_in_runtime")
     monkeypatch.setenv("PYTHONPATH", "/image/cann:/image/tbe")

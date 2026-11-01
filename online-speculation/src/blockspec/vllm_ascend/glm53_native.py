@@ -32,8 +32,12 @@ def clone_projection(module):
 def cache_tensor(value):
     while isinstance(value, (tuple, list)) and len(value) == 1:
         value = value[0]
+    # NoPE 的共享 MLA 分配器仍可能保留不占存储的 RoPE 占位。
+    if (isinstance(value, (tuple, list)) and len(value) == 2
+            and isinstance(value[1], torch.Tensor) and value[1].numel() == 0):
+        value = value[0]
     if not isinstance(value, torch.Tensor) or value.dtype != torch.bfloat16:
-        raise ValueError("GLM draft currently requires a bound BF16 target KV tensor")
+        raise ValueError(f"GLM draft requires a bound BF16 target KV tensor, got {type(value).__name__}")
     return value
 
 

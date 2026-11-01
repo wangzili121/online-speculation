@@ -67,6 +67,7 @@ def main():
                    "--device", "/dev/hisi_hdc", "-e", "ASCEND_RT_VISIBLE_DEVICES=0",
                    "-e", "VLLM_USE_V2_MODEL_RUNNER=0",
                    "-e", "TORCH_EXTENSIONS_DIR=/runtime-cache",
+                   "-e", "TRITON_CACHE_DIR=/runtime-cache/triton",
                    "-v", "/usr/local/Ascend/driver:/usr/local/Ascend/driver:ro",
                    "-v", "/usr/local/dcmi:/usr/local/dcmi:ro",
                    "-v", "/etc/ascend_install.info:/etc/ascend_install.info:ro",
