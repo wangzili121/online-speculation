@@ -150,20 +150,20 @@ def kda_reference(query, key, value, raw_gate, raw_beta, initial, a_log, dt_bias
 
 def kda_native(query, key, value, raw_gate, raw_beta, initial, a_log, dt_bias,
                *, lower_bound=-5.):
-    """调用已有 AscendC recurrent KDA，仅使用自有临时状态槽。"""
+    """调用目标模型同一层 recurrent KDA 接口，仅使用自有临时状态槽。"""
+    from vllm_ascend.ops.kda import run_recurrent_kda
+
     length, heads, dim = query.shape
     if not 1 <= length <= 8 or dim != 128:
         raise ValueError("current native KDA supports 1..8 rows and 128-dim heads")
     states = initial.new_empty((length, heads, value.shape[-1], dim))
     states[0].copy_(initial)
-    output = torch.ops._C_ascend.recurrent_kda(
+    output = run_recurrent_kda(
         query[None], key[None], value[None], raw_gate[None], raw_beta[None], states,
         torch.tensor([0, length], dtype=torch.int32, device=query.device),
         torch.arange(length, dtype=torch.int32, device=query.device)[None],
         a_log.reshape(-1).contiguous(), dt_bias.contiguous(),
-        scale=dim**-.5, use_qk_l2norm_in_kernel=True, use_gate_in_kernel=True,
-        use_beta_sigmoid_in_kernel=True, allow_neg_eigval=False,
-        safe_gate=True, lower_bound=lower_bound,
+        beta_is_preprocessed=False, lower_bound=lower_bound,
     )
     return output[0], states
 

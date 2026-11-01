@@ -1,11 +1,14 @@
 """GLM latent-basis, KPool boundary and immutable-state contracts."""
 
+import sys
+from types import SimpleNamespace as NS
+
 import pytest
 import torch
 from torch.nn import functional as F
 
 from blockspec.vllm_ascend.glm53_ops import (
-    Glm53Architecture, kda_reference, select_history, sparse_draft_attention,
+    Glm53Architecture, kda_native, kda_reference, select_history, sparse_draft_attention,
 )
 
 
@@ -84,6 +87,32 @@ def test_kda_acceptance_boundary_is_not_rejected_final_state():
         torch.testing.assert_close(states[accepted - 1], prefix_states[-1], rtol=0, atol=0)
     torch.testing.assert_close(initial, old, rtol=0, atol=0)
     assert out.shape == (8, 2, 4)
+
+
+@pytest.mark.parametrize("width", [1, 2, 8])
+def test_native_kda_uses_shared_backend_with_owned_state(monkeypatch, width):
+    initial = torch.randn(2, 128, 128)
+    before = initial.clone()
+    called = []
+
+    def run(q, k, v, gate, beta, states, cu_seqlens, indices, a_log, bias, **kwargs):
+        assert states.data_ptr() != initial.data_ptr()
+        torch.testing.assert_close(states[0], initial, rtol=0, atol=0)
+        assert cu_seqlens.tolist() == [0, width]
+        assert indices.tolist() == [list(range(width))]
+        assert kwargs == dict(beta_is_preprocessed=False, lower_bound=-5.)
+        called.append(True)
+        states.fill_(7)
+        return torch.ones_like(v)
+
+    monkeypatch.setitem(sys.modules, "vllm_ascend.ops.kda", NS(run_recurrent_kda=run))
+    q, k, v, gate = [torch.randn(width, 2, 128) for _ in range(4)]
+    out, states = kda_native(q, k, v, gate, torch.zeros(width, 2), initial,
+                             torch.zeros(2), torch.zeros(256))
+    assert called == [True]
+    assert out.shape == (width, 2, 128)
+    assert torch.all(states == 7)
+    torch.testing.assert_close(initial, before, rtol=0, atol=0)
 
 
 def test_config_does_not_accept_full_glm_or_dsv4():

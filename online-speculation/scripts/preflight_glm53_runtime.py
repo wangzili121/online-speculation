@@ -16,20 +16,18 @@ def main():
     root = Path(__file__).resolve().parents[1]
     report = dict(status="failed", image=args.image)
     try:
-        import torch
         import vllm_ascend.ops  # noqa: F401
         from vllm_ascend.models.glm5next.model import Glm5NextForCausalLM
         from blockspec.vllm_ascend.qwen38_runtime import install_runner_hooks
+        from probe_glm53_ops import initialize_npu_runtime, main as probe
 
-        if not hasattr(torch.ops._C_ascend, "recurrent_kda"):
-            raise RuntimeError("native recurrent_kda operator is not registered")
+        report["versions"] = {name: importlib.metadata.version(name)
+                              for name in ("vllm", "vllm-ascend", "torch", "torch-npu", "transformers")}
+        initialize_npu_runtime()
         if not callable(getattr(Glm5NextForCausalLM, "compute_logits", None)):
             raise RuntimeError("native GLM causal LM interface is unavailable")
         install_runner_hooks()
-        report["versions"] = {name: importlib.metadata.version(name)
-                              for name in ("vllm", "vllm-ascend", "torch", "torch-npu", "transformers")}
         # 全部原生模块测试必须在同一运行镜像内通过，才会发布 ready 文件。
-        from probe_glm53_ops import main as probe
         import sys
         original = sys.argv
         try:

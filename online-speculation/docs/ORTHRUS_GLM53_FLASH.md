@@ -56,7 +56,9 @@ draft 只持有注意力投影和内部归一化等参数。执行时临时替�
 
 ## 验证与启动
 
-已完成 58 项定向测试，覆盖双低秩基底 Attention 与显式 SDPA 等价、完整块双向可见、KPool 历史边界、分页读取、临时状态隔离、共用 runner hook，以及下载校验和测试超时释放卡的保护逻辑。单卡 NPU 已跑通 MLA 的 K=2/8/32，对照 FP32 的相对 RMS 误差约 0.3%，结果保存在 `docs/validation/glm53/mla-npu.json`。这些是计算模块和适配器验证，不是 320B 整模型验收。
+已完成 64 项定向测试，覆盖双低秩基底 Attention 与显式 SDPA 等价、完整块双向可见、KPool 历史边界、分页读取、临时状态隔离、共用 runner hook，以及运行时初始化、下载校验和测试超时释放卡的保护逻辑。
+
+在 vLLM/vLLM-Ascend 0.30.0 镜像中，单卡 NPU 已跑通 MLA 的 K=2/8/32 和 KDA 的 K=1/2/8，目标历史及初始递推状态均未被改写。MLA 对照 FP32 的相对 RMS 误差约 0.3%；KDA 对照参考递推的输出及逐位置状态，相对 RMS 误差不超过 7e-8。当前镜像的 runner hook 接口检查也已通过。实测结果和镜像、代码哈希保存在 `docs/validation/glm53/operators-npu-v030.json` 和 `runtime-v030.json`。这些是计算模块和适配器验证，不是 320B 整模型验收，也不是完整 K=32 支持的证明。
 
 单卡算子检查：
 
@@ -66,6 +68,6 @@ PYTHONPATH=src python scripts/probe_glm53_ops.py --output artifacts/operators.js
 
 八卡真实模型测试由 `watch_glm53_validation.py` 组织：等完整权重通过逐文件 SHA256 校验、运行时通过前置检查、八卡都没有 NPU 进程后，先运行 target-only，再运行初始化 draft 的实验路径，比较 greedy token 并检查真实 propose/verify 计数。每阶段有超时限制，结束后删除本实验容器释放卡；不运行空占卡任务，不停止其他人的任务。
 
-目前仍需完成新镜像中的 KDA 算子及 runner 接口检查，以及真实模型闭环、拒绝回滚、量化 head 加载和采样分布验收。没有训练好的 GLM head，不能给出接受率或加速结论。
+目前仍需完成真实模型闭环、拒绝回滚、量化 head 加载和采样分布验收。完整权重已完成逐文件 SHA256 校验；八卡监控在运行时自检通过后才会启动真实模型实验。没有训练好的 GLM head，不能给出接受率或加速结论。
 
 参考：[GLM-5.3-Flash 官方模型卡](https://huggingface.co/zai-org/GLM-5.3-Flash)、[Ascend 部署说明](https://docs.vllm.ai/projects/ascend/en/main/tutorials/models/GLM5.3-Flash.html)、[PyPTO GLM 模型目录](https://github.com/hw-native-sys/pypto-lib/tree/main/models/glm5_3_flash)。

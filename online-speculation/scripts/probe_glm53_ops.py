@@ -12,6 +12,19 @@ from blockspec.vllm_ascend.glm53_ops import (
 )
 
 
+def initialize_npu_runtime():
+    from vllm_ascend.utils import enable_custom_op
+
+    # AscendC 算子延迟注册，必须先绑定可见设备，再加载原生算子库。
+    torch.npu.set_device(0)
+    if not enable_custom_op():
+        raise RuntimeError("native Ascend operators are unavailable after Ascend initialization")
+    from vllm_ascend.ops.kda import run_recurrent_kda
+
+    if not callable(run_recurrent_kda):
+        raise RuntimeError("native recurrent KDA interface is unavailable")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -20,7 +33,7 @@ def main():
     import torch_npu
     import vllm_ascend.ops  # noqa: F401
 
-    torch.npu.set_device(0)
+    initialize_npu_runtime()
     torch.manual_seed(154)
     results = {}
     def rand(*shape):
