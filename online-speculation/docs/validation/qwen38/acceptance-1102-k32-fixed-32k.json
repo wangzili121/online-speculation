@@ -1,0 +1,204 @@
+{
+  "model": "/models/qwen38",
+  "target_only": false,
+  "tp": 2,
+  "block_size": 32,
+  "gdn_prefill_backend": "cann",
+  "max_model_len": 32768,
+  "online": false,
+  "last_layers": 1,
+  "update_stride": 16,
+  "native_ngram_control": false,
+  "proposal_fixture": null,
+  "outputs": [
+    {
+      "case": "short-greedy",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "context-tail",
+      "reference_case": "context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        2,
+        220,
+        16
+      ],
+      "text": "\n\n# 1"
+    },
+    {
+      "case": "after-context-tail",
+      "reference_case": "after-context-tail",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "page-edge",
+      "reference_case": "page-edge",
+      "temperature": 0.0,
+      "tokens": [
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046
+      ],
+      "text": "\n\n\n\n\n\n\n\n\n\n\n"
+    },
+    {
+      "case": "after-stop",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    }
+  ],
+  "workers": [
+    {
+      "orthrus": true,
+      "rank": 0,
+      "proposals": 83,
+      "verified": 60,
+      "accepted": 38,
+      "max_verified_tokens": 31,
+      "full_blocks": 59,
+      "updates": 0,
+      "loss": null,
+      "head_dir": null,
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 83,
+      "cache_readonly_checks": 67
+    },
+    {
+      "orthrus": true,
+      "rank": 1,
+      "proposals": 83,
+      "verified": 60,
+      "accepted": 38,
+      "max_verified_tokens": 31,
+      "full_blocks": 59,
+      "updates": 0,
+      "loss": null,
+      "head_dir": null,
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 83,
+      "cache_readonly_checks": 67
+    }
+  ],
+  "seconds": 348.514351292979,
+  "completed": true,
+  "sampling_calibration": {
+    "trials": 16,
+    "speculative_rows": 32,
+    "allowed": [
+      357,
+      417,
+      351
+    ],
+    "observed": {
+      "357": 2.0,
+      "417": 15.0,
+      "351": 15.0
+    },
+    "expected": {
+      "357": 2.7438356741331518,
+      "417": 13.373444257769734,
+      "351": 15.882718758657575
+    },
+    "variance": {
+      "357": 1.9951854854898716,
+      "417": 2.915501642677021,
+      "351": 1.8173359427628093
+    },
+    "probability_source": "native_pre_sampling_logits",
+    "repeated_seed_tokens": [
+      357,
+      417,
+      351
+    ],
+    "passed": true
+  },
+  "target_weights": {
+    "before": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "after": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "unchanged": true
+  },
+  "greedy_matches_baseline": true
+}
