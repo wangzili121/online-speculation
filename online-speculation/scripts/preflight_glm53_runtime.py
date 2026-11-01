@@ -24,6 +24,7 @@ def main():
         report["versions"] = {name: importlib.metadata.version(name)
                               for name in ("vllm", "vllm-ascend", "torch", "torch-npu", "transformers")}
         initialize_npu_runtime()
+        importlib.import_module("acl.rt")
         if not callable(getattr(Glm5NextForCausalLM, "compute_logits", None)):
             raise RuntimeError("native GLM causal LM interface is unavailable")
         install_runner_hooks()
@@ -37,7 +38,7 @@ def main():
             sys.argv = original
         names = ("src/blockspec/vllm_ascend/glm53_ops.py", "src/blockspec/vllm_ascend/glm53_native.py",
                  "src/blockspec/vllm_ascend/glm53_proposer.py", "src/blockspec/vllm_ascend/qwen38_runtime.py",
-                 "scripts/run_glm53_vllm.py")
+                 "scripts/run_glm53_vllm.py", "scripts/run_in_runtime.py")
         report["sha256"] = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names}
         report["status"] = "passed"
     except Exception as error:

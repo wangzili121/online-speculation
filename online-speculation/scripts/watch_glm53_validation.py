@@ -59,34 +59,46 @@ def runtime_ready(path, source, image):
         return False
     required = {"src/blockspec/vllm_ascend/glm53_ops.py", "src/blockspec/vllm_ascend/glm53_native.py",
                 "src/blockspec/vllm_ascend/glm53_proposer.py", "src/blockspec/vllm_ascend/qwen38_runtime.py",
-                "scripts/run_glm53_vllm.py"}
+                "scripts/run_glm53_vllm.py", "scripts/run_in_runtime.py"}
     hashes = state.get("sha256", {})
     if set(hashes) != required:
         return False
     return all(hashlib.sha256((source / name).read_bytes()).hexdigest() == sha for name, sha in hashes.items())
 
 
-def run_job(args, mode):
-    name = f"wangzili-glm53-{mode}-{os.getpid()}-{int(time.time())}"
-    log = args.output / f"{mode}.log"
+def run_job(args, mode, *, label=None, extra=()):
+    label = label or mode
+    if not re.fullmatch(r"[a-z0-9-]+", label):
+        raise ValueError("invalid validation stage label")
+    devices = list(getattr(args, "devices", range(8)))
+    runtime_cache = args.source / "validation" / "runtime-cache" / args.image.rsplit(":", 1)[-1][:12]
+    name = f"wangzili-glm53-{label}-{os.getpid()}-{int(time.time())}"
+    log = args.output / f"{label}.log"
     command = ["docker", "run", "-d", "--name", name, "--label", "owner=wangzili",
                "--label", "experiment=orthrus-glm53", "--network=host", "--shm-size=32g",
                "--device", "/dev/davinci_manager", "--device", "/dev/devmm_svm",
-               "--device", "/dev/hisi_hdc", "-e", "PYTHONPATH=/work/src",
+               "--device", "/dev/hisi_hdc",
                "-e", "VLLM_USE_V2_MODEL_RUNNER=0", "-e", "VLLM_ASCEND_ENABLE_FLASHCOMM=0",
+               "-e", "VLLM_WORKER_MULTIPROC_METHOD=spawn",
+               "-e", "TORCH_EXTENSIONS_DIR=/runtime-cache",
+               "-e", "ASCEND_RT_VISIBLE_DEVICES=" + ",".join(map(str, range(len(devices)))),
                "-e", "HCCL_BUFFSIZE=200", "-e", "PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
                "-v", "/usr/local/Ascend/driver:/usr/local/Ascend/driver:ro",
                "-v", "/usr/local/dcmi:/usr/local/dcmi:ro",
                "-v", "/etc/ascend_install.info:/etc/ascend_install.info:ro",
                "-v", f"{args.source}:/work:ro", "-v", f"{args.output}:/results",
+               "-v", f"{runtime_cache}:/runtime-cache",
                "-v", f"{args.model}:/models/glm53:ro", "-w", "/work"]
-    for device in range(8):
-        command.extend(["--device", f"/dev/davinci{device}"])
-    command.extend(["--entrypoint", "python3", args.image, "scripts/run_glm53_vllm.py",
-                    "--model", "/models/glm53", "--output", f"/results/{mode}.json", "--mode", mode])
+    for logical, physical in enumerate(devices):
+        command.extend(["--device", f"/dev/davinci{physical}:/dev/davinci{logical}"])
+    command.extend(["--entrypoint", "python3", args.image, "scripts/run_in_runtime.py", "scripts/run_glm53_vllm.py",
+                    "--model", "/models/glm53", "--output", f"/results/{label}.json", "--mode", mode,
+                    "--tp", str(len(devices))])
     if mode == "orthrus":
-        command.extend(["--initialize-from-target", "--mask-token-id", "154820",
-                        "--experimental-hybrid-policy"])
+        command.extend(["--mask-token-id", "154820", "--experimental-hybrid-policy"])
+        if "--head-dir" not in extra:
+            command.append("--initialize-from-target")
+    command.extend(extra)
     try:
         subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
         result = subprocess.run(["docker", "wait", name], text=True, capture_output=True, timeout=args.job_timeout)
@@ -144,17 +156,20 @@ def main():
                 print(json.dumps(state), flush=True)
                 previous = summary
             if weights and ready and idle == list(range(8)):
-                for mode in ("baseline", "orthrus"):
-                    if mode in completed_modes:
+                for mode, label, extra in (("baseline", "baseline", ()),
+                        ("orthrus", "orthrus", ("--audit-cache",)),
+                        ("orthrus", "orthrus-bidir", ("--audit-cache", "--kda-mode", "bidirectional",
+                                                       "--kda-backward-weight", "0.25"))):
+                    if label in completed_modes:
                         continue
                     # Baseline exits before Orthrus starts; recheck that no one claimed a card.
                     if idle_devices(subprocess.check_output(
                             ["/usr/local/bin/npu-smi", "info"], text=True, timeout=20)) != list(range(8)):
                         break
-                    state.update(state="running", mode=mode)
+                    state.update(state="running", mode=label)
                     write_json(status_path, state)
-                    run_job(args, mode)
-                    completed_modes.add(mode)
+                    run_job(args, mode, label=label, extra=extra)
+                    completed_modes.add(label)
                 else:
                     state.update(state="smoke_complete", finished_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
                     write_json(status_path, state)

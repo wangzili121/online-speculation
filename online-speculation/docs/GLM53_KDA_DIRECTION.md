@@ -28,7 +28,9 @@ O_{i,h}^{B}=O_{i,h}^{\rightarrow}+\tanh(\gamma_h)O_{i,h}^{\leftarrow},
 \qquad \gamma_h=0\ \text{at initialization}.
 $$
 
-所以两组第零步的 logits 完全相同。B 是一个明确的研究候选，不是唯一或标准的“双向 KDA”；其反向分支也不是修改 SDPA mask 得到的。本次没有把 B 接入正式 proposer，现有 head 契约及推理策略保持不变。
+所以零门控初始化时，两组第零步的 logits 完全相同。B 是一个明确的研究候选，不是唯一或标准的“双向 KDA”；其反向分支也不是修改 SDPA mask 得到的。
+
+目前 B 已作为显式实验选项接入与 A 相同的 proposer，使用独立的 `experimental_residual_bidir_kda_bidirectional_mla_v1` 策略标识；默认仍为 A。`--kda-mode bidirectional --kda-backward-weight 0.25` 用于初始化 head 的推理联调，非零系数确保测试确实执行反向通路。外部 head 必须携带自己的门控参数，不能在加载时用此初始化选项覆盖。两种 head 的策略不匹配会被拒绝；具体引擎验收范围见 [推理适配](ORTHRUS_GLM53_FLASH.md)。
 
 ## 实测结果
 

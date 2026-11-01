@@ -59,18 +59,22 @@ def main():
             continue
         card = idle[0]
         name = f"wangzili-glm53-preflight-{os.getpid()}"
+        runtime_cache = args.source / "validation" / "runtime-cache" / args.image.rsplit(":", 1)[-1][:12]
         command = ["docker", "run", "-d", "--name", name, "--network=none",
                    "--label", "owner=wangzili", "--label", "experiment=orthrus-glm53",
                    "--device", f"/dev/davinci{card}:/dev/davinci0",
                    "--device", "/dev/davinci_manager", "--device", "/dev/devmm_svm",
                    "--device", "/dev/hisi_hdc", "-e", "ASCEND_RT_VISIBLE_DEVICES=0",
-                   "-e", "PYTHONPATH=/work/src", "-e", "VLLM_USE_V2_MODEL_RUNNER=0",
+                   "-e", "VLLM_USE_V2_MODEL_RUNNER=0",
+                   "-e", "TORCH_EXTENSIONS_DIR=/runtime-cache",
                    "-v", "/usr/local/Ascend/driver:/usr/local/Ascend/driver:ro",
                    "-v", "/usr/local/dcmi:/usr/local/dcmi:ro",
                    "-v", "/etc/ascend_install.info:/etc/ascend_install.info:ro",
                    "-v", f"{args.source}:/work:ro", "-v", f"{args.output}:/results",
+                   "-v", f"{runtime_cache}:/runtime-cache",
                    "-w", "/work", "--entrypoint", "python3", args.image,
-                   "scripts/preflight_glm53_runtime.py", "--output", "/results/runtime-ready.json",
+                   "scripts/run_in_runtime.py", "scripts/preflight_glm53_runtime.py",
+                   "--output", "/results/runtime-ready.json",
                    "--image", args.image]
         write_json(state_path, dict(state="running", card=card, container=name))
         try:

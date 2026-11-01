@@ -95,3 +95,22 @@ def test_timeout_releases_only_our_unique_container(tmp_path, monkeypatch):
     assert name.startswith("wangzili-glm53-baseline-")
     assert ["docker", "stop", "--time", "15", name] in calls
     assert ["docker", "rm", name] in calls
+
+
+def test_native_job_remaps_cards_and_preserves_runtime_environment(tmp_path, monkeypatch):
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return NS(returncode=0, stdout="0", stderr="")
+    monkeypatch.setattr(watch.subprocess, "run", run)
+    args = NS(output=tmp_path, source=tmp_path, model=tmp_path, devices=[2, 3],
+              image="runtime@sha256:123", job_timeout=1)
+    watch.run_job(args, "orthrus", label="reload-bidir",
+                  extra=("--head-dir", "/results/head", "--kda-mode", "bidirectional"))
+    command = calls[0]
+    assert "/dev/davinci2:/dev/davinci0" in command
+    assert "/dev/davinci3:/dev/davinci1" in command
+    assert command[command.index("--tp") + 1] == "2"
+    assert "scripts/run_in_runtime.py" in command
+    assert "PYTHONPATH=/work/src" not in command
+    assert "--initialize-from-target" not in command

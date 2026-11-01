@@ -9,9 +9,9 @@
 - 稀疏 MLA：draft 的每行读取同一段真实历史，以及整个临时 draft 块。历史由主模型的 KPool indexer cache 检索；临时块不经过 Top-K，全部可见。
 - KDA：历史是卷积状态和递推矩阵，不能通过一个 SDPA mask 变成双向 Attention。当前实验扩展采用与 Orthrus Qwen3.5 混合模型相近的方式：复制注意力参数，从真实历史快照出发，在临时状态上因果递推。
 
-第二项是 **GLM 混合模型的实验定义**，不是原始普通 Qwen3 算法已提供的 GLM 实现。如果要求 KDA 本身也双向，需要先确定模型与训练定义，不能用推理 kernel 的改动代替这一决定。因此入口必须显式指定 `experimental_causal_kda_bidirectional_mla_v1`。
+第二项是 **GLM 混合模型的实验定义**，不是原始普通 Qwen3 算法已提供的 GLM 实现。默认策略为 `experimental_causal_kda_bidirectional_mla_v1`，入口要求显式实验确认。
 
-当前推理接入选择保留因果 KDA：整块起草不要求每一层都双向，块内信息可以通过 MLA 交换。单卡方向性及成本测试、三组小规模蒸馏对照见 [KDA 方向选择](GLM53_KDA_DIRECTION.md)；双向候选仅用于该实验，没有改动正式 proposer，也没有据此宣称真实 GLM 的 head 效果已验收。
+同一 proposer 也提供实验性的门控双向 KDA：正向读取 AR 状态，反向只遍历临时块、从零状态开始，两路在输出归一化之前融合。通过 `--kda-mode bidirectional` 选择，head 标记为 `experimental_residual_bidir_kda_bidirectional_mla_v1`。这不是 SDPA 换 mask，也不是已确认优于因果 KDA 的训练方案；方向性测试及三组小规模蒸馏对照见 [KDA 方向选择](GLM53_KDA_DIRECTION.md)。
 
 ## 算子需求
 
