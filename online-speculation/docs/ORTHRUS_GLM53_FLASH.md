@@ -68,6 +68,8 @@ PYTHONPATH=src python scripts/probe_glm53_ops.py --output artifacts/operators.js
 
 八卡真实模型测试由 `watch_glm53_validation.py` 组织：等完整权重通过逐文件 SHA256 校验、运行时通过前置检查、八卡都没有 NPU 进程后，先运行 target-only，再运行初始化 draft 的实验路径，比较 greedy token 并检查真实 propose/verify 计数。每阶段有超时限制，结束后删除本实验容器释放卡；不运行空占卡任务，不停止其他人的任务。
 
+各节点可独立运行 `watch_npu_resources.py --output /path/to/status.json`，每 30 秒记录一次空卡和心跳，发现完整八卡窗口后继续监控。它仅查询资源，不预留设备或启动模型；进程列表为空但 HBM 仍高占用的卡也不会被判为空闲。资源监控和模型测试是两件事，某个节点具备空卡后，仍须在该节点准备并校验权重及运行镜像。
+
 目前仍需完成真实模型闭环、拒绝回滚、量化 head 加载和采样分布验收。完整权重已完成逐文件 SHA256 校验；八卡监控在运行时自检通过后才会启动真实模型实验。没有训练好的 GLM head，不能给出接受率或加速结论。
 
 参考：[GLM-5.3-Flash 官方模型卡](https://huggingface.co/zai-org/GLM-5.3-Flash)、[Ascend 部署说明](https://docs.vllm.ai/projects/ascend/en/main/tutorials/models/GLM5.3-Flash.html)、[PyPTO GLM 模型目录](https://github.com/hw-native-sys/pypto-lib/tree/main/models/glm5_3_flash)。
