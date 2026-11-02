@@ -8,7 +8,7 @@ Qwen3.8-27B 的 Orthrus 投机推理与 draft 更新实现。draft 复用冻结�
 | --- | --- |
 | 投机推理 | 真实 27B、TP2 已验证多种块长、缓存边界及 head 重载；K32 的部分数值一致性用例仍未通过，不能视为完整生产验收。 |
 | 在线 last-N | last-1 / last-4 已在真实 27B 验证更新、冻结参数、只读历史和导出重载。固定反馈 32 步 TV loss 为 0.5044 → 0.4929，不代表业务加速收益。 |
-| 离线全 draft | 实现了随机 anchor、完整块 KL 蒸馏、CPU 优化器与逐层 checkpoint；单元及双 TP 梯度测试已通过，真实 27B 短训与重载验收进行中。 |
+| 离线全 draft | 真实 27B、TP2 已完成全 64 层更新与导出，4 步固定块 KL loss 为 7.16 → 3.06，主模型哈希未变；导出后重载续训验收进行中。不是完整语料训练。 |
 
 未提供预训练 head 时，从主模型 mixer 复制初始化，仅用于验证流程；目前不承诺接受率或吞吐提升。
 
@@ -54,6 +54,7 @@ python scripts/train_qwen38_draft.py \
 ```
 
 独立离线进程从文本随机选择 anchor，用冻结 AR 视图的完整 K-1 行概率做 forward KL 蒸馏，更新全部 draft 层，不提供生成服务。默认 CPU FP32 master/AdamW 和逐层 checkpoint，以搬运与重算降低显存需求。
+TP2 全 draft 的 FP32 参数、梯度与 AdamW 状态合计约 116 GB 主机内存，另需模型加载和临时缓冲空间。
 
 输出为 `loss.jsonl`、`summary.json` 和 `head/version<steps>`。在相同部署配置下，推理传 `--head-dir /data/draft-fit/head/version1000` 即可加载；离线也可用 `--head-dir` 从已有 head 继续学习，但不恢复 AdamW 状态，不能当作精确断点续训。
 
@@ -65,6 +66,7 @@ python scripts/train_qwen38_draft.py \
 
 - [接入与配置](online-speculation/docs/QWEN38_VLLM.md)
 - [已有推理验收边界](online-speculation/docs/QWEN38_ACCEPTANCE_SUMMARY.md)
+- [Draft 更新验证](online-speculation/docs/QWEN38_DRAFT_UPDATES_VALIDATION.md)
 - [原仓库研究说明](README_RESEARCH.md)
 
 模型分支分别为 `feature/orthrus-qwen38`、`feature/orthrus-dsv4`、`feature/orthrus-glm53`；保留公共代码与历史，后续按对应模型独立迭代。
