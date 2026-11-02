@@ -7,7 +7,6 @@ import argparse
 import json
 
 import torch
-import torch_npu
 
 from blockspec.vllm_ascend.torch_npu_dsv4_layer import (
     NativeDSV4Config,
@@ -86,6 +85,7 @@ def main() -> int:
                     "torch_npu.npu_rotary_mul",
                     "torch_npu.npu_lightning_indexer",
                     "torch_npu.npu_fused_infer_attention_score",
+                    "torch_npu.npu_attention_update",
                     "torch_npu.npu_transpose_batchmatmul",
                 ],
                 **result,

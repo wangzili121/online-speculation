@@ -21,7 +21,7 @@ import torch
 import torch_npu
 from torch import nn
 
-from .dsv4_hybrid import merge_attention_segments
+from .dsv4_hybrid import merge_attention_outputs
 
 
 AttentionKind = Literal["swa", "hca", "csa"]
@@ -153,10 +153,11 @@ def _native_fia_segment(
     key_lengths: list[int],
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """计算一段历史或块内 Attention，并返回输出和 LSE。"""
+    key_value = key_value.contiguous()
     result = torch_npu.npu_fused_infer_attention_score(
         query,
-        key_value.contiguous(),
-        key_value.contiguous(),
+        key_value,
+        key_value,
         num_heads=query.shape[2],
         num_key_value_heads=key_value.shape[2],
         input_layout="BSND",
@@ -414,12 +415,14 @@ class TorchNPUOrthrusDSV4Attention(nn.Module):
         outputs: list[torch.Tensor] = []
         lses: list[torch.Tensor] = []
 
-        # K 个 query 读取同一份已接受历史，但不修改它。
+        # ORTHRUS：历史和整个临时块共同归一化，块内不加因果遮挡。
+        # 与正式路径一致，SWA 历史和临时块只调用一次 FIA。
+        window_and_block = torch.cat((history.raw_kv, local_kv), dim=1)
         raw_out, raw_lse = _native_fia_segment(
             query,
-            history.raw_kv,
+            window_and_block,
             query_lengths,
-            [history.raw_kv.shape[1]] * batch,
+            [window_and_block.shape[1]] * batch,
         )
         outputs.append(raw_out)
         lses.append(raw_lse)
@@ -460,20 +463,13 @@ class TorchNPUOrthrusDSV4Attention(nn.Module):
         elif kind != "swa":
             raise ValueError(f"unknown attention kind: {kind}")
 
-        # ORTHRUS 改动：不加因果 mask，K 个 draft 位置可以互相读取。
-        local_out, local_lse = _native_fia_segment(
-            query, local_kv, query_lengths, [block] * batch
-        )
-        outputs.append(local_out)
-        lses.append(local_lse)
-
         # DSV4 attention sink 与其他部分共享 softmax 分母。
-        outputs.append(torch.zeros_like(local_out))
+        outputs.append(torch.zeros_like(raw_out))
         lses.append(
             self.attn_sink.view(1, 1, -1, 1).expand(batch, block, -1, -1)
         )
         # ORTHRUS 改动：用 LSE 精确合并只读历史与双向 draft 块。
-        attention, _ = merge_attention_segments(outputs, lses)
+        attention = merge_attention_outputs(outputs, lses)
 
         # 候选验证以及 cache 提交/回滚由推理引擎负责。
         output = self._output_projection(attention, positions)

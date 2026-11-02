@@ -11,4 +11,6 @@
 
 接口契约见 [head v2](online-speculation/docs/DSV4_HEAD_CONTRACT.md)，当前验收队列见 [验证状态](online-speculation/docs/VALIDATION_QUEUE.md)。
 
+算子实现与 PyPTO 适配边界见 [推理算子需求](online-speculation/docs/ORTHRUS_DSV4_PYPTO_REQUIREMENTS.md)。
+
 历史中保留其他模型和公共代码；后续 DSV4 改动仅在此分支迭代。
