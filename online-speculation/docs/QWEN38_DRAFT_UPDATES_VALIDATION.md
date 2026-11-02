@@ -27,7 +27,7 @@ Full Attention 块内双向，GDN 保持 `orthrus_qwen35_reference` 策略。
 | 3 | 3.945479 | 94.99 s |
 | 4 | 3.055085 | 94.66 s |
 
-每步两个 rank 的 loss、梯度范数一致，梯度覆盖层 0–63。更新后 draft 哈希改变，主模型每 rank 26,896,675,584 字节参数的 SHA256 前后完全相同。
+每步两个 rank 的 loss、梯度范数一致，梯度张量覆盖层 0–63。另将导出的输出投影逐层与 AR 初始化分片比较，确认两 rank 的全部 64 层均有实际参数变化，见 [逐层检查](validation/qwen38/full-draft-20261102/export-layers.json)。主模型每 rank 26,896,675,584 字节参数的 SHA256 前后完全相同。
 已按原生 TP head 契约导出 `version4`，进程正常结束并释放设备；原始记录见 [离线结果](validation/qwen38/full-draft-20261102/offline.json)。
 
 离线教师使用共享原生 TP 权重的 AR 视图及自有历史，而不是在线生成反馈；因此离线记录中原生 proposer/验证/cache 审计计数为零是预期行为，不能将其当作已验证线上缓存。
@@ -35,7 +35,10 @@ Full Attention 块内双向，GDN 保持 `orthrus_qwen35_reference` 策略。
 
 ## 导出后重载
 
-正在独立进程加载离线 `version4`，运行 greedy/采样请求并续训 last-4，检查 head 哈希、主模型冻结、历史只读与 TP 计数一致性。完成前不将这一新增串联测试标为通过。
+独立进程加载离线 `version4`，加载后的 head SHA256 与离线导出时逐 rank 相同。随后运行 6 个请求（greedy 和 temperature=1 各重复三次），继续完成 22 次 last-4 更新；两个 rank 的计数、loss 一致，greedy 三次输出相同。
+本轮验证块确实覆盖 31 个候选位置；读取原生历史 28 次，缓存只读审计 18 次。在线结束后 head 再次改变，主模型 SHA256 仍与离线训练前完全相同。
+这些短请求没有替代完整推理矩阵或采样分布验收，也不将接受计数当作业务接受率。原始结果见 [重载与在线更新](validation/qwen38/full-draft-20261102/reload.json)。
+本轮训练、重载与检查容器均已退出并清理，两张实验设备已释放。
 
 ## 回归与限制
 
