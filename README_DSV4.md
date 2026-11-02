@@ -9,6 +9,6 @@
 
 部署入口：进入 `online-speculation`，按 [部署说明](online-speculation/docs/DSV4_DEPLOYMENT.md) 固定镜像、模型路径与 head；保留 target-only 启动脚本作为基线和回退。
 
-接口契约见 [head v2](online-speculation/docs/DSV4_HEAD_CONTRACT.md)，当前验收队列见 [验证状态](online-speculation/docs/VALIDATION_QUEUE.md)。调用方继续使用标准 OpenAI API，无需在 agent 侧管理 draft/cache。
+接口契约见 [head v2](online-speculation/docs/DSV4_HEAD_CONTRACT.md)，当前验收队列见 [验证状态](online-speculation/docs/VALIDATION_QUEUE.md)。
 
 历史中保留其他模型和公共代码；后续 DSV4 改动仅在此分支迭代。
