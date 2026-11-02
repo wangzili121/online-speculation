@@ -273,7 +273,9 @@ class NativeSuffixLearner(SuffixLearner):
         loss = super().backward()
         for name in sorted(self.replicated):
             if self.master[name].grad is not None:
-                self.tp.reduce(self.master[name].grad)
+                gradient = self.master[name].grad
+                reduced = self.tp.reduce(gradient.to(self.execution[name].device))
+                gradient.copy_(reduced)
         return loss
 
     def clip_gradients(self):
@@ -281,7 +283,8 @@ class NativeSuffixLearner(SuffixLearner):
         for name, value in self.master.items():
             if value.grad is not None and (name not in self.replicated or self.tp.rank == 0):
                 total += value.grad.float().square().sum()
-        norm = self.tp.reduce(total).sqrt()
+        collective_device = next(iter(self.execution.values())).device
+        norm = self.tp.reduce(total.to(collective_device)).sqrt().to(total.device)
         if not torch.isfinite(norm):
             raise FloatingPointError("nonfinite TP draft gradient norm")
         scale = (self.config.clip_norm / (norm + 1e-6)).clamp(max=1.)

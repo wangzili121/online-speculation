@@ -290,7 +290,8 @@ class DualViewDecoder(nn.Module):
         logits = self.head(rows) if compute_logits else None
         return BackboneOutput(hidden, tuple(new_cache) if view == "ar" else cache, logits, boundary)
 
-    def forward_suffix(self, boundary, *, cache=None, logit_range=None, draft_weights=None):
+    def forward_suffix(self, boundary, *, cache=None, logit_range=None, draft_weights=None,
+                       checkpoint_layers=False):
         """Replay a frozen-prefix boundary; optional draft weights carry master gradients."""
         if (not isinstance(boundary, DraftBoundary) or not 0 <= boundary.start_layer < len(self.layers)
                 or boundary.backend != self.backend or cache_length(cache) != boundary.history_length):
@@ -313,9 +314,19 @@ class DualViewDecoder(nn.Module):
         for offset, layer in enumerate(self.layers[boundary.start_layer:]):
             prefix = f"layers.{boundary.start_layer + offset}."
             weights = {name[len(prefix):]: value for name, value in overrides.items() if name.startswith(prefix)}
-            args = (hidden, "draft", None if cache is None else cache[offset],
-                    boundary.rotary, boundary.allowed, self.backend)
-            hidden, _ = (torch.func.functional_call(layer, weights, args) if weights else layer(*args))
+
+            def execute(value, module=layer, parameters=weights, history=None if cache is None else cache[offset]):
+                resident = next(module.parameters())
+                staged = {name: weight.to(device=resident.device, dtype=resident.dtype)
+                          for name, weight in parameters.items()}
+                args = (value, "draft", history, boundary.rotary, boundary.allowed, self.backend)
+                return (torch.func.functional_call(module, staged, args) if staged else module(*args))[0]
+
+            if checkpoint_layers and torch.is_grad_enabled():
+                from torch.utils.checkpoint import checkpoint
+                hidden = checkpoint(execute, hidden, use_reentrant=False)
+            else:
+                hidden = execute(hidden)
         hidden = self.norm(hidden)
         rows = hidden if logit_range is None else hidden[:, logit_range[0]:logit_range[1]]
         return BackboneOutput(hidden, cache, self.head(rows))

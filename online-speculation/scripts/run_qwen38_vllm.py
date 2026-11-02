@@ -21,14 +21,18 @@ def prepare_runtime_environment():
                 os.environ["PYTHONPATH"] = os.pathsep.join([*paths, site])
 
 
-def arguments():
-    parser = argparse.ArgumentParser(description=__doc__)
+def arguments(parser=None, *, defaults=None):
+    parser = parser or argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
     parser.add_argument("--tp", type=int, default=2)
     parser.add_argument("--mask-token-id", type=int, required=True)
     parser.add_argument("--block-size", type=int, default=32)
     parser.add_argument("--online", action="store_true")
     parser.add_argument("--last-layers", type=int, default=1)
+    parser.add_argument("--all-draft-layers", action="store_true")
+    parser.add_argument("--optimizer-device", choices=("model", "cpu"), default="model")
+    parser.add_argument("--checkpoint-layers", action="store_true")
+    parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--update-stride", type=int, default=16)
     parser.add_argument("--head-dir")
     parser.add_argument("--checkpoint-dir")
@@ -39,6 +43,7 @@ def arguments():
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--gdn-prefill-backend", choices=("native", "cann"), default="cann")
+    parser.set_defaults(**(defaults or {}))
     args = parser.parse_args()
     if args.kv_cache_memory_bytes is not None and args.kv_cache_memory_bytes < 1:
         parser.error("--kv-cache-memory-bytes must be positive")
@@ -60,6 +65,9 @@ def native_options(args):
 def speculative_options(args):
     options = dict(mask_token_id=args.mask_token_id, online=args.online, last_layers=args.last_layers,
                    update_stride=args.update_stride, checkpoint_every=args.checkpoint_every)
+    for name, default in (("all_draft_layers", False), ("optimizer_device", "model"),
+                          ("checkpoint_layers", False), ("learning_rate", 1e-5)):
+        options[name] = getattr(args, name, default)
     for name in ("head_dir", "checkpoint_dir"):
         if getattr(args, name, None):
             options[name] = getattr(args, name)

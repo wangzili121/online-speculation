@@ -1,3 +1,9 @@
+# Orthrus-Qwen3.8 (Ascend)
+
+本分支用于 Qwen3.8 的推理、在线 last-N 更新和离线全 draft 更新。安装、运行和 OpenAI API 对接见 [简短接入说明](README_QWEN38.md)。
+
+以下保留原仓库研究说明，非本分支的部署入口。
+
 # inference_scaling
 
 本仓库同时实现自回归语言模型（AR-LLM）和掩码扩散语言模型（dLLM）的训练与推理扩展。AR-LLM

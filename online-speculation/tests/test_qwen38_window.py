@@ -57,6 +57,17 @@ def test_uniform_fixture_runs_separate_bounded_calibration(window, tmp_path):
     assert "--output-dir" not in command
 
 
+def test_offline_fitting_uses_a_separate_dataset_and_training_entry(window, tmp_path):
+    args = NS(devices=[0, 1, 2, 3], source=tmp_path, model=tmp_path, output=tmp_path,
+              image="runtime@sha256:123", max_model_len=2048, acceptance_args=["--steps", "4"],
+              offline_data=tmp_path / "train.jsonl")
+    command = window.container_command(args, "ours")
+    assert f"{args.offline_data}:/data/train.jsonl:ro" in command
+    assert "/work/scripts/train_qwen38_draft.py" in command
+    assert command[command.index("--data") + 1] == "/data/train.jsonl"
+    assert command[-2:] == ["--steps", "4"]
+
+
 def test_failed_container_creation_still_cleans_only_our_name(window, monkeypatch, tmp_path):
     calls, released = [], []
     snapshot = "\n".join(

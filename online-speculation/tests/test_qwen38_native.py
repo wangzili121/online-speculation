@@ -854,7 +854,7 @@ def test_attention_builder_keeps_actual_block_length_for_metadata():
     assert config.speculative_config.num_speculative_tokens == 31
 
 
-def _tp_worker(rank, rendezvous, last_layers):
+def _tp_worker(rank, rendezvous, last_layers, checkpoint_layers=False):
     import transformers.utils as utils
     import transformers.utils.import_utils as imports
     utils.is_torch_npu_available = imports.is_torch_npu_available = lambda: False
@@ -877,7 +877,9 @@ def _tp_worker(rank, rendezvous, last_layers):
             torch.testing.assert_close(ld.logits, fd.logits, rtol=2e-4, atol=2e-5)
             teacher = full(torch.tensor([[9, 11, 12, 13]]), cache=fh).logits[0, :3]
         policy = SuffixConfig(last_layers=last_layers, stride=100, loss="tv", learning_rate=1e-3)
-        ll = NativeSuffixLearner(local, policy, tp)
+        from dataclasses import replace
+        local_policy = replace(policy, checkpoint_layers=checkpoint_layers, optimizer_device="cpu")
+        ll = NativeSuffixLearner(local, local_policy, tp)
         fl = SuffixLearner(full, policy)
         ll.observe(Feedback(block, lh, teacher, 3, ld.boundary), may_update=False)
         fl.observe(Feedback(block, fh, teacher, 3, fd.boundary), may_update=False)
@@ -914,3 +916,56 @@ def _tp_worker(rank, rendezvous, last_layers):
 def test_two_rank_forward_gradients_and_global_clip_match_unsharded(tmp_path, last_layers):
     torch.multiprocessing.start_processes(_tp_worker, args=(str(tmp_path / "gloo"), last_layers), nprocs=2,
                                           join=True, start_method="spawn")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="CPU distributed integration is run in the Linux image")
+def test_two_rank_all_draft_checkpoint_gradients_match_unsharded(tmp_path):
+    torch.multiprocessing.start_processes(_tp_worker, args=(str(tmp_path / "gloo"), 4, True), nprocs=2,
+                                          join=True, start_method="spawn")
+
+
+@pytest.mark.parametrize("anchor", [0, 3])
+@pytest.mark.parametrize("checkpoint_layers", [False, True])
+def test_offline_all_draft_matches_gradients_and_preserves_frozen_target(anchor, checkpoint_layers):
+    from blockspec.parallel.qwen38_training import offline_feedback
+    hf = fixture()
+    model = from_native_model(native_fixture(hf, inference=True), hf.config,
+                              tp=TensorParallel(), block_size=4, mask_token_id=1)
+    clean = torch.tensor([[3, 5, 8, 9, 11, 12, 13]])
+    feedback = offline_feedback(model, clean, anchor)
+    with torch.no_grad():
+        expected = model(clean).logits[0, anchor:anchor + 3]
+    torch.testing.assert_close(feedback.teacher_logits, expected, rtol=2e-4, atol=2e-5)
+    assert feedback.valid == 3 and feedback.boundary.start_layer == 0
+    assert feedback.inputs[0].tolist() == [int(clean[0, anchor]), 1, 1, 1]
+    before = {name: p.detach().clone() for name, p in model.named_parameters()}
+    policy = SuffixConfig(last_layers=4, stride=1, optimizer_device="cpu", checkpoint_layers=checkpoint_layers,
+                          learning_rate=1e-3)
+    learner = NativeSuffixLearner(model, policy, TensorParallel())
+    learner.observe(feedback, may_update=False)
+    learner.backward()
+    gradients = {name: p.grad.clone() for name, p in learner.master.items()}
+    from dataclasses import replace
+    reference = NativeSuffixLearner(model, replace(policy, checkpoint_layers=False), TensorParallel())
+    reference.observe(feedback, may_update=False)
+    reference.backward()
+    for name, parameter in reference.master.items():
+        assert parameter.grad is not None and torch.isfinite(parameter.grad).all()
+        torch.testing.assert_close(gradients[name], parameter.grad)
+    result = learner.update()
+    assert result["version"] == 1 and result["gradient_norm"] > 0
+    changed = {name for name, p in model.named_parameters() if not torch.equal(p, before[name])}
+    assert {int(name.split(".")[1]) for name in changed} == set(range(4))
+    assert all(".attention.draft." in name for name in changed)
+    assert all(not p.requires_grad and p.grad is None for p in model.parameters())
+    learner.clear_replay()
+    state = learner.state_dict()
+    learner.load_state_dict(state)
+    assert learner.updates == 1 and all(p.device.type == "cpu" for p in learner.master.values())
+
+
+def test_offline_worker_rejects_serving_mode():
+    worker = OrthrusWorkerExtension()
+    worker.model_runner = NS(drafter=NS(qwen38_native_proposer=True, options={"online": True}))
+    with pytest.raises(RuntimeError, match="offline updates require"):
+        worker.orthrus_offline_step([3, 5, 8, 9], 0)

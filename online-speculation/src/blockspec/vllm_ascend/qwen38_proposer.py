@@ -40,8 +40,25 @@ class OrthrusWorkerExtension:
                 "max_verified_tokens": draft.max_verified_tokens, "full_blocks": draft.full_blocks,
                 "updates": 0 if draft.learner is None else draft.learner.updates,
                 "loss": None if draft.learner is None else draft.learner.last_loss,
+                "update_seconds": 0. if draft.learner is None else draft.learner.update_seconds,
+                "updated_layers": 0 if draft.learner is None else draft.learner.config.last_layers,
+                "trainable_parameters": 0 if draft.learner is None else draft.learner.trainable_parameters,
+                "optimizer_device": None if draft.learner is None else draft.learner.config.optimizer_device,
                 "head_dir": draft.options.get("head_dir"),
                 "history_backend": draft.history_reader.backend, "history_reads": draft.history_reader.reads}
+
+    def orthrus_offline_step(self, token_ids, anchor):
+        from ..parallel.qwen38_training import offline_feedback
+        draft = self.model_runner.drafter
+        if not getattr(draft, "qwen38_native_proposer", False) or not draft.options.get("offline", False):
+            raise RuntimeError("offline updates require a separate offline worker, not a serving learner")
+        with torch.inference_mode(False), torch.enable_grad():
+            tokens = torch.tensor([token_ids], device=draft.model.embedding.weight.device, dtype=torch.long)
+            feedback = offline_feedback(draft.model, tokens, anchor)
+            result = draft.learner.observe(feedback)
+            draft.learner.clear_replay()
+        return {"rank": draft.tp.rank, "layers": draft.learner.config.last_layers,
+                "trainable_parameters": draft.learner.trainable_parameters, **result}
 
     def orthrus_checkpoint(self):
         draft = self.model_runner.drafter
@@ -62,7 +79,8 @@ class Qwen38OrthrusProposer:
         spec = vllm_config.speculative_config
         options = (vllm_config.additional_config or {}).get("qwen38_orthrus", {})
         allowed = {"mask_token_id", "online", "last_layers", "update_stride", "learning_rate",
-                   "head_dir", "checkpoint_dir", "checkpoint_every"}
+                   "head_dir", "checkpoint_dir", "checkpoint_every", "all_draft_layers", "offline",
+                   "optimizer_device", "checkpoint_layers"}
         if not isinstance(options, dict) or set(options) - allowed:
             raise ValueError("invalid qwen38_orthrus options")
         self.options = dict(options)
@@ -71,8 +89,13 @@ class Qwen38OrthrusProposer:
             raise ValueError("qwen38_gdn_prefill_backend must be native or cann")
         if native_backend == "cann" and vllm_config.model_config.dtype != torch.bfloat16:
             raise ValueError("CANN GDN prefill requires a BF16 target")
-        if type(options.get("online", False)) is not bool:
-            raise ValueError("online must be a boolean")
+        for name in ("online", "offline", "all_draft_layers", "checkpoint_layers"):
+            if type(options.get(name, False)) is not bool:
+                raise ValueError(f"{name} must be a boolean")
+        if options.get("online", False) and options.get("offline", False):
+            raise ValueError("offline fitting and online serving use separate workers")
+        if options.get("optimizer_device", "model") not in {"model", "cpu"}:
+            raise ValueError("optimizer_device must be model or cpu")
         for name in ("last_layers", "update_stride", "checkpoint_every"):
             if name in options and (type(options[name]) is not int or options[name] < 1):
                 raise ValueError(f"{name} must be a positive integer")
@@ -129,10 +152,15 @@ class Qwen38OrthrusProposer:
             self.generator.manual_seed(self.config.model_config.seed + 1337)
             if self.options.get("head_dir"):
                 self._load_head(Path(self.options["head_dir"]))
-            if self.options.get("online", False):
-                policy = SuffixConfig(last_layers=self.options.get("last_layers", 1),
-                                      stride=self.options.get("update_stride", 16), loss="tv",
-                                      learning_rate=self.options.get("learning_rate", 1e-5))
+            offline = self.options.get("offline", False)
+            if self.options.get("online", False) or offline:
+                all_layers = offline or self.options.get("all_draft_layers", False)
+                policy = SuffixConfig(last_layers=len(self.model.layers) if all_layers else self.options.get("last_layers", 1),
+                                      stride=1 if offline else self.options.get("update_stride", 16),
+                                      loss="forward_kl" if offline else "tv",
+                                      learning_rate=self.options.get("learning_rate", 1e-5),
+                                      optimizer_device=self.options.get("optimizer_device", "model"),
+                                      checkpoint_layers=self.options.get("checkpoint_layers", False))
                 self.learner = NativeSuffixLearner(self.model, policy, self.tp)
         logger.info("Orthrus native target ready: TP=%d, K=%d, online=%s, history=shared_target_snapshot",
                     self.tp.size, self.block_size, self.learner is not None)
@@ -163,6 +191,8 @@ class Qwen38OrthrusProposer:
                               top_p=1. if metadata.top_p is None else float(metadata.top_p[0]))
 
     def propose_batch(self, sampled, scheduler_output, *, verification=None):
+        if self.options.get("offline", False):
+            raise RuntimeError("offline workers cannot serve generation requests")
         if self.model is None:
             raise RuntimeError("draft weights have not been bound to the native target")
         runner = self.runner

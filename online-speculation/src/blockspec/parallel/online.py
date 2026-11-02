@@ -23,12 +23,16 @@ class SuffixConfig:
     learning_rate: float = 1e-5
     clip_norm: float = 1.
     loss: str = "forward_kl"
+    optimizer_device: str = "model"
+    checkpoint_layers: bool = False
 
     def __post_init__(self):
         if (any(type(v) is not int or v < 1 for v in (self.last_layers, self.stride, self.replay_blocks))
                 or self.replay_blocks > self.stride
                 or any(not math.isfinite(v) or v <= 0 for v in (self.learning_rate, self.clip_norm))
-                or self.loss not in ("forward_kl", "tv")):
+                or self.loss not in ("forward_kl", "tv")
+                or self.optimizer_device not in ("model", "cpu")
+                or type(self.checkpoint_layers) is not bool):
             raise ValueError("positive bounded suffix/update windows, optimizer scales and KL or TV required")
 
 
@@ -61,7 +65,9 @@ class SuffixLearner:
         dtype = next(model.parameters()).dtype
         if dtype not in (torch.float32, torch.bfloat16):
             raise ValueError("FP32 or BF16 inference weights required")
-        self.master = {name: torch.nn.Parameter(p.detach().float().clone()) for name, p in self.execution.items()}
+        self.master = {name: torch.nn.Parameter(p.detach().to(
+            device="cpu" if config.optimizer_device == "cpu" else p.device, dtype=torch.float32, copy=True))
+            for name, p in self.execution.items()}
         self.parameters = list(self.master.values())
         self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate, weight_decay=0,
                                            fused=True if self.parameters[0].is_cuda else None)
@@ -98,7 +104,8 @@ class SuffixLearner:
             raise RuntimeError("frozen representations or attention execution changed; rebuild the learner")
 
     def _sync(self):
-        synchronize(self.parameters[0].device)
+        for device in {p.device for p in self.execution.values()}:
+            synchronize(device)
 
     def clear_replay(self):
         self.replay.clear()
@@ -130,9 +137,10 @@ class SuffixLearner:
         self.optimizer.zero_grad(set_to_none=True)
         with torch.enable_grad():
             for item in self.replay:
-                weights = {name: p.to(self.execution[name].dtype) for name, p in self.master.items()}
+                # CPU masters are staged inside each layer, not copied as a second full head.
+                options = {"checkpoint_layers": True} if self.config.checkpoint_layers else {}
                 output = self.model.forward_suffix(item.boundary, cache=item.cache,
-                                                   logit_range=(0, item.valid), draft_weights=weights)
+                                                   logit_range=(0, item.valid), draft_weights=self.master, **options)
                 loss = divergence(output.logits[0], item.teacher_logits, self.config.loss).sum() / positions
                 if not torch.isfinite(loss):
                     student_ok = bool(torch.isfinite(output.logits).all())
@@ -156,6 +164,8 @@ class SuffixLearner:
         self._sync()
         start = time.perf_counter()
         loss = self.backward()
+        gradient_layers = sorted({int(name.split(".")[1]) for name, value in self.master.items()
+                                  if value.grad is not None})
         norm = self.clip_gradients()
         self.optimizer.step()
         self.publish()
@@ -165,7 +175,8 @@ class SuffixLearner:
         self.version += 1
         self.update_seconds += elapsed
         self.last_loss = loss
-        return {"loss": loss, "gradient_norm": float(norm), "seconds": elapsed, "version": self.version}
+        return {"loss": loss, "gradient_norm": float(norm), "seconds": elapsed, "version": self.version,
+                "gradient_layers": gradient_layers}
 
     def clip_gradients(self):
         return torch.nn.utils.clip_grad_norm_(self.parameters, self.config.clip_norm, error_if_nonfinite=True)
@@ -184,7 +195,8 @@ class SuffixLearner:
 
     def load_state_dict(self, state):
         self._check()
-        if (state.get("format") != "blockspec-dual-suffix-v1" or state.get("config") != asdict(self.config)
+        saved_config = {"optimizer_device": "model", "checkpoint_layers": False, **state.get("config", {})}
+        if (state.get("format") != "blockspec-dual-suffix-v1" or saved_config != asdict(self.config)
                 or state.get("model_config") != self.model.config.to_dict()
                 or source_identity(state.get("source", {})) != source_identity(getattr(self.model, "source", {}))
                 or state.get("dtype") != str(next(self.model.parameters()).dtype)

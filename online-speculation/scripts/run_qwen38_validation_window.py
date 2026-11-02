@@ -40,6 +40,7 @@ def container_command(args, name):
                        TORCH_EXTENSIONS_DIR="/results/runtime-cache",
                        TRITON_CACHE_DIR="/results/runtime-cache/triton") | runtime_network_environment()
     uniform = getattr(args, "uniform_calibration", False)
+    offline_data = getattr(args, "offline_data", None)
     if uniform:
         environment.update(ORTHRUS_VALIDATE_OUTPUT="/results/uniform.json",
                            ORTHRUS_VALIDATE_CASES="short-sampling", ORTHRUS_VALIDATE_SAMPLING_TRIALS="128",
@@ -52,8 +53,12 @@ def container_command(args, name):
                          ("/etc/ascend_install.info", "/etc/ascend_install.info"),
                          (args.source, "/work"), (args.model, "/models/qwen38")):
         command.extend(["-v", f"{host}:{target}:ro"])
-    script = "validate_qwen38_vllm.py" if uniform else "accept_qwen38_vllm.py"
-    destination = [] if uniform else ["--output-dir", "/results/matrix"]
+    if offline_data:
+        command.extend(["-v", f"{offline_data}:/data/train.jsonl:ro"])
+    script = ("train_qwen38_draft.py" if offline_data else
+              "validate_qwen38_vllm.py" if uniform else "accept_qwen38_vllm.py")
+    destination = (["--data", "/data/train.jsonl", "--output", "/results/training"] if offline_data else
+                   [] if uniform else ["--output-dir", "/results/matrix"])
     command.extend(["-v", f"{args.output}:/results", "-w", "/results", "--entrypoint", "python3",
                     args.image, "/work/scripts/run_in_runtime.py", f"/work/scripts/{script}",
                     "--model", "/models/qwen38", "--mask-token-id", "1", "--tp", str(len(args.devices)),
@@ -73,10 +78,13 @@ def main():
     parser.add_argument("--yield-to-eight-card", action="store_true")
     parser.add_argument("--uniform-calibration", action="store_true",
                         help="test-only known-q acceptance calibration, not a neural-head quality test")
+    parser.add_argument("--offline-data", type=Path, help="run all-draft offline fitting instead of acceptance")
     parser.add_argument("--wait-hours", type=float, default=24)
     parser.add_argument("--timeout", type=int, default=10800)
     parser.add_argument("acceptance_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.offline_data and (not args.offline_data.is_file() or args.uniform_calibration):
+        parser.error("offline fitting requires an existing dataset and cannot run uniform calibration")
     if (len(args.devices) not in {2, 4} or len(set(args.devices)) != len(args.devices)
             or not set(args.devices) <= set(range(8)) or "@sha256:" not in args.image
             or args.wait_hours <= 0 or args.timeout <= 0 or args.max_model_len < 2048):

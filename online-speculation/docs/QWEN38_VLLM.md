@@ -67,6 +67,20 @@ TP 的列投影在反向归并输入梯度，行投影在前向归并结果；�
 更新在本轮验证完成后同步发布，下轮才使用新 head。当前不是异步训练服务，不保证训练带来吞吐收益。
 原生主模型必须在插件生命周期内保持不变，不允许权重热更新。
 
+### 全层与离线更新
+
+在线仍默认 `--last-layers 1`，显式 `--all-draft-layers` 才更新全部 draft 层；主模型参数不参与更新。
+`--optimizer-device cpu --checkpoint-layers` 将 FP32 master、梯度和 AdamW 状态放到 CPU，并在反向逐层重算。
+每层只搬运自身 draft 参数；重算重新从相同的只读历史开始，不能接着首次前向的 GDN 尾状态计算。
+TP norm 梯度与全局范数仍在设备通信组上归并，CPU offload 不改变 TP 梯度含义。
+
+离线入口 `scripts/train_qwen38_draft.py` 读取 tokenized JSONL，默认使用上述省显存配置更新全部 draft 层。
+每步先从干净文本选择随机 anchor，在冻结 AR 视图上计算历史及 K-1 行教师分布，再对 anchor+MASK 块做完整反向，以 forward KL 蒸馏。
+离线使用共享原生 TP 权重的 AR 视图，不调用生成采样器；它与线上原生 verifier 的 BF16 执行形状可能存在已知数值差异。
+在线只监督真实验证到的行，仍使用 TV loss，两者没有混成同一种数据收集方式。
+离线 worker 拒绝生成请求，导出的 head 继续使用现有 TP 契约，可通过 `--head-dir` 重启加载。
+该导出包含 draft 权重，不包含跨进程 AdamW 恢复状态；具体命令见仓库根目录 [简短接入说明](../../README_QWEN38.md)。
+
 ## 运行
 
 入口针对以下已部署环境开发；其他镜像不能仅凭方法签名就视为已经验证：

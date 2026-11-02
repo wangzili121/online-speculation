@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 from .backbone import BackboneOutput, DraftBoundary
 from .branches import MaskedAttentionBranch
@@ -224,15 +225,7 @@ class Qwen38DualView(nn.Module):
         if type(logits_to_keep) is not int or logits_to_keep < 0:
             raise ValueError("nonnegative logits_to_keep required")
         past = 0 if cache is None else cache.length
-        hidden = self.embedding(tokens)
-        positions = torch.arange(past, past + tokens.shape[1], device=tokens.device)[None]
-        rotary = self.rotary(hidden, positions[None].expand(3, -1, -1))
-        # Orthrus: every draft query sees the strict AR prefix and the whole
-        # temporary block. AR instead uses each row's own causal boundary.
-        allowed = hidden.new_zeros((1, 1, tokens.shape[1], past + tokens.shape[1]))
-        if view == "ar":
-            future = torch.arange(past + tokens.shape[1], device=tokens.device)[None] > positions[0, :, None]
-            allowed.masked_fill_(future, float("-inf"))
+        hidden, rotary, allowed = self._block_inputs(tokens, past, view)
         scratch = self._cache(cache)
         boundary = None
         for index, layer in enumerate(self.layers):
@@ -243,12 +236,32 @@ class Qwen38DualView(nn.Module):
         history = scratch.snapshot(past + tokens.shape[1], self.layer_types) if view == "ar" else None
         return BackboneOutput(hidden, history, logits, boundary)
 
-    def forward_suffix(self, boundary, *, cache=None, logit_range=None, draft_weights=None):
+    def _block_inputs(self, tokens, past, view):
+        hidden = self.embedding(tokens)
+        positions = torch.arange(past, past + tokens.shape[1], device=tokens.device)[None]
+        rotary = self.rotary(hidden, positions[None].expand(3, -1, -1))
+        # Orthrus: every draft query sees the strict AR prefix and the whole
+        # temporary block. AR instead uses each row's own causal boundary.
+        allowed = hidden.new_zeros((1, 1, tokens.shape[1], past + tokens.shape[1]))
+        if view == "ar":
+            future = torch.arange(past + tokens.shape[1], device=tokens.device)[None] > positions[0, :, None]
+            allowed.masked_fill_(future, float("-inf"))
+        return hidden, rotary, allowed
+
+    @torch.no_grad()
+    def draft_boundary(self, tokens, cache=None):
+        """Offline full-layer replay starts at embeddings; no redundant draft forward."""
+        past = 0 if cache is None else cache.length
+        return DraftBoundary(*self._block_inputs(tokens, past, "draft"), 0, past, self.backend).detached()
+
+    def forward_suffix(self, boundary, *, cache=None, logit_range=None, draft_weights=None,
+                       checkpoint_layers=False):
         if (not isinstance(boundary, DraftBoundary) or boundary.backend != self.backend
                 or not 0 <= boundary.start_layer < len(self.layers)):
             raise ValueError("compatible captured draft boundary required")
         start = boundary.start_layer
-        scratch = self._cache(cache, start)
+        if cache is not None and len(cache) != len(self.layers) - start:
+            raise ValueError("one history state per executed layer required")
         overrides = {} if draft_weights is None else draft_weights
         permitted = {f"layers.{i}.attention.draft.{name}" for i in range(start, len(self.layers))
                      for name, _ in self.layers[i].attention.draft.named_parameters()}
@@ -258,9 +271,22 @@ class Qwen38DualView(nn.Module):
         for i in range(start, len(self.layers)):
             prefix = f"layers.{i}."
             weights = {name[len(prefix):]: value for name, value in overrides.items() if name.startswith(prefix)}
-            args = (hidden, "draft", boundary.rotary, boundary.allowed, scratch)
-            hidden = (torch.func.functional_call(self.layers[i], weights, args)
-                      if weights else self.layers[i](*args))
+
+            def execute(value, index=i, parameters=weights):
+                layer = self.layers[index]
+                resident = next(layer.parameters())
+                staged = {name: weight.to(device=resident.device, dtype=resident.dtype)
+                          for name, weight in parameters.items()}
+                # Recompute must start from the same clean state, not the first forward's tail.
+                states = [None] * len(self.layers)
+                if cache is not None:
+                    states[index] = cache[index - start]
+                scratch = _ScratchCache(states, self.layer_types)
+                args = (value, "draft", boundary.rotary, boundary.allowed, scratch)
+                return torch.func.functional_call(layer, staged, args) if staged else layer(*args)
+
+            hidden = (checkpoint(execute, hidden, use_reentrant=False)
+                      if checkpoint_layers and torch.is_grad_enabled() else execute(hidden))
         projected = hidden if logit_range is None else hidden[:, slice(*logit_range)]
         return BackboneOutput(hidden, None, self._logits(projected))
 
