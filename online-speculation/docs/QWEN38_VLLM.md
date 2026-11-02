@@ -23,6 +23,7 @@ TP 分片的 query/KV 头和 GDN 头数须能整除 TP；27B 首选 TP=2。
 `qwen38_ops.py` 为 draft 绑定镜像已有算子：Full Attention 的无梯度分支使用原生 QKV 拆分、Q/K norm、RoPE 融合算子，再以 `npu_fusion_attention` 计算历史与双向块；共享 MLP 使用 packed gate/up 投影和 `npu_swiglu`。
 FAS 直接接收 GQA 的原始 KV 头，不先复制为 Q 的头数；无梯度 RoPE 分支也不再重复展开融合算子没有使用的系数。
 单请求、无 padding 的 draft 块全可见，因此 draft mixer 显式设置 `is_causal=False` 并传入 `None` mask；AR 视图仍使用因果 mask。不构造全零 mask，也不在每层重复转换 mask，捕获的训练边界同样保留这一语义。
+已有算子的选择、数值对照和真实模型复验见 [推理算子审计](QWEN38_INFERENCE_OPS_AUDIT.md)。
 GDN 使用已有 causal convolution、L2 norm、递推和门控 norm，所有工作状态均为自有临时存储。训练 GDN 默认使用可微 Torch chunk 路径，另可显式选择 FLA 0.6.0；门控 norm 使用支持反向的 `npu_rms_norm + SiLU`，宽度 4 卷积保留可微组合。Attention 本身仍调用支持反向的融合算子；推理不受训练 backend 选择影响。
 这些适配不改变 head 的参数名或交付格式，不新增 NPU kernel，也不表示性能已经最优。
 
