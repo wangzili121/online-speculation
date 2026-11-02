@@ -35,7 +35,7 @@ python scripts/train_qwen38_draft.py \
   --model /models/Qwen3.8-27B --tp 4 --mask-token-id 1 --block-size 32 \
   --data /data/train.jsonl --output /data/draft-fit \
   --steps 1000 --sequence-length 256 --learning-rate 0.0001 \
-  --max-model-len 2048 --kv-cache-memory-bytes 2147483648
+  --max-model-len 2048 --kv-cache-memory-bytes 8589934592
 ```
 
 此入口不提供生成服务。随机选择 anchor，用冻结 AR 教师强制计算完整 K-1 个位置的分布，以 forward KL 更新**所有层的 draft mixer**。默认 CPU FP32 master/AdamW、逐层 checkpoint；embedding、共享 norm、MLP 和 LM head 不更新。输出 `loss.jsonl`、`summary.json` 和 `head/version<steps>`；导出的 head 可在相同 TP、K、mask ID 和基模上直接加载。重新传 `--head-dir` 是权重续训，不是恢复 AdamW 状态的精确断点续训。
