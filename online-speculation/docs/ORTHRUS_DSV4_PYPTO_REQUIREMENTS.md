@@ -130,6 +130,8 @@ output, lse = output.masked_fill(empty, 0), lse.masked_fill(empty, -torch.inf)
 
 独立单层 demo 为 `scripts/demo_torch_npu_dsv4_layer.py`，计算在 `torch_npu_dsv4_layer.py`：包含投影、norm/RoPE、三类 Attention、sink、inverse RoPE 和 O 投影。本轮将 SWA/块联合计算及原生合并对齐正式路径。demo 使用合成连续历史，CSA 的 gather 便于阅读，不能替代正式分页路径的性能测试。
 
+示例取 anchor=2560，对应 640 行 C4、20 行 C128 和最近 128 行 SWA；query 位置从 anchor 开始递增，历史长度不随块内行号变化。
+
 ```bash
 python scripts/run_in_runtime.py scripts/demo_torch_npu_dsv4_layer.py --block-size 32
 ORTHRUS_RUN_NPU_TESTS=1 PYTHONPATH=src python -m pytest -q tests/test_dsv4_layer_npu.py

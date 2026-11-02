@@ -25,6 +25,7 @@
 - CPU：620 passed、33 skipped。CPU 临时容器内移除 torch-npu，NPU 镜像不修改。
 - Attention 合并与独立 FP32 拼接参考的最大绝对误差约 0.00358。
 - 单层对照保留同一套投影与参数，将 Attention 替换为 FP32 参考，不是完整模型误差界。
+- 合成历史与 anchor 对齐后重新通过 6 组单层测试，记录在 `layer-anchor/`；它们是同一组测试的复验，不重复累计用例数。
 
 ```bash
 python scripts/run_in_runtime.py scripts/smoke_dsv4_hybrid_npu.py --iterations 20

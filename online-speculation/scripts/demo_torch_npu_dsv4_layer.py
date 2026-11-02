@@ -20,13 +20,14 @@ def run_demo(config: NativeDSV4Config, block_size: int) -> dict:
     device = torch.device("npu:0")
     dtype = torch.bfloat16
     batch = 1
+    anchor = 2560
     layer = TorchNPUOrthrusDSV4Attention(config, device=device, dtype=dtype)
     # 用随机输入模拟共享 backbone 生成的 K 位置块。
     hidden = torch.randn(
         batch, block_size, config.hidden_size, device=device, dtype=dtype
     ) * 0.02
     positions = torch.arange(
-        1024, 1024 + block_size, device=device, dtype=torch.long
+        anchor, anchor + block_size, device=device, dtype=torch.long
     ).view(batch, block_size)
     # 用模拟 cache 代替主模型已经接受的历史。
     history = make_synthetic_history(
@@ -34,6 +35,8 @@ def run_demo(config: NativeDSV4Config, block_size: int) -> dict:
         batch=batch,
         device=device,
         dtype=dtype,
+        c4_length=anchor // 4,
+        c128_length=anchor // 128,
     )
     rows = []
     with torch.inference_mode():

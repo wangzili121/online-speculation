@@ -17,16 +17,20 @@ from blockspec.vllm_ascend.dsv4_hybrid import merge_attention_segments
 def test_layer_matches_dense_attention(kind, block, monkeypatch):
     torch.npu.set_device(0)
     torch.manual_seed(20261103)
+    anchor = 2560
     config = layer_impl.NativeDSV4Config.dsv4_flash()
     model = layer_impl.TorchNPUOrthrusDSV4Attention(
         config, device=torch.device("npu:0"), dtype=torch.bfloat16
     )
     history = layer_impl.make_synthetic_history(
-        config, batch=1, device=torch.device("npu:0"), dtype=torch.bfloat16
+        config, batch=1, device=torch.device("npu:0"), dtype=torch.bfloat16,
+        c4_length=anchor // 4, c128_length=anchor // 128,
     )
     snapshots = {name: value.clone() for name, value in vars(history).items()}
     hidden = torch.randn(1, block, config.hidden_size, device="npu", dtype=torch.bfloat16) * .02
-    positions = torch.arange(1024, 1024 + block, device="npu").view(1, block)
+    positions = torch.arange(anchor, anchor + block, device="npu").view(1, block)
+    assert history.c4_kv.shape[1] == anchor // 4
+    assert history.c128_kv.shape[1] == anchor // 128
 
     def dense(query, kv, query_lengths, key_lengths):
         del query_lengths
