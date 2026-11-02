@@ -209,6 +209,8 @@ def main():
             external["error"] = traceback.format_exc()
     Path("/results/training-ops.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)
+    if args.fla_path and not report["external_fla"].get("numerical_pass", False):
+        raise AssertionError("optional FLA audit failed; see training-ops.json")
 
 
 if __name__ == "__main__":

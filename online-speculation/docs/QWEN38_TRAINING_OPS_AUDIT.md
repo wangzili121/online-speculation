@@ -30,6 +30,9 @@ GDN 还比较了长度 1/8/17，norm 比较了长度 1/16；不是只测一个 K
 该路径以 `--training-gdn-backend fla` 显式选择，只替换训练阶段的 chunk GDN；不改变因果递推定义、不替换主模型或 draft 推理 kernel，也不接管缓存提交。
 默认 `torch` 路径仍然保留。FLA 推荐的 Torch-NPU/Triton 版本比当前镜像新，本轮测试结果只适用于记录的镜像与依赖组合，不能直接推广到所有版本。
 
+可选 FLA 路径另验证了长度 1/8/17/32：前向最大相对 L2 误差 `0.00380`，五类输入梯度最大 `0.00561`，最终 FP32 状态最大 `0.00244`，初始状态均保持不变。
+这些检查直接调用接入后的 `delta_rule(..., training_fallback=...)`，而不只是绕开适配层调用 FLA，见 [边界与状态检查](validation/qwen38/training-audit-20261102/fla-boundaries.json)。
+
 ## 真实语料
 
 数据来自 [Salesforce/WikiText](https://huggingface.co/datasets/Salesforce/wikitext)，固定版本 `b08601e04326c79dfdd32d625aee71d232d685c3`，配置 `wikitext-2-raw-v1`、`train` split；数据许可为 CC BY-SA 3.0 / GFDL。
@@ -61,6 +64,9 @@ NPU 短训从其中 8 条原文抽取四个不同窗口，来源行号为 9、3�
 两步 KL 为 5.776670、6.020746；第一步含首次 JIT 编译为 287.40 s，第二步为 91.85 s。数据与运行时负载不同，不能据此与上述 Torch 四步直接比较整步性能。
 记录见 [FLA 离线全层更新](validation/qwen38/training-audit-20261102/fla-offline.json)。
 
+随后用独立进程加载这份 FLA 训练的 head，加载哈希与导出一致，并在 `training_gdn_backend=fla` 下完成 greedy、采样两个请求及 8 次在线 last-4 更新。
+两 rank 的更新计数和 loss 一致，6 次历史只读审计通过；在线后 head 再次改变，主模型完整参数哈希仍未变，见 [FLA 重载与在线更新](validation/qwen38/training-audit-20261102/fla-reload.json)。
+
 ## 更新耗时
 
 在验证 worker 中加入同步计时，不改变正常训练入口的执行方式。以 rank0 的步骤 2–4 为例：
@@ -83,4 +89,6 @@ NPU 短训从其中 8 条原文抽取四个不同窗口，来源行号为 9、3�
 `scripts/prepare_qwen38_data.py` 将本地 JSONL/Parquet 转为 token JSONL，保留来源行号并生成哈希 manifest；使用本地基模 tokenizer，不依赖在线获取模型。
 `scripts/train_qwen38_draft.py` 保持原离线训练入口，增加 `--timing` 可选验证计时；默认行为不变。
 `scripts/audit_qwen38_training_ops.py` 复现已有算子的前后向比较，必须在指定运行时和空闲设备上执行。
+可选库用 `ORTHRUS_QWEN38_FLA_PATH` 指定目录，只在 NPU worker 中延迟加载并校验设备；验证脚本的 `--runtime-cache` 将同版本编译缓存显式挂载进容器，避免引用容器外的宿主机路径。
 CPU 回归为 **636 passed、32 skipped**，跳过项不算作设备测试通过。
+本轮训练、算子审计与重载实验容器均已清理，167 的 6、7 号实验设备已释放。

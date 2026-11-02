@@ -1,0 +1,134 @@
+{
+  "model": "/models/qwen38",
+  "target_only": false,
+  "tp": 2,
+  "block_size": 32,
+  "gdn_prefill_backend": "cann",
+  "max_model_len": 2048,
+  "online": true,
+  "last_layers": 4,
+  "update_stride": 1,
+  "native_ngram_control": false,
+  "proposal_fixture": null,
+  "outputs": [
+    {
+      "case": "short-greedy",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "short-sampling",
+      "reference_case": "short-sampling",
+      "temperature": 1.0,
+      "tokens": [
+        729,
+        198,
+        53975,
+        36570,
+        192526,
+        401,
+        68953,
+        1798
+      ],
+      "text": " !\nUne petite boîte de chocolats"
+    }
+  ],
+  "workers": [
+    {
+      "orthrus": true,
+      "rank": 0,
+      "proposals": 10,
+      "verified": 8,
+      "accepted": 7,
+      "max_verified_tokens": 31,
+      "full_blocks": 8,
+      "updates": 8,
+      "loss": 0.5442358255386353,
+      "update_seconds": 84.8168671107851,
+      "updated_layers": 4,
+      "trainable_parameters": 226243600,
+      "optimizer_device": "cpu",
+      "training_gdn_backend": "fla",
+      "head_dir": "/heads/offline",
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 10,
+      "cache_readonly_checks": 6
+    },
+    {
+      "orthrus": true,
+      "rank": 1,
+      "proposals": 10,
+      "verified": 8,
+      "accepted": 7,
+      "max_verified_tokens": 31,
+      "full_blocks": 8,
+      "updates": 8,
+      "loss": 0.5442358255386353,
+      "update_seconds": 73.84550650743768,
+      "updated_layers": 4,
+      "trainable_parameters": 226243600,
+      "optimizer_device": "cpu",
+      "training_gdn_backend": "fla",
+      "head_dir": "/heads/offline",
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 10,
+      "cache_readonly_checks": 6
+    }
+  ],
+  "seconds": 448.6993749649264,
+  "completed": true,
+  "target_weights": {
+    "before": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "after": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "unchanged": true
+  },
+  "head_before": [
+    {
+      "sha256": "8691111944de04c6c2eaf100e97d4403172a7ec1261da2c5613e1de96f9325c1",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "61ba9c10c8f202d414ebbb790d4d5b1a65ccf73fb093e133c0736f300df206fb",
+      "bytes": 7239797504
+    }
+  ],
+  "head_after": [
+    {
+      "sha256": "9cb06834374cef024a0ed3cba3a8fc489e835dc86dda3f44011697c2ac5cd561",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "f1c59dd778a5aa829e45a8f2e3edd5d5238f82731ae4a423e0820314856cf743",
+      "bytes": 7239797504
+    }
+  ]
+}

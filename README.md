@@ -60,6 +60,6 @@ python scripts/train_qwen38_draft.py \
 独立离线进程从文本随机选择 anchor，用冻结 AR 视图的完整 K-1 行概率做 forward KL 蒸馏，更新全部 draft 层，不提供生成服务。默认 CPU FP32 master/AdamW 和逐层 checkpoint，以搬运与重算降低显存需求。
 TP2 全 draft 的 FP32 参数、梯度与 AdamW 状态合计约 116 GB 主机内存，另需模型加载和临时缓冲空间。
 
-训练 GDN 默认使用可微 Torch 路径；另提供 `--training-gdn-backend fla`，需预装 `fla-core==0.6.0`、`flash-linear-attention==0.6.0`（使用 `--no-deps` 保留既有 Torch/Triton）。该选项只影响训练反向所用的 GDN 实现，推理仍使用镜像已有算子。
+训练 GDN 默认使用可微 Torch 路径；另提供 `--training-gdn-backend fla`。可用 `pip install --no-deps --target /data/fla-deps fla-core==0.6.0 flash-linear-attention==0.6.0` 安装可选依赖，并设置 `ORTHRUS_QWEN38_FLA_PATH=/data/fla-deps`（路径须在容器内可见）。依赖由 NPU worker 延迟加载，不修改既有 Torch/Triton；该选项只影响训练用 GDN，推理仍使用镜像已有算子。
 
 输出目录必须为新目录，包含 `loss.jsonl`、`summary.json` 和 `head/version<steps>`。在相同部署配置下，推理传 `--head-dir /data/draft-fit/head/version1000` 即可加载；离线也可用 `--head-dir` 从已有 head 继续学习，但不恢复 AdamW 状态，不能当作精确断点续训。

@@ -42,7 +42,11 @@ def container_command(args, name):
     dependencies = getattr(args, "fla_dependencies", None)
     if dependencies:
         command.extend(["-v", f"{dependencies}:/dependencies/fla:ro"])
-        environment["PYTHONPATH"] = "/dependencies/fla"
+        environment["ORTHRUS_QWEN38_FLA_PATH"] = "/dependencies/fla"
+    cache = getattr(args, "runtime_cache", None)
+    if cache:
+        command.extend(["-v", f"{cache}:/runtime-cache"])
+        environment.update(TORCH_EXTENSIONS_DIR="/runtime-cache", TRITON_CACHE_DIR="/runtime-cache/triton")
     uniform = getattr(args, "uniform_calibration", False)
     offline_data = getattr(args, "offline_data", None)
     head_reload = getattr(args, "head_reload", None)
@@ -98,6 +102,7 @@ def main():
     parser.add_argument("--reload-repeats", type=int, default=3)
     parser.add_argument("--training-ops", action="store_true", help="audit existing forward/backward operators")
     parser.add_argument("--fla-dependencies", type=Path, help="isolated optional FLA packages, without changing the image")
+    parser.add_argument("--runtime-cache", type=Path, help="explicit shared cache mount for the same runtime and dependencies")
     parser.add_argument("--wait-hours", type=float, default=24)
     parser.add_argument("--timeout", type=int, default=10800)
     parser.add_argument("acceptance_args", nargs=argparse.REMAINDER)
@@ -120,6 +125,8 @@ def main():
     if args.acceptance_args[:1] == ["--"]:
         args.acceptance_args = args.acceptance_args[1:]
     args.output.mkdir(parents=True, exist_ok=False)
+    if args.runtime_cache:
+        args.runtime_cache.mkdir(parents=True, exist_ok=True)
     name = f"wangzili-qwen38-validation-{os.getpid()}-{time.time_ns()}"
     state = dict(state="waiting", devices=args.devices, container=name,
                  started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())

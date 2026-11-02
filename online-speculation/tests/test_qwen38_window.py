@@ -111,8 +111,13 @@ def test_optional_fla_dependencies_preserve_runtime_python_path_setup(window, tm
               fla_dependencies=tmp_path / "fla")
     command = window.container_command(args, "ours")
     assert f"{args.fla_dependencies}:/dependencies/fla:ro" in command
-    assert "PYTHONPATH=/dependencies/fla" in command
+    assert "ORTHRUS_QWEN38_FLA_PATH=/dependencies/fla" in command
+    assert not any(value.startswith("PYTHONPATH=") for value in command)
     assert "/work/scripts/run_in_runtime.py" in command
+    args.runtime_cache = tmp_path / "shared-cache"
+    command = window.container_command(args, "ours")
+    assert f"{args.runtime_cache}:/runtime-cache" in command
+    assert "TRITON_CACHE_DIR=/runtime-cache/triton" in command
 
 
 def test_failed_container_creation_still_cleans_only_our_name(window, monkeypatch, tmp_path):

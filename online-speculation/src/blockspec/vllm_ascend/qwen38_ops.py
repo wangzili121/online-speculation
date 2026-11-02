@@ -129,9 +129,18 @@ def configure_gdn(mixer, training_backend="torch"):
     training_fallback = None
     if training_backend == "fla":
         from importlib.metadata import version
+        import os
+        import sys
+        dependencies = os.environ.get("ORTHRUS_QWEN38_FLA_PATH")
+        if dependencies and dependencies not in sys.path:
+            # FLA captures its device context on import; load only in the initialized worker.
+            sys.path.insert(0, dependencies)
         if version("fla-core") != "0.6.0":
             raise ValueError("the optional GDN training backend requires fla-core==0.6.0")
         from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+        from fla.utils.hardware import IS_NPU
+        if not IS_NPU:
+            raise RuntimeError("FLA must be loaded with an available NPU runtime and writable Triton cache")
         training_fallback = chunk_gated_delta_rule
     elif training_backend != "torch":
         raise ValueError("GDN training backend must be torch or fla")
