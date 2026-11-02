@@ -55,7 +55,7 @@ def container_command(args, name):
     if head_reload:
         environment.update(ORTHRUS_VALIDATE_OUTPUT="/results/reload.json", ORTHRUS_VALIDATE_AUDIT="1",
                            ORTHRUS_VALIDATE_NUMERIC="0", ORTHRUS_VALIDATE_FROZEN="1",
-                           ORTHRUS_VALIDATE_REPEATS="3",
+                           ORTHRUS_VALIDATE_REPEATS=str(getattr(args, "reload_repeats", 3)),
                            ORTHRUS_VALIDATE_CASES="short-greedy,short-sampling")
     for key, value in environment.items():
         command.extend(["-e", f"{key}={value}"])
@@ -95,12 +95,15 @@ def main():
                         help="test-only known-q acceptance calibration, not a neural-head quality test")
     parser.add_argument("--offline-data", type=Path, help="run all-draft offline fitting instead of acceptance")
     parser.add_argument("--head-reload", type=Path, help="load an exported head and check bounded inference/update requests")
+    parser.add_argument("--reload-repeats", type=int, default=3)
     parser.add_argument("--training-ops", action="store_true", help="audit existing forward/backward operators")
     parser.add_argument("--fla-dependencies", type=Path, help="isolated optional FLA packages, without changing the image")
     parser.add_argument("--wait-hours", type=float, default=24)
     parser.add_argument("--timeout", type=int, default=10800)
     parser.add_argument("acceptance_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if not 1 <= args.reload_repeats <= 100:
+        parser.error("reload repeats must be in 1..100")
     if args.fla_dependencies and not args.fla_dependencies.is_dir():
         parser.error("FLA dependency directory does not exist")
     if args.training_ops and (args.offline_data or args.head_reload or args.uniform_calibration):

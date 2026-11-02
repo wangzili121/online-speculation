@@ -1,0 +1,276 @@
+{
+  "model": "/models/qwen38",
+  "target_only": false,
+  "tp": 2,
+  "block_size": 32,
+  "gdn_prefill_backend": "cann",
+  "max_model_len": 2048,
+  "online": true,
+  "last_layers": 4,
+  "update_stride": 1,
+  "native_ngram_control": false,
+  "proposal_fixture": null,
+  "outputs": [
+    {
+      "case": "short-greedy",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "short-sampling",
+      "reference_case": "short-sampling",
+      "temperature": 1.0,
+      "tokens": [
+        729,
+        198,
+        53975,
+        36570,
+        192526,
+        91923,
+        35491,
+        70
+      ],
+      "text": " !\nUne petite boîte plutôt budg"
+    },
+    {
+      "case": "short-greedy-repeat1",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "short-sampling-repeat1",
+      "reference_case": "short-sampling",
+      "temperature": 1.0,
+      "tokens": [
+        729,
+        198,
+        53975,
+        36570,
+        17548,
+        91923,
+        35491,
+        70
+      ],
+      "text": " !\nUne petite pause plutôt budg"
+    },
+    {
+      "case": "short-greedy-repeat2",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "short-sampling-repeat2",
+      "reference_case": "short-sampling",
+      "temperature": 1.0,
+      "tokens": [
+        729,
+        176079,
+        501,
+        25213,
+        1649,
+        4606,
+        295,
+        515
+      ],
+      "text": " ! Depuis le temps que je m’"
+    }
+  ],
+  "workers": [
+    {
+      "orthrus": true,
+      "rank": 0,
+      "proposals": 28,
+      "verified": 22,
+      "accepted": 23,
+      "max_verified_tokens": 31,
+      "full_blocks": 22,
+      "updates": 22,
+      "loss": 0.5229959487915039,
+      "update_seconds": 114.6598654887639,
+      "updated_layers": 4,
+      "trainable_parameters": 226243600,
+      "optimizer_device": "cpu",
+      "head_dir": "/heads/offline",
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 28,
+      "cache_readonly_checks": 18
+    },
+    {
+      "orthrus": true,
+      "rank": 1,
+      "proposals": 28,
+      "verified": 22,
+      "accepted": 23,
+      "max_verified_tokens": 31,
+      "full_blocks": 22,
+      "updates": 22,
+      "loss": 0.5229959487915039,
+      "update_seconds": 108.60245825117454,
+      "updated_layers": 4,
+      "trainable_parameters": 226243600,
+      "optimizer_device": "cpu",
+      "head_dir": "/heads/offline",
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 28,
+      "cache_readonly_checks": 18
+    }
+  ],
+  "seconds": 495.5715544433333,
+  "completed": true,
+  "target_weights": {
+    "before": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "after": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "unchanged": true
+  },
+  "head_before": [
+    {
+      "sha256": "dbd23ca50e3c552a6aa124868f682321098c03ca80f6464fa5709ff9c6127ed0",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "9424e54a27eb488c6fca2d38e85f0cc608cdb53ee19c074c8499a118e2088817",
+      "bytes": 7239797504
+    }
+  ],
+  "head_after": [
+    {
+      "sha256": "21d028f789611f61fa2f3edb01f3fe24d55d150167766e8e4a2f3b1c20fc397a",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "0f05131e3fa1e0d7c6d232ec94d54cdb46046f553dedba1ed7735b9824cf9027",
+      "bytes": 7239797504
+    }
+  ],
+  "memory": [
+    {
+      "case": "short-greedy",
+      "workers": [
+        {
+          "allocated": 42916950528,
+          "reserved": 47880077312
+        },
+        {
+          "allocated": 42916950528,
+          "reserved": 47880077312
+        }
+      ]
+    },
+    {
+      "case": "short-sampling",
+      "workers": [
+        {
+          "allocated": 42948697088,
+          "reserved": 47942991872
+        },
+        {
+          "allocated": 42948697088,
+          "reserved": 47942991872
+        }
+      ]
+    },
+    {
+      "case": "short-greedy-repeat1",
+      "workers": [
+        {
+          "allocated": 42916950528,
+          "reserved": 47945089024
+        },
+        {
+          "allocated": 42916950528,
+          "reserved": 47945089024
+        }
+      ]
+    },
+    {
+      "case": "short-sampling-repeat1",
+      "workers": [
+        {
+          "allocated": 42948697088,
+          "reserved": 47945089024
+        },
+        {
+          "allocated": 42948697088,
+          "reserved": 47945089024
+        }
+      ]
+    },
+    {
+      "case": "short-greedy-repeat2",
+      "workers": [
+        {
+          "allocated": 42916950528,
+          "reserved": 47945089024
+        },
+        {
+          "allocated": 42916950528,
+          "reserved": 47945089024
+        }
+      ]
+    },
+    {
+      "case": "short-sampling-repeat2",
+      "workers": [
+        {
+          "allocated": 42947707904,
+          "reserved": 47945089024
+        },
+        {
+          "allocated": 42947707904,
+          "reserved": 47945089024
+        }
+      ]
+    }
+  ]
+}

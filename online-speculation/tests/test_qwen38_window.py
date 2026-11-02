@@ -78,6 +78,8 @@ def test_offline_head_can_be_reloaded_for_online_last_n(window, tmp_path):
     assert "ORTHRUS_VALIDATE_AUDIT=1" in command and "ORTHRUS_VALIDATE_FROZEN=1" in command
     assert command[command.index("--head-dir") + 1] == "/heads/offline"
     assert command[-3:] == ["--online", "--last-layers", "4"]
+    args.reload_repeats = 1
+    assert "ORTHRUS_VALIDATE_REPEATS=1" in window.container_command(args, "ours")
 
 
 def test_training_operator_audit_uses_the_same_isolation_without_serving_flags(window, tmp_path):

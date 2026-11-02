@@ -111,6 +111,7 @@ def main():
         norm = GatedRMSNorm(torch.nn.Parameter(weight.detach()), 1e-6)
         torch.testing.assert_close(norm(x, z), reference(x, z, weight), rtol=.01, atol=.001)
 
+    fla_cases = []
     # An inference interface is not a training interface merely because it returns tensors.
     for length in (1, 8, 17, 32):
         nk, nv, dim = cfg.linear_num_key_heads // 2, cfg.linear_num_value_heads // 2, 128
@@ -163,6 +164,8 @@ def main():
                     row["fused_error"] = str(exc)
                 row["fused_warnings"] = [str(w.message) for w in caught]
         report["gdn"].append(row)
+        fla_cases.append(dict(length=length, inputs=(q, k, v, g, beta), initial=initial,
+                              expected=expected.detach(), final_state=state.detach(), gradients=grads))
     # Representative TP2 GDN packed-projection weight, not an extrapolated full-step timer.
     master = torch.nn.Parameter(torch.zeros(channels, cfg.hidden_size))
     gradient = torch.randn(master.shape, device="npu", dtype=torch.bfloat16)
@@ -178,20 +181,30 @@ def main():
     report["transfer_probe"]["optimizer_cpu"] = elapsed(optimizer.step, args.repeats)
     if args.fla_path:
         sys.path.insert(0, str(args.fla_path))
-        external = report["external_fla"] = dict(path=str(args.fla_path))
+        external = report["external_fla"] = dict(path=str(args.fla_path), cases=[])
         try:
             from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+            for sample in fla_cases:
+                initial = sample["initial"]
+                before = initial.clone()
 
-            def fused(q, k, v, g, beta):
-                return chunk_gated_delta_rule(q[None].repeat_interleave(nv // nk, 2),
-                    k[None].repeat_interleave(nv // nk, 2), v[None], g=g[None], beta=beta[None],
-                    initial_state=initial, output_final_state=False)[0]
+                def fused(q, k, v, g, beta, history=initial, groups=nv // nk, final=False):
+                    result = delta_rule(q[None].repeat_interleave(groups, 2),
+                        k[None].repeat_interleave(groups, 2), v[None], g=g[None], beta=beta[None],
+                        initial_state=history, output_final_state=final, groups=groups,
+                        fallback=torch_chunk_gated_delta_rule, training_fallback=chunk_gated_delta_rule)
+                    return result if final else result[0]
 
-            metrics, actual, actual_grads = measure(fused, (q, k, v, g, beta), args.repeats)
-            external.update(length=length, fused=metrics, forward=error(actual, out),
-                gradients=[error(a, b) for a, b in zip(actual_grads, grads, strict=True)])
-            external["numerical_pass"] = (external["forward"]["relative_l2"] < .01
-                and all(g["relative_l2"] < .03 for g in external["gradients"]))
+                metrics, actual, actual_grads = measure(fused, sample["inputs"], args.repeats)
+                _, final = fused(*sample["inputs"], final=True)
+                row = dict(length=sample["length"], fused=metrics, forward=error(actual, sample["expected"]),
+                    final_state=error(final, sample["final_state"]), history_unchanged=torch.equal(initial, before),
+                    gradients=[error(a, b) for a, b in zip(actual_grads, sample["gradients"], strict=True)])
+                row["numerical_pass"] = (row["forward"]["relative_l2"] < .01
+                    and row["final_state"]["relative_l2"] < .02 and row["history_unchanged"]
+                    and all(g["relative_l2"] < .03 for g in row["gradients"]))
+                external["cases"].append(row)
+            external["numerical_pass"] = all(row["numerical_pass"] for row in external["cases"])
         except Exception:
             external["error"] = traceback.format_exc()
     Path("/results/training-ops.json").write_text(json.dumps(report, indent=2) + "\n")

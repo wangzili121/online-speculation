@@ -44,3 +44,9 @@ Full Attention 块内双向，GDN 保持 `orthrus_qwen35_reference` 策略。
 
 CPU 回归为 630 passed、32 skipped，包含全层梯度、双 TP 全局裁剪、checkpoint 等价性、混合参数精度与原有 last-N 路径。跳过项不能算作已通过的设备测试。
 没有自研 NPU kernel。少卡 CPU offload 证明功能可运行，不代表高效预训练；本次 loss 下降不证明业务接受率、端到端延迟或吞吐提升。
+
+## 真实语料补测
+
+已补充固定版本 WikiText 数据预处理、真实 27B 随机窗口与 anchor 的离线全层更新，以及独立进程重载后继续在线 last-4。
+同时核对了已有 GDN、卷积与 norm 的反向接口，接入融合 RMSNorm、短块 GDN 配置和可选 FLA 后端。
+数值、分阶段耗时、数据来源和运行记录统一保留在 [训练算子与真实语料验证](QWEN38_TRAINING_OPS_AUDIT.md)。

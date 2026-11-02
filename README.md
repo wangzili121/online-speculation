@@ -10,7 +10,7 @@ Full Attention 在块内采用双向注意力，GDN 使用 `orthrus_qwen35_refer
 | --- | --- |
 | 投机推理 | 真实 27B、TP2 已验证 K=2/8/17/32、多类请求边界、主模型历史缓存复用及 head 重载。 |
 | 在线 last-N | last-1 / last-4 已在真实 27B 验证更新、冻结参数、只读历史和导出重载。固定反馈 32 步 TV loss 为 0.5044 → 0.4929，不代表业务加速收益。 |
-| 离线全 draft | 真实 27B、TP2 已完成全 64 层更新、导出重载并继续 last-4 更新。4 步固定块 KL loss 为 7.16 → 3.06，主模型哈希未变。不是完整语料训练。 |
+| 离线全 draft | 真实 27B、TP2 已完成全 64 层更新、导出重载并继续 last-4 更新；另用 WikiText 真实语料补测随机窗口、随机 anchor 的四步更新，主模型哈希未变。 |
 
 未提供预训练 head 时，从主模型 mixer 复制初始化，仅用于验证流程；目前不承诺接受率或吞吐提升。
 
@@ -47,6 +47,8 @@ python scripts/run_qwen38_vllm.py \
 
 输入为同一基模 tokenizer 生成的 JSONL，每行 `{"input_ids": [...]}`。可附加 `anchor_ranges` 限定预测块所在的半开区间；每条数据须包含完整训练序列。
 
+原始文本可先用 `scripts/prepare_qwen38_data.py --input /data/raw.jsonl --output /data/train.jsonl --model /models/Qwen3.8-27B --source <数据集及版本>` 转换。支持 `text` 或 `messages` JSONL；Parquet 输入另需 `pyarrow`。`--min-tokens` 至少设为训练的 `--sequence-length`，输出同时记录数据来源与哈希。
+
 ```bash
 python scripts/train_qwen38_draft.py \
   --model /models/Qwen3.8-27B --tp 2 --mask-token-id 1 --block-size 32 \
@@ -57,5 +59,7 @@ python scripts/train_qwen38_draft.py \
 
 独立离线进程从文本随机选择 anchor，用冻结 AR 视图的完整 K-1 行概率做 forward KL 蒸馏，更新全部 draft 层，不提供生成服务。默认 CPU FP32 master/AdamW 和逐层 checkpoint，以搬运与重算降低显存需求。
 TP2 全 draft 的 FP32 参数、梯度与 AdamW 状态合计约 116 GB 主机内存，另需模型加载和临时缓冲空间。
+
+训练 GDN 默认使用可微 Torch 路径；另提供 `--training-gdn-backend fla`，需预装 `fla-core==0.6.0`、`flash-linear-attention==0.6.0`（使用 `--no-deps` 保留既有 Torch/Triton）。该选项只影响训练反向所用的 GDN 实现，推理仍使用镜像已有算子。
 
 输出目录必须为新目录，包含 `loss.jsonl`、`summary.json` 和 `head/version<steps>`。在相同部署配置下，推理传 `--head-dir /data/draft-fit/head/version1000` 即可加载；离线也可用 `--head-dir` 从已有 head 继续学习，但不恢复 AdamW 状态，不能当作精确断点续训。
