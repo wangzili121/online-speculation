@@ -2,6 +2,8 @@
 
 Qwen3.8-27B 的 Orthrus 投机推理与 draft 更新实现。draft 复用冻结的主模型 backbone，推理读取主模型历史缓存，候选由原生 vLLM-Ascend 验证。支持在线 last-N 更新和独立离线全层更新，均只更新 draft mixer，不训练主模型。
 
+Full Attention 在块内采用双向注意力，GDN 使用 `orthrus_qwen35_reference` 的因果递推策略。
+
 ## 验证状态
 
 | 路径 | 当前状态 |
@@ -58,15 +60,3 @@ TP2 全 draft 的 FP32 参数、梯度与 AdamW 状态合计约 116 GB 主机内
 
 输出目录必须为新目录，包含 `loss.jsonl`、`summary.json` 和 `head/version<steps>`。在相同部署配置下，推理传 `--head-dir /data/draft-fit/head/version1000` 即可加载；离线也可用 `--head-dir` 从已有 head 继续学习，但不恢复 AdamW 状态，不能当作精确断点续训。
 
-## 范围与文档
-
-当前为 BF16、eager、同步单请求执行；排队不等于并行 batch。暂不支持量化、图模式、多模态或 PP/DP。Full Attention 块内双向，GDN 沿用显式的 `orthrus_qwen35_reference` 因果递推策略。
-
-推理复用镜像已有融合 Attention、卷积、GDN 与 SwiGLU；反向不支持的融合步骤使用可微组合，不含自研 kernel，也不声称已达到最优性能。接入方式是插件加限定版本的内部兼容 hook，不是任意版本的纯配置插件。
-
-- [接入与配置](online-speculation/docs/QWEN38_VLLM.md)
-- [已有推理验收边界](online-speculation/docs/QWEN38_ACCEPTANCE_SUMMARY.md)
-- [Draft 更新验证](online-speculation/docs/QWEN38_DRAFT_UPDATES_VALIDATION.md)
-- [原仓库研究说明](README_RESEARCH.md)
-
-模型分支分别为 `feature/orthrus-qwen38`、`feature/orthrus-dsv4`、`feature/orthrus-glm53`；保留公共代码与历史，后续按对应模型独立迭代。
