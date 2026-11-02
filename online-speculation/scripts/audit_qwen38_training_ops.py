@@ -6,7 +6,9 @@ from functools import partial
 import json
 from pathlib import Path
 import statistics
+import sys
 import time
+import traceback
 import warnings
 
 import torch
@@ -46,10 +48,24 @@ def measure(function, inputs, repeats):
                 peak_extra_bytes=torch.npu.max_memory_allocated() - before), output, gradients
 
 
+def elapsed(operation, repeats):
+    for _ in range(3):
+        operation()
+    torch.npu.synchronize()
+    samples = []
+    for _ in range(repeats):
+        start = time.perf_counter()
+        operation()
+        torch.npu.synchronize()
+        samples.append((time.perf_counter() - start) * 1000)
+    return dict(median_ms=statistics.median(samples), samples_ms=samples)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
     parser.add_argument("--repeats", type=int, default=20)
+    parser.add_argument("--fla-path", type=Path, help="optional isolated fla-core/FLA installation; never installed globally")
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error("positive repeats required")
@@ -147,6 +163,37 @@ def main():
                     row["fused_error"] = str(exc)
                 row["fused_warnings"] = [str(w.message) for w in caught]
         report["gdn"].append(row)
+    # Representative TP2 GDN packed-projection weight, not an extrapolated full-step timer.
+    master = torch.nn.Parameter(torch.zeros(channels, cfg.hidden_size))
+    gradient = torch.randn(master.shape, device="npu", dtype=torch.bfloat16)
+    resident = torch.empty_like(gradient)
+    report["transfer_probe"] = dict(shape=list(master.shape), host_dtype=str(master.dtype),
+        device_dtype=str(gradient.dtype), host_pinned=master.is_pinned(),
+        h2d_with_cast=elapsed(lambda: master.to("npu", dtype=torch.bfloat16), args.repeats),
+        d2h_with_cast=elapsed(lambda: gradient.to("cpu", dtype=torch.float32), args.repeats))
+    with torch.no_grad():
+        report["transfer_probe"]["publish"] = elapsed(lambda: resident.copy_(master), args.repeats)
+    master.grad = gradient.float().cpu()
+    optimizer = torch.optim.AdamW([master], lr=1e-4, weight_decay=0)
+    report["transfer_probe"]["optimizer_cpu"] = elapsed(optimizer.step, args.repeats)
+    if args.fla_path:
+        sys.path.insert(0, str(args.fla_path))
+        external = report["external_fla"] = dict(path=str(args.fla_path))
+        try:
+            from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+
+            def fused(q, k, v, g, beta):
+                return chunk_gated_delta_rule(q[None].repeat_interleave(nv // nk, 2),
+                    k[None].repeat_interleave(nv // nk, 2), v[None], g=g[None], beta=beta[None],
+                    initial_state=initial, output_final_state=False)[0]
+
+            metrics, actual, actual_grads = measure(fused, (q, k, v, g, beta), args.repeats)
+            external.update(length=length, fused=metrics, forward=error(actual, out),
+                gradients=[error(a, b) for a, b in zip(actual_grads, grads, strict=True)])
+            external["numerical_pass"] = (external["forward"]["relative_l2"] < .01
+                and all(g["relative_l2"] < .03 for g in external["gradients"]))
+        except Exception:
+            external["error"] = traceback.format_exc()
     Path("/results/training-ops.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)
 

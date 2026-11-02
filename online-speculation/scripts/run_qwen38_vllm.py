@@ -32,6 +32,7 @@ def arguments(parser=None, *, defaults=None):
     parser.add_argument("--all-draft-layers", action="store_true")
     parser.add_argument("--optimizer-device", choices=("model", "cpu"), default="model")
     parser.add_argument("--checkpoint-layers", action="store_true")
+    parser.add_argument("--training-gdn-backend", choices=("torch", "fla"), default="torch")
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--update-stride", type=int, default=16)
     parser.add_argument("--head-dir")
@@ -66,7 +67,8 @@ def speculative_options(args):
     options = dict(mask_token_id=args.mask_token_id, online=args.online, last_layers=args.last_layers,
                    update_stride=args.update_stride, checkpoint_every=args.checkpoint_every)
     for name, default in (("all_draft_layers", False), ("optimizer_device", "model"),
-                          ("checkpoint_layers", False), ("learning_rate", 1e-5)):
+                          ("checkpoint_layers", False), ("learning_rate", 1e-5),
+                          ("training_gdn_backend", "torch")):
         options[name] = getattr(args, name, default)
     for name in ("head_dir", "checkpoint_dir"):
         if getattr(args, name, None):

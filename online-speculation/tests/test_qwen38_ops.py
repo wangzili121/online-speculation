@@ -106,3 +106,23 @@ def test_shared_rotary_shares_only_coefficients_and_preserves_head_layout():
     cos, sin = shared.coefficients(positions, torch.bfloat16)
     assert cos.shape == sin.shape == (1, 1, 3, 4)
     assert torch.equal(cos[0, 0, :, :2], original.cos_sin_cache[5:8, :2].bfloat16())
+
+
+def test_gdn_training_backend_is_explicit_and_does_not_replace_recurrence(monkeypatch):
+    from types import SimpleNamespace
+    from blockspec.vllm_ascend.qwen38_ops import configure_gdn
+    from transformers.models.qwen3_5.modeling_qwen3_5 import (
+        torch_chunk_gated_delta_rule, torch_recurrent_gated_delta_rule,
+    )
+    mixer = SimpleNamespace(norm=nn.LayerNorm(8), layer_norm_epsilon=1e-6,
+                            num_v_heads=4, num_k_heads=2)
+    configure_gdn(mixer)
+    assert mixer.chunk_gated_delta_rule.keywords["fallback"] is torch_chunk_gated_delta_rule
+    assert mixer.chunk_gated_delta_rule.keywords["training_fallback"] is None
+    assert mixer.recurrent_gated_delta_rule.keywords["fallback"] is torch_recurrent_gated_delta_rule
+    with pytest.raises(ValueError, match="backend"):
+        configure_gdn(mixer, "unknown")
+    import importlib.metadata
+    monkeypatch.setattr(importlib.metadata, "version", lambda _: "0.1")
+    with pytest.raises(ValueError, match="fla-core==0.6.0"):
+        configure_gdn(mixer, "fla")

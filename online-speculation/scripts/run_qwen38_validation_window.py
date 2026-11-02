@@ -39,6 +39,10 @@ def container_command(args, name):
                        PYTORCH_NPU_ALLOC_CONF="expandable_segments:True", OMP_NUM_THREADS="4",
                        TORCH_EXTENSIONS_DIR="/results/runtime-cache",
                        TRITON_CACHE_DIR="/results/runtime-cache/triton") | runtime_network_environment()
+    dependencies = getattr(args, "fla_dependencies", None)
+    if dependencies:
+        command.extend(["-v", f"{dependencies}:/dependencies/fla:ro"])
+        environment["PYTHONPATH"] = "/dependencies/fla"
     uniform = getattr(args, "uniform_calibration", False)
     offline_data = getattr(args, "offline_data", None)
     head_reload = getattr(args, "head_reload", None)
@@ -92,10 +96,13 @@ def main():
     parser.add_argument("--offline-data", type=Path, help="run all-draft offline fitting instead of acceptance")
     parser.add_argument("--head-reload", type=Path, help="load an exported head and check bounded inference/update requests")
     parser.add_argument("--training-ops", action="store_true", help="audit existing forward/backward operators")
+    parser.add_argument("--fla-dependencies", type=Path, help="isolated optional FLA packages, without changing the image")
     parser.add_argument("--wait-hours", type=float, default=24)
     parser.add_argument("--timeout", type=int, default=10800)
     parser.add_argument("acceptance_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.fla_dependencies and not args.fla_dependencies.is_dir():
+        parser.error("FLA dependency directory does not exist")
     if args.training_ops and (args.offline_data or args.head_reload or args.uniform_calibration):
         parser.error("operator audit cannot run another validation mode")
     if args.offline_data and (not args.offline_data.is_file() or args.uniform_calibration):

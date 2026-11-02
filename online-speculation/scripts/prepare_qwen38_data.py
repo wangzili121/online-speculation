@@ -78,7 +78,7 @@ def main():
                     max_tokens=args.max_tokens, chat_template_sha256=hashlib.sha256(
                         json.dumps(tokenizer.chat_template, sort_keys=True).encode()).hexdigest())
     args.output.with_suffix(".manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print(json.dumps(manifest), flush=True)
+    print(json.dumps(manifest | {"records": len(manifest["records"])}), flush=True)
 
 
 if __name__ == "__main__":

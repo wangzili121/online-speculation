@@ -180,7 +180,7 @@ def _weight(module):
     return weight
 
 
-def from_native_model(target, config, *, tp, block_size, mask_token_id):
+def from_native_model(target, config, *, tp, block_size, mask_token_id, training_gdn_backend="torch"):
     """Build a TP-sharded HF-shaped view without a second backbone allocation."""
     from transformers import Qwen3_5TextConfig, Qwen3_5ForCausalLM
 
@@ -238,7 +238,7 @@ def from_native_model(target, config, *, tp, block_size, mask_token_id):
             mixer.conv1d.weight = ar.conv1d.weight
             mixer.A_log, mixer.dt_bias = ar.A_log, ar.dt_bias
             mixer.norm.weight = ar.norm.weight
-            configure_gdn(mixer)
+            configure_gdn(mixer, training_backend=training_gdn_backend)
     model = Qwen38DualView(shaped, block_size=block_size, mask_token_id=mask_token_id,
                            hybrid_policy="orthrus_qwen35_reference")
     # 映射不完整就报错，不能用随机参数掩盖缺失的权重。

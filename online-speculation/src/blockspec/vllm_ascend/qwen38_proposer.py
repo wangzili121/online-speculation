@@ -44,6 +44,7 @@ class OrthrusWorkerExtension:
                 "updated_layers": 0 if draft.learner is None else draft.learner.config.last_layers,
                 "trainable_parameters": 0 if draft.learner is None else draft.learner.trainable_parameters,
                 "optimizer_device": None if draft.learner is None else draft.learner.config.optimizer_device,
+                "training_gdn_backend": draft.options.get("training_gdn_backend", "torch"),
                 "head_dir": draft.options.get("head_dir"),
                 "history_backend": draft.history_reader.backend, "history_reads": draft.history_reader.reads}
 
@@ -80,10 +81,12 @@ class Qwen38OrthrusProposer:
         options = (vllm_config.additional_config or {}).get("qwen38_orthrus", {})
         allowed = {"mask_token_id", "online", "last_layers", "update_stride", "learning_rate",
                    "head_dir", "checkpoint_dir", "checkpoint_every", "all_draft_layers", "offline",
-                   "optimizer_device", "checkpoint_layers"}
+                   "optimizer_device", "checkpoint_layers", "training_gdn_backend"}
         if not isinstance(options, dict) or set(options) - allowed:
             raise ValueError("invalid qwen38_orthrus options")
         self.options = dict(options)
+        if options.get("training_gdn_backend", "torch") not in {"torch", "fla"}:
+            raise ValueError("training_gdn_backend must be torch or fla")
         native_backend = (vllm_config.additional_config or {}).get("qwen38_gdn_prefill_backend", "native")
         if native_backend not in {"native", "cann"}:
             raise ValueError("qwen38_gdn_prefill_backend must be native or cann")
@@ -145,7 +148,8 @@ class Qwen38OrthrusProposer:
             text_config = self.config.model_config.hf_text_config
             self.model = from_native_model(target_model, text_config, tp=self.tp,
                                           block_size=self.block_size,
-                                          mask_token_id=self.options["mask_token_id"])
+                                          mask_token_id=self.options["mask_token_id"],
+                                          training_gdn_backend=self.options.get("training_gdn_backend", "torch"))
             self.history_reader = NativeHybridHistory(target_model, self.runner, self.model.layer_types)
             self.model.source["history_backend"] = self.history_reader.backend
             self.generator = torch.Generator(device=self.model.embedding.weight.device)

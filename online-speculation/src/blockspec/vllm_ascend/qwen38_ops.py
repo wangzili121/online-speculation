@@ -62,7 +62,7 @@ def causal_conv_update(hidden, state, weight, bias=None, activation="silu"):
     return output
 
 
-def delta_rule(query, key, value, *, fallback, groups, **kwargs):
+def delta_rule(query, key, value, *, fallback, groups, training_fallback=None, **kwargs):
     normalize = kwargs.pop("use_qk_l2norm_in_kernel", False)
     if normalize:
         query, key = l2norm(query), l2norm(key)
@@ -72,6 +72,9 @@ def delta_rule(query, key, value, *, fallback, groups, **kwargs):
               and kwargs.get("cu_seqlens") is None
               and not set(kwargs) - {"g", "beta", "initial_state", "output_final_state", "cu_seqlens"})
     if not native:
+        if (training_fallback is not None and torch.is_grad_enabled()
+                and query.device.type == "npu" and query.dtype == torch.bfloat16):
+            return training_fallback(query, key, value, use_qk_l2norm_in_kernel=False, **kwargs)
         if query.device.type == "npu" and query.shape[1] < 64 and "chunk_size" not in kwargs:
             from transformers.models.qwen3_5.modeling_qwen3_5 import torch_chunk_gated_delta_rule
             if fallback is torch_chunk_gated_delta_rule:
@@ -119,13 +122,26 @@ class GatedRMSNorm(nn.Module):
         return (normalized * weight.float() * F.silu(gate.float())).to(value.dtype)
 
 
-def configure_gdn(mixer):
+def configure_gdn(mixer, training_backend="torch"):
+    from transformers.models.qwen3_5.modeling_qwen3_5 import (
+        torch_chunk_gated_delta_rule, torch_recurrent_gated_delta_rule,
+    )
+    training_fallback = None
+    if training_backend == "fla":
+        from importlib.metadata import version
+        if version("fla-core") != "0.6.0":
+            raise ValueError("the optional GDN training backend requires fla-core==0.6.0")
+        from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+        training_fallback = chunk_gated_delta_rule
+    elif training_backend != "torch":
+        raise ValueError("GDN training backend must be torch or fla")
     mixer.norm = GatedRMSNorm(mixer.norm.weight, mixer.layer_norm_epsilon)
     mixer.causal_conv1d_fn = causal_conv
     mixer.causal_conv1d_update = causal_conv_update
     groups = mixer.num_v_heads // mixer.num_k_heads
-    mixer.chunk_gated_delta_rule = partial(delta_rule, fallback=mixer.chunk_gated_delta_rule, groups=groups)
-    mixer.recurrent_gated_delta_rule = partial(delta_rule, fallback=mixer.recurrent_gated_delta_rule, groups=groups)
+    mixer.chunk_gated_delta_rule = partial(delta_rule, fallback=torch_chunk_gated_delta_rule,
+                                           groups=groups, training_fallback=training_fallback)
+    mixer.recurrent_gated_delta_rule = partial(delta_rule, fallback=torch_recurrent_gated_delta_rule, groups=groups)
 
 
 class SharedRotary:

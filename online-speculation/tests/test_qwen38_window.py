@@ -100,6 +100,17 @@ def test_offline_cli_defaults_do_not_change_online_defaults(monkeypatch):
     assert offline.optimizer_device == "cpu" and offline.checkpoint_layers
     options = speculative_options(offline)["additional_config"]["qwen38_orthrus"]
     assert options["optimizer_device"] == "cpu" and options["checkpoint_layers"]
+    assert options["training_gdn_backend"] == "torch"
+
+
+def test_optional_fla_dependencies_preserve_runtime_python_path_setup(window, tmp_path):
+    args = NS(devices=[6, 7], source=tmp_path, model=tmp_path, output=tmp_path,
+              image="runtime@sha256:123", max_model_len=2048, acceptance_args=[],
+              fla_dependencies=tmp_path / "fla")
+    command = window.container_command(args, "ours")
+    assert f"{args.fla_dependencies}:/dependencies/fla:ro" in command
+    assert "PYTHONPATH=/dependencies/fla" in command
+    assert "/work/scripts/run_in_runtime.py" in command
 
 
 def test_failed_container_creation_still_cleans_only_our_name(window, monkeypatch, tmp_path):
