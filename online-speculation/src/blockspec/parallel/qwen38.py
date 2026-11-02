@@ -274,8 +274,8 @@ class Qwen38DualView(nn.Module):
 
             def execute(value, index=i, parameters=weights):
                 layer = self.layers[index]
-                resident = next(layer.parameters())
-                staged = {name: weight.to(device=resident.device, dtype=resident.dtype)
+                resident = dict(layer.named_parameters())
+                staged = {name: weight.to(device=resident[name].device, dtype=resident[name].dtype)
                           for name, weight in parameters.items()}
                 # Recompute must start from the same clean state, not the first forward's tail.
                 states = [None] * len(self.layers)

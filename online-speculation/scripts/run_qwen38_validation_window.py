@@ -41,11 +41,17 @@ def container_command(args, name):
                        TRITON_CACHE_DIR="/results/runtime-cache/triton") | runtime_network_environment()
     uniform = getattr(args, "uniform_calibration", False)
     offline_data = getattr(args, "offline_data", None)
+    head_reload = getattr(args, "head_reload", None)
     if uniform:
         environment.update(ORTHRUS_VALIDATE_OUTPUT="/results/uniform.json",
                            ORTHRUS_VALIDATE_CASES="short-sampling", ORTHRUS_VALIDATE_SAMPLING_TRIALS="128",
                            ORTHRUS_VALIDATE_UNIFORM_CALIBRATION="1", ORTHRUS_VALIDATE_AUDIT="1",
                            ORTHRUS_VALIDATE_FROZEN="1")
+    if head_reload:
+        environment.update(ORTHRUS_VALIDATE_OUTPUT="/results/reload.json", ORTHRUS_VALIDATE_AUDIT="1",
+                           ORTHRUS_VALIDATE_NUMERIC="0", ORTHRUS_VALIDATE_FROZEN="1",
+                           ORTHRUS_VALIDATE_REPEATS="3",
+                           ORTHRUS_VALIDATE_CASES="short-greedy,short-sampling")
     for key, value in environment.items():
         command.extend(["-e", f"{key}={value}"])
     for host, target in (("/usr/local/Ascend/driver", "/usr/local/Ascend/driver"),
@@ -55,9 +61,12 @@ def container_command(args, name):
         command.extend(["-v", f"{host}:{target}:ro"])
     if offline_data:
         command.extend(["-v", f"{offline_data}:/data/train.jsonl:ro"])
+    if head_reload:
+        command.extend(["-v", f"{head_reload}:/heads/offline:ro"])
     script = ("train_qwen38_draft.py" if offline_data else
-              "validate_qwen38_vllm.py" if uniform else "accept_qwen38_vllm.py")
+              "validate_qwen38_vllm.py" if uniform or head_reload else "accept_qwen38_vllm.py")
     destination = (["--data", "/data/train.jsonl", "--output", "/results/training"] if offline_data else
+                   ["--head-dir", "/heads/offline"] if head_reload else
                    [] if uniform else ["--output-dir", "/results/matrix"])
     command.extend(["-v", f"{args.output}:/results", "-w", "/results", "--entrypoint", "python3",
                     args.image, "/work/scripts/run_in_runtime.py", f"/work/scripts/{script}",
@@ -79,12 +88,16 @@ def main():
     parser.add_argument("--uniform-calibration", action="store_true",
                         help="test-only known-q acceptance calibration, not a neural-head quality test")
     parser.add_argument("--offline-data", type=Path, help="run all-draft offline fitting instead of acceptance")
+    parser.add_argument("--head-reload", type=Path, help="load an exported head and check bounded inference/update requests")
     parser.add_argument("--wait-hours", type=float, default=24)
     parser.add_argument("--timeout", type=int, default=10800)
     parser.add_argument("acceptance_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.offline_data and (not args.offline_data.is_file() or args.uniform_calibration):
         parser.error("offline fitting requires an existing dataset and cannot run uniform calibration")
+    if args.head_reload and (args.offline_data or args.uniform_calibration
+                             or not (args.head_reload / "manifest.json").is_file()):
+        parser.error("head reload requires a published head and cannot run other modes")
     if (len(args.devices) not in {2, 4} or len(set(args.devices)) != len(args.devices)
             or not set(args.devices) <= set(range(8)) or "@sha256:" not in args.image
             or args.wait_hours <= 0 or args.timeout <= 0 or args.max_model_len < 2048):

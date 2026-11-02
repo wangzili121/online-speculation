@@ -316,8 +316,8 @@ class DualViewDecoder(nn.Module):
             weights = {name[len(prefix):]: value for name, value in overrides.items() if name.startswith(prefix)}
 
             def execute(value, module=layer, parameters=weights, history=None if cache is None else cache[offset]):
-                resident = next(module.parameters())
-                staged = {name: weight.to(device=resident.device, dtype=resident.dtype)
+                resident = dict(module.named_parameters())
+                staged = {name: weight.to(device=resident[name].device, dtype=resident[name].dtype)
                           for name, weight in parameters.items()}
                 args = (value, "draft", history, boundary.rotary, boundary.allowed, self.backend)
                 return (torch.func.functional_call(module, staged, args) if staged else module(*args))[0]

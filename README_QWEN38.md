@@ -43,6 +43,7 @@ python scripts/train_qwen38_draft.py \
 ## 调用方 / Boom Agent
 
 调用标准 OpenAI 接口即可，不需要在 agent 中接入 draft 或训练逻辑。示例配置：`base_url=http://<server>:8000/v1`，`model=/models/Qwen3.8-27B`，API key 按部署侧认证设置。服务不默认提供认证，跨主机访问应限制网络权限。
+工具调用解析、chat template 和 agent 全流程需由调用方另行联调，不属于本分支已完成的验收。
 
 当前范围：BF16、eager、同步单请求执行，TP2 已有推理/在线验证；队列可以接收多个客户端，但引擎不是并行 batch。暂不承诺量化、图模式、多模态或吞吐收益，K32 仍有已记录的数值一致性边界。主模型走原生 vLLM-Ascend；draft 复用镜像已有融合算子，反向不支持的步骤使用可微组合，不含自研 kernel。
 

@@ -162,8 +162,9 @@ class Qwen38OrthrusProposer:
                                       optimizer_device=self.options.get("optimizer_device", "model"),
                                       checkpoint_layers=self.options.get("checkpoint_layers", False))
                 self.learner = NativeSuffixLearner(self.model, policy, self.tp)
-        logger.info("Orthrus native target ready: TP=%d, K=%d, online=%s, history=shared_target_snapshot",
-                    self.tp.size, self.block_size, self.learner is not None)
+        mode = "offline" if self.options.get("offline", False) else "online" if self.learner is not None else "fixed"
+        logger.info("Orthrus native target ready: TP=%d, K=%d, mode=%s, history=shared_target_snapshot",
+                    self.tp.size, self.block_size, mode)
 
     def propose(self, *args, **kwargs):
         raise RuntimeError("neural Orthrus requires the scoped Ascend runner adapter")

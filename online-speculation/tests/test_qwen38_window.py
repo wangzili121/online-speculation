@@ -68,6 +68,31 @@ def test_offline_fitting_uses_a_separate_dataset_and_training_entry(window, tmp_
     assert command[-2:] == ["--steps", "4"]
 
 
+def test_offline_head_can_be_reloaded_for_online_last_n(window, tmp_path):
+    args = NS(devices=[2, 6], source=tmp_path, model=tmp_path, output=tmp_path,
+              image="runtime@sha256:123", max_model_len=2048, head_reload=tmp_path / "head",
+              acceptance_args=["--online", "--last-layers", "4"])
+    command = window.container_command(args, "ours")
+    assert f"{args.head_reload}:/heads/offline:ro" in command
+    assert "/work/scripts/validate_qwen38_vllm.py" in command
+    assert "ORTHRUS_VALIDATE_AUDIT=1" in command and "ORTHRUS_VALIDATE_FROZEN=1" in command
+    assert command[command.index("--head-dir") + 1] == "/heads/offline"
+    assert command[-3:] == ["--online", "--last-layers", "4"]
+
+
+def test_offline_cli_defaults_do_not_change_online_defaults(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from run_qwen38_vllm import arguments, speculative_options
+    monkeypatch.setattr(sys, "argv", ["run", "--model", "/models/qwen", "--mask-token-id", "1"])
+    online = arguments()
+    assert online.last_layers == 1 and not online.all_draft_layers
+    assert online.optimizer_device == "model" and not online.checkpoint_layers
+    offline = arguments(defaults=dict(optimizer_device="cpu", checkpoint_layers=True))
+    assert offline.optimizer_device == "cpu" and offline.checkpoint_layers
+    options = speculative_options(offline)["additional_config"]["qwen38_orthrus"]
+    assert options["optimizer_device"] == "cpu" and options["checkpoint_layers"]
+
+
 def test_failed_container_creation_still_cleans_only_our_name(window, monkeypatch, tmp_path):
     calls, released = [], []
     snapshot = "\n".join(

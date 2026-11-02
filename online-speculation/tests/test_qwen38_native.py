@@ -969,3 +969,26 @@ def test_offline_worker_rejects_serving_mode():
     worker.model_runner = NS(drafter=NS(qwen38_native_proposer=True, options={"online": True}))
     with pytest.raises(RuntimeError, match="offline updates require"):
         worker.orthrus_offline_step([3, 5, 8, 9], 0)
+
+
+def test_cpu_offload_keeps_each_mixer_parameter_dtype():
+    from blockspec.parallel.qwen38_training import offline_feedback
+    hf = fixture().to(torch.bfloat16)
+    model = from_native_model(native_fixture(hf), hf.config,
+                              tp=TensorParallel(), block_size=4, mask_token_id=1)
+    for layer in model.layers[:3]:
+        layer.attention.draft.A_log.data = layer.attention.draft.A_log.float()
+        layer.attention.draft.dt_bias.data = layer.attention.draft.dt_bias.float()
+    seen = []
+    handles = [layer.attention.draft.register_forward_pre_hook(
+        lambda module, args, kwargs: seen.append((module.A_log.dtype, module.dt_bias.dtype)),
+        with_kwargs=True) for layer in model.layers[:3]]
+    policy = SuffixConfig(last_layers=4, stride=1, optimizer_device="cpu", checkpoint_layers=True)
+    try:
+        learner = NativeSuffixLearner(model, policy, TensorParallel())
+        feedback = offline_feedback(model, torch.tensor([[3, 5, 8, 9, 11, 12, 13]]), 3)
+        learner.observe(feedback)
+    finally:
+        for handle in handles:
+            handle.remove()
+    assert len(seen) >= 6 and set(seen) == {(torch.float32, torch.float32)}
