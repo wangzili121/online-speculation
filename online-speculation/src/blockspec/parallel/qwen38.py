@@ -105,6 +105,9 @@ class _HybridLayer(nn.Module):
         # Draft 只保留普通参数，不复制 vLLM 分片参数类型及其加载器属性。
         parameters = {id(p): nn.Parameter(p.detach().clone(), requires_grad=False) for p in mixer.parameters()}
         self.attention.draft = copy.deepcopy(mixer, parameters)
+        if kind == "full_attention":
+            # 无 padding 的 draft 块全可见；None mask 也必须显式关闭 SDPA causal。
+            self.attention.draft.is_causal = False
         self.input_norm = original.input_layernorm
         self.post_norm = original.post_attention_layernorm
         self.mlp = original.mlp
@@ -113,7 +116,7 @@ class _HybridLayer(nn.Module):
         device = self.input_norm.weight.device
         hidden = hidden.to(device)
         rotary = tuple(x.to(device) for x in rotary)
-        allowed = allowed.to(device)
+        allowed = None if allowed is None else allowed.to(device)
         normalized = self.input_norm(hidden)
         mixer = getattr(self.attention, view)
         if self.kind == "full_attention":
@@ -242,8 +245,9 @@ class Qwen38DualView(nn.Module):
         rotary = self.rotary(hidden, positions[None].expand(3, -1, -1))
         # Orthrus: every draft query sees the strict AR prefix and the whole
         # temporary block. AR instead uses each row's own causal boundary.
-        allowed = hidden.new_zeros((1, 1, tokens.shape[1], past + tokens.shape[1]))
+        allowed = None
         if view == "ar":
+            allowed = hidden.new_zeros((1, 1, tokens.shape[1], past + tokens.shape[1]))
             future = torch.arange(past + tokens.shape[1], device=tokens.device)[None] > positions[0, :, None]
             allowed.masked_fill_(future, float("-inf"))
         return hidden, rotary, allowed

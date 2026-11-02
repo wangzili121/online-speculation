@@ -76,6 +76,43 @@ def _fingerprint(parameters):
 
 
 class ValidationWorker(OrthrusWorkerExtension):
+    def orthrus_enable_draft_mask_audit(self):
+        """Compare the implicit bidirectional path with the former all-zero mask."""
+        model = self.model_runner.drafter.model
+        if hasattr(self, "_draft_mask_rows"):
+            raise RuntimeError("draft mask audit already enabled")
+        self._draft_mask_rows = []
+        forward = model.forward
+
+        def checked(tokens, **kwargs):
+            actual = forward(tokens, **kwargs)
+            if kwargs.get("view", "ar") != "draft":
+                return actual
+            history = kwargs.get("cache")
+            past = 0 if history is None else history.length
+
+            def explicit_mask(module, args, values):
+                width = args[0].shape[1]
+                values["attention_mask"] = args[0].new_zeros((1, 1, width, past + width))
+                return args, values
+
+            handles = [layer.attention.draft.register_forward_pre_hook(explicit_mask, with_kwargs=True)
+                       for layer in model.layers if layer.kind == "full_attention"]
+            try:
+                expected = forward(tokens, **kwargs)
+            finally:
+                for handle in handles:
+                    handle.remove()
+            torch.testing.assert_close(actual.logits, expected.logits, rtol=0, atol=0)
+            self._draft_mask_rows.append(dict(past=past, width=tokens.shape[1], logits_bitwise_equal=True))
+            return actual
+
+        model.forward = checked
+        return "enabled"
+
+    def orthrus_draft_mask_audit(self):
+        return self._draft_mask_rows
+
     def orthrus_timed_offline_step(self, token_ids, anchor):
         """Validation-only barriers: backward includes replay and CPU gradient staging."""
         learner = self.model_runner.drafter.learner

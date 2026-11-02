@@ -529,6 +529,21 @@ def test_native_cache_audit_detects_writes(monkeypatch, corrupt):
         assert worker.orthrus_stats()["cache_readonly_checks"] == 1
 
 
+@torch.no_grad()
+def test_draft_mask_audit_compares_native_proposals_without_changing_history(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from qwen38_validation_worker import ValidationWorker
+    proposer = proposer_fixture()
+    worker = ValidationWorker()
+    worker.model_runner = NS(drafter=proposer)
+    worker.orthrus_enable_draft_mask_audit()
+    with pytest.raises(RuntimeError, match="already enabled"):
+        worker.orthrus_enable_draft_mask_audit()
+    proposer.propose_batch([[9]], NS())
+    assert worker.orthrus_draft_mask_audit() == [dict(past=3, width=4, logits_bitwise_equal=True)]
+    assert proposer.history.length == 3
+
+
 def test_native_feedback_uses_only_reached_rows_and_clears_old_request():
     proposer = proposer_fixture()
     with torch.inference_mode():

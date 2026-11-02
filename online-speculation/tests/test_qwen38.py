@@ -134,15 +134,42 @@ def test_full_attention_draft_mask_exposes_whole_block():
     seen = []
 
     def capture(module, args, kwargs):
-        seen.append(kwargs["attention_mask"].clone())
+        seen.append((kwargs["attention_mask"], module.is_causal))
 
     hook = model.layers[-1].attention.draft.register_forward_pre_hook(capture, with_kwargs=True)
     try:
         model(torch.tensor([[9, 1, 1, 1]]), view="draft", cache=history)
     finally:
         hook.remove()
-    assert seen[0].shape == (1, 1, 4, 7)
-    assert torch.equal(seen[0], torch.zeros_like(seen[0]))
+    assert seen == [(None, False)]
+    assert model.layers[-1].attention.ar.is_causal
+
+
+@pytest.mark.parametrize("backend", ["eager", "sdpa"])
+@torch.no_grad()
+def test_unmasked_draft_matches_explicit_all_visible_mask_and_keeps_future_information(backend):
+    _, model = make_model()
+    model.set_backend(backend)
+    history = model(torch.tensor([[3, 5, 8]])).cache
+    tokens = torch.tensor([[9, 1, 1, 1]])
+    actual = model(tokens, view="draft", cache=history, capture_layer=3)
+    assert actual.boundary.allowed is None
+    mixer = model.layers[-1].attention.draft
+
+    def explicit_mask(module, args, kwargs):
+        kwargs["attention_mask"] = args[0].new_zeros((1, 1, 4, 7))
+        return args, kwargs
+
+    hook = mixer.register_forward_pre_hook(explicit_mask, with_kwargs=True)
+    try:
+        expected = model(tokens, view="draft", cache=history)
+    finally:
+        hook.remove()
+    torch.testing.assert_close(actual.logits, expected.logits, rtol=0, atol=0)
+    changed = tokens.clone()
+    changed[0, -1] = 11
+    later = model(changed, view="draft", cache=history)
+    assert not torch.equal(actual.logits[:, 0], later.logits[:, 0])
 
 
 @torch.no_grad()

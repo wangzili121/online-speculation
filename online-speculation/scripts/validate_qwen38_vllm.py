@@ -137,6 +137,9 @@ def main():
     trace = os.environ.get("ORTHRUS_VALIDATE_LOGITS") == "1"
     freeze = os.environ.get("ORTHRUS_VALIDATE_FROZEN") == "1"
     ar_view = os.environ.get("ORTHRUS_VALIDATE_AR_VIEW") == "1"
+    mask_audit = os.environ.get("ORTHRUS_VALIDATE_DRAFT_MASK") == "1"
+    if mask_audit and (target_only or ngram_control):
+        raise ValueError("draft mask audit requires Orthrus")
     proposal_fixture = os.environ.get("ORTHRUS_VALIDATE_PROPOSAL_FIXTURE")
     head_digest = args.online or bool(args.head_dir)
     repeats = int(os.environ.get("ORTHRUS_VALIDATE_REPEATS", "1"))
@@ -146,10 +149,12 @@ def main():
     uniform_calibration = os.environ.get("ORTHRUS_VALIDATE_UNIFORM_CALIBRATION") == "1"
     if uniform_calibration and (target_only or ngram_control or args.online or proposal_fixture or not calibration):
         raise ValueError("uniform calibration requires fixed-head Orthrus with sampling trials")
-    if audit or trace or freeze or ar_view or head_digest or proposal_fixture or calibration or repeats > 1:
+    if audit or trace or freeze or ar_view or mask_audit or head_digest or proposal_fixture or calibration or repeats > 1:
         options["worker_extension_cls"] = "qwen38_validation_worker.ValidationWorker"
     start = time.perf_counter()
     llm = LLM(**options)
+    if mask_audit:
+        llm.collective_rpc("orthrus_enable_draft_mask_audit")
     if args.gdn_prefill_backend == "cann":
         llm.collective_rpc("orthrus_use_cann_gdn_prefill")
     if trace:
@@ -258,6 +263,11 @@ def main():
         evidence["memory"] = memory
     if replay is not None:
         evidence["fixed_replay"] = replay
+    if mask_audit:
+        rows = llm.collective_rpc("orthrus_draft_mask_audit")
+        if not rows or any(not rank for rank in rows) or any(rank != rows[0] for rank in rows):
+            raise AssertionError("draft mask audit is empty or TP boundaries disagree")
+        evidence["draft_mask_audit"] = rows
     # 后续严格断言失败时，也保留校准后的计数、权重哈希和内存检查。
     if destination:
         Path(destination).write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n")
