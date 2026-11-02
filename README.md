@@ -59,4 +59,3 @@ python scripts/train_qwen38_draft.py \
 TP2 全 draft 的 FP32 参数、梯度与 AdamW 状态合计约 116 GB 主机内存，另需模型加载和临时缓冲空间。
 
 输出目录必须为新目录，包含 `loss.jsonl`、`summary.json` 和 `head/version<steps>`。在相同部署配置下，推理传 `--head-dir /data/draft-fit/head/version1000` 即可加载；离线也可用 `--head-dir` 从已有 head 继续学习，但不恢复 AdamW 状态，不能当作精确断点续训。
-
