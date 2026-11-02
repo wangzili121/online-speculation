@@ -47,3 +47,18 @@ python scripts/run_in_runtime.py scripts/benchmark_glm53_attention_paths.py --ou
 ```
 
 完整 45 层 TP8 尚未通过全部验收。真实源权重截层、单卡算子及初始化 head 只能验证所覆盖的链路，不能代替正式 head 的效果或整模型生产验收。PyPTO 当前能力、算法及开发接口见 [需求报告](ORTHRUS_GLM53_PYPTO_REPORT.md)。
+
+## 本轮原生模型复验
+
+使用真实源权重的前五层，保留原始宽度、W8A8、4 层 KDA 和 1 层 MLA。配置为单卡 TP1、K=8、eager、同步单请求，最大上下文 34816。每阶段运行相同三个请求，各输出 32 token；不是完整 45 层模型。
+
+| 阶段 | 实测结果 |
+| --- | --- |
+| Target-only | 生成本轮固定基线。 |
+| 因果 / 门控双向 draft | 两者各 96 个 greedy token 与基线逐个一致；分别完成 53/56 次 draft/cache 审计。双向门为 0.25，实际执行反向 KDA。 |
+| 两种 head 独立进程重载 | 重载哈希与各自导出一致，重新生成的 greedy token 与基线一致；不是同一进程沿用内存里的 head。 |
+| 两种策略 temperature=0.7 | 各完成 96-token 采样、真实 propose/verify 和缓存审计；这是功能测试，不是分布等价验收。 |
+
+七个阶段全部通过，六个 draft 阶段累计 324 次目标缓存审计通过。各报告的推理代码哈希均与 `b30cf57` 提交一致；未提交模型/head 权重。结果、环境锁和压缩日志见 `validation/glm53/ops-20261103/native-5l/`。
+
+这些结果不替代九层四卡和完整 45 层的严格验收，也不包含并发或图模式。本轮测试容器已删除，设备锁已释放。
