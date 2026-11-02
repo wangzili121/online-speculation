@@ -72,9 +72,10 @@ def _segment(query, latent, scale, backend):
     if backend == "npu":
         import torch_npu
 
+        latent = latent[:, :, None].contiguous()
         output, lse = torch_npu.npu_fused_infer_attention_score(
-            query[:, None].contiguous(), latent[:, :, None].contiguous(),
-            latent[:, :, None].contiguous(), num_heads=query.shape[1],
+            query[:, None].contiguous(), latent,
+            latent, num_heads=query.shape[1],
             num_key_value_heads=1, input_layout="BSND", sparse_mode=0,
             scale=scale, softmax_lse_flag=True,
             actual_seq_lengths=[1] * query.shape[0],
@@ -87,6 +88,22 @@ def _segment(query, latent, scale, backend):
     lse = scores.logsumexp(-1)
     output = torch.einsum("qhs,qsr->qhr", scores.softmax(-1), latent.float())
     return output.to(query.dtype), lse
+
+
+def _block_segment(query, block, scale, backend):
+    """所有 query 共读同一个双向块，不复制 K 份临时 KV。"""
+    if backend != "npu":
+        return _segment(query, block.expand(query.shape[0], -1, -1), scale, backend)
+    import torch_npu
+
+    latent = block[None, :, None].contiguous()
+    output, lse = torch_npu.npu_fused_infer_attention_score(
+        query[None].contiguous(), latent, latent,
+        num_heads=query.shape[1], num_key_value_heads=1, input_layout="BSND",
+        sparse_mode=0, scale=scale, softmax_lse_flag=True,
+        actual_seq_lengths=[query.shape[0]], actual_seq_lengths_kv=[block.shape[0]],
+    )[:2]
+    return output[0], lse.reshape(query.shape[1], query.shape[0]).T.float()
 
 
 def sparse_draft_attention(query, history, block, indices, *, ar_key, ar_value,
@@ -111,7 +128,7 @@ def sparse_draft_attention(query, history, block, indices, *, ar_key, ar_value,
     q_ar = torch.einsum("qhd,hdr->qhr", query, ar_key)
     q_draft = torch.einsum("qhd,hdr->qhr", query, draft_key)
     ar_out, ar_lse = _segment(q_ar, selected, dim**-.5, backend)
-    draft_out, draft_lse = _segment(q_draft, block.expand(q_rows, -1, -1), dim**-.5, backend)
+    draft_out, draft_lse = _block_segment(q_draft, block, dim**-.5, backend)
     ar_out = torch.einsum("qhr,hvr->qhv", ar_out, ar_value)
     draft_out = torch.einsum("qhr,hvr->qhv", draft_out, draft_value)
     # 两段采用同一个 softmax 分母，不是各自归一化后直接相加。
@@ -124,6 +141,36 @@ def sparse_draft_attention(query, history, block, indices, *, ar_key, ar_value,
     output = (ar_out.float() * (ar_lse - total_lse).exp().unsqueeze(-1)
               + draft_out.float() * (draft_lse - total_lse).exp().unsqueeze(-1))
     return output.to(query.dtype)
+
+
+def kda_convolve(rows, tail, weight, *, backend="torch"):
+    """宽度 4 的 QKV 卷积；历史只读，融合路径只写临时状态。"""
+    if rows.ndim != 2 or tail.shape != (3, rows.shape[1]) or weight.shape != (rows.shape[1], 4):
+        raise ValueError("KDA convolution expects rows[K,C], tail[3,C], weight[C,4]")
+    if backend == "auto":
+        # 实测 32/64 heads 的融合调用更快，8 heads 的分配/调度成本反而更高。
+        backend = "npu" if (rows.device.type == "npu" and rows.dtype == torch.bfloat16
+                              and rows.shape[1] in (3 * 32 * 128, 3 * 64 * 128)
+                              and 1 <= rows.shape[0] <= 8) else "torch"
+    if backend == "torch":
+        stream = torch.cat((tail, rows), 0).T[None].float()
+        output = F.conv1d(stream, weight.float()[:, None], groups=rows.shape[1])
+        return F.silu(output).to(rows.dtype)[0].T
+    if backend != "npu" or rows.dtype != torch.bfloat16 or not 1 <= rows.shape[0] <= 32:
+        raise ValueError("native KDA convolution requires BF16 and 1..32 rows")
+    from vllm_ascend.models.glm5next.ops.causal_conv1d import causal_conv1d
+
+    # 原生 GLM 的 prefill 卷积可以消费一个带初始尾部的短块。
+    # 槽 0 保留为 null，所有可写状态都由本次 draft 分配。
+    state = rows.new_zeros((2, 3, rows.shape[1]))
+    state[1].copy_(tail)
+    # 原生 GLM 将卷积参数存为 FP32，调用融合算子前需与激活精度一致。
+    return causal_conv1d(
+        rows.contiguous(), weight.to(rows.dtype).T.contiguous(), state,
+        torch.tensor([0, rows.shape[0]], dtype=torch.int32, device=rows.device),
+        torch.ones(1, dtype=torch.int32, device=rows.device), run_mode=0,
+        initial_state_mode=torch.ones(1, dtype=torch.bool, device=rows.device),
+    )
 
 
 def kda_reference(query, key, value, raw_gate, raw_beta, initial, a_log, dt_bias,

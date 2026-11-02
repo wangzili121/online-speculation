@@ -14,7 +14,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..parallel.backbone import BackboneOutput
-from .glm53_ops import kda_native, select_history, sparse_draft_attention
+from .glm53_ops import kda_convolve, kda_native, select_history, sparse_draft_attention
 
 
 HYBRID_POLICY = "experimental_causal_kda_bidirectional_mla_v1"
@@ -266,9 +266,8 @@ class KDADraft(nn.Module):
                 device=original.A_log.device, dtype=torch.float32), requires_grad=False)
 
     def _convolve(self, rows, tail, dtype):
-        stream = torch.cat((tail, rows), 0).T[None].float()
-        convolved = F.conv1d(stream, self.conv.float().unsqueeze(1), groups=3 * self.heads * self.dim)
-        return F.silu(convolved).to(dtype)[0].T.reshape(-1, 3, self.heads, self.dim).unbind(1)
+        convolved = kda_convolve(rows, tail, self.conv, backend="auto")
+        return convolved.to(dtype).reshape(-1, 3, self.heads, self.dim).unbind(1)
 
     def forward(self, hidden, history):
         size = self.heads * self.dim

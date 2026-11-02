@@ -40,7 +40,7 @@ anchor + MASK × (K−1)                原模型已接受的历史
 
 ### PyPTO 当前支持到哪里
 
-本次核对固定到 2026-11-02 可见的公开主线：`pypto-lib@26ef3e8`、`pypto-serving@d0fe322`，完整提交号见文末。`pypto-lib/models/glm5_3_flash/` 已有 KDA、KPool indexer、稀疏 MLA，以及 mHC、MoE、量化投影和前向编排代码，不能将其当成尚未支持 GLM。
+本次核对固定到 2026-11-03 可见的公开主线：`pypto-lib@2aef453`、`pypto-serving@5f548be`，完整提交号见文末。`pypto-lib/models/glm5_3_flash/` 已有 KDA、KPool indexer、稀疏 MLA，以及 mHC、MoE、量化投影和前向编排代码，不能将其当成尚未支持 GLM。
 
 但库内文档提到的 `pypto_serving.model.glm53.npu_runner.Glm53ModelRunner`，在本次核对的 **Serving 公开主线中没有对应模块**。这是两个公开版本之间的差异；可能存在其他分支，但不能据此认定当前主线已提供可直接使用的 GLM 服务。
 
@@ -157,9 +157,9 @@ def segment(query, latent, scale):
     if latent.shape[1] == 0:
         return (torch.zeros_like(query),
                 query.new_full(query.shape[:2], -torch.inf, dtype=torch.float32))
+    kv = latent[:, :, None].contiguous()
     output, lse = torch_npu.npu_fused_infer_attention_score(
-        query[:, None].contiguous(), latent[:, :, None].contiguous(),
-        latent[:, :, None].contiguous(),
+        query[:, None].contiguous(), kv, kv,
         num_heads=query.shape[1], num_key_value_heads=1,
         input_layout="BSND", sparse_mode=0, scale=scale,
         softmax_lse_flag=True,
@@ -169,13 +169,26 @@ def segment(query, latent, scale):
     return output[:, 0], lse.reshape(query.shape[:2]).float()
 
 
+def block_segment(query, block, scale):
+    # 所有 K 行共读一份临时块，以 sequence 维执行，不复制 K 份 KV。
+    kv = block[None, :, None].contiguous()
+    output, lse = torch_npu.npu_fused_infer_attention_score(
+        query[None].contiguous(), kv, kv,
+        num_heads=query.shape[1], num_key_value_heads=1,
+        input_layout="BSND", sparse_mode=0, scale=scale,
+        softmax_lse_flag=True, actual_seq_lengths=[len(query)],
+        actual_seq_lengths_kv=[len(block)],
+    )[:2]
+    return output[0], lse.reshape(query.shape[1], len(query)).T.float()
+
+
 def joint_mla(query, history, block, indices, ar_key, ar_value,
               draft_key, draft_value):
     # 历史与临时块使用各自的 K 展开权重吸收 query。
     q_ar = torch.einsum("qhd,hdr->qhr", query, ar_key)
     q_d = torch.einsum("qhd,hdr->qhr", query, draft_key)
     h, lh = segment(q_ar, history[indices], 256**-.5)
-    b, lb = segment(q_d, block.expand(len(query), -1, -1), 256**-.5)
+    b, lb = block_segment(q_d, block, 256**-.5)
     h = torch.einsum("qhr,hvr->qhv", h, ar_value)
     b = torch.einsum("qhr,hvr->qhv", b, draft_value)
     if indices.shape[1] == 0:
@@ -188,7 +201,9 @@ def joint_mla(query, history, block, indices, ar_key, ar_value,
     return output.view_as(h)
 ```
 
-这里用 FIA 返回局部输出和 LSE，再用 `npu_attention_update` 完成式 (4)。代码对应 `glm53_ops.py::sparse_draft_attention`；完整实现还提供纯 Torch 参考路径，供数值比较。
+这里用 FIA 返回局部输出和 LSE，再用 `npu_attention_update` 完成式 (4)。历史的选择因 query 而异，仍按行读取；临时块则全部行共享，只保存一份 KV。代码对应 `glm53_ops.py::sparse_draft_attention`；完整实现还提供纯 Torch 参考路径，供数值比较。
+
+已测的 K=2/8、8/32/64 heads 以及单独的 K=32/8-head Attention 用例中，共享块调用约 168–175 μs，重复展开路径约 220–259 μs。该 K=32 检查仅针对 MLA，不能据此宣布完整 KDA/模型支持 K=32。
 
 ### PyPTO 具体适配
 
@@ -270,10 +285,9 @@ $\rho$ 是每 head 的反向门参数，$g_i$ 是输出门投影；因果策略�
 
 ```python
 def convolve(rows, tail, conv_weight, heads):
-    stream = torch.cat((tail, rows), 0).T[None].float()
-    mixed = F.conv1d(stream, conv_weight.float(), groups=3 * heads * 128)
-    mixed = F.silu(mixed).to(rows.dtype)
-    return mixed[0].T.reshape(-1, 3, heads, 128).unbind(1)
+    # kda_convolve 复用现成卷积；只写本次调用分配的临时状态。
+    mixed = kda_convolve(rows, tail, conv_weight[:, 0], backend="auto")
+    return mixed.reshape(-1, 3, heads, 128).unbind(1)
 
 
 def recurrent(q, k, v, gate, beta, initial, a_log, dt_bias):
@@ -307,6 +321,23 @@ def block_kda(rows, tail, initial, gate, beta, conv_weight, a_log, dt_bias,
 ```
 
 此后两种策略都执行同一 gated RMSNorm 和 O 投影。双向策略不是两路分别归一化后相加，也不是再加一个 SDPA。
+
+`kda_convolve` 在实测有收益的形状使用 GLM 原生融合卷积入口，核心调用如下。状态槽 0 保留为 null，槽 1 是独立的历史尾部副本；不会把目标状态传给可写参数：
+
+```python
+from vllm_ascend.models.glm5next.ops.causal_conv1d import causal_conv1d
+
+state = rows.new_zeros((2, 3, rows.shape[1]))
+state[1].copy_(tail)
+mixed = causal_conv1d(
+    rows.contiguous(), weight.to(rows.dtype).T.contiguous(), state,
+    torch.tensor([0, len(rows)], dtype=torch.int32, device=rows.device),
+    torch.ones(1, dtype=torch.int32, device=rows.device), run_mode=0,
+    initial_state_mode=torch.ones(1, dtype=torch.bool, device=rows.device),
+)
+```
+
+这与目标 GLM 使用同一现成 AscendC/FLA 卷积入口，不是自研 kernel。参数在模型内以 FP32 存储，调用前按原生路径转为激活精度。本次使用真实投影式的非连续 QKV 切片、FP32 参数，K=8 的 32/64 heads 分别约为 568/560 μs，原 `conv1d + SiLU` 约为 618/1067 μs；8 heads 原组合约 264 μs，比融合调用约 566 μs 更快。因此 `auto` 仅在已测的 32/64 heads、BF16 激活、K≤8 时选融合入口，其余保留 Torch 组合。CPU 参考始终可运行，不把“融合”当作自动更优的依据。
 
 ### PyPTO 具体适配
 
@@ -348,13 +379,15 @@ head 的加载契约应记录基模、块长、MASK token、混合策略和参�
 
 ## 6. 验证范围与交付顺序
 
+推理接入使用 GLM 的固定 **vLLM-Ascend 0.30** 镜像，不沿用 DSV4 的 0.26 镜像。两者的 KDA 与卷积 API 不同，不能将一个镜像的算子预检作为另一个镜像的兼容证明。本轮新增代码、数值对照、局部计时及原生接入复验见 [算子复核](GLM53_INFERENCE_OPS_AUDIT.md)。
+
 本报告区分三类证据：
 
 - **PyPTO 支持情况是公开源码核对**，尚未编译运行 PyPTO Orthrus kernel。不能把本项目 NPU 组合测试写成 PyPTO 验收。
 - **现成算子组合已做 CPU 数学和单卡 NPU 测试**：包括两套不同 KV 展开权重与显式 SDPA 等价、空历史、KPool 尾部、超过 512 个池、双向信息流、非零反向门及状态只读。新增完整 Attention 分支的测试记录见 `validation/glm53/pypto-report-demo/`。
 - **原生模型接入**：真实源权重的五层截层模型已通过相应单/双卡 eager 测试；九层四卡功能闭环通过，但 greedy 未验收；完整 45 层八卡仍未验收。截层、初始化 head 和合成 demo 都不能证明完整模型正确性或加速收益。
 
-本次 GLM 定向 CPU 回归为 **106 项通过**；另有 6 项仅在显式单卡 NPU 环境执行。NPU 环境运行 demo 测试得到 **15 项通过**，其中 9 项为通用检查、6 项为 NPU/FP32 对照，不能将两组计数简单相加为独立用例。6 个对照覆盖 $K=2/8$、历史长度 0/3/2055 和两种 KDA 策略；完整分支的相对 RMS 误差范围为 MLA **0.41%–0.47%**、KDA **0.43%–0.52%**。FP32 参考使用同一组已舍入权重和输入，容差门槛预设为 4%；这只说明该测试集的组合实现数值吻合，不是端到端模型误差界。
+本轮全套 CPU 回归为 **624 项通过、44 项硬件专项跳过**。完整 Attention 分支的 NPU/FP32 对照覆盖 $K=2/8$、历史长度 0/3/2055 和两种 KDA 策略；还单独比较了共享块调用、原生卷积以及默认后端选择，卷积参数同时覆盖 BF16 与 FP32 存储。FP32 参考使用同一组已舍入权重和输入，完整分支的相对 RMS 容差预设为 4%；这是组合实现的有限数值检查，不是端到端模型误差界。具体计数、命令和结果以本轮复核记录为准，不与历史用例重复相加。
 
 建议先交付 **只读 Indexer 编排 + 联合 MLA + 因果 KDA 临时状态入口**，在已有 Torch-NPU 路径上逐模块对照。门控反向 KDA作为独立策略扩展，复用同一递推核心。完成这些后，再处理完整 PyPTO 模型入口、整块验证与回滚，最后依据性能数据决定是否融合 query 投影、倒序打包和输出门控。
 
@@ -363,7 +396,7 @@ head 的加载契约应记录基模、块长、MASK token、混合策略和参�
 ## 参考版本
 
 - [GLM-5.3-Flash 官方配置](https://huggingface.co/zai-org/GLM-5.3-Flash/blob/main/config.json)：用于核对混合结构和维度。
-- [pypto-lib 固定版本](https://github.com/hw-native-sys/pypto-lib/tree/26ef3e865733747a89c3356ec145e567851ad985)：`models/glm5_3_flash/{indexer,attention,kda,decode_fwd,prefill_fwd}.py` 及对应模型文档。
-- [pypto-serving 固定版本](https://github.com/hw-native-sys/pypto-serving/tree/d0fe322136deb5502a087b5dc97c1a9b2d761b18)：本次公开主线的模型目录不含 GLM runner；不对其他分支或未公开代码作结论。
+- [pypto-lib 固定版本](https://github.com/hw-native-sys/pypto-lib/tree/2aef4534f8769d8ce8d49d9dde7e5aeebc472197)：`models/glm5_3_flash/{indexer,attention,kda,decode_fwd,prefill_fwd}.py` 及对应模型文档。
+- [pypto-serving 固定版本](https://github.com/hw-native-sys/pypto-serving/tree/5f548be23d7af120b20a40694601f5bb5b8b7a90)：本次公开主线的模型目录不含 GLM runner；不对其他分支或未公开代码作结论。
 
 本项目对应源码：`src/blockspec/vllm_ascend/{glm53_ops,glm53_native,glm53_proposer}.py`；独立 demo：`benchmarks/glm53_orthrus_demo.py`；检查逻辑独立保存在 `tests/test_glm53_orthrus_demo.py`，不混入对外展示的计算分支。

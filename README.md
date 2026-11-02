@@ -11,3 +11,5 @@
 运行入口及镜像要求见 [GLM 推理说明](online-speculation/docs/ORTHRUS_GLM53_FLASH.md)。算子需求与实现见 [PyPTO 报告](online-speculation/docs/ORTHRUS_GLM53_PYPTO_REPORT.md)，KDA 策略见 [方向定义](online-speculation/docs/GLM53_KDA_DIRECTION.md)，资源与验收状态见 [验证队列](online-speculation/docs/VALIDATION_QUEUE.md)。
 
 历史中保留公共代码和其他模型；后续 GLM 改动仅在此分支迭代。
+
+现成算子的选择、局部比较与测试范围见 [推理算子复核](online-speculation/docs/GLM53_INFERENCE_OPS_AUDIT.md)。

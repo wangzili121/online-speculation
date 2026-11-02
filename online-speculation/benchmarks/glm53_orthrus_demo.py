@@ -11,10 +11,9 @@ import math
 
 import torch
 from torch import nn
-from torch.nn import functional as F
 
 from blockspec.vllm_ascend.glm53_ops import (
-    kda_native, kda_reference, select_history, sparse_draft_attention,
+    kda_convolve, kda_native, kda_reference, select_history, sparse_draft_attention,
 )
 
 
@@ -58,11 +57,11 @@ class DraftAttentionDemo(nn.Module):
         )
         return self.mla_o(output.flatten(1))
 
-    def _convolve(self, rows, tail):
+    def _convolve(self, rows, tail, backend):
         # 宽度 4 的逐通道卷积，读取 3 行历史；不把新尾部写回 target。
-        stream = torch.cat((tail, rows), 0).T[None].float()
-        mixed = F.conv1d(stream, self.conv_weight.float(), groups=3 * self.heads * self.dim)
-        return F.silu(mixed).to(rows.dtype)[0].T.reshape(-1, 3, 8, 128).unbind(1)
+        mixed = kda_convolve(rows, tail, self.conv_weight[:, 0],
+                             backend="auto" if backend == "npu" else "torch")
+        return mixed.reshape(-1, 3, 8, 128).unbind(1)
 
     def kda(self, hidden, tail, state, *, backend, bidirectional):
         """KDA 分支：临时历史递推，可选零状态反向块，在 gated norm 前合并。"""
@@ -71,7 +70,7 @@ class DraftAttentionDemo(nn.Module):
         core = kda_native if backend == "npu" else kda_reference
 
         def run(qkv, left, initial, raw_gate, raw_beta):
-            q, k, v = self._convolve(qkv, left)
+            q, k, v = self._convolve(qkv, left, backend)
             output, _ = core(q.contiguous(), k.contiguous(), v.contiguous(),
                              raw_gate.contiguous(), raw_beta.contiguous(), initial,
                              self.a_log, self.dt_bias)
