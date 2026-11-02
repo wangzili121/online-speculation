@@ -80,6 +80,15 @@ def test_offline_head_can_be_reloaded_for_online_last_n(window, tmp_path):
     assert command[-3:] == ["--online", "--last-layers", "4"]
 
 
+def test_training_operator_audit_uses_the_same_isolation_without_serving_flags(window, tmp_path):
+    args = NS(devices=[6, 7], source=tmp_path, model=tmp_path, output=tmp_path,
+              image="runtime@sha256:123", max_model_len=2048, training_ops=True, acceptance_args=[])
+    command = window.container_command(args, "ours")
+    assert "/work/scripts/audit_qwen38_training_ops.py" in command
+    assert "--tp" not in command and "--mask-token-id" not in command
+    assert "/dev/davinci6:/dev/davinci0" in command
+
+
 def test_offline_cli_defaults_do_not_change_online_defaults(monkeypatch):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
     from run_qwen38_vllm import arguments, speculative_options

@@ -42,6 +42,7 @@ def container_command(args, name):
     uniform = getattr(args, "uniform_calibration", False)
     offline_data = getattr(args, "offline_data", None)
     head_reload = getattr(args, "head_reload", None)
+    training_ops = getattr(args, "training_ops", False)
     if uniform:
         environment.update(ORTHRUS_VALIDATE_OUTPUT="/results/uniform.json",
                            ORTHRUS_VALIDATE_CASES="short-sampling", ORTHRUS_VALIDATE_SAMPLING_TRIALS="128",
@@ -63,15 +64,16 @@ def container_command(args, name):
         command.extend(["-v", f"{offline_data}:/data/train.jsonl:ro"])
     if head_reload:
         command.extend(["-v", f"{head_reload}:/heads/offline:ro"])
-    script = ("train_qwen38_draft.py" if offline_data else
+    script = ("audit_qwen38_training_ops.py" if training_ops else "train_qwen38_draft.py" if offline_data else
               "validate_qwen38_vllm.py" if uniform or head_reload else "accept_qwen38_vllm.py")
     destination = (["--data", "/data/train.jsonl", "--output", "/results/training"] if offline_data else
                    ["--head-dir", "/heads/offline"] if head_reload else
                    [] if uniform else ["--output-dir", "/results/matrix"])
+    common = ([] if training_ops else ["--mask-token-id", "1", "--tp", str(len(args.devices)),
+                                      *destination, "--max-model-len", str(args.max_model_len)])
     command.extend(["-v", f"{args.output}:/results", "-w", "/results", "--entrypoint", "python3",
                     args.image, "/work/scripts/run_in_runtime.py", f"/work/scripts/{script}",
-                    "--model", "/models/qwen38", "--mask-token-id", "1", "--tp", str(len(args.devices)),
-                    *destination, "--max-model-len", str(args.max_model_len), *args.acceptance_args])
+                    "--model", "/models/qwen38", *common, *args.acceptance_args])
     return command
 
 
@@ -89,10 +91,13 @@ def main():
                         help="test-only known-q acceptance calibration, not a neural-head quality test")
     parser.add_argument("--offline-data", type=Path, help="run all-draft offline fitting instead of acceptance")
     parser.add_argument("--head-reload", type=Path, help="load an exported head and check bounded inference/update requests")
+    parser.add_argument("--training-ops", action="store_true", help="audit existing forward/backward operators")
     parser.add_argument("--wait-hours", type=float, default=24)
     parser.add_argument("--timeout", type=int, default=10800)
     parser.add_argument("acceptance_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.training_ops and (args.offline_data or args.head_reload or args.uniform_calibration):
+        parser.error("operator audit cannot run another validation mode")
     if args.offline_data and (not args.offline_data.is_file() or args.uniform_calibration):
         parser.error("offline fitting requires an existing dataset and cannot run uniform calibration")
     if args.head_reload and (args.offline_data or args.uniform_calibration

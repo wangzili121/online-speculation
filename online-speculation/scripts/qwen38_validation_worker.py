@@ -2,6 +2,8 @@
 
 import functools
 import hashlib
+import time
+from unittest.mock import patch
 
 import torch
 
@@ -74,6 +76,31 @@ def _fingerprint(parameters):
 
 
 class ValidationWorker(OrthrusWorkerExtension):
+    def orthrus_timed_offline_step(self, token_ids, anchor):
+        """Validation-only barriers: backward includes replay and CPU gradient staging."""
+        learner = self.model_runner.drafter.learner
+        phases = {}
+
+        def measured(name, operation):
+            def run(*args, **kwargs):
+                learner._sync()
+                start = time.perf_counter()
+                result = operation(*args, **kwargs)
+                learner._sync()
+                phases[name] = time.perf_counter() - start
+                return result
+            return run
+
+        start = time.perf_counter()
+        with patch.object(learner, "backward", measured("replay_backward_and_transfer", learner.backward)), \
+                patch.object(learner, "clip_gradients", measured("clip_and_collective", learner.clip_gradients)), \
+                patch.object(learner.optimizer, "step", measured("optimizer_cpu", learner.optimizer.step)), \
+                patch.object(learner, "publish", measured("publish_to_npu", learner.publish)):
+            result = self.orthrus_offline_step(token_ids, anchor)
+        result["phase_seconds"] = phases
+        result["offline_step_seconds"] = time.perf_counter() - start
+        return result
+
     def orthrus_enable_projection_audit(self):
         target = self.model_runner.get_model()
         module = getattr(target, "language_model", target).model.layers[0].linear_attn.in_proj_qkvz

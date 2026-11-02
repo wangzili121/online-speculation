@@ -72,6 +72,11 @@ def delta_rule(query, key, value, *, fallback, groups, **kwargs):
               and kwargs.get("cu_seqlens") is None
               and not set(kwargs) - {"g", "beta", "initial_state", "output_final_state", "cu_seqlens"})
     if not native:
+        if query.device.type == "npu" and query.shape[1] < 64 and "chunk_size" not in kwargs:
+            from transformers.models.qwen3_5.modeling_qwen3_5 import torch_chunk_gated_delta_rule
+            if fallback is torch_chunk_gated_delta_rule:
+                # Keep the existing chunk algorithm, without padding short draft blocks to 64.
+                kwargs["chunk_size"] = 1 << (max(1, query.shape[1]) - 1).bit_length()
         return fallback(query, key, value, use_qk_l2norm_in_kernel=False, **kwargs)
     from .qwen38_gdn_backend import recurrent_slices
     length = query.shape[1]
@@ -106,6 +111,10 @@ class GatedRMSNorm(nn.Module):
         if torch.is_inference(weight) and torch.is_grad_enabled() and (value.requires_grad or gate.requires_grad):
             weight = weight.clone()
         full = value.float()
+        if value.device.type == "npu":
+            import torch_npu
+            normalized = torch_npu.npu_rms_norm(full, weight.float(), self.variance_epsilon)[0]
+            return (normalized * F.silu(gate.float())).to(value.dtype)
         normalized = full * torch.rsqrt(full.square().mean(-1, keepdim=True) + self.variance_epsilon)
         return (normalized * weight.float() * F.silu(gate.float())).to(value.dtype)
 
