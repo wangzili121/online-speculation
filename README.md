@@ -1,3 +1,9 @@
+# Orthrus-DSV4 (Ascend)
+
+本分支维护 DSV4 的 Orthrus 推理适配，训练与在线更新暂不推进。运行入口及已知边界见 [简短接入说明](README_DSV4.md)。
+
+以下保留原仓库研究说明，非本分支的部署入口。
+
 # inference_scaling
 
 本仓库同时实现自回归语言模型（AR-LLM）和掩码扩散语言模型（dLLM）的训练与推理扩展。AR-LLM
