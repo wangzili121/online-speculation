@@ -5,7 +5,7 @@
 主模型缓存复用已接入；固定 head 和最后四层在线更新已在新缓存路径重新验证，不再通过 AR 重放生成历史。
 本轮结论与未通过项见 [验收摘要](QWEN38_ACCEPTANCE_SUMMARY.md)。
 
-PyPTO 的计算路径、算子适配与在线反向边界见 [Orthrus-Qwen3.8 算子需求报告](ORTHRUS_QWEN38_PYPTO_REPORT.md)。
+PyPTO 的推理计算路径及接口需求见 [Orthrus-Qwen3.8 算子需求报告](ORTHRUS_QWEN38_PYPTO_REQUIREMENTS.md)；训练与反向另见 [训练算子审计](QWEN38_TRAINING_OPS_AUDIT.md)。
 
 该入口使用 vLLM-Ascend 加载和执行真实 Qwen3.8 主模型，插件负责 Orthrus 起草和在线续训。
 主模型验证候选、执行 rejection sampling、维护正式缓存，均走原生引擎；不是将 Torch 参考执行器包装成服务。
@@ -22,7 +22,8 @@ TP 分片的 query/KV 头和 GDN 头数须能整除 TP；27B 首选 TP=2。
 
 `qwen38_ops.py` 为 draft 绑定镜像已有算子：Full Attention 的无梯度分支使用原生 QKV 拆分、Q/K norm、RoPE 融合算子，再以 `npu_fusion_attention` 计算历史与双向块；共享 MLP 使用 packed gate/up 投影和 `npu_swiglu`。
 FAS 直接接收 GQA 的原始 KV 头，不先复制为 Q 的头数；无梯度 RoPE 分支也不再重复展开融合算子没有使用的系数。
-GDN 使用已有 causal convolution、L2 norm、递推和门控 norm，所有工作状态均为自有临时存储。在线反向中不支持 autograd 的融合步骤改用可微分表达式，保持相同的中间精度和舍入位置；Attention 本身仍调用支持反向的融合算子。
+单请求、无 padding 的 draft 块全可见，因此 draft mixer 显式设置 `is_causal=False` 并传入 `None` mask；AR 视图仍使用因果 mask。不构造全零 mask，也不在每层重复转换 mask，捕获的训练边界同样保留这一语义。
+GDN 使用已有 causal convolution、L2 norm、递推和门控 norm，所有工作状态均为自有临时存储。训练 GDN 默认使用可微 Torch chunk 路径，另可显式选择 FLA 0.6.0；门控 norm 使用支持反向的 `npu_rms_norm + SiLU`，宽度 4 卷积保留可微组合。Attention 本身仍调用支持反向的融合算子；推理不受训练 backend 选择影响。
 这些适配不改变 head 的参数名或交付格式，不新增 NPU kernel，也不表示性能已经最优。
 
 draft 默认跟随请求的 temperature、top-k 和 top-p；greedy 请求直接起草最高概率 token。

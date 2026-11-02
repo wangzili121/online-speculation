@@ -4,6 +4,8 @@ Qwen3.8-27B 的 Orthrus 投机推理与 draft 更新实现。draft 复用冻结�
 
 Full Attention 在块内采用双向注意力，GDN 使用 `orthrus_qwen35_reference` 的因果递推策略。
 
+[PyPTO 推理算子需求](online-speculation/docs/ORTHRUS_QWEN38_PYPTO_REQUIREMENTS.md)说明两类 mixer 的公式、现有实现基础及所需增量。
+
 ## 验证状态
 
 | 路径 | 当前状态 |
