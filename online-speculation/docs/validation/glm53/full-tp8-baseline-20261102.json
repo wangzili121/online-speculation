@@ -1,0 +1,32 @@
+{
+  "checked_utc": "2026-11-02T01:30:24.758747+00:00",
+  "host": "111",
+  "mode": "baseline",
+  "attempt": 1,
+  "stage": "worker_device_initialization",
+  "model_weights_loaded": false,
+  "orthrus_executed": false,
+  "full_model_acceptance": false,
+  "preflight": {
+    "status": "passed",
+    "checked_devices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "hccl_world_size": 1,
+    "scope": "device visibility and synthetic primitive checks, not TP8 model or 8-rank HCCL acceptance"
+  },
+  "errors": [
+    "Free memory on device (32.59/60.96 GiB) on startup is less than desired GPU memory utilization (0.9, 54.86 GiB). Decrease GPU memory utilization or reduce GPU memory used by other processes.",
+    "Free memory on device (33.03/60.96 GiB) on startup is less than desired GPU memory utilization (0.9, 54.86 GiB). Decrease GPU memory utilization or reduce GPU memory used by other processes."
+  ],
+  "completed": [],
+  "retry_attempt": 2,
+  "retry_state": "waiting"
+}

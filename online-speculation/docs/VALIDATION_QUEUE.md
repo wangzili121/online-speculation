@@ -39,6 +39,10 @@ Qwen 当前混合策略为 Full Attention 块内双向、GDN 因果递推，交�
 
 ## 八卡窗口
 
+2026-11-02 北京时间约 09:14，111 的八卡窗口触发了首次完整模型尝试。八卡可见性和基础算子预检通过；随后 target-only 在 worker 设备初始化时失败，各卡可用显存约 32.6–33.0 GiB，低于当前配置要求的 54.9 GiB。失败发生在模型权重加载前，Orthrus 尚未执行，不能计为完整模型验收。失败容器已清理，第二次尝试等待新的八卡窗口。[失败摘要](validation/glm53/full-tp8-baseline-20261102.json)、[原始日志](validation/glm53/full-tp8-baseline-20261102.txt.gz)。
+
+此处的预检不是八进程 TP8 通信验证：其 HCCL 检查的 world size 为 1。完整模型的多卡通信、生成、两种 draft 和 head 重载仍待验证。61 的权重下载因 ModelScope HTTP 500 中断后已重启下载流程与监控；重新完成校验前不运行模型。
+
 GLM 以真实 45 层 W8A8、TP8 为首个八卡验收目标，按顺序运行：
 
 ```text
