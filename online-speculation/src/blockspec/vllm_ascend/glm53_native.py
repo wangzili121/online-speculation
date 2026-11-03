@@ -96,11 +96,26 @@ def read_pages(cache, table, length, *, block_size=None):
         raise ValueError("prefix exceeds GLM page table")
     if not pages:
         return cache.new_empty((0, cache.shape[-1]))
-    pieces = []
-    for page, index in enumerate(table[0, :pages].cpu().tolist()):
-        physical, subpage = divmod(index, split)
-        if not 0 <= physical < cache.shape[0]:
+    page_ids = table[0, :pages].cpu().tolist()
+    for index in page_ids:
+        if not 0 <= index < cache.shape[0] * split:
             raise ValueError("operator page outside the physical cache arena")
+    pitch = cache.stride(1)
+    # 将行末 padding 包含在只读视图中，再批量选行。直接 gather 非连续
+    # cache 会让 NPU 先物化整个 arena，不能用 cache.reshape 替代此视图。
+    if (pages >= 16 and cache.stride(-1) == 1 and pitch >= cache.shape[-1]
+            and cache.stride(0) >= cache.shape[1] * pitch and cache.stride(0) % pitch == 0):
+        page_pitch = cache.stride(0) // pitch
+        rows = (cache.shape[0] - 1) * page_pitch + cache.shape[1]
+        end = (cache.storage_offset() + rows * pitch) * cache.element_size()
+        if end <= cache.untyped_storage().nbytes():
+            arena = cache.as_strided((rows, pitch), (pitch, 1))
+            starts = torch.tensor([i // split * page_pitch + i % split * block_size for i in page_ids])
+            indices = (starts[:, None] + torch.arange(block_size)).flatten()[:length].to(cache.device)
+            return arena.index_select(0, indices)[:, :cache.shape[-1]].contiguous()
+    pieces = []
+    for page, index in enumerate(page_ids):
+        physical, subpage = divmod(index, split)
         offset = subpage * block_size
         width = min(block_size, length - page * block_size)
         pieces.append(cache[physical, offset:offset + width, 0].clone(memory_format=torch.contiguous_format))

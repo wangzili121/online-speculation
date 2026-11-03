@@ -65,6 +65,13 @@ def select_history(query, head_weights, pooled_keys, prefix_length, *, topk, poo
     return torch.cat((indices, tail.expand(query.shape[0], -1)), dim=-1)
 
 
+def gather_history(history, indices):
+    """从请求快照收集 latent；大索引集用一维 index_select 减少 workspace。"""
+    if history.is_contiguous() and indices.numel() >= 2048:
+        return history.index_select(0, indices.flatten()).view(*indices.shape, history.shape[-1])
+    return history[indices]
+
+
 def _segment(query, latent, scale, backend):
     """[Q,H,R] 对每行自己的 [Q,S,R] 计算输出及自然对数 LSE。"""
     if latent.shape[1] == 0:
@@ -124,7 +131,7 @@ def sparse_draft_attention(query, history, block, indices, *, ar_key, ar_value,
             or draft_value.shape != ar_value.shape):
         raise ValueError("incompatible AR/draft latent expansion weights")
     # ORTHRUS：历史按 AR 的 KV 展开权重解释，临时块按 draft 的权重解释。
-    selected = history[indices]
+    selected = gather_history(history, indices)
     q_ar = torch.einsum("qhd,hdr->qhr", query, ar_key)
     q_draft = torch.einsum("qhd,hdr->qhr", query, draft_key)
     ar_out, ar_lse = _segment(q_ar, selected, dim**-.5, backend)
