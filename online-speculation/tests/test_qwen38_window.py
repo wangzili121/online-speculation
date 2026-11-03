@@ -105,6 +105,16 @@ def test_offline_cli_defaults_do_not_change_online_defaults(monkeypatch):
     assert options["training_gdn_backend"] == "torch"
 
 
+def test_offline_checkpoint_default_can_be_explicitly_disabled(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    from run_qwen38_vllm import arguments, speculative_options
+    monkeypatch.setattr(sys, "argv", ["run", "--model", "/models/qwen", "--mask-token-id", "1",
+                                      "--optimizer-device", "model", "--no-checkpoint-layers"])
+    args = arguments(defaults=dict(optimizer_device="cpu", checkpoint_layers=True))
+    options = speculative_options(args)["additional_config"]["qwen38_orthrus"]
+    assert options["optimizer_device"] == "model" and not options["checkpoint_layers"]
+
+
 def test_optional_fla_dependencies_preserve_runtime_python_path_setup(window, tmp_path):
     args = NS(devices=[6, 7], source=tmp_path, model=tmp_path, output=tmp_path,
               image="runtime@sha256:123", max_model_len=2048, acceptance_args=[],

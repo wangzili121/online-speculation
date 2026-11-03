@@ -132,7 +132,7 @@ def draft_gdn(q, k, v, log_decay, beta, ar_state):
     k = k.repeat_interleave(groups, dim=2)
     output, _ = delta_rule(
         q, k, v, g=log_decay, beta=beta,
-        initial_state=ar_state.clone(), output_final_state=False,
+        initial_state=ar_state, output_final_state=False,
         use_qk_l2norm_in_kernel=False, groups=groups,
         fallback=torch_chunk_gated_delta_rule,
     )
@@ -140,6 +140,7 @@ def draft_gdn(q, k, v, log_decay, beta, ar_state):
 ```
 
 完整路径还包含投影、宽度 4 卷积、Q/K norm、门控 norm 和输出投影。NPU 推理复用镜像已有的融合卷积、L2 norm、递推及门控 norm；K32 递推在当前 A2 接口限制下分成最多 16 行的片段，并传递同一临时状态。这不是 K 次完整模型推理。
+适配层将 `ar_state` 复制到独立工作区，分段前只打包一次输入，并保留逐位置 checkpoint；调用方不需要重复复制历史初态。上述执行调整不增加 PyPTO 的算子种类或改变状态契约。
 完整模型执行见 `src/blockspec/parallel/qwen38.py`、`src/blockspec/vllm_ascend/qwen38_ops.py` 和 `qwen38_gdn_backend.py`。可选 FLA 反向仅属于训练实现，不列入本次 PyPTO 推理需求。
 
 ## 4. 完整层与推理引擎

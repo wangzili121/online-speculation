@@ -44,3 +44,23 @@
 `scripts/benchmark_qwen38_history.py --output <结果.json>` 比较现有算子的前向、梯度、延迟和临时内存。
 在 `scripts/validate_qwen38_vllm.py` 的验证环境中设置 `ORTHRUS_VALIDATE_DRAFT_MASK=1`，会将每轮 draft 与显式零 mask 重放对照；该检查只在验证 worker 中启用，不进入正常服务路径。
 实验进程和容器结束后释放测试卡，不保留占卡任务。
+
+## GDN 状态与布局
+
+本节对应核心提交 `fe12ee2`，不改变 GDN 的因果递推定义。
+
+`recurrent_slices` 继续调用镜像的递推 kernel，保留每个候选位置的 checkpoint。`index_select` 已经返回独立存储，因此不再追加 `clone`；末段结束后也不再读取用不到的尾状态。只有一个片段时直接返回算子输出，不额外拼接。
+
+Q/K/V 和 gate 在分段前统一整理为连续布局，后续沿 token 维切片直接传给 kernel。这样 K32 的两个片段不必分别打包同一组输入。draft 临时状态区只初始化第一行，其余行由递推 kernel 写出；不会把未初始化存储交给主模型作历史。
+
+状态测试覆盖乱序槽位、上轮接受位置大于本轮长度、跨 16 行分段以及没有写到的状态槽。另将临时状态的后续行填成 NaN，与全零工作区比较，确认输出和全部 checkpoint 一致。主模型历史仍是只读快照，draft 状态不转为正式缓存。
+
+`scripts/audit_qwen38_execution.py --model <本地模型> --output <结果.json>` 对照原适配逻辑和当前逻辑，包括完整 draft 调用；`scripts/probe_qwen38_execution_ops.py` 检查融合 Attention、卷积、GDN、norm 和 SwiGLU 的前向及可微路径。以上均复用已有算子，不新增 kernel。
+
+TP2 实际规格下，完整 GDN draft 适配调用的 K8 为 1.178 → 1.045 ms，K32 为 1.553 → 1.493 ms；输出和最终状态逐 bit 一致。另覆盖 K1/K17、乱序状态槽、上轮接受边界及 NaN 工作区，全部 checkpoint 对照一致。计时包含适配层调用，不代表服务吞吐同比提升，见 [算子记录](validation/qwen38/execution-20261103/operators.json)。
+
+真实 27B 的固定 head 另复验六类请求，greedy 与同配置 target-only 逐 token 一致；各 rank 完成 56 次历史读取和 18 次只读检查，主模型与固定 head 哈希均未变。见 [固定 head](validation/qwen38/execution-20261103/fixed-tp2.json) 和 [基线](validation/qwen38/execution-20261103/target-tp2.json)。
+
+适配层另在 NPU 上直接检查融合卷积、GDN、门控 norm、SwiGLU、GQA 和完整 Full Attention 的前向及可微路径。GDN 的 K1/8/17/32 空历史与显式零初态逐 bit 相同；Full Attention 的因果与双向模式均通过数值门槛，历史输入保持不变。见 [设备适配层检查](validation/qwen38/execution-20261103/device-adapters.json)。这些是算子与适配层检查，不代替整模型验收。
+
+四卡设备驻留的离线训练、head 重载和在线 last-1/last-4 更新结果见[训练审计](QWEN38_TRAINING_OPS_AUDIT.md#四卡设备驻留验证)。它们验证更新后继续起草和验证的链路，不将在线期间变化的 head 与固定 head 作逐 token 对照。

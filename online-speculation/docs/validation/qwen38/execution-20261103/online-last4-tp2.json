@@ -1,0 +1,134 @@
+{
+  "model": "/models/qwen38",
+  "target_only": false,
+  "tp": 2,
+  "block_size": 32,
+  "gdn_prefill_backend": "cann",
+  "max_model_len": 2048,
+  "online": true,
+  "last_layers": 4,
+  "update_stride": 1,
+  "native_ngram_control": false,
+  "proposal_fixture": null,
+  "outputs": [
+    {
+      "case": "short-greedy",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "short-sampling",
+      "reference_case": "short-sampling",
+      "temperature": 1.0,
+      "tokens": [
+        729,
+        198,
+        53975,
+        36570,
+        192526,
+        401,
+        68953,
+        1798
+      ],
+      "text": " !\nUne petite boîte de chocolats"
+    }
+  ],
+  "workers": [
+    {
+      "orthrus": true,
+      "rank": 0,
+      "proposals": 10,
+      "verified": 8,
+      "accepted": 7,
+      "max_verified_tokens": 31,
+      "full_blocks": 8,
+      "updates": 8,
+      "loss": 0.547987699508667,
+      "update_seconds": 198.8928726640297,
+      "updated_layers": 4,
+      "trainable_parameters": 226243600,
+      "optimizer_device": "cpu",
+      "training_gdn_backend": "fla",
+      "head_dir": "/heads/offline",
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 10,
+      "cache_readonly_checks": 6
+    },
+    {
+      "orthrus": true,
+      "rank": 1,
+      "proposals": 10,
+      "verified": 8,
+      "accepted": 7,
+      "max_verified_tokens": 31,
+      "full_blocks": 8,
+      "updates": 8,
+      "loss": 0.547987699508667,
+      "update_seconds": 198.23186032101512,
+      "updated_layers": 4,
+      "trainable_parameters": 226243600,
+      "optimizer_device": "cpu",
+      "training_gdn_backend": "fla",
+      "head_dir": "/heads/offline",
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 10,
+      "cache_readonly_checks": 6
+    }
+  ],
+  "seconds": 479.6137517580064,
+  "completed": true,
+  "target_weights": {
+    "before": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "after": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "unchanged": true
+  },
+  "head_before": [
+    {
+      "sha256": "5a61f062561936fba0bc91d80ccb1f16f5662770ba5bcdd8fdaabe30c97f2d46",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "6280db46bb859c28eb3eac6120dd8c7e813cdff25aa5d2095c647baea23e42be",
+      "bytes": 7239797504
+    }
+  ],
+  "head_after": [
+    {
+      "sha256": "64766d695afec2a036d4f3c14ca13df92150a186c9b8921ba9259621834c61b9",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "bd4e3e5742330af4b4209393ff22abedd9c825fd2100b6f0f7659d81195f54ad",
+      "bytes": 7239797504
+    }
+  ]
+}

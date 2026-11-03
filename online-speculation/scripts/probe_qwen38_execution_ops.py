@@ -52,6 +52,10 @@ def main():
                       initial_state=initial, output_final_state=True, use_qk_l2norm_in_kernel=True)
         with torch.no_grad():
             actual, final = delta_rule(q, k, value, **kwargs)
+            empty_history = delta_rule(q, k, value, **(kwargs | dict(initial_state=None)))
+            zero_history = delta_rule(q, k, value, **(kwargs | dict(initial_state=torch.zeros_like(initial))))
+            for implicit, explicit in zip(empty_history, zero_history, strict=True):
+                torch.testing.assert_close(implicit, explicit, rtol=0, atol=0)
         expected, state = delta_rule(q, k, value, **kwargs)
         torch.testing.assert_close(actual, expected, rtol=.025, atol=.001)
         torch.testing.assert_close(final, state, rtol=.025, atol=.001)
@@ -60,7 +64,8 @@ def main():
         assert all(p.grad is not None and torch.isfinite(p.grad).all() and p.grad.count_nonzero()
                    for p in (q, k, value, g, beta))
         report["gdn"].append(dict(length=length, forward=error(actual, expected),
-                                  state=error(final, state), history_unchanged=True, backward=True))
+                                  state=error(final, state), history_unchanged=True,
+                                  empty_history_exact=True, backward=True))
     for length in (1, 16, 32):
         packed = torch.randn(length, 256, device=device, dtype=torch.bfloat16, requires_grad=True)
         reference = packed.detach().float().requires_grad_()

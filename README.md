@@ -5,14 +5,15 @@ Qwen3.8-27B 的 Orthrus 投机推理与 draft 更新实现。draft 复用冻结�
 Full Attention 在块内采用双向注意力，GDN 使用 `orthrus_qwen35_reference` 的因果递推策略。
 
 [PyPTO 推理算子需求](online-speculation/docs/ORTHRUS_QWEN38_PYPTO_REQUIREMENTS.md)说明两类 mixer 的公式、现有实现基础及所需增量。
+现成算子的选择与对照见[推理算子审计](online-speculation/docs/QWEN38_INFERENCE_OPS_AUDIT.md)和[训练算子审计](online-speculation/docs/QWEN38_TRAINING_OPS_AUDIT.md)。主要配置为四卡设备驻留，双卡 CPU offload 作为少卡选项保留。
 
 ## 验证状态
 
 | 路径 | 当前状态 |
 | --- | --- |
 | 投机推理 | 真实 27B、TP2 已验证 K=2/8/17/32、多类请求边界、主模型历史缓存复用及 head 重载。 |
-| 在线 last-N | last-1 / last-4 已在真实 27B 验证更新、冻结参数、只读历史和导出重载。固定反馈 32 步 TV loss 为 0.5044 → 0.4929，不代表业务加速收益。 |
-| 离线全 draft | 真实 27B、TP2 已完成全 64 层更新、导出重载并继续 last-4 更新；另用 WikiText 真实语料补测随机窗口、随机 anchor 的四步更新，主模型哈希未变。 |
+| 在线 last-N | TP4 独立重载离线导出的 head，last-1 / last-4 各完成 7 次设备驻留更新；四 rank 一致，主模型参数未变、历史缓存只读检查通过。 |
+| 离线全 draft | TP4 在开启和关闭激活检查点两种配置下，各完成真实 WikiText 六步全 64 层更新与 head 导出。所有层均有梯度，四 rank 的 loss/梯度范数一致，主模型哈希未变；TP2 offload 的训练和重载续训也保留。 |
 
 未提供预训练 head 时，从主模型 mixer 复制初始化，仅用于验证流程；目前不承诺接受率或吞吐提升。
 
@@ -35,9 +36,9 @@ python -m pip install --no-deps --no-build-isolation -e .
 
 ```bash
 python scripts/run_qwen38_vllm.py \
-  --model /models/Qwen3.8-27B --tp 2 --mask-token-id 1 --block-size 32 \
+  --model /models/Qwen3.8-27B --tp 4 --mask-token-id 1 --block-size 32 \
   --online --last-layers 4 --update-stride 16 \
-  --max-model-len 4096 --kv-cache-memory-bytes 12884901888 \
+  --max-model-len 2048 --kv-cache-memory-bytes 4294967296 \
   --checkpoint-dir /data/online-heads --port 8000
 ```
 
@@ -51,17 +52,21 @@ python scripts/run_qwen38_vllm.py \
 
 原始文本可先用 `scripts/prepare_qwen38_data.py --input /data/raw.jsonl --output /data/train.jsonl --model /models/Qwen3.8-27B --source <数据集及版本>` 转换。支持 `text` 或 `messages` JSONL；Parquet 输入另需 `pyarrow`。`--min-tokens` 至少设为训练的 `--sequence-length`，输出同时记录数据来源与哈希。
 
+卡充足时使用下面的设备驻留配置，FP32 master、梯度和 AdamW moment 都保留在 NPU。示例选择已有 FLA 训练后端：用 `pip install --no-deps --target /data/fla-deps fla-core==0.6.0 flash-linear-attention==0.6.0` 准备依赖，并设置 `ORTHRUS_QWEN38_FLA_PATH=/data/fla-deps`，该目录须在容器内可见。不使用 FLA 时改为 `--training-gdn-backend torch`。
+
 ```bash
 python scripts/train_qwen38_draft.py \
-  --model /models/Qwen3.8-27B --tp 2 --mask-token-id 1 --block-size 32 \
+  --model /models/Qwen3.8-27B --tp 4 --mask-token-id 1 --block-size 32 \
   --data /data/train.jsonl --output /data/draft-fit \
-  --steps 1000 --sequence-length 256 --learning-rate 0.0001 \
-  --max-model-len 2048 --kv-cache-memory-bytes 8589934592
+  --steps 1000 --sequence-length 128 --learning-rate 0.0001 \
+  --optimizer-device model --no-checkpoint-layers --training-gdn-backend fla \
+  --max-model-len 2048 --kv-cache-memory-bytes 4294967296
 ```
 
-独立离线进程从文本随机选择 anchor，用冻结 AR 视图的完整 K-1 行概率做 forward KL 蒸馏，更新全部 draft 层，不提供生成服务。默认 CPU FP32 master/AdamW 和逐层 checkpoint，以搬运与重算降低显存需求。
-TP2 全 draft 的 FP32 参数、梯度与 AdamW 状态合计约 116 GB 主机内存，另需模型加载和临时缓冲空间。
+独立离线进程从文本随机选择 anchor，用冻结 AR 视图的完整 K-1 行概率做 forward KL 蒸馏，更新全部 draft 层，不提供生成服务。上述 128-token 配置关闭激活检查点，避免反向时重算；四卡实测预热后单步中位数约 2.91 s，开启时约 3.63 s。较长序列或显存不足时使用 `--checkpoint-layers`，用重算降低激活内存。
 
-训练 GDN 默认使用可微 Torch 路径；另提供 `--training-gdn-backend fla`。可用 `pip install --no-deps --target /data/fla-deps fla-core==0.6.0 flash-linear-attention==0.6.0` 安装可选依赖，并设置 `ORTHRUS_QWEN38_FLA_PATH=/data/fla-deps`（路径须在容器内可见）。依赖由 NPU worker 延迟加载，不修改既有 Torch/Triton；该选项只影响训练用 GDN，推理仍使用镜像已有算子。
+少卡配置保留：将上述命令改为 `--tp 2 --optimizer-device cpu --checkpoint-layers --kv-cache-memory-bytes 8589934592`。TP2 全 draft 的 FP32 参数、梯度与 AdamW 状态合计约 116 GB 主机内存，另需模型加载和临时缓冲；该 offload 路径的性能不作为设备驻留训练的提速依据。
+
+入口不显式指定时，离线仍默认 CPU offload 和 checkpoint，在线默认设备驻留。FLA 由 NPU worker 延迟加载，不修改既有 Torch/Triton；只影响训练用 GDN，推理仍使用镜像已有算子。
 
 输出目录必须为新目录，包含 `loss.jsonl`、`summary.json` 和 `head/version<steps>`。在相同部署配置下，推理传 `--head-dir /data/draft-fit/head/version1000` 即可加载；离线也可用 `--head-dir` 从已有 head 继续学习，但不恢复 AdamW 状态，不能当作精确断点续训。

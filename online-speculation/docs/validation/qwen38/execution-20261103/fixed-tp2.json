@@ -1,0 +1,832 @@
+{
+  "model": "/models/qwen38",
+  "target_only": false,
+  "tp": 2,
+  "block_size": 32,
+  "gdn_prefill_backend": "cann",
+  "max_model_len": 2048,
+  "online": false,
+  "last_layers": 1,
+  "update_stride": 16,
+  "native_ngram_control": false,
+  "proposal_fixture": null,
+  "outputs": [
+    {
+      "case": "short-greedy",
+      "reference_case": "short-greedy",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353,
+        2688,
+        264,
+        220,
+        17,
+        15,
+        4514
+      ],
+      "text": ", I'm a 20-year"
+    },
+    {
+      "case": "short-sampling",
+      "reference_case": "short-sampling",
+      "temperature": 1.0,
+      "tokens": [
+        729,
+        198,
+        53975,
+        36570,
+        192526,
+        401,
+        68953,
+        1798
+      ],
+      "text": " !\nUne petite boîte de chocolats"
+    },
+    {
+      "case": "reject-rounds",
+      "reference_case": "reject-rounds",
+      "temperature": 0.0,
+      "tokens": [
+        220,
+        16,
+        11,
+        220,
+        17,
+        11,
+        220,
+        18,
+        11,
+        220,
+        19,
+        11,
+        220,
+        20,
+        11,
+        220,
+        21,
+        11,
+        220,
+        22,
+        11,
+        220,
+        23,
+        11,
+        220,
+        24,
+        11,
+        220,
+        16,
+        15,
+        11,
+        220,
+        16,
+        16,
+        11,
+        220,
+        16,
+        17,
+        11,
+        220,
+        16,
+        18,
+        11,
+        220,
+        16,
+        19,
+        11,
+        220
+      ],
+      "text": " 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, "
+    },
+    {
+      "case": "chunked-prefill",
+      "reference_case": "chunked-prefill",
+      "temperature": 0.0,
+      "tokens": [
+        271,
+        760,
+        1414,
+        16661,
+        314,
+        279,
+        3074,
+        11316,
+        328,
+        32,
+        4757,
+        682,
+        5983,
+        10583,
+        1,
+        11173
+      ],
+      "text": "\n\nThe text consists of the single sentence \"A tree has green leaves\" repeated"
+    },
+    {
+      "case": "length-2",
+      "reference_case": "length-2",
+      "temperature": 0.0,
+      "tokens": [
+        11,
+        353
+      ],
+      "text": ", I"
+    },
+    {
+      "case": "page-edge",
+      "reference_case": "page-edge",
+      "temperature": 0.0,
+      "tokens": [
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046,
+        198,
+        248045,
+        248046
+      ],
+      "text": "\n\n\n\n\n\n\n\n\n\n\n"
+    }
+  ],
+  "workers": [
+    {
+      "orthrus": true,
+      "rank": 0,
+      "proposals": 56,
+      "verified": 50,
+      "accepted": 63,
+      "max_verified_tokens": 31,
+      "full_blocks": 50,
+      "updates": 0,
+      "loss": null,
+      "update_seconds": 0.0,
+      "updated_layers": 0,
+      "trainable_parameters": 0,
+      "optimizer_device": null,
+      "training_gdn_backend": "torch",
+      "head_dir": "/heads/offline",
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 56,
+      "cache_readonly_checks": 18
+    },
+    {
+      "orthrus": true,
+      "rank": 1,
+      "proposals": 56,
+      "verified": 50,
+      "accepted": 63,
+      "max_verified_tokens": 31,
+      "full_blocks": 50,
+      "updates": 0,
+      "loss": null,
+      "update_seconds": 0.0,
+      "updated_layers": 0,
+      "trainable_parameters": 0,
+      "optimizer_device": null,
+      "training_gdn_backend": "torch",
+      "head_dir": "/heads/offline",
+      "history_backend": "shared_target_snapshot",
+      "history_reads": 56,
+      "cache_readonly_checks": 18
+    }
+  ],
+  "seconds": 300.7879868319724,
+  "completed": true,
+  "target_weights": {
+    "before": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "after": [
+      {
+        "sha256": "bce55261bf244e7b3b81c82b89873845e5dc460d0ca03375b400db6d6a33bf9a",
+        "bytes": 26896675584
+      },
+      {
+        "sha256": "818656b212b7e3f680b2e557f9f4aba3ff9de5447f28d2ce99289d9c9ce5a708",
+        "bytes": 26896675584
+      }
+    ],
+    "unchanged": true
+  },
+  "head_before": [
+    {
+      "sha256": "5a61f062561936fba0bc91d80ccb1f16f5662770ba5bcdd8fdaabe30c97f2d46",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "6280db46bb859c28eb3eac6120dd8c7e813cdff25aa5d2095c647baea23e42be",
+      "bytes": 7239797504
+    }
+  ],
+  "head_after": [
+    {
+      "sha256": "5a61f062561936fba0bc91d80ccb1f16f5662770ba5bcdd8fdaabe30c97f2d46",
+      "bytes": 7239797504
+    },
+    {
+      "sha256": "6280db46bb859c28eb3eac6120dd8c7e813cdff25aa5d2095c647baea23e42be",
+      "bytes": 7239797504
+    }
+  ],
+  "draft_mask_audit": [
+    [
+      {
+        "past": 1,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 3,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 5,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 7,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 9,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 2,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 4,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 6,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 8,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 11,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 13,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 16,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 18,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 21,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 23,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 25,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 27,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 29,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 31,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 34,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 36,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 38,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 40,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 42,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 45,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 47,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 49,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 52,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 54,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 56,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 58,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 484,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 486,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 488,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 490,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 492,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 494,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 496,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 498,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 500,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 3,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1535,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1537,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1539,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1541,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1544,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1547,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1550,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1553,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1556,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1559,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1562,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1565,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1568,
+        "width": 32,
+        "logits_bitwise_equal": true
+      }
+    ],
+    [
+      {
+        "past": 1,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 3,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 5,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 7,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 9,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 2,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 4,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 6,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 8,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 11,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 13,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 16,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 18,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 21,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 23,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 25,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 27,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 29,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 31,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 34,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 36,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 38,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 40,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 42,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 45,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 47,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 49,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 52,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 54,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 56,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 58,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 484,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 486,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 488,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 490,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 492,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 494,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 496,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 498,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 500,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 3,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1535,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1537,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1539,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1541,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1544,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1547,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1550,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1553,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1556,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1559,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1562,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1565,
+        "width": 32,
+        "logits_bitwise_equal": true
+      },
+      {
+        "past": 1568,
+        "width": 32,
+        "logits_bitwise_equal": true
+      }
+    ]
+  ],
+  "greedy_matches_baseline": true
+}

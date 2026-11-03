@@ -1,8 +1,30 @@
 # Qwen3.8 Draft 训练算子与真实语料验证
 
 验证目标是冻结 Qwen3.8-27B 主模型，只更新 draft 参数，并复用已有高效算子；不开发 kernel、不改变 Attention/GDN 的数学定义。
-环境为两张 Ascend 910B3、TP2、K=32，Torch 路径执行代码为 `51d7464`，可选 FLA 接入为 `b078413`。
+训练性能按两种配置分别记录：**参数、梯度和优化器状态驻留 NPU 是主要基线；双卡 CPU offload 是省显存的兼容路径。** CPU 优化器或搬运的改善不代表设备驻留训练的提速。下文的小算子前后向计时在 NPU 上执行，不包含 offload。
+算子对照与少卡验证使用 Ascend 910B3、TP2、K=32；设备驻留验证另使用 TP4。Torch 路径起始代码为 `51d7464`，可选 FLA 接入为 `b078413`，本轮执行优化为 `fe12ee2`。
 镜像固定为 `quay.io/ascend/vllm-ascend@sha256:0bc946247f2ae008fdf73838e597404fbbfebac4692c703eba531c05a9b5c58a`，Torch-NPU 为 `2.10.0.post4`，Triton-Ascend 为 `3.2.2`。
+
+## 四卡设备驻留验证
+
+真实 27B、TP4、K32、128-token 语料窗口、FLA 反向下，开启和关闭逐层 checkpoint 各完成六步全 64 层更新并导出 head，另有两轮各两步的独立短训。每轮内部四 rank 的 loss、梯度范数和层覆盖一致；draft 确实更新，冻结主模型的完整参数 SHA256 未变。
+
+实测每 rank 的 FP32 master 和梯度各约 6.74 GiB，AdamW moment 约 13.49 GiB，均驻留 NPU；CPU 仅保留约 2 KiB 的优化器标量计数，并非参数或 moment offload。当前配置为每 rank 4 GiB KV、2K 最大上下文。
+
+剔除首步编译，后五步中位数如下。单步包含教师前向、draft 更新和验证计时；阶段时间取 rank0，不能相加当作完整单步。
+
+| 配置 | 单步 | 重放/反向/通信 | 范数/归并/裁剪 | 优化器 | 峰值 allocated / reserved |
+| --- | --- | --- | --- | --- | --- |
+| 开启 checkpoint | 3.63 s | 1.90 s | 22 ms | 124 ms | 53.79 / 54.38 GiB |
+| 关闭 checkpoint | 2.91 s | 1.15 s | 22 ms | 124 ms | 53.79 / 55.30 GiB |
+
+两轮使用相同文本窗口、anchor、初始化参数和执行配置，仅切换 checkpoint。短序列下关闭 checkpoint 减少重算，观测到单步中位耗时降低约 20%；内存峰值此时主要受模型和优化器影响，不能据此推断长序列也不增加显存。两次独立运行的 loss 不作为逐值等价性证据；本表也不代表长期吞吐或业务推理加速。原始记录见 [开启 checkpoint](validation/qwen38/execution-20261103/offline-tp4.json) 与 [关闭 checkpoint](validation/qwen38/execution-20261103/offline-no-checkpoint-tp4.json)。
+
+同一份真实梯度上，两种配置各完成四 rank、六步共 24 次旧/新范数对照，48 次全部通过，最大相对误差约 `2.7e-7`。开启 checkpoint 时旧范数与归并的中位数约 35 ms；新路径连同梯度缩放约 22 ms。两者工作范围略有不同，不把这个比例换算为完整训练加速比。对照仅在验证 worker 中执行，额外耗时独立记录。
+
+记录见 [设备驻留训练](validation/qwen38/execution-20261103/offline-tp4.json) 与 [独立参考运行](validation/qwen38/execution-20261103/offline-tp4-reference.json)。这些结果不与双卡 offload 的整步时间直接换算加速比。
+
+独立 TP4 推理进程分别重载六步训练导出的 head，加载前哈希与导出完全一致；last-1、last-4 两种配置均完成 greedy、采样请求和 7 次在线更新。每种配置的四 rank 更新计数与 loss 一致，各完成 6 次历史缓存只读检查；更新后 head 改变，主模型完整参数哈希仍未变。记录见 [TP4 last-1](validation/qwen38/execution-20261103/online-last1-tp4.json) 和 [TP4 last-4](validation/qwen38/execution-20261103/online-last4-tp4.json)。这证明设备驻留的训练、导出、加载、推理和续训链路可执行，不评价接受率或 head 收敛。
 
 ## 算子选择
 
@@ -86,9 +108,30 @@ NPU 短训从其中 8 条原文抽取四个不同窗口，来源行号为 9、3�
 
 ## 使用入口
 
+### 设备驻留训练
+
+`--optimizer-device model` 将 FP32 master、梯度和 AdamW 状态留在对应 NPU；`--checkpoint-layers` 仅重算激活，不把参数卸载到 CPU。四卡 128-token 配置使用 `--no-checkpoint-layers` 避免重算，长序列按显存选择是否开启。在线 last-N 默认已采用设备驻留；离线全层训练需要显式选择该选项。
+
+设备侧梯度范数使用现成的 `_foreach_norm` 批量归约，再执行原有 TP 归并和统一裁剪。TP4 投影、卷积及 norm 的混合梯度规格下，单项归约由 0.667 ms 降至 0.245 ms，结果一致；批量缩放梯度没有明显收益，仍保留原路径。该计时不包含反向、TP 通信或完整训练步骤，见 [设备小算子对照](validation/qwen38/execution-20261103/device-primitives.json)。
+
+验证计时使用 `optimizer_step` 通用名称，并记录每个 rank 的实际优化器设备和 NPU allocator 峰值；新增的验证路径可在同一份真实梯度上对照旧归约，额外计时单列，不进入生产更新。反向阶段包含重算与 TP 通信，不能当作纯计算时间；allocator 峰值也不包含所有 CANN 外部工作空间。
+
+### CPU Offload 执行
+
+Qwen 原生 learner 的 CPU FP32 master 使用 PyTorch 已有的 fused AdamW，替代逐张量更新；设备上的优化器路径保持不变。在线 last-N 和离线全层选择同一个 learner，更新层数、loss 和 head 格式均未改变。
+
+CPU 梯度范数先按最后一维归约，再累加平方和，避免为整个投影矩阵分配同尺寸的平方临时张量。TP 仍只统计一次复制参数，再归并各 rank 的平方和并统一裁剪。离线 KL 另外省去没有参与公式的 student 概率张量，TV 路径不变。
+
+`scripts/audit_qwen38_execution.py` 使用 TP2 的投影矩阵规格比较 AdamW 后端，核对连续五步的参数、`exp_avg` 和 `exp_avg_sq`，再计时；同时比较梯度范数归约。单元测试另覆盖变化的梯度、last-1 / 全层参数选择、复制梯度计数、非有限梯度拒绝和双 rank 更新。
+
+NPU fused AdamW 在本镜像中可执行且更快，但 moment 对照未满足本轮 `rtol=1e-5, atol=1e-8` 的严格门槛，因此没有默认替换设备侧优化器。这不等于该算子不可用或训练算法有问题；融合 AdamW 只在已通过对应数值检查的 CPU offload 路径启用，NPU 保持原有 AdamW。
+
+双卡路径已复验两步真实语料全层更新、独立重载及八次 last-4 更新；主模型哈希未变、只读历史检查通过，见 [双卡训练](validation/qwen38/execution-20261103/offline-tp2.json) 与 [重载续训](validation/qwen38/execution-20261103/online-last4-tp2.json)。本轮 CPU 回归为 **653 passed、32 skipped**，见 [JUnit](validation/qwen38/execution-20261103/cpu.xml.gz)。跳过项不算设备验证通过。
+
+### 命令
+
 `scripts/prepare_qwen38_data.py` 将本地 JSONL/Parquet 转为 token JSONL，保留来源行号并生成哈希 manifest；使用本地基模 tokenizer，不依赖在线获取模型。
 `scripts/train_qwen38_draft.py` 保持原离线训练入口，增加 `--timing` 可选验证计时；默认行为不变。
 `scripts/audit_qwen38_training_ops.py` 复现已有算子的前后向比较，必须在指定运行时和空闲设备上执行。
 可选库用 `ORTHRUS_QWEN38_FLA_PATH` 指定目录，只在 NPU worker 中延迟加载并校验设备；验证脚本的 `--runtime-cache` 将同版本编译缓存显式挂载进容器，避免引用容器外的宿主机路径。
-CPU 回归为 **636 passed、32 skipped**，跳过项不算作设备测试通过。
-本轮训练、算子审计与重载实验容器均已清理，167 的 6、7 号实验设备已释放。
+本轮 CPU 回归为 **653 passed、32 skipped**，跳过项不算作设备测试通过。训练、算子审计和重载均采用限时实验进程，结束后清理容器并释放实验设备。

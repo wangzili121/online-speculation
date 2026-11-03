@@ -31,7 +31,7 @@ def arguments(parser=None, *, defaults=None):
     parser.add_argument("--last-layers", type=int, default=1)
     parser.add_argument("--all-draft-layers", action="store_true")
     parser.add_argument("--optimizer-device", choices=("model", "cpu"), default="model")
-    parser.add_argument("--checkpoint-layers", action="store_true")
+    parser.add_argument("--checkpoint-layers", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--training-gdn-backend", choices=("torch", "fla"), default="torch")
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--update-stride", type=int, default=16)

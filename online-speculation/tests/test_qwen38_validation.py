@@ -695,3 +695,32 @@ def test_fixed_replay_failure_is_returned_for_evidence_collection(monkeypatch):
     result = worker.orthrus_validate_online_replay(1)
     assert result["passed"] is False and result["cache_unchanged"]
     assert result["steps"] == 1 and result["changed_parameters"] == ["weight"]
+
+
+def test_offline_timing_records_actual_optimizer_device_and_generic_phases(monkeypatch):
+    import torch
+    from types import SimpleNamespace as NS
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import qwen38_validation_worker as audit
+
+    parameter = torch.ones(1)
+    learner = NS(execution={"weight": parameter}, parameters=[parameter], _sync=lambda: None,
+                 backward=lambda: None, clip_gradients=lambda: None, publish=lambda: None,
+                 optimizer=NS(step=lambda: None))
+    worker = audit.ValidationWorker()
+    worker.model_runner = NS(drafter=NS(learner=learner))
+
+    def step(tokens, anchor):
+        learner.backward()
+        learner.clip_gradients()
+        learner.optimizer.step()
+        learner.publish()
+        return dict(loss=.5)
+
+    monkeypatch.setattr(worker, "orthrus_offline_step", step)
+    result = worker.orthrus_timed_offline_step([1, 2, 3], 0)
+    assert result["optimizer_devices"] == ["cpu"]
+    assert result["training_storage_bytes"] == dict(parameters={"cpu": 4}, gradients={}, optimizer={})
+    assert set(result["phase_seconds"]) == {"replay_backward_and_transfer", "clip_and_collective",
+                                           "optimizer_step", "publish_to_npu"}
+    assert all(seconds >= 0 for seconds in result["phase_seconds"].values())

@@ -114,9 +114,14 @@ class ValidationWorker(OrthrusWorkerExtension):
         return self._draft_mask_rows
 
     def orthrus_timed_offline_step(self, token_ids, anchor):
-        """Validation-only barriers: backward includes replay and CPU gradient staging."""
+        """Validation barriers; backward includes replay, communication and any offload."""
         learner = self.model_runner.drafter.learner
         phases = {}
+        norm_audit = {}
+        device = next(iter(learner.execution.values())).device
+        if device.type == "npu":
+            learner._sync()
+            torch.npu.reset_peak_memory_stats(device)
 
         def measured(name, operation):
             def run(*args, **kwargs):
@@ -128,13 +133,53 @@ class ValidationWorker(OrthrusWorkerExtension):
                 return result
             return run
 
+        original_clip = learner.clip_gradients
+
+        def checked_clip():
+            if device.type != "npu":
+                return measured("clip_and_collective", original_clip)()
+            # 在同一份真实梯度上做 A/B，避免跨进程前向数值波动干扰归约对照。
+            learner._sync()
+            reference_start = time.perf_counter()
+            total = torch.zeros((), device=device)
+            for name, parameter in learner.master.items():
+                if parameter.grad is not None and (name not in learner.replicated or learner.tp.rank == 0):
+                    total += parameter.grad.float().square().sum()
+            expected = learner.tp.reduce(total).sqrt()
+            learner._sync()
+            phases["reference_norm_and_collective"] = time.perf_counter() - reference_start
+            actual = measured("clip_and_collective", original_clip)()
+            torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+            norm_audit.update(reference=float(expected), actual=float(actual), passed=True)
+            return actual
+
         start = time.perf_counter()
         with patch.object(learner, "backward", measured("replay_backward_and_transfer", learner.backward)), \
-                patch.object(learner, "clip_gradients", measured("clip_and_collective", learner.clip_gradients)), \
-                patch.object(learner.optimizer, "step", measured("optimizer_cpu", learner.optimizer.step)), \
+                patch.object(learner, "clip_gradients", checked_clip), \
+                patch.object(learner.optimizer, "step", measured("optimizer_step", learner.optimizer.step)), \
                 patch.object(learner, "publish", measured("publish_to_npu", learner.publish)):
             result = self.orthrus_offline_step(token_ids, anchor)
         result["phase_seconds"] = phases
+        if norm_audit:
+            result["gradient_norm_audit"] = norm_audit
+        result["optimizer_devices"] = sorted({str(p.device) for p in learner.parameters})
+
+        def storage(tensors):
+            sizes = {}
+            for tensor in tensors:
+                if isinstance(tensor, torch.Tensor):
+                    key = str(tensor.device)
+                    sizes[key] = sizes.get(key, 0) + tensor.numel() * tensor.element_size()
+            return sizes
+
+        result["training_storage_bytes"] = dict(
+            parameters=storage(learner.parameters), gradients=storage(p.grad for p in learner.parameters),
+            optimizer=storage(value for state in getattr(learner.optimizer, "state", {}).values()
+                              for value in state.values()))
+        if device.type == "npu":
+            result["memory"] = dict(allocated=torch.npu.memory_allocated(device),
+                                    peak_allocated=torch.npu.max_memory_allocated(device),
+                                    peak_reserved=torch.npu.max_memory_reserved(device))
         result["offline_step_seconds"] = time.perf_counter() - start
         return result
 
