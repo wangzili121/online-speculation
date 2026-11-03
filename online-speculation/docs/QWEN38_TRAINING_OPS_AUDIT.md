@@ -51,7 +51,24 @@
 
 四个 rank 的 FP32/BF16、KL/TV 均通过数值对照，loss 最大相对 L2 误差为 `9.25e-7`，局部 logits 梯度为 `5.99e-4`。CPU 另覆盖两卡/四卡、词表 padding、空分片、极端 logits 和非均匀上游梯度；两卡小模型覆盖全层/last-1、KL/TV、checkpoint 的完整参数梯度与裁剪、更新对照。本轮回归为 660 passed、32 skipped。
 
-原始记录见 [rank0](validation/qwen38/tp-execution-20261103/tp-training-rank0.json)、[rank1](validation/qwen38/tp-execution-20261103/tp-training-rank1.json)、[rank2](validation/qwen38/tp-execution-20261103/tp-training-rank2.json)、[rank3](validation/qwen38/tp-execution-20261103/tp-training-rank3.json)。以上是本轮算子与梯度证据；真实 27B 长窗口和在线更新复验仍待可用的四卡运行环境，不将上文旧版本已完成的整模型验证算作本轮增量验收。
+原始记录见 [rank0](validation/qwen38/tp-execution-20261103/tp-training-rank0.json)、[rank1](validation/qwen38/tp-execution-20261103/tp-training-rank1.json)、[rank2](validation/qwen38/tp-execution-20261103/tp-training-rank2.json)、[rank3](validation/qwen38/tp-execution-20261103/tp-training-rank3.json)。这些是算子与梯度对照；同一份运行时代码的整模型结果如下。
+
+### 整模型复验
+
+2026-11-03 18:48–19:12（北京时间），代码 `72e5da6` 在真实 Qwen3.8-27B、TP4、K32 上完成四项复验。沿用固定镜像、FLA 训练后端和每 rank 4 GiB KV；FP32 master、梯度及 AdamW moment 驻留 NPU，不做参数 offload，关闭逐层 checkpoint。
+
+| 路径 | 数据与配置 | 实际检查结果 |
+| --- | --- | --- |
+| 离线全层、512-token | WikiText 原文窗口，`gathered`，4 步 | 每步 64 层均有梯度，四 rank 的 loss/范数一致；draft 改变并导出 version4，主模型完整参数哈希未变。 |
+| 离线全层、2048-token | WikiText 段落打包窗口，`vocab_parallel`，3 步 | 同样覆盖全部 64 层，四 rank 一致；draft 改变并导出 version3，主模型完整参数哈希未变。 |
+| 重载后在线 last-4 | 加载 512-token 训练导出的 head，`gathered` | 加载哈希与导出逐 rank 一致；greedy/采样各一个请求，共 8 次更新，每 rank 6 次历史只读检查通过。 |
+| 重载后在线 last-1 | 独立进程加载同一份 head，`vocab_parallel` | 同样完成 8 次更新和每 rank 6 次历史只读检查；两种在线配置均只有 draft 改变，主模型哈希未变。 |
+
+离线共 7 步、四 rank 的 **28 次梯度范数参考对照全部通过**，最大相对误差 `1.61e-7`；loss 与梯度均有限。实测峰值 allocated 约 53.82 GiB/rank。原文中没有足够长的单段落，因此 2048-token 数据由连续真实段落加 EOS 打包，`anchor_ranges` 限制预测块不跨原段落；不是重复 token 拼出的长序列。数据哈希与来源行号见[打包记录](validation/qwen38/tp-execution-20261103/integration/packed-data.json)。
+
+本轮完成的是更新、导出、加载和继续推理的集成复验，不是新一轮 target-only 逐 token/采样分布对照，也不评价 head 收敛或业务加速。本轮包含首次编译，且在共享机器上运行，计时波动较大，不用这些短训时间比较两种 loss 后端的速度；默认仍为 `gathered`。四项实验结束均清理容器并释放设备。
+
+记录：[512-token](validation/qwen38/tp-execution-20261103/integration/offline-512.json)、[2048-token](validation/qwen38/tp-execution-20261103/integration/offline-2048.json)、[在线 last-4](validation/qwen38/tp-execution-20261103/integration/online-last4.json)、[在线 last-1](validation/qwen38/tp-execution-20261103/integration/online-last1.json)。
 
 ## 算子选择
 

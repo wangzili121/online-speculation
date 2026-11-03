@@ -47,8 +47,11 @@
     "training_loss_backend": "gathered",
     "vocab_parallel": "opt-in memory reduction; slower for measured K32 workload"
   },
-  "not_completed": [
-    "27B TP4 integration of this revision: offline 512/2048 windows, exported-head reload and online updates"
-  ],
-  "resource_note": "A full-model retry stopped before loading because another job consumed startup memory. A second host's idle group returned zero visible NPUs in container preflight. No integration pass claimed; no driver, sharing-mode or privileged-container changes made."
+  "integration": {
+    "status": "passed",
+    "source_commit": "72e5da6",
+    "manifest": "integration/manifest.json"
+  },
+  "not_completed": [],
+  "resource_note": "Initial retries were blocked by competing startup memory and container NPU enumeration. A later four-card window completed all four integration stages on the pinned source. Experiment containers were removed; no driver, sharing-mode or privileged-container changes were made."
 }

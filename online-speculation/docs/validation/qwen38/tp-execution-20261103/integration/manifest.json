@@ -1,0 +1,76 @@
+{
+  "schema": "qwen38-tp4-integration-v1",
+  "source_commit": "72e5da6",
+  "source_sha256_manifest": "../manifest.json",
+  "started_utc": "2026-11-03T10:48:42.755224+00:00",
+  "finished_utc": "2026-11-03T11:12:26.599499+00:00",
+  "reviewed_date": "2026-11-04",
+  "status": "passed",
+  "model": "Qwen3.8-27B",
+  "tp": 4,
+  "block_size": 32,
+  "optimizer_device": "model",
+  "training_gdn_backend": "fla",
+  "checkpoint_layers": false,
+  "max_model_len": 2048,
+  "kv_cache_memory_bytes_per_rank": 4294967296,
+  "offline": [
+    {
+      "result": "offline-512.json",
+      "sha256": "a518db906684f15bf7f1f2672d16365fa2af53c7926598e373ea5a7442085c43",
+      "sequence_length": 512,
+      "steps": 4,
+      "layers": 64,
+      "loss_backend": "gathered",
+      "data_sha256": "828413e4775161abd5fcd4f67a2068fa579bd55808f089b100353295c7179fce",
+      "target_unchanged": true,
+      "draft_changed": true
+    },
+    {
+      "result": "offline-2048.json",
+      "sha256": "f94ac51c2d1931b56cc246ba10f09f9df5486de3e3e3ddf61c7c550afd0a262f",
+      "sequence_length": 2048,
+      "steps": 3,
+      "layers": 64,
+      "loss_backend": "vocab_parallel",
+      "data_sha256": "860ce50c233fbb3393babbbb474d9544203842d0d56626022cf1e4cf25cb1bf1",
+      "packing_manifest": "packed-data.json",
+      "target_unchanged": true,
+      "draft_changed": true
+    }
+  ],
+  "online": [
+    {
+      "result": "online-last4.json",
+      "sha256": "c95da03fad7dce87fbf327e0cf3c4b3e2925304f92bdcf679fe2ffa5add7f3b0",
+      "last_layers": 4,
+      "loss_backend": "gathered",
+      "updates_per_rank": 8,
+      "cache_readonly_checks_per_rank": 6,
+      "head_reload_matches_offline_512": true,
+      "target_unchanged": true,
+      "draft_changed": true
+    },
+    {
+      "result": "online-last1.json",
+      "sha256": "b0ff5619c55e8f6b72af8fb1edb7f1ef55a0c1ca9f498d311e7e9234a060b356",
+      "last_layers": 1,
+      "loss_backend": "vocab_parallel",
+      "updates_per_rank": 8,
+      "cache_readonly_checks_per_rank": 6,
+      "head_reload_matches_offline_512": true,
+      "target_unchanged": true,
+      "draft_changed": true
+    }
+  ],
+  "checks": {
+    "all_ranks_agree": true,
+    "all_offline_layers_have_gradients": true,
+    "finite_losses_and_gradient_norms": true,
+    "gradient_norm_reference_comparisons_passed": 28,
+    "max_gradient_norm_relative_error": 1.60325383572468e-7,
+    "max_allocated_gib_per_rank": 53.819626808166504,
+    "experiment_containers_removed": true
+  },
+  "scope": "Bounded real-model offline updates, export/reload and online updates with greedy/sampling requests. Not a new target-only equivalence/distribution comparison, convergence test or throughput benchmark."
+}

@@ -9,13 +9,13 @@ Full Attention 在块内采用双向注意力，GDN 使用 `orthrus_qwen35_refer
 
 ## 验证状态
 
-下表整模型记录对应已验证基线 `88923af`；本轮 TP 通信与 loss 增量的验证状态见[训练算子审计](online-speculation/docs/QWEN38_TRAINING_OPS_AUDIT.md#tp-通信与词表分片)。
+本轮 TP 通信与 loss 更新（`72e5da6`）已在真实 27B、TP4 上完成复验；原始记录见[训练算子审计](online-speculation/docs/QWEN38_TRAINING_OPS_AUDIT.md#整模型复验)。
 
 | 路径 | 当前状态 |
 | --- | --- |
 | 投机推理 | 真实 27B、TP2 已验证 K=2/8/17/32、多类请求边界、主模型历史缓存复用及 head 重载。 |
-| 在线 last-N | TP4 独立重载离线导出的 head，last-1 / last-4 各完成 7 次设备驻留更新；四 rank 一致，主模型参数未变、历史缓存只读检查通过。 |
-| 离线全 draft | TP4 在开启和关闭激活检查点两种配置下，各完成真实 WikiText 六步全 64 层更新与 head 导出。所有层均有梯度，四 rank 的 loss/梯度范数一致，主模型哈希未变；TP2 offload 的训练和重载续训也保留。 |
+| 在线 last-N | TP4 独立重载离线导出的 head，last-1 / last-4 各完成 8 次设备驻留更新，覆盖 greedy 和采样请求；四 rank 一致，主模型参数未变、历史缓存只读检查通过。 |
+| 离线全 draft | TP4 在 512 / 2048-token 真实语料窗口上分别完成 4 / 3 步全 64 层更新与 head 导出，所有层均有梯度、主模型哈希未变。另保留开启/关闭激活检查点的验证及 TP2 offload 路径。 |
 
 未提供预训练 head 时，从主模型 mixer 复制初始化，仅用于验证流程；目前不承诺接受率或吞吐提升。
 
