@@ -61,9 +61,9 @@ $$
 O_D=\mathrm{softmax}\left(Q_D[K_H;K_D]^\top/\sqrt d\right)[V_H;V_D].
 $$
 
-对比两式，softmax Attention 本身没有变，变化在传给它的 KV：**每个 draft query 读取相同的历史前缀，以及整个临时块**。这条路径不涉及 DSV4 的 sink、压缩 KV 或 indexer。
+两式的 Attention 公式不变，区别在于可见范围：**每个 draft query 都能读取同一段历史和整个草稿块**。
 
-Attention 前后还要保留 Qwen 自身的处理。该模型有 24 个 query head、4 个 KV head，以 GQA 方式共享，head 维度为 `d=256`。Q/K 先做 RMSNorm，再对前 64 维做 RoPE；Attention 输出乘 query 投影产生的 sigmoid gate，最后经过 O 投影。Q/K norm 的缩放使用 `1 + weight`。这些步骤都参与最终结果，移植时要和 Attention 一起对齐。
+Q/K 归一化、部分 RoPE、GQA 及输出处理沿用 Qwen 原有实现。
 
 #### 2.1.2 PyPTO 已有实现与所需修改
 
@@ -71,29 +71,59 @@ Attention 前后还要保留 Qwen 自身的处理。该模型有 24 个 query he
 
 因此可以保留前后处理，重点扩展 Attention 入口：一次接收 K 行 query，并额外接收临时块 K/V。所有行的历史长度都设为 `a`，临时块全部可见。由于这些 K/V 由 draft 参数计算，不是主模型的正式历史，起草阶段不调用 AR 的 KV append，只写自己的输出和工作区。候选接受后，正式 KV 由主模型验证时重新计算。
 
-首版可以先接连续历史，与下面的 Torch-NPU 实现比较结果。之后若要直接读取主模型分页缓存，再增加页表读取。历史和临时块可以放进同一次 Attention，也可以分开计算，再用 LSE（log-sum-exp）恢复两部分的相对权重后合并；具体拆成几个 kernel，取决于接口和性能，不影响上面的定义。
+PyPTO 可先沿用当前 Torch-NPU 的方式：按页表将历史 KV 整理为连续张量，与草稿块拼接后统一计算 Attention，再对照现有结果验证。
 
 #### 2.1.3 Torch-NPU 实现
 
-现有 Torch-NPU 版本就是按上述顺序执行：先用 draft 权重投影，再调用镜像中的 `triton_split_qkv_rmsnorm_mrope` 完成拆分、Q/K norm 和部分 RoPE。随后由本轮私有的 `_ScratchCache` 拼接历史与临时 KV，交给融合 Attention：
+现有 Torch-NPU 版本就是按上述顺序执行：先用 draft 权重投影，再调用`triton_split_qkv_rmsnorm_mrope` 完成QKV拆分、Q/K norm 和部分 RoPE，再在临时缓存中拼接历史与草稿 KV，调用融合 Attention：
+
+以下摘取当前 BF16、单请求、无 padding、无梯度的融合推理分支。`self` 为 draft Attention，`past_key_values` 为已装入历史 KV 快照的本轮 `_ScratchCache`；输入检查、mask 转换和其他执行分支仍保留在后面的完整函数中。
 
 ```python
-# query/key/value 已完成投影及位置处理。
-# update 只更新 draft 的临时对象，不写主模型 KV。
+# draft 投影；下面只展示单请求、无 padding 的融合推理分支。
+batch, length, _ = hidden_states.shape
+shape = (batch, length, -1, self.head_dim)
+projected_q, projected_k, projected_v = (projection(hidden_states)
+    for projection in (self.q_proj, self.k_proj, self.v_proj))
+num_q_heads = projected_q.shape[-1] // (2 * self.head_dim)
+num_kv_heads = projected_k.shape[-1] // self.head_dim
+
+# 按历史长度准备本轮位置编码，复用主模型的只读 RoPE 系数表。
+native_rope = self._native_rope
+history_key = past_key_values.layers[self.layer_idx].keys
+past = 0 if history_key is None else history_key.shape[2]
+positions = native_rope.positions(past, length, hidden_states.device)
+packed = torch.cat((projected_q, projected_k, projected_v), dim=-1).reshape(length, -1)
+cos_sin = native_rope.cache.index_select(0, positions).to(packed.dtype)
+cos_sin = cos_sin[None].expand(3, -1, -1).contiguous()
+
+# 现成融合算子：QKV 拆分、Q/K norm、部分 RoPE，并拆出输出门控值。
+q, k, v, raw_gate = torch.ops.vllm.triton_split_qkv_rmsnorm_mrope(
+    qkv=packed, q_weight=1 + self.q_norm.weight, k_weight=1 + self.k_norm.weight,
+    cos_sin=cos_sin, num_q_heads=num_q_heads, num_kv_heads=num_kv_heads,
+    head_size=self.head_dim, eps=self.config.rms_norm_eps,
+    mrope_section=list(native_rope.sections),
+    is_interleaved=native_rope.interleaved, rope_dim=native_rope.dim, has_gate=True,
+)
+query, key, value = (part.reshape(shape).transpose(1, 2) for part in (q, k, v))
+
+# ORTHRUS：在本轮 _ScratchCache 中拼接历史和草稿 KV，不写主模型缓存。
 key, value = past_key_values.update(key, value, self.layer_idx)
+
+# 历史与整个草稿块全部可见；原生 GQA 不需要复制 KV head。
 out = torch_npu.npu_fusion_attention(
-    query, key.contiguous(), value.contiguous(),
-    query.shape[1], input_layout="BNSD", atten_mask=blocked,
-    scale=self.scaling, keep_prob=1., sparse_mode=0,
+    query, key.contiguous(), value.contiguous(), num_q_heads,
+    input_layout="BNSD", atten_mask=None, scale=self.scaling,
+    keep_prob=1., sparse_mode=0,
 )[0]
 out = out.transpose(1, 2).reshape(batch, length, -1)
-out = out * gate.reshape(batch, length, -1).sigmoid()
+out = out * raw_gate.reshape(batch, length, -1).sigmoid()
 return self.o_proj(out), None
 ```
 
-输入布局为 `[batch, head, token, dim]`，融合算子直接支持 GQA，所以保留原来的少量 KV head，不复制整段历史。当前单请求且没有 padding，传入的历史和临时块都可见；有 padding 时再屏蔽无效位置。这里还要转换 mask 的布尔含义：Torch SDPA 的 `True` 表示可见，FAS 的 `True` 则表示禁止读取。
+历史 KV 先按页表收集为连续张量，再与本轮草稿 KV 拼接，以 `[batch, head, token, dim]` 布局送入融合 Attention。算子原生支持 GQA，无需展开复制 KV head。
 
-在进入这段计算之前，适配层已按页表把主模型 KV 收集成独立连续快照。后续拼接只发生在 draft 私有对象中，不影响主模型，但仍有一次历史复制，并非零拷贝分页读取。折叠部分保留实际 Attention 和历史读取函数，运行时依赖本仓库的模型对象与环境。
+当前按单请求、无 padding 场景执行，历史和整个草稿块均可见，调用时不设置 mask。完整 Attention 和历史读取函数见下方折叠代码。
 
 <details>
 <summary>完整函数：Full Attention 与分页历史读取</summary>
@@ -176,7 +206,9 @@ def paged_history(cache, block_table, length):
 
 #### 2.2.1 从历史状态继续计算当前块
 
-GDN 与前一节不同：它不逐条读取历史 KV，而是带着历史状态继续计算。输入先经过宽度为 4 的因果逐通道卷积，再用门控 Delta Rule 更新矩阵状态。Q/K 各有 16 个 head，V 有 48 个 head，每个 head 维度为 128，三个 V head 共享一组 Q/K。
+Full Attention 通过读取历史 KV 获取信息，GDN 则用卷积状态和递推矩阵保留历史。处理当前块时，输入先经过宽度为 4 的因果逐通道卷积，再通过门控 Delta Rule 更新矩阵状态。
+
+该模型的 GDN 中，Q/K 各有 16 个 head，V 有 48 个 head，每个 head 的维度为 128，每三个 V head 共用一组 Q/K。
 
 省略 batch 和 head 下标，令 `q_i`、`k_i` 为 L2 归一化后的列向量，`v_i` 为 value，`S_i` 为处理完位置 `i` 后的矩阵状态。门控和衰减为：
 
