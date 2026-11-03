@@ -10,23 +10,23 @@ Orthrus 采用共享主干的草稿结构，在模型各层增加独立的 draft
 
 ### 1.1 草稿分支与主模型的关系
 
-Qwen3.8-27B 的文本部分沿用 Qwen3.5 系列的混合结构：每三个 GDN 层后接一个 Full Attention 层，重复 16 次，共 64 层。Full Attention 从历史 KV 中读取信息，GDN 则通过卷积和矩阵递推保留历史。两类层对历史的处理不同，draft 也需要分别适配。
+Qwen3.8-27B 的模型主干共有 64 层：每三个 GDN 层后接一个 Full Attention 层，重复 16 次，共 48 层 GDN、16 层 Full Attention。Full Attention 读取历史 token 的 KV，GDN 则通过卷积和矩阵递推累积历史信息。因此，草稿分支在这两类层中使用不同的方式接上主模型历史。
 
-每层中，负责这部分计算的模块以下称为 mixer。Orthrus 为 mixer 准备独立的 draft 参数，其他层参数继续与主模型共享：
+Orthrus 为每层的 Full Attention 或 GDN 另外保留一套独立的 draft 参数。起草时使用这套参数，embedding、外层 norm、MLP 和 LM head 仍与主模型共享：
 
 ```text
 共享 Embedding
     |
     v
 [ GDN -> GDN -> GDN -> Full Attention ] x 16
-    | 每层：共享 input norm -> 本层 mixer -> 残差
+    | 每层：共享 input norm -> Full Attention / GDN -> 残差
     |                       -> 共享 post norm / MLP -> 残差
     v
 共享 Final Norm / LM head
 
-每层 mixer 有两套参数：
-  AR mixer      ：原模型参数，产生正式历史
-  Draft mixer   ：独立参数，读取 AR 历史，在临时工作区计算候选
+每层的 Full Attention 或 GDN 有两套参数：
+  AR 参数    ：原模型参数，产生正式历史
+  Draft 参数 ：独立参数，读取 AR 历史，在临时工作区计算候选
 ```
 
 draft 每轮输入一个块：`anchor + (K-1) 个 MASK`。anchor 是已经确定的最后一个 token，MASK 占据接下来要预测的位置，输入中没有未来答案。设 anchor 位于 `a`，它之前的 `[0,a)` 直接读取主模型历史；anchor 和 MASK 则占据 `a` 到 `a+K-1`，在本轮一起计算。常用的 `K=32` 就是一个 anchor 加 31 个候选位置，K 本身可以配置。
@@ -37,9 +37,9 @@ draft 每轮输入一个块：`anchor + (K-1) 个 MASK`。anchor 是已经确定
 
 PyPTO 已有 Qwen3.8 整网前向的实现基础，位于 `pypto-lib` PR #1503。本文按提交 `1d454a1b8f7af18c9b176d8aeaa60dc565a6a9e9` 核对，下文文件均位于 `models/qwen3_8_27b/`。该 PR 及配套 `pypto-serving` PR #281 尚未合入，公开验证的是单卡、单请求、最多 128 个位置的普通推理，尚不包含本报告的投机执行方式。
 
-在这个基础上，**主要要扩展两类 mixer 的调用方式**。Full Attention 需要一次计算 K 行 query，让它们读取同一段历史和整个当前块；GDN 需要带着已有历史状态连续处理 K 行，而且只更新临时副本。前者改变可见范围，后者改变输入长度和状态传递方式，因而不能用一次 mask 修改概括全部工作。
+在这个基础上，**主要要扩展 Full Attention 和 GDN 的调用方式**。Full Attention 需要一次计算 K 行 query，让它们读取同一段历史和整个当前块；GDN 需要带着已有历史状态连续处理 K 行，而且只更新临时副本。前者改变可见范围，后者改变输入长度和状态传递方式，因而不能用一次 mask 修改概括全部工作。
 
-投影、norm、RoPE 和 MLP 的公式可以沿用。接入时仍要给它们绑定正确的 draft 或共享权重，按 TP 规格分片，再与主模型交换历史。下面先说明两类 mixer 内部要改什么，第 3 节再把它们放回完整推理流程。
+投影、norm、RoPE 和 MLP 的公式可以沿用。接入时仍要给它们绑定正确的 draft 或共享权重，按 TP 规格分片，再与主模型交换历史。下面先说明这两类模块内部要改什么，第 3 节再把它们放回完整推理流程。
 
 ## 2. Attention 模块设计
 
@@ -384,7 +384,7 @@ class GatedRMSNorm(nn.Module):
 
 ### 3.1 一轮投机如何执行
 
-起草时，当前块先经过共享 Embedding，再通过 64 层。每层按 `共享 input norm -> draft mixer -> 残差 -> 共享 post norm / MLP -> 残差` 执行，最后经过共享 Final Norm 和 LM head，得到候选分布。MLP 等虽然使用主模型权重，但 draft 输入不同，仍需重新计算，不能直接拿主模型的中间结果代替；共享权重省下的是第二套 backbone 参数。
+起草时，当前块先经过共享 Embedding，再通过 64 层。每层按 `共享 input norm -> draft Full Attention / GDN -> 残差 -> 共享 post norm / MLP -> 残差` 执行，最后经过共享 Final Norm 和 LM head，得到候选分布。MLP 等虽然使用主模型权重，但 draft 输入不同，仍需重新计算，不能直接拿主模型的中间结果代替；共享权重省下的是第二套 backbone 参数。
 
 ```text
 已接受的主模型历史
@@ -403,7 +403,7 @@ class GatedRMSNorm(nn.Module):
 
 ### 3.2 PyPTO 与引擎的接口
 
-PyPTO 可以先只接管 Full Attention 和 GDN 这两类 mixer，主模型、共享 MLP、TP 通信和验证采样继续由现有 vLLM-Ascend 执行器负责。每次调用时，执行器传入 draft 参数、历史长度、KV 或 GDN 初态，并提供输出和临时工作区。
+PyPTO 可以先只接管 Full Attention 和 GDN 这两类模块，主模型、共享 MLP、TP 通信和验证采样继续由现有 vLLM-Ascend 执行器负责。每次调用时，执行器传入 draft 参数、历史长度、KV 或 GDN 初态，并提供输出和临时工作区。
 
 调用双方首先要对齐张量布局、设备地址和有效长度，再约定 stream 怎样同步、临时缓冲何时释放，确保 PyPTO 读到的是本轮有效历史。缓存分配、页表和接受决策仍由引擎管理，算子只按这些信息读写数据。
 
@@ -413,7 +413,7 @@ PyPTO 可以先只接管 Full Attention 和 GDN 这两类 mixer，主模型、�
 
 ### 3.3 可运行实现与验证范围
 
-上面的函数用于单独对照计算，完整流程可以通过仓库已有的 Torch-NPU 执行器和 vLLM-Ascend 接入运行。下列命令加载真实模型，执行起草、验证和缓存检查。没有提供 head 时，程序从主模型 mixer 复制参数初始化，用来检查链路是否能运行。
+上面的函数用于单独对照计算，完整流程可以通过仓库已有的 Torch-NPU 执行器和 vLLM-Ascend 接入运行。下列命令加载真实模型，执行起草、验证和缓存检查。没有提供 head 时，程序从主模型对应的 Full Attention 或 GDN 模块复制参数初始化，用来检查链路是否能运行。
 
 ```bash
 cd online-speculation
@@ -428,7 +428,7 @@ python scripts/run_in_runtime.py scripts/validate_qwen38_vllm.py \
 
 这些是 Torch-NPU 路径的结果，可以作为 PyPTO 接入的对照，但 PyPTO Orthrus 本身尚未验证。数值检查也还没有全部通过：原生不同计算形状下存在 K32 数值分叉，严格逐 token 一致性尚未达成。当前覆盖 BF16、eager、同步单请求，量化、图模式和动态 batch 需要另行适配。初始化 head 用来验证链路，业务接受率和加速收益需要训练 head 另行评估。
 
-因此，接下来先让两类 PyPTO mixer 与现有结果对齐，再放回整层、接入真实主模型历史，最后检查各接受位置恢复、TP 分片和长上下文。计算和流程确认后，再根据搬运与执行耗时决定是否增加分页直读或进一步融合。
+因此，接下来先让 PyPTO 中的 Full Attention 和 GDN 与现有结果对齐，再放回整层、接入真实主模型历史，最后检查各接受位置恢复、TP 分片和长上下文。计算和流程确认后，再根据搬运与执行耗时决定是否增加分页直读或进一步融合。
 
 ## 参考资料
 
