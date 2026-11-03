@@ -12,9 +12,9 @@ Orthrus 采用共享主干的草稿结构，在模型各层增加独立的 diffu
 
 ### 1.1 草稿分支与主模型的关系
 
-每轮草稿输入由一个已知的 anchor token 和多个 MASK token 组成。anchor 是本轮预测的起点；MASK 是尚未生成位置的占位符，不是答案 token。当前服务使用块长 $K=32$，即一个 anchor 和 31 个待预测位置。
+每轮草稿输入由一个已知的 anchor token 和多个 MASK token 组成。anchor 是本轮预测的起点；MASK 是尚未生成位置的占位符，不是答案 token。当前服务使用块长 $`K=32`$，即一个 anchor 和 31 个待预测位置。
 
-设 anchor 的绝对位置为 $a$，主模型已经提供位置 $0,\ldots,a-1$ 的历史状态。草稿块中各位置使用自己的 diffusion query，读取这段历史对应的滑窗或压缩表示，同时读取整个临时块。块内位置交换的是当前层的中间特征，因此不需要先等待其他位置生成 token。
+设 anchor 的绝对位置为 $`a`$，主模型已经提供位置 $`0,\ldots,a-1`$ 的历史状态。草稿块中各位置使用自己的 diffusion query，读取这段历史对应的滑窗或压缩表示，同时读取整个临时块。块内位置交换的是当前层的中间特征，因此不需要先等待其他位置生成 token。
 
 ```text
 anchor + MASK × 31
@@ -60,54 +60,59 @@ Attention 侧可分为四个逻辑模块：**公共双向块、SWA、HCA、CSA**
 
 #### 2.1.1 可见性变化与计算定义
 
-普通自回归模型即使一次处理多个位置，第 $i$ 个位置也只能读取本块中 $j\le i$ 的位置，否则会看到未来答案。Orthrus 的块内输入则是 anchor 和 MASK，不包含未来答案，因此可以让每个位置读取整个块，以并行生成候选。
+普通自回归模型即使一次处理多个位置，第 $`i`$ 个位置也只能读取本块中 $`j\le i`$ 的位置，否则会看到未来答案。Orthrus 的块内输入则是 anchor 和 MASK，不包含未来答案，因此可以让每个位置读取整个块，以并行生成候选。
 
 仅考虑当前块，原有因果 mask 与 Orthrus mask 的区别为：
 
-$$
-M_{ij}^{AR}=
+```math
+\begin{aligned}
+M_{ij}^{AR}&=
 \begin{cases}
 0,&j\le i,\\
 -\infty,&j>i,
-\end{cases}
-\qquad
-M_{ij}^{D}=0,\quad 0\le i,j<K.
+\end{cases}\\
+M_{ij}^{D}&=0,\qquad 0\le i,j<K.
+\end{aligned}
 \tag{1}
-$$
+```
 
-$M$ 是加在 Attention 分数上的 additive mask，零表示可见，$-\infty$ 表示被屏蔽；上标 $AR$ 和 $D$ 分别表示主模型与 diffusion 分支。这个变化只涉及临时块，历史仍然限定在 anchor 之前，不能读取其他预测块或未来目标状态。
+$`M`$ 是加在 Attention 分数上的 additive mask，零表示可见，$`-\infty`$ 表示被屏蔽；上标 $`AR`$ 和 $`D`$ 分别表示主模型与 diffusion 分支。这个变化只涉及临时块，历史仍然限定在 anchor 之前，不能读取其他预测块或未来目标状态。
 
 为统一三类历史路径，定义单个 head 的 Attention：
 
-$$
+```math
 \mathcal A(q,C;s)=
 \frac{\sum_{c_j\in C}\exp(\alpha q c_j^\top)c_j}
 {\exp(s)+\sum_{c_j\in C}\exp(\alpha q c_j^\top)}.
 \tag{2}
-$$
+```
 
-$q$ 是 query，$C$ 是该 query 可见的 KV 行集合，$\alpha$ 是模型规定的缩放，$s$ 是 Attention sink 的 logit。DSV4 在这里使用同一 shared KV 向量 $c_j$ 作为 key 和 value；sink 等价于一个 value 为零的额外项，只增加分母。公式按反量化后的实数表示，低精度实现仍需检查数值误差。
+$`q`$ 是 query，$`C`$ 是该 query 可见的 KV 行集合，$`\alpha`$ 是模型规定的缩放，$`s`$ 是 Attention sink 的 logit。DSV4 在这里使用同一 shared KV 向量 $`c_j`$ 作为 key 和 value；sink 等价于一个 value 为零的额外项，只增加分母。公式按反量化后的实数表示，低精度实现仍需检查数值误差。
 
-设本轮临时块为 $B^D=\{c_0^D,\ldots,c_{K-1}^D\}$。若只计算块内部分，则第 $i$ 行返回：
+设本轮临时块为 $`B^D=\{c_0^D,\ldots,c_{K-1}^D\}`$。若只计算块内部分，则第 $`i`$ 行返回：
 
-$$
-O_{B,i}=\mathcal A(q_i^D,B^D;-\infty),\qquad
-L_{B,i}=\log\sum_{j=0}^{K-1}
+```math
+\begin{aligned}
+O_{B,i}&=\mathcal A(q_i^D,B^D;-\infty),\\
+L_{B,i}&=\log\sum_{j=0}^{K-1}
 \exp\!\left(\alpha q_i^D(c_j^D)^\top\right).
+\end{aligned}
 \tag{3}
-$$
+```
 
-这里不在块内单独计入 sink，因为块内输出还要与历史共同归一化。$O_{B,i}$ 是局部归一化输出，$L_{B,i}$ 是该部分的 log-sum-exp，简称 LSE。
+这里不在块内单独计入 sink，因为块内输出还要与历史共同归一化。$`O_{B,i}`$ 是局部归一化输出，$`L_{B,i}`$ 是该部分的 log-sum-exp，简称 LSE。
 
-历史和块内 Attention 可以融合计算，也可以分别调用现成算子。分开计算时，不能直接相加各自的输出：每部分都除以了不同的 softmax 分母，需要根据其 LSE 恢复相对权重。设第 $r$ 段返回 $O_r,L_r$，共有 $R$ 段，则：
+历史和块内 Attention 可以融合计算，也可以分别调用现成算子。分开计算时，不能直接相加各自的输出：每部分都除以了不同的 softmax 分母，需要根据其 LSE 恢复相对权重。设第 $`r`$ 段返回 $`O_r,L_r`$，共有 $`R`$ 段，则：
 
-$$
-L=\operatorname{logsumexp}(s,L_1,\ldots,L_R),\qquad
-O=\sum_{r=1}^{R}\exp(L_r-L)O_r.
+```math
+\begin{aligned}
+L&=\operatorname{logsumexp}(s,L_1,\ldots,L_R),\\
+O&=\sum_{r=1}^{R}\exp(L_r-L)O_r.
+\end{aligned}
 \tag{4}
-$$
+```
 
-sink 按 $(O_s,L_s)=(0,s)$ 加入一次。空历史段使用 $O_r=0,L_r=-\infty$，对结果没有贡献。在实数计算下，该式与把所有可见 KV 一起代入式 (2) 等价；它是调用多个现成算子时的组合方法，不要求 PyPTO 也必须拆成多个 kernel。
+sink 按 $`(O_s,L_s)=(0,s)`$ 加入一次。空历史段使用 $`O_r=0,L_r=-\infty`$，对结果没有贡献。在实数计算下，该式与把所有可见 KV 一起代入式 (2) 等价；它是调用多个现成算子时的组合方法，不要求 PyPTO 也必须拆成多个 kernel。
 
 #### 2.1.2 PyPTO 实现基础与适配方案
 
@@ -115,24 +120,28 @@ sink 按 $(O_s,L_s)=(0,s)$ 加入一次。空历史段使用 $O_r=0,L_r=-\infty$
 
 该实现采用分块 QK、softmax、PV：矩阵单元计算 QK/PV，向量单元维护最大值、指数和与累加分子，通过流水线同步衔接。块宽取自 `DSPARK_SPEC_TOKENS`，相应的可见行数和临时空间由配置生成。适配 Orthrus 时，可以复用这些计算，但应让临时块直接作为输入，不再依赖“写入私有 cache 后再读取”的流程，并为 K=32 及相应 batch/布局配置临时空间。
 
-归一化合并也有现成基础。PyPTO HCA 已经维护各段 online-softmax 状态 $(m_r,\ell_r,u_r)$，其中 $m_r$ 是最大分数，$\ell_r$ 是减去最大值后的指数和，$u_r$ 是同样缩放的加权 value 分子：
+归一化合并也有现成基础。PyPTO HCA 已经维护各段 online-softmax 状态 $`(m_r,\ell_r,u_r)`$，其中 $`m_r`$ 是最大分数，$`\ell_r`$ 是减去最大值后的指数和，$`u_r`$ 是同样缩放的加权 value 分子：
 
-$$
-\ell_r=\sum_j e^{z_{rj}-m_r},\qquad
-u_r=\sum_j e^{z_{rj}-m_r}v_{rj}.
+```math
+\begin{aligned}
+\ell_r&=\sum_j e^{z_{rj}-m_r},\\
+u_r&=\sum_j e^{z_{rj}-m_r}v_{rj}.
+\end{aligned}
 \tag{5}
-$$
+```
 
-$z_{rj}$ 和 $v_{rj}$ 分别是第 $r$ 段第 $j$ 行的分数和 value。现有 HCA 将滑窗与压缩历史合并；支持 Orthrus 后，只需把临时块也纳入同一组状态：
+$`z_{rj}`$ 和 $`v_{rj}`$ 分别是第 $`r`$ 段第 $`j`$ 行的分数和 value。现有 HCA 将滑窗与压缩历史合并；支持 Orthrus 后，只需把临时块也纳入同一组状态：
 
-$$
-m=\max(s,m_1,\ldots,m_R),\qquad
-O=\frac{\sum_r e^{m_r-m}u_r}
+```math
+\begin{aligned}
+m&=\max(s,m_1,\ldots,m_R),\\
+O&=\frac{\sum_r e^{m_r-m}u_r}
 {e^{s-m}+\sum_r e^{m_r-m}\ell_r}.
+\end{aligned}
 \tag{6}
-$$
+```
 
-非空段满足 $L_r=m_r+\log\ell_r$、$O_r=u_r/\ell_r$，因此式 (4) 和式 (6) 是同一归一化的两种接口形式。空段置 $m_r=-\infty,\ell_r=0,u_r=0$。PyPTO 可以直接复用状态合并，不需要先产生 LSE 再调用额外合并 kernel；关键是全部贡献合并后才执行输出后处理，且 sink 不重复计算。
+非空段满足 $`L_r=m_r+\log\ell_r`$、$`O_r=u_r/\ell_r`$，因此式 (4) 和式 (6) 是同一归一化的两种接口形式。空段置 $`m_r=-\infty,\ell_r=0,u_r=0`$。PyPTO 可以直接复用状态合并，不需要先产生 LSE 再调用额外合并 kernel；关键是全部贡献合并后才执行输出后处理，且 sink 不重复计算。
 
 #### 2.1.3 Torch-NPU 实现
 
@@ -304,13 +313,18 @@ def merge_attention_outputs(
 
 双向块解决当前 K 个位置之间的交互，但候选还需要已有上下文。SWA 提供最近一段原始 KV，因此它既是独立 SWA 层的历史来源，也是 HCA/CSA 路径的局部历史部分。
 
-设 $W(t)$ 表示截至位置 $t$ 的最近至多 $w$ 行原始 KV，DSV4-Flash 的窗口宽度 $w=128$；$p$ 是 AR query 的绝对位置。原有计算与 Orthrus 的区别为：
+设 $`W(t)`$ 表示截至位置 $`t`$ 的最近至多 $`w`$ 行原始 KV，DSV4-Flash 的窗口宽度 $`w=128`$；$`p`$ 是 AR query 的绝对位置。原有计算与 Orthrus 的区别为：
 
-| 原有 AR Attention | Orthrus-SWA |
-| --- | --- |
-| $o_p^{AR}=\mathcal A(q_p^{AR},W(p);s^{AR})$ | $o_i^D=\mathcal A(q_i^D,W(a-1)\Vert B^D;s^D)$ |
+```math
+\begin{aligned}
+\text{AR:}\quad o_p^{AR}
+&=\mathcal A(q_p^{AR},W(p);s^{AR}),\\
+\text{Orthrus:}\quad o_i^D
+&=\mathcal A(q_i^D,W(a-1)\Vert B^D;s^D).
+\end{aligned}
+```
 
-$\Vert$ 表示两组 KV 共同参与 Attention，不要求物理拼接。AR 窗口随 query 位置移动，包含当前 query 对应的真实 KV；Orthrus 的 K 个 query 则读取同一个 anchor 前窗口，再读取整块临时 KV。即使第 $i$ 个 draft 位置更靠后，也不能按 AR 规则缩短它可读的 anchor 历史。
+$`\Vert`$ 表示两组 KV 共同参与 Attention，不要求物理拼接。AR 窗口随 query 位置移动，包含当前 query 对应的真实 KV；Orthrus 的 K 个 query 则读取同一个 anchor 前窗口，再读取整块临时 KV。即使第 $`i`$ 个 draft 位置更靠后，也不能按 AR 规则缩短它可读的 anchor 历史。
 
 #### 2.2.2 PyPTO 实现基础与适配方案
 
@@ -446,13 +460,18 @@ def history_and_block_mask(
 
 SWA 仅保存近处的原始上下文。HCA 在此基础上读取主模型按 ratio-128 生成的压缩行，使 query 能访问更长的历史。Orthrus 不需要对草稿块再运行一次目标 compressor，而是使用已经完成的压缩历史，将草稿块保持为未压缩的临时 KV。
 
-记 $H_{128}(t)$ 为截至位置 $t$ 已完成的 C128 压缩行：
+记 $`H_{128}(t)`$ 为截至位置 $`t`$ 已完成的 C128 压缩行：
 
-| 原有 AR Attention | Orthrus-HCA |
-| --- | --- |
-| $o_p^{AR}=\mathcal A(q_p^{AR},W(p)\Vert H_{128}(p);s^{AR})$ | $o_i^D=\mathcal A(q_i^D,W(a-1)\Vert H_{128}(a-1)\Vert B^D;s^D)$ |
+```math
+\begin{aligned}
+\text{AR:}\quad o_p^{AR}
+&=\mathcal A(q_p^{AR},W(p)\Vert H_{128}(p);s^{AR}),\\
+\text{Orthrus:}\quad o_i^D
+&=\mathcal A(q_i^D,W(a-1)\Vert H_{128}(a-1)\Vert B^D;s^D).
+\end{aligned}
+```
 
-anchor 前有 $a$ 个 token，因此读取 $\lfloor a/128\rfloor$ 个已完成压缩行。未完成压缩组仍保存在目标模型的 compressor state 中，draft 不能补完或更新它。这里读取全部有效 C128 行，不通过 indexer 做 Top-K 截断。
+anchor 前有 $`a`$ 个 token，因此读取 $`\lfloor a/128\rfloor`$ 个已完成压缩行。未完成压缩组仍保存在目标模型的 compressor state 中，draft 不能补完或更新它。这里读取全部有效 C128 行，不通过 indexer 做 Top-K 截断。
 
 #### 2.3.2 PyPTO 实现基础与适配方案
 
@@ -571,28 +590,40 @@ def _sparse_history_segment(query, cache, block_table, indices, lengths, scale):
 
 C4 的压缩率比 C128 低，同一上下文会保留更多压缩行。CSA 先由 indexer 为每个 query 选择相关历史，再对选中行计算 Attention。适配 Orthrus 时，历史 index key 和 C4 KV 仍来自主模型，query 及其检索权重改由 diffusion 分支生成，以对应本轮 hidden 和交付 head 中的 indexer 参数。
 
-设 $k_u^I$ 为历史第 $u$ 行 index key，$q_{i,h}^{I,X}$ 为位置 $i$、head $h$ 的 indexer query，$w_{i,h}^{X}$ 为含模型缩放的 head 权重，$X\in\{AR,D\}$。两种路径共用同一评分形式：
+设 $`k_u^I`$ 为历史第 $`u`$ 行 index key，$`q_{i,h}^{I,X}`$ 为位置 $`i`$、head $`h`$ 的 indexer query，$`w_{i,h}^{X}`$ 为含模型缩放的 head 权重，$`X\in\{AR,D\}`$。两种路径共用同一评分形式：
 
-$$
+```math
 A_{i,u}^{X}=
 \sum_{h=1}^{H_I}w_{i,h}^{X}
 \operatorname{ReLU}\!\left(q_{i,h}^{I,X}(k_u^I)^\top\right).
 \tag{7}
-$$
+```
 
-$H_I$ 是 indexer head 数。变化在于 query/权重来源和有效历史范围：
+$`H_I`$ 是 indexer head 数。变化在于 query/权重来源和有效历史范围：
 
-| 原有 AR 检索 | Orthrus 检索 |
-| --- | --- |
-| $I_p^{AR}=\operatorname{TopIdx}_{k_I}\{A_{p,u}^{AR}:0\le u<\lfloor(p+1)/4\rfloor\}$ | $I_i^D=\operatorname{TopIdx}_{k_I}\{A_{i,u}^{D}:0\le u<\lfloor a/4\rfloor\}$ |
+```math
+\begin{aligned}
+\text{AR:}\quad I_p^{AR}
+&=\operatorname{TopIdx}_{k_I}
+  \{A_{p,u}^{AR}:0\le u<\lfloor(p+1)/4\rfloor\},\\
+\text{Orthrus:}\quad I_i^D
+&=\operatorname{TopIdx}_{k_I}
+  \{A_{i,u}^{D}:0\le u<\lfloor a/4\rfloor\}.
+\end{aligned}
+```
 
-$k_I=512$ 是最多选取的压缩行数，与 draft 块长 $K=32$ 不同；历史不足时仅使用有效行。所有 draft query 的检索范围相同，但 query 不同，选中的行可以不同。当前临时块全量可见，不参与 Top-K。
+$`k_I=512`$ 是最多选取的压缩行数，与 draft 块长 $`K=32`$ 不同；历史不足时仅使用有效行。所有 draft query 的检索范围相同，但 query 不同，选中的行可以不同。当前临时块全量可见，不参与 Top-K。
 
-记 $H_4[I]$ 为行号集合 $I$ 对应的 C4 KV，最终 Attention 为：
+记 $`H_4[I]`$ 为行号集合 $`I`$ 对应的 C4 KV，最终 Attention 为：
 
-| 原有 AR Attention | Orthrus-CSA |
-| --- | --- |
-| $o_p^{AR}=\mathcal A(q_p^{AR},W(p)\Vert H_4[I_p^{AR}];s^{AR})$ | $o_i^D=\mathcal A(q_i^D,W(a-1)\Vert H_4[I_i^D]\Vert B^D;s^D)$ |
+```math
+\begin{aligned}
+\text{AR:}\quad o_p^{AR}
+&=\mathcal A(q_p^{AR},W(p)\Vert H_4[I_p^{AR}];s^{AR}),\\
+\text{Orthrus:}\quad o_i^D
+&=\mathcal A(q_i^D,W(a-1)\Vert H_4[I_i^D]\Vert B^D;s^D).
+\end{aligned}
+```
 
 因此，CSA 需要独立 diffusion indexer 参数，但不需要重新设计评分公式或 Top-K 排序算法。参数替换与算子算法复用是两件不同的事。
 
