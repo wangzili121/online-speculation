@@ -31,7 +31,7 @@ Orthrus 为每层的 Full Attention 或 GDN 另外保留一套独立的 draft �
 
 draft 每轮输入一个块：`anchor + (K-1) 个 MASK`。anchor 是已经确定的最后一个 token，MASK 占据接下来要预测的位置，输入中没有未来答案。设 anchor 位于 `a`，它之前的 `[0,a)` 直接读取主模型历史；anchor 和 MASK 则占据 `a` 到 `a+K-1`，在本轮一起计算。常用的 `K=32` 就是一个 anchor 加 31 个候选位置，K 本身可以配置。
 
-在 Full Attention 层，块内位置可以互相读取信息；在 GDN 层，当前实现仍从 AR 历史状态出发，按顺序递推。**这两种计算合在一起，构成 `orthrus_qwen35_reference` 策略**，依据的是 Orthrus Qwen3.5 混合模型参考实现。原始普通 Qwen3 没有 GDN，因此不能直接把它的双向 SDPA 套到所有层。加载训练 head 时，也要确认它采用同样的混合层策略。
+参考 Orthrus 的 Qwen3.5 混合模型实现，Qwen3.8 的草稿分支采用以下计算方式：在 Full Attention 层，块内位置可以互相读取信息；在 GDN 层，当前实现仍从 AR 历史状态出发，按顺序递推。代码中将这一配置记为 `orthrus_qwen35_reference`。原始普通 Qwen3 没有 GDN，因此不能直接把它的双向 SDPA 套到所有层。加载训练 head 时，也要确认它采用同样的混合层策略。
 
 ### 1.2 PyPTO 已有基础与本次改动范围
 
