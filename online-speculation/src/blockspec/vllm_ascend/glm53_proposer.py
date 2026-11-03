@@ -27,7 +27,7 @@ class GLM53OrthrusProposer(Qwen38OrthrusProposer):
         # 模型插件选项留在 HF config；Ascend additional_config 只接受后端自己的字段。
         options = getattr(vllm_config.model_config.hf_config, "orthrus_glm53", {})
         allowed = {"mask_token_id", "hybrid_policy", "head_dir", "initialize_from_target",
-                   "kda_backward_weight", "audit_cache"}
+                   "kda_backward_weight", "audit_cache", "history_read_mode"}
         if not isinstance(options, dict) or set(options) - allowed:
             raise ValueError("invalid glm53_orthrus options")
         if options.get("hybrid_policy") not in HYBRID_POLICIES:
@@ -39,6 +39,8 @@ class GLM53OrthrusProposer(Qwen38OrthrusProposer):
             raise ValueError("KDA backward weight is a finite (-1,1) bidirectional smoke initializer only")
         if type(options.get("audit_cache", False)) is not bool:
             raise ValueError("audit_cache must be a boolean")
+        if options.get("history_read_mode", "auto") not in ("auto", "snapshot", "paged"):
+            raise ValueError("history_read_mode must be auto, snapshot or paged")
         if type(options.get("initialize_from_target", False)) is not bool:
             raise ValueError("initialize_from_target must be a boolean")
         if bool(options.get("head_dir")) == bool(options.get("initialize_from_target", False)):
@@ -90,7 +92,8 @@ class GLM53OrthrusProposer(Qwen38OrthrusProposer):
         with torch.inference_mode(False), torch.no_grad():
             self.model = SharedGLM53Draft(target, self.config, policy=self.options["hybrid_policy"],
                                           backward_weight=self.options.get("kda_backward_weight", 0.))
-            self.history_reader = NativeGLM53History(target, self.runner)
+            self.history_reader = NativeGLM53History(target, self.runner,
+                read_mode=self.options.get("history_read_mode", "auto"))
             if self.options.get("audit_cache", False):
                 self.model.cache_auditor = self.history_reader.snapshot_target_cache
             self.generator = torch.Generator(device=self.model.embedding.weight.device)
@@ -174,6 +177,8 @@ class GLM53WorkerExtension:
                     accepted=draft.accepted, full_blocks=draft.full_blocks,
                     max_verified_tokens=draft.max_verified_tokens,
                     history_reads=draft.history_reader.reads, hybrid_policy=draft.options["hybrid_policy"],
+                    history_read_paths=dict(draft.history_reader.read_paths),
+                    history_read_mode=draft.history_reader.read_mode,
                     rejected_rounds=draft.rejected_rounds, cache_audits=draft.model.audit_checks,
                     kda_reverse_calls=sum(getattr(layer, "reverse_calls", 0) for layer in draft.model.layers),
                     draft_parameter_bytes=sum(p.numel() * p.element_size()

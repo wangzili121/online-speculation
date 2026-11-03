@@ -32,7 +32,7 @@ def settings(args):
         extra = dict(mask_token_id=args.mask_token_id,
                      hybrid_policy=BIDIRECTIONAL_POLICY if args.kda_mode == "bidirectional" else HYBRID_POLICY,
                      head_dir=args.head_dir, initialize_from_target=args.initialize_from_target,
-                     audit_cache=args.audit_cache)
+                     audit_cache=args.audit_cache, history_read_mode=getattr(args, "history_read_mode", "auto"))
         if args.kda_backward_weight is not None:
             if args.kda_mode != "bidirectional" or not args.initialize_from_target:
                 raise ValueError("backward weight is only valid for bidirectional smoke initialization")
@@ -63,6 +63,7 @@ def main():
     parser.add_argument("--kda-mode", choices=("causal", "bidirectional"), default="causal")
     parser.add_argument("--kda-backward-weight", type=float)
     parser.add_argument("--audit-cache", action="store_true")
+    parser.add_argument("--history-read-mode", choices=("auto", "snapshot", "paged"), default="auto")
     parser.add_argument("--save-head", type=Path)
     parser.add_argument("--baseline", type=Path)
     # The pinned runtime's NoPE metadata rejects the 2K smoke configuration.
@@ -103,6 +104,7 @@ def main():
         "scripts/run_glm53_vllm.py", "scripts/run_in_runtime.py",
         "src/blockspec/vllm_ascend/glm53_proposer.py", "src/blockspec/vllm_ascend/glm53_native.py",
         "src/blockspec/vllm_ascend/glm53_ops.py", "src/blockspec/vllm_ascend/qwen38_runtime.py",
+        "src/blockspec/vllm_ascend/glm53_history.py",
         "src/blockspec/vllm_ascend/qwen38_proposer.py")}
     if args.mode == "orthrus":
         stats = engine.llm_engine.engine_core.collective_rpc("orthrus_stats")
@@ -113,6 +115,8 @@ def main():
         if args.audit_cache and any(s.get("cache_audits") != s.get("proposals") for s in stats):
             raise AssertionError("not every proposal passed a target-cache audit")
         report["workers"] = stats
+        if args.history_read_mode == "paged" and any(not s.get("history_read_paths", {}).get("paged") for s in stats):
+            raise AssertionError("forced paged history was not executed")
         if args.save_head:
             report["head_exports"] = engine.llm_engine.engine_core.collective_rpc(
                 "orthrus_save_head", args=(str(args.save_head),))

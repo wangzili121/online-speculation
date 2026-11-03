@@ -14,6 +14,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..parallel.backbone import BackboneOutput
+from .glm53_history import PagedLatent, read_pages
 from .glm53_ops import kda_convolve, kda_native, select_history, sparse_draft_attention
 
 
@@ -82,56 +83,21 @@ def kda_history(attention, metadata, *, accepted, query_length):
     return tail, cache_rows(recurrent, state_index)[0]
 
 
-def read_pages(cache, table, length, *, block_size=None):
-    """复制请求的有效分页前缀，返回 [L, dim]，不会引用可写 cache。"""
-    if (cache.ndim != 4 or cache.shape[2] != 1 or table.ndim != 2
-            or table.shape[0] != 1 or length < 0):
-        raise ValueError("unsupported GLM batch-one paged latent layout")
-    block_size = cache.shape[1] if block_size is None else block_size
-    if block_size < 1 or cache.shape[1] % block_size:
-        raise ValueError("operator pages must divide the physical cache page")
-    split = cache.shape[1] // block_size
-    pages = (length + block_size - 1) // block_size
-    if pages > table.shape[1]:
-        raise ValueError("prefix exceeds GLM page table")
-    if not pages:
-        return cache.new_empty((0, cache.shape[-1]))
-    page_ids = table[0, :pages].cpu().tolist()
-    for index in page_ids:
-        if not 0 <= index < cache.shape[0] * split:
-            raise ValueError("operator page outside the physical cache arena")
-    pitch = cache.stride(1)
-    # 将行末 padding 包含在只读视图中，再批量选行。直接 gather 非连续
-    # cache 会让 NPU 先物化整个 arena，不能用 cache.reshape 替代此视图。
-    if (pages >= 16 and cache.stride(-1) == 1 and pitch >= cache.shape[-1]
-            and cache.stride(0) >= cache.shape[1] * pitch and cache.stride(0) % pitch == 0):
-        page_pitch = cache.stride(0) // pitch
-        rows = (cache.shape[0] - 1) * page_pitch + cache.shape[1]
-        end = (cache.storage_offset() + rows * pitch) * cache.element_size()
-        if end <= cache.untyped_storage().nbytes():
-            arena = cache.as_strided((rows, pitch), (pitch, 1))
-            starts = torch.tensor([i // split * page_pitch + i % split * block_size for i in page_ids])
-            indices = (starts[:, None] + torch.arange(block_size)).flatten()[:length].to(cache.device)
-            return arena.index_select(0, indices)[:, :cache.shape[-1]].contiguous()
-    pieces = []
-    for page, index in enumerate(page_ids):
-        physical, subpage = divmod(index, split)
-        offset = subpage * block_size
-        width = min(block_size, length - page * block_size)
-        pieces.append(cache[physical, offset:offset + width, 0].clone(memory_format=torch.contiguous_format))
-    return pieces[0] if len(pieces) == 1 else torch.cat(pieces)
-
-
 @dataclass(frozen=True)
 class GLMHistory:
     layers: tuple
     length: int
 
+    def release(self):
+        for state in self.layers:
+            if isinstance(state, tuple) and isinstance(state[0], PagedLatent):
+                state[0].release()
+
 
 class NativeGLM53History:
-    backend = "shared_glm53_target_snapshot"
+    backend = "shared_glm53_target_readonly"
 
-    def __init__(self, target, runner):
+    def __init__(self, target, runner, *, read_mode="auto"):
         self.target = target
         self.runner = runner
         names = {id(m): n for n, m in runner.compilation_config.static_forward_context.items()}
@@ -143,15 +109,22 @@ class NativeGLM53History:
             self.entries.append((layer.layer_kind, attention, cache_layer, names[id(cache_layer)]))
         self.metadata = self.request_id = None
         self.reads = 0
+        self.read_mode = read_mode
+        self.read_paths = dict(paged=0, snapshot=0)
+        self._history = None
 
     def capture(self, metadata, request_id):
         if not isinstance(metadata, dict):
             raise ValueError("GLM eager per-layer attention metadata required")
+        if self._history is not None:
+            self._history.release()
         self.metadata, self.request_id = metadata, request_id
 
     def read(self, request_id, length, *, sampled_count, draft_count):
         if self.metadata is None or request_id != self.request_id:
             raise RuntimeError("GLM history does not belong to the current request")
+        if self._history is not None:
+            self._history.release()
         sparse = next(name for kind, _, _, name in self.entries if kind == "mla")
         meta = self.metadata[sparse]
         if meta.seq_lens.numel() != 1 or meta.query_start_loc.numel() != 2:
@@ -168,19 +141,22 @@ class NativeGLM53History:
             if kind == "kda":
                 states.append(kda_history(attention, current, accepted=accepted, query_length=query_length))
             else:
-                if (not torch.equal(current.seq_lens, meta.seq_lens)
-                        or not torch.equal(current.query_start_loc, meta.query_start_loc)):
+                if (current.seq_lens is not meta.seq_lens and not torch.equal(current.seq_lens, meta.seq_lens)
+                        or current.query_start_loc is not meta.query_start_loc
+                        and not torch.equal(current.query_start_loc, meta.query_start_loc)):
                     raise RuntimeError("GLM MLA layers disagree on the committed history boundary")
                 indexer = attention.indexer
                 index_meta = self.metadata[indexer.k_cache.prefix]
-                latent = read_pages(cache_tensor(cache_layer.kv_cache), current.block_table, length,
-                                    block_size=getattr(current, "block_size", None))
+                latent = PagedLatent(cache_tensor(cache_layer.kv_cache), current.block_table, length,
+                                     block_size=getattr(current, "block_size", None),
+                                     mode=self.read_mode, counters=self.read_paths)
                 # 完整池用缓存；不足一池的历史 token 总会被选入，不必重新压缩。
                 pools = read_pages(cache_tensor(indexer.k_cache.kv_cache), index_meta.block_table,
                                    length // indexer.index_kpool, block_size=getattr(index_meta, "block_size", None))
                 states.append((latent, pools))
         self.reads += 1
-        return GLMHistory(tuple(states), length)
+        self._history = GLMHistory(tuple(states), length)
+        return self._history
 
     def snapshot_target_cache(self):
         """验收用：复制当前请求的有效 KV、卷积和验证 checkpoint 到 CPU。"""
@@ -292,12 +268,12 @@ class KDADraft(nn.Module):
         # 只在临时输入上卷积和递推；主模型的卷积及 recurrent state 均不更新。
         q, k, v = self._convolve(qkv, tail, hidden.dtype)
         gate = self.f_b_proj(f_a)[0].reshape(-1, self.heads, self.dim)
-        output, _ = kda_native(q.contiguous(), k.contiguous(), v.contiguous(), gate, beta,
+        output, _ = kda_native(q, k, v, gate, beta,
                                initial, self.a_log, self.dt_bias, lower_bound=self.lower_bound)
         if self.backward_gate is not None:
             # 反向只读当前块，从零状态开始；不能反向遍历 AR 历史。
             rq, rk, rv = self._convolve(qkv.flip(0), torch.zeros_like(tail), hidden.dtype)
-            reverse, _ = kda_native(rq.contiguous(), rk.contiguous(), rv.contiguous(), gate.flip(0),
+            reverse, _ = kda_native(rq, rk, rv, gate.flip(0),
                 beta.flip(0), torch.zeros_like(initial), self.a_log, self.dt_bias, lower_bound=self.lower_bound)
             output = output + self.backward_gate.tanh().to(output.dtype)[None, :, None] * reverse.flip(0)
             self.reverse_calls += 1
@@ -346,13 +322,16 @@ class SharedGLM53Draft(nn.Module):
         from vllm_ascend.ascend_forward_context import set_ascend_forward_context
 
         positions = torch.arange(cache.length, cache.length + tokens.numel(), device=tokens.device)
-        before = None if self.cache_auditor is None else self.cache_auditor()
         # embedding、mHC、norm、MoE 和 LM head 全部调用同一份原生目标模型。
-        with replace_attention(self.target.model.layers, self.layers, cache):
-            with set_ascend_forward_context(None, self.vllm_config, num_tokens=tokens.numel(),
-                                            model_instance=self.target, skip_compiled=True):
-                hidden = self.target(tokens.flatten(), positions)
-                logits = self.target.compute_logits(hidden)
+        try:
+            before = None if self.cache_auditor is None else self.cache_auditor()
+            with replace_attention(self.target.model.layers, self.layers, cache):
+                with set_ascend_forward_context(None, self.vllm_config, num_tokens=tokens.numel(),
+                                                model_instance=self.target, skip_compiled=True):
+                    hidden = self.target(tokens.flatten(), positions)
+                    logits = self.target.compute_logits(hidden)
+        finally:
+            cache.release()
         if before is not None:
             after = self.cache_auditor()
             if before.keys() != after.keys() or any(

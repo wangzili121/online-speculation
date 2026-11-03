@@ -71,7 +71,7 @@ class DraftAttentionDemo(nn.Module):
 
         def run(qkv, left, initial, raw_gate, raw_beta):
             q, k, v = self._convolve(qkv, left, backend)
-            output, _ = core(q.contiguous(), k.contiguous(), v.contiguous(),
+            output, _ = core(q, k, v,
                              raw_gate.contiguous(), raw_beta.contiguous(), initial,
                              self.a_log, self.dt_bias)
             return output

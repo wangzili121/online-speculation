@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--wait-hours", type=float, default=1)
     parser.add_argument("--max-model-len", type=int)
     parser.add_argument("--long-prompt-repeats", type=int)
+    parser.add_argument("--history-read-mode", choices=("auto", "snapshot", "paged"), default="auto")
     parser.add_argument("--block-size", type=int, choices=range(2, 9), default=8)
     parser.add_argument("--privileged-runtime", action="store_true",
                         help="explicit trusted-node workaround; use the same mode in runtime preflight")
@@ -62,6 +63,7 @@ def main():
                                  8 if len(args.devices) == 8 else 1, privileged_runtime=args.privileged_runtime):
                 raise RuntimeError("native runtime or source changed; repeat preflight")
             extra += ("--block-size", str(args.block_size))
+            extra += ("--history-read-mode", args.history_read_mode)
             for option in ("max_model_len", "long_prompt_repeats"):
                 value = getattr(args, option)
                 if value is not None:

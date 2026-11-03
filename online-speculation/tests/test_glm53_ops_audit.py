@@ -6,7 +6,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from blockspec.vllm_ascend.glm53_ops import _block_segment, _segment, kda_convolve
+from blockspec.vllm_ascend.glm53_ops import _block_segment, _segment, kda_convolve, kda_native
 
 
 @pytest.mark.parametrize("length", [1, 2, 8, 32])
@@ -53,3 +53,29 @@ def test_shared_block_and_fused_convolution(length, heads, weight_dtype):
                                    kda_convolve(rows, tail, weight, backend=selected), atol=0, rtol=0)
     for value, old in zip((query, block, rows, tail, weight), before, strict=True):
         assert torch.equal(value, old)
+
+
+@pytest.mark.skipif(os.environ.get("ORTHRUS_RUN_NPU_TESTS") != "1", reason="allocated NPU required")
+@pytest.mark.parametrize("length", [1, 2, 8])
+@pytest.mark.parametrize("heads", [8, 64])
+def test_native_kda_accepts_packed_qkv_strides_without_copy(length, heads):
+    import torch_npu  # noqa: F401
+    from vllm_ascend.utils import enable_custom_op
+
+    torch.npu.set_device(0)
+    assert enable_custom_op()
+    torch.manual_seed(5313)
+    packed = torch.randn(length, 3, heads, 128, device="npu", dtype=torch.bfloat16) * .1
+    q, k, v = packed.unbind(1)
+    gate = torch.randn(length, heads, 128, device="npu", dtype=torch.bfloat16)
+    beta = torch.randn(length, heads, device="npu", dtype=torch.bfloat16)
+    initial = torch.randn(heads, 128, 128, device="npu") * .01
+    before = initial.clone()
+    a_log = torch.zeros(heads, device="npu")
+    bias = torch.full((heads * 128,), -3., device="npu")
+    with torch.inference_mode():
+        copied = kda_native(q.contiguous(), k.contiguous(), v.contiguous(), gate, beta, initial, a_log, bias)
+        strided = kda_native(q, k, v, gate, beta, initial, a_log, bias)
+    for actual, expected in zip(strided, copied, strict=True):
+        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    assert torch.equal(initial, before)

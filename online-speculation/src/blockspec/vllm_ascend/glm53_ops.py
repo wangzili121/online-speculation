@@ -6,6 +6,8 @@ import math
 import torch
 from torch.nn import functional as F
 
+from .glm53_history import gather_history
+
 
 @dataclass(frozen=True)
 class Glm53Architecture:
@@ -63,13 +65,6 @@ def select_history(query, head_weights, pooled_keys, prefix_length, *, topk, poo
     indices = (chosen.unsqueeze(-1) * pool_size + offsets).flatten(1)
     tail = torch.arange(complete * pool_size, prefix_length, device=query.device)
     return torch.cat((indices, tail.expand(query.shape[0], -1)), dim=-1)
-
-
-def gather_history(history, indices):
-    """从请求快照收集 latent；大索引集用一维 index_select 减少 workspace。"""
-    if history.is_contiguous() and indices.numel() >= 2048:
-        return history.index_select(0, indices.flatten()).view(*indices.shape, history.shape[-1])
-    return history[indices]
 
 
 def _segment(query, latent, scale, backend):
