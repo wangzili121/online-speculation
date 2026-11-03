@@ -2,11 +2,15 @@
 
 ## 1. 背景与适配目标
 
-Orthrus 用一个 draft 分支并行预测多个 token，再由原模型一次验证这些候选。本文面向 Qwen3.8-27B 文本模型，说明将该分支交给 PyPTO 执行时，需要保留哪些模型计算、调整哪些算子入口，以及如何与主模型协作。范围仅为推理，不包含训练和反向算子。
+Orthrus 先让 draft 分支一次预测多个 token，再交给主模型验证。draft 与主模型共享大部分权重，但用独立参数处理 token 之间的信息。要把它放到 PyPTO 上运行，需要先看清楚 Qwen3.8-27B 每类层怎样计算，再判断现有实现哪些能沿用、哪些需要调整。
+
+下文用 AR 表示主模型的自回归分支，draft 表示预测候选的分支。这里只讨论文本推理，不包含训练和反向算子。
 
 ### 1.1 草稿分支与主模型的关系
 
-Qwen3.8-27B 的文本骨干沿用 Qwen3.5 系列的混合结构，共 64 层：48 层 GDN 和 16 层 Full Attention。两类层的排列与 draft 参数所在位置如下：
+Qwen3.8-27B 的文本部分沿用 Qwen3.5 系列的混合结构：每三个 GDN 层后接一个 Full Attention 层，重复 16 次，共 64 层。Full Attention 从历史 KV 中读取信息，GDN 则通过卷积和矩阵递推保留历史。两类层对历史的处理不同，draft 也需要分别适配。
+
+每层中，负责这部分计算的模块以下称为 mixer。Orthrus 为 mixer 准备独立的 draft 参数，其他层参数继续与主模型共享：
 
 ```text
 共享 Embedding
@@ -23,25 +27,25 @@ Qwen3.8-27B 的文本骨干沿用 Qwen3.5 系列的混合结构，共 64 层：4
   Draft mixer   ：独立参数，读取 AR 历史，在临时工作区计算候选
 ```
 
-每轮 draft 的输入是 `anchor + (K-1) 个 MASK`。anchor 是已经确定的最后一个 token；MASK 是待预测位置的占位符，不是未来答案。设 anchor 的绝对位置为 $a$，则可读取的主模型历史为 $[0,a)$，当前块占据 $a$ 到 $a+K-1$。本实现常用 $K=32$，即一个 anchor 和 31 个候选位置；K 是配置，不是算法常数。
+draft 每轮输入一个块：`anchor + (K-1) 个 MASK`。anchor 是已经确定的最后一个 token，MASK 占据接下来要预测的位置，输入中没有未来答案。设 anchor 位于 $a$，它之前的 $[0,a)$ 直接读取主模型历史；anchor 和 MASK 则占据 $a$ 到 $a+K-1$，在本轮一起计算。常用的 $K=32$ 就是一个 anchor 加 31 个候选位置，K 本身可以配置。
 
-当前混合层策略记为 `orthrus_qwen35_reference`：**Full Attention 在当前块内双向计算，GDN 则从 AR 历史状态出发，保持因果递推。** 这是依据 Orthrus Qwen3.5 参考实现采用的模型扩展；原始普通 Qwen3 算法没有 GDN，不能把“所有层都改成双向 SDPA”作为这里的默认定义。训练 head 必须与这一策略匹配。
+在 Full Attention 层，块内位置可以互相读取信息；在 GDN 层，当前实现仍从 AR 历史状态出发，按顺序递推。**这两种计算合在一起，构成 `orthrus_qwen35_reference` 策略**，依据的是 Orthrus Qwen3.5 混合模型参考实现。原始普通 Qwen3 没有 GDN，因此不能直接把它的双向 SDPA 套到所有层。加载训练 head 时，也要确认它采用同样的混合层策略。
 
-### 1.2 现有推理路径的适配边界
+### 1.2 PyPTO 已有基础与本次改动范围
 
-PyPTO 已有 Qwen3.8 整网前向的实现基础。本文固定参考 `pypto-lib` PR #1503 的提交 `1d454a1b8f7af18c9b176d8aeaa60dc565a6a9e9`，模块路径均相对于 `models/qwen3_8_27b/`。该 PR 及配套 `pypto-serving` PR #281 尚未合入，公开验证范围为单卡、单请求、最多 128 个位置，不包含投机解码，不能等同于已经支持本报告的执行方式。
+PyPTO 已有 Qwen3.8 整网前向的实现基础，位于 `pypto-lib` PR #1503。本文按提交 `1d454a1b8f7af18c9b176d8aeaa60dc565a6a9e9` 核对，下文文件均位于 `models/qwen3_8_27b/`。该 PR 及配套 `pypto-serving` PR #281 尚未合入，公开验证的是单卡、单请求、最多 128 个位置的普通推理，尚不包含本报告的投机执行方式。
 
-**核心增量是两个 mixer 入口，不是固定新增若干个底层 kernel。** Full Attention 要从单个 AR query 扩展为整块 query，并改变可见范围；GDN 要从带历史初值的单步，扩展为 K 个位置连续推进，同时隔离状态写入。投影、norm、RoPE、MLP 等公式不因 Orthrus 改变，但仍要接好独立 draft 权重和 TP 分片，不能只替换一个 mask 就完成整网接入。
+在这个基础上，**主要要扩展两类 mixer 的调用方式**。Full Attention 需要一次计算 K 行 query，让它们读取同一段历史和整个当前块；GDN 需要带着已有历史状态连续处理 K 行，而且只更新临时副本。前者改变可见范围，后者改变输入长度和状态传递方式，因而不能用一次 mask 修改概括全部工作。
 
-下面按两条计算路径依次说明：先定义计算，再对照 PyPTO 现有入口，最后给出当前 Torch-NPU 实现。
+投影、norm、RoPE 和 MLP 的公式可以沿用。接入时仍要给它们绑定正确的 draft 或共享权重，按 TP 规格分片，再与主模型交换历史。下面先说明两类 mixer 内部要改什么，第 3 节再把它们放回完整推理流程。
 
 ## 2. Attention 模块设计
 
 ### 2.1 Full Attention：历史前缀与双向块
 
-#### 2.1.1 可见性变化与计算定义
+#### 2.1.1 计算方式与可见范围
 
-普通 AR 层中，第 $i$ 个位置只能读取历史及当前块的前 $i+1$ 个位置；draft 的块内输入没有未来答案，因此每行可以读取整个临时块。主模型历史保持原样，不重新做双向计算。
+先看普通 AR 层。它按从左到右的顺序预测，第 $i$ 个位置只能读取历史和当前块的前 $i+1$ 个位置，避免看到未来答案。draft 输入的是 anchor 和 MASK，没有未来答案可泄露，因此每行可以读取整个当前块。双向只发生在这个块里，之前的主模型历史保持不变。
 
 按单个 query head 书写，令 $K_H,V_H$ 为主模型历史，$q_i^{AR}$ 和 $K_{AR,0:i},V_{AR,0:i}$ 为当前 AR 块的 query 和因果前缀，则原有计算为：
 
@@ -55,21 +59,21 @@ $$
 O_D=\mathrm{softmax}\left(Q_D[K_H;K_D]^\top/\sqrt d\right)[V_H;V_D].
 $$
 
-两者仍是同一个 SDPA 公式，变化是**所有 draft query 都读取同一历史前缀及整个临时块**。这里没有 DSV4 的 sink、压缩 KV 或 indexer。
+对比两式，softmax Attention 本身没有变，变化在传给它的 KV：**每个 draft query 读取相同的历史前缀，以及整个临时块**。这条路径不涉及 DSV4 的 sink、压缩 KV 或 indexer。
 
-该模型使用 GQA：24 个 query head 共享 4 个 KV head，$d=256$。Q/K 先做 RMSNorm，仅前 64 维做 RoPE；Attention 输出乘以 query 投影产生的 sigmoid gate，再经过 O projection。Q/K norm 的缩放按 `1 + weight` 解释，这些前后处理也属于模型语义，不能只对齐 softmax 而省略它们。
+Attention 前后还要保留 Qwen 自身的处理。该模型有 24 个 query head、4 个 KV head，以 GQA 方式共享，$d=256$。Q/K 先做 RMSNorm，再对前 64 维做 RoPE；Attention 输出乘 query 投影产生的 sigmoid gate，最后经过 O 投影。Q/K norm 的缩放使用 `1 + weight`。这些步骤都参与最终结果，移植时要和 Attention 一起对齐。
 
-#### 2.1.2 PyPTO 实现基础与适配方案
+#### 2.1.2 PyPTO 已有实现与所需修改
 
-现有 `attention_state.py` 已有 Q/K norm、部分 RoPE、GQA 和输出门控。`full_network_core.py::attention_context_full` 从连续 KV 读取历史，但只计算第一个有效 query，并按当前位置限制可见范围；`append_kv_full` 则负责追加主模型 K/V。
+现有 `attention_state.py` 已包含上述 Q/K norm、部分 RoPE、GQA 和门控。历史 Attention 位于 `full_network_core.py::attention_context_full`，目前从连续 KV 中读取数据，只计算第一个有效 query，并按当前位置限制可见范围；新 K/V 由另一个入口 `append_kv_full` 追加。
 
-Orthrus 需要保留前后处理，将 Attention 入口扩展为 K 行 query，另行传入临时块 K/V。历史长度固定为 $a$，当前块不加因果限制，且不调用 AR 的 KV append。这里“只读”限制的是历史输入；算子仍会写自己的输出和临时缓冲。draft K/V 不会成为正式历史，即使对应候选最终被接受，也由主模型重新计算其正式 KV。
+因此可以保留前后处理，重点扩展 Attention 入口：一次接收 K 行 query，并额外接收临时块 K/V。所有行的历史长度都设为 $a$，临时块全部可见。由于这些 K/V 由 draft 参数计算，不是主模型的正式历史，起草阶段不调用 AR 的 KV append，只写自己的输出和工作区。候选接受后，正式 KV 由主模型验证时重新计算。
 
-首版可接连续历史，与下述 Torch-NPU 入口对照；若接入主模型分页缓存，再根据页表读取。历史和临时块既可放在一次 Attention 中计算，也可分别计算后按 LSE 合并，数学定义不要求拆成两个 kernel。
+首版可以先接连续历史，与下面的 Torch-NPU 实现比较结果。之后若要直接读取主模型分页缓存，再增加页表读取。历史和临时块可以放进同一次 Attention，也可以分开计算，再用 LSE（log-sum-exp）恢复两部分的相对权重后合并；具体拆成几个 kernel，取决于接口和性能，不影响上面的定义。
 
 #### 2.1.3 Torch-NPU 实现
 
-现有实现先用 draft 投影产生 Q/K/V，并复用镜像中的 `triton_split_qkv_rmsnorm_mrope` 完成拆分、Q/K norm 和部分 RoPE。随后在本轮私有的 `_ScratchCache` 中拼接历史与临时 KV，调用融合 Attention：
+现有 Torch-NPU 版本就是按上述顺序执行：先用 draft 权重投影，再调用镜像中的 `triton_split_qkv_rmsnorm_mrope` 完成拆分、Q/K norm 和部分 RoPE。随后由本轮私有的 `_ScratchCache` 拼接历史与临时 KV，交给融合 Attention：
 
 ```python
 # query/key/value 已完成投影及位置处理。
@@ -85,9 +89,9 @@ out = out * gate.reshape(batch, length, -1).sigmoid()
 return self.o_proj(out), None
 ```
 
-布局为 `[batch, head, token, dim]`，融合算子直接接收较少的 KV head，不需要复制整段历史来展开 GQA。当前单请求、无 padding 的 draft 中，所有传入 KV 都可见；若有 padding，则显式屏蔽无效位置。Torch 的布尔 SDPA mask 用 `True` 表示可见，而这里的 FAS mask 用 `True` 表示禁止读取，适配层负责转换。
+输入布局为 `[batch, head, token, dim]`，融合算子直接支持 GQA，所以保留原来的少量 KV head，不复制整段历史。当前单请求且没有 padding，传入的历史和临时块都可见；有 padding 时再屏蔽无效位置。这里还要转换 mask 的布尔含义：Torch SDPA 的 `True` 表示可见，FAS 的 `True` 则表示禁止读取。
 
-主模型分页 KV 当前通过页表收集为独立连续快照，并非零拷贝分页直读。快照之后的拼接只发生在 draft 私有对象中。以下折叠源码给出实际 Attention 函数和历史读取函数，依赖本仓库的模型对象及运行环境。
+在进入这段计算之前，适配层已按页表把主模型 KV 收集成独立连续快照。后续拼接只发生在 draft 私有对象中，不影响主模型，但仍有一次历史复制，并非零拷贝分页读取。折叠部分保留实际 Attention 和历史读取函数，运行时依赖本仓库的模型对象与环境。
 
 <details>
 <summary>完整函数：Full Attention 与分页历史读取</summary>
@@ -168,9 +172,9 @@ def paged_history(cache, block_table, length):
 
 ### 2.2 GDN：带历史初值的块递推
 
-#### 2.2.1 原有递推与 draft 状态
+#### 2.2.1 从历史状态继续计算当前块
 
-GDN 不计算 softmax Attention，而是先做宽度为 4 的因果逐通道卷积，再用门控 Delta Rule 推进一个矩阵状态。Q/K 各有 16 个 head，V 有 48 个 head，每个 head 维度为 128；每组三个 V head 共享一组 Q/K。
+GDN 与前一节不同：它不逐条读取历史 KV，而是带着历史状态继续计算。输入先经过宽度为 4 的因果逐通道卷积，再用门控 Delta Rule 更新矩阵状态。Q/K 各有 16 个 head，V 有 48 个 head，每个 head 维度为 128，三个 V head 共享一组 Q/K。
 
 省略 batch 和 head 下标，令 $q_i,k_i$ 为 L2 归一化后的列向量，$v_i$ 为 value，$S_i$ 为处理完位置 $i$ 后的矩阵状态。门控和衰减为：
 
@@ -188,21 +192,21 @@ $$
 S_i=\overline S_i+\delta_i k_i^\top,\qquad o_i=S_iq_i/\sqrt{d_k}.
 $$
 
-输出再经过本层 gated RMSNorm、`SiLU(z)` 门控和 O projection。该 norm 使用自己的 weight，不采用 Full Attention 的 `1 + weight` 解释。
+算出 $o_i$ 后，再做本层 gated RMSNorm、`SiLU(z)` 门控和 O 投影。这里 norm 直接使用自己的 weight，与 Full Attention 中的 `1 + weight` 不同。
 
-**AR 与 draft 使用相同递推公式，区别在参数和状态的归属。** AR 从上一段已接受的正式状态继续，用主模型参数计算；draft 以 $S_{-1}^{D}=S_{a-1}^{AR}$ 为初态副本，用 draft 参数在工作区中计算 K 行，结束后丢弃临时状态。卷积也要带入历史尾部的三个原始投影输入，而不是从零开始，或读取卷积后的结果。
+这套公式在 AR 和 draft 中相同，**需要改变的是用哪套参数、把状态写到哪里**。AR 用主模型参数，从上一段正式状态继续；draft 则复制 anchor 之前的状态，以 $S_{-1}^{D}=S_{a-1}^{AR}$ 为初态，用独立参数在工作区中处理 K 行。卷积也要带入历史最后三个原始投影输入，这样块的第一个位置才能接上此前的序列。它需要的是卷积前输入，不是卷积输出。临时状态在起草结束后丢弃。
 
-#### 2.2.2 PyPTO 实现基础与适配方案
+#### 2.2.2 PyPTO 已有实现与所需修改
 
-现有 `delta_state.py` 已实现 Qwen GDN 的卷积、head 分组、标量衰减、Delta Rule 和门控 norm，不需要用 GLM KDA 代替。`decode_layer.py::delta_decode_into` 接受 `previous_conv` 和 `previous_recurrent`，但一次只处理一个有效 token。
+现有 `delta_state.py` 已实现这里的卷积、head 分组、标量衰减、Delta Rule 和门控 norm，可以直接作为 Qwen GDN 的基础。`decode_layer.py::delta_decode_into` 也接受 `previous_conv` 和 `previous_recurrent`，能够接上历史，不过一次只处理一个有效 token。
 
-所需变化是提供**非零历史初值下的块入口**：按顺序处理 K 行卷积输入，把每步递推状态传给下一步，并返回每个位置的输出。首版可以编排已有单步计算，再评估分块融合；不能把同一序列的 K 个位置当成 K 条互不相关的 batch。现有入口里的 16 行 padding tile 不等于已经支持 16 或 32 个有效位置，短 prefill 中的零历史假设也不能直接沿用。
+因此要把单步入口扩展为整块入口：从已有历史初态出发，按顺序处理 K 行，把每步状态交给下一步，并返回全部位置的输出。可以先逐步调用已有计算，再考虑分块融合。同一请求的这些位置有先后依赖，不能作为独立 batch 同时更新一个状态。现有 16 行 padding tile 只说明缓冲的补齐尺寸，不代表能处理同样数量的有效位置；短 prefill 的零历史假设也需要改为本轮传入的历史初态。
 
-状态布局必须显式约定：原生 NPU cache 为 `[V,K]`，HF 与所参考 PyPTO 入口为 `[K,V]`，需要转置。两维恰好都是 128，仅核对 shape 无法发现转置错误。draft 只需要自己的临时推进状态；如果主模型验证也迁入 PyPTO，则还需能恢复任意接受前缀的状态，见第 3 节。
+传递状态时还有一个容易忽略的差别：原生 NPU cache 为 `[V,K]`，HF 和所参考 PyPTO 入口为 `[K,V]`，两者需要转置。因为两维恰好都是 128，shape 相同也可能把矩阵方向用反。draft 只在副本上继续递推；主模型验证后的状态恢复是另一件事，放在第 3 节说明。
 
 #### 2.2.3 Torch-NPU 实现
 
-当前路径复用现成的因果卷积、L2 norm、GDN 递推和门控 norm。进入递推前，适配层先将 AR 初态复制进自有工作区，再调用镜像已有算子：
+现有 NPU 路径复用因果卷积、L2 norm、GDN 递推和门控 norm。下面截取其中的状态交接：先给本轮分配工作区，把 AR 初态复制进去，再调用镜像已有的递推算子。
 
 ```python
 length = query.shape[1]
@@ -224,9 +228,9 @@ out = recurrent_slices(
 )
 ```
 
-这里省略了空历史分支，完整函数见下方。`groups` 是 V head 与 Q/K head 的比例；HF 输入已展开分组，传给原生接口时恢复为少量 Q/K head。当前 A2 递推接口每次最多处理 16 行，`recurrent_slices` 将 K32 切为两段，后段继续使用前段末状态；这不是两次整网起草，也不改变块内的因果关系。
+这里省略了空历史分支，完整函数见下方。`groups` 是 V head 与 Q/K head 的比例；HF 输入已按这个比例展开，原生接口支持分组，因此传入时再恢复为少量 Q/K head。当前 A2 接口一次最多处理 16 行，所以 `recurrent_slices` 将 K32 分成两段，后一段接着前一段末状态计算。只有本层递推分段，模型不需要为此跑两遍。
 
-卷积同样只使用私有状态，按顺序衔接历史尾部与当前块。GDN 输出经现成门控 norm 返回本层残差路径。以下源码保留实际调用和边界处理，供 PyPTO 对照输入、状态布局及分段语义，而不是要求逐句照搬 Torch 编排。
+卷积也按同样原则执行：把历史尾部接到当前块之前，只写私有状态。递推输出经过门控 norm 和 O 投影后，回到本层残差计算。下面保留完整调用，便于对照输入布局和跨段状态；PyPTO 可以使用自己的分块方式，只要计算关系一致。
 
 <details>
 <summary>完整函数：因果卷积、GDN 递推分段和门控 norm</summary>
@@ -366,13 +370,13 @@ class GatedRMSNorm(nn.Module):
 | Full Attention | Q/K norm、部分 RoPE、GQA、输出门控，以及连续历史的单 query Attention。 | K 行 draft query 读取相同历史及整个临时块；不执行 AR KV append；扩展有效长度和容量，按集成方式接连续或分页历史。 |
 | GDN | 带历史的单步卷积和 Delta Rule、head 分组、门控 norm。 | 非零初态下连续处理 K 行，卷积和递推写入私有工作区；对齐状态布局，不把块内位置作为独立 batch。 |
 
-这是两条模型计算路径的需求划分，不规定最终 kernel 数量。norm、投影等已有组件可以按实际性能选择融合；共享 MLP 和 TP 通信属于完整层执行，不应另列成 Orthrus 新 Attention 算法。
+这两条路径接通后，每类层内部的计算就有了基础。接下来还要把它们放回完整模型，使用共享层传递当前块的特征，再交给主模型验证。norm、投影等可以继续复用或按性能融合，最终 kernel 数量由实现方式决定。
 
 ## 3. 模型执行与推理引擎接入
 
 ### 3.1 一轮投机如何执行
 
-完整 draft 并不是只调用一次 Attention。执行器要让当前块依次通过 64 层：`共享 input norm -> draft mixer -> 残差 -> 共享 post norm / MLP -> 残差`，最后经共享 Final Norm 和 LM head 产生候选分布。共享的是主模型权重，不是本轮中间结果，因此 MLP 等仍需对 draft 输入重新计算，但不必复制第二套 backbone。
+起草时，当前块先经过共享 Embedding，再通过 64 层。每层按 `共享 input norm -> draft mixer -> 残差 -> 共享 post norm / MLP -> 残差` 执行，最后经过共享 Final Norm 和 LM head，得到候选分布。MLP 等虽然使用主模型权重，但 draft 输入不同，仍需重新计算，不能直接拿主模型的中间结果代替；共享权重省下的是第二套 backbone 参数。
 
 ```text
 已接受的主模型历史
@@ -387,19 +391,21 @@ class GatedRMSNorm(nn.Module):
                                     拒绝后缀 -> 回收 KV / 恢复 GDN
 ```
 
-候选由主模型验证后，正式历史来自这次 **AR 计算**，不是把 draft KV 或 GDN 状态转正。Full Attention 由引擎控制接受前缀的 KV 可见长度；GDN 则必须恢复到接受位置的递推状态和卷积尾部，不能把块末状态简单“截短”。现有实现使用逐位置 checkpoint，另一种可行方式是重新计算接受前缀。
+主模型随后按因果规则验证候选。接受前缀对应的 **AR 计算结果** 才成为正式历史，draft KV 和 GDN 状态不会转正。对 Full Attention，引擎保留接受位置之前的 KV，并限制后续可读长度；对 GDN，还要取回那个位置对应的递推矩阵和卷积尾部。因为块末矩阵已经包含后续位置的信息，不能简单缩短长度来回滚。现有实现保存逐位置 checkpoint，也可以通过重新计算接受前缀恢复状态。
 
 ### 3.2 PyPTO 与引擎的接口
 
-若仅将 draft mixer 交给 PyPTO，vLLM-Ascend 可以继续负责主模型、共享 MLP、TP 通信和原生验证采样。调用方需传入 draft 参数、历史边界、KV 或 GDN 初态，以及独立输出和工作区；同时约定张量布局、设备地址、有效长度、stream 同步和缓冲生命周期。两个运行时都在 NPU 上，不代表缓存指针可以未经约定直接互用。
+PyPTO 可以先只接管 Full Attention 和 GDN 这两类 mixer，主模型、共享 MLP、TP 通信和验证采样继续由现有 vLLM-Ascend 执行器负责。每次调用时，执行器传入 draft 参数、历史长度、KV 或 GDN 初态，并提供输出和临时工作区。
 
-若将整段 draft 迁入 PyPTO，再接齐共享权重调用、残差、MLP 和跨卡通信即可；若连主模型也迁入 PyPTO，还要提供上一节的块验证和接受前缀恢复。缓存分配、页表与接受决策由引擎管理，算子只按输入页表或状态地址执行读取与写入，二者不能混为一个新增 kernel。
+调用双方首先要对齐张量布局、设备地址和有效长度，再约定 stream 怎样同步、临时缓冲何时释放，确保 PyPTO 读到的是本轮有效历史。缓存分配、页表和接受决策仍由引擎管理，算子只按这些信息读写数据。
 
-参考 PR 是单卡完整规格，而现有 Torch-NPU 接入支持 TP 分片。以 TP2 为例，每 rank 的 Full Attention 为 12 个 Q head、2 个 KV head，GDN 为 8 个 Q/K head、24 个 V head；TP4 分别为 6/1 和 4/12。PyPTO 入口须参数化这些尺寸并匹配分片权重，不能直接沿用单卡常量。head 的基模、K、mask token、混合层策略和 TP 规格也应一致。
+在此基础上，可以再把整段 draft 迁入 PyPTO，接齐共享层、残差和跨卡通信。如果主模型也改由 PyPTO 执行，还要实现上一节的块验证和接受前缀恢复。这样可以先验证局部计算，再逐步扩大执行范围。
+
+跨卡时还要调整尺寸。参考 PR 使用单卡完整规格，现有 Torch-NPU 接入则有 TP 分片：TP2 每 rank 的 Full Attention 为 12 个 Q head、2 个 KV head，GDN 为 8 个 Q/K head、24 个 V head；TP4 分别为 6/1 和 4/12。因此 PyPTO 入口需要按 TP 配置接收尺寸和分片权重，不能固定为单卡常量。加载 head 时也要核对基模、K、mask token、混合层策略和 TP 规格。
 
 ### 3.3 可运行实现与验证范围
 
-本仓库已有完整 Torch-NPU 执行器和 vLLM-Ascend 接入，不仅是以上两个计算片段。下列命令在固定运行环境中加载真实模型，执行起草、验证和缓存检查；未提供 head 时从主模型 mixer 复制初始化，只用于功能验证。
+上面的函数用于单独对照计算，完整流程可以通过仓库已有的 Torch-NPU 执行器和 vLLM-Ascend 接入运行。下列命令加载真实模型，执行起草、验证和缓存检查。没有提供 head 时，程序从主模型 mixer 复制参数初始化，用来检查链路是否能运行。
 
 ```bash
 cd online-speculation
@@ -408,13 +414,13 @@ python scripts/run_in_runtime.py scripts/validate_qwen38_vllm.py \
   --max-model-len 2048 --kv-cache-memory-bytes 8589934592
 ```
 
-模型路径按实际挂载修改；使用训练 head 时指定 `--head-dir`，mask token 和 TP 规格以该 head 的配置为准。这里的 mask ID 仅是初始化功能用例配置，不是所有 head 的通用取值。
+运行时按挂载位置修改模型路径；已有训练 head 则指定 `--head-dir`，并使用它对应的 mask token 和 TP 规格。命令中的 mask ID 只用于初始化功能用例。
 
-现有记录覆盖真实 27B 的 TP2 起草与原生验证、K=2/8/17/32、全接受及连续拒绝后的状态恢复、分页历史读取、缓存隔离、head 导出重载和采样校准；单算子还对照了双向 Full Attention、非零初态 GDN、分段边界和相关前后处理。另有 TP4 加载及 draft 更新记录，但不把训练反向列入本报告的 PyPTO 开发范围。
+现有验证分为两层。计算上，已对照双向 Full Attention、非零初态 GDN、跨分段状态和相关前后处理；真实模型上，已在 27B、TP2 中覆盖 K=2/8/17/32 的起草与原生验证、全接受和连续拒绝后的恢复、分页历史、缓存隔离、head 导出重载及采样校准。另有 TP4 加载和 draft 更新记录，训练反向不列入本次 PyPTO 需求。
 
-这些结果可作为 PyPTO 逐模块和整网接入的参照，**不是 PyPTO Orthrus 已验证的证据**。原生不同计算形状存在 K32 数值分叉，严格逐 token 一致性没有全部通过；初始化 head 也不代表已获得业务接受率或加速收益。当前推理以 BF16、eager、同步单请求为验证范围，不据此推断量化、图模式或动态 batch 已完成适配。
+这些是 Torch-NPU 路径的结果，可以作为 PyPTO 接入的对照，但 PyPTO Orthrus 本身尚未验证。数值检查也还没有全部通过：原生不同计算形状下存在 K32 数值分叉，严格逐 token 一致性尚未达成。当前覆盖 BF16、eager、同步单请求，量化、图模式和动态 batch 需要另行适配。初始化 head 用来验证链路，业务接受率和加速收益需要训练 head 另行评估。
 
-开发顺序可沿用上述模块边界：先对照连续历史的 Full Attention 和非零初态 GDN，再接整层及真实共享历史，最后验证各接受位置恢复、TP 分片和长上下文；分页直读与更大融合在这一基础上按测量结果推进。
+因此，接下来先让两类 PyPTO mixer 与现有结果对齐，再放回整层、接入真实主模型历史，最后检查各接受位置恢复、TP 分片和长上下文。计算和流程确认后，再根据搬运与执行耗时决定是否增加分页直读或进一步融合。
 
 ## 参考资料
 
