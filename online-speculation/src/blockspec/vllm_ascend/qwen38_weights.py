@@ -254,6 +254,9 @@ class NativeSuffixLearner(SuffixLearner):
     def __init__(self, model, config, tp):
         self.tp = tp
         super().__init__(model, config)
+        if self.parameters[0].device.type == "cpu":
+            self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate,
+                                               weight_decay=0, fused=True)
         self.replicated = {name for name in self.master if ".q_norm." in name or ".k_norm." in name
                            or ".norm." in name}
 
@@ -280,9 +283,15 @@ class NativeSuffixLearner(SuffixLearner):
 
     def clip_gradients(self):
         total = torch.zeros((), device=self.parameters[0].device, dtype=torch.float32)
-        for name, value in self.master.items():
-            if value.grad is not None and (name not in self.replicated or self.tp.rank == 0):
-                total += value.grad.float().square().sum()
+        gradients = [value.grad.float() for name, value in self.master.items()
+                     if value.grad is not None and (name not in self.replicated or self.tp.rank == 0)]
+        if gradients and total.device.type == "npu":
+            # 现成多张量归约，避免逐个大矩阵创建平方副本。
+            total = torch.stack(torch._foreach_norm(gradients, 2)).square().sum()
+        else:
+            for gradient in gradients:
+                total += (torch.linalg.vector_norm(gradient, dim=-1).square().sum()
+                          if gradient.device.type == "cpu" else gradient.square().sum())
         collective_device = next(iter(self.execution.values())).device
         norm = self.tp.reduce(total.to(collective_device)).sqrt().to(total.device)
         if not torch.isfinite(norm):

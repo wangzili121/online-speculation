@@ -83,16 +83,19 @@ def delta_rule(query, key, value, *, fallback, groups, training_fallback=None, *
         return fallback(query, key, value, use_qk_l2norm_in_kernel=False, **kwargs)
     from .qwen38_gdn_backend import recurrent_slices
     length = query.shape[1]
-    state = torch.zeros((length, value.shape[2], 128, 128), device=query.device, dtype=torch.float32)
+    state = torch.empty((length, value.shape[2], 128, 128), device=query.device, dtype=torch.float32)
     initial = kwargs.get("initial_state")
-    if initial is not None:
-        state[:1] = initial.transpose(-1, -2).float()
+    # 递推算子写出每行 checkpoint；仅首行需要历史初态，其他行不预先清零。
+    if initial is None:
+        state[:1].zero_()
+    else:
+        state[:1].copy_(initial.transpose(-1, -2))
     # HF 已经展开了 GQA 头；原生递推可直接接收少量 Q/K 头。
     operation = torch.ops._C_ascend.npu_recurrent_gated_delta_rule
     operation = getattr(operation, "__wrapped__", operation)
-    out = recurrent_slices(operation, query=query[0, :, ::groups].contiguous(),
-        key=key[0, :, ::groups].contiguous(), value=value[0].contiguous(),
-        g=kwargs["g"][0].float().contiguous(), beta=kwargs["beta"][0].contiguous(), state=state,
+    out = recurrent_slices(operation, query=query[0, :, ::groups],
+        key=key[0, :, ::groups], value=value[0],
+        g=kwargs["g"][0].float(), beta=kwargs["beta"][0], state=state,
         actual_seq_lengths=torch.tensor([0, length], dtype=torch.int32, device=query.device),
         ssm_state_indices=torch.arange(length, dtype=torch.int32, device=query.device),
         num_accepted_tokens=torch.ones(1, dtype=torch.int32, device=query.device), scale=128 ** -.5)

@@ -828,6 +828,56 @@ def test_recurrent_hook_only_changes_orthrus_speculative_calls(monkeypatch):
     assert hook(num_accepted_tokens=torch.tensor([1])) == (original, "sliced")
 
 
+@pytest.mark.parametrize("length", [1, 16, 17, 32])
+def test_recurrent_slices_only_gather_states_needed_by_next_segment(monkeypatch, length):
+    from blockspec.vllm_ascend.qwen38_gdn_backend import recurrent_slices
+
+    selected = []
+    original = torch.Tensor.index_select
+
+    def gather(state, dim, index):
+        selected.append(index.tolist())
+        return original(state, dim, index)
+
+    monkeypatch.setattr(torch.Tensor, "index_select", gather)
+    state = torch.randn(40, 1, 2, 2)
+    indices = torch.randperm(40)[:32].int()
+    value = torch.randn(length, 1, 2)
+    result = recurrent_slices(lambda **kw: kw["value"].clone(), query=value, key=value, value=value,
+        state=state, actual_seq_lengths=torch.tensor([0, length]), ssm_state_indices=indices,
+        num_accepted_tokens=torch.tensor([32]), g=None, beta=None, scale=1.)
+    assert selected == [[int(indices[31])]] + ([[int(indices[15])]] if length > 16 else [])
+    state.zero_()
+    torch.testing.assert_close(result, value, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("length", [17, 32])
+def test_recurrent_slices_pack_strided_inputs_once_before_chunking(monkeypatch, length):
+    from blockspec.vllm_ascend.qwen38_gdn_backend import recurrent_slices
+
+    inputs = {name: torch.randn(length, 6, 8)[:, ::3] for name in ("query", "key", "value")}
+    inputs.update({name: torch.randn(length, 4)[:, ::2] for name in ("g", "beta")})
+    calls = {name: 0 for name in inputs}
+    original = torch.Tensor.contiguous
+
+    def contiguous(tensor, *args, **kwargs):
+        for name, value in inputs.items():
+            if tensor is value:
+                calls[name] += 1
+        return original(tensor, *args, **kwargs)
+
+    def operation(**kwargs):
+        assert all(kwargs[name].is_contiguous() for name in inputs)
+        return kwargs["query"] + kwargs["key"] + kwargs["value"]
+
+    monkeypatch.setattr(torch.Tensor, "contiguous", contiguous)
+    actual = recurrent_slices(operation, **inputs, state=torch.zeros(32, 2, 8, 8),
+        actual_seq_lengths=torch.tensor([0, length]), ssm_state_indices=torch.arange(32).int(),
+        num_accepted_tokens=torch.tensor([1]), scale=1.)
+    torch.testing.assert_close(actual, inputs["query"] + inputs["key"] + inputs["value"], rtol=0, atol=0)
+    assert calls == dict.fromkeys(inputs, 1)
+
+
 @pytest.mark.parametrize("length", [17, 31, 32])
 def test_paged_query_slices_preserve_causal_attention(length):
     torch.manual_seed(2)
@@ -937,6 +987,60 @@ def test_two_rank_forward_gradients_and_global_clip_match_unsharded(tmp_path, la
 def test_two_rank_all_draft_checkpoint_gradients_match_unsharded(tmp_path):
     torch.multiprocessing.start_processes(_tp_worker, args=(str(tmp_path / "gloo"), 4, True), nprocs=2,
                                           join=True, start_method="spawn")
+
+
+@pytest.mark.parametrize("last_layers", [1, 4])
+def test_native_cpu_fused_adamw_matches_single_tensor_steps_and_moments(last_layers):
+    hf = fixture()
+    model = from_native_model(native_fixture(hf), hf.config, tp=TensorParallel(),
+                              block_size=4, mask_token_id=1)
+    learner = NativeSuffixLearner(model, SuffixConfig(last_layers=last_layers, optimizer_device="cpu"),
+                                  TensorParallel())
+    reference = [nn.Parameter(p.detach().clone()) for p in learner.parameters]
+    optimizer = torch.optim.AdamW(reference, lr=learner.config.learning_rate, weight_decay=0, foreach=False)
+    assert learner.optimizer.defaults["fused"] is True
+    for step in range(5):
+        for actual, expected in zip(learner.parameters, reference, strict=True):
+            gradient = torch.randn_like(actual) * (step + 1)
+            actual.grad = gradient.clone()
+            expected.grad = gradient.clone()
+        learner.optimizer.step()
+        optimizer.step()
+        for actual, expected in zip(learner.parameters, reference, strict=True):
+            torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-8)
+            for key in ("step", "exp_avg", "exp_avg_sq"):
+                torch.testing.assert_close(learner.optimizer.state[actual][key], optimizer.state[expected][key],
+                                           rtol=1e-5, atol=1e-8)
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_native_cpu_row_norm_preserves_tp_replicated_gradient_counting(rank):
+    parameters = {name: nn.Parameter(torch.zeros(shape)) for name, shape in
+                  (("matrix", (256, 5120)), ("norm", (5120,)), ("unused", (4,)))}
+    for name in ("matrix", "norm"):
+        parameters[name].grad = torch.randn_like(parameters[name])
+    expected_square = parameters["matrix"].grad.double().square().sum()
+    if rank == 0:
+        expected_square += parameters["norm"].grad.double().square().sum()
+    expected = expected_square.sqrt().float()
+    before = {name: p.grad.clone() for name, p in parameters.items() if p.grad is not None}
+    learner = NS(master=parameters, parameters=list(parameters.values()), execution=parameters,
+                 replicated={"norm"}, tp=NS(rank=rank, reduce=lambda value: value), config=NS(clip_norm=.5))
+    actual = NativeSuffixLearner.clip_gradients(learner)
+    torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-5)
+    scale = .5 / (expected + 1e-6)
+    for name, gradient in before.items():
+        torch.testing.assert_close(parameters[name].grad, gradient * scale, rtol=1e-6, atol=1e-8)
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_native_cpu_row_norm_rejects_nonfinite_gradients(value):
+    parameter = nn.Parameter(torch.zeros(2, 3))
+    parameter.grad = torch.full_like(parameter, value)
+    learner = NS(master={"matrix": parameter}, parameters=[parameter], execution={"matrix": parameter},
+                 replicated=set(), tp=TensorParallel(), config=NS(clip_norm=1.))
+    with pytest.raises(FloatingPointError, match="nonfinite"):
+        NativeSuffixLearner.clip_gradients(learner)
 
 
 @pytest.mark.parametrize("anchor", [0, 3])

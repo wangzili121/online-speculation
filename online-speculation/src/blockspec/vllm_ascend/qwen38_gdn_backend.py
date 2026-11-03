@@ -13,21 +13,25 @@ def recurrent_slices(operation, *, query, key, value, state, actual_seq_lengths,
         raise ValueError("synchronous batch-one recurrent verification required")
     # 上轮只接受到哪个位置，就从那个位置的状态开始；先复制，避免被本轮覆盖。
     selected = ssm_state_indices[num_accepted_tokens.long() - 1].long()
-    initial = state.index_select(0, selected).clone()
+    initial = state.index_select(0, selected)
+    # 整块只整理一次布局；沿 token 维切片不会再次破坏连续性。
+    query, key, value = (tensor.contiguous() for tensor in (query, key, value))
+    g = None if g is None else g.contiguous()
+    beta = None if beta is None else beta.contiguous()
     outputs = []
     for start in range(0, length, limit):
         end = min(start + limit, length)
         slots = ssm_state_indices[start:end].contiguous()
         state.index_copy_(0, slots[:1].long(), initial)
         outputs.append(operation(
-            query=query[start:end].contiguous(), key=key[start:end].contiguous(),
-            value=value[start:end].contiguous(), state=state,
+            query=query[start:end], key=key[start:end], value=value[start:end], state=state,
             actual_seq_lengths=actual_seq_lengths.new_tensor([0, end - start]),
             ssm_state_indices=slots, num_accepted_tokens=None,
-            g=None if g is None else g[start:end].contiguous(),
-            beta=None if beta is None else beta[start:end].contiguous(), scale=scale))
-        initial = state.index_select(0, slots[-1:].long()).clone()
-    return torch.cat(outputs, dim=0)
+            g=None if g is None else g[start:end],
+            beta=None if beta is None else beta[start:end], scale=scale))
+        if end < length:
+            initial = state.index_select(0, slots[-1:].long())
+    return outputs[0] if len(outputs) == 1 else torch.cat(outputs, dim=0)
 
 
 def install_recurrent_hook(vllm_config=None):
