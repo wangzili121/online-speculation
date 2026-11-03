@@ -27,7 +27,7 @@ Qwen3.8-27B 的文本部分沿用 Qwen3.5 系列的混合结构：每三个 GDN 
   Draft mixer   ：独立参数，读取 AR 历史，在临时工作区计算候选
 ```
 
-draft 每轮输入一个块：`anchor + (K-1) 个 MASK`。anchor 是已经确定的最后一个 token，MASK 占据接下来要预测的位置，输入中没有未来答案。设 anchor 位于 $a$，它之前的 $[0,a)$ 直接读取主模型历史；anchor 和 MASK 则占据 $a$ 到 $a+K-1$，在本轮一起计算。常用的 $K=32$ 就是一个 anchor 加 31 个候选位置，K 本身可以配置。
+draft 每轮输入一个块：`anchor + (K-1) 个 MASK`。anchor 是已经确定的最后一个 token，MASK 占据接下来要预测的位置，输入中没有未来答案。设 anchor 位于 `a`，它之前的 `[0,a)` 直接读取主模型历史；anchor 和 MASK 则占据 `a` 到 `a+K-1`，在本轮一起计算。常用的 `K=32` 就是一个 anchor 加 31 个候选位置，K 本身可以配置。
 
 在 Full Attention 层，块内位置可以互相读取信息；在 GDN 层，当前实现仍从 AR 历史状态出发，按顺序递推。**这两种计算合在一起，构成 `orthrus_qwen35_reference` 策略**，依据的是 Orthrus Qwen3.5 混合模型参考实现。原始普通 Qwen3 没有 GDN，因此不能直接把它的双向 SDPA 套到所有层。加载训练 head 时，也要确认它采用同样的混合层策略。
 
@@ -45,15 +45,15 @@ PyPTO 已有 Qwen3.8 整网前向的实现基础，位于 `pypto-lib` PR #1503�
 
 #### 2.1.1 计算方式与可见范围
 
-先看普通 AR 层。它按从左到右的顺序预测，第 $i$ 个位置只能读取历史和当前块的前 $i+1$ 个位置，避免看到未来答案。draft 输入的是 anchor 和 MASK，没有未来答案可泄露，因此每行可以读取整个当前块。双向只发生在这个块里，之前的主模型历史保持不变。
+先看普通 AR 层。它按从左到右的顺序预测，第 `i` 个位置只能读取历史和当前块的前 `i+1` 个位置，避免看到未来答案。draft 输入的是 anchor 和 MASK，没有未来答案可泄露，因此每行可以读取整个当前块。双向只发生在这个块里，之前的主模型历史保持不变。
 
-按单个 query head 书写，令 $K_H,V_H$ 为主模型历史，$q_i^{AR}$ 和 $K_{AR,0:i},V_{AR,0:i}$ 为当前 AR 块的 query 和因果前缀，则原有计算为：
+按单个 query head 书写，令 `K_H`、`V_H` 为主模型历史，`q_i^AR` 为当前 AR query，`K_AR,0:i`、`V_AR,0:i` 为当前块截至位置 `i` 的 K/V，则原有计算为：
 
 $$
 o_i^{AR}=\mathrm{softmax}\left(q_i^{AR}[K_H;K_{AR,0:i}]^\top/\sqrt d\right)[V_H;V_{AR,0:i}].
 $$
 
-$0:i$ 包含位置 $i$，分号表示沿 token 维拼接。Orthrus 由本层 draft 参数产生 $Q_D,K_D,V_D$，计算改为：
+`0:i` 包含位置 `i`，分号表示沿 token 维拼接。Orthrus 由本层 draft 参数产生 `Q_D`、`K_D`、`V_D`，计算改为：
 
 $$
 O_D=\mathrm{softmax}\left(Q_D[K_H;K_D]^\top/\sqrt d\right)[V_H;V_D].
@@ -61,13 +61,13 @@ $$
 
 对比两式，softmax Attention 本身没有变，变化在传给它的 KV：**每个 draft query 读取相同的历史前缀，以及整个临时块**。这条路径不涉及 DSV4 的 sink、压缩 KV 或 indexer。
 
-Attention 前后还要保留 Qwen 自身的处理。该模型有 24 个 query head、4 个 KV head，以 GQA 方式共享，$d=256$。Q/K 先做 RMSNorm，再对前 64 维做 RoPE；Attention 输出乘 query 投影产生的 sigmoid gate，最后经过 O 投影。Q/K norm 的缩放使用 `1 + weight`。这些步骤都参与最终结果，移植时要和 Attention 一起对齐。
+Attention 前后还要保留 Qwen 自身的处理。该模型有 24 个 query head、4 个 KV head，以 GQA 方式共享，head 维度为 `d=256`。Q/K 先做 RMSNorm，再对前 64 维做 RoPE；Attention 输出乘 query 投影产生的 sigmoid gate，最后经过 O 投影。Q/K norm 的缩放使用 `1 + weight`。这些步骤都参与最终结果，移植时要和 Attention 一起对齐。
 
 #### 2.1.2 PyPTO 已有实现与所需修改
 
 现有 `attention_state.py` 已包含上述 Q/K norm、部分 RoPE、GQA 和门控。历史 Attention 位于 `full_network_core.py::attention_context_full`，目前从连续 KV 中读取数据，只计算第一个有效 query，并按当前位置限制可见范围；新 K/V 由另一个入口 `append_kv_full` 追加。
 
-因此可以保留前后处理，重点扩展 Attention 入口：一次接收 K 行 query，并额外接收临时块 K/V。所有行的历史长度都设为 $a$，临时块全部可见。由于这些 K/V 由 draft 参数计算，不是主模型的正式历史，起草阶段不调用 AR 的 KV append，只写自己的输出和工作区。候选接受后，正式 KV 由主模型验证时重新计算。
+因此可以保留前后处理，重点扩展 Attention 入口：一次接收 K 行 query，并额外接收临时块 K/V。所有行的历史长度都设为 `a`，临时块全部可见。由于这些 K/V 由 draft 参数计算，不是主模型的正式历史，起草阶段不调用 AR 的 KV append，只写自己的输出和工作区。候选接受后，正式 KV 由主模型验证时重新计算。
 
 首版可以先接连续历史，与下面的 Torch-NPU 实现比较结果。之后若要直接读取主模型分页缓存，再增加页表读取。历史和临时块可以放进同一次 Attention，也可以分开计算，再用 LSE（log-sum-exp）恢复两部分的相对权重后合并；具体拆成几个 kernel，取决于接口和性能，不影响上面的定义。
 
@@ -176,13 +176,13 @@ def paged_history(cache, block_table, length):
 
 GDN 与前一节不同：它不逐条读取历史 KV，而是带着历史状态继续计算。输入先经过宽度为 4 的因果逐通道卷积，再用门控 Delta Rule 更新矩阵状态。Q/K 各有 16 个 head，V 有 48 个 head，每个 head 维度为 128，三个 V head 共享一组 Q/K。
 
-省略 batch 和 head 下标，令 $q_i,k_i$ 为 L2 归一化后的列向量，$v_i$ 为 value，$S_i$ 为处理完位置 $i$ 后的矩阵状态。门控和衰减为：
+省略 batch 和 head 下标，令 `q_i`、`k_i` 为 L2 归一化后的列向量，`v_i` 为 value，`S_i` 为处理完位置 `i` 后的矩阵状态。门控和衰减为：
 
 $$
 \beta_i=\sigma(b_i),\qquad g_i=-\exp(A_{\log})\,\mathrm{softplus}(u_i+\Delta t).
 $$
 
-$b_i,u_i$ 来自本层投影，$\sigma$ 为 sigmoid，$A_{\log},\Delta t$ 为每个 V head 的参数；$g_i$ 是该 head 的标量衰减。状态采用原生 `[V,K]` 布局，即 $S\in\mathbb R^{d_v\times d_k}$，单步计算为：
+`b_i`、`u_i` 来自本层投影，`σ` 为 sigmoid，`A_log`、`Δt` 为每个 V head 的参数；`g_i` 是该 head 的标量衰减。状态采用原生 `[V,K]` 布局，也就是 `d_v × d_k` 矩阵，单步计算为：
 
 $$
 \overline S_i=e^{g_i}S_{i-1},\qquad \delta_i=\beta_i(v_i-\overline S_i k_i).
@@ -192,9 +192,15 @@ $$
 S_i=\overline S_i+\delta_i k_i^\top,\qquad o_i=S_iq_i/\sqrt{d_k}.
 $$
 
-算出 $o_i$ 后，再做本层 gated RMSNorm、`SiLU(z)` 门控和 O 投影。这里 norm 直接使用自己的 weight，与 Full Attention 中的 `1 + weight` 不同。
+算出 `o_i` 后，再做本层 gated RMSNorm、`SiLU(z)` 门控和 O 投影。这里 norm 直接使用自己的 weight，与 Full Attention 中的 `1 + weight` 不同。
 
-这套公式在 AR 和 draft 中相同，**需要改变的是用哪套参数、把状态写到哪里**。AR 用主模型参数，从上一段正式状态继续；draft 则复制 anchor 之前的状态，以 $S_{-1}^{D}=S_{a-1}^{AR}$ 为初态，用独立参数在工作区中处理 K 行。卷积也要带入历史最后三个原始投影输入，这样块的第一个位置才能接上此前的序列。它需要的是卷积前输入，不是卷积输出。临时状态在起草结束后丢弃。
+这套公式在 AR 和 draft 中相同，**需要改变的是用哪套参数、把状态写到哪里**。AR 用主模型参数，从上一段正式状态继续；draft 则复制 anchor 之前的状态，用独立参数在工作区中处理 K 行，矩阵初态为：
+
+$$
+S_{-1}^{D}=S_{a-1}^{AR}.
+$$
+
+卷积也要带入历史最后三个原始投影输入，这样块的第一个位置才能接上此前的序列。它需要的是卷积前输入，不是卷积输出。临时状态在起草结束后丢弃。
 
 #### 2.2.2 PyPTO 已有实现与所需修改
 
