@@ -182,12 +182,19 @@ def block_segment(query, block, scale):
     return output[0], lse.reshape(query.shape[1], len(query)).T.float()
 
 
+def gather_history(history, indices):
+    # history 已是请求自己的快照；大索引集展平成一次行收集。
+    if history.is_contiguous() and indices.numel() >= 2048:
+        return history.index_select(0, indices.flatten()).view(*indices.shape, history.shape[-1])
+    return history[indices]
+
+
 def joint_mla(query, history, block, indices, ar_key, ar_value,
               draft_key, draft_value):
     # 历史与临时块使用各自的 K 展开权重吸收 query。
     q_ar = torch.einsum("qhd,hdr->qhr", query, ar_key)
     q_d = torch.einsum("qhd,hdr->qhr", query, draft_key)
-    h, lh = segment(q_ar, history[indices], 256**-.5)
+    h, lh = segment(q_ar, gather_history(history, indices), 256**-.5)
     b, lb = block_segment(q_d, block, 256**-.5)
     h = torch.einsum("qhr,hvr->qhv", h, ar_value)
     b = torch.einsum("qhr,hvr->qhv", b, draft_value)
@@ -202,6 +209,8 @@ def joint_mla(query, history, block, indices, ar_key, ar_value,
 ```
 
 这里用 FIA 返回局部输出和 LSE，再用 `npu_attention_update` 完成式 (4)。历史的选择因 query 而异，仍按行读取；临时块则全部行共享，只保存一份 KV。代码对应 `glm53_ops.py::sparse_draft_attention`；完整实现还提供纯 Torch 参考路径，供数值比较。
+
+`gather_history` 不改变索引的内容或顺序，只调整大索引集的读取方式。连续快照可直接按展平索引收集行，再恢复 `[K,S,512]`；小索引集和非连续输入保留普通索引。它不直接对目标模型的非连续 cache arena 做 `index_select`，避免触发整块 arena 的物化。
 
 已测的 K=2/8、8/32/64 heads 以及单独的 K=32/8-head Attention 用例中，共享块调用约 168–175 μs，重复展开路径约 220–259 μs。该 K=32 检查仅针对 MLA，不能据此宣布完整 KDA/模型支持 K=32。
 
@@ -371,6 +380,8 @@ python scripts/run_in_runtime.py benchmarks/glm53_orthrus_demo.py \
 
 PyPTO 完整接入还需要一个 draft 前向入口：加载匹配策略的 head，执行共享主干，把请求的 anchor 边界、页表和临时 KDA 状态传给上述计算，跳过 target 的 cache 写入。现有 embedding、mHC、norm、FFN/MoE、LM head 不因 Orthrus 产生新的数学需求，但仍要完成权重布局、TP/EP、量化 scale、padding 和调用编排；“可复用”不等于不需要联调。
 
+当前 vLLM 接入先把有效历史读成独立快照，再调用上述 Attention。分页读取在较长前缀、规则 stride 和足够存储边界下，将行末 padding 包含在一个连续的只读视图中，批量收集所需行后去掉 padding；短前缀或不兼容布局仍逐页复制。这个视图本身不分配 arena 副本，返回结果则有自己的存储。它减少搬运调用次数，但仍不是零拷贝。PyPTO 已有的只读分页 Attention 可直接读取选中历史，不需要照搬这套 Torch 快照策略，也不因此增加一个 Attention 算子需求。
+
 head 的加载契约应记录基模、块长、MASK token、混合策略和参数布局。量化 head 还需匹配自身 scale，不能在训练后的参数上直接沿用原模型 scale；这属于参数交付和加载，不是另一个 Attention 算子。
 
 引擎负责分配缓存、调度请求、验证候选、采样和提交/拒绝。算子不决定接受几个 token，但必须服从只读 target 历史和独立临时状态的接口约束。**draft 的 latent、卷积和递推状态永不转正；接受后保留的是 target 按因果规则重新计算的状态。**
@@ -387,9 +398,11 @@ head 的加载契约应记录基模、块长、MASK token、混合策略和参�
 - **现成算子组合已做 CPU 数学和单卡 NPU 测试**：包括两套不同 KV 展开权重与显式 SDPA 等价、空历史、KPool 尾部、超过 512 个池、双向信息流、非零反向门及状态只读。新增完整 Attention 分支的测试记录见 `validation/glm53/pypto-report-demo/`。
 - **原生模型接入**：真实源权重的五层截层模型已通过相应单/双卡 eager 测试；九层四卡功能闭环通过，但 greedy 未验收；完整 45 层八卡仍未验收。截层、初始化 head 和合成 demo 都不能证明完整模型正确性或加速收益。
 
-本轮全套 CPU 回归为 **624 项通过、44 项硬件专项跳过**。完整 Attention 分支的 NPU/FP32 对照覆盖 $K=2/8$、历史长度 0/3/2055 和两种 KDA 策略；还单独比较了共享块调用、原生卷积以及默认后端选择，卷积参数同时覆盖 BF16 与 FP32 存储。FP32 参考使用同一组已舍入权重和输入，完整分支的相对 RMS 容差预设为 4%；这是组合实现的有限数值检查，不是端到端模型误差界。具体计数、命令和结果以本轮复核记录为准，不与历史用例重复相加。
+全套 CPU 回归为 **646 项通过、57 项硬件专项跳过**。单卡读取、收集、完整 Attention 和卷积共 66 项通过，其中 31 项为 NPU 专项、35 项为通用复验。Attention 的 NPU/FP32 对照覆盖 $K=2/8$、历史长度 0/3/2055 和两种 KDA 策略；还覆盖分页与 padding、快照隔离、重复索引及分配峰值，卷积参数同时覆盖 BF16 与 FP32 存储。FP32 参考使用同一组已舍入权重和输入，完整分支的相对 RMS 容差预设为 4%；这是有限数值检查，不是端到端模型误差界。
 
-更新后的推理代码另通过真实源权重五层、单卡 TP1/K=8 的七阶段复验：target-only、两种 draft、两种 head 的独立进程重载及两种采样闭环。四个 draft/reload greedy 阶段各 96 个 token 与基线一致，重载 head 哈希一致，六个 draft 阶段共 324 次目标缓存审计通过。采样只验证功能，不代替分布统计；五层通过不等于九层四卡或完整 45 层已验收。
+分页快照另做 14 组对照：MLA 的 32771 行合成历史约 89.8 → 3.00 ms；K=8、每行 2051 个索引的 latent 收集约 132 → 49–51 μs，峰值临时分配约 33.6 → 16.8 MB。它们使用现成 Torch 调用，输出逐元素相同，不改变检索和 Attention 的数学定义；局部计时不等于服务吞吐提升。记录见 `validation/glm53/history-20261103/`。
+
+更新后的推理代码通过真实源权重五层、单卡 TP1/K=8 的七阶段复验：target-only、两种 draft、两种 head 的独立进程重载及两种采样闭环。四个 draft/reload greedy 阶段各 96 个 token 与基线一致，重载 head 哈希一致，六个 draft 阶段共 330 次目标缓存审计通过。长输入按模型 tokenizer 计 2251 token，超过 512 个完整池，覆盖 Top-K 实际筛选与批量读取；32K 仅用于独立算子压力测试。源码哈希与 `ded51dd` 一致，记录在 `validation/glm53/history-20261103/native-5l/`。采样只验证功能，不代替分布统计；五层通过不等于九层四卡或完整 45 层已验收。
 
 建议先交付 **只读 Indexer 编排 + 联合 MLA + 因果 KDA 临时状态入口**，在已有 Torch-NPU 路径上逐模块对照。门控反向 KDA作为独立策略扩展，复用同一递推核心。完成这些后，再处理完整 PyPTO 模型入口、整块验证与回滚，最后依据性能数据决定是否融合 query 投影、倒序打包和输出门控。
 
