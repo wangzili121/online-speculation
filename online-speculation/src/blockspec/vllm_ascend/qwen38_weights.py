@@ -95,7 +95,7 @@ class ParallelLinear(nn.Module):
         self.weight = weight if isinstance(weight, nn.Parameter) else nn.Parameter(weight, requires_grad=False)
         self.tp, self.mode = tp, mode
 
-    def forward(self, value):
+    def _project(self, value):
         if self.mode in {"column", "vocab"}:
             value = _Copy.apply(value, self.tp)
         if torch.is_inference(self.weight) and torch.is_grad_enabled() and value.requires_grad:
@@ -104,6 +104,10 @@ class ParallelLinear(nn.Module):
             out = _FrozenLinear.apply(value, self.weight)
         else:
             out = F.linear(value, self.weight)
+        return out
+
+    def forward(self, value):
+        out = self._project(value)
         if self.mode == "row":
             out = _Reduce.apply(out, self.tp)
         elif self.mode == "vocab":
@@ -171,6 +175,14 @@ class SharedHead(ParallelLinear):
 
     def forward(self, value):
         return super().forward(value)[..., :self.vocab_size]
+
+    @property
+    def vocab_start(self):
+        return min(self.tp.rank * self.weight.shape[0], self.vocab_size)
+
+    def local_logits(self, value):
+        width = max(0, min(self.weight.shape[0], self.vocab_size - self.vocab_start))
+        return self._project(value)[..., :width]
 
 
 def _weight(module):
@@ -251,14 +263,29 @@ def from_native_model(target, config, *, tp, block_size, mask_token_id, training
 
 class NativeSuffixLearner(SuffixLearner):
     """TP-aware online replay against an immutable native vLLM target."""
-    def __init__(self, model, config, tp):
+    def __init__(self, model, config, tp, *, vocab_parallel_loss=False):
         self.tp = tp
+        self.vocab_parallel_loss = vocab_parallel_loss and tp.size > 1
         super().__init__(model, config)
         if self.parameters[0].device.type == "cpu":
             self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate,
                                                weight_decay=0, fused=True)
         self.replicated = {name for name in self.master if ".q_norm." in name or ".k_norm." in name
                            or ".norm." in name}
+
+    def replay_logits(self, item):
+        if not self.vocab_parallel_loss:
+            return super().replay_logits(item)
+        return self.model.forward_suffix(item.boundary, cache=item.cache, logit_range=(0, item.valid),
+            draft_weights=self.master, checkpoint_layers=self.config.checkpoint_layers,
+            logit_head=self.model.head.local_logits).logits[0]
+
+    def replay_divergence(self, student, teacher):
+        if not self.vocab_parallel_loss:
+            return super().replay_divergence(student, teacher)
+        from .qwen38_loss import vocab_divergence
+        return vocab_divergence(student, teacher, start=self.model.head.vocab_start,
+                                 tp=self.tp, kind=self.config.loss)
 
     @staticmethod
     def parameter_stamp(parameter):
@@ -274,11 +301,16 @@ class NativeSuffixLearner(SuffixLearner):
 
     def backward(self):
         loss = super().backward()
-        for name in sorted(self.replicated):
-            if self.master[name].grad is not None:
-                gradient = self.master[name].grad
-                reduced = self.tp.reduce(gradient.to(self.execution[name].device))
-                gradient.copy_(reduced)
+        names = [name for name in sorted(self.replicated) if self.master[name].grad is not None]
+        gradients = [self.master[name].grad for name in names]
+        if gradients and self.tp.size > 1:
+            # 所有复制的 norm 参数只做一次小通信；CPU offload 仍仅搬运这一小包。
+            device = next(iter(self.execution.values())).device
+            packed = torch.cat([gradient.reshape(-1) for gradient in gradients]).to(device)
+            packed = self.tp.reduce(packed).to(gradients[0].device)
+            for name, gradient, reduced in zip(names, gradients, packed.split([g.numel() for g in gradients]),
+                                                strict=True):
+                self.master[name].grad = reduced.reshape_as(gradient)
         return loss
 
     def clip_gradients(self):

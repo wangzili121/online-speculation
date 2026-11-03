@@ -202,9 +202,9 @@ class Qwen38DualView(nn.Module):
         self.norm.to(devices[-1])
         return self
 
-    def _logits(self, hidden):
+    def _logits(self, hidden, head=None):
         normalized = self.norm(hidden.to(self.norm.weight.device))
-        return self.head(normalized.to(self.head.weight.device))
+        return (self.head if head is None else head)(normalized.to(self.head.weight.device))
 
     def _cache(self, cache, start=0):
         if cache is None:
@@ -259,7 +259,7 @@ class Qwen38DualView(nn.Module):
         return DraftBoundary(*self._block_inputs(tokens, past, "draft"), 0, past, self.backend).detached()
 
     def forward_suffix(self, boundary, *, cache=None, logit_range=None, draft_weights=None,
-                       checkpoint_layers=False):
+                       checkpoint_layers=False, logit_head=None):
         if (not isinstance(boundary, DraftBoundary) or boundary.backend != self.backend
                 or not 0 <= boundary.start_layer < len(self.layers)):
             raise ValueError("compatible captured draft boundary required")
@@ -292,7 +292,7 @@ class Qwen38DualView(nn.Module):
             hidden = (checkpoint(execute, hidden, use_reentrant=False)
                       if checkpoint_layers and torch.is_grad_enabled() else execute(hidden))
         projected = hidden if logit_range is None else hidden[:, slice(*logit_range)]
-        return BackboneOutput(hidden, None, self._logits(projected))
+        return BackboneOutput(hidden, None, self._logits(projected, logit_head))
 
 
 class Qwen38Branch(MaskedAttentionBranch):

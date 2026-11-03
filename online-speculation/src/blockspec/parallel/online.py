@@ -131,6 +131,14 @@ class SuffixLearner:
             return self.update()
         return None
 
+    def replay_logits(self, item):
+        options = {"checkpoint_layers": True} if self.config.checkpoint_layers else {}
+        return self.model.forward_suffix(item.boundary, cache=item.cache, logit_range=(0, item.valid),
+                                         draft_weights=self.master, **options).logits[0]
+
+    def replay_divergence(self, student, teacher):
+        return divergence(student, teacher, self.config.loss)
+
     def backward(self):
         """Full-soft-target gradients through a frozen-prefix suffix replay."""
         total, positions = 0., sum(item.valid for item in self.replay)
@@ -138,12 +146,10 @@ class SuffixLearner:
         with torch.enable_grad():
             for item in self.replay:
                 # CPU masters are staged inside each layer, not copied as a second full head.
-                options = {"checkpoint_layers": True} if self.config.checkpoint_layers else {}
-                output = self.model.forward_suffix(item.boundary, cache=item.cache,
-                                                   logit_range=(0, item.valid), draft_weights=self.master, **options)
-                loss = divergence(output.logits[0], item.teacher_logits, self.config.loss).sum() / positions
+                logits = self.replay_logits(item)
+                loss = self.replay_divergence(logits, item.teacher_logits).sum() / positions
                 if not torch.isfinite(loss):
-                    student_ok = bool(torch.isfinite(output.logits).all())
+                    student_ok = bool(torch.isfinite(logits).all())
                     teacher_ok = bool(torch.isfinite(item.teacher_logits).all())
                     teacher_nan = int(item.teacher_logits.isnan().sum())
                     raise FloatingPointError(f"nonfinite online suffix loss: student_finite={student_ok}, "

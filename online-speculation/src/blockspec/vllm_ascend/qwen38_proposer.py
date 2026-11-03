@@ -45,6 +45,7 @@ class OrthrusWorkerExtension:
                 "trainable_parameters": 0 if draft.learner is None else draft.learner.trainable_parameters,
                 "optimizer_device": None if draft.learner is None else draft.learner.config.optimizer_device,
                 "training_gdn_backend": draft.options.get("training_gdn_backend", "torch"),
+                "training_loss_backend": draft.options.get("training_loss_backend", "gathered"),
                 "head_dir": draft.options.get("head_dir"),
                 "history_backend": draft.history_reader.backend, "history_reads": draft.history_reader.reads}
 
@@ -81,10 +82,12 @@ class Qwen38OrthrusProposer:
         options = (vllm_config.additional_config or {}).get("qwen38_orthrus", {})
         allowed = {"mask_token_id", "online", "last_layers", "update_stride", "learning_rate",
                    "head_dir", "checkpoint_dir", "checkpoint_every", "all_draft_layers", "offline",
-                   "optimizer_device", "checkpoint_layers", "training_gdn_backend"}
+                   "optimizer_device", "checkpoint_layers", "training_gdn_backend", "training_loss_backend"}
         if not isinstance(options, dict) or set(options) - allowed:
             raise ValueError("invalid qwen38_orthrus options")
         self.options = dict(options)
+        if options.get("training_loss_backend", "gathered") not in {"gathered", "vocab_parallel"}:
+            raise ValueError("training_loss_backend must be gathered or vocab_parallel")
         if options.get("training_gdn_backend", "torch") not in {"torch", "fla"}:
             raise ValueError("training_gdn_backend must be torch or fla")
         native_backend = (vllm_config.additional_config or {}).get("qwen38_gdn_prefill_backend", "native")
@@ -165,7 +168,8 @@ class Qwen38OrthrusProposer:
                                       learning_rate=self.options.get("learning_rate", 1e-5),
                                       optimizer_device=self.options.get("optimizer_device", "model"),
                                       checkpoint_layers=self.options.get("checkpoint_layers", False))
-                self.learner = NativeSuffixLearner(self.model, policy, self.tp)
+                self.learner = NativeSuffixLearner(self.model, policy, self.tp,
+                    vocab_parallel_loss=self.options.get("training_loss_backend", "gathered") == "vocab_parallel")
         mode = "offline" if self.options.get("offline", False) else "online" if self.learner is not None else "fixed"
         logger.info("Orthrus native target ready: TP=%d, K=%d, mode=%s, history=shared_target_snapshot",
                     self.tp.size, self.block_size, mode)
@@ -266,20 +270,22 @@ class Qwen38OrthrusProposer:
         if not count or self.learner is None or self.pending["boundary"] is None:
             return None
         with torch.inference_mode(False), torch.no_grad():
-            return logits[metadata.target_logits_indices].detach().clone()
+            # index_select 已拥有独立存储；采样器随后改写原 logits 不会污染教师。
+            return logits.index_select(0, metadata.target_logits_indices).detach()
 
     def observe_verified(self, metadata, teacher, sampled):
         count = metadata.num_draft_tokens[0]
         if not count:
             return
         pending, self.pending = self.pending, None
-        used = min(int((sampled[0] >= 0).sum().item()), count)
+        sampled_count = int((sampled[0] >= 0).sum().item())
+        used = min(sampled_count, count)
         if used < 1:
             raise RuntimeError("native verifier produced no reached token")
         self.verified += 1
         self.max_verified_tokens = max(self.max_verified_tokens, count)
         self.full_blocks += count == self.block_size - 1
-        self.accepted += min(int((sampled[0] >= 0).sum().item()) - 1, count)
+        self.accepted += min(sampled_count - 1, count)
         if self.learner is None:
             return
         with torch.inference_mode(False):

@@ -64,3 +64,11 @@ TP2 实际规格下，完整 GDN draft 适配调用的 K8 为 1.178 → 1.045 ms
 适配层另在 NPU 上直接检查融合卷积、GDN、门控 norm、SwiGLU、GQA 和完整 Full Attention 的前向及可微路径。GDN 的 K1/8/17/32 空历史与显式零初态逐 bit 相同；Full Attention 的因果与双向模式均通过数值门槛，历史输入保持不变。见 [设备适配层检查](validation/qwen38/execution-20261103/device-adapters.json)。这些是算子与适配层检查，不代替整模型验收。
 
 四卡设备驻留的离线训练、head 重载和在线 last-1/last-4 更新结果见[训练审计](QWEN38_TRAINING_OPS_AUDIT.md#四卡设备驻留验证)。它们验证更新后继续起草和验证的链路，不将在线期间变化的 head 与固定 head 作逐 token 对照。
+
+## 主机同步与缓存边界
+
+verifier 返回后，接受长度和反馈覆盖长度共用一次设备计数，省去对同一结果重复执行 `sum().item()` 的主机同步。CPU 边界测试覆盖 K32 的全部拒绝位置；整模型的本轮复验状态见训练审计。
+
+教师 logits 用 `index_select` 按 verifier 行号取出独立副本，不再紧接一次 `clone`。采样器原地修改原 logits 时，教师内容仍保持不变；反馈存储的独立快照不受影响。
+
+历史 KV 继续使用独立快照。在线重放可以跨越后续 decode 轮次，因此不能直接覆盖旧快照。现有索引顺序改写没有测得收益，本轮不据此替换历史读取；融合卷积路径也保持不变。

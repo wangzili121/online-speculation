@@ -9,6 +9,8 @@ Full Attention 在块内采用双向注意力，GDN 使用 `orthrus_qwen35_refer
 
 ## 验证状态
 
+下表整模型记录对应已验证基线 `88923af`；本轮 TP 通信与 loss 增量的验证状态见[训练算子审计](online-speculation/docs/QWEN38_TRAINING_OPS_AUDIT.md#tp-通信与词表分片)。
+
 | 路径 | 当前状态 |
 | --- | --- |
 | 投机推理 | 真实 27B、TP2 已验证 K=2/8/17/32、多类请求边界、主模型历史缓存复用及 head 重载。 |
@@ -68,5 +70,7 @@ python scripts/train_qwen38_draft.py \
 少卡配置保留：将上述命令改为 `--tp 2 --optimizer-device cpu --checkpoint-layers --kv-cache-memory-bytes 8589934592`。TP2 全 draft 的 FP32 参数、梯度与 AdamW 状态合计约 116 GB 主机内存，另需模型加载和临时缓冲；该 offload 路径的性能不作为设备驻留训练的提速依据。
 
 入口不显式指定时，离线仍默认 CPU offload 和 checkpoint，在线默认设备驻留。FLA 由 NPU worker 延迟加载，不修改既有 Torch/Triton；只影响训练用 GDN，推理仍使用镜像已有算子。
+
+训练默认使用 `--training-loss-backend gathered`。可选 `vocab_parallel` 在词表分片上精确计算同一 KL/TV，减少临时显存；当前四卡 K32 小测未获得更低延迟，因此不作为卡充足时的默认配置。两种方式使用相同的 head 格式，均不改变推理采样。
 
 输出目录必须为新目录，包含 `loss.jsonl`、`summary.json` 和 `head/version<steps>`。在相同部署配置下，推理传 `--head-dir /data/draft-fit/head/version1000` 即可加载；离线也可用 `--head-dir` 从已有 head 继续学习，但不恢复 AdamW 状态，不能当作精确断点续训。

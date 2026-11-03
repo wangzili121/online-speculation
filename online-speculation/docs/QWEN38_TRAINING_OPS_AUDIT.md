@@ -26,6 +26,33 @@
 
 独立 TP4 推理进程分别重载六步训练导出的 head，加载前哈希与导出完全一致；last-1、last-4 两种配置均完成 greedy、采样请求和 7 次在线更新。每种配置的四 rank 更新计数与 loss 一致，各完成 6 次历史缓存只读检查；更新后 head 改变，主模型完整参数哈希仍未变。记录见 [TP4 last-1](validation/qwen38/execution-20261103/online-last1-tp4.json) 和 [TP4 last-4](validation/qwen38/execution-20261103/online-last4-tp4.json)。这证明设备驻留的训练、导出、加载、推理和续训链路可执行，不评价接受率或 head 收敛。
 
+## TP 通信与词表分片
+
+本轮只组合现成 Torch 算子和 HCCL collective，不新增 NPU kernel。FP32 master、梯度与优化器驻留 NPU，双卡 offload 继续保留。
+
+### 复制参数梯度
+
+64 层 draft 的 80 个复制 norm 梯度不再逐个 `all_reduce`，而是拼成一个 FP32 buffer，归并一次。各参数的 `.grad` 指向该 buffer 的不重叠视图，避免再逐项发起 NPU 复制；下一轮 `zero_grad(set_to_none=True)` 仍按原方式释放梯度。CPU offload 也只搬运这个小包。
+
+四卡真实 head 规格、预热后 30 次同步计时，rank0 中位数由 **16.35 ms 降至 0.53 ms**。最大绝对差 `4.77e-7`，相对 L2 误差 `2.46e-8`；这是 FP32 collective 归约顺序差异，不宣称逐 bit 一致。它只衡量复制参数梯度的归并，不是完整训练加速比。
+
+### 分片 Loss
+
+原路径汇总完整 student logits 后计算 KL/TV。可选路径仅计算本 rank 的 LM head 词表行，汇总每个位置的局部 log-sum-exp，得到完整词表的归一化量，再归并各分片的 loss。KL 反向为 `q-p`；TV 反向为 `q*(sign(q-p)-sum(q*sign(q-p)))/2`，其中求和覆盖完整词表。LM head 继续归并 hidden 梯度，教师分布保持 detach。没有截断词表或改变蒸馏目标。
+
+下面是 TP4、31 行、248,320 词表下，BF16 logits 的 loss 前后向和临时 allocator 峰值。两条路径都包含完整词表上的精确目标；临时峰值不包含输入、模型、优化器和外部 CANN 内存。
+
+| Loss | 完整汇总 | 词表分片 | 完整汇总临时峰值 | 词表分片临时峰值 |
+| --- | --- | --- | --- | --- |
+| KL | 1.43 ms | 1.73 ms | 164.68 MiB | 59.37 MiB |
+| TV | 1.51 ms | 1.99 ms | 195.37 MiB | 74.69 MiB |
+
+分片版本降低临时显存，但在当前小块规模下更慢，因此 **默认保留 `gathered`，`vocab_parallel` 显式选择**。推理 logits、候选采样和 verifier 不走这个分片 loss 接口，head 格式不变。
+
+四个 rank 的 FP32/BF16、KL/TV 均通过数值对照，loss 最大相对 L2 误差为 `9.25e-7`，局部 logits 梯度为 `5.99e-4`。CPU 另覆盖两卡/四卡、词表 padding、空分片、极端 logits 和非均匀上游梯度；两卡小模型覆盖全层/last-1、KL/TV、checkpoint 的完整参数梯度与裁剪、更新对照。本轮回归为 660 passed、32 skipped。
+
+原始记录见 [rank0](validation/qwen38/tp-execution-20261103/tp-training-rank0.json)、[rank1](validation/qwen38/tp-execution-20261103/tp-training-rank1.json)、[rank2](validation/qwen38/tp-execution-20261103/tp-training-rank2.json)、[rank3](validation/qwen38/tp-execution-20261103/tp-training-rank3.json)。以上是本轮算子与梯度证据；真实 27B 长窗口和在线更新复验仍待可用的四卡运行环境，不将上文旧版本已完成的整模型验证算作本轮增量验收。
+
 ## 算子选择
 
 | 模块 | 核对与实测 | 当前采用 |

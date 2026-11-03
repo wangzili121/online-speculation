@@ -1,0 +1,54 @@
+{
+  "schema": "qwen38-tp-execution-audit-v1",
+  "date": "2026-11-03",
+  "baseline_commit": "88923af",
+  "image": "quay.io/ascend/vllm-ascend@sha256:0bc946247f2ae008fdf73838e597404fbbfebac4692c703eba531c05a9b5c58a",
+  "source_sha256": {
+    "src/blockspec/vllm_ascend/qwen38_weights.py": "cd56e0641be01d856a7e3005dd0b6d651a88f739276e5e9a9c110006b1f2d3b5",
+    "src/blockspec/vllm_ascend/qwen38_loss.py": "79344318863d727f9ee0ee4e53c88c2933d2739d34d20bed9c659025f16d7e44",
+    "src/blockspec/vllm_ascend/qwen38_proposer.py": "35cb44a8478e1ecac315d5439c2e2821b0956533768b0b5e2b2c0ed3ab1e7fb4",
+    "src/blockspec/vllm_ascend/qwen38_ops.py": "a3142f7da94bb1a6f5b4444a49ecb3d8803d0678ea70bf5b78e331a2cf355cf8",
+    "src/blockspec/parallel/online.py": "b735c4eb7d69f43a0bac407f702afffb1a982aa67116dc3128e46ee8c59ac043",
+    "src/blockspec/parallel/qwen38.py": "e4e2686a08cb3886b5f309087b5eb5bf71beb67d73cccc7c304742eaf467f4c9",
+    "scripts/run_qwen38_vllm.py": "88be45eb9938e15a8898c753a939a19c4822169a5b314fdd7d6d3bb1d1b76147",
+    "scripts/audit_qwen38_tp_training.py": "3ac7b11588ed8ad025aa728ae4a8bff67b17edb81e68bdf1884028b57b043892",
+    "tests/test_qwen38_native.py": "d7cd3a46725359e1dc60b8832293db10747c6c37735ec06c07c6821ae2f32365",
+    "tests/test_qwen38_loss.py": "02d12de423e4938c945a622106adde3fdf671913eba34ebffdc341d2f65745a0"
+  },
+  "device_tests": {
+    "tp": 4,
+    "scope": "loss gradients and replicated-gradient collectives; not a 27B end-to-end update",
+    "ranks": [
+      {
+        "rank": 0,
+        "result": "tp-training-rank0.json"
+      },
+      {
+        "rank": 1,
+        "result": "tp-training-rank1.json"
+      },
+      {
+        "rank": 2,
+        "result": "tp-training-rank2.json"
+      },
+      {
+        "rank": 3,
+        "result": "tp-training-rank3.json"
+      }
+    ]
+  },
+  "cpu_regression": {
+    "passed": 660,
+    "skipped": 32,
+    "failures": 0,
+    "result": "cpu.xml.gz"
+  },
+  "defaults": {
+    "training_loss_backend": "gathered",
+    "vocab_parallel": "opt-in memory reduction; slower for measured K32 workload"
+  },
+  "not_completed": [
+    "27B TP4 integration of this revision: offline 512/2048 windows, exported-head reload and online updates"
+  ],
+  "resource_note": "A full-model retry stopped before loading because another job consumed startup memory. A second host's idle group returned zero visible NPUs in container preflight. No integration pass claimed; no driver, sharing-mode or privileged-container changes made."
+}

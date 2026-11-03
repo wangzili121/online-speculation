@@ -919,7 +919,7 @@ def test_attention_builder_keeps_actual_block_length_for_metadata():
     assert config.speculative_config.num_speculative_tokens == 31
 
 
-def _tp_worker(rank, rendezvous, last_layers, checkpoint_layers=False):
+def _tp_worker(rank, rendezvous, last_layers, checkpoint_layers=False, kind="tv"):
     import transformers.utils as utils
     import transformers.utils.import_utils as imports
     utils.is_torch_npu_available = imports.is_torch_npu_available = lambda: False
@@ -941,10 +941,10 @@ def _tp_worker(rank, rendezvous, last_layers, checkpoint_layers=False):
             fd = full(block, view="draft", cache=fh, capture_layer=4 - last_layers)
             torch.testing.assert_close(ld.logits, fd.logits, rtol=2e-4, atol=2e-5)
             teacher = full(torch.tensor([[9, 11, 12, 13]]), cache=fh).logits[0, :3]
-        policy = SuffixConfig(last_layers=last_layers, stride=100, loss="tv", learning_rate=1e-3)
+        policy = SuffixConfig(last_layers=last_layers, stride=100, loss=kind, learning_rate=1e-3)
         from dataclasses import replace
         local_policy = replace(policy, checkpoint_layers=checkpoint_layers, optimizer_device="cpu")
-        ll = NativeSuffixLearner(local, local_policy, tp)
+        ll = NativeSuffixLearner(local, local_policy, tp, vocab_parallel_loss=True)
         fl = SuffixLearner(full, policy)
         ll.observe(Feedback(block, lh, teacher, 3, ld.boundary), may_update=False)
         fl.observe(Feedback(block, fh, teacher, 3, fd.boundary), may_update=False)
@@ -978,9 +978,35 @@ def _tp_worker(rank, rendezvous, last_layers, checkpoint_layers=False):
 
 @pytest.mark.skipif(sys.platform != "linux", reason="CPU distributed integration is run in the Linux image")
 @pytest.mark.parametrize("last_layers", [1, 4])
-def test_two_rank_forward_gradients_and_global_clip_match_unsharded(tmp_path, last_layers):
-    torch.multiprocessing.start_processes(_tp_worker, args=(str(tmp_path / "gloo"), last_layers), nprocs=2,
+@pytest.mark.parametrize("kind", ["forward_kl", "tv"])
+def test_two_rank_forward_gradients_and_global_clip_match_unsharded(tmp_path, last_layers, kind):
+    torch.multiprocessing.start_processes(_tp_worker, args=(str(tmp_path / "gloo"), last_layers, False, kind), nprocs=2,
                                           join=True, start_method="spawn")
+
+
+def test_replicated_norm_gradients_use_one_collective(monkeypatch):
+    from blockspec.parallel.online import SuffixLearner
+    monkeypatch.setattr(SuffixLearner, "backward", lambda self: .25)
+    parameters = {name: nn.Parameter(torch.randn(*shape))
+                  for name, shape in (("a.norm", (3,)), ("b.norm", (2, 3)), ("unused.norm", (1,)),
+                                      ("sharded", (4,)))}
+    for name, parameter in parameters.items():
+        parameter.grad = None if name == "unused.norm" else torch.randn_like(parameter)
+    before = {name: p.grad.clone() for name, p in parameters.items() if p.grad is not None}
+    calls = []
+
+    def reduce(value):
+        calls.append(value.numel())
+        return value.mul_(2)
+
+    learner = NativeSuffixLearner.__new__(NativeSuffixLearner)
+    learner.master = learner.execution = parameters
+    learner.replicated = {"a.norm", "b.norm", "unused.norm"}
+    learner.tp = NS(size=2, reduce=reduce)
+    assert learner.backward() == .25
+    assert calls == [9]
+    for name, gradient in before.items():
+        torch.testing.assert_close(parameters[name].grad, gradient * (2 if name in learner.replicated else 1))
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="CPU distributed integration is run in the Linux image")
