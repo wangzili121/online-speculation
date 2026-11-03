@@ -27,7 +27,7 @@ MLA 保留可以逐条读取的历史表示，计算时先检索，再做 Attent
 共享 Final Norm / LM head -> 候选 -> 原模型验证
 ```
 
-draft 每轮输入一个块：`anchor + (K-1) 个 MASK`。anchor 是位置 $a$ 上已经确定的最后一个 token，MASK 占据接下来要预测的位置。历史只读取 $[0,a)$，而 anchor 和 MASK 一起参与本轮计算。因此，块长 K 包含 anchor，实际提出 K-1 个候选。当前原生 KDA 接口将整条推理路径限制在 $K\le8$；这是本实现的接口限制，不是 Orthrus 或 PyPTO 的数学限制。
+draft 每轮输入一个块：`anchor + (K-1) 个 MASK`。anchor 是位置 `a` 上已经确定的最后一个 token，MASK 占据接下来要预测的位置。历史只读取 `[0,a)`，而 anchor 和 MASK 一起参与本轮计算。因此，块长 K 包含 anchor，实际提出 K-1 个候选。当前原生 KDA 接口将整条推理路径限制在 `K <= 8`；这是本实现的接口限制，不是 Orthrus 或 PyPTO 的数学限制。
 
 MLA 可以让块内位置互相可见，KDA 却不是 softmax Attention，没有一张 mask 可以直接把它改成双向。为此，当前实现保留两种实验策略：**因果 KDA + 双向 MLA**，以及**门控双向 KDA + 双向 MLA**。前者从主模型历史状态的副本出发向前递推；后者再增加一次从零状态出发的块内反向递推，并在输出归一化前合并两路结果。下文会先讲两种策略共用的部分，再解释反向分支。
 
@@ -49,19 +49,31 @@ PyPTO 库已经有 GLM5.3-Flash 的模型计算代码，包括 KDA、KPool、稀
 
 MLA 不必读取所有历史 token，而是先用 KPool 找出一批相关位置。主模型每四个历史位置生成一个池 key，检索时先给池打分，再把选中的池展开为 token 索引。这些 key 是主模型已经计算好的压缩结果，draft 直接读取，不重新压缩历史。
 
-原模型逐步生成时，每个位置只能检索截至自身边界的历史。设 AR 位置 $p$ 的可见长度为 $b_p$，完整池数为 $P_p=\lfloor b_p/4\rfloor$。$u_{ph}^{AR}$ 是 indexer 第 h 个 head 的 query，$\omega_{ph}^{AR}$ 是包含缩放的 head 权重，$\kappa_r^{AR}$ 是历史池 key，打分为：
+原模型逐步生成时，每个位置只能检索截至自身边界的历史。设 AR 位置 `p` 的可见长度为 `b_p`，每四个位置组成一个完整池，则池数为：
+
+$$
+P_p=\lfloor b_p/4\rfloor.
+$$
+
+`u_ph^AR` 是 indexer 第 h 个 head 的 query，`ω_ph^AR` 是包含缩放的 head 权重，`κ_r^AR` 是历史池 key，打分为：
 
 $$
 s_{pr}^{AR}=\sum_{h=1}^{32}\omega_{ph}^{AR}\,\mathrm{ReLU}\left((u_{ph}^{AR})^\top\kappa_r^{AR}\right),\qquad 0\le r<P_p.
 $$
 
-draft 的不同之处在于：一个块里的 query 同时提出，读取的都应是 anchor 之前的历史。因此换用 draft 的 query 和 head 权重后，所有行都使用同一个池数 $P=\lfloor a/4\rfloor$：
+draft 的不同之处在于：一个块里的 query 同时提出，读取的都应是 anchor 之前的历史。因此换用 draft 的 query 和 head 权重后，所有行都使用同一个池数：
+
+$$
+P=\lfloor a/4\rfloor.
+$$
+
+对应打分为：
 
 $$
 s_{ir}^{D}=\sum_{h=1}^{32}\omega_{ih}^{D}\,\mathrm{ReLU}\left((u_{ih}^{D})^\top\kappa_r^{AR}\right),\qquad 0\le r<P.
 $$
 
-$u$ 和 $\kappa$ 均为 128 维，$\omega$ 已包含 $128^{-1/2}32^{-1/2}$ 缩放。令 $m=\min(P,512)$，选中的池集合及展开后的历史 token 集合为：
+query `u` 和池 key `κ` 均为 128 维，head 权重 `ω` 已包含 `1/sqrt(128)` 和 `1/sqrt(32)` 两项缩放。令 `m = min(P,512)`，选中的池集合及展开后的历史 token 集合为：
 
 $$
 \mathcal R_i=\mathrm{TopK}_{m}(s_i^{D}),\qquad \mathcal H_i=\bigcup_{r\in\mathcal R_i}\{4r,4r+1,4r+2,4r+3\}\cup\{4P,\ldots,a-1\}.
@@ -130,7 +142,7 @@ def select_history(query, head_weights, pooled_keys, prefix_length, *, topk, poo
 
 上一步给出了每行要读取的历史位置，MLA 接下来计算这些位置和当前块对输出的贡献。历史中保存的是 512 维压缩表示，以下称为 latent；它还需要通过各 head 的权重展开成 K/V。主模型生成的历史使用 AR 展开权重，本轮 draft 生成的临时块使用 draft 展开权重，两套权重可能不同。
 
-按单个 head 书写，令 $c_j^{AR},c_t^D\in\mathbb R^{512}$ 分别为历史与临时 latent，$W_K^{AR},W_K^D,W_V^{AR},W_V^D\in\mathbb R^{256\times512}$ 为相应展开权重。原有 AR 的 query 为 $q_p^{AR}\in\mathbb R^{256}$，可见集合为 $\mathcal H_p^{AR}$，计算为：
+按单个 head 书写，历史 latent `c_j^AR` 和临时 latent `c_t^D` 都是 512 维向量；两套 K/V 展开权重 `W_K^AR`、`W_K^D`、`W_V^AR`、`W_V^D` 都是 256 × 512 矩阵。原有 AR 的 query `q_p^AR` 为 256 维，可见历史集合记为 `H_p^AR`，计算为：
 
 $$
 z_{pj}^{AR}=(q_p^{AR})^\top W_K^{AR}c_j^{AR}/\sqrt{256}.
@@ -140,7 +152,7 @@ $$
 o_p^{AR}=\frac{\sum_{j\in\mathcal H_p^{AR}}e^{z_{pj}^{AR}}W_V^{AR}c_j^{AR}}{\sum_{j\in\mathcal H_p^{AR}}e^{z_{pj}^{AR}}}.
 $$
 
-Orthrus 的 $q_i^D\in\mathbb R^{256}$ 由 draft 投影生成。为区分输入来源，将历史段和临时块段的分数分别记为 $z_{ij}^{H}$、$z_{it}^{B}$：
+Orthrus 的 256 维 query `q_i^D` 由 draft 投影生成。为区分输入来源，将历史段和临时块段的分数分别记为 `z_ij^H`、`z_it^B`：
 
 $$
 z_{ij}^{H}=(q_i^D)^\top W_K^{AR}c_j^{AR}/\sqrt{256},\qquad z_{it}^{B}=(q_i^D)^\top W_K^Dc_t^D/\sqrt{256}.
@@ -152,15 +164,15 @@ $$
 o_i^D=\frac{\sum_{j\in\mathcal H_i}e^{z_{ij}^{H}}W_V^{AR}c_j^{AR}+\sum_{t=0}^{K-1}e^{z_{it}^{B}}W_V^Dc_t^D}{\sum_{j\in\mathcal H_i}e^{z_{ij}^{H}}+\sum_{t=0}^{K-1}e^{z_{it}^{B}}}.
 $$
 
-公式的分子同时累加历史和临时块的贡献，分母也把两部分放在同一个 softmax 中。所有临时位置 $t$ 都可见，历史仍止于 anchor 前。这里没有 DSV4 的 Attention sink，也不使用 RoPE。
+公式的分子同时累加历史和临时块的贡献，分母也把两部分放在同一个 softmax 中。所有临时位置 `t` 都可见，历史仍止于 anchor 前。这里没有 DSV4 的 Attention sink，也不使用 RoPE。
 
-为调用现成算子，当前实现先分别计算历史和临时块。两段各自做过 softmax，输出已经除以不同的分母，所以不能直接相加；需要保留每段的 log-sum-exp（LSE），用它恢复两段的相对权重。将局部输出记为 $o_{i,H},o_{i,B}$，自然对数 LSE 记为 $L_{i,H},L_{i,B}$，合并为：
+为调用现成算子，当前实现先分别计算历史和临时块。两段各自做过 softmax，输出已经除以不同的分母，所以不能直接相加；需要保留每段的 log-sum-exp（LSE），用它恢复两段的相对权重。下面用 `o` 表示局部输出，`L` 表示自然对数 LSE；下标 `H`、`B` 分别指历史和临时块，`i` 指 query 位置。合并为：
 
 $$
 L_i=\log\left(e^{L_{i,H}}+e^{L_{i,B}}\right),\qquad o_i^D=e^{L_{i,H}-L_i}o_{i,H}+e^{L_{i,B}-L_i}o_{i,B}.
 $$
 
-合并前，两段还要分别乘各自的 $W_V$，都展开成 256 维 value 向量。若先混合 512 维 latent，再统一乘 draft 的 $W_V$，就把历史也按 draft 权重解释了，与上式不同。空历史则取零输出、负无穷 LSE，使其对结果没有贡献。PyPTO 可以在一次计算中完成这套归一化，不必沿用两次算子调用。
+合并前，两段还要分别乘各自的 `W_V`，都展开成 256 维 value 向量。若先混合 512 维 latent，再统一乘 draft 的 `W_V`，就把历史也按 draft 权重解释了，与上式不同。空历史则取零输出、负无穷 LSE，使其对结果没有贡献。PyPTO 可以在一次计算中完成这套归一化，不必沿用两次算子调用。
 
 #### 2.2.2 PyPTO 已有实现与所需修改
 
@@ -176,7 +188,7 @@ draft_sparse_mla(
 ) -> attention[K,H,256]
 ```
 
-现有分块 softmax 其实已经计算了这些统计，只是没有向外返回：$m_r$ 是本段最大分数，$\ell_r$ 是减去最大值后的指数和，$u_r$ 是按这些指数加权累加的 latent 向量。将历史和临时块分别记为 $H,B$，就可以继续计算：
+现有分块 softmax 其实已经计算了这些统计，只是没有向外返回：`m_r` 是本段最大分数，`ℓ_r` 是减去最大值后的指数和，`u_r` 是按这些指数加权累加的 latent 向量。将历史和临时块分别记为 `H`、`B`，就可以继续计算：
 
 $$
 m=\max(m_H,m_B),\qquad \alpha_H=e^{m_H-m},\qquad \alpha_B=e^{m_B-m}.
@@ -186,9 +198,9 @@ $$
 \ell=\alpha_H\ell_H+\alpha_B\ell_B,\qquad u=\alpha_H W_V^{AR}u_H+\alpha_B W_V^Du_B,\qquad o=u/\ell.
 $$
 
-$u_H,u_B$ 仍是 512 维 latent 累加值，分别乘 $W_V$ 后，才得到 256 维的合并分子 $u$。这与 LSE 合并公式计算的是同一个结果，因此可以复用已有分块归约，不必另写一个独立的 LSE kernel。实现中将空段权重置零，避免负无穷之间相减。
+`u_H`、`u_B` 仍是 512 维 latent 累加值，分别乘 `W_V` 后，才得到 256 维的合并分子 `u`。这与 LSE 合并公式计算的是同一个结果，因此可以复用已有分块归约，不必另写一个独立的 LSE kernel。实现中将空段权重置零，避免负无穷之间相减。
 
-完成 Attention 后还要接 O 投影。原有 `mla_epilog_decode` 为 AR 路径预先合并了 value 展开和输出投影，保存在 `w_o_absorbed` 中；两段使用不同 $W_V$ 时，这一套权重不再适用。按上式先得到 256 维 value 输出后，可以接回 `mla_epilog_prefill / mla_epilog_w8a8`，使用 draft 的实际 O 投影。
+完成 Attention 后还要接 O 投影。原有 `mla_epilog_decode` 为 AR 路径预先合并了 value 展开和输出投影，保存在 `w_o_absorbed` 中；两段使用不同 `W_V` 时，这一套权重不再适用。按上式先得到 256 维 value 输出后，可以接回 `mla_epilog_prefill / mla_epilog_w8a8`，使用 draft 的实际 O 投影。
 
 #### 2.2.3 Torch-NPU 实现
 
@@ -332,15 +344,21 @@ def merge_attention_outputs(
 
 #### 2.3.1 从历史状态继续计算当前块
 
-MLA 根据索引读取一条条历史，KDA 则只带着一份状态继续往前算。这份状态包括宽度 4 卷积保留的三行输入，以及每个 head 的 $128\times128$ 矩阵。draft 先复制 anchor 之前的这两份状态，再用自己的投影处理当前块，计算过程中只改副本。
+MLA 根据索引读取一条条历史，KDA 则只带着一份状态继续往前算。这份状态包括宽度 4 卷积保留的三行输入，以及每个 head 的 128 × 128 矩阵。draft 先复制 anchor 之前的这两份状态，再用自己的投影处理当前块，计算过程中只改副本。
 
-省略 head 下标，令 $q_i,k_i,v_i\in\mathbb R^{128}$ 为投影经因果逐通道卷积和 SiLU 后的向量，$\widehat q_i=\mathrm{L2Norm}(q_i)/\sqrt{128}$、$\widehat k_i=\mathrm{L2Norm}(k_i)$。$f_i,b_i$ 是衰减和更新门的原始投影，$A_{\log},d_t$ 是学习参数，则：
+省略 head 下标，令 `q_i`、`k_i`、`v_i` 为投影经因果逐通道卷积和 SiLU 后的 128 维向量。query 和 key 先归一化：
+
+$$
+\widehat{q}_i=\mathrm{L2Norm}(q_i)/\sqrt{128},\qquad \widehat{k}_i=\mathrm{L2Norm}(k_i).
+$$
+
+衰减门和更新门的原始投影分别记为 `f_i`、`b_i`，学习参数为 `A_log`、`d_t`。门值按下式计算：
 
 $$
 \gamma_i=-5\,\sigma\left(e^{A_{\log}}\odot(f_i+d_t)\right),\qquad \beta_i=\sigma(b_i).
 $$
 
-$\sigma$ 是 sigmoid，$\gamma_i$ 是逐 key 通道衰减，不是 Qwen GDN 的标量衰减。状态采用 `[V,K]` 布局，单步计算为：
+其中 `σ` 表示 sigmoid，`γ_i` 是逐 key 通道衰减，不是 Qwen GDN 的标量衰减。状态采用 `[V,K]` 布局，单步计算为：
 
 $$
 \overline S_i=S_{i-1}\,\mathrm{diag}(e^{\gamma_i}),\qquad \delta_i=\beta_i(v_i-\overline S_i\widehat k_i).
@@ -350,21 +368,31 @@ $$
 S_i=\overline S_i+\delta_i\widehat k_i^\top,\qquad y_i^{\rightarrow}=S_i\widehat q_i.
 $$
 
-这套递推公式在 AR 和因果 draft 中不变。区别是 AR 使用主模型参数，并把结果留作后续历史；draft 使用独立参数，以 $S_{-1}^{D}=\mathrm{copy}(S_{a-1}^{AR})$ 和历史卷积尾部副本为起点，连续处理 K 行，结果只供本轮起草使用。
+这套递推公式在 AR 和因果 draft 中不变。区别是 AR 使用主模型参数，并把结果留作后续历史；draft 使用独立参数，以历史矩阵和卷积尾部的副本为起点，连续处理 K 行，结果只供本轮起草使用。矩阵初态为：
 
-如果采用门控双向策略，还要让当前位置获得块内右侧的信息。做法是把**当前块的原始投影输入倒序**，从零卷积历史和零矩阵状态出发，再运行同一套递推。将这一路输出翻回原顺序，记为 $y_i^{\leftarrow}$，再用每 head 的参数 $\rho$ 控制它的贡献：
+$$
+S_{-1}^{D}=\mathrm{copy}(S_{a-1}^{AR}).
+$$
+
+如果采用门控双向策略，还要让当前位置获得块内右侧的信息。做法是把**当前块的原始投影输入倒序**，从零卷积历史和零矩阵状态出发，再运行同一套递推。将这一路输出翻回原顺序，记为反向输出，再用每 head 的参数 `ρ` 控制它的贡献：
 
 $$
 \widetilde y_i=y_i^{\rightarrow}+\tanh(\rho)\odot y_i^{\leftarrow}.
 $$
 
-因果策略直接取 $\widetilde y_i=y_i^{\rightarrow}$。两种策略随后使用相同输出处理：
+因果策略只使用正向输出，不加入反向分支：
+
+$$
+\widetilde{y}_i=y_i^{\rightarrow}.
+$$
+
+两种策略随后使用相同输出处理：
 
 $$
 o_i=W_O^D\,\mathrm{ConcatHeads}\left(\mathrm{RMSNorm}_{w^D}(\widetilde y_i)\odot\sigma(g_i)\right).
 $$
 
-$g_i$ 是输出门投影，$w^D$ 是该 norm 的权重。这里先合并两路，再做 norm、sigmoid 门控和 O 投影；GLM 的输出门与 Qwen 的 SiLU 不同。反向分支只遍历当前块，不重算历史。$\rho=0$ 时它不影响输出，所以验证双向分支时需要使用非零门。
+`g_i` 是输出门投影，`w^D` 是该 norm 的权重。这里先合并两路，再做 norm、sigmoid 门控和 O 投影；GLM 的输出门与 Qwen 的 SiLU 不同。反向分支只遍历当前块，不重算历史。`ρ = 0` 时它不影响输出，所以验证双向分支时需要使用非零门。
 
 #### 2.3.2 PyPTO 已有实现与所需修改
 
