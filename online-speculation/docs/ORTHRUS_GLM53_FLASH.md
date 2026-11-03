@@ -56,6 +56,8 @@ $$
 
 draft 只持有注意力投影和内部归一化等参数。执行时临时替换各层 Attention 的调用，仍使用原模型完成 embedding、mHC、MoE、norm 和输出头；`finally` 恢复 AR 调用。该方法仅用于 eager、同步、单请求实验，不用于并发或图模式。head 文件必须匹配基模配置、量化描述、TP 布局、K、mask token 和混合策略。
 
+MLA latent 在本轮同步 draft 内可借用目标分页存储，执行到本层才收集；正常返回、异常退出和下一次 metadata 捕获均释放旧引用。KDA 状态和 Indexer 池仍使用自有副本。`history_read_mode` 只控制数据读取，不改变 head 参数或算法。
+
 ## 验证与启动
 
 验证分为数学与适配器回归、单卡 NPU 算子检查、原生引擎闭环三层。114 项定向回归通过，覆盖 Attention 与显式 SDPA 等价、双向信息流、KPool 边界、接受位置的状态选取、分页寻址、head 契约、异常恢复，以及启动环境检查。NPU 检查覆盖 MLA 的 K=2 至 8 及 K=32、KDA 的 K=1 至 8；MLA 对 FP32 的相对 RMS 误差约 0.3%，KDA 输出及逐位置状态的相对 RMS 误差不超过 1.2e-5。
@@ -93,7 +95,7 @@ draft 只持有注意力投影和内部归一化等参数。执行时临时替�
 PYTHONPATH=src python scripts/probe_glm53_ops.py --output artifacts/operators.json
 ```
 
-原生闭环先运行 `prepare_glm53_runtime.py`，再用 `validate_glm53_native.py` 指定物理卡、模型和输出目录；它依次完成基线、两种起草、重载及采样，任一阶段不通过则停止。`--block-size`、`--max-model-len` 和 `--long-prompt-repeats` 指定测试档位。`run_glm53_vllm.py --mode ngram` 提供不加载本项目 head/hooks 的独立原生对照；`--check-head-replacement` 只在明确加载 head 后启用验证专用 worker 扩展，使用具名 RPC，不放开函数序列化。
+原生闭环先运行 `prepare_glm53_runtime.py`，再用 `validate_glm53_native.py` 指定物理卡、模型和输出目录；它依次完成基线、两种起草、重载及采样，任一阶段不通过则停止。`--block-size`、`--max-model-len` 和 `--long-prompt-repeats` 指定测试档位；`--history-read-mode auto|snapshot|paged` 选择自动、本层快照或强制按页读取，默认 `auto`，强制按页时会检查路径确实执行。`run_glm53_vllm.py --mode ngram` 提供不加载本项目 head/hooks 的独立原生对照；`--check-head-replacement` 只在明确加载 head 后启用验证专用 worker 扩展，使用具名 RPC，不放开函数序列化。
 
 八卡准备使用 `prepare_glm53_runtime.py --all-devices --retry-seconds 300`：等待八卡空闲，检查 CANN、原生 worker 导入、每张卡的小张量计算、单 rank HCCL 建链及 draft 算子；失败后先释放容器，再等待重试。`watch_glm53_validation.py` 在完整权重校验、八卡预检和资源检查通过后，依次运行 target-only、两种 draft、两种 head 重载和两种采样，并核对各 rank 的 head 哈希。每次监控使用独立结果目录。单卡预检不能授权八卡任务；源码或网络配置变化后必须重新预检。源码变化后还须重启验收进程。本地文件锁只协调本项目，不预留其他用户的资源。
 

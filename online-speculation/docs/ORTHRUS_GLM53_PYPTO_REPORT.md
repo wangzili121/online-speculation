@@ -102,6 +102,8 @@ def select_history(query, head_weights, pooled_keys, prefix_length,
     return torch.cat((indices, tail.expand(query.shape[0], -1)), dim=-1)
 ```
 
+这里的逐 head ReLU 与所参考 PyPTO 的 `indexer_score` 一致。固定 vLLM-Ascend 镜像另有先合并 query head 再打分的 Triton 入口，与式 (1) 不等价，不能直接替换为该调用。主模型仍保留其原生路径；两套检索的差异不作为本轮算法修改，head 交付时必须匹配 draft 公式。
+
 ### PyPTO 具体适配
 
 现有 `indexer_score` 通过 `seg_start / pool_count` 描述各行的历史，`indexer_expand` 接收 `tail_start / tail_count / kv_len`。对同一 draft 请求，这些边界按同一个 $a$ 填写即可；不需要为“多行 query”另写一套 score 或 Top-K。
@@ -151,6 +153,9 @@ $$
 下面给出实际调用的完整计算主体，省略的只有输入合法性检查。`indices=[K,S]` 为上一节的结果，`query=[K,H,256]`，历史和临时块分别为 `[a,512]`、`[K,512]`。历史按索引 gather；没有展开整段历史的每头 K/V。
 
 ```python
+from blockspec.vllm_ascend.glm53_history import PagedLatent
+
+
 def segment(query, latent, scale):
     # 每行 query 视作独立 batch，读取自己的 selected latent。
     # query=[K,H,512]，latent=[K,S,512]。
@@ -183,7 +188,9 @@ def block_segment(query, block, scale):
 
 
 def gather_history(history, indices):
-    # history 已是请求自己的快照；大索引集展平成一次行收集。
+    # 同步引擎可借用分页历史；独立 demo 也可传入自有快照。
+    if isinstance(history, PagedLatent):
+        return history.gather(indices)
     if history.is_contiguous() and indices.numel() >= 2048:
         return history.index_select(0, indices.flatten()).view(*indices.shape, history.shape[-1])
     return history[indices]
@@ -210,7 +217,21 @@ def joint_mla(query, history, block, indices, ar_key, ar_value,
 
 这里用 FIA 返回局部输出和 LSE，再用 `npu_attention_update` 完成式 (4)。历史的选择因 query 而异，仍按行读取；临时块则全部行共享，只保存一份 KV。代码对应 `glm53_ops.py::sparse_draft_attention`；完整实现还提供纯 Torch 参考路径，供数值比较。
 
-`gather_history` 不改变索引的内容或顺序，只调整大索引集的读取方式。连续快照可直接按展平索引收集行，再恢复 `[K,S,512]`；小索引集和非连续输入保留普通索引。它不直接对目标模型的非连续 cache arena 做 `index_select`，避免触发整块 arena 的物化。
+`gather_history` 不改变索引的内容或顺序。自有连续快照的大索引集用展平 `index_select`，小索引集保留普通索引；引擎还可传入 `glm53_history.py` 的 `PagedLatent`，在本层选池之后直接收集目标 cache 中命中的行，不先复制全部 latent。
+
+分页读取的关键步骤如下。`starts` 是有效逻辑页对应的物理起始行，页表已按 anchor 边界固定；`rows` 是包含行末 padding 的连续物理视图，不是把裁窄的非连续 arena 做 `reshape`。
+
+```python
+pages = torch.div(indices, block_size, rounding_mode="floor")
+physical = starts.index_select(0, pages.flatten()).view_as(indices)
+physical = physical + indices.remainder(block_size)
+# 最后一个有效页也可能含尚未提交的行，不能把这些行作为历史读取。
+physical = torch.where(indices < history_length, physical, rows.shape[0])
+selected = rows.index_select(0, physical.flatten())[:, :512].contiguous()
+selected = selected.view(*indices.shape, 512)
+```
+
+输出拥有独立存储。按页读取省去未命中 latent 的复制，但增加了索引映射；实测短历史下反而稍慢，因此自动模式只在至少 32K、且历史长度不小于总收集行数时采用它，其他形状在本层生成快照。不兼容布局保留逐页读取。两种路径都不修改目标 cache。
 
 已测的 K=2/8、8/32/64 heads 以及单独的 K=32/8-head Attention 用例中，共享块调用约 168–175 μs，重复展开路径约 220–259 μs。该 K=32 检查仅针对 MLA，不能据此宣布完整 KDA/模型支持 K=32。
 
@@ -317,19 +338,20 @@ def recurrent(q, k, v, gate, beta, initial, a_log, dt_bias):
 def block_kda(rows, tail, initial, gate, beta, conv_weight, a_log, dt_bias,
               backward_gate=None):
     heads = initial.shape[0]
-    q, k, v = [x.contiguous() for x in convolve(rows, tail, conv_weight, heads)]
+    q, k, v = convolve(rows, tail, conv_weight, heads)
     forward = recurrent(q, k, v, gate.contiguous(), beta.contiguous(),
                         initial, a_log, dt_bias)
     if backward_gate is None:
         return forward
-    rq, rk, rv = [x.contiguous() for x in
-                  convolve(rows.flip(0), torch.zeros_like(tail), conv_weight, heads)]
+    rq, rk, rv = convolve(rows.flip(0), torch.zeros_like(tail), conv_weight, heads)
     reverse = recurrent(rq, rk, rv, gate.flip(0).contiguous(), beta.flip(0).contiguous(),
                         torch.zeros_like(initial), a_log, dt_bias)
     return forward + backward_gate.tanh()[None, :, None] * reverse.flip(0)
 ```
 
 此后两种策略都执行同一 gated RMSNorm 和 O 投影。双向策略不是两路分别归一化后相加，也不是再加一个 SDPA。
+
+固定版本的 recurrent KDA 接口接受独立的 Q/K/V stride，因此卷积后的三个切片直接传入，不先复制为连续张量。输出与逐位置 FP32 状态已与复制后调用逐元素对照；其他仍要求连续布局的参数保持原调用约束。
 
 `kda_convolve` 在实测有收益的形状使用 GLM 原生融合卷积入口，核心调用如下。状态槽 0 保留为 null，槽 1 是独立的历史尾部副本；不会把目标状态传给可写参数：
 
@@ -380,7 +402,7 @@ python scripts/run_in_runtime.py benchmarks/glm53_orthrus_demo.py \
 
 PyPTO 完整接入还需要一个 draft 前向入口：加载匹配策略的 head，执行共享主干，把请求的 anchor 边界、页表和临时 KDA 状态传给上述计算，跳过 target 的 cache 写入。现有 embedding、mHC、norm、FFN/MoE、LM head 不因 Orthrus 产生新的数学需求，但仍要完成权重布局、TP/EP、量化 scale、padding 和调用编排；“可复用”不等于不需要联调。
 
-当前 vLLM 接入先把有效历史读成独立快照，再调用上述 Attention。分页读取在较长前缀、规则 stride 和足够存储边界下，将行末 padding 包含在一个连续的只读视图中，批量收集所需行后去掉 padding；短前缀或不兼容布局仍逐页复制。这个视图本身不分配 arena 副本，返回结果则有自己的存储。它减少搬运调用次数，但仍不是零拷贝。PyPTO 已有的只读分页 Attention 可直接读取选中历史，不需要照搬这套 Torch 快照策略，也不因此增加一个 Attention 算子需求。
+当前 vLLM 接入固定请求的已提交边界，复制 KDA 状态和 Indexer 池；MLA latent 则先保留目标 cache 的只读引用，执行到本层时再按上述策略收集。目标模型在同步 draft 期间不推进、不回收页；返回或异常退出时释放引用，下一次 metadata 捕获也使旧引用失效。这不是可用于异步请求或在线 replay 的跨步骤快照。PyPTO 已有的只读分页 Attention 可直接读取选中历史，不需要照搬 Torch 的中间收集策略，也不因此增加一个 Attention 算子需求。
 
 head 的加载契约应记录基模、块长、MASK token、混合策略和参数布局。量化 head 还需匹配自身 scale，不能在训练后的参数上直接沿用原模型 scale；这属于参数交付和加载，不是另一个 Attention 算子。
 
@@ -398,11 +420,15 @@ head 的加载契约应记录基模、块长、MASK token、混合策略和参�
 - **现成算子组合已做 CPU 数学和单卡 NPU 测试**：包括两套不同 KV 展开权重与显式 SDPA 等价、空历史、KPool 尾部、超过 512 个池、双向信息流、非零反向门及状态只读。新增完整 Attention 分支的测试记录见 `validation/glm53/pypto-report-demo/`。
 - **原生模型接入**：真实源权重的五层截层模型已通过相应单/双卡 eager 测试；九层四卡功能闭环通过，但 greedy 未验收；完整 45 层八卡仍未验收。截层、初始化 head 和合成 demo 都不能证明完整模型正确性或加速收益。
 
-全套 CPU 回归为 **646 项通过、57 项硬件专项跳过**。单卡读取、收集、完整 Attention 和卷积共 66 项通过，其中 31 项为 NPU 专项、35 项为通用复验。Attention 的 NPU/FP32 对照覆盖 $K=2/8$、历史长度 0/3/2055 和两种 KDA 策略；还覆盖分页与 padding、快照隔离、重复索引及分配峰值，卷积参数同时覆盖 BF16 与 FP32 存储。FP32 参考使用同一组已舍入权重和输入，完整分支的相对 RMS 容差预设为 4%；这是有限数值检查，不是端到端模型误差界。
+最新全套 CPU 回归为 **682 项通过、69 项跳过**；单卡环境中的读取、Attention、卷积及 KDA 布局专项共 **114 项通过**，其中包含通用复验，不与 CPU 总数重复相加。Attention 的 NPU/FP32 对照覆盖 $K=2/8$、历史长度 0/3/2055 和两种 KDA 策略；还覆盖分页与 padding、快照隔离、重复索引、借用历史的释放及分配峰值，卷积参数同时覆盖 BF16 与 FP32 存储。FP32 参考使用同一组已舍入权重和输入，完整分支的相对 RMS 容差预设为 4%；这是有限数值检查，不是端到端模型误差界。
 
 分页快照另做 14 组对照：MLA 的 32771 行合成历史约 89.8 → 3.00 ms；K=8、每行 2051 个索引的 latent 收集约 132 → 49–51 μs，峰值临时分配约 33.6 → 16.8 MB。它们使用现成 Torch 调用，输出逐元素相同，不改变检索和 Attention 的数学定义；局部计时不等于服务吞吐提升。记录见 `validation/glm53/history-20261103/`。
 
-更新后的推理代码通过真实源权重五层、单卡 TP1/K=8 的七阶段复验：target-only、两种 draft、两种 head 的独立进程重载及两种采样闭环。四个 draft/reload greedy 阶段各 96 个 token 与基线一致，重载 head 哈希一致，六个 draft 阶段共 330 次目标缓存审计通过。长输入按模型 tokenizer 计 2251 token，超过 512 个完整池，覆盖 Top-K 实际筛选与批量读取；32K 仅用于独立算子压力测试。源码哈希与 `ded51dd` 一致，记录在 `validation/glm53/history-20261103/native-5l/`。采样只验证功能，不代替分布统计；五层通过不等于九层四卡或完整 45 层已验收。
+选择性读取追加 16 组包含元数据与布局转换的比较：32K 历史的延迟仍约 3.9 ms，K=8、pitch=576 的峰值额外分配由 68.26 降至 34.32 MiB；短历史没有统一更快，因此保留快照路径。KDA 去掉 Q/K/V 连续化后，K=8 的 8/64 heads 调用耗时分别为 524→451 μs、495→423 μs，输出及逐位置状态逐元素相同。记录见 `validation/glm53/selective-20261103/`；这些分项收益不代替整模型性能测试。
+
+更新后的推理代码通过真实源权重五层、单卡 TP1/K=8 的七阶段复验：target-only、两种 draft、两种 head 的独立进程重载及两种采样闭环。四个 draft/reload greedy 阶段各 96 个 token 与基线一致，重载 head 哈希一致，六个 draft 阶段共 330 次目标缓存审计通过。该轮强制按页读取，路径计数确认每次 proposal 均执行新路径。长输入按模型 tokenizer 计 2251 token，超过 512 个完整池，覆盖 Top-K 实际筛选；32K 仅用于独立算子压力测试。源码哈希与 `5734050` 一致，记录在 `validation/glm53/selective-20261103/native-paged/`。采样只验证功能，不代替分布统计；五层通过不等于九层四卡或完整 45 层已验收。
+
+两份 head 再切回默认自动读取，在独立进程重载后各 96 个 greedy token 仍与基线相同，哈希不变，114 次快照路径审计通过；见 `native-auto-r2/`。九阶段合计 444 次缓存审计通过，证明两种读取方式不需要不同的 head，不增加整模型验收范围。
 
 建议先交付 **只读 Indexer 编排 + 联合 MLA + 因果 KDA 临时状态入口**，在已有 Torch-NPU 路径上逐模块对照。门控反向 KDA作为独立策略扩展，复用同一递推核心。完成这些后，再处理完整 PyPTO 模型入口、整块验证与回滚，最后依据性能数据决定是否融合 query 投影、倒序打包和输出门控。
 
@@ -414,4 +440,4 @@ head 的加载契约应记录基模、块长、MASK token、混合策略和参�
 - [pypto-lib 固定版本](https://github.com/hw-native-sys/pypto-lib/tree/2aef4534f8769d8ce8d49d9dde7e5aeebc472197)：`models/glm5_3_flash/{indexer,attention,kda,decode_fwd,prefill_fwd}.py` 及对应模型文档。
 - [pypto-serving 固定版本](https://github.com/hw-native-sys/pypto-serving/tree/5f548be23d7af120b20a40694601f5bb5b8b7a90)：本次公开主线的模型目录不含 GLM runner；不对其他分支或未公开代码作结论。
 
-本项目对应源码：`src/blockspec/vllm_ascend/{glm53_ops,glm53_native,glm53_proposer}.py`；独立 demo：`benchmarks/glm53_orthrus_demo.py`；检查逻辑独立保存在 `tests/test_glm53_orthrus_demo.py`，不混入对外展示的计算分支。
+本项目对应源码：`src/blockspec/vllm_ascend/{glm53_history,glm53_ops,glm53_native,glm53_proposer}.py`；独立 demo：`benchmarks/glm53_orthrus_demo.py`；检查逻辑独立保存在 `tests/`，不混入对外展示的计算分支。搬运成本、读取策略和进一步优化边界见 [推理优化分析](GLM53_INFERENCE_OPTIMIZATION.md)。

@@ -12,4 +12,4 @@
 
 历史中保留公共代码和其他模型；后续 GLM 改动仅在此分支迭代。
 
-现成算子的选择、局部比较与测试范围见 [推理算子复核](online-speculation/docs/GLM53_INFERENCE_OPS_AUDIT.md)。
+现成算子的选择与测试范围见 [推理算子复核](online-speculation/docs/GLM53_INFERENCE_OPS_AUDIT.md)；搬运、内存和同步开销的分析见 [优化分析](online-speculation/docs/GLM53_INFERENCE_OPTIMIZATION.md)。
