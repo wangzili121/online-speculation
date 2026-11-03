@@ -2,13 +2,15 @@
 
 ## 1. 背景与适配目标
 
-Orthrus 在原模型中增加独立的 draft Attention 参数，一次提出多个候选 token，再由原模型验证。将这套方法用于 GLM5.3-Flash，既要处理稀疏 MLA 的历史检索，也要处理 KDA 的递推状态，不能直接照搬普通 Transformer 的双向 SDPA。
+Orthrus 的做法是先让 draft 分支一次预测多个 token，再交给主模型验证。draft 复用主模型的大部分权重，只在负责处理 token 之间关系的模块上使用独立参数。这样接入 GLM5.3-Flash 时，首先要弄清楚：模型的哪些层要读取历史，哪些层要接着历史状态继续计算。
 
-本文面向 GLM5.3-Flash 的文本推理，依次说明模型结构、各计算模块的公式、PyPTO 现有基础、所需适配和可运行的 Torch-NPU 实现。范围不包含训练、在线更新或多模态；Torch-NPU 验证也不等于 PyPTO 已实现 Orthrus。
+GLM5.3-Flash 同时使用稀疏 MLA 和 KDA，两类层保存历史的方式不同，所需修改也不同。下面先从这一区别讲起，再分别说明 PyPTO 已有什么、还要补什么，以及现有 Torch-NPU 代码怎样完成这些计算。本文只讨论文本推理，训练、在线更新和多模态不在范围内。
 
 ### 1.1 草稿分支与主模型的关系
 
-GLM5.3-Flash 共 45 层，排列为 `(KDA x 3 -> 稀疏 MLA) x 11 -> KDA`，即 34 层 KDA、11 层 MLA。MLA 位于从 0 开始计数的第 3、7、…、43 层。这里没有 DSV4 的 SWA、C4、C128 三类层。
+GLM5.3-Flash 共 45 层：每三个 KDA 层后接一个稀疏 MLA 层，这样重复 11 次，最后再接一个 KDA 层。因此共有 34 层 KDA、11 层 MLA；MLA 位于从 0 开始计数的第 3、7、…、43 层。
+
+MLA 保留可以逐条读取的历史表示，计算时先检索，再做 Attention。KDA 则把历史信息保存在卷积尾部和递推矩阵中，计算新位置时继续更新这个状态。因此，这里的适配应围绕 MLA 和 KDA 展开，而不是沿用 DSV4 的 SWA、C4、C128 分类。
 
 ```text
 共享 Embedding
@@ -25,33 +27,35 @@ GLM5.3-Flash 共 45 层，排列为 `(KDA x 3 -> 稀疏 MLA) x 11 -> KDA`，即 
 共享 Final Norm / LM head -> 候选 -> 原模型验证
 ```
 
-每轮输入为 `anchor + (K-1) 个 MASK`。anchor 是位置 $a$ 上已知的最后一个 token，MASK 是未知位置的占位符；读取的主模型历史止于 $[0,a)$。块长 K 包含 anchor，候选数为 K-1。当前原生 KDA 接口限制本接入使用 $K\le8$，这不是 Orthrus 或 PyPTO 的数学限制，单独 MLA 的 K32 用例也不能证明完整模型已支持 K32。
+draft 每轮输入一个块：`anchor + (K-1) 个 MASK`。anchor 是位置 $a$ 上已经确定的最后一个 token，MASK 占据接下来要预测的位置。历史只读取 $[0,a)$，而 anchor 和 MASK 一起参与本轮计算。因此，块长 K 包含 anchor，实际提出 K-1 个候选。当前原生 KDA 接口将整条推理路径限制在 $K\le8$；这是本实现的接口限制，不是 Orthrus 或 PyPTO 的数学限制。
 
-当前保留两种明确区分的实验策略：**因果 KDA + 双向 MLA**，以及**门控双向 KDA + 双向 MLA**。前者在 AR 状态副本上向前递推；后者增加从零状态出发的反向块，在输出归一化前融合。两者需要各自匹配的 head，均不能表述为原作者已经训练并确认的 GLM head。下文先说明公共需求，再给出反向分支的增量。
+MLA 可以让块内位置互相可见，KDA 却不是 softmax Attention，没有一张 mask 可以直接把它改成双向。为此，当前实现保留两种实验策略：**因果 KDA + 双向 MLA**，以及**门控双向 KDA + 双向 MLA**。前者从主模型历史状态的副本出发向前递推；后者再增加一次从零状态出发的块内反向递推，并在输出归一化前合并两路结果。下文会先讲两种策略共用的部分，再解释反向分支。
 
-### 1.2 现有推理路径的适配边界
+这两种策略是本项目的 GLM 适配选项，尚无原作者提供并确认的训练 head。交付 head 时需要注明采用哪一种策略，推理时保持一致。
 
-本文固定参考 `pypto-lib@2aef4534f8769d8ce8d49d9dde7e5aeebc472197` 和 `pypto-serving@5f548be23d7af120b20a40694601f5bb5b8b7a90`。下文库内文件名均相对于 `models/glm5_3_flash/`。该库已有 KDA、KPool、稀疏 MLA、mHC、MoE、量化投影和整网前向编排，不是从零开发 GLM。
+### 1.2 PyPTO 已有基础与本次改动范围
 
-但库内文档提到的 `pypto_serving.model.glm53.npu_runner.Glm53ModelRunner`，在所核对的 Serving 公开主线版本中没有对应模块。因此需要区分“已有模型计算代码”和“已有可直接部署的服务”，不对其他分支或未公开代码作推断。
+PyPTO 库已经有 GLM5.3-Flash 的模型计算代码，包括 KDA、KPool、稀疏 MLA、mHC、MoE、量化投影和整网前向。本文以 `pypto-lib@2aef4534f8769d8ce8d49d9dde7e5aeebc472197` 为准，下文库内文件均位于 `models/glm5_3_flash/`。
 
-**Attention 侧按三个计算入口组织需求：KPool 检索、历史与临时块联合 MLA、KDA 块执行。** 这不等于三个全新 kernel：检索和因果 KDA 主要复用现有核心，MLA 需要扩展联合归一化与两套 KV 展开。双向临时块属于 MLA 内部计算，不必再独立列作第四个算子。
+在这些代码上支持 Orthrus，需要接好三个计算入口：先由 KPool 检索历史，再由 MLA 把选中历史和当前双向块一起计算；KDA 层则从历史初态继续处理整个块。**主要的计算扩展在联合 MLA，KPool 检索和因果 KDA 的核心算法可以复用。** 三个入口只是需求的划分，最后可以由多个 kernel 组合，也可以进一步融合。
+
+模型计算之外还需要服务接入。本文核对的 `pypto-serving@5f548be23d7af120b20a40694601f5bb5b8b7a90` 公开主线，没有库内文档提到的 `pypto_serving.model.glm53.npu_runner.Glm53ModelRunner`。因此，已有模型代码还不足以说明该版本已经能直接启动 GLM 服务；第 3 节会另行说明引擎需要配合的部分。
 
 ## 2. Attention 模块设计
 
 ### 2.1 KPool：用 draft query 检索主模型历史
 
-#### 2.1.1 原有检索与 draft 历史边界
+#### 2.1.1 检索过程与历史范围
 
-KPool 不直接计算最终 Attention，而是先选择值得读取的历史 token。模型每四个历史位置生成一个池 key；这是主模型已有的压缩结果，不是简单均值，也不需要 draft 重新压缩历史。
+MLA 不必读取所有历史 token，而是先用 KPool 找出一批相关位置。主模型每四个历史位置生成一个池 key，检索时先给池打分，再把选中的池展开为 token 索引。这些 key 是主模型已经计算好的压缩结果，draft 直接读取，不重新压缩历史。
 
-先定义原有打分。设 AR 位置 $p$ 的可见长度为 $b_p$，完整池数为 $P_p=\lfloor b_p/4\rfloor$。$u_{ph}^{AR}$ 为 indexer 第 h 个 head 的 query，$\omega_{ph}^{AR}$ 为包含缩放的 head 权重，$\kappa_r^{AR}$ 为历史池 key，则：
+原模型逐步生成时，每个位置只能检索截至自身边界的历史。设 AR 位置 $p$ 的可见长度为 $b_p$，完整池数为 $P_p=\lfloor b_p/4\rfloor$。$u_{ph}^{AR}$ 是 indexer 第 h 个 head 的 query，$\omega_{ph}^{AR}$ 是包含缩放的 head 权重，$\kappa_r^{AR}$ 是历史池 key，打分为：
 
 $$
 s_{pr}^{AR}=\sum_{h=1}^{32}\omega_{ph}^{AR}\,\mathrm{ReLU}\left((u_{ph}^{AR})^\top\kappa_r^{AR}\right),\qquad 0\le r<P_p.
 $$
 
-Orthrus 用 draft 的 query 和 head 权重打分，所有行的池数固定为 anchor 之前的 $P=\lfloor a/4\rfloor$：
+draft 的不同之处在于：一个块里的 query 同时提出，读取的都应是 anchor 之前的历史。因此换用 draft 的 query 和 head 权重后，所有行都使用同一个池数 $P=\lfloor a/4\rfloor$：
 
 $$
 s_{ir}^{D}=\sum_{h=1}^{32}\omega_{ih}^{D}\,\mathrm{ReLU}\left((u_{ih}^{D})^\top\kappa_r^{AR}\right),\qquad 0\le r<P.
@@ -63,19 +67,19 @@ $$
 \mathcal R_i=\mathrm{TopK}_{m}(s_i^{D}),\qquad \mathcal H_i=\bigcup_{r\in\mathcal R_i}\{4r,4r+1,4r+2,4r+3\}\cup\{4P,\ldots,a-1\}.
 $$
 
-最后一项是不足一池的尾部；无尾部时为空。每行最多读取 2048 个池展开位置和 3 个尾部位置。各行可以选出不同的池，但都不能超过同一个历史边界；当前临时块随后全部参与 MLA，不经过历史 Top-K。
+最后一项补上不足四个 token 的历史尾部；没有尾部时该集合为空。这样每行最多选出 2048 个池展开位置和 3 个尾部位置。虽然不同 query 可以选中不同的池，但它们的历史边界相同。当前块不参加这次历史检索，而是在下一步 MLA 中全部可见。
 
-#### 2.1.2 PyPTO 实现基础与适配方案
+#### 2.1.2 PyPTO 已有实现与所需修改
 
-`indexer.py` 的 `indexer_score / indexer_topk / indexer_expand` 已支持多行 query、逐行池数和历史尾部，读池与写池分离。`indexer_score` 用 `seg_start / pool_count` 描述历史，`indexer_expand` 接受 `tail_start / tail_count / kv_len`。同一 draft 请求将这些边界统一为 $a$ 即可，不需要重写 Top-K 算法。
+现有 `indexer.py` 已经把读池和写池分开，`indexer_score / indexer_topk / indexer_expand` 也支持多行 query。因此可以保留这三个计算步骤，只调整输入：query 来自 draft 权重，每一行的历史范围都按同一个 anchor 填写。具体对应 `seg_start / pool_count`，以及展开阶段的 `tail_start / tail_count / kv_len`。
 
-需要补的是 draft 查询编排：使用 draft 的 `w_q_b` 和 head-weight 投影，不调用 `indexer_cache_write / indexer_pool_write`。现有 `indexer_proj` 同时算 query、key 和 gate，首版可复用后丢弃不用的输出，再抽出 query-only 投影；已有 `skip_query` 恰好是跳过 query，不是所需的 query-only 开关。
+为此需要增加一个 draft 查询入口，使用 draft 的 `w_q_b` 和 head-weight 投影，随后执行上述检索，但不调用 `indexer_cache_write / indexer_pool_write`。现有 `indexer_proj` 会同时计算 query、key 和 gate，首版可以直接复用并忽略不用的输出；后续再拆出只算 query 的投影，省去多余计算。已有 `skip_query` 表示跳过 query，不能用于这个目的。
 
-实现还需处理两个接口约束。第一，现有投影要求行数按 16 对齐，短块 padding 必须排除在有效 query 之外，相关 score tile 也需按实际 K 检查。第二，PyPTO 使用 Hadamard 变换后的 INT8 池 key、FP32 scale 和 query 量化，而当前 vLLM 路径读取未打包的 BF16 池。两者不能直接交换 cache 指针，须提供布局转换或适配入口，并核对缩放只计一次、量化后的 Top-K 选择符合约定。
+算法可以沿用，输入格式还有两处需要处理。短块首先要补齐到投影要求的 16 行，但补出的行不能作为有效 query，score 的分块尺寸也要按实际 K 检查。其次，PyPTO 读取 Hadamard 变换后的 INT8 池 key 和 FP32 scale，并会量化 query；当前 vLLM 路径读取的是未打包的 BF16 池。接入时要转换格式，或提供能读取现有格式的入口，再检查缩放是否重复、量化后的 Top-K 结果是否符合约定。
 
 #### 2.1.3 Torch-NPU 实现
 
-现有 `select_history` 的主体就是上面的池打分和索引展开。输入 query 为 `[K,32,128]`，head 权重为 `[K,32]`，历史池为 `[P,128]`：
+Torch 版本按同样的顺序实现：算每个 query/head 与池 key 的分数，做 ReLU 和 head 加权，选池，最后展开索引并补上尾部。`select_history` 接收 `[K,32,128]` 的 query、`[K,32]` 的 head 权重和 `[P,128]` 的历史池：
 
 ```python
 # ORTHRUS：所有 query 共用 anchor 前的历史池，不写入新池。
@@ -88,7 +92,7 @@ tail = torch.arange(complete * pool_size, prefix_length, device=query.device)
 return torch.cat((indices, tail.expand(query.shape[0], -1)), dim=-1)
 ```
 
-这里先逐 head 做 ReLU，再加权求和，与所参考 PyPTO 的打分定义一致。固定 vLLM-Ascend 镜像另有先合并 query head 再打分的 Triton 入口，两者并不等价，不能只因它是融合算子就替换进 draft。主模型仍保持原生路径，draft head 需匹配本节公式。
+这里保留了一个会影响结果的顺序：先对每个 head 的分数做 ReLU，再加权求和，与所参考 PyPTO 定义一致。固定 vLLM-Ascend 镜像中另一个 Triton 入口会先合并 query head 再打分，计算结果并不等价，因此没有用它替换 draft 检索。主模型继续走原生路径，draft head 则按本节公式使用。
 
 <details>
 <summary>完整函数：历史池打分与索引展开</summary>
@@ -122,9 +126,9 @@ def select_history(query, head_weights, pooled_keys, prefix_length, *, topk, poo
 
 ### 2.2 MLA：历史与双向临时块共同归一化
 
-#### 2.2.1 原有计算与联合 Attention
+#### 2.2.1 为什么历史和当前块要一起计算
 
-MLA 的历史保存 512 维 latent，而不是展开后的逐 head K/V。AR 用自身投影读取历史；draft 则用自己的 query 读取选中的 AR 历史和整个临时块。由于历史与临时块来自不同参数，不能默认二者使用同一套 KV 展开权重。
+上一步给出了每行要读取的历史位置，MLA 接下来计算这些位置和当前块对输出的贡献。历史中保存的是 512 维压缩表示，以下称为 latent；它还需要通过各 head 的权重展开成 K/V。主模型生成的历史使用 AR 展开权重，本轮 draft 生成的临时块使用 draft 展开权重，两套权重可能不同。
 
 按单个 head 书写，令 $c_j^{AR},c_t^D\in\mathbb R^{512}$ 分别为历史与临时 latent，$W_K^{AR},W_K^D,W_V^{AR},W_V^D\in\mathbb R^{256\times512}$ 为相应展开权重。原有 AR 的 query 为 $q_p^{AR}\in\mathbb R^{256}$，可见集合为 $\mathcal H_p^{AR}$，计算为：
 
@@ -148,21 +152,21 @@ $$
 o_i^D=\frac{\sum_{j\in\mathcal H_i}e^{z_{ij}^{H}}W_V^{AR}c_j^{AR}+\sum_{t=0}^{K-1}e^{z_{it}^{B}}W_V^Dc_t^D}{\sum_{j\in\mathcal H_i}e^{z_{ij}^{H}}+\sum_{t=0}^{K-1}e^{z_{it}^{B}}}.
 $$
 
-临时块中所有 $t$ 都可见，历史仍止于 anchor 前。这里没有 DSV4 的 Attention sink，也没有 RoPE。吸收 K 展开后虽然 query 变为 512 维，缩放仍按原始 256 维 query 计算。
+公式的分子同时累加历史和临时块的贡献，分母也把两部分放在同一个 softmax 中。所有临时位置 $t$ 都可见，历史仍止于 anchor 前。这里没有 DSV4 的 Attention sink，也不使用 RoPE。
 
-当前实现分别调用现成 Attention 计算两段，再按同一个 softmax 分母合并。若两段返回局部输出 $o_{i,H},o_{i,B}$ 和自然对数 LSE $L_{i,H},L_{i,B}$，则：
+为调用现成算子，当前实现先分别计算历史和临时块。两段各自做过 softmax，输出已经除以不同的分母，所以不能直接相加；需要保留每段的 log-sum-exp（LSE），用它恢复两段的相对权重。将局部输出记为 $o_{i,H},o_{i,B}$，自然对数 LSE 记为 $L_{i,H},L_{i,B}$，合并为：
 
 $$
 L_i=\log\left(e^{L_{i,H}}+e^{L_{i,B}}\right),\qquad o_i^D=e^{L_{i,H}-L_i}o_{i,H}+e^{L_{i,B}-L_i}o_{i,B}.
 $$
 
-空历史取输出零、LSE 为负无穷。两段输出要先经过各自 $W_V$，进入相同的 256 维 value 空间，再合并；不能先合并 512 维 latent 输出，最后统一乘 draft 的 $W_V$。分段是现成算子的组合方式，不是算法规定必须调用两个 kernel。
+合并前，两段还要分别乘各自的 $W_V$，都展开成 256 维 value 向量。若先混合 512 维 latent，再统一乘 draft 的 $W_V$，就把历史也按 draft 权重解释了，与上式不同。空历史则取零输出、负无穷 LSE，使其对结果没有贡献。PyPTO 可以在一次计算中完成这套归一化，不必沿用两次算子调用。
 
-#### 2.2.2 PyPTO 实现基础与适配方案
+#### 2.2.2 PyPTO 已有实现与所需修改
 
-`attention.py::decode_sparse_attn` 已能根据逐 query 索引读取分页 latent，支持多行 query，且自身只读 cache。写入由独立的 `mla_cache_write` 完成；它不是一个必须先删除内部因果 mask 才能使用的核心。
+现有 `attention.py::decode_sparse_attn` 已经能处理多行 query，并根据每行索引读取分页 latent。这个核心只读 cache，写入在独立的 `mla_cache_write` 中完成，因此分页读取本身可以保留；历史边界继续由传入索引限制。
 
-缺口在于当前入口只接一类 latent，只返回归一化后的 latent 输出。Orthrus 需要增加临时块分支、分别使用两套 KV 展开，并保留联合归一化所需的统计。建议的逻辑接口如下，名称不限定最终实现：
+还缺的是当前块及两套展开权重。原入口只接一类 latent，并直接返回归一化后的 latent 输出，已经丢掉了后续合并需要的 softmax 统计。因此要么扩展它，让历史和临时块在内部一起计算；要么让它返回统计，再与块内结果合并。下面给出需要传入的数据，函数名仅作示意：
 
 ```text
 draft_sparse_mla(
@@ -172,7 +176,7 @@ draft_sparse_mla(
 ) -> attention[K,H,256]
 ```
 
-现有分块 softmax 内部已经维护最大分数 $m_r$、移位指数和 $\ell_r$ 和未归一化 latent 和 $u_r$。下标 $H,B$ 表示历史与临时块。保留这些量即可完成：
+现有分块 softmax 其实已经计算了这些统计，只是没有向外返回：$m_r$ 是本段最大分数，$\ell_r$ 是减去最大值后的指数和，$u_r$ 是按这些指数加权累加的 latent 向量。将历史和临时块分别记为 $H,B$，就可以继续计算：
 
 $$
 m=\max(m_H,m_B),\qquad \alpha_H=e^{m_H-m},\qquad \alpha_B=e^{m_B-m}.
@@ -182,13 +186,13 @@ $$
 \ell=\alpha_H\ell_H+\alpha_B\ell_B,\qquad u=\alpha_H W_V^{AR}u_H+\alpha_B W_V^Du_B,\qquad o=u/\ell.
 $$
 
-$u_H,u_B$ 为 512 维，合并后的 $u$ 为 256 维。这与上面的 LSE 公式等价，可在同一计算图中完成，也可扩展原入口返回统计后再合并，不必为此强制新增独立的 LSE kernel。空段的权重置零，避免对负无穷做未定义运算。
+$u_H,u_B$ 仍是 512 维 latent 累加值，分别乘 $W_V$ 后，才得到 256 维的合并分子 $u$。这与 LSE 合并公式计算的是同一个结果，因此可以复用已有分块归约，不必另写一个独立的 LSE kernel。实现中将空段权重置零，避免负无穷之间相减。
 
-输出编排也要调整：现有 `mla_epilog_decode` 将 AR 的 value 展开吸收进 `w_o_absorbed`，不能用这一套吸收权重统一处理两段。得到共同 value 输出后，可复用 `mla_epilog_prefill / mla_epilog_w8a8`，使用 draft 的实际 O 投影。
+完成 Attention 后还要接 O 投影。原有 `mla_epilog_decode` 为 AR 路径预先合并了 value 展开和输出投影，保存在 `w_o_absorbed` 中；两段使用不同 $W_V$ 时，这一套权重不再适用。按上式先得到 256 维 value 输出后，可以接回 `mla_epilog_prefill / mla_epilog_w8a8`，使用 draft 的实际 O 投影。
 
 #### 2.2.3 Torch-NPU 实现
 
-当前计算不展开整段历史的逐 head K/V，而是把 K 展开吸收到 query，再调用 `npu_fused_infer_attention_score`（FIA）计算 latent Attention。历史集合因 query 而异，按行读取；临时块所有 query 共用，只传一份 K/V。
+Torch-NPU 版本利用矩阵乘法的结合律，把 K 展开权重先乘到 query 上，而不是给整段历史展开逐 head K。这样可以直接用 512 维 latent 调用 `npu_fused_infer_attention_score`（FIA）。query 虽变为 512 维，分数缩放仍按原始 256 维计算。历史因 query 而异，按行收集；临时块则由所有 query 共读，只传一份 K/V。
 
 ```python
 # selected 为每行检索到的历史 latent；block 是整个临时块。
@@ -205,7 +209,7 @@ return merge_attention_outputs(
 )
 ```
 
-变量 `q_ar` 仍来自 draft query，只是吸收了 AR 的 K 展开；它不是另一次主模型前向。FIA 返回局部输出与 LSE，合并封装在 NPU 路径调用 `npu_attention_update`；空历史另走安全分支。下面保留完整计算函数，包括 Torch 参考分支和空段处理。
+代码中的 `q_ar` 仍由 draft query 得来，名字表示它乘了 AR 的 K 展开权重，并没有再运行一次主模型。两次 FIA 返回局部输出和 LSE，再由 `npu_attention_update` 合并；空历史单独处理。完整函数如下，同时保留了纯 Torch 对照实现。
 
 <details>
 <summary>完整函数：两段 Attention、value 展开与联合归一化</summary>
@@ -322,13 +326,13 @@ def merge_attention_outputs(
 
 </details>
 
-`gather_history` 可以接独立连续快照，也可接本轮借用的 `PagedLatent`：根据逻辑索引和页表，只收集命中的历史行。当前自动策略仅在足够长的历史采用后者，短历史保留快照；这属于数据读取编排，不改变检索集合或 Attention 公式。PyPTO 已有分页读取基础，可以直接在 kernel 中访问选中页，不必照搬 Torch 的中间物化方式。
+历史数据由 `gather_history` 提供。短历史下，它从独立连续快照中选行；历史足够长时，也可以通过 `PagedLatent` 借用本轮页表，只收集命中的行。这两种方式读取的逻辑位置相同，只是搬运量和索引开销不同。PyPTO 已有分页读取能力，可以直接访问选中页，省去 Torch 中间收集出的张量。
 
 ### 2.3 KDA：带历史初值的临时块执行
 
-#### 2.3.1 原有递推与两种 draft 策略
+#### 2.3.1 从历史状态继续计算当前块
 
-KDA 的历史是宽度 4 卷积保留的三行输入，以及每个 head 的 $128\times128$ 递推矩阵，而不是逐 token KV。draft 使用自己的投影，读取 AR 状态副本，计算结束后不写回主模型。
+MLA 根据索引读取一条条历史，KDA 则只带着一份状态继续往前算。这份状态包括宽度 4 卷积保留的三行输入，以及每个 head 的 $128\times128$ 矩阵。draft 先复制 anchor 之前的这两份状态，再用自己的投影处理当前块，计算过程中只改副本。
 
 省略 head 下标，令 $q_i,k_i,v_i\in\mathbb R^{128}$ 为投影经因果逐通道卷积和 SiLU 后的向量，$\widehat q_i=\mathrm{L2Norm}(q_i)/\sqrt{128}$、$\widehat k_i=\mathrm{L2Norm}(k_i)$。$f_i,b_i$ 是衰减和更新门的原始投影，$A_{\log},d_t$ 是学习参数，则：
 
@@ -346,9 +350,9 @@ $$
 S_i=\overline S_i+\delta_i\widehat k_i^\top,\qquad y_i^{\rightarrow}=S_i\widehat q_i.
 $$
 
-AR 用主模型参数计算并保留正式状态；因果 draft 保持同一公式，但以 $S_{-1}^{D}=\mathrm{copy}(S_{a-1}^{AR})$ 和历史卷积尾部副本为初态，在工作区连续推进 K 行。
+这套递推公式在 AR 和因果 draft 中不变。区别是 AR 使用主模型参数，并把结果留作后续历史；draft 使用独立参数，以 $S_{-1}^{D}=\mathrm{copy}(S_{a-1}^{AR})$ 和历史卷积尾部副本为起点，连续处理 K 行，结果只供本轮起草使用。
 
-门控双向策略额外将**当前块的原始投影输入倒序**，用零卷积历史和零矩阵状态执行同一递推，再把输出翻回原顺序，记作 $y_i^{\leftarrow}$。令 $\rho$ 为每 head 的反向门，则：
+如果采用门控双向策略，还要让当前位置获得块内右侧的信息。做法是把**当前块的原始投影输入倒序**，从零卷积历史和零矩阵状态出发，再运行同一套递推。将这一路输出翻回原顺序，记为 $y_i^{\leftarrow}$，再用每 head 的参数 $\rho$ 控制它的贡献：
 
 $$
 \widetilde y_i=y_i^{\rightarrow}+\tanh(\rho)\odot y_i^{\leftarrow}.
@@ -360,19 +364,19 @@ $$
 o_i=W_O^D\,\mathrm{ConcatHeads}\left(\mathrm{RMSNorm}_{w^D}(\widetilde y_i)\odot\sigma(g_i)\right).
 $$
 
-$g_i$ 是输出门投影，$w^D$ 为该 norm 的权重；GLM 的输出门为 sigmoid，不是 Qwen 的 SiLU。反向只遍历当前块，不反向重算历史，融合发生在 gated norm 之前。$\rho=0$ 时退化为因果策略，验证反向是否真正生效应使用非零门。
+$g_i$ 是输出门投影，$w^D$ 是该 norm 的权重。这里先合并两路，再做 norm、sigmoid 门控和 O 投影；GLM 的输出门与 Qwen 的 SiLU 不同。反向分支只遍历当前块，不重算历史。$\rho=0$ 时它不影响输出，所以验证双向分支时需要使用非零门。
 
-#### 2.3.2 PyPTO 实现基础与适配方案
+#### 2.3.2 PyPTO 已有实现与所需修改
 
-`kda.py` 的 `kda_conv_prefill` 已接收 `query_start_loc / state_rows`，能消费带历史尾部的块；`prefill_kda` 支持非零矩阵初态、变长序列和 16 行 chunk。因此因果 draft 主要是把历史状态换成私有副本，再复用 prefill 核心和 `kda_output`，不需要新发明递推算法。
+这部分可以从现有 prefill 入口接起。`kda.py::kda_conv_prefill` 已通过 `query_start_loc / state_rows` 支持带历史尾部的块，`prefill_kda` 也支持非零矩阵初态、变长序列和 16 行分块。给它们传入历史状态的私有副本，就能沿用因果递推，再接现有 `kda_output`。
 
-不能将 K 行都指向同一 state row，再一次调用 `decode_kda`：decode 中每行是独立任务，这样会竞争同一个状态，而不是按序递推。应使用块 prefill，或者严格顺序编排单步入口，并核对状态布局、门函数、归一化 epsilon 与有效长度。
+之所以选 prefill，是因为同一个请求的 K 个位置有先后依赖。`decode_kda` 把各行当作独立任务，若让它们同时写同一个 state row，就会发生竞争，而不是连续递推。也可以逐步调用 decode，但必须保证顺序，并核对状态布局、门函数、归一化 epsilon 和有效长度。
 
-双向策略增加倒序打包、零状态初始化、第二次卷积/递推和门控融合的编排。反向输入必须在卷积前倒序，不能把正向卷积结果简单翻转代替；是否进一步融合由实测决定。K 变化涉及 tile、padding 与编译形状，不等于每换一个 K 就重写 KDA 算法。
+在此基础上，双向策略再加倒序输入、零状态、第二次卷积/递推，以及输出前的门控合并。倒序必须发生在卷积之前；先做正向卷积再翻转，得到的邻域不同。首版可用现有算子组合完成，再根据耗时考虑融合。改变 K 时主要调整分块、padding 和编译形状，递推公式不变。
 
 #### 2.3.3 Torch-NPU 实现
 
-当前递推复用与目标 GLM 相同的 `run_recurrent_kda`，先分配私有状态槽并复制初态。卷积由 `kda_convolve` 选择现成的原生因果卷积或 `conv1d + SiLU`，两者都不把 AR cache 传给可写参数。完整分支中的两种策略如下：
+现有 NPU 版本调用与主模型相同的 `run_recurrent_kda`，但为 draft 另分配状态槽，再复制历史初态。前面的卷积由 `kda_convolve` 选择原生因果卷积或 `conv1d + SiLU`，两条路径也都只改临时状态。两种策略的差别集中在下面这段：
 
 ```python
 # run 内部执行当前块卷积和 KDA；state/tail 均只作历史输入。
@@ -387,7 +391,7 @@ out_gate = self.g_b(g_a).reshape(-1, 8, 128).sigmoid()
 return self.kda_o((self.kda_norm(output) * out_gate).flatten(1))
 ```
 
-这里的 8 heads 是 demo 对应的 TP8 单分片规格，不是 KDA 的通用常量。当前原生接口可直接接收卷积结果的 Q/K/V 切片，不必全部复制为连续张量；其他参数仍遵守接口要求。卷积自动选择也以已测形状为依据：小 head 数时组合调用可能更快，不把“融合”直接等同于性能更好。
+代码中的 8 heads 对应 demo 的 TP8 单分片。卷积输出的 Q/K/V 切片可以直接交给当前原生递推接口，省去连续化复制；其他参数仍按接口要求处理。卷积则按已测形状选择实现，因为 head 数较少时，分配和调用开销可能使融合版本更慢。
 
 <details>
 <summary>完整函数：卷积、Torch 递推参考与原生 KDA 调用</summary>
@@ -475,13 +479,13 @@ def kda_native(query, key, value, raw_gate, raw_beta, initial, a_log, dt_bias,
 | 联合 MLA | 多 query 分页 latent 读取、稀疏 Attention、分块 softmax 统计。 | 加入整个临时块及两套 KV 展开；保留统计或在内部联合归一化；共同 value 输出后使用 draft O 投影。是主要计算扩展。 |
 | Draft KDA | 带非零初态的块卷积、KDA prefill 和输出处理。 | 在私有状态上执行 K 行；可选策略再编排零状态反向块和门控融合。因果递推核心不重写。 |
 
-表格划分的是三个计算入口，最终可以拆分或融合成不同数量的 kernel。共享 mHC、norm、MLP/MoE 等不产生新的 Attention 数学，但仍需模型执行和权重映射，不能将“可复用”理解为整网无需适配。
+上述三个入口接通后，解决的是每类层内部怎样处理历史和当前块。下一步还要把它们放回 45 层模型中，接好共享权重、层间数据传递和主模型验证。这些工作不需要新的 Attention 公式，但决定了整条推理能否运行。
 
 ## 3. 模型执行与推理引擎接入
 
 ### 3.1 从计算模块到一轮投机
 
-完整 draft 要依次通过 45 层，使用各层独立的 draft 参数，并复用主模型 embedding、外层 norm、mHC、MLP/MoE 和 LM head。共享的是权重，不是本轮激活，这些模块仍须对 anchor/MASK 输入重新计算，但不应复制第二套 backbone。
+起草时，anchor/MASK 块先经过共享 Embedding，再依次通过 45 层。每层用本层 draft 参数执行 MLA 或 KDA，其他部分继续使用主模型的 norm、mHC 和 MLP/MoE，最后由共享 LM head 给出候选分布。这里共享的是权重：draft 输入不同，仍需重新计算各层激活，但无需保存第二套 backbone 参数。
 
 ```text
 主模型已接受的历史
@@ -497,15 +501,17 @@ def kda_native(query, key, value, raw_gate, raw_beta, initial, a_log, dt_bias,
                            拒绝后缀：回收 KV，恢复对应 KDA 状态
 ```
 
-当前 vLLM 接入在同步 draft 期间固定历史边界，主模型不推进或回收被读取的页。MLA 历史引用在 proposal 返回、异常或下一次 metadata 捕获时失效，不能作为跨步骤、异步 replay 的快照。算子内部可以写自己的输出和临时状态，但不能改变这些 AR 历史。
+先看历史怎样交给 draft。当前 vLLM 接入采用同步起草：这段时间主模型不继续执行，也不回收正在读取的页，因此 MLA 可以暂时借用历史引用。一次 proposal 返回、异常退出或获取下一轮 metadata 后，该引用就失效；若要异步执行或留作后续 replay，需要另行保存快照。KDA 和 KPool 则按图中方式复制所需状态，避免临时计算覆盖主模型历史。
 
-接受 token 后保留的是 **target 按因果规则重新计算的状态**，draft latent、卷积尾部和递推矩阵永不转正。引擎决定接受前缀、管理页表与分配；算子按这些地址和有效长度读写。若验证器也迁入 PyPTO，还需逐位置 KDA/卷积 checkpoint 或拒绝后重放，只返回块末状态不够。现有 `prefill_kda` 和普通 MTP 编排不能自动替代该回滚接口。
+再看候选怎样成为正式输出。主模型收到候选后，仍按因果规则计算和验证；接受前缀对应的主模型状态才会保留下来，draft 的 latent、卷积尾部和递推矩阵不会转成正式历史。接受几个 token、保留哪些页由引擎决定，算子按引擎提供的地址和长度执行。
+
+如果连验证器也迁入 PyPTO，还需要恢复到任意接受位置的 KDA 状态。只返回块末矩阵不够，因为拒绝可能发生在块中间；需要逐位置 checkpoint，或者重新计算接受前缀。现有 `prefill_kda` 和普通 MTP 流程尚不包含这套整块拒绝恢复接口。
 
 ### 3.2 整体 demo 与真实模型入口
 
-独立 demo 位于 `online-speculation/benchmarks/glm53_orthrus_demo.py`。它包含实际投影和输出：MLA 从 4096 维输入生成低秩 query/latent、执行 32-head indexer、联合 Attention 和 O 投影；KDA 包含 QKV、更新门和两类 gate 投影、卷积、递推、可选反向块、gated norm 和 O 投影。二者直接调用上文核心函数，而非另一套示意计算。
+为了单独运行这些计算，仓库提供了 `online-speculation/benchmarks/glm53_orthrus_demo.py`。它把上面的核心函数接上输入和输出投影：MLA 从 4096 维输入生成 query/latent，经过 32-head indexer 和联合 Attention，再投影回 4096 维；KDA 则依次执行投影、卷积、递推、可选反向块、gated norm 和 O 投影。
 
-demo 对应 TP8 单分片：MLA/KDA 各 8 个 head，indexer 保持 32 个 head，latent 为 512 维，query rank 为 1536。权重和历史是合成数据，两条分支分别返回结果，不是作为同一层相加；它不包含整网 mHC/MoE、分词或采样。
+demo 使用 TP8 单分片的尺寸：MLA/KDA 各 8 个 head，indexer 保留 32 个 head，latent 为 512 维，query rank 为 1536。它用合成权重和历史分别演示两类层，不把两类层的输出相加，也不执行整网 mHC/MoE、分词或采样。因此可以先用它对照计算，再进入真实模型测试。
 
 ```bash
 cd online-speculation
@@ -667,21 +673,21 @@ if __name__ == "__main__":
 
 </details>
 
-真实模型推理由 `glm53_native.py / glm53_proposer.py` 接入原生 vLLM-Ascend。`scripts/run_glm53_vllm.py` 是有界验证程序，不是长驻 OpenAI 服务；其主模型及 verifier 使用 GLM 固定的 0.30 环境，不能沿用 DSV4 的 0.26 镜像预检结论。
+真实模型由 `glm53_native.py / glm53_proposer.py` 接入原生 vLLM-Ascend，运行入口是 `scripts/run_glm53_vllm.py`。这个脚本加载模型、执行指定验证用例后退出，不是长驻 OpenAI 服务。它使用固定的 GLM 0.30 环境，卷积和 KDA API 与 DSV4 的 0.26 环境不同，需要分别检查兼容性。
 
-将完整 draft 交给 PyPTO 时，除上面的三个入口外，还要加载共享权重与 draft head，接齐 mHC、残差、MLP/MoE、TP/EP 通信和输出。若仅替换计算模块，则可暂时保留现有 Torch 执行器。两种方式都需约定张量布局、stream 同步、页表和工作区生命周期。
+PyPTO 接入可以分两步进行。先替换这三个计算入口，其余共享层和通信继续由现有 Torch 执行器负责；之后再把整段 draft 迁入 PyPTO，接齐共享权重、mHC、残差、MLP/MoE、TP/EP 通信和输出。无论停在哪一步，调用双方都要约定好张量布局、stream 同步、页表，以及临时工作区何时可以释放。
 
-head 契约需记录基模、K、MASK token、KDA 策略和参数布局；量化 head 使用自己的 scale，不能在参数更新后直接套用主模型 scale。这属于参数交付与加载，不是新增 Attention 算子。
+加载 head 时，还要核对基模、K、MASK token、KDA 策略和参数布局。量化 head 的 scale 应与它自己的参数匹配，不能直接套用主模型 scale。这些检查放在参数加载阶段完成，不需要另开发 Attention 算子。
 
 ### 3.3 已验证范围与后续验收
 
-现成算子组合已做 CPU 数学与单卡 NPU 对照，覆盖不同 AR/draft KV 展开、空历史、超过 512 个池及尾部、分页与 padding、非零 KDA 初态、非零反向门和目标状态只读。单独 MLA 还覆盖 K32，但完整原生 KDA 接入仍限 K≤8。PyPTO 能力描述来自固定版本源码核对，尚未编译运行 PyPTO Orthrus kernel。
+目前先验证了计算本身，再验证真实权重的截层模型。CPU 和单卡 NPU 对照覆盖两套不同的 KV 展开权重、空历史、超过 512 个池及尾部、分页与 padding、非零 KDA 初态和反向门，并检查起草没有修改目标状态。单独 MLA 还测过 K32，但整条原生 KDA 接入仍限 K≤8。
 
-真实源权重的五层截层模型已有单/双卡 eager 验证。更新后的五层 TP1/K8 还完成 target-only、两种 draft、独立进程 head 重载及两种采样闭环；四个 draft/reload greedy 阶段各 96 个 token 与基线一致，重载哈希一致，强制分页与自动读取合计 444 次缓存审计通过。采样仅作功能验证，不代替分布检验。
+在真实源权重上，五层截层模型已有单/双卡 eager 验证。其中五层 TP1/K8 测过无投机基线、两种 draft、独立进程重载 head，以及两种策略下的采样流程。四个 draft/reload greedy 阶段各 96 个 token 与基线一致，重载前后 head 哈希一致；分页和自动读取两种方式合计通过 444 次缓存检查。采样部分只确认流程能完成，尚不代表分布检验通过。
 
-九层四卡已有功能闭环，但 greedy 未验收；完整 45 层八卡尚未验收。截层、合成 demo 和初始化 head 都不能证明完整模型正确性、业务接受率或加速收益。长历史性能记录属于局部算子测试，不等同于整网长上下文验收。
+还未完成的部分也要单独看：九层四卡已能完成起草和验证，但 greedy 未验收；完整 45 层八卡尚未验收。长历史记录是局部算子测试，尚不覆盖整网长上下文。PyPTO 部分目前只核对了固定版本源码，还没有编译运行 Orthrus kernel，以上 Torch-NPU 结果是它的对照依据，不是 PyPTO 验证结果。
 
-建议先完成只读 KPool 查询、联合 MLA 和因果 KDA 私有状态入口，与 Torch-NPU 逐模块对照；反向 KDA 作为独立策略接入。随后验证整层、整网、TP/EP 和各接受位置恢复。必须核对同一 anchor 边界、临时块全可见、两套展开权重、空历史、跨页与池尾部，以及 proposal 前后 target 状态不变，再据耗时决定进一步融合。
+因此，接下来应先让三个 PyPTO 入口与 Torch-NPU 结果对齐，再接整层和整网，最后检查 TP/EP 及各接受位置的状态恢复。对齐时重点看历史是否止于同一 anchor、块内是否全部可见、两套展开权重是否用对，以及空历史、跨页、池尾部和状态只读是否正确。反向 KDA 作为独立策略测试；计算和流程确认后，再根据耗时决定融合。初始化 head 在这里用于验证链路，业务接受率和加速收益需要训练 head 另行评估。
 
 ## 参考资料
 
