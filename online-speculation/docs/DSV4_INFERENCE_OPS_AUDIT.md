@@ -35,4 +35,4 @@ python scripts/run_in_runtime.py scripts/benchmark_dsv4_attention_paths.py --cas
 ORTHRUS_RUN_NPU_TESTS=1 PYTHONPATH=src python -m pytest -q tests/test_dsv4_layer_npu.py
 ```
 
-本轮未重跑完整 43 层 TP8，不能替代端到端验收。此前原生 C4 布局舍入问题仍独立归档。PyPTO 的接口、公式与组合代码见 [需求报告](ORTHRUS_DSV4_PYPTO_REQUIREMENTS.md)。
+本轮未重跑完整 43 层 TP8，不能替代端到端验收。此前原生 C4 布局舍入问题仍独立归档。PyPTO 的接口、公式与组合代码见 [需求报告](../../orthrus_dsv4_pypto_requirements.md)。

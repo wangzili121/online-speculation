@@ -2,7 +2,7 @@
 
 分支：`feature/orthrus-dsv4`。本分支维护 `Eco-Tech/DeepSeek-V4-Flash-0731-w8a8` 的 Orthrus 推理适配；训练和在线更新暂不推进。
 
-**算子需求报告：[Orthrus-DSV4 NPU 推理适配与算子设计](ORTHRUS_DSV4_PYPTO_REQUIREMENTS.md)**
+**算子需求报告：[Orthrus-DSV4 NPU 推理适配与算子设计](orthrus_dsv4_pypto_requirements.md)**
 
 - 模型：主模型保持原生 vLLM-Ascend 路径；draft 共享冻结 backbone，读取 SWA、C4、C128 历史，生成临时双向块。
 - 接口：提供专属 proposer、head 契约、缓存适配及部署脚本；部署方式为插件加固定版本兼容适配，并非任意版本的纯配置插件。
