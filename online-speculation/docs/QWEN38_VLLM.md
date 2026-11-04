@@ -5,7 +5,7 @@
 主模型缓存复用已接入；固定 head 和最后四层在线更新已在新缓存路径重新验证，不再通过 AR 重放生成历史。
 本轮结论与未通过项见 [验收摘要](QWEN38_ACCEPTANCE_SUMMARY.md)。
 
-PyPTO 的推理计算路径及接口需求见 [Orthrus-Qwen3.8 算子需求报告](ORTHRUS_QWEN38_PYPTO_REQUIREMENTS.md)；训练与反向另见 [训练算子审计](QWEN38_TRAINING_OPS_AUDIT.md)。
+PyPTO 的推理计算路径及接口需求见 [Orthrus-Qwen3.8 算子需求报告](../../orthrus_qwen38_pypto_requirements.md)；训练与反向另见 [训练算子审计](QWEN38_TRAINING_OPS_AUDIT.md)。
 
 该入口使用 vLLM-Ascend 加载和执行真实 Qwen3.8 主模型，插件负责 Orthrus 起草和在线续训。
 主模型验证候选、执行 rejection sampling、维护正式缓存，均走原生引擎；不是将 Torch 参考执行器包装成服务。
