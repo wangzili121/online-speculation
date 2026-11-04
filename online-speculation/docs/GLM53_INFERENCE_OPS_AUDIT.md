@@ -91,7 +91,7 @@ ORTHRUS_RUN_NPU_TESTS=1 PYTHONPATH=src python -m pytest -q tests/test_glm53_hist
 python scripts/run_in_runtime.py scripts/benchmark_glm53_history_paths.py --output /tmp/glm53-history.json
 ```
 
-完整 45 层 TP8 尚未通过全部验收。真实源权重截层、单卡算子及初始化 head 只能验证所覆盖的链路，不能代替正式 head 的效果或整模型生产验收。PyPTO 当前能力、算法及开发接口见 [需求报告](ORTHRUS_GLM53_PYPTO_REPORT.md)。
+完整 45 层 TP8 尚未通过全部验收。真实源权重截层、单卡算子及初始化 head 只能验证所覆盖的链路，不能代替正式 head 的效果或整模型生产验收。PyPTO 当前能力、算法及开发接口见 [需求报告](../../orthrus_glm53_pypto_report.md)。
 
 ## 本轮原生模型复验
 
