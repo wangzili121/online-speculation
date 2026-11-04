@@ -1,0 +1,11 @@
+Device initialization failed before the vector kernel executed.
+Observed with explicit free-device mapping; this is not a model numerical result.
+
+[ERROR] RUNTIME(199675,python):2026-11-04-16:49:50.115.964 [runtime_keeper.cc:75]199675 GetDeviceType:Call halGetDeviceInfo failed: drvRet=87, module type=0, info type=1.
+[ERROR] RUNTIME(199675,python):2026-11-04-16:49:50.150.697 [runtime.cc:1122]199675 CheckHaveDevice:Call halGetDeviceInfo failed: drvRet=87, module type=0, info type=1.
+[ERROR] RUNTIME(199675,python):2026-11-04-16:49:50.152.176 [npu_driver.cc:31]199675 NpuDriver:[drv api] drvGetPlatformInfo failed: drvRetCode=87!
+[ERROR] RUNTIME(199675,python):2026-11-04-16:49:50.152.285 [npu_driver.cc:142]199675 GetDeviceCount:[drv api] drvGetDevNum failed: drvRetCode=87!
+[ERROR] RUNTIME(199675,python):2026-11-04-16:49:50.152.295 [api_error.cc:2539]199675 SetDevice:Get device cnt failed, retCode=0x7020010
+[ERROR] RUNTIME(199675,python):2026-11-04-16:49:50.152.356 [api_c_device.cc:91]199675 rtSetDevice:ErrCode=507899, desc=[driver error:internal error], InnerCode=0x7020010
+[mono_ns=3680553488353390][T0xffffa0bca020][ERROR] bind_current_thread: [device_runner_base.cpp:1093] rtSetDevice(0) failed: 507899
+[mono_ns=3680553488371770][T0xffffa0bca020][ERROR] bind_current_thread: [device_runner_base.cpp:1094] ACL error detail: 507899 ACL_ERROR_RT_DRV_INTERNAL_ERROR - driver internal error -- typically a sticky error returned by every later call on an already-poisoned context, so it is a symptom of an earlier failure, not the cause

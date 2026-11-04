@@ -1,5 +1,7 @@
 # Orthrus-Qwen3.8 on Ascend
 
+PyPTO Serving 接入进行中：[代码与验证状态](online-speculation/docs/QWEN38_PYPTO_PORT.md)。已实现 head 转换、draft 前向和缓存事务编排，NPU 端到端待验收。下文介绍已接入的 vLLM-Ascend 路径。
+
 Qwen3.8-27B 的 Orthrus 投机推理与 draft 更新实现。draft 复用冻结的主模型 backbone，推理读取主模型历史缓存，候选由原生 vLLM-Ascend 验证。支持在线 last-N 更新和独立离线全层更新，均只更新 draft mixer，不训练主模型。
 
 Full Attention 在块内采用双向注意力，GDN 使用 `orthrus_qwen35_reference` 的因果递推策略。
