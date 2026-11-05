@@ -2,7 +2,7 @@
 
 本分支基于 OneServing 的 Qwen3.8 独立交付包接入 Orthrus。原生模型保持不变，训练仍由现有 PyTorch 路径完成，推理侧读取相同的 draft head。
 
-当前已实现 head 读取与布局转换、K32 神经 draft 的 PyPTO 前向编排、greedy 候选校正、KV 页回收和 GDN 状态恢复适配。五个 draft 入口已通过固定版本的前端编译和代码生成；**尚未通过 NPU 端到端验收，不能视为已可部署的 Orthrus PyPTO 服务。** 原有 vLLM-Ascend 路径不受影响。
+原生 Qwen3.8-27B 已通过单卡 A2 的基本推理与 HTTP 检查。Orthrus 已实现 head 读取与布局转换、K32 神经 draft 的 PyPTO 前向编排、greedy 候选校正、KV 页回收和 GDN 状态恢复适配；五个 draft 入口已通过固定版本的前端编译和代码生成。**Orthrus 神经 draft 的 NPU 端到端尚未验收。**
 
 ## 固定基线
 
@@ -84,10 +84,38 @@ python scripts/validate_qwen38_pypto_neural.py \
 
 先运行 `probe_qwen38_pypto_environment.py --device 0 --output /results/probe.json`，通过后再加载真实模型。它检查版本并实际执行向量加法，输出文件必须使用新路径。
 
+本次真实 NPU 验证采用宿主机原生用户进程，使用 Python 3.10.21、Torch 2.10.0+cpu、CANN 9.1.1 和驱动 26.1.1；PyPTO、Simpler、PTOAS、PTO-ISA 仍为上表固定版本。Python/Torch 负责权重与主机侧数据，模型计算由 PyPTO 程序在 NPU 执行。
+
+在可写的用户源码目录中，使用宿主机 CANN 重建设备运行时：
+
+```bash
+export ASCEND_HOME_PATH=/usr/local/Ascend/cann-9.1.1
+python -m simpler_setup.build_runtimes --platforms a2a3
+```
+
+依赖准备好、分配到空闲设备后，可执行下面的原生服务检查。`ASCEND_RT_VISIBLE_DEVICES` 指定物理卡，脚本中的 `--device 0` 对应可见设备的第一个逻辑编号：
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0 python scripts/smoke_qwen38_pypto_base.py \
+  --source /sources/OneServing --model /models/Qwen3.8-27B \
+  --device 0 --output-dir /results/native-smoke-1
+```
+
+脚本启动独立的原生服务，检查 completion、chat、SSE 和 metrics，随后正常关闭；保留 `server.log` 和 `result.json`。输出目录必须为新目录。它不加载 Orthrus head。
+
 ## 验证与后续
 
 已通过 273 项 CPU 用例，覆盖 K32 每个拒绝位置、输出截断、停止 token、异常恢复、跨页回收、递推状态恢复、缓冲边界与 TP 参数合并。另读取真实 27B 离线训练导出的 TP4 head，检查完整 64 层的布局转换和 dtype，保持输入只读。构建脚本已实际执行通过；五个 draft 入口通过前端编译和 PTOAS 代码生成，向量计算通过模拟器执行（误差 0）。证据见 `validation/pypto-qwen38/port-20261105/`。
 
-实机目前停在模型执行之前：服务器的 Ascend Docker Runtime 无法创建容器；显式映射空闲设备后，向量加法仍在设备枚举/初始化阶段报 `drvGetDevNum=87`、`507899`。这些记录不能证明模型或 draft 数值正确，也不能仅据错误码确定驱动与 CANN 不兼容。详细原因需要结合主机的容器运行时日志排查，该日志目录仅管理员可读。
+真实 NPU 已完成以下检查，证据见 `validation/pypto-qwen38/target-only-20261105/`：
 
-下一步先恢复可用的 NPU 容器运行环境，再验证原生模型、真实 draft 的共享历史与缓存不变性、候选验证与拒绝恢复，以及 head 重载。随后扩展 TP、采样和性能优化；训练和在线更新不在本轮迁移范围内。
+- 固定软件栈的向量加法实际在 NPU 执行，最大绝对误差为 0。
+- 完整 64 层 BF16 主模型在单张 64 GiB A2 上加载，以 TP1、一个活动请求运行。
+- completion 返回文本，chat 对 `1+1` 返回 `2`；SSE 返回 token 及 `[DONE]`。
+- 三次请求完成、请求错误数为 0；应用正常关闭，服务和 NPU worker 进程均退出，测试卡恢复无用户进程状态。
+
+此次原生服务的 HBM 峰值约 57.3 GiB，包含当前运行时配置；这是短请求检查，不是吞吐、长上下文或完整数值一致性验收。
+
+早期容器中的设备枚举错误记录保留在 `port-20261105/`。本次通过用户目录下的原生环境完成验证，没有修改 OneServing 模型源码；原容器启动失败的具体原因仍未确认。
+
+下一步验证候选校验和拒绝恢复，再验证真实 draft 的共享历史、缓存不变性、完整生成与 head 重载。随后扩展 TP、采样和性能优化；训练和在线更新不在本轮迁移范围内。
