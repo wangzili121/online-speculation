@@ -2,7 +2,7 @@
 
 本分支基于 OneServing 的 Qwen3.8 独立交付包接入 Orthrus。原生模型保持不变，训练仍由现有 PyTorch 路径完成，推理侧读取相同的 draft head。
 
-原生 Qwen3.8-27B 已通过单卡 A2 的基本推理与 HTTP 检查。Orthrus 已实现 head 读取与布局转换、K32 神经 draft 的 PyPTO 前向编排、greedy 候选校正、KV 页回收和 GDN 状态恢复适配；五个 draft 入口已通过固定版本的前端编译和代码生成。**Orthrus 神经 draft 的 NPU 端到端尚未验收。**
+原生 Qwen3.8-27B 已通过单卡 A2 的基本推理与 HTTP 检查；使用测试候选的 K32 验证与拒绝恢复也已在真实模型上通过。Orthrus 已实现 head 读取与布局转换、K32 神经 draft 的 PyPTO 前向编排、greedy 候选校正、KV 页回收和 GDN 状态恢复适配；五个 draft 入口已通过固定版本的前端编译和代码生成。**Orthrus 神经 draft 的 NPU 端到端尚未验收。**
 
 ## 固定基线
 
@@ -57,12 +57,12 @@ python scripts/audit_qwen38_pypto.py \
 
 `validate_qwen38_pypto_flow.py` 是原生目标模型事务验证入口：先运行 target-only，再使用显式 oracle/拒绝候选检查验证和恢复。**候选来自测试 fixture，不运行神经 draft，不作为接受率或加速证据。**
 
-真实神经 draft 的实验验证入口如下。默认生成 3 个 token，用于首次检查完整 64 层前向；后续增加 `--tokens 33` 检查 K32 请求续写和恢复，不以初始化 head 的接受率验收性能：
+真实神经 draft 的实验验证入口如下。`--audit-block` 单独执行一次完整 K32 起草，逐字节检查起草前后的目标 KV 和 GDN 状态，随后检查已提交历史与接受前缀重放是否一致。默认另生成 3 个 token，比较服务调度路径与 target-only 的续写；增加 `--tokens 33` 可延长请求验证，不以初始化 head 的接受率验收性能：
 
 ```bash
 python scripts/validate_qwen38_pypto_neural.py \
   --source /sources/OneServing --model /models/Qwen3.8-27B \
-  --head-dir /heads/version4 --device 0 --output /results/neural.json
+  --head-dir /heads/version4 --device 0 --audit-block --output /results/neural.json
 ```
 
 `serve_qwen38_pypto.py` 接受相同的模型、head 和设备参数，保留原生 OpenAI API、SSE、停止与取消处理；目前是待实机验收的实验入口。
@@ -116,6 +116,8 @@ ASCEND_RT_VISIBLE_DEVICES=0 python scripts/smoke_qwen38_pypto_base.py \
 
 此次原生服务的 HBM 峰值约 57.3 GiB，包含当前运行时配置；这是短请求检查，不是吞吐、长上下文或完整数值一致性验收。
 
+K32 验证与拒绝恢复已在同一真实模型上通过，证据见 `validation/pypto-qwen38/transactions-20261105/`。全接受、首位拒绝、第 17 个候选拒绝、最后一个候选拒绝四类用例均生成 33 个 token，与 target-only 逐个一致；首位拒绝用例连续执行 31 次恢复。验证跨越 16 行 tile 和 KV 页边界，结束后请求均已释放。这里的候选由测试 fixture 提供，只证明目标验证与缓存事务可工作，不证明神经 draft 前向、接受率或加速效果。
+
 早期容器中的设备枚举错误记录保留在 `port-20261105/`。本次通过用户目录下的原生环境完成验证，没有修改 OneServing 模型源码；原容器启动失败的具体原因仍未确认。
 
-下一步验证候选校验和拒绝恢复，再验证真实 draft 的共享历史、缓存不变性、完整生成与 head 重载。随后扩展 TP、采样和性能优化；训练和在线更新不在本轮迁移范围内。
+下一步验证真实 draft 的共享历史、缓存不变性、完整生成与 head 重载。随后扩展 TP、采样和性能优化；训练和在线更新不在本轮迁移范围内。
