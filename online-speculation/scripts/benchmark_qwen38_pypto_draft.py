@@ -35,6 +35,7 @@ def profile(draft):
         (draft, "_run", "run"),
         (draft, "_upload", "upload"),
         (draft.native.worker, "copy_from", "readback"),
+        (draft.native.worker, "copy_to", "host_to_device"),
     ]:
         install(obj, name, label)
     try:
@@ -48,12 +49,14 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--source", type=Path, required=True)
     p.add_argument("--model", type=Path, required=True)
-    p.add_argument("--head-dir", type=Path, required=True)
+    p.add_argument("--head-dir", type=Path)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--device", type=int, required=True)
     p.add_argument("--rounds", type=int, default=2)
     p.add_argument("--head-storage", choices=("auto", "resident", "stream"))
+    p.add_argument("--head-transfer", choices=("individual", "packed"))
     p.add_argument("--save-logits", action="store_true")
+    p.add_argument("--compare-transfer", action="store_true")
     a = p.parse_args()
     if a.output.exists() or a.rounds < 1 or a.device < 0:
         p.error("require a new output, assigned device and positive round count")
@@ -68,16 +71,28 @@ def main():
     import torch
 
     report = {"passed": False, "rounds": [], "runtime": runtime_identity(pypto)}
-    engine = None
+    engine = primary = extra = None
     request = None
     try:
         source = HeadSource(a.model, a.head_dir)
         kw = {} if a.head_storage is None else {"head_storage": a.head_storage}
+        if a.head_transfer is not None:
+            kw["head_transfer"] = a.head_transfer
         engine = make_engine(a.source, a.model, a.device, source, **kw)
         start = time.monotonic()
         engine.start()
         report["startup_seconds"] = time.monotonic() - start
         native, draft = engine.runner.native, engine.runner.draft
+        primary = draft.weights
+        strategies = {getattr(primary, "transfer", "individual"): primary}
+        if a.compare_transfer:
+            from blockspec.pypto_qwen38.weights import DraftWeights
+            if draft.storage != "stream":
+                raise ValueError("transfer comparison requires streaming head storage")
+            other = "packed" if primary.transfer == "individual" else "individual"
+            extra = DraftWeights(source, "stream", other)
+            extra.start(native.worker)
+            strategies[other] = extra
         schedule = native_module(a.source, "schedule")
         request = schedule.RequestState(
             engine.tokenizer.encode("Hello", add_special_tokens=False), 40, frozenset()
@@ -108,15 +123,18 @@ def main():
         target.restore(initial)
         before = resident_checksum(native)
         report["initial_history_sha256"] = history_checksum(native, request)
-        for n in range(a.rounds):
+        sequence = [(n, name) for n in range(a.rounds)
+                    for name in (list(strategies) if n % 2 == 0 else list(reversed(strategies)))]
+        for n, name in sequence:
+            draft.weights = strategies[name]
             with profile(draft) as stats:
                 start = time.monotonic()
                 candidate = draft.propose(request, anchor, 32)
                 elapsed = time.monotonic() - start
-            if n:
+            if "candidates" in report:
                 assert candidate == report["candidates"]
             report["candidates"] = candidate
-            row = {"round": n, "seconds": elapsed, "phases": stats}
+            row = {"round": n, "transfer": name, "seconds": elapsed, "phases": stats}
             if hasattr(draft, "last_timings"):
                 row["internal_timings"] = draft.last_timings
             logits = torch.empty((31, 248320), dtype=torch.bfloat16)
@@ -128,7 +146,9 @@ def main():
             row["logits_sha256"] = hashlib.sha256(
                 memoryview(logits.view(torch.uint8).numpy())
             ).hexdigest()
-            if n == 0 and a.save_logits:
+            if report["rounds"]:
+                assert row["logits_sha256"] == report["rounds"][0]["logits_sha256"]
+            if not report["rounds"] and a.save_logits:
                 from safetensors.torch import save_file
 
                 save_file(
@@ -163,10 +183,18 @@ def main():
         raise
     finally:
         try:
-            if request is not None:
-                engine.runner.native.release(request)
-            if engine is not None:
-                engine.stop()
+            try:
+                if extra is not None:
+                    extra.close()
+            finally:
+                try:
+                    if primary is not None:
+                        engine.runner.draft.weights = primary
+                    if request is not None:
+                        engine.runner.native.release(request)
+                finally:
+                    if engine is not None:
+                        engine.stop()
         except BaseException as e:
             report["cleanup_error"] = repr(e)
             report["passed"] = False

@@ -3,6 +3,14 @@
 from dataclasses import dataclass
 
 
+def host_greedy_tokens(logits, *, name="PyPTO draft"):
+    """CPU BF16/FP32 logits：保留非有限值检查，直接归约得到每行 token。"""
+    low, high = logits.aminmax()
+    if not bool(low.isfinite() & high.isfinite()):
+        raise FloatingPointError(f"nonfinite {name} logits")
+    return logits.max(dim=-1).indices.tolist()
+
+
 @dataclass(frozen=True)
 class Correction:
     tokens: tuple[int, ...]

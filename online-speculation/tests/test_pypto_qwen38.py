@@ -374,6 +374,83 @@ def test_auto_streaming_and_explicit_resident_memory_gate(monkeypatch):
     weights.close()
 
 
+def test_packed_stream_reuses_two_owned_buffers_and_copies_each_layer_once(monkeypatch):
+    import math
+    import sys
+    from blockspec.pypto_qwen38.weights import DraftWeights
+    monkeypatch.setitem(sys.modules, "pypto.runtime.task_interface", SimpleNamespace(
+        DataType=SimpleNamespace(BFLOAT16=torch.bfloat16, FLOAT32=torch.float32)))
+
+    class PackedWorker(WeightWorker):
+        def alloc_tensor(self, shape, dtype, init=None):
+            parent = super().alloc_tensor(shape, dtype, init)
+
+            def view(shape, dtype, *, byte_offset):
+                size = math.prod(shape) * torch.empty((), dtype=dtype).element_size()
+                value = parent.payload[byte_offset:byte_offset + size].view(dtype).reshape(shape)
+                return SimpleNamespace(payload=value)
+
+            parent.buffer = SimpleNamespace(tensor=view)
+            return parent
+
+    head = tiny_head(monkeypatch)
+    head.prepare()
+    worker = PackedWorker(1 << 30)
+    weights = DraftWeights(head, "stream", "packed")
+    weights.start(worker)
+    assert len(worker.handles) == 2
+    for _ in range(2):
+        for layer in range(64):
+            for actual, expected in zip(weights.for_layer(layer), head.banks(layer), strict=True):
+                assert actual.payload.dtype == expected.dtype
+                assert torch.equal(actual.payload, expected)
+    assert worker.uploads == 128
+    weights.close()
+    assert len(worker.freed) == 2 and not weights.packed
+
+
+def test_packed_stream_rejects_a_bank_outside_the_prepared_storage(monkeypatch):
+    import sys
+    from blockspec.pypto_qwen38.weights import DraftWeights
+    monkeypatch.setitem(sys.modules, "pypto.runtime.task_interface", SimpleNamespace(
+        DataType=SimpleNamespace(BFLOAT16=torch.bfloat16, FLOAT32=torch.float32)))
+    head = tiny_head(monkeypatch)
+    head.prepare()
+    banks = head.banks
+    monkeypatch.setattr(head, "banks", lambda layer: [v.clone() for v in banks(layer)])
+    worker = WeightWorker(1 << 30)
+    weights = DraftWeights(head, "stream", "packed")
+    with pytest.raises(ValueError, match="packed storage"):
+        weights.start(worker)
+    assert not worker.handles
+    weights.close()
+
+
+def test_host_selection_preserves_every_finite_bf16_value_and_first_tie():
+    from blockspec.pypto_qwen38.greedy import host_greedy_tokens
+    encodings = torch.arange(65536, dtype=torch.int32).to(torch.int16)
+    values = encodings.view(torch.bfloat16)
+    finite = values[values.isfinite()]
+    pairs = torch.stack((finite, finite.flip(0)), dim=-1)
+    assert host_greedy_tokens(pairs) == pairs.float().argmax(-1).tolist()
+    ties = finite[:, None].expand(-1, 3).contiguous()
+    assert host_greedy_tokens(ties) == [0] * len(finite)
+    # 逐个覆盖全部 BF16 NaN 编码和正负无穷，而非只检查一整组特殊值。
+    for encoding in encodings[~values.isfinite()]:
+        matrix = torch.arange(24, dtype=torch.bfloat16).reshape(3, 8)
+        matrix.view(torch.int16)[2, 1] = encoding
+        with pytest.raises(FloatingPointError, match="nonfinite"):
+            host_greedy_tokens(matrix)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
+def test_host_selection_rejects_nonfinite_fp32_values(bad):
+    from blockspec.pypto_qwen38.greedy import host_greedy_tokens
+    values = torch.tensor([[5., bad, -1.], [0., 0., 0.]])
+    with pytest.raises(FloatingPointError, match="nonfinite"):
+        host_greedy_tokens(values)
+
+
 @pytest.mark.parametrize("nonfinite", (False, True))
 def test_verifier_reads_active_rows_in_bulk_with_the_correct_slot(nonfinite):
     import ctypes

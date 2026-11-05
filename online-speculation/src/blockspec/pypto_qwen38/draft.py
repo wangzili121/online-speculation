@@ -5,6 +5,7 @@ import time
 import torch
 
 from .baseline import native_module
+from .greedy import host_greedy_tokens
 from .programs import make_programs
 from .target import OrthrusRunner, SnapshotPool
 from .weights import DraftWeights
@@ -32,7 +33,7 @@ def metadata(head, native_samples):
 class NeuralDraft:
     context = 512
 
-    def __init__(self, source, head, *, head_storage="auto"):
+    def __init__(self, source, head, *, head_storage="auto", head_transfer="individual"):
         self.source, self.head = source, head
         self.block_size = head.block_size
         self.programs, self.handles = {}, []
@@ -40,7 +41,7 @@ class NeuralDraft:
         self.rounds = 0
         self.last_seconds = None
         self.last_timings = {}
-        self.weights = DraftWeights(head, head_storage)
+        self.weights = DraftWeights(head, head_storage, head_transfer)
 
     def compile(self, samples, config):
         inputs = metadata(self.head, samples)
@@ -144,9 +145,7 @@ class NeuralDraft:
         worker.copy_from(logits.data_ptr(), self.logits.data_ptr, logits.numel() * logits.element_size())
         self.last_timings["readback_seconds"] = time.monotonic() - copy_start
         select_start = time.monotonic()
-        if not logits.isfinite().all():
-            raise FloatingPointError("nonfinite PyPTO draft logits")
-        tokens = logits.float().argmax(dim=-1).tolist()
+        tokens = host_greedy_tokens(logits)
         self.last_timings["select_seconds"] = time.monotonic() - select_start
         self.rounds += 1
         self.last_seconds = time.monotonic() - start
@@ -154,10 +153,10 @@ class NeuralDraft:
         return tokens
 
 
-def make_runner(source, model_root, device, head, *, head_storage="auto", **callbacks):
+def make_runner(source, model_root, device, head, *, head_storage="auto", head_transfer="individual", **callbacks):
     """Create a native runner with additional graphs; leave native source intact."""
     runtime = native_module(source, "runtime")
-    draft = NeuralDraft(source, head, head_storage=head_storage)
+    draft = NeuralDraft(source, head, head_storage=head_storage, head_transfer=head_transfer)
 
     class PreparedRunner(runtime.ModelRunner):
         def start(self):
@@ -197,7 +196,7 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", **call
     return OrthrusRunner(native, draft, native_module(source, "schedule").BatchSlot)
 
 
-def make_engine(source, model_root, device, head, *, head_storage="auto"):
+def make_engine(source, model_root, device, head, *, head_storage="auto", head_transfer="individual"):
     class Engine(native_module(source, "engine").InferenceEngine):
         def snapshot(self):
             result = super().snapshot()
@@ -207,12 +206,14 @@ def make_engine(source, model_root, device, head, *, head_storage="auto"):
                                      neural_draft_rounds=runner.draft.rounds,
                                      last_draft_seconds=runner.draft.last_seconds,
                                      head_storage=runner.draft.storage,
+                                     head_transfer=runner.draft.weights.transfer,
                                      head_preparation_seconds=head.preparation_seconds,
                                      last_draft_timings=dict(runner.draft.last_timings))
             return result
 
     engine = Engine(model_root, device, max_active=1, prefix_cache=False)
     engine.runner = make_runner(source, model_root, device, head, head_storage=head_storage,
+                                head_transfer=head_transfer,
                                 on_cache_event=engine._on_cache)
     engine.scheduler.runner = engine.runner
     return engine

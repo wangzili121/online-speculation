@@ -13,6 +13,7 @@ def main():
     parser.add_argument("--head-dir", type=Path, required=True)
     parser.add_argument("--device", type=int, required=True)
     parser.add_argument("--head-storage", choices=("auto", "resident", "stream"), default="auto")
+    parser.add_argument("--head-transfer", choices=("individual", "packed"), default="individual")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
@@ -32,7 +33,8 @@ def main():
 
     @asynccontextmanager
     async def lifespan(application):
-        engine = make_engine(args.source, args.model, args.device, head, head_storage=args.head_storage)
+        engine = make_engine(args.source, args.model, args.device, head,
+                             head_storage=args.head_storage, head_transfer=args.head_transfer)
         application.state.engine = engine
         try:
             await asyncio.to_thread(engine.start)

@@ -8,7 +8,7 @@ import shutil
 import threading
 import weakref
 
-from .greedy import verify_transaction
+from .greedy import host_greedy_tokens, verify_transaction
 
 
 @dataclass(frozen=True)
@@ -99,9 +99,7 @@ class NativeTarget:
                 offset = self.resident.slot * host.numel() * host.element_size()
                 self.runner.worker.copy_from(logits.data_ptr(), self.runner.logits.data_ptr,
                     logits.numel() * logits.element_size(), src_offset=offset)
-                if not logits.isfinite().all():
-                    raise FloatingPointError("native target returned nonfinite verifier logits")
-                output.extend(logits.float().argmax(dim=-1).tolist())
+                output.extend(host_greedy_tokens(logits, name="native target verifier"))
                 continue
             for row in range(len(tokens)):
                 logits = self.runner._logit_row(self.resident.slot, row)
