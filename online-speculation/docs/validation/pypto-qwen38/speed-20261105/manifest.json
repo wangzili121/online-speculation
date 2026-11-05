@@ -1,0 +1,90 @@
+{
+  "date": "2026-11-05",
+  "scope": "warmed TP1 real-model greedy E2E and existing-primitive overhead audit",
+  "host": "189.1.227.167",
+  "device": "Ascend 910B3, 64 GiB",
+  "physical_devices": [
+    0,
+    1
+  ],
+  "final_request_device": 0,
+  "driver": "26.1.1",
+  "cann": "9.1.1",
+  "python": "3.10.21",
+  "torch": "2.10.0+cpu",
+  "runtime": {
+    "pypto": "98752784548b777b2377a9084411c3716eb341d6",
+    "simpler": "c1f89ea431f5306f78c0e4ab9573c829756d7f1e",
+    "pto_isa": "418de18dde8fa33773dc5c384fdfe5506463b628",
+    "ptoas": "0.65",
+    "ptoas_executable_version": "0.65"
+  },
+  "baseline_commit": "9d69860",
+  "implementation_commit": "14959c352839056a2bf1485bafd672ab913a0d91",
+  "model": "Qwen3.8-27B, 64 layers BF16",
+  "head": "AR-copy initialization; no pretrained head or online updates",
+  "cpu_threads": 4,
+  "tp": 1,
+  "active_requests": 1,
+  "max_model_len": 512,
+  "block_size": 32,
+  "head_storage": "stream",
+  "head_transfer": "individual",
+  "head_bytes": 14558230528,
+  "prompt": "Count the integers from 1 to 100:",
+  "tokens": 128,
+  "ignore_eos": true,
+  "warmups_per_case": 1,
+  "repeats": 3,
+  "prefill_and_request_release_included": true,
+  "startup_and_warmup_excluded": true,
+  "real_draft_preserved_in_oracle": true,
+  "attention_programs_unchanged": true,
+  "cpu_tests": "293 passed; cpu-tests.txt",
+  "source_snapshots": {
+    "request-original.json": "pypto-speed-r1",
+    "request-packed.json": "pypto-packed-r2",
+    "transfer-comparison.json": "pypto-packed-r2",
+    "packed-component.json": "pypto-packed-r1",
+    "request-final.json": "pypto-final-r1"
+  },
+  "transfer_comparison_head": "TP4 offline four-step trained-v4 test head; merged into TP1, not converged",
+  "source_hashes": "source-sha256.json",
+  "results": {
+    "target": {
+      "median_tps": 7.805617266953904,
+      "accepted_per_round": null,
+      "candidate_acceptance": null
+    },
+    "real_head": {
+      "median_tps": 1.2434956291279389,
+      "accepted_per_round": 1.0819672131147542,
+      "candidate_acceptance": 0.039544637507489516
+    },
+    "oracle_keep_real_draft": {
+      "median_tps": 19.252547546739716,
+      "accepted_per_round": 30.75,
+      "candidate_acceptance": 1.0
+    }
+  },
+  "default_transfer_decision": "Keep individual. Packed passed exactness but E2E benefit was not stable.",
+  "limitations": [
+    "One fixed prompt on a shared host; not representative business throughput",
+    "PyPTO TP1 / 512 context differs from vLLM TP2 / 2048 context",
+    "Full-head residency for the real 27B model was not tested on this 64 GiB device",
+    "PyPTO path is greedy only; no device-side rejection sampler was added",
+    "Exact logits comparison covers transfer strategies, not PyTorch-versus-PyPTO draft parity"
+  ],
+  "orchestration_note": "The original request benchmark completed and wrote passed=true. SSH transport was lost afterwards; an attempted duplicate launch refused to overwrite its log. Its overwritten supervisor summary is not used as model-result evidence. Packed and final runs completed under fresh run identifiers.",
+  "artifact_sha256": {
+    "cpu-tests.txt": "98a3e6c50a6bb179bd013d29c2788793ac7f40da6e62af5eab20a6ee53945afa",
+    "packed-component.json": "91af7f61fcc53726ba0cad0e88eed2e3e2194e6cb54ef22d7acf3e92f982db99",
+    "release.json": "1a5d5415aa7177feee845aaa3181b15ba5997406543660cbb2ead7a98ec0d485",
+    "request-final.json": "45e4496fd5672e164793124df7171e25be1e929f0400dc66dde0ceb9610c27b6",
+    "request-original.json": "64d4451b4016af0bec4f3d60ec4ea54035ed675794371a80cbd889f6b1e3a62c",
+    "request-packed.json": "6796366b1845d74afd50e1db701d88de137724919c07891ea1d9a1bfbb39bcb0",
+    "selection-cpu.json": "f969ed32e3b954675f1be8cc12c2a5ca14edca20788ce44593a660408cc88a02",
+    "source-sha256.json": "a8fce845335381d5c6bad51777c622f5de279a93c1b7a7058eb3fa52e3db42dc",
+    "transfer-comparison.json": "1a8a00760f955fcf101dc76e9a4ea4024068b659fa86062ad85c8121222da0d7"
+  }
+}

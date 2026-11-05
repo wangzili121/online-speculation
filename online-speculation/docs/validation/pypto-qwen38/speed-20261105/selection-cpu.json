@@ -1,0 +1,46 @@
+{
+  "threads": 4,
+  "dtype": "torch.bfloat16",
+  "cases": [
+    {
+      "rows": 1,
+      "median_seconds": {
+        "matrix/float_argmax": 0.0027369929011911154,
+        "matrix/bf16_argmax": 0.002121299970895052,
+        "matrix/float_max": 0.002110839821398258,
+        "matrix/bf16_max": 0.001058849971741438,
+        "extrema/float_argmax": 0.002027504611760378,
+        "extrema/bf16_argmax": 0.0017439527437090874,
+        "extrema/float_max": 0.001852968242019415,
+        "extrema/bf16_max": 0.0006899884901940823
+      }
+    },
+    {
+      "rows": 16,
+      "median_seconds": {
+        "matrix/float_argmax": 0.022425385657697916,
+        "matrix/bf16_argmax": 0.023177529452368617,
+        "matrix/float_max": 0.023305059177801013,
+        "matrix/bf16_max": 0.018925514072179794,
+        "extrema/float_argmax": 0.014395816950127482,
+        "extrema/bf16_argmax": 0.011259757913649082,
+        "extrema/float_max": 0.0102536475751549,
+        "extrema/bf16_max": 0.00502816797234118
+      }
+    },
+    {
+      "rows": 31,
+      "median_seconds": {
+        "matrix/float_argmax": 0.059624504996463656,
+        "matrix/bf16_argmax": 0.05483604199253023,
+        "matrix/float_max": 0.07160462043248117,
+        "matrix/bf16_max": 0.05007790494710207,
+        "extrema/float_argmax": 0.036195328924804926,
+        "extrema/bf16_argmax": 0.02797999163158238,
+        "extrema/float_max": 0.02962150378152728,
+        "extrema/bf16_max": 0.017192510655149817
+      }
+    }
+  ],
+  "passed": true
+}
