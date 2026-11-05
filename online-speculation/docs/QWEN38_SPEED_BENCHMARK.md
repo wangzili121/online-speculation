@@ -18,7 +18,7 @@ K32 每轮提交 31 个候选。以每轮接受的候选数为 A，主要报告�
 
 ## 实测结果
 
-2026-11-05，在同一组 2×64 GiB Ascend A2 上运行 BF16 Qwen3.8-27B，TP2、eager、同步单请求、上下文上限 2048、KV 预算每 rank 8 GiB。固定提示为 `Count the integers from 1 to 100:`，每次输出 128 token；各组独立预热一次，再取三次测速的中位数。
+2026-11-05，在同一组 2×64 GiB Ascend A2 上运行 BF16 Qwen3.8-27B，TP2、eager、同步单请求、上下文上限 2048、KV 预算每 rank 8 GiB。固定提示为 `Count the integers from 1 to 100:`，忽略 EOS，定长输出 128 token；各组独立预热一次，再取三次测速的中位数。
 
 | 路径 | 平均接受候选 / 验证轮 | 接受候选 / 提交候选 | 端到端 tok/s | 相对 Target |
 | --- | ---: | ---: | ---: | ---: |
