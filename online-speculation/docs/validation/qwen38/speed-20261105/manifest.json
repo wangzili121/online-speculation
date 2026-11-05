@@ -1,0 +1,59 @@
+{
+  "date": "2026-11-05",
+  "scope": "warmed TP2 single-request E2E; greedy controlled acceptance, not business throughput",
+  "host": "189.1.227.167",
+  "physical_devices": [
+    2,
+    3
+  ],
+  "device": "2 x Ascend 910B3 64 GiB",
+  "image": "quay.io/ascend/vllm-ascend@sha256:0bc946247f2ae008fdf73838e597404fbbfebac4692c703eba531c05a9b5c58a",
+  "base_commit": "a17c1caae81d9317ba6a551529eeec02571824a3",
+  "head": "AR-copy initialization; no pretrained head or online updates",
+  "greedy": true,
+  "eager": true,
+  "active_requests": 1,
+  "OMP_NUM_THREADS": 4,
+  "startup_and_warmup_excluded": true,
+  "prefill_included": true,
+  "real_draft_preserved_in_oracle": true,
+  "audits_and_parameter_hashing_enabled": false,
+  "repeats": 3,
+  "source_sha256": {
+    "scripts/benchmark_qwen38_vllm.py": "02e49dbe082a82cbc5c46a27343d63c1689ef865552d25691d1108786c253d96",
+    "scripts/qwen38_validation_worker.py": "32cfcab83ba0de8f62589a749a72b4323dd12a42ef36a975f0fb62b6f4f4ec28",
+    "scripts/run_qwen38_vllm.py": "88be45eb9938e15a8898c753a939a19c4822169a5b314fdd7d6d3bb1d1b76147",
+    "src/blockspec/vllm_ascend/qwen38_proposer.py": "35cb44a8478e1ecac315d5439c2e2821b0956533768b0b5e2b2c0ed3ab1e7fb4",
+    "src/blockspec/vllm_ascend/qwen38_runtime.py": "a20d604daa8024a22554950498bc0fc766d7f935b7eee9779e57d6c93f1402cc",
+    "src/blockspec/vllm_ascend/qwen38_weights.py": "cd56e0641be01d856a7e3005dd0b6d651a88f739276e5e9a9c110006b1f2d3b5",
+    "src/blockspec/vllm_ascend/qwen38_ops.py": "a3142f7da94bb1a6f5b4444a49ecb3d8803d0678ea70bf5b78e331a2cf355cf8"
+  },
+  "target_median_tps": 4.2662634813348115,
+  "results": {
+    "real_head": {
+      "median_tps": 2.914185727224433,
+      "relative_target": 0.683076828230181,
+      "accepted_per_round": 1.0819672131147542,
+      "candidate_acceptance": 0.034902168164992066
+    },
+    "oracle_keep_real_draft": {
+      "median_tps": 34.71028419681701,
+      "relative_target": 8.135991681872634,
+      "accepted_per_round": 31.0,
+      "candidate_acceptance": 1.0
+    }
+  },
+  "process_returncode": 0,
+  "elapsed_seconds_including_setup": 702.4091899720952,
+  "superseded_attempt": "r1 used 4 GiB KV and failed Orthrus initialization (minimum reported 5.1 GiB); r2 reran both sides with 8 GiB per rank",
+  "limitations": [
+    "One fixed 128-token prompt, shared host",
+    "Oracle supplies known correct tokens after executing real draft; it is not trained head quality",
+    "Different timing/configuration from the earlier PyPTO short-request TPOT checks"
+  ],
+  "artifact_sha256": {
+    "target.json": "df2e11af6a7a8bc9ad595b6cb36718820d47ec37e00020da9001e1fe820a2788",
+    "orthrus.json": "60f04efb6757f8938f60bcdec4c2617d5212a5dbcb7011095ea1884a364e5d23",
+    "release.json": "b93af8ee1b20b550b8602c70ab650298f9bb9031c9638b13ad60a22c892b11f3"
+  }
+}

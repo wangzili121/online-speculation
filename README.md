@@ -9,6 +9,8 @@ Full Attention 在块内采用双向注意力，GDN 使用 `orthrus_qwen35_refer
 [PyPTO 推理适配与算子设计](orthrus_qwen38_pypto_requirements.md)说明模型结构、两类 mixer 的公式、现有实现基础、Torch-NPU 代码及引擎接入。
 现成算子的选择与对照见[推理算子审计](online-speculation/docs/QWEN38_INFERENCE_OPS_AUDIT.md)和[训练算子审计](online-speculation/docs/QWEN38_TRAINING_OPS_AUDIT.md)。主要配置为四卡设备驻留，双卡 CPU offload 作为少卡选项保留。
 
+[接受长度与推理开销测速](online-speculation/docs/QWEN38_SPEED_BENCHMARK.md)对比原生主模型、初始化 head 与保留真实起草计算的全接受控制组，提供独立测速入口和原始记录。
+
 ## 验证状态
 
 本轮 TP 通信与 loss 更新（`72e5da6`）已在真实 27B、TP4 上完成复验；原始记录见[训练算子审计](online-speculation/docs/QWEN38_TRAINING_OPS_AUDIT.md#整模型复验)。

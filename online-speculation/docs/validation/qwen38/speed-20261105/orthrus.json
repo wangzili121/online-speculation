@@ -1,0 +1,128 @@
+{
+  "passed": true,
+  "scope": "warmed_single_request_e2e",
+  "settings": {
+    "model": "/models/qwen38",
+    "tp": 2,
+    "prompt": "Count the integers from 1 to 100:",
+    "tokens": 128,
+    "max_model_len": 2048,
+    "kv_cache_memory_bytes": 8589934592,
+    "gdn_prefill_backend": "cann"
+  },
+  "head_dir": null,
+  "stage": "orthrus",
+  "cases": [
+    {
+      "mode": "real_head",
+      "warmup_seconds": 44.89540291111916,
+      "samples": [
+        {
+          "repeat": 0,
+          "seconds": 43.92307559680194,
+          "output_tokens": 128,
+          "tokens_per_second": 2.914185727224433,
+          "counters": {
+            "proposals": 62,
+            "verified": 61,
+            "accepted": 66,
+            "full_blocks": 61,
+            "updates": 0
+          },
+          "greedy_matches_target": true,
+          "accepted_per_verified_round": 1.0819672131147542,
+          "candidate_acceptance": 0.034902168164992066
+        },
+        {
+          "repeat": 1,
+          "seconds": 43.83179194200784,
+          "output_tokens": 128,
+          "tokens_per_second": 2.920254781491751,
+          "counters": {
+            "proposals": 62,
+            "verified": 61,
+            "accepted": 66,
+            "full_blocks": 61,
+            "updates": 0
+          },
+          "greedy_matches_target": true,
+          "accepted_per_verified_round": 1.0819672131147542,
+          "candidate_acceptance": 0.034902168164992066
+        },
+        {
+          "repeat": 2,
+          "seconds": 44.41573216114193,
+          "output_tokens": 128,
+          "tokens_per_second": 2.8818617587032276,
+          "counters": {
+            "proposals": 62,
+            "verified": 61,
+            "accepted": 66,
+            "full_blocks": 61,
+            "updates": 0
+          },
+          "greedy_matches_target": true,
+          "accepted_per_verified_round": 1.0819672131147542,
+          "candidate_acceptance": 0.034902168164992066
+        }
+      ],
+      "median_tokens_per_second": 2.914185727224433
+    },
+    {
+      "mode": "oracle_keep_real_draft",
+      "warmup_seconds": 3.584202280268073,
+      "samples": [
+        {
+          "repeat": 0,
+          "seconds": 3.6876678760163486,
+          "output_tokens": 128,
+          "tokens_per_second": 34.71028419681701,
+          "counters": {
+            "proposals": 5,
+            "verified": 4,
+            "accepted": 124,
+            "full_blocks": 4,
+            "updates": 0
+          },
+          "greedy_matches_target": true,
+          "accepted_per_verified_round": 31.0,
+          "candidate_acceptance": 1.0
+        },
+        {
+          "repeat": 1,
+          "seconds": 3.726298118941486,
+          "output_tokens": 128,
+          "tokens_per_second": 34.35044537884704,
+          "counters": {
+            "proposals": 5,
+            "verified": 4,
+            "accepted": 124,
+            "full_blocks": 4,
+            "updates": 0
+          },
+          "greedy_matches_target": true,
+          "accepted_per_verified_round": 31.0,
+          "candidate_acceptance": 1.0
+        },
+        {
+          "repeat": 2,
+          "seconds": 3.628943471238017,
+          "output_tokens": 128,
+          "tokens_per_second": 35.271974064763455,
+          "counters": {
+            "proposals": 5,
+            "verified": 4,
+            "accepted": 124,
+            "full_blocks": 4,
+            "updates": 0
+          },
+          "greedy_matches_target": true,
+          "accepted_per_verified_round": 31.0,
+          "candidate_acceptance": 1.0
+        }
+      ],
+      "median_tokens_per_second": 34.71028419681701
+    }
+  ],
+  "startup_seconds": 126.78260760195553
+}
