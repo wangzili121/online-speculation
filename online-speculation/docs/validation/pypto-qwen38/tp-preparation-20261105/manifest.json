@@ -1,0 +1,85 @@
+{
+  "date": "2026-11-05",
+  "scope": "rank-local head loading and TP layout preparation, plus real TP1 regression",
+  "implementation_commit": "eb79c9f6a9c38cc6774241dbe6867d022791b7b0",
+  "baseline_commit": "4a1dc24",
+  "host": "189.1.227.167",
+  "oneserving": "7aa40ba5238e3a83bb5f25e18817497c181e3e9b",
+  "runtime": {
+    "pypto": "98752784548b777b2377a9084411c3716eb341d6",
+    "simpler": "c1f89ea431f5306f78c0e4ab9573c829756d7f1e",
+    "pto_isa": "418de18dde8fa33773dc5c384fdfe5506463b628",
+    "ptoas": "0.65",
+    "ptoas_executable_version": "0.65"
+  },
+  "model": "Qwen3.8-27B, 64 layers BF16",
+  "trained_head": "TP4 offline four-step trained-v4 test head; not converged",
+  "cpu_tests": 331,
+  "rank_local_audits": {
+    "trained-tp2.json": {
+      "source_tp": 4,
+      "runtime_tp": 2,
+      "layers": 64,
+      "rank_parameter_bytes": [
+        7239797504,
+        7239797504
+      ]
+    },
+    "trained-tp4.json": {
+      "source_tp": 4,
+      "runtime_tp": 4,
+      "layers": 64,
+      "rank_parameter_bytes": [
+        3619913088,
+        3619913088,
+        3619913088,
+        3619913088
+      ]
+    },
+    "initialized-tp2.json": {
+      "source_tp": 1,
+      "runtime_tp": 2,
+      "layers": 64,
+      "rank_parameter_bytes": [
+        7239795200,
+        7239795200
+      ]
+    }
+  },
+  "math_checks": "CPU small-dimension grouped bidirectional Full Attention and causal GDN: summed rank outputs match unsplit reference; no actual inter-device collective",
+  "head_format": "orthrus-qwen38-native-tp-v1; unchanged",
+  "head_order": "contiguous heads, packed GDN Q/K/V split section by section",
+  "runtime_tp_equals_checkpoint_tp_not_required": true,
+  "readonly_checkpoint_access": true,
+  "tensor_parallel_service_enabled": false,
+  "attention_programs_unchanged": true,
+  "new_compute_kernels": false,
+  "tp1_regression": {
+    "physical_card": 4,
+    "npu_execution": true,
+    "runtime_tp": 1,
+    "block_size": 32,
+    "target_cache_unchanged": true,
+    "accepted_history_matches_replay": true,
+    "continuation_matches": true,
+    "service_output_matches_target": true,
+    "requests_released": true
+  },
+  "remaining": [
+    "Native full-backbone TP executor and local-width programs",
+    "Bind local shared weights/history and per-device ownership to the native executor",
+    "Use native reductions before residual addition",
+    "Synchronize proposal/acceptance decisions and transactional history across ranks",
+    "Real-model TP2/TP4 inference and resident-memory acceptance"
+  ],
+  "source_sha256_file": "source-sha256.json",
+  "artifact_sha256": {
+    "cpu-tests.txt": "4ea25637fe138b4251c9b721af4fb31c7d31a5b9b58d73a23232cbf40df061f0",
+    "initialized-tp2.json": "3bc4f2cc083c0a71119c3aea140a1262998e6a92f1c52f431207bd823aa88d26",
+    "release.json": "a68df7723597df75e3fa0a757a30a384886a26fe1c1c8adb8a878109fd961f7c",
+    "source-sha256.json": "2557f4625d0d06736043240d23864bdc7fd35c78ebcb4f717af1f5865415cbe1",
+    "tp1-regression.json": "04e55cc86baf861869d39eb0874561b05913ad93fc98a27f409b8b68576355a5",
+    "trained-tp2.json": "9dba95318bd7b73d0074df073101a77da0f8a154e73c8767932940be16adb1be",
+    "trained-tp4.json": "25694637f66eb4e82adb19065b0ecfa5ba80485903976d0a5ccd965ef1d0c7cd"
+  }
+}

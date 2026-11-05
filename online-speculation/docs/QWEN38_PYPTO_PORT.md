@@ -23,7 +23,8 @@ Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标
 代码位于 `src/blockspec/pypto_qwen38/`：
 
 - `baseline.py`：检查 OneServing 与运行时版本，在独立模块命名空间导入原生代码。
-- `head.py`：读取 `orthrus-qwen38-native-tp-v1`，检查基模哈希、K、mask、混合层策略和 tensor schema，启动时合并 TP1/2/4 head 分片并准备共享主机布局。
+- `head.py`：读取 `orthrus-qwen38-native-tp-v1`，检查基模哈希、K、mask、混合层策略和 tensor schema，按运行 rank 读取 TP1/2/4 checkpoint 的对应参数，并准备共享主机布局。当前服务运行 TP1，会合并训练分片。
+- `tp.py`：定义各 rank 的 heads 范围和 KV/GDN 状态形状，按参数布局重分片，检查目标历史的形状是否相容。
 - `weights.py`：设备内存充足时保留全部 head；否则复用 GDN、Full Attention 各一组设备缓冲，逐层上传已经准备好的参数。可选按层打包上传，通过公开的 `Buffer.tensor` 创建具有同一内存 owner 的参数视图。
 - `greedy.py`：比较整块候选；第一次拒绝时输出目标 token，全接受时输出 bonus；输出上限和停止 token 同样限制提交长度。
 - `target.py`：在原生 runner 上执行验证，批量读取有效 logits 行；需要拒绝后缀时，恢复验证前的 GDN 状态和页表长度，再仅重放接受前缀。状态快照使用预注册共享缓冲，每个存活快照独占一个槽；池满时回退到独立副本。
@@ -48,6 +49,35 @@ Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthr
 | 整块校正 | 使用 vLLM 原生 sampler，支持 greedy 与标准 rejection sampling | 批量读回 logits 后在 CPU 选择 token；接受前缀由 `greedy.correct` 的 Python 循环确定。目前仅支持 greedy，尚未实现设备端整块张量校正与随机采样 |
 
 当前实测最大增量成本仍是 head 逐层上传。128-token 请求中的 CPU 接受前缀匹配累计约 3–4 ms，远小于上传和 draft 前向；CPU 上扫描完整词表、选择 token 是另一项开销，不能将两者混为一谈。
+
+## 完整 TP 的接入准备
+
+PyPTO 本身已有多卡运行能力；当前固定 OneServing 只分片 LM head，Orthrus 服务仍使用 TP1。这里完成的是后续完整 TP 所需的 head 加载与布局准备，未启用多卡整网推理。`NeuralDraft` 会拒绝把局部 head 送入现有单卡图。
+
+| 运行 TP | 每卡 Full Attention Q / KV heads | 每卡 GDN K / V heads | 每卡共享 MLP 中间宽度 |
+| --- | --- | --- | --- |
+| 1 | 24 / 4 | 16 / 48 | 17408 |
+| 2 | 12 / 2 | 8 / 24 | 8704 |
+| 4 | 6 / 1 | 4 / 12 | 4352 |
+
+每卡仍处理完整的 K32 位置，按 heads 和通道切参数。head 加载使用与现有 vLLM checkpoint 一致的连续 heads 分片：Q/K/V 投影切输出行，O projection 切输入列；GDN 的 packed QKV 与卷积按 Q、K、V 各段分别切分，保持 K/V heads 的 1:3 分组；norm 复制并检查各训练 rank 一致。训练 TP 与运行 TP 可以不同，加载只读取当前运行 rank 所需的区间，不先拼出完整 head。GDN 门控矩阵保留原有 tile padding，局部有效 heads 之外补零。
+
+局部历史布局由 `TPLayout.history_shapes(slots=..., pages=...)` 给出：KV pool 为 `(16, 4/TP, pages, 16, 256)`，卷积状态为 `(slots, 48, 4, 10240/TP)`，递推状态为 `(slots, 48, 48/TP, 128, 128)`。`validate_history_shapes` 只检查形状；实际接入时，还须由原生适配器确认 heads 顺序、rank 归属和请求的提交边界。原生若采用不同排列，需要明确转换，不能仅凭形状匹配。
+
+后续原生完整 TP 需要对接三处：按局部 heads/通道编译 draft 图，引用本卡的 backbone 和历史；让局部 Attention/GDN 的 O projection、共享 MLP 的 down projection 沿用原生归约，并在归约之后加 residual；让各 rank 同步 anchor、候选及接受长度，按各自页表提交或恢复同一段逻辑历史。当前 `programs.py` 及部分原生内联函数仍固定 TP1 宽度，需随原生局部算子接口一起调整。共享 MLP 等 backbone 仍使用原生实现，不在 draft 中另建副本。
+
+检查一个运行 rank 的参数布局：
+
+```bash
+python scripts/audit_qwen38_pypto.py \
+  --source /sources/OneServing --model /models/Qwen3.8-27B \
+  --head-dir /heads/version4 --mode head --runtime-tp 2 --runtime-rank 0 \
+  --output /results/head-tp2-rank0.json
+```
+
+`HeadSource(..., runtime_tp=2, runtime_rank=rank)` 提供相同的 Python 接口。`head.tp` 表示 checkpoint TP，`head.layout` 表示运行布局。使用 `audit_qwen38_pypto_tp.py --source ... --model ... --head-dir ... --tp 2 --output ...` 可核对所有 rank：逐层与独立整张量读取对照，检查重组后参数完全相同；省略 `--head-dir` 检查 AR 复制初始化。以上入口不分配 NPU，不是多卡推理验收。
+
+本轮已用真实 27B 的 TP4 测试 head 检查 TP2、TP4 运行布局，以及从 AR 权重初始化的 TP2 布局，三组均覆盖 64 层，重组后的参数和 dtype 完全相同。另在一张真实 A2 上复跑 TP1：K32 起草前后目标缓存不变，拒绝后的已提交历史与重放一致，后续续写和服务调度输出均与 Target 相同。331 项 CPU 用例通过，包含跨 TP 的局部读取、复制参数校验，以及小尺寸 Full Attention/GDN 分头后合并输出的数学对照；未执行整网多卡通信。证据见 `validation/pypto-qwen38/tp-preparation-20261105/`。
 
 ## 运行入口
 
@@ -157,7 +187,7 @@ ASCEND_RT_VISIBLE_DEVICES=0 python scripts/smoke_qwen38_pypto_base.py \
 
 ## 验证与后续
 
-已通过 293 项 CPU 用例，覆盖 K32 每个拒绝位置、输出截断、停止 token、异常恢复、跨页回收、递推状态恢复、缓冲边界、TP 参数合并及原始设备错误保留；还包括打包视图的 owner/布局检查、全接受测试保留真实起草，以及全部 BF16 编码和并列最大值的输出选择检查。另读取真实 27B 离线训练导出的 TP4 head，检查完整 64 层的布局转换和 dtype，保持输入只读。构建脚本已实际执行通过；五个 draft 入口通过前端编译和 PTOAS 代码生成，向量计算通过模拟器执行（误差 0）。初次验证证据见 `validation/pypto-qwen38/port-20261105/`，缓存布局修正后的记录见 `neural-20261105/`。
+已通过 331 项 CPU 用例，覆盖 K32 每个拒绝位置、输出截断、停止 token、异常恢复、跨页回收、递推状态恢复、缓冲边界、TP 参数合并及原始设备错误保留；还包括打包视图的 owner/布局检查、全接受测试保留真实起草，以及全部 BF16 编码和并列最大值的输出选择检查。另读取真实 27B 离线训练导出的 TP4 head，检查完整 64 层的布局转换和 dtype，保持输入只读。构建脚本已实际执行通过；五个 draft 入口通过前端编译和 PTOAS 代码生成，向量计算通过模拟器执行（误差 0）。初次验证证据见 `validation/pypto-qwen38/port-20261105/`，缓存布局修正后的记录见 `neural-20261105/`。
 
 真实 NPU 已完成以下检查，证据见 `validation/pypto-qwen38/target-only-20261105/`：
 
