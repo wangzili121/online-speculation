@@ -2,11 +2,14 @@
 
 
 class DraftWeights:
-    def __init__(self, head, mode="auto", transfer="individual"):
+    def __init__(self, head, mode="auto", transfer="individual", *, worker_id=0):
         if mode not in {"auto", "resident", "stream"}:
             raise ValueError("head storage must be auto, resident or stream")
         if transfer not in {"individual", "packed"}:
             raise ValueError("head transfer must be individual or packed")
+        if type(worker_id) is not int or worker_id < 0:
+            raise ValueError("head worker_id must be a nonnegative integer")
+        self.worker_id = worker_id
         self.head, self.mode = head, mode
         self.transfer, self.packed = transfer, {}
         self.worker = None
@@ -15,7 +18,7 @@ class DraftWeights:
 
     def _allocate(self, value, *, initialize):
         handle = self.worker.alloc_tensor(
-            tuple(value.shape), value.dtype, init=value if initialize else None
+            tuple(value.shape), value.dtype, init=value if initialize else None, worker_id=self.worker_id
         )
         self.handles.append(handle)
         return handle
@@ -24,7 +27,7 @@ class DraftWeights:
         if self.worker is not None or self.head.shared_weights is None:
             raise RuntimeError("prepare the head before starting its device weights")
         self.worker = worker
-        free, _ = worker.device_memory_info()
+        free, _ = worker.device_memory_info(worker_id=self.worker_id)
         required = self.head.shared_weights.numel() + (256 << 20)
         if self.mode == "resident" and required > free:
             raise RuntimeError(
@@ -97,7 +100,7 @@ class DraftWeights:
             raise RuntimeError("head device weights are not started")
         if self.transfer == "packed":
             span, parent, views = self.packed[layer]
-            self.worker.copy_to(parent.data_ptr, span.data_ptr(), span.numel())
+            self.worker.copy_to(parent.data_ptr, span.data_ptr(), span.numel(), worker_id=self.worker_id)
             return views
         values = self.head.banks(layer)
         handles = self.buffers["full" if layer % 4 == 3 else "gdn"]
@@ -105,19 +108,17 @@ class DraftWeights:
             if tuple(value.shape) != handle.shape or value.dtype != handle.dtype:
                 raise ValueError(f"head buffer layout changed at layer {layer}")
             self.worker.copy_to(
-                handle.data_ptr, value.data_ptr(), value.numel() * value.element_size()
+                handle.data_ptr, value.data_ptr(), value.numel() * value.element_size(), worker_id=self.worker_id
             )
         return handles
 
     def close(self):
-        try:
-            if self.worker is not None:
-                for handle in reversed(self.handles):
-                    self.worker.free_tensor(handle)
-        finally:
-            self.handles.clear()
-            self.resident.clear()
-            self.buffers.clear()
-            self.packed.clear()
-            self.worker = None
-            self.storage = None
+        # 首次 free 失败时保留未释放的 owner/handle，允许同一 worker 上重试。
+        self.storage = None
+        self.resident.clear()
+        self.buffers.clear()
+        self.packed.clear()
+        while self.handles:
+            self.worker.free_tensor(self.handles[-1], worker_id=self.worker_id)
+            self.handles.pop()
+        self.worker = None

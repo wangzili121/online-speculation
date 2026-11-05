@@ -10,6 +10,7 @@ from safetensors.torch import load_file, save_file
 
 from blockspec.pypto_qwen38.head import HeadSource, merge_parameter
 from blockspec.pypto_qwen38.tp import TPLayout, reshard_parameter
+from blockspec.pypto_qwen38.tp_programs import validate_linear_tiles
 
 
 @pytest.fixture
@@ -84,6 +85,18 @@ def test_local_heads_and_history_cover_the_target_once(tp):
 def test_invalid_tp_is_rejected(size, rank):
     with pytest.raises(ValueError):
         TPLayout(size, rank)
+
+
+@pytest.mark.parametrize("tp", (1, 2, 4))
+def test_native_linear_tile_requirements_do_not_silently_drop_mlp_tail(tp):
+    validate_linear_tiles(6144 // tp, 5120)
+    validate_linear_tiles(5120, 17408 // tp)
+    if tp == 4:
+        with pytest.raises(ValueError, match="tail-aware"):
+            validate_linear_tiles(17408 // tp, 5120)
+        validate_linear_tiles(4608, 5120)  # 需要显式补齐 256 列，不是直接截掉尾部。
+    else:
+        validate_linear_tiles(17408 // tp, 5120)
 
 
 def test_replicated_norm_and_nonfinite_local_shards_are_rejected(small_weights):

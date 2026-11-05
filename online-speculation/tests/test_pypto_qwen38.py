@@ -316,11 +316,14 @@ class WeightWorker:
         self.free = free
         self.handles, self.freed = [], []
         self.uploads = 0
+        self.operations = []
 
-    def device_memory_info(self):
+    def device_memory_info(self, worker_id=0):
+        self.operations.append(("memory", worker_id))
         return self.free, self.free
 
-    def alloc_tensor(self, shape, dtype, init=None):
+    def alloc_tensor(self, shape, dtype, init=None, worker_id=0):
+        self.operations.append(("allocate", worker_id))
         payload = torch.empty(shape, dtype=dtype)
         handle = SimpleNamespace(shape=tuple(shape), dtype=dtype, data_ptr=payload.data_ptr(), payload=payload)
         self.handles.append(handle)
@@ -329,12 +332,14 @@ class WeightWorker:
             self.uploads += 1
         return handle
 
-    def copy_to(self, dst, src, size):
+    def copy_to(self, dst, src, size, worker_id=0):
+        self.operations.append(("copy", worker_id))
         import ctypes
         ctypes.memmove(dst, src, size)
         self.uploads += 1
 
-    def free_tensor(self, handle):
+    def free_tensor(self, handle, worker_id=0):
+        self.operations.append(("free", worker_id))
         self.freed.append(handle)
 
 
@@ -374,7 +379,69 @@ def test_auto_streaming_and_explicit_resident_memory_gate(monkeypatch):
     weights.close()
 
 
-def test_packed_stream_reuses_two_owned_buffers_and_copies_each_layer_once(monkeypatch):
+@pytest.mark.parametrize("mode", ("resident", "stream"))
+def test_all_head_memory_operations_use_the_assigned_worker(monkeypatch, mode):
+    from blockspec.pypto_qwen38.weights import DraftWeights
+
+    class AssignedWorker(WeightWorker):
+        def device_memory_info(self, worker_id=0):
+            assert worker_id == 1
+            return super().device_memory_info(worker_id)
+
+        def alloc_tensor(self, shape, dtype, init=None, worker_id=0):
+            assert worker_id == 1
+            return super().alloc_tensor(shape, dtype, init, worker_id)
+
+        def copy_to(self, dst, src, size, worker_id=0):
+            assert worker_id == 1
+            return super().copy_to(dst, src, size, worker_id)
+
+        def free_tensor(self, handle, worker_id=0):
+            assert worker_id == 1
+            return super().free_tensor(handle, worker_id)
+
+    head = tiny_head(monkeypatch)
+    head.prepare()
+    worker = AssignedWorker(1 << 30)
+    weights = DraftWeights(head, mode, worker_id=1)
+    weights.start(worker)
+    for layer in range(64):
+        assert all(torch.equal(handle.payload, value)
+                   for handle, value in zip(weights.for_layer(layer), head.banks(layer), strict=True))
+    weights.close()
+    assert len(worker.handles) == len(worker.freed)
+
+
+def test_head_free_failure_keeps_the_owner_and_remaining_allocations_for_retry(monkeypatch):
+    from blockspec.pypto_qwen38.weights import DraftWeights
+    head = tiny_head(monkeypatch)
+    head.prepare()
+    worker = WeightWorker(1 << 30)
+    weights = DraftWeights(head, "resident", worker_id=1)
+    weights.start(worker)
+    release = worker.free_tensor
+    calls = []
+
+    def fail_once(handle, worker_id=0):
+        calls.append(worker_id)
+        if len(calls) == 2:
+            raise RuntimeError("temporary free failure")
+        return release(handle, worker_id)
+
+    worker.free_tensor = fail_once
+    with pytest.raises(RuntimeError, match="temporary free"):
+        weights.close()
+    assert weights.worker is worker and len(weights.handles) == len(worker.handles) - 1
+    with pytest.raises(RuntimeError, match="not started"):
+        weights.for_layer(0)
+    weights.close()
+    assert calls == [1] * len(calls)
+    assert weights.worker is None and not weights.handles
+    assert len(worker.freed) == len(worker.handles)
+
+
+@pytest.mark.parametrize("worker_id", (0, 1))
+def test_packed_stream_reuses_two_owned_buffers_and_copies_each_layer_once(monkeypatch, worker_id):
     import math
     import sys
     from blockspec.pypto_qwen38.weights import DraftWeights
@@ -382,8 +449,8 @@ def test_packed_stream_reuses_two_owned_buffers_and_copies_each_layer_once(monke
         DataType=SimpleNamespace(BFLOAT16=torch.bfloat16, FLOAT32=torch.float32)))
 
     class PackedWorker(WeightWorker):
-        def alloc_tensor(self, shape, dtype, init=None):
-            parent = super().alloc_tensor(shape, dtype, init)
+        def alloc_tensor(self, shape, dtype, init=None, worker_id=0):
+            parent = super().alloc_tensor(shape, dtype, init, worker_id=worker_id)
 
             def view(shape, dtype, *, byte_offset):
                 size = math.prod(shape) * torch.empty((), dtype=dtype).element_size()
@@ -396,7 +463,7 @@ def test_packed_stream_reuses_two_owned_buffers_and_copies_each_layer_once(monke
     head = tiny_head(monkeypatch)
     head.prepare()
     worker = PackedWorker(1 << 30)
-    weights = DraftWeights(head, "stream", "packed")
+    weights = DraftWeights(head, "stream", "packed", worker_id=worker_id)
     weights.start(worker)
     assert len(worker.handles) == 2
     for _ in range(2):
@@ -407,6 +474,7 @@ def test_packed_stream_reuses_two_owned_buffers_and_copies_each_layer_once(monke
     assert worker.uploads == 128
     weights.close()
     assert len(worker.freed) == 2 and not weights.packed
+    assert all(owner == worker_id for _, owner in worker.operations)
 
 
 def test_packed_stream_rejects_a_bank_outside_the_prepared_storage(monkeypatch):
