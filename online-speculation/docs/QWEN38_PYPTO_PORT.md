@@ -2,7 +2,7 @@
 
 本分支基于 OneServing 的 Qwen3.8 独立交付包接入 Orthrus。原生模型保持不变，训练仍由现有 PyTorch 路径完成，推理侧读取相同的 draft head。
 
-原生 Qwen3.8-27B 已通过单卡 A2 的基本推理与 HTTP 检查。Orthrus 已完成真实 head 的 K32 前向、目标缓存只读、拒绝恢复和短请求 greedy 续写检查；测试覆盖完整 64 层，主模型与 draft 在同一 worker 中共享 backbone。**目前是 TP1、一个活动请求的推理联调版本，Orthrus HTTP 服务仍待实机检查。**
+Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标缓存只读、拒绝恢复、短请求 greedy 对照及 HTTP 检查。测试覆盖完整 64 层，主模型与 draft 在同一 worker 中共享 backbone。**目前是 TP1、一个活动请求的功能联调版本；逐层数值对照和性能优化仍待完成。**
 
 ## 固定基线
 
@@ -65,7 +65,15 @@ python scripts/validate_qwen38_pypto_neural.py \
   --head-dir /heads/version4 --device 0 --audit-block --output /results/neural.json
 ```
 
-`serve_qwen38_pypto.py` 接受相同的模型、head 和设备参数，保留原生 OpenAI API、SSE、停止与取消处理；HTTP 路径目前仍待实机检查。使用 `smoke_qwen38_pypto_base.py` 时添加 `--head-dir /heads/version4 --tokens 3`，即可对这一服务执行 completion、chat、SSE 和关闭检查。
+`serve_qwen38_pypto.py` 保留原生 OpenAI API、SSE、停止与取消处理：
+
+```bash
+python scripts/serve_qwen38_pypto.py \
+  --source /sources/OneServing --model /models/Qwen3.8-27B \
+  --head-dir /heads/version4 --device 0 --port 8000
+```
+
+`/metrics` 在原生指标之外返回 `orthrus` 字段，包括投机轮数、接受数、恢复次数和真实神经 draft 调用次数。使用 `smoke_qwen38_pypto_base.py` 时添加 `--head-dir /heads/version4 --tokens 3`，可检查 completion、chat、SSE、draft 调用计数及服务关闭。
 
 ## 环境复现
 
@@ -101,7 +109,9 @@ ASCEND_RT_VISIBLE_DEVICES=0 python scripts/smoke_qwen38_pypto_base.py \
   --device 0 --output-dir /results/native-smoke-1
 ```
 
-脚本启动独立的原生服务，检查 completion、chat、SSE 和 metrics，随后正常关闭；保留 `server.log` 和 `result.json`。输出目录必须为新目录。它不加载 Orthrus head。
+脚本启动独立服务，检查 completion、chat、SSE 和 metrics，随后正常关闭；保留 `server.log` 和 `result.json`。输出目录必须为新目录。上面的命令不加载 Orthrus head。
+
+模型从其他下载工具复制过来时，可能缺少 OneServing 检查的 Hugging Face 下载记录。本次在 61 上逐一核对了 18 个权重分片和推理配置的 SHA256，确认与已验证副本一致，再在独立模型视图中复制原始下载记录。共享模型目录未修改，版本校验保持开启；哈希记录见 `validation/pypto-qwen38/http-20261105/checkpoint.json`。
 
 ## 验证与后续
 
@@ -122,6 +132,10 @@ K32 验证与拒绝恢复已在同一真实模型上通过，证据见 `validati
 
 首次神经 draft 执行暴露了运行时对缓存视图连续性的要求：选中 slot/layer 后须先去掉相应长度为 1 的维度，再 reshape。GDN 和 Full Attention 读取均已按此修正。本次检查证明了前向与验证链路可运行，尚未比较 PyPTO 与 PyTorch draft 的逐层数值，也不代表长请求、并发或生产验收。测试 head 只经历少量更新，且逐层搬运参数的路径尚未优化，不据此评价接受率或加速。
 
+Orthrus HTTP 检查在 61 的单张 A2 上通过，加载的是 TP2 在线 last-4 更新导出的 version298 测试 head，部署仍为 TP1。completion 返回 `, I'm`，chat 对 `1+1` 返回 `2`，SSE 正常返回 token 和 `[DONE]`。三次请求全部完成，错误与取消数为 0；指标记录 3 次神经 draft、3 轮验证和 1 次恢复。服务正常关闭，验证进程、服务进程及 NPU worker 均已退出，证据见 `validation/pypto-qwen38/http-20261105/`。
+
+当前逐层合并、校验和搬运 head 的路径仍然很慢，实测单轮起草约 59–147 秒。设备执行日志表明，大量时间位于设备调用之间，后续需拆分测量权重准备与传输开销，并设计参数驻留路径；这份结果用于功能验证，不作为投机加速部署配置。
+
 早期容器中的设备枚举错误记录保留在 `port-20261105/`。本次通过用户目录下的原生环境完成验证，没有修改 OneServing 模型源码；原容器启动失败的具体原因仍未确认。
 
-下一步检查 Orthrus HTTP 服务，再补充逐层数值对照、更多请求边界和 head 重载。随后扩展 TP、采样和性能优化；训练和在线更新不在本轮迁移范围内。
+下一步补充逐层数值对照、更多请求边界和 head 重载，并优化 head 的准备与驻留方式。随后扩展 TP 和采样；训练和在线更新不在本轮迁移范围内。

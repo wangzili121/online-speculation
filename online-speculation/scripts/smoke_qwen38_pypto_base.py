@@ -111,6 +111,10 @@ def main():
             report["metrics"] = exchange(base, "/metrics")
             if report["metrics"]["requests"]["errors"]:
                 raise AssertionError("native service recorded a request error")
+            if args.head_dir:
+                counters = report["metrics"].get("orthrus", {})
+                if counters.get("rounds", 0) < 1 or counters.get("neural_draft_rounds", 0) < 1:
+                    raise AssertionError("HTTP requests did not execute the neural draft")
             report["passed"] = True
         except BaseException as error:
             report["error"] = repr(error)

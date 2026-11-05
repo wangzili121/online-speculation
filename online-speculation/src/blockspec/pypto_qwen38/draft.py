@@ -185,7 +185,17 @@ def make_runner(source, model_root, device, head, **callbacks):
 
 
 def make_engine(source, model_root, device, head):
-    engine = native_module(source, "engine").InferenceEngine(model_root, device, max_active=1, prefix_cache=False)
+    class Engine(native_module(source, "engine").InferenceEngine):
+        def snapshot(self):
+            result = super().snapshot()
+            runner = self.runner
+            result["orthrus"] = dict(block_size=runner.draft.block_size, rounds=runner.rounds,
+                                     accepted=runner.accepted, restores=runner.restores,
+                                     neural_draft_rounds=runner.draft.rounds,
+                                     last_draft_seconds=runner.draft.last_seconds)
+            return result
+
+    engine = Engine(model_root, device, max_active=1, prefix_cache=False)
     engine.runner = make_runner(source, model_root, device, head, on_cache_event=engine._on_cache)
     engine.scheduler.runner = engine.runner
     return engine
