@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start native OneServing and check completion, chat, SSE, and clean shutdown."""
+"""Check OneServing HTTP and shutdown, optionally loading an Orthrus head."""
 
 import argparse
 import json
@@ -26,20 +26,29 @@ def main():
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--device", type=int, required=True)
+    parser.add_argument("--head-dir", type=Path, help="enable the Orthrus runner instead of target-only")
+    parser.add_argument("--tokens", type=int, default=8)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--startup-timeout", type=float, default=900)
     args = parser.parse_args()
-    if args.device < 0 or args.output_dir.exists() or args.startup_timeout <= 0:
-        parser.error("require an assigned nonnegative device, new output directory and positive timeout")
+    if (args.device < 0 or args.output_dir.exists() or args.startup_timeout <= 0
+            or not 3 <= args.tokens <= 64):
+        parser.error("require an assigned device, new output directory, positive timeout and 3..64 tokens")
     args.output_dir.mkdir(parents=True)
     with socket.socket() as endpoint:
         endpoint.bind(("127.0.0.1", 0))
         port = endpoint.getsockname()[1]
     base = f"http://127.0.0.1:{port}"
-    command = [sys.executable, str(Path(__file__).with_name("serve_qwen38_pypto_base.py")),
+    script = "serve_qwen38_pypto.py" if args.head_dir else "serve_qwen38_pypto_base.py"
+    command = [sys.executable, str(Path(__file__).with_name(script)),
                "--source", str(args.source), "--model", str(args.model),
-               "--devices", str(args.device), "--tp", "1", "--port", str(port)]
-    report = dict(scope="native_qwen38_target_only_http", orthrus_enabled=False, passed=False)
+               "--port", str(port)]
+    if args.head_dir:
+        command += ["--device", str(args.device), "--head-dir", str(args.head_dir)]
+    else:
+        command += ["--devices", str(args.device), "--tp", "1"]
+    scope = "orthrus_qwen38_http" if args.head_dir else "native_qwen38_target_only_http"
+    report = dict(scope=scope, orthrus_enabled=bool(args.head_dir), passed=False)
     server = None
     start = time.monotonic()
     with (args.output_dir / "server.log").open("xb") as log:
@@ -58,9 +67,9 @@ def main():
                         raise TimeoutError("native server did not become ready")
                     time.sleep(.5)
             report["startup_seconds"] = time.monotonic() - start
-            print("native Qwen3.8 server ready", flush=True)
+            print(scope + " server ready", flush=True)
 
-            completion = exchange(base, "/v1/completions", dict(prompt="Hello", max_tokens=8, temperature=0))
+            completion = exchange(base, "/v1/completions", dict(prompt="Hello", max_tokens=args.tokens, temperature=0))
             report["completion"] = completion
             choice = completion["choices"][0]
             if not choice["token_ids"] or not choice["text"].strip():
@@ -69,7 +78,7 @@ def main():
 
             chat = exchange(base, "/v1/chat/completions", dict(
                 messages=[dict(role="user", content="Reply with just the number: 1+1=?")],
-                max_tokens=8, temperature=0))
+                max_tokens=args.tokens, temperature=0))
             report["chat"] = chat
             choice = chat["choices"][0]
             if not choice["token_ids"] or not choice["message"]["content"].strip():
@@ -77,7 +86,7 @@ def main():
             print("chat: " + choice["message"]["content"], flush=True)
 
             request = Request(base + "/v1/chat/completions", data=json.dumps(dict(
-                messages=[dict(role="user", content="Say hello briefly.")], max_tokens=4,
+                messages=[dict(role="user", content="Say hello briefly.")], max_tokens=min(args.tokens, 4),
                 temperature=0, stream=True)).encode(), headers={"Content-Type": "application/json"})
             events, done = [], False
             with urlopen(request, timeout=300) as response:

@@ -83,10 +83,12 @@ def make_programs(source):
             layer: pl.Scalar[pl.INT32], slot: pl.Scalar[pl.INT32]):
         index = layer - layer // 4
         gamma = pl.slice(input_gamma, [1, 5120], [layer, 0])
-        conv_source = pl.reshape(pl.slice(conv_history, [1, 1, 4, 10240],
-                                          [slot, index, 0, 0]), [4, 10240])
+        # Drop the selected slot/layer axes before reshaping: their inherited
+        # strides are not canonical for size-one axes in the pinned runtime.
+        conv_source = pl.slice(conv_history, [1, 1, 4, 10240],
+                               [slot, index, 0, 0], drop_dims=[0, 1])
         state_source = pl.reshape(pl.slice(recurrent_history, [1, 1, 48, 128, 128],
-                                           [slot, index, 0, 0, 0]), [6144, 128])
+                                           [slot, index, 0, 0, 0], drop_dims=[0, 1]), [6144, 128])
         # Orthrus: start from the AR state, mutate only temporary copies.
         conv = pl.create_tensor([4, 10240], dtype=pl.BF16)
         state = pl.create_tensor([48, 128, 128], dtype=pl.FP32)
@@ -179,10 +181,10 @@ def make_programs(source):
             logical = task % 32
             physical = pl.read(block_table, [logical])
             row = logical * 16
-            keys[head:head + 1, row:row + 16, 0:256] = pl.reshape(
-                pl.slice(key_pool, [1, 1, 1, 16, 256], [index, head, physical, 0, 0]), [1, 16, 256])
-            values[head:head + 1, row:row + 16, 0:256] = pl.reshape(
-                pl.slice(value_pool, [1, 1, 1, 16, 256], [index, head, physical, 0, 0]), [1, 16, 256])
+            keys[head:head + 1, row:row + 16, 0:256] = pl.slice(
+                key_pool, [1, 1, 1, 16, 256], [index, head, physical, 0, 0], drop_dims=[0, 1])
+            values[head:head + 1, row:row + 16, 0:256] = pl.slice(
+                value_pool, [1, 1, 1, 16, 256], [index, head, physical, 0, 0], drop_dims=[0, 1])
         # All active block K/V exist before either half's query runs. The pools
         # above remain read-only: only these temporary tensors receive draft KV.
         with pl.spmd(4, name_hint="orthrus_append_temporary_block"):

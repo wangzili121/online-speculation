@@ -244,3 +244,32 @@ def test_neural_draft_refuses_a_stale_anchor_boundary():
     request = SimpleNamespace(request_id="r", prompt_ids=[1, 2, 3], generated=[4])
     with pytest.raises(RuntimeError, match="history boundary"):
         draft.propose(request, 4, 32)
+
+
+@pytest.mark.parametrize("execution_failed", (True, False))
+def test_neural_draft_preserves_execution_error_when_free_also_fails(execution_failed):
+    from blockspec.pypto_qwen38.draft import NeuralDraft
+    head = SimpleNamespace(block_size=32, mask_token_id=1,
+                           banks=lambda layer: [torch.zeros(1) for _ in range(9)])
+    draft = NeuralDraft(None, head)
+
+    def fail_free(handle):
+        raise RuntimeError("mailbox cleanup failure")
+
+    def run(name, arguments):
+        if name == "gdn" and execution_failed:
+            raise RuntimeError("original device execution failure")
+
+    draft.native = SimpleNamespace(
+        requests={"r": SimpleNamespace(pages=SimpleNamespace(length=1, pages=[0]), slot=0)},
+        rope={name: torch.zeros(512, 64) for name in ("cos", "sin")},
+        worker=SimpleNamespace(alloc_tensor=lambda *a, **k: object(), free_tensor=fail_free),
+        banks=[None] * 8, resident=[None] * 2)
+    draft.ids = draft.cos = draft.sin = draft.table = draft.mask = None
+    draft.hidden = [None, None]
+    draft._upload = lambda *args: None
+    draft._run = run
+    request = SimpleNamespace(request_id="r", prompt_ids=[5], generated=[7])
+    expected = "original device execution failure" if execution_failed else "mailbox cleanup failure"
+    with pytest.raises(RuntimeError, match=expected):
+        draft.propose(request, 7, 32)

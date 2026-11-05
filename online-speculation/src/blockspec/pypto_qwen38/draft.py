@@ -110,6 +110,7 @@ class NeuralDraft:
             if layer % 4 != 3:
                 host[5] = host[5].float()  # BF16 initialization also promotes exactly.
             weights = []
+            failed = False
             try:
                 for value in host:
                     weights.append(worker.alloc_tensor(tuple(value.shape), value.dtype, init=value))
@@ -123,9 +124,19 @@ class NeuralDraft:
                     self._run("full", [current, *banks[4:8], weights[-1], self.query, self.key,
                                        self.value, self.gate, *native.resident[2:], self.table,
                                        self.mask, output, layer, past, width])
+            except BaseException:
+                failed = True
+                raise
             finally:
                 for value in reversed(weights):
-                    worker.free_tensor(value)
+                    try:
+                        worker.free_tensor(value)
+                    except Exception:
+                        # A failed device run can poison the worker mailbox.
+                        # Preserve its execution error; worker.close owns cleanup.
+                        if not failed:
+                            raise
+                        break
         self._run("finish", [self.hidden[0], banks[1], banks[2], self.logits])
         logits = torch.empty((32, 248320), dtype=torch.bfloat16)
         worker.copy_from(logits.data_ptr(), self.logits.data_ptr, logits.numel() * logits.element_size())

@@ -2,7 +2,7 @@
 
 本分支基于 OneServing 的 Qwen3.8 独立交付包接入 Orthrus。原生模型保持不变，训练仍由现有 PyTorch 路径完成，推理侧读取相同的 draft head。
 
-原生 Qwen3.8-27B 已通过单卡 A2 的基本推理与 HTTP 检查；使用测试候选的 K32 验证与拒绝恢复也已在真实模型上通过。Orthrus 已实现 head 读取与布局转换、K32 神经 draft 的 PyPTO 前向编排、greedy 候选校正、KV 页回收和 GDN 状态恢复适配；五个 draft 入口已通过固定版本的前端编译和代码生成。**Orthrus 神经 draft 的 NPU 端到端尚未验收。**
+原生 Qwen3.8-27B 已通过单卡 A2 的基本推理与 HTTP 检查。Orthrus 已完成真实 head 的 K32 前向、目标缓存只读、拒绝恢复和短请求 greedy 续写检查；测试覆盖完整 64 层，主模型与 draft 在同一 worker 中共享 backbone。**目前是 TP1、一个活动请求的推理联调版本，Orthrus HTTP 服务仍待实机检查。**
 
 ## 固定基线
 
@@ -65,7 +65,7 @@ python scripts/validate_qwen38_pypto_neural.py \
   --head-dir /heads/version4 --device 0 --audit-block --output /results/neural.json
 ```
 
-`serve_qwen38_pypto.py` 接受相同的模型、head 和设备参数，保留原生 OpenAI API、SSE、停止与取消处理；目前是待实机验收的实验入口。
+`serve_qwen38_pypto.py` 接受相同的模型、head 和设备参数，保留原生 OpenAI API、SSE、停止与取消处理；HTTP 路径目前仍待实机检查。使用 `smoke_qwen38_pypto_base.py` 时添加 `--head-dir /heads/version4 --tokens 3`，即可对这一服务执行 completion、chat、SSE 和关闭检查。
 
 ## 环境复现
 
@@ -105,7 +105,7 @@ ASCEND_RT_VISIBLE_DEVICES=0 python scripts/smoke_qwen38_pypto_base.py \
 
 ## 验证与后续
 
-已通过 273 项 CPU 用例，覆盖 K32 每个拒绝位置、输出截断、停止 token、异常恢复、跨页回收、递推状态恢复、缓冲边界与 TP 参数合并。另读取真实 27B 离线训练导出的 TP4 head，检查完整 64 层的布局转换和 dtype，保持输入只读。构建脚本已实际执行通过；五个 draft 入口通过前端编译和 PTOAS 代码生成，向量计算通过模拟器执行（误差 0）。证据见 `validation/pypto-qwen38/port-20261105/`。
+已通过 275 项 CPU 用例，覆盖 K32 每个拒绝位置、输出截断、停止 token、异常恢复、跨页回收、递推状态恢复、缓冲边界、TP 参数合并及原始设备错误保留。另读取真实 27B 离线训练导出的 TP4 head，检查完整 64 层的布局转换和 dtype，保持输入只读。构建脚本已实际执行通过；五个 draft 入口通过前端编译和 PTOAS 代码生成，向量计算通过模拟器执行（误差 0）。初次验证证据见 `validation/pypto-qwen38/port-20261105/`，缓存布局修正后的记录见 `neural-20261105/`。
 
 真实 NPU 已完成以下检查，证据见 `validation/pypto-qwen38/target-only-20261105/`：
 
@@ -118,6 +118,10 @@ ASCEND_RT_VISIBLE_DEVICES=0 python scripts/smoke_qwen38_pypto_base.py \
 
 K32 验证与拒绝恢复已在同一真实模型上通过，证据见 `validation/pypto-qwen38/transactions-20261105/`。全接受、首位拒绝、第 17 个候选拒绝、最后一个候选拒绝四类用例均生成 33 个 token，与 target-only 逐个一致；首位拒绝用例连续执行 31 次恢复。验证跨越 16 行 tile 和 KV 页边界，结束后请求均已释放。这里的候选由测试 fixture 提供，只证明目标验证与缓存事务可工作，不证明神经 draft 前向、接受率或加速效果。
 
+真实 head 检查使用 TP4 离线更新 4 步导出的测试 head，按层合并并在 TP1 上执行，证据见 `validation/pypto-qwen38/neural-20261105/`：完整 K32 起草返回 31 个候选；起草前后全部目标 KV、卷积状态、递推矩阵及页归属保持不变。验证接受 1 个候选后发生拒绝，提交后的历史与仅重放接受前缀逐字节一致，随后 3 步 AR 续写一致。另通过真实 scheduler 生成 3 个 token，与 target-only 完全相同，确实调用了神经 draft；请求释放、worker 与验证进程退出均已确认。
+
+首次神经 draft 执行暴露了运行时对缓存视图连续性的要求：选中 slot/layer 后须先去掉相应长度为 1 的维度，再 reshape。GDN 和 Full Attention 读取均已按此修正。本次检查证明了前向与验证链路可运行，尚未比较 PyPTO 与 PyTorch draft 的逐层数值，也不代表长请求、并发或生产验收。测试 head 只经历少量更新，且逐层搬运参数的路径尚未优化，不据此评价接受率或加速。
+
 早期容器中的设备枚举错误记录保留在 `port-20261105/`。本次通过用户目录下的原生环境完成验证，没有修改 OneServing 模型源码；原容器启动失败的具体原因仍未确认。
 
-下一步验证真实 draft 的共享历史、缓存不变性、完整生成与 head 重载。随后扩展 TP、采样和性能优化；训练和在线更新不在本轮迁移范围内。
+下一步检查 Orthrus HTTP 服务，再补充逐层数值对照、更多请求边界和 head 重载。随后扩展 TP、采样和性能优化；训练和在线更新不在本轮迁移范围内。
