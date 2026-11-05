@@ -1,6 +1,6 @@
 # Orthrus-Qwen3.8 on Ascend
 
-PyPTO Serving 接入进行中：[代码与验证状态](online-speculation/docs/QWEN38_PYPTO_PORT.md)。真实 27B 加 head 的 K32 前向、目标缓存只读、拒绝恢复、短请求 greedy 对照及 completion / chat / SSE 已通过单卡 A2 检查。当前为 TP1、一个活动请求的功能联调版本，逐层数值对照和性能优化仍待完成。下文介绍 vLLM-Ascend 路径。
+PyPTO Serving 的真实 27B、K32 draft、缓存恢复及 completion / chat / SSE 已通过单卡 A2 检查。参数启动时准备，设备缓冲反复使用；同卡对照中，单轮起草从约 56.63 秒降至 2.70 秒，完整 logits 不变。支持自动选择 head 驻留或逐层上传；当前为 TP1、一个活动请求，起草耗时不代表服务吞吐收益。[运行与验证](online-speculation/docs/QWEN38_PYPTO_PORT.md)。下文介绍 vLLM-Ascend 路径。
 
 Qwen3.8-27B 的 Orthrus 投机推理与 draft 更新实现。draft 复用冻结的主模型 backbone，推理读取主模型历史缓存，候选由原生 vLLM-Ascend 验证。支持在线 last-N 更新和独立离线全层更新，均只更新 draft mixer，不训练主模型。
 

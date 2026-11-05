@@ -6,7 +6,8 @@ import torch
 
 from .baseline import native_module
 from .programs import make_programs
-from .target import OrthrusRunner
+from .target import OrthrusRunner, SnapshotPool
+from .weights import DraftWeights
 
 
 def metadata(head, native_samples):
@@ -31,13 +32,15 @@ def metadata(head, native_samples):
 class NeuralDraft:
     context = 512
 
-    def __init__(self, source, head):
+    def __init__(self, source, head, *, head_storage="auto"):
         self.source, self.head = source, head
         self.block_size = head.block_size
         self.programs, self.handles = {}, []
         self.native = None
         self.rounds = 0
         self.last_seconds = None
+        self.last_timings = {}
+        self.weights = DraftWeights(head, head_storage)
 
     def compile(self, samples, config):
         inputs = metadata(self.head, samples)
@@ -45,6 +48,10 @@ class NeuralDraft:
             print(f"compiling Orthrus {name}", flush=True)
             self.programs[name] = program.compile(*inputs[name], config=config)
         return list(self.programs.values())
+
+    def prepare_host(self):
+        self.head.prepare()
+        self.host_logits = torch.empty((32, 248320), dtype=torch.bfloat16).share_memory_()
 
     def _allocate(self, shape, dtype=torch.bfloat16):
         handle = self.native.worker.alloc_tensor(shape, dtype)
@@ -63,20 +70,32 @@ class NeuralDraft:
         self.table = self._allocate((32,), torch.int32)
         self.mask = self._allocate((16, 512), torch.float32)
         self.logits = self._allocate((32, 248320))
+        self.weights.start(native.worker)
+
+    @property
+    def storage(self):
+        return self.weights.storage
 
     def close(self):
-        if self.native is not None and self.native.worker is not None:
-            for handle in reversed(self.handles):
-                self.native.worker.free_tensor(handle)
-        self.handles.clear()
-        self.native = None
+        try:
+            self.weights.close()
+            if self.native is not None and self.native.worker is not None:
+                for handle in reversed(self.handles):
+                    self.native.worker.free_tensor(handle)
+        finally:
+            self.handles.clear()
+            self.native = None
 
     def _upload(self, tensor, handle):
         tensor = tensor.contiguous()
         self.native.worker.copy_to(handle.data_ptr, tensor.data_ptr(), tensor.numel() * tensor.element_size())
 
     def _run(self, name, arguments):
-        self.native.worker.run(self.programs[name], *arguments, config=self.native.config)
+        start = time.monotonic()
+        try:
+            self.native.worker.run(self.programs[name], *arguments, config=self.native.config)
+        finally:
+            self.last_timings["device_seconds"] += time.monotonic() - start
 
     def propose(self, request, anchor, width):
         native = self.native
@@ -88,6 +107,7 @@ class NeuralDraft:
         if past != expected or past + width > self.context:
             raise RuntimeError("draft history boundary does not match the request anchor")
         start = time.monotonic()
+        self.last_timings = dict(device_seconds=0.0, weights_seconds=0.0)
         ids = torch.full((32,), self.head.mask_token_id, dtype=torch.int32)
         ids[0] = anchor
         self._upload(ids, self.ids)
@@ -101,56 +121,43 @@ class NeuralDraft:
         mask = torch.full((16, 512), -10000.0)
         mask[:, :past + width] = 0
         self._upload(mask, self.mask)
+        self.last_timings["inputs_seconds"] = time.monotonic() - start
         worker, banks = native.worker, native.banks
         self._run("embedding", [self.ids, banks[0], self.hidden[0]])
         for layer in range(64):
-            # Stream only attention weights, keeping the target's MLP/norm/LM
-            # allocations shared. This initial path prioritizes bounded memory.
-            host = self.head.banks(layer)
+            weight_start = time.monotonic()
+            weights = self.weights.for_layer(layer)
+            self.last_timings["weights_seconds"] += time.monotonic() - weight_start
+            current, output = self.hidden[layer % 2], self.hidden[1 - layer % 2]
             if layer % 4 != 3:
-                host[5] = host[5].float()  # BF16 initialization also promotes exactly.
-            weights = []
-            failed = False
-            try:
-                for value in host:
-                    weights.append(worker.alloc_tensor(tuple(value.shape), value.dtype, init=value))
-                current, output = self.hidden[layer % 2], self.hidden[1 - layer % 2]
-                if layer % 4 != 3:
-                    self._run("gdn", [current, *banks[3:8], *weights,
-                                      *native.resident[:2], output, layer, resident.slot])
-                else:
-                    self._run("full_prepare", [current, banks[3], *weights[:5], self.cos, self.sin,
-                                               self.query, self.key, self.value, self.gate, layer])
-                    self._run("full", [current, *banks[4:8], weights[-1], self.query, self.key,
-                                       self.value, self.gate, *native.resident[2:], self.table,
-                                       self.mask, output, layer, past, width])
-            except BaseException:
-                failed = True
-                raise
-            finally:
-                for value in reversed(weights):
-                    try:
-                        worker.free_tensor(value)
-                    except Exception:
-                        # A failed device run can poison the worker mailbox.
-                        # Preserve its execution error; worker.close owns cleanup.
-                        if not failed:
-                            raise
-                        break
+                self._run("gdn", [current, *banks[3:8], *weights,
+                                  *native.resident[:2], output, layer, resident.slot])
+            else:
+                self._run("full_prepare", [current, banks[3], *weights[:5], self.cos, self.sin,
+                                           self.query, self.key, self.value, self.gate, layer])
+                self._run("full", [current, *banks[4:8], weights[-1], self.query, self.key,
+                                   self.value, self.gate, *native.resident[2:], self.table,
+                                   self.mask, output, layer, past, width])
         self._run("finish", [self.hidden[0], banks[1], banks[2], self.logits])
-        logits = torch.empty((32, 248320), dtype=torch.bfloat16)
+        copy_start = time.monotonic()
+        logits = self.host_logits[:width - 1]
         worker.copy_from(logits.data_ptr(), self.logits.data_ptr, logits.numel() * logits.element_size())
-        if not logits[:width - 1].isfinite().all():
+        self.last_timings["readback_seconds"] = time.monotonic() - copy_start
+        select_start = time.monotonic()
+        if not logits.isfinite().all():
             raise FloatingPointError("nonfinite PyPTO draft logits")
+        tokens = logits.float().argmax(dim=-1).tolist()
+        self.last_timings["select_seconds"] = time.monotonic() - select_start
         self.rounds += 1
         self.last_seconds = time.monotonic() - start
-        return logits[:width - 1].float().argmax(dim=-1).tolist()
+        self.last_timings["total_seconds"] = self.last_seconds
+        return tokens
 
 
-def make_runner(source, model_root, device, head, **callbacks):
+def make_runner(source, model_root, device, head, *, head_storage="auto", **callbacks):
     """Create a native runner with additional graphs; leave native source intact."""
     runtime = native_module(source, "runtime")
-    draft = NeuralDraft(source, head)
+    draft = NeuralDraft(source, head, head_storage=head_storage)
 
     class PreparedRunner(runtime.ModelRunner):
         def start(self):
@@ -160,11 +167,17 @@ def make_runner(source, model_root, device, head, **callbacks):
             self.prefill = runtime.prefill_fwd.compile(*samples, 1, config=self.config)
             self.decode = runtime.decode_fwd.compile(*samples, 1, config=self.config)
             programs = draft.compile(samples, self.config)
+            draft.prepare_host()
             self.rope = runtime.rotary_tables(self.model_root)
             if any(value.shape != (512, 64) for value in self.rope.values()):
                 raise ValueError("invalid native RoPE table")
             self._buffers()
-            self.worker = runtime.DistributedWorker([self.prefill, self.decode, *programs], config=self.config)
+            self.verification_logits = torch.empty((16, 248320), dtype=torch.bfloat16).share_memory_()
+            self.verification_states = SnapshotPool(self.zero_conv.shape, self.zero_recurrent.shape)
+            from pypto.runtime import ReadOnlyHostTensor
+            self.worker = runtime.DistributedWorker([self.prefill, self.decode, *programs], config=self.config,
+                inherited_host_tensors=[ReadOnlyHostTensor(head.shared_weights), draft.host_logits,
+                                        self.verification_logits, self.verification_states.storage])
             try:
                 for _, host in runtime.TextWeights(self.model_root).banks():
                     self.banks.append(self.worker.alloc_tensor(tuple(host.shape), host.dtype, init=host))
@@ -184,7 +197,7 @@ def make_runner(source, model_root, device, head, **callbacks):
     return OrthrusRunner(native, draft, native_module(source, "schedule").BatchSlot)
 
 
-def make_engine(source, model_root, device, head):
+def make_engine(source, model_root, device, head, *, head_storage="auto"):
     class Engine(native_module(source, "engine").InferenceEngine):
         def snapshot(self):
             result = super().snapshot()
@@ -192,10 +205,14 @@ def make_engine(source, model_root, device, head):
             result["orthrus"] = dict(block_size=runner.draft.block_size, rounds=runner.rounds,
                                      accepted=runner.accepted, restores=runner.restores,
                                      neural_draft_rounds=runner.draft.rounds,
-                                     last_draft_seconds=runner.draft.last_seconds)
+                                     last_draft_seconds=runner.draft.last_seconds,
+                                     head_storage=runner.draft.storage,
+                                     head_preparation_seconds=head.preparation_seconds,
+                                     last_draft_timings=dict(runner.draft.last_timings))
             return result
 
     engine = Engine(model_root, device, max_active=1, prefix_cache=False)
-    engine.runner = make_runner(source, model_root, device, head, on_cache_event=engine._on_cache)
+    engine.runner = make_runner(source, model_root, device, head, head_storage=head_storage,
+                                on_cache_event=engine._on_cache)
     engine.scheduler.runner = engine.runner
     return engine

@@ -2,6 +2,11 @@
 
 from collections import deque
 from dataclasses import dataclass
+from math import prod
+from pathlib import Path
+import shutil
+import threading
+import weakref
 
 from .greedy import verify_transaction
 
@@ -11,6 +16,36 @@ class Snapshot:
     length: int
     pages: tuple[int, ...]
     state: tuple
+
+
+class SnapshotPool:
+    """快照存活期间独占对应缓冲；池满时由调用方回退到独立副本。"""
+
+    def __init__(self, conv_shape, recurrent_shape, capacity=2):
+        import torch
+        conv_bytes, recurrent_bytes = prod(conv_shape) * 2, prod(recurrent_shape) * 4
+        stride = conv_bytes + recurrent_bytes
+        size = capacity * stride
+        if Path("/dev/shm").is_dir() and shutil.disk_usage("/dev/shm").free < size + (64 << 20):
+            raise RuntimeError(f"state snapshots require at least {size + (64 << 20)} free shared bytes")
+        self.storage = torch.empty((capacity, stride), dtype=torch.uint8).share_memory_()
+        self.states = tuple((row[:conv_bytes].view(torch.bfloat16).reshape(conv_shape),
+                             row[conv_bytes:].view(torch.float32).reshape(recurrent_shape))
+                            for row in self.storage)
+        self.busy = set()
+        self.lock = threading.Lock()
+
+    def acquire(self):
+        with self.lock:
+            index = next((i for i in range(len(self.states)) if i not in self.busy), None)
+            if index is None:
+                return None
+            self.busy.add(index)
+        return index, self.states[index]
+
+    def release(self, index):
+        with self.lock:
+            self.busy.remove(index)
 
 
 class NativeTarget:
@@ -23,6 +58,20 @@ class NativeTarget:
 
     def snapshot(self):
         resident = self.resident
+        pool = getattr(self.runner, "verification_states", None)
+        entry = None if pool is None else pool.acquire()
+        if entry is not None:
+            index, state = entry
+            try:
+                for host, device in zip(state, self.runner.resident[:2], strict=True):
+                    offset = resident.slot * host.numel() * host.element_size()
+                    self.runner._copy_offset(host, device, offset, False)
+                snapshot = Snapshot(resident.pages.length, tuple(resident.pages.pages), state)
+                weakref.finalize(snapshot, pool.release, index)
+                return snapshot
+            except BaseException:
+                pool.release(index)
+                raise
         return Snapshot(resident.pages.length, tuple(resident.pages.pages),
                         self.runner._read_state(resident.slot))
 
@@ -43,6 +92,17 @@ class NativeTarget:
             tokens = tuple(inputs[offset:offset + self.rows])
             slot = self.slot_type(self.request, tokens, self.resident.pages.length, "decode", False)
             self.runner.run_batch([slot])
+            host = getattr(self.runner, "verification_logits", None)
+            if host is not None:
+                # 一次读取当前 tile 的有效行，复用 fork 前注册的共享主机缓冲。
+                logits = host[:len(tokens)]
+                offset = self.resident.slot * host.numel() * host.element_size()
+                self.runner.worker.copy_from(logits.data_ptr(), self.runner.logits.data_ptr,
+                    logits.numel() * logits.element_size(), src_offset=offset)
+                if not logits.isfinite().all():
+                    raise FloatingPointError("native target returned nonfinite verifier logits")
+                output.extend(logits.float().argmax(dim=-1).tolist())
+                continue
             for row in range(len(tokens)):
                 logits = self.runner._logit_row(self.resident.slot, row)
                 if not logits.isfinite().all():

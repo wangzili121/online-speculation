@@ -3,6 +3,8 @@
 import hashlib
 import json
 from pathlib import Path
+import shutil
+import time
 
 import torch
 from safetensors import safe_open
@@ -50,11 +52,14 @@ def merge_parameter(layer, name, shards):
 
 
 class HeadSource:
-    """Stream one layer at a time; do not duplicate a full BF16 draft on the device."""
+    """Validate head shards and prepare an immutable runtime layout once."""
 
     def __init__(self, model_root, head_dir=None, *, block_size=32, mask_token_id=1):
         self.model_root = Path(model_root)
         self.directory = None if head_dir is None else Path(head_dir)
+        self._prepared = None
+        self.shared_weights = None
+        self.preparation_seconds = 0.0
         self.block_size, self.mask_token_id = block_size, mask_token_id
         config = json.loads((self.model_root / "config.json").read_text())["text_config"]
         expected = dict(hidden_size=HIDDEN, num_hidden_layers=64, num_attention_heads=24,
@@ -113,6 +118,10 @@ class HeadSource:
         return result
 
     def banks(self, layer):
+        if self._prepared is not None:
+            if type(layer) is not int or not 0 <= layer < 64:
+                raise ValueError("layer must be in 0..63")
+            return list(self._prepared[layer])
         weights = self.layer(layer)
         if layer % 4 == 3:
             return [weights[name] for name in ("q_proj.weight", "k_proj.weight", "v_proj.weight")] + [
@@ -129,3 +138,35 @@ class HeadSource:
         return [weights["in_proj_qkv.weight"], weights["in_proj_z.weight"], *padded,
                 weights["conv1d.weight"].squeeze(1).T.contiguous(), *constants,
                 weights["norm.weight"].reshape(1, 128), weights["out_proj.weight"]]
+
+    def prepare(self):
+        """一次转换并校验，再放入同一块共享内存，供 worker 直接读取。"""
+        if self._prepared is not None:
+            return
+        start = time.monotonic()
+        layers = [self.banks(layer) for layer in range(64)]
+        for layer, values in enumerate(layers):
+            if layer % 4 != 3:
+                values[5] = values[5].float()
+        size, layouts = 0, []
+        for values in layers:
+            current = []
+            for value in values:
+                size = (size + 63) // 64 * 64
+                count = value.numel() * value.element_size()
+                current.append((size, count))
+                size += count
+            layouts.append(current)
+        if Path("/dev/shm").is_dir() and shutil.disk_usage("/dev/shm").free < size + (64 << 20):
+            raise RuntimeError(f"head preparation requires at least {size + (64 << 20)} free bytes in /dev/shm")
+        storage = torch.empty(size, dtype=torch.uint8).share_memory_()
+        prepared = []
+        for values, layout in zip(layers, layouts, strict=True):
+            current = []
+            for value, (offset, count) in zip(values, layout, strict=True):
+                target = storage[offset:offset + count].view(value.dtype).reshape(value.shape)
+                target.copy_(value)
+                current.append(target)
+            prepared.append(tuple(current))
+        self.shared_weights, self._prepared = storage, tuple(prepared)
+        self.preparation_seconds = time.monotonic() - start

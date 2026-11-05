@@ -246,8 +246,7 @@ def test_neural_draft_refuses_a_stale_anchor_boundary():
         draft.propose(request, 4, 32)
 
 
-@pytest.mark.parametrize("execution_failed", (True, False))
-def test_neural_draft_preserves_execution_error_when_free_also_fails(execution_failed):
+def test_neural_draft_does_not_allocate_or_free_weights_during_a_round():
     from blockspec.pypto_qwen38.draft import NeuralDraft
     head = SimpleNamespace(block_size=32, mask_token_id=1,
                            banks=lambda layer: [torch.zeros(1) for _ in range(9)])
@@ -257,7 +256,7 @@ def test_neural_draft_preserves_execution_error_when_free_also_fails(execution_f
         raise RuntimeError("mailbox cleanup failure")
 
     def run(name, arguments):
-        if name == "gdn" and execution_failed:
+        if name == "gdn":
             raise RuntimeError("original device execution failure")
 
     draft.native = SimpleNamespace(
@@ -267,9 +266,196 @@ def test_neural_draft_preserves_execution_error_when_free_also_fails(execution_f
         banks=[None] * 8, resident=[None] * 2)
     draft.ids = draft.cos = draft.sin = draft.table = draft.mask = None
     draft.hidden = [None, None]
+    draft.weights = SimpleNamespace(for_layer=lambda layer: [None] * 9)
     draft._upload = lambda *args: None
     draft._run = run
     request = SimpleNamespace(request_id="r", prompt_ids=[5], generated=[7])
-    expected = "original device execution failure" if execution_failed else "mailbox cleanup failure"
-    with pytest.raises(RuntimeError, match=expected):
+    with pytest.raises(RuntimeError, match="original device execution failure"):
         draft.propose(request, 7, 32)
+
+
+def tiny_head(monkeypatch):
+    from blockspec.pypto_qwen38.head import HeadSource
+    head = HeadSource.__new__(HeadSource)
+    head._prepared = head.shared_weights = None
+    head.preparation_seconds = 0.0
+    full = {name: torch.arange(256, dtype=torch.bfloat16) / 256
+            if name.endswith("norm.weight") else torch.ones((2, 2), dtype=torch.bfloat16)
+            for name in ("q_proj.weight", "k_proj.weight", "v_proj.weight", "o_proj.weight",
+                         "q_norm.weight", "k_norm.weight")}
+    gdn = {name: torch.ones((2, 2), dtype=torch.bfloat16) for name in
+           ("in_proj_qkv.weight", "in_proj_z.weight", "in_proj_a.weight", "in_proj_b.weight", "out_proj.weight")}
+    gdn.update({"A_log": torch.arange(48, dtype=torch.bfloat16) / 48,
+                "dt_bias": torch.zeros(48, dtype=torch.bfloat16),
+                "norm.weight": torch.ones(128, dtype=torch.bfloat16),
+                "conv1d.weight": torch.ones((2, 1, 4), dtype=torch.bfloat16)})
+    monkeypatch.setattr(head, "layer", lambda layer: full if layer % 4 == 3 else gdn)
+    return head
+
+
+def test_head_preparation_preserves_values_and_reuses_one_shared_storage(monkeypatch):
+    head = tiny_head(monkeypatch)
+    expected = [head.banks(layer) for layer in range(64)]
+    for layer in range(64):
+        if layer % 4 != 3:
+            expected[layer][5] = expected[layer][5].float()
+    head.prepare()
+    pool = head.shared_weights
+    monkeypatch.setattr(head, "layer", lambda layer: pytest.fail("head must not be re-read"))
+    head.prepare()
+    assert head.shared_weights is pool and pool.is_shared()
+    for layer in range(64):
+        for actual, wanted in zip(head.banks(layer), expected[layer], strict=True):
+            assert actual.dtype == wanted.dtype and torch.equal(actual, wanted)
+            assert actual.untyped_storage().data_ptr() == pool.untyped_storage().data_ptr()
+            assert actual.is_shared()
+
+
+class WeightWorker:
+    def __init__(self, free):
+        self.free = free
+        self.handles, self.freed = [], []
+        self.uploads = 0
+
+    def device_memory_info(self):
+        return self.free, self.free
+
+    def alloc_tensor(self, shape, dtype, init=None):
+        payload = torch.empty(shape, dtype=dtype)
+        handle = SimpleNamespace(shape=tuple(shape), dtype=dtype, data_ptr=payload.data_ptr(), payload=payload)
+        self.handles.append(handle)
+        if init is not None:
+            payload.copy_(init)
+            self.uploads += 1
+        return handle
+
+    def copy_to(self, dst, src, size):
+        import ctypes
+        ctypes.memmove(dst, src, size)
+        self.uploads += 1
+
+    def free_tensor(self, handle):
+        self.freed.append(handle)
+
+
+@pytest.mark.parametrize("mode,expected", (("resident", "resident"), ("stream", "stream"), ("auto", "resident")))
+def test_device_head_reuses_allocations_and_resident_head_never_reuploads(monkeypatch, mode, expected):
+    from blockspec.pypto_qwen38.weights import DraftWeights
+    head = tiny_head(monkeypatch)
+    head.prepare()
+    worker = WeightWorker(1 << 30)
+    weights = DraftWeights(head, mode)
+    weights.start(worker)
+    count, uploads = len(worker.handles), worker.uploads
+    for _ in range(2):
+        for layer in range(64):
+            handles = weights.for_layer(layer)
+            for handle, value in zip(handles, head.banks(layer), strict=True):
+                assert torch.equal(handle.payload, value)
+    assert weights.storage == expected and len(worker.handles) == count
+    assert worker.uploads == uploads if expected == "resident" else worker.uploads > uploads
+    weights.close()
+    assert len(worker.freed) == count
+
+
+def test_auto_streaming_and_explicit_resident_memory_gate(monkeypatch):
+    from blockspec.pypto_qwen38.weights import DraftWeights
+    head = tiny_head(monkeypatch)
+    head.prepare()
+    worker = WeightWorker((256 << 20) + head.shared_weights.numel() // 2)
+    resident = DraftWeights(head, "resident")
+    with pytest.raises(RuntimeError, match="resident head requires"):
+        resident.start(worker)
+    assert not worker.handles
+    resident.close()
+    weights = DraftWeights(head)
+    weights.start(worker)
+    assert weights.storage == "stream"
+    weights.close()
+
+
+@pytest.mark.parametrize("nonfinite", (False, True))
+def test_verifier_reads_active_rows_in_bulk_with_the_correct_slot(nonfinite):
+    import ctypes
+    payload = torch.full((2, 16, 8), float("nan"), dtype=torch.bfloat16)
+    host = torch.empty((16, 8), dtype=torch.bfloat16).share_memory_()
+    resident = SimpleNamespace(slot=1, pages=SimpleNamespace(length=0))
+    copies = []
+
+    def run(slots):
+        for row in range(len(slots[0].token_ids)):
+            payload[1, row].zero_()
+            payload[1, row, 1] = payload[1, row, 4] = 3  # 并列最大值仍选最小 token ID。
+        if nonfinite:
+            payload[1, 0, 0] = float("nan")
+        resident.pages.length += len(slots[0].token_ids)
+
+    def copy(dst, src, size, *, src_offset):
+        copies.append((size, src_offset))
+        ctypes.memmove(dst, src + src_offset, size)
+
+    runner = SimpleNamespace(requests={"r": resident}, run_batch=run,
+        verification_logits=host, logits=SimpleNamespace(data_ptr=payload.data_ptr()),
+        worker=SimpleNamespace(copy_from=copy), _logit_row=lambda *a: pytest.fail("must use bulk readback"))
+    make_slot = lambda request, token_ids, *a: SimpleNamespace(token_ids=token_ids)
+    target = NativeTarget(runner, SimpleNamespace(request_id="r"), make_slot, rows=2)
+    if nonfinite:
+        with pytest.raises(FloatingPointError, match="nonfinite"):
+            target.forward([10, 11, 12])
+    else:
+        assert target.forward([10, 11, 12]) == [1, 1, 1]
+        assert copies == [(32, 256), (16, 256)]
+
+
+def test_snapshot_buffers_are_not_reused_while_a_snapshot_is_alive():
+    import gc
+    from blockspec.pypto_qwen38.target import SnapshotPool
+    pool = SnapshotPool((2, 3), (2, 2))
+    values = (torch.ones((2, 3), dtype=torch.bfloat16), torch.ones((2, 2), dtype=torch.float32))
+    private_reads = []
+
+    def copy(host, device, offset, to_device):
+        assert offset == 0 and not to_device
+        host.copy_(device)
+
+    def read(slot):
+        private_reads.append(slot)
+        return tuple(v.clone() for v in values)
+
+    runner = SimpleNamespace(requests={"r": SimpleNamespace(slot=0, pages=SimpleNamespace(length=1, pages=[0]))},
+        resident=values, verification_states=pool, _copy_offset=copy, _read_state=read)
+    target = NativeTarget(runner, SimpleNamespace(request_id="r"), None)
+    first = target.snapshot()
+    for value in values:
+        value.fill_(2)
+    second = target.snapshot()
+    for value in values:
+        value.fill_(3)
+    third = target.snapshot()  # 两个共享槽均在使用，必须获得独立副本。
+    assert private_reads == [0]
+    assert all(torch.equal(v, torch.ones_like(v)) for v in first.state)
+    assert all(torch.equal(v, torch.full_like(v, 2)) for v in second.state)
+    del first
+    gc.collect()
+    for value in values:
+        value.fill_(4)
+    fourth = target.snapshot()
+    assert private_reads == [0]
+    assert all(torch.equal(v, torch.full_like(v, 2)) for v in second.state)
+    assert all(torch.equal(v, torch.full_like(v, 3)) for v in third.state)
+    assert all(torch.equal(v, torch.full_like(v, 4)) for v in fourth.state)
+
+
+def test_failed_snapshot_copy_releases_its_buffer():
+    from blockspec.pypto_qwen38.target import SnapshotPool
+    pool = SnapshotPool((2, 3), (2, 2))
+
+    def fail(*args):
+        raise RuntimeError("copy failed")
+
+    runner = SimpleNamespace(requests={"r": SimpleNamespace(slot=0, pages=SimpleNamespace(length=1, pages=[0]))},
+        resident=[None, None], verification_states=pool, _copy_offset=fail)
+    target = NativeTarget(runner, SimpleNamespace(request_id="r"), None)
+    with pytest.raises(RuntimeError, match="copy failed"):
+        target.snapshot()
+    assert not pool.busy

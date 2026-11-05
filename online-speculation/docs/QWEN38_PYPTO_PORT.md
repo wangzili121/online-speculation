@@ -2,7 +2,7 @@
 
 本分支基于 OneServing 的 Qwen3.8 独立交付包接入 Orthrus。原生模型保持不变，训练仍由现有 PyTorch 路径完成，推理侧读取相同的 draft head。
 
-Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标缓存只读、拒绝恢复、短请求 greedy 对照及 HTTP 检查。测试覆盖完整 64 层，主模型与 draft 在同一 worker 中共享 backbone。**目前是 TP1、一个活动请求的功能联调版本；逐层数值对照和性能优化仍待完成。**
+Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标缓存只读、拒绝恢复、短请求 greedy 对照及 HTTP 检查。测试覆盖完整 64 层，主模型与 draft 在同一 worker 中共享 backbone。参数转换移到启动阶段，推理复用已分配的缓冲；同卡对照中，单轮 K32 起草中位数从 56.63 秒降至 2.70 秒，完整 logits 逐字节相同。**目前为 TP1、一个活动请求；该耗时是 draft 阶段计时，不是服务吞吐提升。**
 
 ## 固定基线
 
@@ -23,15 +23,16 @@ Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标
 代码位于 `src/blockspec/pypto_qwen38/`：
 
 - `baseline.py`：检查 OneServing 与运行时版本，在独立模块命名空间导入原生代码。
-- `head.py`：读取 `orthrus-qwen38-native-tp-v1`，检查基模哈希、K、mask、混合层策略和 tensor schema，按层合并 TP1/2/4 head 分片。
+- `head.py`：读取 `orthrus-qwen38-native-tp-v1`，检查基模哈希、K、mask、混合层策略和 tensor schema，启动时合并 TP1/2/4 head 分片并准备共享主机布局。
+- `weights.py`：设备内存充足时保留全部 head；否则复用 GDN、Full Attention 各一组设备缓冲，逐层上传已经准备好的参数。
 - `greedy.py`：比较整块候选；第一次拒绝时输出目标 token，全接受时输出 bonus；输出上限和停止 token 同样限制提交长度。
-- `target.py`：在原生 runner 上执行验证；需要拒绝后缀时，恢复验证前的 GDN 状态和页表长度，再仅重放接受前缀。它不是通过截断长度来恢复递推矩阵。
+- `target.py`：在原生 runner 上执行验证，批量读取有效 logits 行；需要拒绝后缀时，恢复验证前的 GDN 状态和页表长度，再仅重放接受前缀。状态快照使用预注册共享缓冲，每个存活快照独占一个槽；池满时回退到独立副本。
 - `programs.py`：组合原生投影、norm、GDN、Full Attention 和 MLP。K32 分为两个 16 行 tile；Full Attention 先准备整个块的 K/V，再计算两个 tile 的 query，读取主模型历史但不写目标缓存。
-- `draft.py`：将 draft 与目标程序提前注册到同一 worker，共享 embedding、norm、MLP 和 LM head；按层加载 draft attention 参数，控制额外设备内存。
+- `draft.py`：将 draft 与目标程序提前注册到同一 worker，共享 embedding、norm、MLP 和 LM head，组织各层计算与输出读取。
 
 Q/K/V-packed 的 GDN 投影与卷积按 Q、K、V 三段分别合并；O projection 按列合并；复制 norm 必须在各 rank 一致。真实 vLLM head 的 `A_log` 是 FP32，转换时保持原精度；decay/beta 编排使用相同公式，去掉原生辅助函数对该参数的重复转换。其他参数按实际 dtype 校验。
 
-Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthrus_qwen35_reference` 因果递推，在目标状态的临时副本上计算。逐层加载 head 的路径用于控制首次联调的内存，仍有大量 CPU 到 NPU 的权重搬运，尚无吞吐或加速结论。
+Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthrus_qwen35_reference` 因果递推，在目标状态的临时副本上计算。以上计算公式和 `programs.py` 未因本次缓冲优化而改变，主模型继续使用固定 OneServing 的原生程序。
 
 初版事务适配仅针对 TP1、一个活动请求。原生 scheduler 每次消费一个 token，适配器缓存已验证的输出前缀，逐个交付；后续交付不再次运行模型，且检查请求位置和 anchor，拒绝错位的旧缓冲。真实 draft 应提供 `propose(request, anchor, width)`，读取已提交历史，不写入目标缓存。
 
@@ -70,10 +71,25 @@ python scripts/validate_qwen38_pypto_neural.py \
 ```bash
 python scripts/serve_qwen38_pypto.py \
   --source /sources/OneServing --model /models/Qwen3.8-27B \
-  --head-dir /heads/version4 --device 0 --port 8000
+  --head-dir /heads/version4 --device 0 --head-storage auto --port 8000
 ```
 
-`/metrics` 在原生指标之外返回 `orthrus` 字段，包括投机轮数、接受数、恢复次数和真实神经 draft 调用次数。使用 `smoke_qwen38_pypto_base.py` 时添加 `--head-dir /heads/version4 --tokens 3`，可检查 completion、chat、SSE、draft 调用计数及服务关闭。
+`--head-storage auto` 按加载主模型和工作区后的空闲设备内存选择 `resident` 或 `stream`。前者一次加载全部 head，后续轮次不再上传参数；后者保留共享主机参数，复用设备缓冲，推理时不重新合并、校验或分配各层参数。显式指定 `resident` 但内存不足时会报错，不会静默切换。head 在进程内保持不变，换 head 后重启服务。
+
+完整 head 的共享主机布局约 14.5 GB，另有原生模型加载和状态缓冲开销；容器建议使用至少 32 GiB 的 `/dev/shm`，或按部署规范共享宿主机 IPC。设备 `resident` 还需额外容纳完整 head。当前原生主模型在 64 GiB A2 上约占 57 GiB，实际选择的是 `stream`；增加卡数不会自动让此 TP1 路径分片。
+
+`/metrics` 在原生指标之外返回 `orthrus` 字段，包括投机轮数、接受数、恢复次数、真实神经 draft 调用次数、head 存储方式和最近一轮各阶段耗时。使用 `smoke_qwen38_pypto_base.py` 时添加 `--head-dir /heads/version4 --tokens 3`，可检查 completion、chat、SSE、draft 调用计数及服务关闭。
+
+固定同一前缀测量 K32 起草，并检查目标缓存、完整 logits 和验证后的历史：
+
+```bash
+python scripts/benchmark_qwen38_pypto_draft.py \
+  --source /sources/OneServing --model /models/Qwen3.8-27B \
+  --head-dir /heads/version4 --device 0 --head-storage auto \
+  --rounds 3 --output /results/draft-bench.json
+```
+
+该入口的计时仅包含 `propose`，缓存哈希审计在计时区间外执行。`benchmark_qwen38_pypto_snapshots.py` 使用同样的 `--source`、`--model`、`--device` 和新 `--output` 路径，交错比较独立状态副本与共享快照，不加载 draft head。`validate_qwen38_pypto_storage.py --device 0 --output /results/storage.json` 使用小张量在真实 NPU 上检查两种存储方式和只读边界，不加载 27B。
 
 ## 环境复现
 
@@ -115,7 +131,7 @@ ASCEND_RT_VISIBLE_DEVICES=0 python scripts/smoke_qwen38_pypto_base.py \
 
 ## 验证与后续
 
-已通过 275 项 CPU 用例，覆盖 K32 每个拒绝位置、输出截断、停止 token、异常恢复、跨页回收、递推状态恢复、缓冲边界、TP 参数合并及原始设备错误保留。另读取真实 27B 离线训练导出的 TP4 head，检查完整 64 层的布局转换和 dtype，保持输入只读。构建脚本已实际执行通过；五个 draft 入口通过前端编译和 PTOAS 代码生成，向量计算通过模拟器执行（误差 0）。初次验证证据见 `validation/pypto-qwen38/port-20261105/`，缓存布局修正后的记录见 `neural-20261105/`。
+已通过 283 项 CPU 用例，覆盖 K32 每个拒绝位置、输出截断、停止 token、异常恢复、跨页回收、递推状态恢复、缓冲边界、TP 参数合并及原始设备错误保留；新增覆盖参数布局的精确转换、设备存储选择、批量读回和多个快照的独立生命周期。另读取真实 27B 离线训练导出的 TP4 head，检查完整 64 层的布局转换和 dtype，保持输入只读。构建脚本已实际执行通过；五个 draft 入口通过前端编译和 PTOAS 代码生成，向量计算通过模拟器执行（误差 0）。初次验证证据见 `validation/pypto-qwen38/port-20261105/`，缓存布局修正后的记录见 `neural-20261105/`。
 
 真实 NPU 已完成以下检查，证据见 `validation/pypto-qwen38/target-only-20261105/`：
 
@@ -130,12 +146,31 @@ K32 验证与拒绝恢复已在同一真实模型上通过，证据见 `validati
 
 真实 head 检查使用 TP4 离线更新 4 步导出的测试 head，按层合并并在 TP1 上执行，证据见 `validation/pypto-qwen38/neural-20261105/`：完整 K32 起草返回 31 个候选；起草前后全部目标 KV、卷积状态、递推矩阵及页归属保持不变。验证接受 1 个候选后发生拒绝，提交后的历史与仅重放接受前缀逐字节一致，随后 3 步 AR 续写一致。另通过真实 scheduler 生成 3 个 token，与 target-only 完全相同，确实调用了神经 draft；请求释放、worker 与验证进程退出均已确认。
 
-首次神经 draft 执行暴露了运行时对缓存视图连续性的要求：选中 slot/layer 后须先去掉相应长度为 1 的维度，再 reshape。GDN 和 Full Attention 读取均已按此修正。本次检查证明了前向与验证链路可运行，尚未比较 PyPTO 与 PyTorch draft 的逐层数值，也不代表长请求、并发或生产验收。测试 head 只经历少量更新，且逐层搬运参数的路径尚未优化，不据此评价接受率或加速。
+首次神经 draft 执行暴露了运行时对缓存视图连续性的要求：选中 slot/layer 后须先去掉相应长度为 1 的维度，再 reshape。GDN 和 Full Attention 读取均已按此修正。本次检查证明了前向与验证链路可运行，尚未比较 PyPTO 与 PyTorch draft 的逐层数值，也不代表长请求、并发或生产验收。测试 head 只经历少量更新，不据此评价接受率或服务加速。
 
 Orthrus HTTP 检查在 61 的单张 A2 上通过，加载的是 TP2 在线 last-4 更新导出的 version298 测试 head，部署仍为 TP1。completion 返回 `, I'm`，chat 对 `1+1` 返回 `2`，SSE 正常返回 token 和 `[DONE]`。三次请求全部完成，错误与取消数为 0；指标记录 3 次神经 draft、3 轮验证和 1 次恢复。服务正常关闭，验证进程、服务进程及 NPU worker 均已退出，证据见 `validation/pypto-qwen38/http-20261105/`。
 
-当前逐层合并、校验和搬运 head 的路径仍然很慢，实测单轮起草约 59–147 秒。设备执行日志表明，大量时间位于设备调用之间，后续需拆分测量权重准备与传输开销，并设计参数驻留路径；这份结果用于功能验证，不作为投机加速部署配置。
+## 推理开销对照
+
+在同一张 A2、同一个真实 TP4 测试 head 和相同历史前缀上，分别测量初版和参数缓冲版本。CPU 使用 4 个线程，所有 NPU 调用同步完成后计时结束；不计入启动、缓存哈希和落盘时间。记录见 `validation/pypto-qwen38/optimization-20261105/`。
+
+| 项目 | 初版 | 参数缓冲版本 |
+| --- | --- | --- |
+| K32 起草中位数 | 56.63 s（2 轮） | 2.70 s（3 轮） |
+| 每轮 head 准备 | 重新读文件、合并和校验 | 已在启动时完成 |
+| 每轮设备参数分配/释放 | 各 528 次 | 0 次 |
+| 实际 head 存储方式 | 逐层分配并上传 | `stream`，复用两组缓冲 |
+| 完整 31 × 248320 logits | 与右侧逐字节相同 | SHA256 相同 |
+| 目标缓存只读、接受后历史 | 通过 | 通过 |
+
+起草阶段约快 21 倍，主要消除了重复转换和跨进程临时搬运，并未改变 Attention 算法。转换占用约 55 秒，被移至启动阶段；这组记录中完整启动从约 157 秒增至 234 秒。单卡仍需每轮上传约 14.5 GB 的 head，传输约占 2.3 秒，设备执行约 0.35 秒。设备内存足够时可使用 `resident` 避免重复上传；两种模式均已通过真实 NPU 小张量检查，但完整 27B 加全 head 驻留未在这张 64 GiB 卡上验收。
+
+验证侧分开测量了两项变化：批量读回有效 logits，使验证前向段减少约 70–80 ms；预注册 GDN 快照缓冲，减少主机临时分配和跨进程中转。后者在同一个模型中交错运行 24 个事务，首位拒绝、接受一个候选后拒绝和全部接受三类用例，输出及已提交缓存均一致。排除第一轮后，前两类事务中位数约从 1.05–1.07 秒降至 0.54–0.55 秒，全部接受从 0.65 秒降至 0.38 秒。共享快照占约 310 MB 主机内存，未增加 NPU 缓存。
+
+合入共享快照后的完整版本另在 A2 复验：三轮 K32 起草中位数 2.52 秒，随后验证事务约 0.51 秒，完整 logits 及接受后的历史检查均通过；completion、chat、SSE 也重新通过，三次请求无错误，服务正常退出。该复验使用另一张卡，未用于上表的同卡提速比值。
+
+上述数据用于定位和消除接入开销。接受率、完整请求吞吐和 goodput 还需使用训练充分的 head 与代表性请求评估。
 
 早期容器中的设备枚举错误记录保留在 `port-20261105/`。本次通过用户目录下的原生环境完成验证，没有修改 OneServing 模型源码；原容器启动失败的具体原因仍未确认。
 
-下一步补充逐层数值对照、更多请求边界和 head 重载，并优化 head 的准备与驻留方式。随后扩展 TP 和采样；训练和在线更新不在本轮迁移范围内。
+后续补充 PyPTO 与 PyTorch draft 的逐层数值对照、更多请求边界和 head 重载，再随原生模型演进扩展 TP、上下文和采样。训练和在线更新继续使用现有 PyTorch 路径，不在本轮推理迁移范围内。

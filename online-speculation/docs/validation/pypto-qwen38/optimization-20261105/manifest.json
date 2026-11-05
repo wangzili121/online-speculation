@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-05",
+  "scope": "PyPTO TP1 Orthrus serving overhead; no new production kernels or attention math changes",
+  "baseline_commit": "399930acaea1b6977c816572124f025d20a36ef7",
+  "host": "189.1.227.167",
+  "device": "Ascend 910B3, 64 GiB",
+  "cann": "9.1.1",
+  "driver": "26.1.1",
+  "cpu_threads": 4,
+  "runtime": {
+    "pypto": "98752784548b777b2377a9084411c3716eb341d6",
+    "simpler": "c1f89ea431f5306f78c0e4ab9573c829756d7f1e",
+    "pto_isa": "418de18dde8fa33773dc5c384fdfe5506463b628",
+    "ptoas": "0.65",
+    "ptoas_executable_version": "0.65"
+  },
+  "model": "Qwen3.8-27B, 64 layers BF16",
+  "head": "TP4 offline 4-step test head, not a converged pretrained head",
+  "head_storage": "stream for full 27B; resident tested with small NPU tensors only",
+  "source_sha256": {
+    "head.py": "5a4ec65efcf45a2f530dd96c03710d42b924ef8b289530552bec0df1006cb27c",
+    "weights.py": "7fcb11323a3a672158f4916759c838f71daa4dc80db612ecff8891496d5cf491",
+    "target.py": "31916cfdcf6e8783ef1319340ca8e861b0924dc95510b908fa9b4d2e10083809",
+    "draft.py": "dfe6f09592f50bb47cd6ebce8bd5b591fbe3dce4d7302874e2f5b103e02ec635",
+    "programs.py": "4d6057f58209669f535382e8d50e6642bc8537c24d40a33f6088b0eff2801a09",
+    "greedy.py": "a6ca3c0e32b35f4e26ea3d3d114b711478fa321422ef2c00b9b707c0be905cdf"
+  },
+  "attention_programs_equal_baseline": true,
+  "same_card_draft_comparison": {
+    "card": 2,
+    "baseline_rounds": 2,
+    "buffered_rounds": 3,
+    "includes_startup": false,
+    "includes_audit": false,
+    "metric": "synchronous propose latency, not request goodput"
+  },
+  "snapshot_comparison": {
+    "card": 4,
+    "transactions": 24,
+    "cases": [
+      "reject0",
+      "reject1",
+      "accept31"
+    ],
+    "order": "alternating private/shared on identical saved history",
+    "median_excludes_iteration": 0
+  },
+  "limitations": [
+    "TP1, one active request, greedy, native 512 context",
+    "No full-model head-resident validation on this 64 GiB device",
+    "Full-logits exactness compares pre/post overhead optimization; PyTorch vs PyPTO layerwise parity is separate"
+  ],
+  "public_snapshot_harness_reproduction": {
+    "card": 2,
+    "transactions": 24,
+    "passed": true,
+    "artifact": "snapshots-reproduction.json"
+  },
+  "resource_release_scope": "release.json checks process exit and advisory leases; its runs include historical attempts, not an aggregate test result",
+  "public_scripts_sha256": {
+    "benchmark_qwen38_pypto_draft.py": "53f25354ef0a01ed81932b811428a7625dd1d29fc9294e8b369fa39abf33f827",
+    "benchmark_qwen38_pypto_snapshots.py": "5fd8f130d330a6e0f4e96222bc769ac69c48de908f5f03b3d1162e67ccbc7c9e",
+    "validate_qwen38_pypto_storage.py": "da1857d299a91ffd80915423028f8d3ffab79bb4d2ff48261558b72b081d1276",
+    "serve_qwen38_pypto.py": "8248f7763c1095f2a8b0e59912c703f51661deacb706cce4616a35f3a076778b"
+  },
+  "artifact_sha256": {
+    "baseline.json": "4c00c0f7d44ac1d1824a6da197dbe6d922e9f8a9f53c618e4c8fc6bf5cb7cc91",
+    "comparison.json": "19a14238c61447e5ee71c95a35ee67d030c1ff55eb57a210714fb3e881658156",
+    "cpu.json": "f17814777d76387191811d4ca8cb86f475ec78a57e08d93c88ba7c31f3ae2f34",
+    "draft-buffers.json": "4e287b5c3437ebf16901f86e74c766a7c27b049fb6e088d017edcc32d226ca59",
+    "draft-final.json": "8309ad8fddbcad6d4d37dcc8635ef16dd74d6cada639db2843913e59610e6bda",
+    "http.json": "c5b63aa6495575647f0af4eb018033cdf52a70483d3d1e2bee0322369d028d35",
+    "release.json": "18613688a62c2f9ad874dc6448ef1bfb8896f3948a8c834472182b0fc13eefd9",
+    "snapshots-reproduction.json": "68a192b871f036874d4e4334db6631f059b9372d1e78222e0412645d59433386",
+    "storage.json": "286c6db1c8128de2503ae93fcccc336f878ce4b60a5936594653a4a04ed95437",
+    "verifier-readback.json": "3c327347329fe0c01aadbae37a3a818bc169ef791aea2a38afa2d64a1686bd2a",
+    "verifier-snapshots.json": "5a1db5cd691a6fb3d89ff02fb3150ff06d6bfb6f7624e45839daed20fe2b83aa"
+  }
+}
