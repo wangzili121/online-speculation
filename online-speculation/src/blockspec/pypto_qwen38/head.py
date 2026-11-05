@@ -10,6 +10,7 @@ import torch
 from safetensors import safe_open
 
 from .baseline import read_manifest
+from .tp import TPLayout, reshard_parameter
 
 
 HIDDEN, KEY_WIDTH, VALUE_WIDTH = 5120, 2048, 6144
@@ -54,7 +55,9 @@ def merge_parameter(layer, name, shards):
 class HeadSource:
     """Validate head shards and prepare an immutable runtime layout once."""
 
-    def __init__(self, model_root, head_dir=None, *, block_size=32, mask_token_id=1):
+    def __init__(self, model_root, head_dir=None, *, block_size=32, mask_token_id=1,
+                 runtime_tp=1, runtime_rank=0):
+        self.layout = TPLayout(runtime_tp, runtime_rank)
         self.model_root = Path(model_root)
         self.directory = None if head_dir is None else Path(head_dir)
         self._prepared = None
@@ -89,12 +92,19 @@ class HeadSource:
                 raise ValueError("head must match the base checkpoint, mask, block and hybrid policy")
             names = {f"layers.{layer}.attention.draft.{name}": shape
                      for layer in range(64) for name, shape in tensor_schema(layer, self.tp).items()}
+            dtypes = {}
             for rank in range(self.tp):
                 with safe_open(self.directory / f"rank{rank}.safetensors", framework="pt", device="cpu") as shard:
                     if set(shard.keys()) != names.keys():
                         raise ValueError(f"head shard {rank} has missing or extra draft tensors")
                     if any(tuple(shard.get_slice(key).get_shape()) != shape for key, shape in names.items()):
                         raise ValueError(f"head shard {rank} has incompatible tensor shapes")
+                    for key in names:
+                        dtype = shard.get_slice(key).get_dtype()
+                        permitted = {"BF16", "F32"} if key.endswith(".A_log") else {"BF16"}
+                        if dtype not in permitted or key in dtypes and dtypes[key] != dtype:
+                            raise ValueError(f"head shard {rank} has incompatible dtype for {key}")
+                        dtypes[key] = dtype
 
     def layer(self, layer):
         if type(layer) is not int or not 0 <= layer < 64:
@@ -102,19 +112,21 @@ class HeadSource:
         result = {}
         for name in tensor_schema(layer):
             if self.directory:
-                shards = []
-                for rank in range(self.tp):
+                def read(rank, selection, name=name):
                     with safe_open(self.directory / f"rank{rank}.safetensors", framework="pt", device="cpu") as file:
-                        shards.append(file.get_tensor(f"layers.{layer}.attention.draft.{name}"))
-                result[name] = merge_parameter(layer, name, shards)
+                        return file.get_slice(f"layers.{layer}.attention.draft.{name}")[selection]
+                source_tp = self.tp
             else:
                 kind = "self_attn" if layer % 4 == 3 else "linear_attn"
                 key = f"model.language_model.layers.{layer}.{kind}.{name}"
                 filename = Path(self.index[key])
                 if filename.is_absolute() or len(filename.parts) != 1:
                     raise ValueError("checkpoint shard names must be local basenames")
-                with safe_open(self.model_root / filename, framework="pt", device="cpu") as file:
-                    result[name] = merge_parameter(layer, name, [file.get_tensor(key)])
+                def read(rank, selection, filename=filename, key=key):
+                    with safe_open(self.model_root / filename, framework="pt", device="cpu") as file:
+                        return file.get_slice(key)[selection]
+                source_tp = 1
+            result[name] = reshard_parameter(layer, name, source_tp=source_tp, layout=self.layout, read=read)
         return result
 
     def banks(self, layer):
@@ -129,11 +141,11 @@ class HeadSource:
                 weights["o_proj.weight"]]
         padded = []
         for name in ("in_proj_a.weight", "in_proj_b.weight"):
-            padded.append(torch.nn.functional.pad(weights[name], (0, 0, 0, 80)))
+            padded.append(torch.nn.functional.pad(weights[name], (0, 0, 0, 128 - weights[name].shape[0])))
         constants = []
         for name in ("A_log", "dt_bias"):
             value = torch.zeros((1, 64), dtype=weights[name].dtype)
-            value[0, :48] = weights[name]
+            value[0, :weights[name].numel()] = weights[name]
             constants.append(value)
         return [weights["in_proj_qkv.weight"], weights["in_proj_z.weight"], *padded,
                 weights["conv1d.weight"].squeeze(1).T.contiguous(), *constants,

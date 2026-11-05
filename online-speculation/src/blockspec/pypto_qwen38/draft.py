@@ -34,6 +34,8 @@ class NeuralDraft:
     context = 512
 
     def __init__(self, source, head, *, head_storage="auto", head_transfer="individual"):
+        if getattr(getattr(head, "layout", None), "size", 1) != 1:
+            raise ValueError("rank-local heads require a full-model TP executor; the pinned native executor is TP1")
         self.source, self.head = source, head
         self.block_size = head.block_size
         self.programs, self.handles = {}, []
