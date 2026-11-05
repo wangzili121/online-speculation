@@ -1,0 +1,84 @@
+{
+  "passed": true,
+  "scope": "two_device_head_residency_and_row_projection_components",
+  "full_model_loaded": false,
+  "full_tp_inference": false,
+  "npu_execution": true,
+  "cases": [
+    {
+      "projection": "attention_o",
+      "repeat": 0,
+      "native_projection_exact": true,
+      "sum_exact": true,
+      "residual_once_exact": true,
+      "hot_head_upload_calls": 0
+    },
+    {
+      "projection": "attention_o",
+      "repeat": 1,
+      "native_projection_exact": true,
+      "sum_exact": true,
+      "residual_once_exact": true,
+      "hot_head_upload_calls": 0
+    },
+    {
+      "projection": "attention_o",
+      "repeat": 2,
+      "native_projection_exact": true,
+      "sum_exact": true,
+      "residual_once_exact": true,
+      "hot_head_upload_calls": 0
+    },
+    {
+      "projection": "mlp_down",
+      "repeat": 0,
+      "native_projection_exact": true,
+      "sum_exact": true,
+      "residual_once_exact": true,
+      "hot_head_upload_calls": 0
+    },
+    {
+      "projection": "mlp_down",
+      "repeat": 1,
+      "native_projection_exact": true,
+      "sum_exact": true,
+      "residual_once_exact": true,
+      "hot_head_upload_calls": 0
+    },
+    {
+      "projection": "mlp_down",
+      "repeat": 2,
+      "native_projection_exact": true,
+      "sum_exact": true,
+      "residual_once_exact": true,
+      "hot_head_upload_calls": 0
+    }
+  ],
+  "runtime": {
+    "pypto": "98752784548b777b2377a9084411c3716eb341d6",
+    "simpler": "c1f89ea431f5306f78c0e4ab9573c829756d7f1e",
+    "pto_isa": "418de18dde8fa33773dc5c384fdfe5506463b628",
+    "ptoas": "0.65",
+    "ptoas_executable_version": "0.65"
+  },
+  "compiled_programs": [
+    "attention_o",
+    "mlp_down",
+    "sum",
+    "residual"
+  ],
+  "rank_head_bytes": [
+    7342061568,
+    7342061568
+  ],
+  "cold_head_upload_calls": [
+    528,
+    528
+  ],
+  "committed_bytes_after_head": [
+    12795068333,
+    12795068333
+  ],
+  "wrong_worker_free_rejected": true,
+  "byte_exact_head_layers_per_rank": 64
+}

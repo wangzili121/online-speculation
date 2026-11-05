@@ -1,0 +1,107 @@
+{
+  "date": "2026-11-06",
+  "timezone": "Asia/Shanghai",
+  "scope": "two-NPU residency, native row projection and collective components; not full-model TP serving",
+  "implementation_commit": "b3907a7fc74265527ac8c4ed91c3ad65f741a4cf",
+  "base_commit": "eaa2f9841f93b4488c5bdcfc8db8d04e72238c22",
+  "upstream": {
+    "checked_on": "2026-11-06",
+    "url": "https://github.com/ndleslx/OneServing/tree/main",
+    "main_commit": "7aa40ba5238e3a83bb5f25e18817497c181e3e9b",
+    "changed_from_pinned": false
+  },
+  "host": "189.1.227.167",
+  "physical_devices": [
+    4,
+    5
+  ],
+  "logical_workers": [
+    0,
+    1
+  ],
+  "device": "2 x Ascend 910B3 64 GiB",
+  "driver": "26.1.1",
+  "cann": "9.1.1",
+  "runtime": {
+    "pypto": "98752784548b777b2377a9084411c3716eb341d6",
+    "simpler": "c1f89ea431f5306f78c0e4ab9573c829756d7f1e",
+    "pto_isa": "418de18dde8fa33773dc5c384fdfe5506463b628",
+    "ptoas": "0.65",
+    "ptoas_executable_version": "0.65"
+  },
+  "model": "Qwen3.8-27B external BF16 checkpoint",
+  "head": "TP4 offline four-step trained-v4 test head, resharded into TP2; not converged",
+  "full_model_loaded": false,
+  "full_tp_inference": false,
+  "cpu_tests": 338,
+  "cpu_test_source_snapshot": "pypto-devices-20261106-r3",
+  "implementation": "Native Linear/residual and builtin cast/Sum; no handwritten arithmetic kernels",
+  "final_source_snapshot": "pypto-devices-20261106-r3",
+  "head_residency": {
+    "parameter_bytes_per_rank": [
+      7342061568,
+      7342061568
+    ],
+    "cold_upload_calls": [
+      528,
+      528
+    ],
+    "byte_exact_layers_per_rank": 64,
+    "hot_head_upload_calls": 0,
+    "wrong_worker_free_rejected": true,
+    "committed_bytes_after_head": [
+      12795068205,
+      12795068205
+    ],
+    "committed_bytes_scope": "Runtime/window heap and head only; not full-model memory"
+  },
+  "projection_reference": "Sparse BF16 inputs select first/last K tiles of real local weights; exact FP32 two-term reference rounded to BF16",
+  "pipeline": [
+    "native row projection on both devices",
+    "FP32 Sum of all 32x5120 outputs",
+    "BF16 cast",
+    "native residual once per rank"
+  ],
+  "runtime_cpu_roundtrip_between_pipeline_steps": false,
+  "component_cases": 6,
+  "repeats_per_projection": 3,
+  "validation_collective_iterations_per_dispatch": 3,
+  "default_collective_iterations_per_dispatch": 1,
+  "results": {
+    "projections_exact": true,
+    "sum_exact": true,
+    "residual_exact": true,
+    "signal_reuse": true
+  },
+  "tile_limit": {
+    "native_k_tile": 512,
+    "native_n_tile": 128,
+    "tp2_attention_o_k": 3072,
+    "tp2_mlp_down_k": 8704,
+    "tp4_mlp_down_k": 4352,
+    "tp4_required_k_if_padded": 4608,
+    "tp4_mlp_down_padding_implemented": false,
+    "misaligned_native_calls_rejected": true
+  },
+  "remaining": [
+    "Native complete Attention/GDN/MLP TP graphs and shared-history binding",
+    "Rank-synchronized proposal/verification and transactional cache commits",
+    "Full-model TP2/TP4 end-to-end and throughput acceptance"
+  ],
+  "resource_release": "release.json",
+  "source_sha256": "source-sha256.json",
+  "artifact_source_snapshots": {
+    "rowwise.json": "pypto-devices-20261106-r2",
+    "blockwise.json": "pypto-devices-20261106-r3",
+    "compile.json": "pypto-devices-20261106-r3",
+    "cpu-tests.txt": "pypto-devices-20261106-r3"
+  },
+  "artifact_sha256": {
+    "blockwise.json": "9e8aabdf4d796717cf4b012816fe8edee81e80155b225a7b57170d3f96e00e29",
+    "compile.json": "8d65585e2c67314b6089ae205d2159872027ef4ab50721f493c548f79f16eb6b",
+    "cpu-tests.txt": "462a86258ebc4281be236b382080777a47428a7dd6430495f848fef11f0b7870",
+    "release.json": "627e3c8e73cf12ea564889855044aeac0df523c23eb4263ffc8d21eee3d56eb5",
+    "rowwise.json": "5d2eeb7313039fd040c168f66f55b2b4aaf25d0004f5cc371bc971bc781b3470",
+    "source-sha256.json": "6b752e201898d96f4932b241fd5917dc8cfb89cd600c6dfbd7c0db2f925e151b"
+  }
+}

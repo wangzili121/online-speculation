@@ -26,6 +26,7 @@ Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标
 - `head.py`：读取 `orthrus-qwen38-native-tp-v1`，检查基模哈希、K、mask、混合层策略和 tensor schema，按运行 rank 读取 TP1/2/4 checkpoint 的对应参数，并准备共享主机布局。当前服务运行 TP1，会合并训练分片。
 - `tp.py`：定义各 rank 的 heads 范围和 KV/GDN 状态形状，按参数布局重分片，检查目标历史的形状是否相容。
 - `weights.py`：设备内存充足时保留全部 head；否则复用 GDN、Full Attention 各一组设备缓冲，逐层上传已经准备好的参数。可选按层打包上传，通过公开的 `Buffer.tensor` 创建具有同一内存 owner 的参数视图。
+- `tp_programs.py`：组合原生 Linear、residual 和 PyPTO 内置 Sum，提供行并行投影、整块归约及归约后的 residual 组件；完整 TP 模型执行器尚未接入。
 - `greedy.py`：比较整块候选；第一次拒绝时输出目标 token，全接受时输出 bonus；输出上限和停止 token 同样限制提交长度。
 - `target.py`：在原生 runner 上执行验证，批量读取有效 logits 行；需要拒绝后缀时，恢复验证前的 GDN 状态和页表长度，再仅重放接受前缀。状态快照使用预注册共享缓冲，每个存活快照独占一个槽；池满时回退到独立副本。
 - `programs.py`：组合原生投影、norm、GDN、Full Attention 和 MLP。K32 分为两个 16 行 tile；Full Attention 先准备整个块的 K/V，再计算两个 tile 的 query，读取主模型历史但不写目标缓存。
@@ -43,7 +44,7 @@ Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthr
 
 | 能力 | vLLM-Ascend | 当前 PyPTO 接入 |
 | --- | --- | --- |
-| 参数驻留 | TP2/TP4 分片后，固定推理的主模型和 draft 参数驻留 NPU | 主模型驻留；head 支持 `resident`/`stream`，但完整 27B 在当前 64 GiB 单卡实际使用逐层上传。全 head 驻留只验过小张量组件 |
+| 参数驻留 | TP2/TP4 分片后，固定推理的主模型和 draft 参数驻留 NPU | 单卡服务的主模型驻留、head 逐层上传；另已验证真实 head 的 TP2 分片分别驻留两卡。主模型与 head 一起驻留的整网多卡路径尚未接入 |
 | Backbone/KV 共享 | 引用原生 backbone 权重，读取主模型历史快照 | 同一 worker 复用 backbone 设备参数和目标历史缓存；draft 使用临时工作区，不转正 draft KV。两边都有布局整理或临时复制，并非所有读取均为零拷贝 |
 | Attention 执行 | 使用 `npu_fusion_attention` 等镜像已有融合算子 | 复用 OneServing 的 PyPTO Attention/GDN 模块。当前 `attention512_core` 分段计算 QK、softmax、PV，并保留 scores/probabilities 中间张量，不等同于 FlashAttention 式融合实现 |
 | 整块校正 | 使用 vLLM 原生 sampler，支持 greedy 与标准 rejection sampling | 批量读回 logits 后在 CPU 选择 token；接受前缀由 `greedy.correct` 的 Python 循环确定。目前仅支持 greedy，尚未实现设备端整块张量校正与随机采样 |
@@ -53,6 +54,8 @@ Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthr
 ## 完整 TP 的接入准备
 
 PyPTO 本身已有多卡运行能力；当前固定 OneServing 只分片 LM head，Orthrus 服务仍使用 TP1。这里完成的是后续完整 TP 所需的 head 加载与布局准备，未启用多卡整网推理。`NeuralDraft` 会拒绝把局部 head 送入现有单卡图。
+
+2026-11-06 检查公开 [OneServing main](https://github.com/ndleslx/OneServing/tree/main)，仍为固定的 `7aa40ba`。本轮继续验证双卡参数驻留与行并行组件，没有修改原生模型源码或放宽版本检查。
 
 | 运行 TP | 每卡 Full Attention Q / KV heads | 每卡 GDN K / V heads | 每卡共享 MLP 中间宽度 |
 | --- | --- | --- | --- |
@@ -78,6 +81,29 @@ python scripts/audit_qwen38_pypto.py \
 `HeadSource(..., runtime_tp=2, runtime_rank=rank)` 提供相同的 Python 接口。`head.tp` 表示 checkpoint TP，`head.layout` 表示运行布局。使用 `audit_qwen38_pypto_tp.py --source ... --model ... --head-dir ... --tp 2 --output ...` 可核对所有 rank：逐层与独立整张量读取对照，检查重组后参数完全相同；省略 `--head-dir` 检查 AR 复制初始化。以上入口不分配 NPU，不是多卡推理验收。
 
 本轮已用真实 27B 的 TP4 测试 head 检查 TP2、TP4 运行布局，以及从 AR 权重初始化的 TP2 布局，三组均覆盖 64 层，重组后的参数和 dtype 完全相同。另在一张真实 A2 上复跑 TP1：K32 起草前后目标缓存不变，拒绝后的已提交历史与重放一致，后续续写和服务调度输出均与 Target 相同。331 项 CPU 用例通过，包含跨 TP 的局部读取、复制参数校验，以及小尺寸 Full Attention/GDN 分头后合并输出的数学对照；未执行整网多卡通信。证据见 `validation/pypto-qwen38/tp-preparation-20261105/`。
+
+### 双卡驻留与行并行组件
+
+`DraftWeights(..., worker_id=rank)` 将显存查询、参数分配、上传和释放绑定到指定设备 worker。`worker_id` 是 `DistributedWorker` 内的逻辑编号，不是物理卡号，也不自动从 checkpoint rank 推断。各 rank 的共享主机参数应在创建 worker 前以 `ReadOnlyHostTensor` 注册；释放失败时保留未释放的句柄及 owner，允许重试。
+
+行并行链路为 `本卡投影 → 全块 Sum → residual`。`tp_programs.py` 直接调用原生 Linear 和 residual；归约调用 PyPTO 现有 `pld.tensor.allreduce`。固定版本的归约支持 FP16/FP32，不能直接接收 BF16，因此在设备上转 FP32、完成 Sum 后转回 BF16。归约以整个 `32 × 5120` 输出为单位，residual 在归约后只加一次，中间结果不经过 CPU。
+
+使用 InCore Sum 是为了复用其可重复使用的 signal 协议；该版本的 HOST Sum 不能直接放进循环。测试入口在一次 dispatch 内连续归约三次，并改变输入重复调用，检查信号状态没有污染后续计算。
+
+原生 Linear 的 K tile 为 512、输出 tile 为 128，现有循环不处理不足一块的尾部。TP2 的 Attention O projection 和 MLP down projection 分别有 3072、8704 个输入通道，均符合要求；TP4 的 MLP down 为 4352，需要补齐到 4608 或使用支持尾块的原生实现。`validate_linear_tiles` 会拒绝直接提交不整除的形状，防止静默漏算最后 256 列。这是算子调用布局要求，不改变模型公式。
+
+在已分配的两张卡上运行：
+
+```bash
+python scripts/validate_qwen38_pypto_tp_components.py \
+  --source /sources/OneServing --model /models/Qwen3.8-27B \
+  --head-dir /heads/version4 --devices 0,1 \
+  --output /results/tp-components.json
+```
+
+添加 `--compile-only` 只编译四个入口，不分配 NPU。实测入口只加载真实 head 分片及一层共享 MLP down 权重，逐卡回读全部 64 层 head，并检查驻留后不再上传、错误 owner 释放被拒绝，以及两类投影的 Sum/residual 结果。CPU 只生成对照数据、校验回读值；这不是完整 TP2 模型服务或吞吐测试。
+
+2026-11-06 在 167 的两张 A2 上完成实测：每卡约 7.34 GB head 完整驻留，64 层参数逐字节回读一致，重复调用不再上传 head；原生 Attention O projection 与共享 MLP down projection 各三轮，局部投影、整块 Sum 和 residual 均与对照完全相同。每次 Sum dispatch 内连续执行三次归约，信号重复使用通过。测试结束后两卡的 worker、控制进程和设备锁均已释放。记录见 `validation/pypto-qwen38/tp-components-20261106/`，后续仍需将这些组件接入原生完整 TP 的 Attention/GDN/MLP 计算图和跨 rank 验证事务。
 
 ## 运行入口
 
@@ -187,7 +213,7 @@ ASCEND_RT_VISIBLE_DEVICES=0 python scripts/smoke_qwen38_pypto_base.py \
 
 ## 验证与后续
 
-已通过 331 项 CPU 用例，覆盖 K32 每个拒绝位置、输出截断、停止 token、异常恢复、跨页回收、递推状态恢复、缓冲边界、TP 参数合并及原始设备错误保留；还包括打包视图的 owner/布局检查、全接受测试保留真实起草，以及全部 BF16 编码和并列最大值的输出选择检查。另读取真实 27B 离线训练导出的 TP4 head，检查完整 64 层的布局转换和 dtype，保持输入只读。构建脚本已实际执行通过；五个 draft 入口通过前端编译和 PTOAS 代码生成，向量计算通过模拟器执行（误差 0）。初次验证证据见 `validation/pypto-qwen38/port-20261105/`，缓存布局修正后的记录见 `neural-20261105/`。
+已通过 338 项 CPU 用例，覆盖 K32 每个拒绝位置、输出截断、停止 token、异常恢复、跨页回收、递推状态恢复、缓冲边界、TP 参数合并及原始设备错误保留；还包括打包视图的 owner/布局检查、指定 worker 的内存操作与释放重试、全接受测试保留真实起草，以及全部 BF16 编码和并列最大值的输出选择检查。另读取真实 27B 离线训练导出的 TP4 head，检查完整 64 层的布局转换和 dtype，保持输入只读。构建脚本已实际执行通过；五个 draft 入口通过前端编译和 PTOAS 代码生成，向量计算通过模拟器执行（误差 0）。初次验证证据见 `validation/pypto-qwen38/port-20261105/`，缓存布局修正后的记录见 `neural-20261105/`。
 
 真实 NPU 已完成以下检查，证据见 `validation/pypto-qwen38/target-only-20261105/`：
 
