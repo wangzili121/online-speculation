@@ -86,3 +86,18 @@ def test_unknown_backend_is_rejected_before_importing_pypto():
         make_programs(None, attention_backend="unknown")
     with pytest.raises(ValueError, match="backend"):
         NeuralDraft(None, None, attention_backend="unknown")
+
+
+@pytest.mark.parametrize("kwargs", [{"physical_pages": 0}, {"pool_layers": -1},
+                                    {"capacity": 64}, {"capacity": True}])
+def test_paged_backend_rejects_incompatible_storage_or_capacity(kwargs):
+    from blockspec.pypto_qwen38.paged_attention_programs import make_paged_attention
+    with pytest.raises(ValueError):
+        make_paged_attention(**kwargs)
+
+
+@pytest.mark.parametrize("tile", [4, 8])
+def test_paged_backend_does_not_advertise_unvalidated_cube_or_vector_tiles(tile):
+    from blockspec.pypto_qwen38.paged_attention_programs import make_paged_attention
+    with pytest.raises(ValueError, match="query_tile=16"):
+        make_paged_attention(AttentionShape(query_tile=tile))

@@ -1,0 +1,143 @@
+{
+  "scope": "separate_instrumented_last_case_profiles",
+  "profiles": {
+    "staged": {
+      "source": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261107_003657_0qpt3d2v/dfx_outputs/rank0/d8/merged_swimlane_20261107_003727.json",
+      "sha256": "b4e2208eb19cbacb7d2e84c29f368d08d7b5b0260f917c0b3402796680c2c868",
+      "device_task_window_us": 203.28,
+      "run_epoch": 1879,
+      "block_records": 468,
+      "tasks": {
+        "orthrus_history_gather_spmd": {
+          "blocks": 128,
+          "min_us": 1.8200000000000003,
+          "median_us": 3.1200000000000028,
+          "max_us": 6.5200000000000005
+        },
+        "orthrus_temporary_kv_spmd": {
+          "blocks": 4,
+          "min_us": 16.36,
+          "median_us": 16.799999999999997,
+          "max_us": 17.32
+        },
+        "orthrus_staged_qk_aic_spmd": {
+          "blocks": 48,
+          "min_us": 5.340000000000003,
+          "median_us": 6.589999999999996,
+          "max_us": 9.040000000000006
+        },
+        "orthrus_staged_qk_aiv_spmd": {
+          "blocks": 96,
+          "min_us": 5.140000000000001,
+          "median_us": 6.6200000000000045,
+          "max_us": 9.260000000000005
+        },
+        "orthrus_staged_softmax_spmd": {
+          "blocks": 48,
+          "min_us": 2.5400000000000063,
+          "median_us": 3.1600000000000037,
+          "max_us": 5.519999999999996
+        },
+        "orthrus_staged_pv_aic_spmd": {
+          "blocks": 48,
+          "min_us": 20.5,
+          "median_us": 25.0,
+          "max_us": 27.97999999999999
+        },
+        "orthrus_staged_pv_aiv_spmd": {
+          "blocks": 96,
+          "min_us": 20.560000000000002,
+          "median_us": 25.04,
+          "max_us": 29.319999999999993
+        }
+      }
+    },
+    "fused": {
+      "source": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261107_003658_43j2p5se/dfx_outputs/rank0/d10/merged_swimlane_20261107_003727.json",
+      "sha256": "6c8adf76c785e2a82cdb9022d585e45bd92f9f622f01d9f5b4100d0b4720bfcd",
+      "device_task_window_us": 108.34,
+      "run_epoch": 1882,
+      "block_records": 276,
+      "tasks": {
+        "orthrus_history_gather_spmd": {
+          "blocks": 128,
+          "min_us": 1.6599999999999966,
+          "median_us": 3.2200000000000015,
+          "max_us": 6.46
+        },
+        "orthrus_temporary_kv_spmd": {
+          "blocks": 4,
+          "min_us": 16.6,
+          "median_us": 16.89,
+          "max_us": 17.240000000000002
+        },
+        "orthrus_bidirectional_attention_aic_spmd": {
+          "blocks": 48,
+          "min_us": 9.719999999999999,
+          "median_us": 11.030000000000001,
+          "max_us": 15.159999999999997
+        },
+        "orthrus_bidirectional_attention_aiv_spmd": {
+          "blocks": 96,
+          "min_us": 9.780000000000001,
+          "median_us": 11.939999999999998,
+          "max_us": 16.599999999999994
+        }
+      }
+    },
+    "paged": {
+      "source": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261107_003659_gsm6917h/dfx_outputs/rank0/d12/merged_swimlane_20261107_003728.json",
+      "sha256": "1185163336b0fe8239462be1d9f1773c377b41dea6456e1130a7373ad9c9deb9",
+      "device_task_window_us": 64.08,
+      "run_epoch": 1885,
+      "block_records": 145,
+      "tasks": {
+        "orthrus_l1_zero_source_1": {
+          "blocks": 1,
+          "min_us": 1.98,
+          "median_us": 1.98,
+          "max_us": 1.98
+        },
+        "orthrus_direct_paged_attention_1_aic_spmd": {
+          "blocks": 48,
+          "min_us": 14.800000000000004,
+          "median_us": 19.16,
+          "max_us": 20.6
+        },
+        "orthrus_direct_paged_attention_1_aiv_spmd": {
+          "blocks": 96,
+          "min_us": 14.759999999999998,
+          "median_us": 19.309999999999995,
+          "max_us": 22.220000000000002
+        }
+      }
+    },
+    "paged32": {
+      "source": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261107_003701_7y821efv/dfx_outputs/rank0/d14/merged_swimlane_20261107_003728.json",
+      "sha256": "ce0d407894ea537cd33a9a5f015377ee7a46c28e4c950918e9845b462a357bc4",
+      "device_task_window_us": 53.4,
+      "run_epoch": 1888,
+      "block_records": 73,
+      "tasks": {
+        "orthrus_l1_zero_source_1": {
+          "blocks": 1,
+          "min_us": 1.96,
+          "median_us": 1.96,
+          "max_us": 1.96
+        },
+        "orthrus_direct_paged_attention_1_aic_spmd": {
+          "blocks": 24,
+          "min_us": 17.32,
+          "median_us": 25.53,
+          "max_us": 26.96
+        },
+        "orthrus_direct_paged_attention_1_aiv_spmd": {
+          "blocks": 48,
+          "min_us": 16.720000000000006,
+          "median_us": 26.040000000000003,
+          "max_us": 29.38
+        }
+      }
+    }
+  }
+}
