@@ -49,7 +49,7 @@ Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthr
 
 独立入口、输入输出及调优边界见 [kernel 任务说明](QWEN38_PYPTO_KERNEL_TASK.md)，原始记录见 `validation/pypto-qwen38/attention-20261106/`。可参考 Goal Plus Playground 的 `pypto-kernel` 场景组织后续调优，保持本项目的 golden、输入与计时范围不变。
 
-补充的同 worker 对照中，原生与融合后端的完整 logits 和 31 个候选逐字节相同，两边的验证与接受前缀重放均通过。六轮起草中位数分别为 2.225 s 和 2.311 s；Full Attention 入口分别为 47.85 ms 和 46.06 ms，整轮主要受 head 上传影响，尚未取得完整起草收益，默认仍为 `native`。同一 head 转为 TP2 文件并重启 TP1 worker 后，运行参数、初始历史及两种后端的 logits/候选也完全一致。另完成相同输入的逐层 HF 对照，128 项检查全部通过，最大相对 L2 误差约 0.285%；CPU 回归共 357 项通过。方法和原始记录见[逐层对照与重载验证](QWEN38_PYPTO_PAIRED_VALIDATION.md)。
+补充的同 worker 对照中，原生与融合后端的完整 logits 和 31 个候选逐字节相同，两边的验证与接受前缀重放均通过。六轮起草中位数分别为 2.225 s 和 2.311 s；Full Attention 层执行入口分别为 47.85 ms 和 46.06 ms，该入口包含 O 投影、残差、norm 和 MLP，不能当成纯 Attention 核计时。整轮主要受 head 上传影响，尚未取得完整起草收益，默认仍为 `native`。同一 head 转为 TP2 文件并重启 TP1 worker 后，运行参数、初始历史及两种后端的 logits/候选也完全一致。另完成相同输入的逐层 HF 对照，128 项检查全部通过，最大相对 L2 误差约 0.285%；CPU 回归共 357 项通过。方法和原始记录见[逐层对照与重载验证](QWEN38_PYPTO_PAIRED_VALIDATION.md)。
 
 ## 与 vLLM 路径的对应关系
 
