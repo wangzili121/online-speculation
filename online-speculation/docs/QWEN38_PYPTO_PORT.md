@@ -49,6 +49,8 @@ Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthr
 
 独立入口、输入输出及调优边界见 [kernel 任务说明](QWEN38_PYPTO_KERNEL_TASK.md)，原始记录见 `validation/pypto-qwen38/attention-20261106/`。可参考 Goal Plus Playground 的 `pypto-kernel` 场景组织后续调优，保持本项目的 golden、输入与计时范围不变。
 
+补充的同 worker 对照中，原生与融合后端的完整 logits 和 31 个候选逐字节相同，两边的验证与接受前缀重放均通过。六轮起草中位数分别为 2.225 s 和 2.311 s；Full Attention 入口分别为 47.85 ms 和 46.06 ms，整轮主要受 head 上传影响，尚未取得完整起草收益，默认仍为 `native`。同一 head 转为 TP2 文件并重启 TP1 worker 后，运行参数、初始历史及两种后端的 logits/候选也完全一致。另完成相同输入的逐层 HF 对照，128 项检查全部通过，最大相对 L2 误差约 0.285%；CPU 回归共 357 项通过。方法和原始记录见[逐层对照与重载验证](QWEN38_PYPTO_PAIRED_VALIDATION.md)。
+
 ## 与 vLLM 路径的对应关系
 
 两条路径共享算法定义，执行能力需分别核对，不能将 vLLM 的算子与校正实现直接算作 PyPTO 已有能力。
@@ -272,4 +274,4 @@ Orthrus HTTP 检查在 61 的单张 A2 上通过，加载的是 TP2 在线 last-
 
 早期容器中的设备枚举错误记录保留在 `port-20261105/`。本次通过用户目录下的原生环境完成验证，没有修改 OneServing 模型源码；原容器启动失败的具体原因仍未确认。
 
-后续补充 PyPTO 与 PyTorch draft 的逐层数值对照、更多请求边界和 head 重载，再随原生模型演进扩展 TP、上下文和采样。训练和在线更新继续使用现有 PyTorch 路径，不在本轮推理迁移范围内。
+后续扩展请求边界，并随原生模型演进接入完整 TP、head 驻留、上下文和采样。训练和在线更新继续使用现有 PyTorch 路径，PyPTO 加载导出的 head；重启换入不等于进程内在线更新。

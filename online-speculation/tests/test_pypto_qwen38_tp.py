@@ -1,7 +1,9 @@
 """CPU checks of rank-local loading and head-parallel Attention/GDN math."""
 
 import hashlib
+import importlib.util
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -137,6 +139,32 @@ def make_checkpoint(tmp_path, weights, source_tp):
     for rank, shard in enumerate(shards):
         save_file(shard, head / f"rank{rank}.safetensors")
     return model, head
+
+
+def test_exported_head_repartition_is_exact_and_does_not_overwrite(tmp_path, small_weights):
+    from blockspec.pypto_qwen38.inspection import head_digest
+
+    path = Path(__file__).parents[1] / "scripts/reshard_qwen38_pypto_head.py"
+    spec = importlib.util.spec_from_file_location("reshard_head", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    export_head = module.export_head
+
+    model, source = make_checkpoint(tmp_path, small_weights, 4)
+    output = tmp_path / "head-tp2"
+    export_head(model, source, output, 2)
+    before, after = HeadSource(model, source), HeadSource(model, output)
+    assert before.tp == 4 and after.tp == 2
+    assert head_digest(before) == head_digest(after)
+    before.prepare()
+    assert head_digest(before) == head_digest(after)
+    with pytest.raises(FileExistsError):
+        export_head(model, source, output, 2)
+    assert HeadSource(model, output).tp == 2
+    altered = load_file(output / "rank0.safetensors")
+    altered["layers.0.attention.draft.in_proj_b.weight"][0, 0] += 1
+    save_file(altered, output / "rank0.safetensors")
+    assert head_digest(before) != head_digest(HeadSource(model, output))
 
 
 @pytest.mark.parametrize("source_tp", (1, 2, 4))

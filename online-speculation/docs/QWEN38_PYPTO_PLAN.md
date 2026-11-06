@@ -17,4 +17,6 @@
 
 当前进度：第 1 项已有独立 Torch 参考、融合/分阶段对照和 14 组 A2 实测；融合后端已接回完整 64 层，真实 27B 的 K32 起草、目标 cache 只读、拒绝恢复和短请求 greedy 检查通过。352 项 CPU 回归通过，相关卡已释放。
 
-接下来补逐层 Torch 数值对照、同一 head 的整轮性能比较及 head 重载；随后扩展请求边界和服务验收。完整 TP 的执行接入需要原生模型提供局部 Attention/GDN/MLP 和归约接口；现有 head 分片与双卡组件继续作为其对接基础。具体 kernel 的输入、参考、验证和性能口径见 [任务说明](QWEN38_PYPTO_KERNEL_TASK.md)。
+已补完相同输入的逐层 Torch 对照：两个后端共 128 项检查通过，最大相对 L2 误差约 0.285%；CPU 回归共 357 项通过。同一 worker 的六轮对照中，两种后端 logits 和候选完全相同；head 由 TP4 转成 TP2 文件并重启加载后，参数、历史、logits 和候选也完全相同。融合 Full Attention 局部耗时较低，完整起草未取得收益，默认保留原生后端。结果与复现入口见[逐层对照与重载验证](QWEN38_PYPTO_PAIRED_VALIDATION.md)。
+
+下一步扩展请求边界和服务验收，并接通完整 TP 与 head 驻留。完整 TP 的执行接入需要原生模型提供局部 Attention/GDN/MLP 和归约接口；现有 head 分片与双卡组件继续作为其对接基础。具体 kernel 的输入、参考、验证和性能口径见 [任务说明](QWEN38_PYPTO_KERNEL_TASK.md)。

@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-06",
+  "base_commit": "0bd67b3cca2d80a0960294e9bc3e5d77b37222f6",
+  "host": "189.1.227.167",
+  "runtime_tp": 1,
+  "block_size": 32,
+  "active_requests": 1,
+  "cpu": {
+    "tests": 357,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "hf_reference_version": "5.17.0",
+  "layer_checks": 128,
+  "max_layer_relative_l2": 0.002847562078386545,
+  "relative_l2_limit": 0.02,
+  "native_fused_candidates_and_logits_exact": true,
+  "repartition_source_tp": 4,
+  "repartition_destination_tp": 2,
+  "restart_head_history_logits_exact": true,
+  "runtime": {
+    "pypto": "98752784548b777b2377a9084411c3716eb341d6",
+    "simpler": "c1f89ea431f5306f78c0e4ab9573c829756d7f1e",
+    "pto_isa": "418de18dde8fa33773dc5c384fdfe5506463b628",
+    "ptoas": "0.65",
+    "ptoas_executable_version": "0.65"
+  },
+  "head_sha256": "9c1d292e1eb2c1a5f1329e2af5b82300f3166cb2d9071c002e580aeb66eb59b7",
+  "paired_rounds_per_backend": 6,
+  "paired_seconds": {
+    "native": 2.2248964058235288,
+    "fused": 2.310796381905675
+  },
+  "phase_medians_seconds": {
+    "native": {
+      "full_seconds": 0.04785027448087931,
+      "device_seconds": 0.3388948552310467,
+      "weights_seconds": 1.8565274851862341,
+      "total_seconds": 2.22482972079888
+    },
+    "fused": {
+      "full_seconds": 0.04605552088469267,
+      "device_seconds": 0.338994603138417,
+      "weights_seconds": 1.9401371604762971,
+      "total_seconds": 2.3107385870534927
+    }
+  },
+  "default_attention_backend": "native",
+  "end_to_end_speedup_established": false,
+  "resources_released": true,
+  "tested_source_sha256": {
+    "online-speculation/src/blockspec/pypto_qwen38/__init__.py": "75e50623604a7d353323f043cf6173ad529cf127150ff16f3427b97697e09171",
+    "online-speculation/src/blockspec/pypto_qwen38/attention.py": "6e3786ad4deb1c4e4733214d08618a40479cf567027c0fcd88010ace2656beef",
+    "online-speculation/src/blockspec/pypto_qwen38/attention_programs.py": "56f1033d5e66cf33881bc1a25230a9dbc0a8a04b898604d509a83813642cc84b",
+    "online-speculation/src/blockspec/pypto_qwen38/baseline.py": "37ae279f87c74d05fa5fbb26c355d86ecbd8c6ac78cd4961d0787af0472f88c7",
+    "online-speculation/src/blockspec/pypto_qwen38/draft.py": "6f54fa888ca4087143d3478df6f6d2a5de4a2afa75867424f3dca5f2df245512",
+    "online-speculation/src/blockspec/pypto_qwen38/greedy.py": "3ef63dd45a5f43efa0a47bcccd98babc78bd7edc559f8814af8adb4e2e2dcfdf",
+    "online-speculation/src/blockspec/pypto_qwen38/head.py": "7b8d3ca5e299d62e5c126572db4db9f11a607fa01a483eaecfbfd89dcb6a30d7",
+    "online-speculation/src/blockspec/pypto_qwen38/hf_reference.py": "10dd5f8400b2372a13480cb54f99fea4627225b2891ef64adc2defb46ff4966e",
+    "online-speculation/src/blockspec/pypto_qwen38/inspection.py": "0b322d5ef4a6870f4fc220ad4c6fd8c5911677df45ade3c2fbbd006030bddc07",
+    "online-speculation/src/blockspec/pypto_qwen38/programs.py": "7f9d3f47e7ada25630241f360805fed151978383cc44e9ce325fad5508811e7d",
+    "online-speculation/src/blockspec/pypto_qwen38/target.py": "6775958eaae5b3d18ab64c95b15432e73719b6f67979ec9cf357b99fe04daa5b",
+    "online-speculation/src/blockspec/pypto_qwen38/tp.py": "542f5161814cae470f676be3d928c0b5ed2c279babfc4883f752ec73e7ce3db6",
+    "online-speculation/src/blockspec/pypto_qwen38/tp_programs.py": "67984e99e394689e49c9d4156e496dd086d721ef5a809b2ebf6cf7532a21946a",
+    "online-speculation/src/blockspec/pypto_qwen38/weights.py": "9a21d3512a7ba9ef585ec51e6fc4e4a8ac1760bd759207bef2b30f74686a5717",
+    "online-speculation/src/blockspec/parallel/qwen38.py": "e4e2686a08cb3886b5f309087b5eb5bf71beb67d73cccc7c304742eaf467f4c9",
+    "online-speculation/scripts/compare_qwen38_pypto_draft.py": "8b37096d4dd0c20945a2172667351cce8248b418b29f209ac3627d6782a308ef",
+    "online-speculation/scripts/audit_qwen38_pypto_layers.py": "01283495482fcfe414ddaee377b662707d5f455055eb81100bc71568c315b158",
+    "online-speculation/scripts/reshard_qwen38_pypto_head.py": "00b83049829a37e38e92e18aa135911aa79411776e4804e7399353f447b7547f",
+    "online-speculation/tests/test_pypto_qwen38.py": "a30fe279f1ef0668baee64cd00c4fafc88c0e9e37df64be32fda5c15d1989ded",
+    "online-speculation/tests/test_pypto_qwen38_attention.py": "2a722365f7c87c1ce66dc007f9aa9e4c6fdd82baa9653cdaf68bdbd15d93d6f3",
+    "online-speculation/tests/test_pypto_qwen38_benchmark.py": "d0014068a43f9adb6abe2f75845db0da387edd2238706bfc6a44274c58225c0c",
+    "online-speculation/tests/test_pypto_qwen38_inspection.py": "5aa334d8d5ec356f343a817743b47fae9ae6c4607100961864ada62c9c888054",
+    "online-speculation/tests/test_pypto_qwen38_tp.py": "cab91cd6b5e06db564e1ce37da6a94b0277a1fb581c69f3a6505af6cb0c14c47"
+  },
+  "benchmark_and_reference_torch_threads": 4,
+  "pytest_torch_threads": 1
+}
