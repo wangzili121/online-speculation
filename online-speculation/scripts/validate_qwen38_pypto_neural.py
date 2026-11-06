@@ -49,14 +49,55 @@ def history_checksum(native, request):
     return digest.hexdigest()
 
 
-def audit_round(engine, source, width, audit):
+def audit_verifier(target, anchor, expected, snapshot):
+    """用目标续写构造候选，覆盖全接受/中途拒绝；不作为 draft 接受率或性能结果。"""
+    from blockspec.pypto_qwen38.greedy import verify_transaction
+
+    candidates = list(expected[:31])
+    cases = [("all_accepted", candidates, 32, (), 31)]
+    for rejected in (0, 15, 16, 30):
+        changed = candidates.copy()
+        changed[rejected] = (changed[rejected] + 1) % 248320
+        cases.append((f"reject_at_{rejected}", changed, 32, (), rejected))
+    for budget in (1, 16):
+        cases.append((f"budget_{budget}", candidates, budget, (), budget))
+    stop = expected[16]
+    cases.append(("stop_token", candidates, 32, (stop,), expected.index(stop) + 1))
+    report = []
+    try:
+        for name, proposed, budget, stops, accepted in cases:
+            target.restore(snapshot)
+            result = verify_transaction(target, anchor, proposed, budget=budget, stop_tokens=stops)
+            if result.accepted != accepted or list(result.tokens) != expected[:len(result.tokens)]:
+                raise AssertionError(f"{name}: incorrect target correction or accepted count")
+            actual = history_checksum(target.runner, target.request)
+            target.restore(snapshot)
+            target.forward((anchor, *proposed)[:result.committed_inputs])
+            if actual != history_checksum(target.runner, target.request):
+                raise AssertionError(f"{name}: committed KV/GDN differs from accepted-prefix replay")
+            token, continuation = result.tokens[-1], []
+            for _ in range(3):
+                token = target.forward([token])[0]
+                continuation.append(token)
+            if continuation != expected[len(result.tokens):len(result.tokens) + 3]:
+                raise AssertionError(f"{name}: continuation differs after correction")
+            row = dict(case=name, accepted=result.accepted, committed_inputs=result.committed_inputs,
+                       history_matches_replay=True, continuation_matches=True, passed=True)
+            report.append(row)
+            print(json.dumps(row), flush=True)
+    finally:
+        target.restore(snapshot)
+    return report
+
+
+def audit_round(engine, source, width, audit, *, prompt_ids=None):
     """独立审计一个真实 K32 起草轮，避免接受率低时反复起草影响联调耗时。"""
     from blockspec.pypto_qwen38.baseline import native_module
     from blockspec.pypto_qwen38.greedy import verify_transaction
     from blockspec.pypto_qwen38.target import NativeTarget
     schedule = native_module(source, "schedule")
     native, draft = engine.runner.native, engine.runner.draft
-    request = schedule.RequestState(engine.tokenizer.encode("Hello", add_special_tokens=False),
+    request = schedule.RequestState(engine.tokenizer.encode("Hello", add_special_tokens=False) if prompt_ids is None else list(prompt_ids),
                                     width + 4, frozenset())
     native.admit(request)
     try:
@@ -77,7 +118,8 @@ def audit_round(engine, source, width, audit):
         pages = (native.requests[request.request_id].pages.length,
                  tuple(native.requests[request.request_id].pages.pages))
         candidates = draft.propose(request, anchor, width)
-        audit.update(candidates=candidates, draft_executed=True, draft_seconds=draft.last_seconds)
+        audit.update(candidates=candidates, draft_executed=True, draft_seconds=draft.last_seconds,
+                     draft_timings=dict(draft.last_timings))
         unchanged = before == resident_checksum(native) and pages == (
             native.requests[request.request_id].pages.length, tuple(native.requests[request.request_id].pages.pages))
         audit["target_cache_unchanged"] = unchanged
@@ -117,7 +159,7 @@ def main():
     parser.add_argument("--tokens", type=int, default=3)
     parser.add_argument("--request-timeout", type=float, default=1200)
     parser.add_argument("--audit-block", action="store_true", help="audit a full K32 round and cache bytes")
-    parser.add_argument("--attention-backend", choices=("native", "fused"), default="native")
+    parser.add_argument("--attention-backend", choices=("native", "fused", "paged"), default="native")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists() or args.device < 0 or not 3 <= args.tokens <= 64 or args.request_timeout <= 0:

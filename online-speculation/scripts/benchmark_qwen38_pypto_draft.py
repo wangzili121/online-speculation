@@ -56,7 +56,7 @@ def main():
     p.add_argument("--rounds", type=int, default=2)
     p.add_argument("--head-storage", choices=("auto", "resident", "stream"))
     p.add_argument("--head-transfer", choices=("individual", "packed"))
-    p.add_argument("--attention-backend", choices=("native", "fused"), default="native")
+    p.add_argument("--attention-backend", choices=("native", "fused", "paged"), default="native")
     p.add_argument("--save-logits", action="store_true")
     p.add_argument("--compare-transfer", action="store_true")
     a = p.parse_args()

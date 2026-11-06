@@ -26,6 +26,8 @@ def metadata(head, native_samples):
         "full_prepare": [hidden, native_samples[4], *full[:5], cos, sin, q, k, v, gate, 3],
         "full": [hidden, *native_samples[5:9], full[-1], q, k, v, gate, *native_samples[31:33],
                  empty((32,), torch.int32), empty((16, 512), torch.float32), result, 3, 0, 32],
+        "full_layer": [hidden, *native_samples[4:9], *full, cos, sin, q, k, v, gate,
+                       *native_samples[31:33], empty((32,), torch.int32), empty((16, 512), torch.float32), result, 3, 0, 32],
         "finish": [hidden, native_samples[2], native_samples[3], empty((32, 248320))],
     }
 
@@ -34,8 +36,8 @@ class NeuralDraft:
     context = 512
 
     def __init__(self, source, head, *, head_storage="auto", head_transfer="individual", attention_backend="native"):
-        if attention_backend not in {"native", "fused"}:
-            raise ValueError("attention backend must be native or fused")
+        if attention_backend not in {"native", "fused", "paged"}:
+            raise ValueError("attention backend must be native, fused or paged")
         if getattr(getattr(head, "layout", None), "size", 1) != 1:
             raise ValueError("rank-local heads require a full-model TP executor; the pinned native executor is TP1")
         self.source, self.head = source, head
@@ -65,7 +67,9 @@ class NeuralDraft:
         return handle
 
     def start(self, native):
-        if self.native is not None or len(self.programs) != 5:
+        expected = ({"embedding", "gdn", "full_layer", "finish"} if self.attention_backend == "paged" else
+                    {"embedding", "gdn", "full_prepare", "full", "finish"})
+        if self.native is not None or set(self.programs) != expected:
             raise RuntimeError("draft programs must be registered before starting the native worker")
         self.native = native
         self.hidden = [self._allocate((32, 5120)), self._allocate((32, 5120))]
@@ -97,6 +101,7 @@ class NeuralDraft:
         self.native.worker.copy_to(handle.data_ptr, tensor.data_ptr(), tensor.numel() * tensor.element_size())
 
     def _run(self, name, arguments):
+        self.last_timings["compute_dispatches"] += 1
         start = time.monotonic()
         try:
             self.native.worker.run(self.programs[name], *arguments, config=self.native.config)
@@ -116,7 +121,7 @@ class NeuralDraft:
         if past != expected or past + width > self.context:
             raise RuntimeError("draft history boundary does not match the request anchor")
         start = time.monotonic()
-        self.last_timings = dict(device_seconds=0.0, weights_seconds=0.0)
+        self.last_timings = dict(device_seconds=0.0, weights_seconds=0.0, compute_dispatches=0)
         ids = torch.full((32,), self.head.mask_token_id, dtype=torch.int32)
         ids[0] = anchor
         self._upload(ids, self.ids)
@@ -141,6 +146,10 @@ class NeuralDraft:
             if layer % 4 != 3:
                 self._run("gdn", [current, *banks[3:8], *weights,
                                   *native.resident[:2], output, layer, resident.slot])
+            elif self.attention_backend == "paged":
+                self._run("full_layer", [current, *banks[3:8], *weights, self.cos, self.sin,
+                                        self.query, self.key, self.value, self.gate, *native.resident[2:],
+                                        self.table, self.mask, output, layer, past, width])
             else:
                 self._run("full_prepare", [current, banks[3], *weights[:5], self.cos, self.sin,
                                            self.query, self.key, self.value, self.gate, layer])

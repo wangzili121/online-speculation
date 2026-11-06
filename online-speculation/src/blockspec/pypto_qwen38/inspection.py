@@ -65,8 +65,8 @@ def capture_layers(draft, directory):
     records = {}
 
     def observe(name, args):
-        layer = args[-2] if name == "gdn" else args[-1] if name == "full_prepare" else args[-3] if name == "full" else None
-        if name in {"gdn", "full_prepare"}:
+        layer = args[-2] if name == "gdn" else args[-1] if name == "full_prepare" else args[-3] if name in {"full", "full_layer"} else None
+        if name in {"gdn", "full_prepare", "full_layer"}:
             records[layer] = dict(input=read_tensor(draft.native, args[0]))
         result = original(name, args)
         if name == "gdn":
@@ -74,7 +74,7 @@ def capture_layers(draft, directory):
         elif name == "full_prepare":
             records[layer].update({key: read_tensor(draft.native, handle)
                                    for key, handle in zip(("query", "key", "value", "gate"), args[-5:-1], strict=True)})
-        elif name == "full":
+        elif name in {"full", "full_layer"}:
             records[layer]["output"] = read_tensor(draft.native, args[-4])
         elif name == "finish":
             save_file(dict(hidden=read_tensor(draft.native, args[0]), logits=read_tensor(draft.native, args[-1])),

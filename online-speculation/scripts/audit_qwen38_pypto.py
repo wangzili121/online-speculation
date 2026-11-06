@@ -17,7 +17,7 @@ def main():
     parser.add_argument("--runtime-tp", type=int, choices=(1, 2, 4), default=1)
     parser.add_argument("--runtime-rank", type=int, default=0)
     parser.add_argument("--mode", choices=("environment", "head", "compile"), default="environment")
-    parser.add_argument("--attention-backend", choices=("native", "fused"), default="native")
+    parser.add_argument("--attention-backend", choices=("native", "fused", "paged"), default="native")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():

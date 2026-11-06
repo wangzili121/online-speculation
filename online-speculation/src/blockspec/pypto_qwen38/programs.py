@@ -9,8 +9,8 @@ from .baseline import native_module
 
 
 def make_programs(source, *, attention_backend="native"):
-    if attention_backend not in {"native", "fused"}:
-        raise ValueError("attention backend must be native or fused")
+    if attention_backend not in {"native", "fused", "paged"}:
+        raise ValueError("attention backend must be native, fused or paged")
     import pypto.language as pl
 
     model = native_module(source, "model")
@@ -217,9 +217,14 @@ def make_programs(source, *, attention_backend="native"):
         return result
 
     full = native_full
-    if attention_backend == "fused":
-        from .attention_programs import make_attention
-        paged, _ = make_attention(physical_pages=pool_blocks, pool_layers=16)
+    if attention_backend != "native":
+        if attention_backend == "paged":
+            from .attention import AttentionShape
+            from .paged_attention_programs import make_paged_attention
+            paged, _ = make_paged_attention(AttentionShape(query_tile=32), physical_pages=pool_blocks, pool_layers=16)
+        else:
+            from .attention_programs import make_attention
+            paged, _ = make_attention(physical_pages=pool_blocks, pool_layers=16)
 
         @pl.jit
         def fused_full(hidden: pl.Tensor, post_gamma: pl.Tensor,
@@ -295,7 +300,25 @@ def make_programs(source, *, attention_backend="native"):
              gate, key_pool, value_pool, block_table, mask, result, layer, offset, width, device=0)
 
     @pl.jit.host
+    def full_layer_host(hidden: pl.Tensor, input_gamma: pl.Tensor, post_gamma: pl.Tensor,
+                        mlp_gate: pl.Tensor, mlp_up: pl.Tensor, mlp_down: pl.Tensor,
+                        q_weight: pl.Tensor, k_weight: pl.Tensor, v_weight: pl.Tensor,
+                        q_gamma: pl.Tensor, k_gamma: pl.Tensor, out_weight: pl.Tensor,
+                        cos: pl.Tensor, sin: pl.Tensor,
+                        query: pl.Out[pl.Tensor], key: pl.Out[pl.Tensor], value: pl.Out[pl.Tensor], gate: pl.Out[pl.Tensor],
+                        key_pool: pl.Tensor, value_pool: pl.Tensor, block_table: pl.Tensor, mask: pl.Tensor,
+                        result: pl.Out[pl.Tensor], layer: pl.Scalar[pl.INT32],
+                        offset: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32]):
+        # 同一次 HOST 提交先准备整块 Q/K/V，再计算双向 Attention 和共享 MLP。
+        query, key, value, gate = full_prepare(hidden, input_gamma, q_weight, k_weight, v_weight, q_gamma, k_gamma,
+                                              cos, sin, query, key, value, gate, layer, device=0)
+        full(hidden, post_gamma, mlp_gate, mlp_up, mlp_down, out_weight, query, key, value, gate,
+             key_pool, value_pool, block_table, mask, result, layer, offset, width, device=0)
+
+    @pl.jit.host
     def finish_host(hidden: pl.Tensor, gamma: pl.Tensor, weight: pl.Tensor, logits: pl.Out[pl.Tensor]):
         finish(hidden, gamma, weight, logits, device=0)
 
+    if attention_backend == "paged":
+        return dict(embedding=embed_host, gdn=gdn_host, full_layer=full_layer_host, finish=finish_host)
     return dict(embedding=embed_host, gdn=gdn_host, full_prepare=prepare_host, full=full_host, finish=finish_host)

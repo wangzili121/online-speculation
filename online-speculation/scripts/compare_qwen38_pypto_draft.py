@@ -24,6 +24,9 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--rounds", type=int, default=6)
     parser.add_argument("--capture", action="store_true")
+    parser.add_argument("--candidate-backend", choices=("fused", "paged"), default="fused")
+    parser.add_argument("--audit-boundaries", action="store_true", help="audit real-model page and length-bucket boundaries")
+    parser.add_argument("--audit-verifier", action="store_true", help="audit full acceptance, late rejection and output limits with target-derived candidates")
     parser.add_argument("--reload-reference", type=Path, help="require identical head, history and logits after restart")
     args = parser.parse_args()
     if args.output_dir.exists() or args.device < 0 or args.rounds < 2:
@@ -39,9 +42,9 @@ def main():
     from blockspec.pypto_qwen38.programs import make_programs
     from blockspec.pypto_qwen38.target import NativeTarget
     from blockspec.pypto_qwen38.greedy import verify_transaction
-    from validate_qwen38_pypto_neural import resident_checksum, history_checksum
+    from validate_qwen38_pypto_neural import resident_checksum, history_checksum, audit_round, audit_verifier
 
-    report = dict(passed=False, scope="same_worker_same_head_paired_draft", rounds=[],
+    report = dict(passed=False, scope="same_worker_same_head_paired_draft", rounds=[], candidate_backend=args.candidate_backend,
                   model=str(args.model), head_dir=str(args.head_dir), runtime=runtime_identity(pypto))
     engine = request = None
     try:
@@ -55,9 +58,10 @@ def main():
         def compile_both(samples, config):
             result = original_compile(samples, config)
             programs["native"] = draft.programs["full"]
-            programs["fused"] = make_programs(args.source, attention_backend="fused")["full"].compile(
-                *metadata(head, samples)["full"], config=config)
-            return [*result, programs["fused"]]
+            key = "full_layer" if args.candidate_backend == "paged" else "full"
+            programs[args.candidate_backend] = make_programs(args.source, attention_backend=args.candidate_backend)[key].compile(
+                *metadata(head, samples)[key], config=config)
+            return [*result, programs[args.candidate_backend]]
 
         draft.compile = compile_both
         start = time.monotonic()
@@ -89,14 +93,14 @@ def main():
         signatures = {}
 
         def propose(backend):
-            draft.programs["full"] = programs[backend]
+            draft.programs["full_layer" if backend == "paged" else "full"] = programs[backend]
             draft.attention_backend = backend
             return draft.propose(request, anchor, 32)
 
         for backend in programs:
             propose(backend)
         for index in range(args.rounds):
-            for backend in (("native", "fused") if index % 2 == 0 else ("fused", "native")):
+            for backend in (list(programs) if index % 2 == 0 else list(reversed(programs))):
                 start = time.perf_counter()
                 candidate = propose(backend)
                 elapsed = time.perf_counter() - start
@@ -105,6 +109,8 @@ def main():
                     raise AssertionError(f"{backend}: repeated draft changed candidates/logits")
                 signatures[backend] = signature
                 row = dict(round=index, backend=backend, seconds=elapsed, phases=dict(draft.last_timings))
+                if row["phases"]["compute_dispatches"] != (66 if backend == "paged" else 82):
+                    raise AssertionError("unexpected K32 compute dispatch count")
                 report["rounds"].append(row)
                 print(json.dumps(row), flush=True)
         report["signatures"] = signatures
@@ -119,7 +125,7 @@ def main():
             raise AssertionError("draft backend changed the target history")
         report["medians"] = {backend: statistics.median(row["seconds"] for row in report["rounds"]
                                                        if row["backend"] == backend) for backend in programs}
-        report["paired_speedup"] = report["medians"]["native"] / report["medians"]["fused"]
+        report["paired_speedup"] = report["medians"]["native"] / report["medians"][args.candidate_backend]
         for backend, signature in signatures.items():
             target.restore(snapshot)
             result = verify_transaction(target, anchor, signature["candidates"], budget=32)
@@ -131,6 +137,27 @@ def main():
             if actual != history_checksum(native, request):
                 raise AssertionError(f"{backend}: accepted history differs from replay")
         report["verification_and_replay_passed"] = True
+        if args.audit_verifier:
+            report["target_derived_verifier_cases"] = audit_verifier(target, anchor, expected, snapshot)
+        if args.audit_boundaries:
+            native.release(request)
+            request = None
+            draft.attention_backend = args.candidate_backend
+            report["boundary_cases"] = []
+            prefix_hits = native.allow_prefix_hits
+            native.allow_prefix_hits = False
+            try:
+                for past in (15, 17, 96, 97, 224, 225):
+                    seed = engine.tokenizer.encode(f"Case {past}. Please explain how computers work. ", add_special_tokens=False)
+                    ids = (seed * ((past + len(seed) - 1) // len(seed)))[:past]
+                    audit = dict(past=past, width=32, passed=False)
+                    report["boundary_cases"].append(audit)
+                    audit_round(engine, args.source, 32, audit, prompt_ids=ids)
+                    audit["requests_released"] = not bool(native.requests)
+                    if not audit["requests_released"]:
+                        raise AssertionError("request boundary leaked target state")
+            finally:
+                native.allow_prefix_hits = prefix_hits
         if args.reload_reference:
             reference = json.loads(args.reload_reference.read_text())
             for field in ("head_sha256", "initial_history_sha256", "signatures"):

@@ -20,22 +20,28 @@
 
 - `src/blockspec/pypto_qwen38/attention.py`：Torch SDPA 数学参考，以及保留原生 BF16 中间舍入的兼容参考。
 - `src/blockspec/pypto_qwen38/attention_programs.py`：`fused` 和 `staged` 两种实现，共用相同的分页读取及临时块准备。前者融合 QK、softmax、PV、门控；后者将 QK、softmax、PV 分阶段执行，保留全量分数和概率中间张量，供同口径比较。
-- `scripts/validate_qwen38_pypto_attention.py`：固定种子生成独立输入，覆盖 7 组历史/块边界；无效 cache 与 inactive draft 行填入 NaN，检查误读；执行后回读所有输入，检查逐字节不变。
+- `src/blockspec/pypto_qwen38/paged_attention_programs.py`：`paged` 将页表指定的历史及临时块直接搬入 L1，不先生成连续 K/V 副本；保留融合 Attention 和门控，按 `past + width` 选择 128、256、512 容量。支持 16/32 行 query tile，32 行使用一个跨核流水槽以满足 A2 Vector 缓冲上限。长度选择在编排层完成，各混合核保持固定形状。
+- `scripts/validate_qwen38_pypto_attention.py`：固定种子生成独立输入，覆盖 13 组历史/块边界，包括容量切换前后；无效 cache 与 inactive draft 行填入 NaN，检查误读；执行后回读所有输入，检查逐字节不变。
 
 在 `online-speculation/` 目录、已匹配的固定 PyPTO 环境中运行，设备编号使用实际分配的逻辑编号：
 
 ```bash
 python scripts/validate_qwen38_pypto_attention.py \
-  --device 0 --backend both --repeats 100 --output /results/attention.json
+  --device 0 --backend all --tune-paged --profile \
+  --repeats 30 --output /results/attention.json
 ```
 
-主指标是同一 worker、相同输入下的 resident dispatch 墙钟中位数，包含分页准备、Attention、门控和同步调用开销；编译、上传、回读、Torch 计算在计时外。逐 case 保留全部样本；该指标不等于设备纯计算时间或整网吞吐。模拟器只用于功能检查，不提供性能结论。
+主指标是同一 worker、相同输入下的 resident dispatch 墙钟中位数，各后端交错测量，包含分页准备、Attention、门控和同步调用开销；编译、上传、回读、Torch 计算在计时外。逐 case 保留全部样本；该指标不等于设备纯计算时间或整网吞吐。
+
+`--profile` 在计时之外另采集设备时间线，使用 `scripts/summarize_qwen38_pypto_profile.py` 汇总最后一组输入的任务窗口，不能将并行 block 耗时相加。模拟器只用于功能检查，不提供性能结论；驱动显式检查运行模式，避免平台参数将 SIM 覆盖为 ONBOARD。本次真实 NPU 已通过；当前固定主机环境缺少模拟器要求的 `g++-15`，不报告模拟器通过。
+
+实测与原始数据见 [分页 Attention 验证](QWEN38_PYPTO_PAGED_VALIDATION.md)。
 
 验证和 Torch 参考独立于候选实现。调优不得修改输入、可见性、舍入约定、golden、误差门槛或跳过只读检查。可探索 query tile、K/V 搬运、混合核流水和中间存储；改变 kernel 数量不改变被测入口范围。
 
 ## 接回完整模型
 
-服务、完整 draft 验证与 benchmark 均提供 `--attention-backend native|fused`。`native` 是当前原生路径，`fused` 仅替换 Full Attention 核心；GDN 策略和 head 参数契约相同。O projection、共享 MLP、验证与回滚仍走现有流程。
+服务、完整 draft 验证与 benchmark 均提供 `--attention-backend native|fused|paged`，默认保留 `native`。`fused` 和 `paged` 替换 Full Attention 核心，后者同时将该层的准备和计算合为一次 HOST 提交；GDN 策略和 head 参数契约相同。O projection、共享 MLP、验证与回滚仍使用现有计算。
 
 独立 kernel 通过后，运行 `validate_qwen38_pypto_neural.py --attention-backend fused --audit-block` 检查完整 K32 起草、目标 cache 不变、拒绝后的状态和 greedy 续写；再对同一 head 比较完整 draft 及请求耗时。独立 kernel 的收益不能直接当作服务收益。
 

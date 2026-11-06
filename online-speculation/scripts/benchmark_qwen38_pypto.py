@@ -80,7 +80,7 @@ def main():
     parser.add_argument("--head-dir", type=Path)
     parser.add_argument("--head-storage", choices=("auto", "resident", "stream"), default="auto")
     parser.add_argument("--head-transfer", choices=("individual", "packed"), default="individual")
-    parser.add_argument("--attention-backend", choices=("native", "fused"), default="native")
+    parser.add_argument("--attention-backend", choices=("native", "fused", "paged"), default="native")
     parser.add_argument("--device", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--tokens", type=int, default=128)

@@ -55,7 +55,7 @@ def main():
             state = ((history[f"key.{layer // 4}"], history[f"value.{layer // 4}"]) if kind == "full_attention"
                      else (history["conv"][layer - layer // 4], history["recurrent"][layer - layer // 4]))
             mixer = head.layer(layer)
-            for backend in ("native", "fused"):
+            for backend in parent["signatures"]:
                 capture = load_file(args.capture_dir / backend / f"layer{layer}.safetensors")
                 expected = layer_reference(config, layer, capture["input"], shared, mixer, state,
                                            (history["cos"], history["sin"]))

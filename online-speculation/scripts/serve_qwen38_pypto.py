@@ -14,7 +14,7 @@ def main():
     parser.add_argument("--device", type=int, required=True)
     parser.add_argument("--head-storage", choices=("auto", "resident", "stream"), default="auto")
     parser.add_argument("--head-transfer", choices=("individual", "packed"), default="individual")
-    parser.add_argument("--attention-backend", choices=("native", "fused"), default="native")
+    parser.add_argument("--attention-backend", choices=("native", "fused", "paged"), default="native")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
