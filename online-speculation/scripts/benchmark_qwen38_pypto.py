@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import logging
 from pathlib import Path
 import queue
 import statistics
@@ -79,6 +80,7 @@ def main():
     parser.add_argument("--head-dir", type=Path)
     parser.add_argument("--head-storage", choices=("auto", "resident", "stream"), default="auto")
     parser.add_argument("--head-transfer", choices=("individual", "packed"), default="individual")
+    parser.add_argument("--attention-backend", choices=("native", "fused"), default="native")
     parser.add_argument("--device", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--tokens", type=int, default=128)
@@ -89,6 +91,7 @@ def main():
     if (args.output.exists() or args.device < 0 or not 64 <= args.tokens <= 480
             or args.repeats < 2 or args.request_timeout <= 0):
         parser.error("require a new output, assigned device, 64..480 tokens and 2+ repeats")
+    logging.getLogger("simpler").setLevel(logging.WARNING)
     import pypto
     from blockspec.pypto_qwen38 import greedy, target
     from blockspec.pypto_qwen38.baseline import runtime_identity
@@ -120,7 +123,8 @@ def main():
     try:
         head = HeadSource(args.model, args.head_dir)
         engine = make_engine(args.source, args.model, args.device, head,
-                             head_storage=args.head_storage, head_transfer=args.head_transfer)
+                             head_storage=args.head_storage, head_transfer=args.head_transfer,
+                             attention_backend=args.attention_backend)
         # 仅此测速进程忽略 EOS，与 vLLM 定长对照的 SamplingParams 一致。
         engine.scheduler.stop_token_ids = frozenset()
         prompt_ids = engine.tokenizer.encode(args.prompt, add_special_tokens=False)
@@ -133,7 +137,8 @@ def main():
         meter = DraftMeter(runner.draft)
         runner.draft.propose = meter
         greedy.correct, target.verify_transaction = timed_correct, timed_verify
-        report.update(head_storage=runner.draft.storage, head_transfer=runner.draft.weights.transfer,
+        report.update(attention_backend=runner.draft.attention_backend,
+                      head_storage=runner.draft.storage, head_transfer=runner.draft.weights.transfer,
                       head_bytes=head.shared_weights.numel(),
                       head_preparation_seconds=head.preparation_seconds)
         for mode in ("target", "real_head", "oracle_keep_real_draft"):

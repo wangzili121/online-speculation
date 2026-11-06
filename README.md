@@ -2,6 +2,8 @@
 
 PyPTO Serving 的真实 27B、K32 draft、缓存恢复及 completion / chat / SSE 已通过单卡 A2 检查。参数启动时准备，设备缓冲反复使用；同卡对照中，单轮起草从约 56.63 秒降至 2.70 秒，完整 logits 不变。支持自动选择 head 驻留或逐层上传；当前为 TP1、一个活动请求，起草耗时不代表服务吞吐收益。[运行与验证](online-speculation/docs/QWEN38_PYPTO_PORT.md)。下文介绍 vLLM-Ascend 路径。
 
+PyPTO 新增可选的融合分页双向 Attention，已通过真实 27B 的 K32 起草、cache 只读和拒绝恢复检查；默认保留原生后端。[接入计划](online-speculation/docs/QWEN38_PYPTO_PLAN.md)和[独立 kernel 开发与调优任务](online-speculation/docs/QWEN38_PYPTO_KERNEL_TASK.md)分别说明整体工作和算子边界。
+
 Qwen3.8-27B 的 Orthrus 投机推理与 draft 更新实现。draft 复用冻结的主模型 backbone，推理读取主模型历史缓存，候选由原生 vLLM-Ascend 验证。支持在线 last-N 更新和独立离线全层更新，均只更新 draft mixer，不训练主模型。
 
 Full Attention 在块内采用双向注意力，GDN 使用 `orthrus_qwen35_reference` 的因果递推策略。

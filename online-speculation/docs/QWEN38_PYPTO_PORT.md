@@ -30,6 +30,7 @@ Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标
 - `greedy.py`：比较整块候选；第一次拒绝时输出目标 token，全接受时输出 bonus；输出上限和停止 token 同样限制提交长度。
 - `target.py`：在原生 runner 上执行验证，批量读取有效 logits 行；需要拒绝后缀时，恢复验证前的 GDN 状态和页表长度，再仅重放接受前缀。状态快照使用预注册共享缓冲，每个存活快照独占一个槽；池满时回退到独立副本。
 - `programs.py`：组合原生投影、norm、GDN、Full Attention 和 MLP。K32 分为两个 16 行 tile；Full Attention 先准备整个块的 K/V，再计算两个 tile 的 query，读取主模型历史但不写目标缓存。
+- `attention.py` / `attention_programs.py`：独立 Torch 参考，以及共用分页准备的融合/分阶段 Attention；接收原生完整 KV pool 和层号，读取真实历史与临时块，输出门控后的 Attention。
 - `draft.py`：将 draft 与目标程序提前注册到同一 worker，共享 embedding、norm、MLP 和 LM head，组织各层计算与输出读取。
 
 Q/K/V-packed 的 GDN 投影与卷积按 Q、K、V 三段分别合并；O projection 按列合并；复制 norm 必须在各 rank 一致。真实 vLLM head 的 `A_log` 是 FP32，转换时保持原精度；decay/beta 编排使用相同公式，去掉原生辅助函数对该参数的重复转换。其他参数按实际 dtype 校验。
@@ -37,6 +38,16 @@ Q/K/V-packed 的 GDN 投影与卷积按 Q、K、V 三段分别合并；O project
 Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthrus_qwen35_reference` 因果递推，在目标状态的临时副本上计算。以上计算公式和 `programs.py` 未因本次缓冲优化而改变，主模型继续使用固定 OneServing 的原生程序。
 
 初版事务适配仅针对 TP1、一个活动请求。原生 scheduler 每次消费一个 token，适配器缓存已验证的输出前缀，逐个交付；后续交付不再次运行模型，且检查请求位置和 anchor，拒绝错位的旧缓冲。真实 draft 应提供 `propose(request, anchor, width)`，读取已提交历史，不写入目标缓存。
+
+## 可选 Attention 后端
+
+服务、编译审计、完整 draft 验证和 benchmark 均可指定 `--attention-backend native|fused`，默认 `native`。`fused` 将 QK、softmax、PV 和输出门控放入同一混合核计算范围，K 分块搬入 L1；历史读取和临时块准备保持独立。QKV 投影、norm/RoPE、O projection、GDN 和共享 MLP 继续调用原生实现。
+
+2026-11-06 在 A2 上验证两种独立实现共 14 组输入：涵盖空历史、非整页历史、部分有效块、不同 cache 层及 512 位置边界；无效位置填 NaN，所有输入回读逐字节不变。与原生舍入参考的最大绝对误差不超过 0.0009765625。关闭 tracing、各预热 5 次并测量 30 次，融合入口的 resident dispatch 中位数为 0.926–0.977 ms，分阶段对照为 1.030–1.092 ms；范围包含分页准备和同步调用开销，不是设备纯计算或整网吞吐。
+
+完整 27B 使用 TP4 训练导出的测试 head、TP1 推理，融合后端完成 64 层 K32 起草，返回 31 个候选；起草前后目标 cache 不变，拒绝后的已提交历史与仅重放接受前缀一致，随后 3 步 AR 续写和 scheduler 的 3-token 输出均与 target-only 相同。352 项 CPU 回归通过，测试进程及设备占用已释放。这些检查覆盖已测短请求，不替代逐层 Torch 数值对照、多请求或完整 TP 验收。
+
+独立入口、输入输出及调优边界见 [kernel 任务说明](QWEN38_PYPTO_KERNEL_TASK.md)，原始记录见 `validation/pypto-qwen38/attention-20261106/`。可参考 Goal Plus Playground 的 `pypto-kernel` 场景组织后续调优，保持本项目的 golden、输入与计时范围不变。
 
 ## 与 vLLM 路径的对应关系
 
@@ -46,7 +57,7 @@ Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthr
 | --- | --- | --- |
 | 参数驻留 | TP2/TP4 分片后，固定推理的主模型和 draft 参数驻留 NPU | 单卡服务的主模型驻留、head 逐层上传；另已验证真实 head 的 TP2 分片分别驻留两卡。主模型与 head 一起驻留的整网多卡路径尚未接入 |
 | Backbone/KV 共享 | 引用原生 backbone 权重，读取主模型历史快照 | 同一 worker 复用 backbone 设备参数和目标历史缓存；draft 使用临时工作区，不转正 draft KV。两边都有布局整理或临时复制，并非所有读取均为零拷贝 |
-| Attention 执行 | 使用 `npu_fusion_attention` 等镜像已有融合算子 | 复用 OneServing 的 PyPTO Attention/GDN 模块。当前 `attention512_core` 分段计算 QK、softmax、PV，并保留 scores/probabilities 中间张量，不等同于 FlashAttention 式融合实现 |
+| Attention 执行 | 使用 `npu_fusion_attention` 等镜像已有融合算子 | 默认复用 OneServing 的分阶段 Attention/GDN；可选 `fused` 分页双向 Attention 已完成独立及真实 27B 短请求检查，尚未据整网测速替换默认 |
 | 整块校正 | 使用 vLLM 原生 sampler，支持 greedy 与标准 rejection sampling | 批量读回 logits 后在 CPU 选择 token；接受前缀由 `greedy.correct` 的 Python 循环确定。目前仅支持 greedy，尚未实现设备端整块张量校正与随机采样 |
 
 当前实测最大增量成本仍是 head 逐层上传。128-token 请求中的 CPU 接受前缀匹配累计约 3–4 ms，远小于上传和 draft 前向；CPU 上扫描完整词表、选择 token 是另一项开销，不能将两者混为一谈。

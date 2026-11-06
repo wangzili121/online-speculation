@@ -4,6 +4,7 @@ import argparse
 import hashlib
 from contextlib import contextmanager
 import json
+import logging
 from pathlib import Path
 import time
 
@@ -55,11 +56,13 @@ def main():
     p.add_argument("--rounds", type=int, default=2)
     p.add_argument("--head-storage", choices=("auto", "resident", "stream"))
     p.add_argument("--head-transfer", choices=("individual", "packed"))
+    p.add_argument("--attention-backend", choices=("native", "fused"), default="native")
     p.add_argument("--save-logits", action="store_true")
     p.add_argument("--compare-transfer", action="store_true")
     a = p.parse_args()
     if a.output.exists() or a.rounds < 1 or a.device < 0:
         p.error("require a new output, assigned device and positive round count")
+    logging.getLogger("simpler").setLevel(logging.WARNING)
     # 与功能验收共用缓存检查，计时只包住 propose，不包含这些审计。
     from validate_qwen38_pypto_neural import resident_checksum, history_checksum
     from blockspec.pypto_qwen38.baseline import native_module, runtime_identity
@@ -78,7 +81,8 @@ def main():
         kw = {} if a.head_storage is None else {"head_storage": a.head_storage}
         if a.head_transfer is not None:
             kw["head_transfer"] = a.head_transfer
-        engine = make_engine(a.source, a.model, a.device, source, **kw)
+        report["attention_backend"] = a.attention_backend
+        engine = make_engine(a.source, a.model, a.device, source, attention_backend=a.attention_backend, **kw)
         start = time.monotonic()
         engine.start()
         report["startup_seconds"] = time.monotonic() - start

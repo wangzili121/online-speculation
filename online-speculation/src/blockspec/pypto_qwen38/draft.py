@@ -33,10 +33,13 @@ def metadata(head, native_samples):
 class NeuralDraft:
     context = 512
 
-    def __init__(self, source, head, *, head_storage="auto", head_transfer="individual"):
+    def __init__(self, source, head, *, head_storage="auto", head_transfer="individual", attention_backend="native"):
+        if attention_backend not in {"native", "fused"}:
+            raise ValueError("attention backend must be native or fused")
         if getattr(getattr(head, "layout", None), "size", 1) != 1:
             raise ValueError("rank-local heads require a full-model TP executor; the pinned native executor is TP1")
         self.source, self.head = source, head
+        self.attention_backend = attention_backend
         self.block_size = head.block_size
         self.programs, self.handles = {}, []
         self.native = None
@@ -47,7 +50,7 @@ class NeuralDraft:
 
     def compile(self, samples, config):
         inputs = metadata(self.head, samples)
-        for name, program in make_programs(self.source).items():
+        for name, program in make_programs(self.source, attention_backend=self.attention_backend).items():
             print(f"compiling Orthrus {name}", flush=True)
             self.programs[name] = program.compile(*inputs[name], config=config)
         return list(self.programs.values())
@@ -98,7 +101,10 @@ class NeuralDraft:
         try:
             self.native.worker.run(self.programs[name], *arguments, config=self.native.config)
         finally:
-            self.last_timings["device_seconds"] += time.monotonic() - start
+            elapsed = time.monotonic() - start
+            self.last_timings["device_seconds"] += elapsed
+            label = name + "_seconds"
+            self.last_timings[label] = self.last_timings.get(label, 0.0) + elapsed
 
     def propose(self, request, anchor, width):
         native = self.native
@@ -155,10 +161,12 @@ class NeuralDraft:
         return tokens
 
 
-def make_runner(source, model_root, device, head, *, head_storage="auto", head_transfer="individual", **callbacks):
+def make_runner(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
+                attention_backend="native", **callbacks):
     """Create a native runner with additional graphs; leave native source intact."""
     runtime = native_module(source, "runtime")
-    draft = NeuralDraft(source, head, head_storage=head_storage, head_transfer=head_transfer)
+    draft = NeuralDraft(source, head, head_storage=head_storage, head_transfer=head_transfer,
+                        attention_backend=attention_backend)
 
     class PreparedRunner(runtime.ModelRunner):
         def start(self):
@@ -198,7 +206,8 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
     return OrthrusRunner(native, draft, native_module(source, "schedule").BatchSlot)
 
 
-def make_engine(source, model_root, device, head, *, head_storage="auto", head_transfer="individual"):
+def make_engine(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
+                attention_backend="native"):
     class Engine(native_module(source, "engine").InferenceEngine):
         def snapshot(self):
             result = super().snapshot()
@@ -209,6 +218,7 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                                      last_draft_seconds=runner.draft.last_seconds,
                                      head_storage=runner.draft.storage,
                                      head_transfer=runner.draft.weights.transfer,
+                                     attention_backend=runner.draft.attention_backend,
                                      head_preparation_seconds=head.preparation_seconds,
                                      last_draft_timings=dict(runner.draft.last_timings))
             return result
@@ -216,6 +226,7 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
     engine = Engine(model_root, device, max_active=1, prefix_cache=False)
     engine.runner = make_runner(source, model_root, device, head, head_storage=head_storage,
                                 head_transfer=head_transfer,
+                                attention_backend=attention_backend,
                                 on_cache_event=engine._on_cache)
     engine.scheduler.runner = engine.runner
     return engine

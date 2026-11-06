@@ -8,10 +8,13 @@ before the second half exists. No target cache is an output of these graphs.
 from .baseline import native_module
 
 
-def make_programs(source):
+def make_programs(source, *, attention_backend="native"):
+    if attention_backend not in {"native", "fused"}:
+        raise ValueError("attention backend must be native or fused")
     import pypto.language as pl
 
     model = native_module(source, "model")
+    pool_blocks = model.POOL_BLOCKS
     linear = model.linear_hidden_projection_inline
     norm = model.rmsnorm_rmsnorm_inline
     residual = model.residual_residual_add_inline
@@ -166,7 +169,7 @@ def make_programs(source):
         return query, key, value, gate
 
     @pl.jit
-    def full(hidden: pl.Tensor, post_gamma: pl.Tensor,
+    def native_full(hidden: pl.Tensor, post_gamma: pl.Tensor,
              mlp_gate: pl.Tensor, mlp_up: pl.Tensor, mlp_down: pl.Tensor,
              out_weight: pl.Tensor, query: pl.Tensor, key: pl.Tensor, value: pl.Tensor,
              gate: pl.Tensor, key_pool: pl.Tensor, value_pool: pl.Tensor,
@@ -212,6 +215,35 @@ def make_programs(source):
                                     post_gamma, mlp_gate, mlp_up, mlp_down, following, layer)
             result[row:row + 16, 0:5120] = following
         return result
+
+    full = native_full
+    if attention_backend == "fused":
+        from .attention_programs import make_attention
+        paged, _ = make_attention(physical_pages=pool_blocks, pool_layers=16)
+
+        @pl.jit
+        def fused_full(hidden: pl.Tensor, post_gamma: pl.Tensor,
+                       mlp_gate: pl.Tensor, mlp_up: pl.Tensor, mlp_down: pl.Tensor,
+                       out_weight: pl.Tensor, query: pl.Tensor, key: pl.Tensor, value: pl.Tensor,
+                       gate: pl.Tensor, key_pool: pl.Tensor, value_pool: pl.Tensor,
+                       block_table: pl.Tensor, mask: pl.Tensor, result: pl.Out[pl.Tensor],
+                       layer: pl.Scalar[pl.INT32], offset: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32]):
+            index = layer // 4
+            # 直接传目标池和层号，避免固定编译器无法推导中间 cache 视图。
+            gated = pl.create_tensor([32, 6144], dtype=pl.BF16)
+            gated = paged(query, key, value, gate, key_pool, value_pool, block_table, mask, gated, offset, width, index)
+            for half in pl.range(2):
+                row = half * 16
+                attn = pl.create_tensor([16, 5120], dtype=pl.BF16)
+                gated_half = pl.slice(gated, [16, 6144], [row, 0])
+                attn = linear(gated_half, out_weight, attn)
+                following = pl.create_tensor([16, 5120], dtype=pl.BF16)
+                current = pl.slice(hidden, [16, 5120], [row, 0])
+                following = shared_tail(current, attn, post_gamma, mlp_gate, mlp_up, mlp_down, following, layer)
+                result[row:row + 16, 0:5120] = following
+            return result
+
+        full = fused_full
 
     @pl.jit
     def finish(hidden: pl.Tensor, gamma: pl.Tensor, weight: pl.Tensor, logits: pl.Out[pl.Tensor]):

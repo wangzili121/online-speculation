@@ -17,6 +17,7 @@ def main():
     parser.add_argument("--runtime-tp", type=int, choices=(1, 2, 4), default=1)
     parser.add_argument("--runtime-rank", type=int, default=0)
     parser.add_argument("--mode", choices=("environment", "head", "compile"), default="environment")
+    parser.add_argument("--attention-backend", choices=("native", "fused"), default="native")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
@@ -61,7 +62,8 @@ def main():
                 from pypto.runtime import RunConfig
                 from blockspec.pypto_qwen38.draft import NeuralDraft
                 report.update(runtime_identity(pypto))
-                draft = NeuralDraft(args.source, head)
+                report["attention_backend"] = args.attention_backend
+                draft = NeuralDraft(args.source, head, attention_backend=args.attention_backend)
                 config = RunConfig(platform="a2a3", distributed_config=DistributedConfig(
                     device_ids=[0], num_sub_workers=0))
                 draft.compile(native_module(args.source, "runtime").single_meta_samples(), config)
