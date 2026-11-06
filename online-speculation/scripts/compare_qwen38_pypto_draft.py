@@ -25,12 +25,17 @@ def main():
     parser.add_argument("--rounds", type=int, default=6)
     parser.add_argument("--capture", action="store_true")
     parser.add_argument("--candidate-backend", choices=("fused", "paged"), default="fused")
+    parser.add_argument("--baseline-backend", choices=("native", "paged"), default="native")
+    parser.add_argument("--draft-group-size", type=int, choices=(1, 4), default=1)
+    parser.add_argument("--head-transfer", choices=("individual", "packed"), default="individual")
     parser.add_argument("--audit-boundaries", action="store_true", help="audit real-model page and length-bucket boundaries")
     parser.add_argument("--audit-verifier", action="store_true", help="audit full acceptance, late rejection and output limits with target-derived candidates")
     parser.add_argument("--reload-reference", type=Path, help="require identical head, history and logits after restart")
     args = parser.parse_args()
     if args.output_dir.exists() or args.device < 0 or args.rounds < 2:
         parser.error("require a new output directory, assigned device and 2+ rounds")
+    if args.draft_group_size == 4 and (args.candidate_backend != "paged" or args.capture):
+        parser.error("grouped comparison requires paged attention without per-layer capture")
     args.output_dir.mkdir(parents=True)
     logging.getLogger("simpler").setLevel(logging.WARNING)
     import torch
@@ -44,24 +49,30 @@ def main():
     from blockspec.pypto_qwen38.greedy import verify_transaction
     from validate_qwen38_pypto_neural import resident_checksum, history_checksum, audit_round, audit_verifier
 
-    report = dict(passed=False, scope="same_worker_same_head_paired_draft", rounds=[], candidate_backend=args.candidate_backend,
+    candidate_name = args.candidate_backend if args.draft_group_size == 1 else "paged-group4"
+    if candidate_name == args.baseline_backend:
+        parser.error("baseline and candidate must differ")
+    report = dict(passed=False, scope="same_worker_same_head_paired_draft", rounds=[], candidate_backend=candidate_name,
                   model=str(args.model), head_dir=str(args.head_dir), runtime=runtime_identity(pypto))
-    engine = request = None
+    engine = request = primary = extra = None
     try:
         torch.set_num_threads(4)
         head = HeadSource(args.model, args.head_dir)
-        engine = make_engine(args.source, args.model, args.device, head, attention_backend="native")
+        engine = make_engine(args.source, args.model, args.device, head, attention_backend=args.baseline_backend,
+                             head_transfer=args.head_transfer)
         draft = engine.runner.draft
         original_compile = draft.compile
         programs = {}
 
         def compile_both(samples, config):
             result = original_compile(samples, config)
-            programs["native"] = draft.programs["full"]
-            key = "full_layer" if args.candidate_backend == "paged" else "full"
-            programs[args.candidate_backend] = make_programs(args.source, attention_backend=args.candidate_backend)[key].compile(
+            base_key = "full_layer" if args.baseline_backend == "paged" else "full"
+            programs[args.baseline_backend] = draft.programs[base_key]
+            key = "group" if args.draft_group_size == 4 else "full_layer" if args.candidate_backend == "paged" else "full"
+            programs[candidate_name] = make_programs(args.source, attention_backend=args.candidate_backend,
+                                                   group_size=args.draft_group_size)[key].compile(
                 *metadata(head, samples)[key], config=config)
-            return [*result, programs[args.candidate_backend]]
+            return [*result, programs[candidate_name]]
 
         draft.compile = compile_both
         start = time.monotonic()
@@ -69,6 +80,13 @@ def main():
         report.update(startup_seconds=time.monotonic() - start, source_tp=head.tp,
                       head_sha256=head_digest(head), head_storage=draft.storage)
         native = engine.runner.native
+        primary = draft.weights
+        if args.draft_group_size == 4:
+            from blockspec.pypto_qwen38.weights import DraftWeights
+            extra = DraftWeights(head, "auto", "packed", group_size=4)
+            extra.start(native.worker)
+            draft.group_scratch = [draft._allocate((32, 5120)), draft._allocate((32, 5120))]
+            report["group_head_storage"] = extra.storage
         schedule = native_module(args.source, "schedule")
         request = schedule.RequestState(engine.tokenizer.encode("Hello", add_special_tokens=False), 40, frozenset())
         native.admit(request)
@@ -92,9 +110,16 @@ def main():
             save_history(native, request, args.output_dir / "capture")
         signatures = {}
 
+        def select(backend):
+            grouped = backend == "paged-group4"
+            attention_backend = "paged" if grouped else backend
+            key = "group" if grouped else "full_layer" if attention_backend == "paged" else "full"
+            draft.programs[key] = programs[backend]
+            draft.attention_backend, draft.group_size = attention_backend, 4 if grouped else 1
+            draft.weights = extra if grouped else primary
+
         def propose(backend):
-            draft.programs["full_layer" if backend == "paged" else "full"] = programs[backend]
-            draft.attention_backend = backend
+            select(backend)
             return draft.propose(request, anchor, 32)
 
         for backend in programs:
@@ -109,11 +134,13 @@ def main():
                     raise AssertionError(f"{backend}: repeated draft changed candidates/logits")
                 signatures[backend] = signature
                 row = dict(round=index, backend=backend, seconds=elapsed, phases=dict(draft.last_timings))
-                if row["phases"]["compute_dispatches"] != (66 if backend == "paged" else 82):
+                if row["phases"]["compute_dispatches"] != (18 if backend == "paged-group4" else 66 if backend == "paged" else 82):
                     raise AssertionError("unexpected K32 compute dispatch count")
                 report["rounds"].append(row)
                 print(json.dumps(row), flush=True)
         report["signatures"] = signatures
+        if args.draft_group_size == 4 and signatures[args.baseline_backend] != signatures[candidate_name]:
+            raise AssertionError("grouping changed draft logits or candidates")
         if args.capture:
             for backend in programs:
                 with capture_layers(draft, args.output_dir / "capture" / backend):
@@ -125,7 +152,7 @@ def main():
             raise AssertionError("draft backend changed the target history")
         report["medians"] = {backend: statistics.median(row["seconds"] for row in report["rounds"]
                                                        if row["backend"] == backend) for backend in programs}
-        report["paired_speedup"] = report["medians"]["native"] / report["medians"][args.candidate_backend]
+        report["paired_speedup"] = report["medians"][args.baseline_backend] / report["medians"][candidate_name]
         for backend, signature in signatures.items():
             target.restore(snapshot)
             result = verify_transaction(target, anchor, signature["candidates"], budget=32)
@@ -142,7 +169,7 @@ def main():
         if args.audit_boundaries:
             native.release(request)
             request = None
-            draft.attention_backend = args.candidate_backend
+            select(candidate_name)
             report["boundary_cases"] = []
             prefix_hits = native.allow_prefix_hits
             native.allow_prefix_hits = False
@@ -175,7 +202,13 @@ def main():
                     engine.runner.native.release(request)
             finally:
                 if engine is not None:
-                    engine.stop()
+                    try:
+                        if extra is not None:
+                            extra.close()
+                    finally:
+                        if primary is not None:
+                            engine.runner.draft.weights = primary
+                        engine.stop()
         except BaseException as error:
             report.update(passed=False, cleanup_error=repr(error))
             raise

@@ -20,7 +20,7 @@ def metadata(head, native_samples):
     # Native samples: weights occupy 1..23; resident states/cache occupy 29..32.
     q, k, v, gate = [empty((32, width)) for width in (6144, 1024, 1024, 6144)]
     cos, sin = empty((32, 64)), empty((32, 64))
-    return {
+    inputs = {
         "embedding": [empty((32,), torch.int32), native_samples[1], hidden],
         "gdn": [hidden, *native_samples[4:9], *gdn, *native_samples[29:31], result, 0, 0],
         "full_prepare": [hidden, native_samples[4], *full[:5], cos, sin, q, k, v, gate, 3],
@@ -30,29 +30,39 @@ def metadata(head, native_samples):
                        *native_samples[31:33], empty((32,), torch.int32), empty((16, 512), torch.float32), result, 3, 0, 32],
         "finish": [hidden, native_samples[2], native_samples[3], empty((32, 248320))],
     }
+    group_weights = [empty(value.shape, torch.float32 if index == 5 else value.dtype)
+                     for layer in range(3) for index, value in enumerate(head.banks(layer))]
+    inputs["group"] = [hidden, *native_samples[4:9], *group_weights, *full, cos, sin, q, k, v, gate,
+                       *native_samples[29:33], empty((32,), torch.int32), empty((16, 512), torch.float32),
+                       empty((32, 5120)), empty((32, 5120)), result, 0, 0, 0, 32]
+    return inputs
 
 
 class NeuralDraft:
     context = 512
 
-    def __init__(self, source, head, *, head_storage="auto", head_transfer="individual", attention_backend="native"):
+    def __init__(self, source, head, *, head_storage="auto", head_transfer="individual", attention_backend="native", group_size=1):
         if attention_backend not in {"native", "fused", "paged"}:
             raise ValueError("attention backend must be native, fused or paged")
+        if (type(group_size) is not int or group_size not in {1, 4}
+                or group_size == 4 and (attention_backend != "paged" or head_transfer != "packed")):
+            raise ValueError("group_size=4 requires paged attention and packed head transfer")
         if getattr(getattr(head, "layout", None), "size", 1) != 1:
             raise ValueError("rank-local heads require a full-model TP executor; the pinned native executor is TP1")
         self.source, self.head = source, head
         self.attention_backend = attention_backend
+        self.group_size = group_size
         self.block_size = head.block_size
         self.programs, self.handles = {}, []
         self.native = None
         self.rounds = 0
         self.last_seconds = None
         self.last_timings = {}
-        self.weights = DraftWeights(head, head_storage, head_transfer)
+        self.weights = DraftWeights(head, head_storage, head_transfer, group_size=group_size)
 
     def compile(self, samples, config):
         inputs = metadata(self.head, samples)
-        for name, program in make_programs(self.source, attention_backend=self.attention_backend).items():
+        for name, program in make_programs(self.source, attention_backend=self.attention_backend, group_size=self.group_size).items():
             print(f"compiling Orthrus {name}", flush=True)
             self.programs[name] = program.compile(*inputs[name], config=config)
         return list(self.programs.values())
@@ -69,10 +79,13 @@ class NeuralDraft:
     def start(self, native):
         expected = ({"embedding", "gdn", "full_layer", "finish"} if self.attention_backend == "paged" else
                     {"embedding", "gdn", "full_prepare", "full", "finish"})
+        if self.group_size == 4:
+            expected = {"embedding", "group", "finish"}
         if self.native is not None or set(self.programs) != expected:
             raise RuntimeError("draft programs must be registered before starting the native worker")
         self.native = native
         self.hidden = [self._allocate((32, 5120)), self._allocate((32, 5120))]
+        self.group_scratch = [self._allocate((32, 5120)), self._allocate((32, 5120))] if self.group_size == 4 else []
         self.query, self.key, self.value, self.gate = [self._allocate((32, width))
                                                      for width in (6144, 1024, 1024, 6144)]
         self.ids = self._allocate((32,), torch.int32)
@@ -138,12 +151,18 @@ class NeuralDraft:
         self.last_timings["inputs_seconds"] = time.monotonic() - start
         worker, banks = native.worker, native.banks
         self._run("embedding", [self.ids, banks[0], self.hidden[0]])
-        for layer in range(64):
+        for layer in range(0, 64, self.group_size):
             weight_start = time.monotonic()
-            weights = self.weights.for_layer(layer)
+            weights = self.weights.for_group(layer) if self.group_size == 4 else self.weights.for_layer(layer)
             self.last_timings["weights_seconds"] += time.monotonic() - weight_start
-            current, output = self.hidden[layer % 2], self.hidden[1 - layer % 2]
-            if layer % 4 != 3:
+            index = layer // self.group_size % 2
+            current, output = self.hidden[index], self.hidden[1 - index]
+            if self.group_size == 4:
+                flat = [handle for group in weights for handle in group]
+                self._run("group", [current, *banks[3:8], *flat, self.cos, self.sin,
+                                    self.query, self.key, self.value, self.gate, *native.resident,
+                                    self.table, self.mask, *self.group_scratch, output, layer, resident.slot, past, width])
+            elif layer % 4 != 3:
                 self._run("gdn", [current, *banks[3:8], *weights,
                                   *native.resident[:2], output, layer, resident.slot])
             elif self.attention_backend == "paged":
@@ -171,11 +190,11 @@ class NeuralDraft:
 
 
 def make_runner(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
-                attention_backend="native", **callbacks):
+                attention_backend="native", group_size=1, **callbacks):
     """Create a native runner with additional graphs; leave native source intact."""
     runtime = native_module(source, "runtime")
     draft = NeuralDraft(source, head, head_storage=head_storage, head_transfer=head_transfer,
-                        attention_backend=attention_backend)
+                        attention_backend=attention_backend, group_size=group_size)
 
     class PreparedRunner(runtime.ModelRunner):
         def start(self):
@@ -216,7 +235,7 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
 
 
 def make_engine(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
-                attention_backend="native"):
+                attention_backend="native", group_size=1):
     class Engine(native_module(source, "engine").InferenceEngine):
         def snapshot(self):
             result = super().snapshot()
@@ -228,6 +247,7 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                                      head_storage=runner.draft.storage,
                                      head_transfer=runner.draft.weights.transfer,
                                      attention_backend=runner.draft.attention_backend,
+                                     draft_group_size=runner.draft.group_size,
                                      head_preparation_seconds=head.preparation_seconds,
                                      last_draft_timings=dict(runner.draft.last_timings))
             return result
@@ -236,6 +256,7 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
     engine.runner = make_runner(source, model_root, device, head, head_storage=head_storage,
                                 head_transfer=head_transfer,
                                 attention_backend=attention_backend,
+                                group_size=group_size,
                                 on_cache_event=engine._on_cache)
     engine.scheduler.runner = engine.runner
     return engine

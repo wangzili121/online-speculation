@@ -101,3 +101,15 @@ def test_paged_backend_does_not_advertise_unvalidated_cube_or_vector_tiles(tile)
     from blockspec.pypto_qwen38.paged_attention_programs import make_paged_attention
     with pytest.raises(ValueError, match="query_tile=16"):
         make_paged_attention(AttentionShape(query_tile=tile))
+
+
+def test_grouped_execution_requires_matching_programs_and_nonaliased_weight_storage():
+    from blockspec.pypto_qwen38.programs import make_programs
+    from blockspec.pypto_qwen38.draft import NeuralDraft
+    from blockspec.pypto_qwen38.weights import DraftWeights
+    with pytest.raises(ValueError, match="paged"):
+        make_programs(None, group_size=4)
+    with pytest.raises(ValueError, match="packed"):
+        NeuralDraft(None, None, attention_backend="paged", group_size=4)
+    with pytest.raises(ValueError, match="packed"):
+        DraftWeights(None, group_size=4)

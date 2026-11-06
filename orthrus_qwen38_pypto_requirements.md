@@ -35,9 +35,9 @@ draft 每轮输入一个块：`anchor + (K-1) 个 MASK`。anchor 是已经确定
 
 ### 1.2 PyPTO 已有基础与本次改动范围
 
-PyPTO 已有 Qwen3.8 整网前向的实现基础，位于 `pypto-lib` PR #1503。本文按提交 `1d454a1b8f7af18c9b176d8aeaa60dc565a6a9e9` 核对，下文文件均位于 `models/qwen3_8_27b/`。该 PR 及配套 `pypto-serving` PR #281 尚未合入，公开验证的是单卡、单请求、最多 128 个位置的普通推理，尚不包含本报告的投机执行方式。
+本文的算子设计基线为 `pypto-lib` PR #1503 的提交 `1d454a1b8f7af18c9b176d8aeaa60dc565a6a9e9`，下文该基线的文件均位于 `models/qwen3_8_27b/`。可运行接入采用固定的 OneServing `7aa40ba` 交付包及配套 PyPTO，支持单卡、单活动请求、512 个总位置；环境和运行入口见 [PyPTO Serving 接入](online-speculation/docs/QWEN38_PYPTO_PORT.md)。这两份基线的接口不同，下面的计算契约相同。
 
-在这个基础上，**主要要扩展 Full Attention 和 GDN 的调用方式**。Full Attention 需要一次计算 K 行 query，每行读取同一段历史和整个草稿块；GDN 则先复制主模型的历史状态，再用这份数据依次计算 K 个位置，不修改主模型原来的状态。这里除了调整 Attention 的可见范围，还要支持 GDN 的整块计算和状态传递。
+**Orthrus 主要扩展 Full Attention 和 GDN 的调用方式**。Full Attention 一次计算 K 行 query，每行读取同一段历史和整个草稿块；GDN 则先复制主模型的历史状态，再用这份数据依次计算 K 个位置，不修改主模型原来的状态。这两条路径已在可运行接入中实现；以下解释计算要求，最后说明整网验证范围。
 
 投影、norm、RoPE 和 MLP 的公式可以沿用。接入时仍要给它们绑定正确的 draft 或共享权重，按 TP 规格分片，再与主模型交换历史。下面先说明这两类模块内部要改什么，第 3 节再把它们放回完整推理流程。
 
@@ -67,11 +67,11 @@ Q/K 归一化、部分 RoPE、GQA 及输出处理沿用 Qwen 原有实现。
 
 #### 2.1.2 PyPTO 已有实现与所需修改
 
-现有 `attention_state.py` 已包含上述 Q/K norm、部分 RoPE、GQA 和门控。历史 Attention 位于 `full_network_core.py::attention_context_full`，目前从连续 KV 中读取数据，只计算第一个有效 query，并按当前位置限制可见范围；新 K/V 由另一个入口 `append_kv_full` 追加。
+设计基线中的 `attention_state.py` 已包含上述 Q/K norm、部分 RoPE、GQA 和门控。其历史 Attention 位于 `full_network_core.py::attention_context_full`，从连续 KV 中读取数据，只计算第一个有效 query，并按当前位置限制可见范围；新 K/V 由另一个入口 `append_kv_full` 追加。
 
 因此可以保留前后处理，重点扩展 Attention 入口：一次接收 K 行 query，并额外接收临时块 K/V。所有行的历史长度都设为 `a`，临时块全部可见。由于这些 K/V 由 draft 参数计算，不是主模型的正式历史，起草阶段不调用 AR 的 KV append，只写自己的输出和工作区。候选接受后，正式 KV 由主模型验证时重新计算。
 
-PyPTO 可先沿用当前 Torch-NPU 的方式：按页表将历史 KV 整理为连续张量，与草稿块拼接后统一计算 Attention，再对照现有结果验证。
+可运行接入保留连续历史对照，并提供 `paged` 实现：按页表将历史和整个有效草稿块直接搬入 L1，融合 QK、softmax、PV 和门控，不生成连续 KV 副本。按有效长度选择 128/256/512 容量，Torch 数学参考保持独立；详见 [kernel 接口](online-speculation/docs/QWEN38_PYPTO_KERNEL_TASK.md)。
 
 #### 2.1.3 Torch-NPU 实现
 
@@ -238,7 +238,7 @@ $$
 
 #### 2.2.2 PyPTO 已有实现与所需修改
 
-现有 `delta_state.py` 已实现这里的卷积、head 分组、标量衰减、Delta Rule 和门控 norm，可以直接作为 Qwen GDN 的基础。`decode_layer.py::delta_decode_into` 也接受 `previous_conv` 和 `previous_recurrent`，能够接上历史，不过一次只处理一个有效 token。
+设计基线中的 `delta_state.py` 已实现这里的卷积、head 分组、标量衰减、Delta Rule 和门控 norm，可以作为 Qwen GDN 的基础。`decode_layer.py::delta_decode_into` 也接受 `previous_conv` 和 `previous_recurrent`，能够接上历史，不过一次只处理一个有效 token。
 
 因此要把单步入口扩展为整块入口：从已有历史初态出发，按顺序处理 K 行，把每步状态交给下一步，并返回全部位置的输出。可以先逐步调用已有计算，再考虑分块融合。同一请求的这些位置有先后依赖，不能作为独立 batch 同时更新一个状态。现有 16 行 padding tile 只说明缓冲的补齐尺寸，不代表能处理同样数量的有效位置；短 prefill 的零历史假设也需要改为本轮传入的历史初态。
 
@@ -412,6 +412,8 @@ class GatedRMSNorm(nn.Module):
 
 这两条路径接通后，每类层内部的计算就有了基础。接下来还要把它们放回完整模型，使用共享层传递当前块的特征，再交给主模型验证。norm、投影等可以继续复用或按性能融合，最终 kernel 数量由实现方式决定。
 
+可运行 PyPTO 接入已覆盖两行要求：Full Attention 采用 K32 分页双向计算，GDN 从目标历史的临时副本连续处理两个 16 行 tile。共享层仍调用交付包的原生计算；可选四层合并 HOST 编排进一步减少提交次数，不改变上述公式。
+
 ## 3. 模型执行与推理引擎接入
 
 ### 3.1 一轮投机如何执行
@@ -435,11 +437,11 @@ class GatedRMSNorm(nn.Module):
 
 ### 3.2 PyPTO 与引擎的接口
 
-PyPTO 可以先只接管 Full Attention 和 GDN 这两类模块，主模型、共享 MLP、TP 通信和验证采样继续由现有 vLLM-Ascend 执行器负责。每次调用时，执行器传入 draft 参数、历史长度、KV 或 GDN 初态，并提供输出和临时工作区。
+当前接入在同一个 OneServing `DistributedWorker` 中运行主模型和完整 draft。`HeadSource` 读取训练 head，`DraftWeights` 管理驻留或流式上传，`NeuralDraft.propose` 绑定共享 backbone 与目标历史；Full Attention 读取分页池，GDN 在私有工作区更新状态。PyPTO 执行全部模型计算。
 
-调用双方首先要对齐张量布局、设备地址和有效长度，再约定 stream 怎样同步、临时缓冲何时释放，确保 PyPTO 读到的是本轮有效历史。缓存分配、页表和接受决策仍由引擎管理，算子只按这些信息读写数据。
+`OrthrusRunner` 对接原生 scheduler，`NativeTarget` 调用原生 AR 程序分块验证候选；批量回读有效 logits 后做 greedy 校正。拒绝后缀时恢复 GDN 和页表长度，只重放接受前缀；已验证输出由 scheduler 逐 token 交付。缓存分配、页表和接受决策由引擎管理，算子按传入的长度和布局读写数据。
 
-在此基础上，可以再把整段 draft 迁入 PyPTO，接齐共享层、残差和跨卡通信。如果主模型也改由 PyPTO 执行，还要实现上一节的块验证和接受前缀恢复。这样可以先验证局部计算，再逐步扩大执行范围。
+`--draft-group-size 4` 将 3 个 GDN 层与 1 个 Full Attention 层编排为一次 HOST 提交，head 同时按组上传。该配置只改变执行粒度，K 仍为 32；共享层继续使用原生计算。完整 TP 尚需对接原生的局部 backbone 和归约接口。
 
 跨卡时还要调整尺寸。参考 PR 使用单卡完整规格，现有 Torch-NPU 接入则有 TP 分片：TP2 每 rank 的 Full Attention 为 12 个 Q head、2 个 KV head，GDN 为 8 个 Q/K head、24 个 V head；TP4 分别为 6/1 和 4/12。因此 PyPTO 入口需要按 TP 配置接收尺寸和分片权重，不能固定为单卡常量。加载 head 时也要核对基模、K、mask token、混合层策略和 TP 规格。
 
@@ -458,9 +460,9 @@ python scripts/run_in_runtime.py scripts/validate_qwen38_vllm.py \
 
 现有验证分为两层。计算上，已对照双向 Full Attention、非零初态 GDN、跨分段状态和相关前后处理；真实模型上，已在 27B、TP2 中覆盖 K=2/8/17/32 的起草与原生验证、全接受和连续拒绝后的恢复、分页历史、缓存隔离、head 导出重载及采样校准。另有 TP4 加载和 draft 更新记录，训练反向不列入本次 PyPTO 需求。
 
-这些是 Torch-NPU 路径的结果，可以作为 PyPTO 接入的对照，但 PyPTO Orthrus 本身尚未验证。数值检查也还没有全部通过：原生不同计算形状下存在 K32 数值分叉，严格逐 token 一致性尚未达成。当前覆盖 BF16、eager、同步单请求，量化、图模式和动态 batch 需要另行适配。初始化 head 用来验证链路，业务接受率和加速收益需要训练 head 另行评估。
+PyPTO 路径也已在真实 27B、K32 上完成独立验证：52 项 Attention 检查、128 项真实输入逐层 HF 对照、六个历史边界、八组全接受/拒绝/截断用例、TP2 文件重载及 scheduler 续写均通过。原生与分页后端、分页逐层与四层合并两组对照的有效 logits 和候选均逐字节相同。CPU 回归共 372 项通过。
 
-因此，接下来先让 PyPTO 中的 Full Attention 和 GDN 与现有结果对齐，再放回整层、接入真实主模型历史，最后检查各接受位置恢复、TP 分片和长上下文。计算和流程确认后，再根据搬运与执行耗时决定是否增加分页直读或进一步融合。
+上述 PyPTO 验证范围为 TP1、一个活动请求、512 个总位置及 greedy。四层合并将单轮起草耗时中位数从 2.600 s 降为 2.315 s，不能当作业务吞吐收益；当前仍主要受流式 head 上传限制。完整 TP、长上下文和采样需要单独接入与验证。代码入口、原始记录和复现命令见 [执行与验证](online-speculation/docs/QWEN38_PYPTO_PAGED_VALIDATION.md)。
 
 ## 参考资料
 

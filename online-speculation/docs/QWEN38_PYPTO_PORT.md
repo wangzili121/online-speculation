@@ -2,7 +2,7 @@
 
 本分支基于 OneServing 的 Qwen3.8 独立交付包接入 Orthrus。原生模型保持不变，训练仍由现有 PyTorch 路径完成，推理侧读取相同的 draft head。
 
-Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标缓存只读、拒绝恢复、短请求 greedy 对照及 HTTP 检查。测试覆盖完整 64 层，主模型与 draft 在同一 worker 中共享 backbone。参数转换移到启动阶段，推理复用已分配的缓冲；同卡对照中，单轮 K32 起草中位数从 56.63 秒降至 2.70 秒，完整 logits 逐字节相同。**目前为 TP1、一个活动请求；该耗时是 draft 阶段计时，不是服务吞吐提升。**
+Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标缓存只读、拒绝恢复、greedy 对照及 HTTP 检查。测试覆盖完整 64 层，主模型与 draft 在同一 worker 中共享 backbone。参数转换在启动阶段完成，推理复用已分配的缓冲。**目前为 TP1、一个活动请求、512 个总位置；起草阶段计时与服务吞吐分别验收。**
 
 ## 固定基线
 
@@ -25,11 +25,11 @@ Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标
 - `baseline.py`：检查 OneServing 与运行时版本，在独立模块命名空间导入原生代码。
 - `head.py`：读取 `orthrus-qwen38-native-tp-v1`，检查基模哈希、K、mask、混合层策略和 tensor schema，按运行 rank 读取 TP1/2/4 checkpoint 的对应参数，并准备共享主机布局。当前服务运行 TP1，会合并训练分片。
 - `tp.py`：定义各 rank 的 heads 范围和 KV/GDN 状态形状，按参数布局重分片，检查目标历史的形状是否相容。
-- `weights.py`：设备内存充足时保留全部 head；否则复用 GDN、Full Attention 各一组设备缓冲，逐层上传已经准备好的参数。可选按层打包上传，通过公开的 `Buffer.tensor` 创建具有同一内存 owner 的参数视图。
+- `weights.py`：设备内存充足时保留全部 head；否则逐层或按四层复用暂存缓冲。打包上传通过公开的 `Buffer.tensor` 创建具有同一内存 owner 的参数视图，同组各层参数同时有效。
 - `tp_programs.py`：组合原生 Linear、residual 和 PyPTO 内置 Sum，提供行并行投影、整块归约及归约后的 residual 组件；完整 TP 模型执行器尚未接入。
 - `greedy.py`：比较整块候选；第一次拒绝时输出目标 token，全接受时输出 bonus；输出上限和停止 token 同样限制提交长度。
 - `target.py`：在原生 runner 上执行验证，批量读取有效 logits 行；需要拒绝后缀时，恢复验证前的 GDN 状态和页表长度，再仅重放接受前缀。状态快照使用预注册共享缓冲，每个存活快照独占一个槽；池满时回退到独立副本。
-- `programs.py`：组合原生投影、norm、GDN、Full Attention 和 MLP。K32 分为两个 16 行 tile；Full Attention 先准备整个块的 K/V，再计算两个 tile 的 query，读取主模型历史但不写目标缓存。
+- `programs.py` / `group_programs.py`：组合原生投影、norm、GDN、Full Attention 和 MLP，可按层或四层提交。原生投影和 GDN 使用 16 行 tile；Full Attention 先准备整个 K32 块的 K/V，分页核心使用 32 行 query，读取主模型历史但不写目标缓存。
 - `attention.py` / `attention_programs.py` / `paged_attention_programs.py`：独立 Torch 参考、融合/分阶段对照及直接分页 Attention；接收原生完整 KV pool 和层号，读取真实历史与临时块，输出门控后的 Attention。
 - `draft.py`：将 draft 与目标程序提前注册到同一 worker，共享 embedding、norm、MLP 和 LM head，组织各层计算与输出读取。
 
@@ -54,6 +54,8 @@ Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthr
 真实 27B 的同 worker 对照中，原生与分页路径的完整有效 logits 和 31 个候选逐字节相同；目标 cache 只读、接受前缀重放及六个历史边界后的 greedy 续写均通过。六轮起草中位数为 2.417 s / 2.401 s，其中约 2.05 s 用于逐层上传 head。独立 Attention 的收益没有转化为明显的整轮提速，默认后端保持不变。
 
 独立输入、Torch 参考、计时范围与调优入口见 [kernel 任务说明](QWEN38_PYPTO_KERNEL_TASK.md)，本轮原始数据和复现方式见 [分页 Attention 验证](QWEN38_PYPTO_PAGED_VALIDATION.md)。原生/融合路径的逐层对照及 TP4→TP2 文件重载记录见 [逐层对照与重载验证](QWEN38_PYPTO_PAIRED_VALIDATION.md)。
+
+可选 `--draft-group-size 4 --attention-backend paged --head-transfer packed` 将 3 个 GDN 层和 1 个 Full Attention 层合并为一次 HOST 提交，并按组上传 head；K32 的计算提交由 66 次降为 18 次。模型计算不变，约增加 0.45 GiB 流式暂存。同 worker 六轮对照起草耗时为 2.600 / 2.315 s，logits 与候选逐字节相同；六个历史边界、八组 verifier 用例及直接启动服务检查均通过。实际配置和记录见 [执行与验证](QWEN38_PYPTO_PAGED_VALIDATION.md#四层合并执行)。
 
 ## 与 vLLM 路径的对应关系
 

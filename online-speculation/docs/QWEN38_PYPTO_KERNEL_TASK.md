@@ -43,6 +43,8 @@ python scripts/validate_qwen38_pypto_attention.py \
 
 服务、完整 draft 验证与 benchmark 均提供 `--attention-backend native|fused|paged`，默认保留 `native`。`fused` 和 `paged` 替换 Full Attention 核心，后者同时将该层的准备和计算合为一次 HOST 提交；GDN 策略和 head 参数契约相同。O projection、共享 MLP、验证与回滚仍使用现有计算。
 
+`--draft-group-size 4 --head-transfer packed` 在 `paged` 后端上进一步将 3 个 GDN 层和 1 个 Full Attention 层合并提交；这是执行编排配置，K 仍为 32。独立核的输入与参考保持不变；整网分配、参数视图和缓存检查见 [执行与验证](QWEN38_PYPTO_PAGED_VALIDATION.md#四层合并执行)。
+
 独立 kernel 通过后，运行 `validate_qwen38_pypto_neural.py --attention-backend fused --audit-block` 检查完整 K32 起草、目标 cache 不变、拒绝后的状态和 greedy 续写；再对同一 head 比较完整 draft 及请求耗时。独立 kernel 的收益不能直接当作服务收益。
 
 该任务可作为 Goal Plus Playground 的 `pypto-kernel` 场景任务输入。Playground 提供工作区和优化流程；本项目提供算法、固定版本接口、独立参考与验证入口，不沿用示例任务的 DSpark 形状、设备号或性能数字。

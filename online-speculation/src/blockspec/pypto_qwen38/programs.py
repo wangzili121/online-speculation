@@ -8,9 +8,11 @@ before the second half exists. No target cache is an output of these graphs.
 from .baseline import native_module
 
 
-def make_programs(source, *, attention_backend="native"):
+def make_programs(source, *, attention_backend="native", group_size=1):
     if attention_backend not in {"native", "fused", "paged"}:
         raise ValueError("attention backend must be native, fused or paged")
+    if type(group_size) is not int or group_size not in {1, 4} or group_size == 4 and attention_backend != "paged":
+        raise ValueError("group_size must be 1 or 4; groups of four require the paged backend")
     import pypto.language as pl
 
     model = native_module(source, "model")
@@ -319,6 +321,9 @@ def make_programs(source, *, attention_backend="native"):
     def finish_host(hidden: pl.Tensor, gamma: pl.Tensor, weight: pl.Tensor, logits: pl.Out[pl.Tensor]):
         finish(hidden, gamma, weight, logits, device=0)
 
+    if group_size == 4:
+        from .group_programs import make_group_host
+        return dict(embedding=embed_host, group=make_group_host(gdn, full_prepare, full), finish=finish_host)
     if attention_backend == "paged":
         return dict(embedding=embed_host, gdn=gdn_host, full_layer=full_layer_host, finish=finish_host)
     return dict(embedding=embed_host, gdn=gdn_host, full_prepare=prepare_host, full=full_host, finish=finish_host)

@@ -2,14 +2,17 @@
 
 
 class DraftWeights:
-    def __init__(self, head, mode="auto", transfer="individual", *, worker_id=0):
+    def __init__(self, head, mode="auto", transfer="individual", *, worker_id=0, group_size=1):
         if mode not in {"auto", "resident", "stream"}:
             raise ValueError("head storage must be auto, resident or stream")
         if transfer not in {"individual", "packed"}:
             raise ValueError("head transfer must be individual or packed")
         if type(worker_id) is not int or worker_id < 0:
             raise ValueError("head worker_id must be a nonnegative integer")
+        if type(group_size) is not int or group_size not in {1, 4} or group_size == 4 and transfer != "packed":
+            raise ValueError("head group_size must be 1 or 4; groups of four require packed transfer")
         self.worker_id = worker_id
+        self.group_size = group_size
         self.head, self.mode = head, mode
         self.transfer, self.packed = transfer, {}
         self.worker = None
@@ -48,7 +51,7 @@ class DraftWeights:
             # GDN 与 Full Attention 各用一组缓冲，不在每层/每轮重新分配。
             minimum = sum(
                 value.numel() * value.element_size()
-                for layer in (0, 3)
+                for layer in (range(4) if self.group_size == 4 else (0, 3))
                 for value in self.head.banks(layer)
             ) + (256 << 20)
             if minimum > free:
@@ -65,6 +68,8 @@ class DraftWeights:
                 )
 
     def _prepare_packed_stream(self):
+        if self.group_size == 4:
+            return self._prepare_packed_groups()
         import torch
         from pypto.runtime.task_interface import DataType
 
@@ -93,7 +98,48 @@ class DraftWeights:
                           for value, offset in zip(values, offsets, strict=True))
             self.packed[layer] = (span, parent, views)
 
+    def _prepare_packed_groups(self):
+        import torch
+        from pypto.runtime.task_interface import DataType
+
+        pool = self.head.shared_weights
+        if pool.dtype != torch.uint8 or pool.ndim != 1 or not pool.is_contiguous():
+            raise ValueError("packed groups require one contiguous byte head storage")
+        dtypes = {torch.bfloat16: DataType.BFLOAT16, torch.float32: DataType.FLOAT32}
+        layouts = {}
+        for base in range(0, 64, 4):
+            banks = [self.head.banks(layer) for layer in range(base, base + 4)]
+            offsets = [[value.data_ptr() - pool.data_ptr() for value in values] for values in banks]
+            begin = min(offset for row in offsets for offset in row)
+            end = max(offset + value.numel() * value.element_size()
+                      for row, values in zip(offsets, banks, strict=True)
+                      for offset, value in zip(row, values, strict=True))
+            if begin < 0 or end > pool.numel() or any(not v.is_contiguous() for row in banks for v in row):
+                raise ValueError(f"head group {base} is outside its packed storage")
+            layouts[base] = (pool[begin:end], banks, [[offset - begin for offset in row] for row in offsets])
+        # 三个 GDN 层必须拥有各自的参数视图；不能连续上传到同一个逐层缓冲后再执行。
+        size = max(span.numel() for span, _, _ in layouts.values())
+        self.buffers["group"] = parent = self._allocate(torch.empty(size, dtype=torch.uint8), initialize=False)
+        for base, (span, banks, offsets) in layouts.items():
+            views = tuple(tuple(parent.buffer.tensor(tuple(value.shape), dtypes[value.dtype], byte_offset=offset)
+                                for value, offset in zip(values, row, strict=True))
+                          for values, row in zip(banks, offsets, strict=True))
+            self.packed[base] = (span, parent, views)
+
+    def for_group(self, base):
+        if self.group_size != 4 or type(base) is not int or base not in range(0, 64, 4):
+            raise ValueError("a four-layer head and an aligned group base are required")
+        if self.storage == "resident":
+            return tuple(self.resident[layer] for layer in range(base, base + 4))
+        if self.storage != "stream":
+            raise RuntimeError("head device weights are not started")
+        span, parent, views = self.packed[base]
+        self.worker.copy_to(parent.data_ptr, span.data_ptr(), span.numel(), worker_id=self.worker_id)
+        return views
+
     def for_layer(self, layer):
+        if self.group_size != 1:
+            raise RuntimeError("four-layer weights must be consumed through for_group")
         if self.storage == "resident":
             return self.resident[layer]
         if self.storage != "stream":

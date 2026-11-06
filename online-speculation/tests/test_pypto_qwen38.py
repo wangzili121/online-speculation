@@ -441,7 +441,8 @@ def test_head_free_failure_keeps_the_owner_and_remaining_allocations_for_retry(m
 
 
 @pytest.mark.parametrize("worker_id", (0, 1))
-def test_packed_stream_reuses_two_owned_buffers_and_copies_each_layer_once(monkeypatch, worker_id):
+@pytest.mark.parametrize("group_size", (1, 4))
+def test_packed_stream_reuses_owned_buffers_and_copies_each_layer_or_group_once(monkeypatch, worker_id, group_size):
     import math
     import sys
     from blockspec.pypto_qwen38.weights import DraftWeights
@@ -463,18 +464,40 @@ def test_packed_stream_reuses_two_owned_buffers_and_copies_each_layer_once(monke
     head = tiny_head(monkeypatch)
     head.prepare()
     worker = PackedWorker(1 << 30)
-    weights = DraftWeights(head, "stream", "packed", worker_id=worker_id)
+    weights = DraftWeights(head, "stream", "packed", worker_id=worker_id, group_size=group_size)
     weights.start(worker)
-    assert len(worker.handles) == 2
+    count = 1 if group_size == 4 else 2
+    assert len(worker.handles) == count
     for _ in range(2):
-        for layer in range(64):
-            for actual, expected in zip(weights.for_layer(layer), head.banks(layer), strict=True):
-                assert actual.payload.dtype == expected.dtype
-                assert torch.equal(actual.payload, expected)
-    assert worker.uploads == 128
+        for base in range(0, 64, group_size):
+            banks = weights.for_group(base) if group_size == 4 else [weights.for_layer(base)]
+            # 同组的三个 GDN 参数必须同时保持正确，不能全部别名到最后一次上传。
+            for index, handles in enumerate(banks):
+                for actual, expected in zip(handles, head.banks(base + index), strict=True):
+                    assert actual.payload.dtype == expected.dtype
+                    assert torch.equal(actual.payload, expected)
+    assert worker.uploads == 128 // group_size
+    if group_size == 4:
+        with pytest.raises(RuntimeError, match="for_group"):
+            weights.for_layer(0)
     weights.close()
-    assert len(worker.freed) == 2 and not weights.packed
+    assert len(worker.freed) == count and not weights.packed
     assert all(owner == worker_id for _, owner in worker.operations)
+
+
+def test_resident_four_layer_groups_use_distinct_parameters_without_upload(monkeypatch):
+    from blockspec.pypto_qwen38.weights import DraftWeights
+    head = tiny_head(monkeypatch)
+    head.prepare()
+    worker = WeightWorker(1 << 30)
+    weights = DraftWeights(head, "resident", "packed", group_size=4)
+    weights.start(worker)
+    uploads = worker.uploads
+    for base in range(0, 64, 4):
+        for index, handles in enumerate(weights.for_group(base)):
+            assert all(torch.equal(h.payload, value) for h, value in zip(handles, head.banks(base + index), strict=True))
+    assert worker.uploads == uploads
+    weights.close()
 
 
 def test_packed_stream_rejects_a_bank_outside_the_prepared_storage(monkeypatch):

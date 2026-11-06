@@ -1,4 +1,4 @@
-# Orthrus 分页 Attention 验证
+# Orthrus-Qwen3.8 PyPTO 执行与验证
 
 本次为 Orthrus 的 Full Attention 增加直接分页实现：通过页表将主模型历史与临时 draft 块搬入 L1，融合 QK、softmax、PV 和输出门控。历史与整个有效块参加同一个 softmax，目标 cache 保持只读。共享 backbone、GDN 策略及主模型源码不变。
 
@@ -29,7 +29,29 @@
 
 将相同参数改存为 TP2 文件并重启后，参数、初始历史、两种后端的 logits 和候选均保持一致。另用目标续写构造八组校正用例，覆盖全接受 31 个候选、第 0/15/16/30 个位置拒绝、输出预算 1/16 和停止 token，已提交历史及三步续写全部通过。这些候选仅检查 verifier，不计作 draft 接受率或加速收益；记录见 [reloaded-verifier.json](validation/pypto-qwen38/paged-attention-20261107/reloaded-verifier.json)。
 
-在 CPU 上将两个后端的各层真实输入交给独立 HF 参考，共 128 项检查通过，最大相对 L2 误差为 0.285%，未放宽 2% 门槛；记录见 [layers.json](validation/pypto-qwen38/paged-attention-20261107/layers.json)。直接以 `paged` 启动的四个程序入口、K32 cache 审计和 scheduler 三 token 续写也通过，记录见 [service.json](validation/pypto-qwen38/paged-attention-20261107/service.json)。对应 CPU 回归为 368 项通过。
+在 CPU 上将两个后端的各层真实输入交给独立 HF 参考，共 128 项检查通过，最大相对 L2 误差为 0.285%，未放宽 2% 门槛；记录见 [layers.json](validation/pypto-qwen38/paged-attention-20261107/layers.json)。直接以 `paged` 启动的四个程序入口、K32 cache 审计和 scheduler 三 token 续写也通过，记录见 [service.json](validation/pypto-qwen38/paged-attention-20261107/service.json)。
+
+### 四层合并执行
+
+`--draft-group-size 4` 将连续的 3 个 GDN 层和 1 个 Full Attention 层放在一次 HOST 提交中，并按组上传 head。它仍逐层调用相同的 GDN、Attention 和共享 MLP；这是编排合并，K 仍为 32，也不把四层融合成一个硬件 kernel。三个 GDN 层使用不同参数视图，工作区交替复用；目标历史保持只读。
+
+同一 worker、相同 head/history、两边都采用 packed 上传，预热后交错测量六轮：
+
+| 指标 | 逐层 `paged` | 四层合并 |
+| --- | --- | --- |
+| K32 HOST 计算提交次数 | 66 | 18 |
+| 流式 head 上传次数 | 64 | 16 |
+| 完整起草中位数 | 2.600 s | 2.315 s |
+| 计算提交累计耗时中位数，含同步调用 | 327.2 ms | 283.7 ms |
+| head 上传累计耗时中位数 | 2.252 s | 2.004 s |
+
+本轮起草耗时降低约 11%，不能推导为请求吞吐提升。流式暂存扩大为 3 套 GDN 与 1 套 Full 参数，约多用 0.45 GiB；全部 head 能驻留时也支持按组引用已有参数，但本轮真实整网使用流式模式。默认仍保留逐层执行和原生 Attention，四层配置显式开启。
+
+两条路径的 logits 与候选逐字节相同，目标 cache 不变；六个历史边界和八组 verifier 用例均通过。单独启动三个程序入口的合并服务，K32 审计及 scheduler 续写也通过。CPU 回归共 372 项通过，包括四层参数同时有效、分配复用、上传次数及释放检查。[整轮对照](validation/pypto-qwen38/grouped-draft-20261107/paired.json)、[直接启动](validation/pypto-qwen38/grouped-draft-20261107/service.json)与 [CPU 记录](validation/pypto-qwen38/grouped-draft-20261107/cpu.xml)保留原始数据。
+
+本轮测试的父进程、设备 worker 和设备锁均已释放，检查时无遗留 NPU 占用；记录见 [release.json](validation/pypto-qwen38/grouped-draft-20261107/release.json)。
+
+实现入口为 `group_programs.py::make_group_host`；`weights.py::for_group` 返回同组参数，`draft.py::NeuralDraft.propose` 每四层提交一次。对照基准仍使用同一套 `programs.py` 计算，避免以另一套数学实现作为优化前版本。
 
 ## 复现
 
@@ -48,6 +70,12 @@ python scripts/compare_qwen38_pypto_draft.py \
   --source /sources/OneServing --model /models/Qwen3.8-27B \
   --head-dir /heads/version4 --device 0 --candidate-backend paged \
   --audit-boundaries --audit-verifier --capture --rounds 6 --output-dir /results/paired
+
+python scripts/compare_qwen38_pypto_draft.py \
+  --source /sources/OneServing --model /models/Qwen3.8-27B \
+  --head-dir /heads/version4 --device 0 --baseline-backend paged \
+  --candidate-backend paged --head-transfer packed --draft-group-size 4 \
+  --audit-boundaries --audit-verifier --rounds 6 --output-dir /results/grouped
 ```
 
 目前完整服务仍是 TP1。单卡流式 head 上传仍占主要时间；完整 TP 与 head 驻留需要原生模型提供局部 backbone 和归约接口，不能由 Attention 核的提速代替。

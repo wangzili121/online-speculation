@@ -160,6 +160,7 @@ def main():
     parser.add_argument("--request-timeout", type=float, default=1200)
     parser.add_argument("--audit-block", action="store_true", help="audit a full K32 round and cache bytes")
     parser.add_argument("--attention-backend", choices=("native", "fused", "paged"), default="native")
+    parser.add_argument("--draft-group-size", type=int, choices=(1, 4), default=1)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists() or args.device < 0 or not 3 <= args.tokens <= 64 or args.request_timeout <= 0:
@@ -176,7 +177,8 @@ def main():
         head = HeadSource(args.model, args.head_dir)
         report.update(head_source="trained", head_tp=head.tp, block_size=head.block_size)
         report["attention_backend"] = args.attention_backend
-        engine = make_engine(args.source, args.model, args.device, head, attention_backend=args.attention_backend)
+        engine = make_engine(args.source, args.model, args.device, head, attention_backend=args.attention_backend,
+                             group_size=args.draft_group_size, head_transfer="packed" if args.draft_group_size == 4 else "individual")
         runner = engine.runner
         engine.start()
         if args.audit_block:

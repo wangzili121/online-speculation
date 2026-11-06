@@ -57,11 +57,14 @@ def main():
     p.add_argument("--head-storage", choices=("auto", "resident", "stream"))
     p.add_argument("--head-transfer", choices=("individual", "packed"))
     p.add_argument("--attention-backend", choices=("native", "fused", "paged"), default="native")
+    p.add_argument("--draft-group-size", type=int, choices=(1, 4), default=1)
     p.add_argument("--save-logits", action="store_true")
     p.add_argument("--compare-transfer", action="store_true")
     a = p.parse_args()
     if a.output.exists() or a.rounds < 1 or a.device < 0:
         p.error("require a new output, assigned device and positive round count")
+    if a.draft_group_size == 4 and a.compare_transfer:
+        p.error("grouped execution requires packed transfer, not a transfer comparison")
     logging.getLogger("simpler").setLevel(logging.WARNING)
     # 与功能验收共用缓存检查，计时只包住 propose，不包含这些审计。
     from validate_qwen38_pypto_neural import resident_checksum, history_checksum
@@ -82,7 +85,10 @@ def main():
         if a.head_transfer is not None:
             kw["head_transfer"] = a.head_transfer
         report["attention_backend"] = a.attention_backend
-        engine = make_engine(a.source, a.model, a.device, source, attention_backend=a.attention_backend, **kw)
+        if a.draft_group_size == 4:
+            kw.setdefault("head_transfer", "packed")
+        engine = make_engine(a.source, a.model, a.device, source, attention_backend=a.attention_backend,
+                             group_size=a.draft_group_size, **kw)
         start = time.monotonic()
         engine.start()
         report["startup_seconds"] = time.monotonic() - start

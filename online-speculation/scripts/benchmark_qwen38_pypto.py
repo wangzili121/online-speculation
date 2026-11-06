@@ -81,6 +81,7 @@ def main():
     parser.add_argument("--head-storage", choices=("auto", "resident", "stream"), default="auto")
     parser.add_argument("--head-transfer", choices=("individual", "packed"), default="individual")
     parser.add_argument("--attention-backend", choices=("native", "fused", "paged"), default="native")
+    parser.add_argument("--draft-group-size", type=int, choices=(1, 4), default=1)
     parser.add_argument("--device", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--tokens", type=int, default=128)
@@ -124,7 +125,7 @@ def main():
         head = HeadSource(args.model, args.head_dir)
         engine = make_engine(args.source, args.model, args.device, head,
                              head_storage=args.head_storage, head_transfer=args.head_transfer,
-                             attention_backend=args.attention_backend)
+                             attention_backend=args.attention_backend, group_size=args.draft_group_size)
         # 仅此测速进程忽略 EOS，与 vLLM 定长对照的 SamplingParams 一致。
         engine.scheduler.stop_token_ids = frozenset()
         prompt_ids = engine.tokenizer.encode(args.prompt, add_special_tokens=False)
