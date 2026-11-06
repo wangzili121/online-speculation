@@ -27,6 +27,10 @@
 
 完整起草中位数为原生 2.417 s、分页 2.401 s；计算提交累计耗时中位数为 346.6 / 323.6 ms，包含同步调用开销。约 2.05 s 用于 head 上传，不能将 Attention 局部收益直接当作服务收益。默认后端仍为 `native`。原始记录见 [paired.json](validation/pypto-qwen38/paged-attention-20261107/paired.json)，完整 logits 对照见 [logits-comparison.json](validation/pypto-qwen38/paged-attention-20261107/logits-comparison.json)。
 
+将相同参数改存为 TP2 文件并重启后，参数、初始历史、两种后端的 logits 和候选均保持一致。另用目标续写构造八组校正用例，覆盖全接受 31 个候选、第 0/15/16/30 个位置拒绝、输出预算 1/16 和停止 token，已提交历史及三步续写全部通过。这些候选仅检查 verifier，不计作 draft 接受率或加速收益；记录见 [reloaded-verifier.json](validation/pypto-qwen38/paged-attention-20261107/reloaded-verifier.json)。
+
+在 CPU 上将两个后端的各层真实输入交给独立 HF 参考，共 128 项检查通过，最大相对 L2 误差为 0.285%，未放宽 2% 门槛；记录见 [layers.json](validation/pypto-qwen38/paged-attention-20261107/layers.json)。直接以 `paged` 启动的四个程序入口、K32 cache 审计和 scheduler 三 token 续写也通过，记录见 [service.json](validation/pypto-qwen38/paged-attention-20261107/service.json)。对应 CPU 回归为 368 项通过。
+
 ## 复现
 
 使用 [固定环境](QWEN38_PYPTO_PORT.md#固定基线)，在 `online-speculation/` 下运行：
