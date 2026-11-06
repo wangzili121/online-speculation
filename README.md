@@ -1,3 +1,19 @@
+# Qwen3.8 Orthrus 中文代码学习分支
+
+从 [代码阅读指南](online-speculation/docs/QWEN38_CODE_WALKTHROUGH.md) 开始：先看数据含义，再沿推理和训练两条调用链打开带中文注释的源码。
+
+- [每个相关文件负责什么](online-speculation/docs/QWEN38_FILE_INDEX.md)
+- [每个已注释函数的职责、参数和源码入口](online-speculation/docs/QWEN38_FUNCTION_INDEX.md)
+- 直接读起草入口：[qwen38_proposer.py](online-speculation/src/blockspec/vllm_ascend/qwen38_proposer.py)，搜索 `def propose_batch`。
+- 直接读模型结构：[parallel/qwen38.py](online-speculation/src/blockspec/parallel/qwen38.py)，搜索 `_HybridLayer` 和 `Qwen38DualView`。
+- 直接读参数更新：[parallel/online.py](online-speculation/src/blockspec/parallel/online.py)，搜索 `def update`。
+
+本分支基于 vLLM 版 `d9a0193`，只增加注释与文档。它用于学习固定实现，不替代原功能分支，也不包含另一对话中进行的 PyPTO 开发。
+
+---
+
+以下保留原项目说明。
+
 # Orthrus-Qwen3.8 on Ascend
 
 Qwen3.8-27B 的 Orthrus 投机推理与 draft 更新实现。draft 复用冻结的主模型 backbone，推理读取主模型历史缓存，候选由原生 vLLM-Ascend 验证。支持在线 last-N 更新和独立离线全层更新，均只更新 draft mixer，不训练主模型。
