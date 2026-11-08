@@ -1,0 +1,29 @@
+{
+  "passed": true,
+  "physical_device": 6,
+  "command": [
+    "/usr/bin/taskset",
+    "-c",
+    "48-71",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/source-k32-release-r2/scripts/smoke_qwen38_pypto_base.py",
+    "--device",
+    "0",
+    "--output-dir",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/k32-release-http-r2",
+    "--source",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/OneServing",
+    "--model",
+    "/data/disk/wangzili/models/Qwen3.8-27B",
+    "--head-dir",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/heads/trained-v4",
+    "--attention-backend",
+    "paged",
+    "--gdn-backend",
+    "vector",
+    "--draft-group-size",
+    "4"
+  ],
+  "pid": 820120,
+  "returncode": 0
+}

@@ -24,4 +24,12 @@ NUMA 对照中，仅切换参数主机来源，完整起草约 1.740 s / 1.094 s
 
 `manifest.json` 保存正式包 24 个模块的 SHA256。`experiment-sources.zip` 按各自不可变快照存放实验脚本及依赖模块，`device-profiles.zip` 保存按原路径映射的时间线。归档不含模型、head 权重或激活；复现时传入匹配的外部模型和 head。
 
-`cpu-k32-release.xml` 对应 387 项 CPU 回归。名称以 `k32-release-` 开头的整包复验记录使用同一份正式模块；最终分层、四层、HTTP 与逐层 HF 记录在完成后归入本目录。
+`cpu-k32-release.xml` 对应 387 项 CPU 回归。名称以 `k32-release-` 开头的整包复验记录使用同一份正式模块，SHA256 与提交 `a44b01d` 对应：
+
+- `k32-release-layered/group4.json`：两种编排的候选及 logits 逐字节相同，目标缓存不变，六个历史边界、八组 verifier、接受前缀回放、slot 0→1 及换页均通过。
+- `k32-release-hf.json`：64 层、原生和优化两条路径共 128 项真实输入对照通过，最大相对 L2 为 0.321%，门槛保持 2%。CPU 使用 16 线程，只用于参考复验。
+- `k32-release-http-r2.json`：completion、chat、SSE、后端配置及正常退出通过；另两种 Attention 后端的服务记录见前述文件。
+
+正式包对照固定分页 Full Attention，仅切换 `native/vector` GDN。逐层同步计算约 0.281/0.160 s，四层同步计算约 0.255/0.131 s，四层完整起草约 1.221/1.097 s；首个完整 draft GDN 层的设备窗口约 4.169/1.210 ms，包含共享 MLP。这组基线与共享 MLP 分块对照不同。
+
+`device-profiles-release.zip` 补充正式包六份重复设备时间线；`release-source.zip` 包含正式模块、验证脚本和 CPU 用例，并保留早期投影候选以复现编译限制。`cann-install.txt` 固定 CANN 9.1.1，`npu-release.txt` 记录验收完成后的资源状态；本次所有 NPU 实验进程已退出。
