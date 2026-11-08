@@ -1,0 +1,4526 @@
+{
+  "passed": true,
+  "scope": "standalone_head_projection_and_input_norm",
+  "runtime": {
+    "pypto": "98752784548b777b2377a9084411c3716eb341d6",
+    "simpler": "c1f89ea431f5306f78c0e4ab9573c829756d7f1e",
+    "pto_isa": "418de18dde8fa33773dc5c384fdfe5506463b628",
+    "ptoas": "0.65",
+    "ptoas_executable_version": "0.65"
+  },
+  "cases": [
+    {
+      "component": "gdn_qkv",
+      "backend": "native",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.00390625,
+      "relative_l2": 2.198986112489365e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0008419787045568228,
+      "wall_samples_seconds": [
+        0.0008849436417222023,
+        0.0009155338630080223,
+        0.000874124001711607,
+        0.0008703144267201424,
+        0.0008210539817810059,
+        0.0008582030422985554,
+        0.000856754370033741,
+        0.0008979742415249348,
+        0.0008215527050197124,
+        0.0008707339875400066,
+        0.0008185142651200294,
+        0.0008416241034865379,
+        0.0008148541674017906,
+        0.0008447938598692417,
+        0.0008235941641032696,
+        0.0008445237763226032,
+        0.0008332938887178898,
+        0.0008630543015897274,
+        0.0008241431787610054,
+        0.0008608540520071983,
+        0.0008217240683734417,
+        0.0008424939587712288,
+        0.0008421540260314941,
+        0.0008600642904639244,
+        0.0008242740295827389,
+        0.0008603930473327637,
+        0.0008270139805972576,
+        0.0008645742200314999,
+        0.0008159228600561619,
+        0.0008360636420547962,
+        0.0008092229254543781,
+        0.0008531841449439526,
+        0.0008241329342126846,
+        0.0008526640012860298,
+        0.0008226041682064533,
+        0.0008466639555990696,
+        0.0008403831161558628,
+        0.0008605038747191429,
+        0.0008205138146877289,
+        0.0008371639996767044,
+        0.000843253917992115,
+        0.000869393814355135,
+        0.0008140839636325836,
+        0.0008418033830821514,
+        0.0008115740492939949,
+        0.0008414131589233875,
+        0.0008252840489149094,
+        0.0008449140004813671,
+        0.0008400529623031616,
+        0.0008494439534842968
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-native-0.json",
+          "sha256": "f85d54c73014ae727f2ea3274d9db7c0e7697173d7d66168b345b263bc72e8e4",
+          "device_task_window_us": 141.28,
+          "run_epoch": 168,
+          "block_records": 480,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 160,
+              "min_us": 11.66,
+              "median_us": 12.39,
+              "max_us": 17.700000000000003
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 320,
+              "min_us": 10.54,
+              "median_us": 12.64,
+              "max_us": 18.180000000000003
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-native-1.json",
+          "sha256": "6e0e9c007200e294dfd68313f9c9e80c2b975a7d8c8bcc5acdda12c970e36994",
+          "device_task_window_us": 123.74000000000001,
+          "run_epoch": 170,
+          "block_records": 480,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 160,
+              "min_us": 11.679999999999993,
+              "median_us": 12.690000000000001,
+              "max_us": 15.280000000000001
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 320,
+              "min_us": 11.700000000000003,
+              "median_us": 12.910000000000004,
+              "max_us": 15.8
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-native-2.json",
+          "sha256": "87d95a495e586aa45912a22db37da39f3f4d06e7c3b0c2da3dee2cd77a9173ac",
+          "device_task_window_us": 133.5,
+          "run_epoch": 172,
+          "block_records": 480,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 160,
+              "min_us": 11.86,
+              "median_us": 12.439999999999998,
+              "max_us": 15.6
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 320,
+              "min_us": 11.919999999999987,
+              "median_us": 12.649999999999999,
+              "max_us": 16.1
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-native-3.json",
+          "sha256": "1d1dae28c933a7db0a6cbfbb366bb5d1be47f328414adf2b02a83d5157290e1b",
+          "device_task_window_us": 130.74,
+          "run_epoch": 174,
+          "block_records": 480,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 160,
+              "min_us": 11.700000000000003,
+              "median_us": 12.719999999999999,
+              "max_us": 15.740000000000002
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 320,
+              "min_us": 11.64,
+              "median_us": 12.91,
+              "max_us": 16.22
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-native-4.json",
+          "sha256": "facda78c68c0143c6576d8036512270cec174256e01502f6f8382a3e687baada",
+          "device_task_window_us": 125.18,
+          "run_epoch": 176,
+          "block_records": 480,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 160,
+              "min_us": 11.54,
+              "median_us": 12.510000000000005,
+              "max_us": 15.42
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 320,
+              "min_us": 10.16,
+              "median_us": 12.780000000000005,
+              "max_us": 15.88
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "gdn_qkv",
+      "backend": "n64",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.00390625,
+      "relative_l2": 2.198986112489365e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0008501484990119934,
+      "wall_samples_seconds": [
+        0.0009085740894079208,
+        0.000881043728441,
+        0.0008624042384326458,
+        0.0008387230336666107,
+        0.0008617439307272434,
+        0.0008478639647364616,
+        0.0008453242480754852,
+        0.0008513540960848331,
+        0.0008333427831530571,
+        0.0008738841861486435,
+        0.0008455929346382618,
+        0.0008515529334545135,
+        0.0008592340163886547,
+        0.000841392669826746,
+        0.0008570938371121883,
+        0.0008469927124679089,
+        0.0008914940990507603,
+        0.0008712643757462502,
+        0.0008573038503527641,
+        0.0008607339113950729,
+        0.0008628740906715393,
+        0.0008305627852678299,
+        0.0008339839987456799,
+        0.0008492330089211464,
+        0.0008284738287329674,
+        0.0008521438576281071,
+        0.0008617439307272434,
+        0.0008353441953659058,
+        0.0008446937426924706,
+        0.0008469843305647373,
+        0.0008593937382102013,
+        0.0008387342095375061,
+        0.0008472041226923466,
+        0.0008637937717139721,
+        0.0008441032841801643,
+        0.0008338042534887791,
+        0.0008421042002737522,
+        0.0008519040420651436,
+        0.0008554542437195778,
+        0.0008424832485616207,
+        0.0008602337911725044,
+        0.0008332626894116402,
+        0.0008437037467956543,
+        0.0008515343070030212,
+        0.0008510639891028404,
+        0.0008484739810228348,
+        0.0008581536822021008,
+        0.000848724041134119,
+        0.000866633839905262,
+        0.0008401037193834782
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-n64-0.json",
+          "sha256": "fd109a585d2ed20fbf29fc07a33cdc29f072c855f2042db6aea608e9ee7c538b",
+          "device_task_window_us": 143.38,
+          "run_epoch": 179,
+          "block_records": 480,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 160,
+              "min_us": 8.279999999999987,
+              "median_us": 8.850000000000001,
+              "max_us": 11.16
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 320,
+              "min_us": 8.040000000000006,
+              "median_us": 8.79,
+              "max_us": 11.280000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-n64-1.json",
+          "sha256": "6fba5298d05c14a5a534c253d5d9908924e80a0977d1c96e4319f225c1355dfb",
+          "device_task_window_us": 134.48,
+          "run_epoch": 181,
+          "block_records": 480,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 160,
+              "min_us": 8.219999999999999,
+              "median_us": 8.930000000000001,
+              "max_us": 11.5
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 320,
+              "min_us": 7.980000000000004,
+              "median_us": 8.93,
+              "max_us": 11.6
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-n64-2.json",
+          "sha256": "1762faade910d82766c978bc742e199827003aef310ce2f74d0316d83948baf1",
+          "device_task_window_us": 147.08,
+          "run_epoch": 183,
+          "block_records": 480,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 160,
+              "min_us": 8.259999999999991,
+              "median_us": 8.959999999999999,
+              "max_us": 12.7
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 320,
+              "min_us": 8.02000000000001,
+              "median_us": 8.939999999999998,
+              "max_us": 12.799999999999999
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-n64-3.json",
+          "sha256": "6ce47cdd5a8a67c64216da3abaadf65cebbcad11329d4ffe8f5b724336e24513",
+          "device_task_window_us": 144.02,
+          "run_epoch": 185,
+          "block_records": 480,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 160,
+              "min_us": 8.42,
+              "median_us": 8.900000000000002,
+              "max_us": 11.62
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 320,
+              "min_us": 8.100000000000001,
+              "median_us": 8.900000000000002,
+              "max_us": 11.74
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-n64-4.json",
+          "sha256": "c624c7873b858300ee863c84387ae85b0f86bce63c09763421c335c16fa2e4dd",
+          "device_task_window_us": 138.34,
+          "run_epoch": 187,
+          "block_records": 480,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 160,
+              "min_us": 8.340000000000003,
+              "median_us": 8.96,
+              "max_us": 11.48
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 320,
+              "min_us": 8.11999999999999,
+              "median_us": 8.920000000000002,
+              "max_us": 11.66
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "gdn_qkv",
+      "backend": "n128",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.00390625,
+      "relative_l2": 2.198986112489365e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007837333250790834,
+      "wall_samples_seconds": [
+        0.0008078040555119514,
+        0.0007942528463900089,
+        0.0008199242874979973,
+        0.0008172942325472832,
+        0.0007979129441082478,
+        0.0007674442604184151,
+        0.0007811137475073338,
+        0.0007677334360778332,
+        0.0007815342396497726,
+        0.0007707932963967323,
+        0.0007804939523339272,
+        0.0007932838052511215,
+        0.0007983027026057243,
+        0.0007757339626550674,
+        0.0007786727510392666,
+        0.0007663639262318611,
+        0.0008115540258586407,
+        0.0007673930376768112,
+        0.000791843980550766,
+        0.0008018631488084793,
+        0.0007901433855295181,
+        0.0007751942612230778,
+        0.000784742645919323,
+        0.0007735840044915676,
+        0.0007862932980060577,
+        0.000771224033087492,
+        0.0008024340495467186,
+        0.0007854527793824673,
+        0.0008055842481553555,
+        0.0007660733535885811,
+        0.0007827240042388439,
+        0.0007557729259133339,
+        0.0007947743870317936,
+        0.0007589831948280334,
+        0.0007690940983593464,
+        0.0007627829909324646,
+        0.0008036540821194649,
+        0.0007878430187702179,
+        0.0007953429594635963,
+        0.0007582330144941807,
+        0.0007984130643308163,
+        0.0007625739090144634,
+        0.0008024326525628567,
+        0.0007739239372313023,
+        0.0008018934167921543,
+        0.0007760841399431229,
+        0.0007854430004954338,
+        0.0007644225843250751,
+        0.0007929638959467411,
+        0.0007619429379701614
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-n128-0.json",
+          "sha256": "1a8a36cb211dcf2ad098080fb8b1bc365ca330a2b029fe7a66d93c7cba7d0f8b",
+          "device_task_window_us": 73.34,
+          "run_epoch": 190,
+          "block_records": 240,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 80,
+              "min_us": 13.02,
+              "median_us": 13.940000000000001,
+              "max_us": 15.520000000000001
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 12.86,
+              "median_us": 13.86,
+              "max_us": 15.680000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-n128-1.json",
+          "sha256": "6d885f55e28986d7d32041c2c68ac54f56a3af7d61edb9fcf2d363837166ee4c",
+          "device_task_window_us": 71.60000000000001,
+          "run_epoch": 192,
+          "block_records": 240,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 80,
+              "min_us": 12.820000000000007,
+              "median_us": 13.919999999999998,
+              "max_us": 17.320000000000004
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 12.660000000000004,
+              "median_us": 13.900000000000002,
+              "max_us": 17.5
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-n128-2.json",
+          "sha256": "8acafb36abc0d908fabb77e4c8cfb9d0f268a90774b3065814483b6058bf0de2",
+          "device_task_window_us": 71.84,
+          "run_epoch": 194,
+          "block_records": 240,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 80,
+              "min_us": 13.04,
+              "median_us": 13.950000000000001,
+              "max_us": 16.18
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 12.959999999999994,
+              "median_us": 13.9,
+              "max_us": 16.380000000000003
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-n128-3.json",
+          "sha256": "2904e889137cdf65ae9fc21ed6c1ad498578c556c1fded3f9ab8c6a24bd77d7c",
+          "device_task_window_us": 72.06,
+          "run_epoch": 196,
+          "block_records": 240,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 80,
+              "min_us": 13.18,
+              "median_us": 13.74,
+              "max_us": 16.6
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 12.999999999999998,
+              "median_us": 13.7,
+              "max_us": 16.8
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_qkv-n128-4.json",
+          "sha256": "c4d131ff99d2dadc51079ec11fb1e1968565ceba06688a8cdaea87baa2051cc8",
+          "device_task_window_us": 72.7,
+          "run_epoch": 198,
+          "block_records": 240,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 80,
+              "min_us": 13.02,
+              "median_us": 14.030000000000001,
+              "max_us": 16.38
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 12.880000000000003,
+              "median_us": 13.950000000000001,
+              "max_us": 16.58
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "gdn_z",
+      "backend": "native",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0078125,
+      "relative_l2": 4.8409518058178946e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007607529405504465,
+      "wall_samples_seconds": [
+        0.0007725539617240429,
+        0.0007382729090750217,
+        0.0007325629703700542,
+        0.0007521230727434158,
+        0.0007411930710077286,
+        0.0007869638502597809,
+        0.0007524830289185047,
+        0.0007619429379701614,
+        0.0007627643644809723,
+        0.0007613729685544968,
+        0.0007316241972148418,
+        0.0007359529845416546,
+        0.0007360726594924927,
+        0.0007691532373428345,
+        0.0007372940890491009,
+        0.0007429327815771103,
+        0.0007186033762991428,
+        0.0007308041676878929,
+        0.0007367432117462158,
+        0.0007420731708407402,
+        0.0008643143810331821,
+        0.0008585536852478981,
+        0.0009492738172411919,
+        0.0007938030175864697,
+        0.000754442997276783,
+        0.0007674130611121655,
+        0.0007723639719188213,
+        0.0007649841718375683,
+        0.0007487931288778782,
+        0.0007763835601508617,
+        0.0007524527609348297,
+        0.0007672128267586231,
+        0.0007453537546098232,
+        0.0007637529633939266,
+        0.0007510143332183361,
+        0.0007809242233633995,
+        0.0007540029473602772,
+        0.0007683336734771729,
+        0.0007596630603075027,
+        0.0007569328881800175,
+        0.0007643341086804867,
+        0.0007652142085134983,
+        0.0007834429852664471,
+        0.0007950533181428909,
+        0.0007629641331732273,
+        0.0007601329125463963,
+        0.0007401639595627785,
+        0.0007758042775094509,
+        0.000750283244997263,
+        0.0007794131524860859
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-native-0.json",
+          "sha256": "6b177ea013b88d3a223be791ce3661fd097339345cc428af8aa13fb96aeb6bb7",
+          "device_task_window_us": 84.78,
+          "run_epoch": 366,
+          "block_records": 288,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 96,
+              "min_us": 11.659999999999997,
+              "median_us": 13.010000000000002,
+              "max_us": 15.360000000000001
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 11.64,
+              "median_us": 13.17,
+              "max_us": 15.92
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-native-1.json",
+          "sha256": "b41755c1c55732aad743272efd5b6e8cabf8c54b2df7b95178f8162b27a7b43d",
+          "device_task_window_us": 79.26,
+          "run_epoch": 368,
+          "block_records": 288,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 96,
+              "min_us": 11.759999999999998,
+              "median_us": 12.79,
+              "max_us": 15.76
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 11.699999999999996,
+              "median_us": 12.930000000000001,
+              "max_us": 16.26
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-native-2.json",
+          "sha256": "703a4396666602ccdb2f800cb80115b55d4b3da85f8c1b8c8c7b1634dad01a38",
+          "device_task_window_us": 84.5,
+          "run_epoch": 370,
+          "block_records": 288,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 96,
+              "min_us": 11.739999999999998,
+              "median_us": 12.500000000000004,
+              "max_us": 15.48
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 11.7,
+              "median_us": 12.689999999999998,
+              "max_us": 15.979999999999999
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-native-3.json",
+          "sha256": "21222a73400bacdee6ee2562154df9633260372e5bfc7b72acdeede8922faffd",
+          "device_task_window_us": 84.18,
+          "run_epoch": 372,
+          "block_records": 288,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 96,
+              "min_us": 11.68,
+              "median_us": 12.300000000000002,
+              "max_us": 15.36
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 11.600000000000001,
+              "median_us": 12.46,
+              "max_us": 15.82
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-native-4.json",
+          "sha256": "af77e7e06ffd8d1659068158e45402f9e62e8f0030893e2b70606cb539cf3acc",
+          "device_task_window_us": 89.9,
+          "run_epoch": 374,
+          "block_records": 288,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 96,
+              "min_us": 11.68,
+              "median_us": 12.5,
+              "max_us": 15.860000000000001
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 11.640000000000004,
+              "median_us": 12.690000000000003,
+              "max_us": 16.34
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "gdn_z",
+      "backend": "n64",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0078125,
+      "relative_l2": 4.8409518058178946e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007655583322048187,
+      "wall_samples_seconds": [
+        0.0007579629309475422,
+        0.0007441230118274689,
+        0.000753854401409626,
+        0.0007679942063987255,
+        0.0007442440837621689,
+        0.0007370030507445335,
+        0.0007595838978886604,
+        0.0007706140168011189,
+        0.000786973163485527,
+        0.0007647732272744179,
+        0.0007301131263375282,
+        0.0007271440699696541,
+        0.0007354831323027611,
+        0.0007384829223155975,
+        0.0007647532038390636,
+        0.0007303431630134583,
+        0.0007436340674757957,
+        0.0007565729320049286,
+        0.0007429630495607853,
+        0.0007366528734564781,
+        0.0007470031268894672,
+        0.0007473928853869438,
+        0.0008080643601715565,
+        0.0008145328611135483,
+        0.0007721041329205036,
+        0.0007705031894147396,
+        0.0007616830989718437,
+        0.0007669031620025635,
+        0.000774103682488203,
+        0.0007629026658833027,
+        0.0007730238139629364,
+        0.0007736342959105968,
+        0.000769312959164381,
+        0.000773394014686346,
+        0.0007723625749349594,
+        0.0007671229541301727,
+        0.0007592230103909969,
+        0.0007762727327644825,
+        0.0007998039945960045,
+        0.0007767737843096256,
+        0.0007647029124200344,
+        0.0007588430307805538,
+        0.0007653739303350449,
+        0.00077025406062603,
+        0.0007657427340745926,
+        0.0007815128192305565,
+        0.0007746629416942596,
+        0.0007669329643249512,
+        0.000779343768954277,
+        0.0007728640921413898
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-n64-0.json",
+          "sha256": "2efcd8a39ce2a532300d743bf81f62f639850b91306fbca6d33bb5305f43ad13",
+          "device_task_window_us": 65.08,
+          "run_epoch": 377,
+          "block_records": 288,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 96,
+              "min_us": 8.74,
+              "median_us": 9.340000000000002,
+              "max_us": 10.700000000000001
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 8.459999999999999,
+              "median_us": 9.249999999999996,
+              "max_us": 11.020000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-n64-1.json",
+          "sha256": "ac0aea38038ef15822d8efb9bec53422b2c038d525e32d9856a3a0bb75b11adf",
+          "device_task_window_us": 79.52,
+          "run_epoch": 379,
+          "block_records": 288,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 96,
+              "min_us": 8.400000000000006,
+              "median_us": 9.29,
+              "max_us": 11.520000000000001
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 8.179999999999993,
+              "median_us": 9.13,
+              "max_us": 11.66
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-n64-2.json",
+          "sha256": "250f608dab366de0642c71537a184a533731034b102d1338a7ce9e954fd0ffe9",
+          "device_task_window_us": 85.62,
+          "run_epoch": 381,
+          "block_records": 288,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 96,
+              "min_us": 8.480000000000004,
+              "median_us": 8.910000000000004,
+              "max_us": 11.379999999999999
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 8.160000000000002,
+              "median_us": 8.86,
+              "max_us": 11.66
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-n64-3.json",
+          "sha256": "e22602413bb660d3bef0abe2c4b6d5c458ed8e544b742617c3af0e78efb0d07a",
+          "device_task_window_us": 74.48,
+          "run_epoch": 383,
+          "block_records": 288,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 96,
+              "min_us": 8.180000000000001,
+              "median_us": 9.11,
+              "max_us": 11.500000000000002
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 7.720000000000001,
+              "median_us": 9.020000000000001,
+              "max_us": 11.66
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-n64-4.json",
+          "sha256": "70bbb060cf4565fcb55378895827531d50a9058e6cf2221fb739c71552b0118d",
+          "device_task_window_us": 76.88,
+          "run_epoch": 385,
+          "block_records": 288,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 96,
+              "min_us": 8.04,
+              "median_us": 9.18,
+              "max_us": 11.36
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 7.760000000000005,
+              "median_us": 9.14,
+              "max_us": 11.780000000000001
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "gdn_z",
+      "backend": "n128",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0078125,
+      "relative_l2": 4.8409518058178946e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007213731296360493,
+      "wall_samples_seconds": [
+        0.0007135127671062946,
+        0.0006952239200472832,
+        0.0007131127640604973,
+        0.000705513171851635,
+        0.0007143029943108559,
+        0.0006924928165972233,
+        0.000759683083742857,
+        0.0007304232567548752,
+        0.0007550730369985104,
+        0.0007165637798607349,
+        0.0007118233479559422,
+        0.0006971829570829868,
+        0.0007142238318920135,
+        0.0006840527057647705,
+        0.0007220329716801643,
+        0.0006881440058350563,
+        0.0007134932093322277,
+        0.0006967531517148018,
+        0.0007165432907640934,
+        0.000708624254912138,
+        0.0007181940600275993,
+        0.0007150326855480671,
+        0.0008001341484487057,
+        0.0007316228002309799,
+        0.0007475032471120358,
+        0.0007265741005539894,
+        0.0007471339777112007,
+        0.0007304530590772629,
+        0.000738802831619978,
+        0.0007108128629624844,
+        0.0007362030446529388,
+        0.0007075429894030094,
+        0.0007293131202459335,
+        0.0007220231927931309,
+        0.0007512439042329788,
+        0.0007129330188035965,
+        0.0007615038193762302,
+        0.0007075932808220387,
+        0.0007398626767098904,
+        0.0007142829708755016,
+        0.0007458138279616833,
+        0.0007207230664789677,
+        0.0007553431205451488,
+        0.0007262928411364555,
+        0.0007500131614506245,
+        0.000712553970515728,
+        0.0007379641756415367,
+        0.0007382831536233425,
+        0.0007467130199074745,
+        0.0007500327192246914
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-n128-0.json",
+          "sha256": "aa5b378e5607732a3dc506e8838eef87b0f287809f4b2d0cd3057c6443c26dc7",
+          "device_task_window_us": 45.62,
+          "run_epoch": 388,
+          "block_records": 144,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 48,
+              "min_us": 13.32,
+              "median_us": 13.92,
+              "max_us": 16.38
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 96,
+              "min_us": 13.059999999999999,
+              "median_us": 13.940000000000001,
+              "max_us": 16.74
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-n128-1.json",
+          "sha256": "2e35ba5f1a94576956a108b05ccb217cfb1cc2743f9177d8d39290d36d7b25a4",
+          "device_task_window_us": 49.72,
+          "run_epoch": 390,
+          "block_records": 144,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 48,
+              "min_us": 13.14,
+              "median_us": 13.96,
+              "max_us": 16.62
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 96,
+              "min_us": 12.919999999999998,
+              "median_us": 14.010000000000002,
+              "max_us": 16.82
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-n128-2.json",
+          "sha256": "696e57f2423421bda9328bd84c02738894620b0af17a6d9882c41da80685127f",
+          "device_task_window_us": 45.7,
+          "run_epoch": 392,
+          "block_records": 144,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 48,
+              "min_us": 13.240000000000002,
+              "median_us": 14.36,
+              "max_us": 16.4
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 96,
+              "min_us": 13.080000000000002,
+              "median_us": 14.34,
+              "max_us": 16.619999999999997
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-n128-3.json",
+          "sha256": "ec5127631fc6613973c1623a645681edd6e3e390ebe6ba8952f9d017c0292cf2",
+          "device_task_window_us": 45.980000000000004,
+          "run_epoch": 394,
+          "block_records": 144,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 48,
+              "min_us": 13.200000000000003,
+              "median_us": 14.01,
+              "max_us": 16.36
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 96,
+              "min_us": 13.100000000000001,
+              "median_us": 14.009999999999998,
+              "max_us": 16.56
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_z-n128-4.json",
+          "sha256": "6c3cf3c3d5f9f84086d5f78e62f149ee4bf167f1de902938b8f554c94c0bd131",
+          "device_task_window_us": 45.04,
+          "run_epoch": 396,
+          "block_records": 144,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 48,
+              "min_us": 13.32,
+              "median_us": 14.41,
+              "max_us": 16.14
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 96,
+              "min_us": 13.14,
+              "median_us": 14.4,
+              "max_us": 16.34
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "gdn_ab",
+      "backend": "native",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.00048828125,
+      "relative_l2": 1.0656435733835679e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006925780326128006,
+      "wall_samples_seconds": [
+        0.0007075928151607513,
+        0.0007103541865944862,
+        0.0006837029941380024,
+        0.000690992921590805,
+        0.0006739431992173195,
+        0.0007171533070504665,
+        0.0006800531409680843,
+        0.0007053832523524761,
+        0.0007658232934772968,
+        0.0007026530802249908,
+        0.0006787530146539211,
+        0.000695542898029089,
+        0.0006890040822327137,
+        0.0007075327448546886,
+        0.0006884131580591202,
+        0.0007019033655524254,
+        0.0006853928789496422,
+        0.0007045529782772064,
+        0.0006829327903687954,
+        0.0007087830454111099,
+        0.0006755930371582508,
+        0.0006999033503234386,
+        0.0006776228547096252,
+        0.0006949030794203281,
+        0.0006759031675755978,
+        0.0006941631436347961,
+        0.0006962930783629417,
+        0.0006951228715479374,
+        0.0006844131276011467,
+        0.0007197828963398933,
+        0.0006748833693563938,
+        0.000701982993632555,
+        0.0006780331023037434,
+        0.0007681227289140224,
+        0.0006810831837356091,
+        0.0007187742739915848,
+        0.0006745932623744011,
+        0.0006989333778619766,
+        0.0006708628498017788,
+        0.0006886026822030544,
+        0.0006715832278132439,
+        0.0006971433758735657,
+        0.0006697531789541245,
+        0.0006906827911734581,
+        0.0006736530922353268,
+        0.0006963927298784256,
+        0.0006649126298725605,
+        0.0007069529965519905,
+        0.000676122959703207,
+        0.0007051038555800915
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-native-0.json",
+          "sha256": "e5900d4ae4232e874d6a1a9fd423da3960a7a8aa6a136897555decc648e90a50",
+          "device_task_window_us": 12.66,
+          "run_epoch": 564,
+          "block_records": 6,
+          "tasks": {
+            "qwen_hidden_projection_aic": {
+              "blocks": 2,
+              "min_us": 12.22,
+              "median_us": 12.23,
+              "max_us": 12.24
+            },
+            "qwen_hidden_projection_aiv": {
+              "blocks": 4,
+              "min_us": 12.280000000000001,
+              "median_us": 12.46,
+              "max_us": 12.64
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-native-1.json",
+          "sha256": "d8346125ad5398339a986382d352145450add9254875009d752b37f63de7dabf",
+          "device_task_window_us": 12.76,
+          "run_epoch": 566,
+          "block_records": 6,
+          "tasks": {
+            "qwen_hidden_projection_aic": {
+              "blocks": 2,
+              "min_us": 12.14,
+              "median_us": 12.23,
+              "max_us": 12.32
+            },
+            "qwen_hidden_projection_aiv": {
+              "blocks": 4,
+              "min_us": 12.180000000000001,
+              "median_us": 12.47,
+              "max_us": 12.74
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-native-2.json",
+          "sha256": "9984060ecef9b9f4f2420e66b8b365708e28d88a982b473b5542163599b16d23",
+          "device_task_window_us": 12.84,
+          "run_epoch": 568,
+          "block_records": 6,
+          "tasks": {
+            "qwen_hidden_projection_aic": {
+              "blocks": 2,
+              "min_us": 12.22,
+              "median_us": 12.34,
+              "max_us": 12.46
+            },
+            "qwen_hidden_projection_aiv": {
+              "blocks": 4,
+              "min_us": 12.22,
+              "median_us": 12.520000000000001,
+              "max_us": 12.84
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-native-3.json",
+          "sha256": "f9d1cd0e6da7dcfe35ebcffbb46bb2b1e13f4894f0394db858542263a4a71299",
+          "device_task_window_us": 12.8,
+          "run_epoch": 570,
+          "block_records": 6,
+          "tasks": {
+            "qwen_hidden_projection_aic": {
+              "blocks": 2,
+              "min_us": 12.120000000000001,
+              "median_us": 12.240000000000002,
+              "max_us": 12.360000000000001
+            },
+            "qwen_hidden_projection_aiv": {
+              "blocks": 4,
+              "min_us": 12.14,
+              "median_us": 12.47,
+              "max_us": 12.780000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-native-4.json",
+          "sha256": "cc5c9a5901885601bf4300a76d9b9b6cedadfd17457392941a7c365b2dd88583",
+          "device_task_window_us": 12.9,
+          "run_epoch": 572,
+          "block_records": 6,
+          "tasks": {
+            "qwen_hidden_projection_aic": {
+              "blocks": 2,
+              "min_us": 12.0,
+              "median_us": 12.23,
+              "max_us": 12.46
+            },
+            "qwen_hidden_projection_aiv": {
+              "blocks": 4,
+              "min_us": 12.040000000000001,
+              "median_us": 12.440000000000001,
+              "max_us": 12.88
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "gdn_ab",
+      "backend": "n64",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.00048828125,
+      "relative_l2": 1.0656435733835679e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007006528321653605,
+      "wall_samples_seconds": [
+        0.0007008430548012257,
+        0.0007118829526007175,
+        0.0006968132220208645,
+        0.0007132827304303646,
+        0.0007039927877485752,
+        0.0007123830728232861,
+        0.0006883032619953156,
+        0.00069860415533185,
+        0.0008662338368594646,
+        0.0006963526830077171,
+        0.0006951927207410336,
+        0.0006954330019652843,
+        0.0006982525810599327,
+        0.0006969333626329899,
+        0.0006977529264986515,
+        0.0007047830149531364,
+        0.0007176240906119347,
+        0.000696233008056879,
+        0.0007155039347708225,
+        0.0007012831047177315,
+        0.0007201428525149822,
+        0.0007045739330351353,
+        0.0007179430685937405,
+        0.000710722990334034,
+        0.0007072631269693375,
+        0.0007015927694737911,
+        0.0007082531228661537,
+        0.0007074330933392048,
+        0.0007043830119073391,
+        0.0006970730610191822,
+        0.0006980327889323235,
+        0.0006918031722307205,
+        0.0007057632319629192,
+        0.0006919731386005878,
+        0.0006853733211755753,
+        0.0006917729042470455,
+        0.0006896629929542542,
+        0.0007075429894030094,
+        0.0006879027932882309,
+        0.0006925538182258606,
+        0.0007030232809484005,
+        0.000726612750440836,
+        0.0006903125904500484,
+        0.0007094228640198708,
+        0.0007004626095294952,
+        0.0007088929414749146,
+        0.000700273085385561,
+        0.0006998330354690552,
+        0.0006852028891444206,
+        0.0006959526799619198
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-n64-0.json",
+          "sha256": "830a065ae5a3fba1b7baa7cf5316c2bcfd1109513c8d732b9e18db48a53147db",
+          "device_task_window_us": 9.16,
+          "run_epoch": 575,
+          "block_records": 6,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 2,
+              "min_us": 8.46,
+              "median_us": 8.790000000000001,
+              "max_us": 9.120000000000001
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 4,
+              "min_us": 8.180000000000001,
+              "median_us": 8.670000000000002,
+              "max_us": 9.14
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-n64-1.json",
+          "sha256": "9008501435ea4c952a72f3aedeb82da42bd8ae11579d69e99267a719fc5aefad",
+          "device_task_window_us": 9.200000000000001,
+          "run_epoch": 577,
+          "block_records": 6,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 2,
+              "min_us": 8.4,
+              "median_us": 8.790000000000001,
+              "max_us": 9.180000000000001
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 4,
+              "min_us": 8.14,
+              "median_us": 8.670000000000002,
+              "max_us": 9.18
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-n64-2.json",
+          "sha256": "19125b83311cec6117d2f557271436c8b5505b6270fd7740c8951b56d51647ef",
+          "device_task_window_us": 9.22,
+          "run_epoch": 579,
+          "block_records": 6,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 2,
+              "min_us": 8.5,
+              "median_us": 8.850000000000001,
+              "max_us": 9.200000000000001
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 4,
+              "min_us": 8.24,
+              "median_us": 8.73,
+              "max_us": 9.180000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-n64-3.json",
+          "sha256": "485a6a9ad4c97ef32e7a171bf96cc9d97e34a80f2322cc99ebf1c2cbc30f4c0b",
+          "device_task_window_us": 9.14,
+          "run_epoch": 581,
+          "block_records": 6,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 2,
+              "min_us": 8.48,
+              "median_us": 8.8,
+              "max_us": 9.120000000000001
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 4,
+              "min_us": 8.200000000000001,
+              "median_us": 8.670000000000002,
+              "max_us": 9.100000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-n64-4.json",
+          "sha256": "a793efa08d3555fdb0ccfd0aced39d537fa4c6def24ede9fee0929ae7305fc03",
+          "device_task_window_us": 9.32,
+          "run_epoch": 583,
+          "block_records": 6,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 2,
+              "min_us": 8.86,
+              "median_us": 9.08,
+              "max_us": 9.3
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 4,
+              "min_us": 8.58,
+              "median_us": 8.96,
+              "max_us": 9.280000000000001
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "gdn_ab",
+      "backend": "n128",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.00048828125,
+      "relative_l2": 1.0656435733835679e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006939684972167015,
+      "wall_samples_seconds": [
+        0.0007062926888465881,
+        0.0006778431124985218,
+        0.0007027429528534412,
+        0.0006750533357262611,
+        0.0007062628865242004,
+        0.0006825332529842854,
+        0.0006960928440093994,
+        0.0006872229278087616,
+        0.0007485132664442062,
+        0.0007193540222942829,
+        0.0007001534104347229,
+        0.0006852028891444206,
+        0.0007272427901625633,
+        0.0006811432540416718,
+        0.00075960299000144,
+        0.0006907428614795208,
+        0.0007417029701173306,
+        0.00069848308339715,
+        0.0006980029866099358,
+        0.0006827828474342823,
+        0.0006931130774319172,
+        0.0006729131564497948,
+        0.0006987028755247593,
+        0.0006908532232046127,
+        0.0006978129968047142,
+        0.0006743329577147961,
+        0.0007023741491138935,
+        0.0006694733165204525,
+        0.000695542898029089,
+        0.000671143177896738,
+        0.0007108226418495178,
+        0.0006697629578411579,
+        0.0007147141732275486,
+        0.0006810426712036133,
+        0.000698283314704895,
+        0.0006695128977298737,
+        0.0007011429406702518,
+        0.0006715431809425354,
+        0.0006968528032302856,
+        0.0006686029955744743,
+        0.0006985929794609547,
+        0.0006783530116081238,
+        0.0006936639547348022,
+        0.0006765932776033878,
+        0.0006921631284058094,
+        0.00066720275208354,
+        0.0006908229552209377,
+        0.0006946530193090439,
+        0.0006942730396986008,
+        0.0006994828581809998
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-n128-0.json",
+          "sha256": "4880f39c4571d5f96822bc6de8cb4ce723bdcff5831dc27cefe9796d60dc135d",
+          "device_task_window_us": 13.14,
+          "run_epoch": 586,
+          "block_records": 3,
+          "tasks": {
+            "orthrus_projection32_aic": {
+              "blocks": 1,
+              "min_us": 13.14,
+              "median_us": 13.14,
+              "max_us": 13.14
+            },
+            "orthrus_projection32_aiv": {
+              "blocks": 2,
+              "min_us": 12.860000000000001,
+              "median_us": 12.96,
+              "max_us": 13.06
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-n128-1.json",
+          "sha256": "d65fc3420b6e49a350a6dcffd818599f2c829cd0260117c3c49278b17587df38",
+          "device_task_window_us": 13.120000000000001,
+          "run_epoch": 588,
+          "block_records": 3,
+          "tasks": {
+            "orthrus_projection32_aic": {
+              "blocks": 1,
+              "min_us": 13.120000000000001,
+              "median_us": 13.120000000000001,
+              "max_us": 13.120000000000001
+            },
+            "orthrus_projection32_aiv": {
+              "blocks": 2,
+              "min_us": 12.860000000000001,
+              "median_us": 12.96,
+              "max_us": 13.06
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-n128-2.json",
+          "sha256": "550397ccd5a475a067ac65f243941060c9d95d4762270074c1869a02d42b2c25",
+          "device_task_window_us": 13.280000000000001,
+          "run_epoch": 590,
+          "block_records": 3,
+          "tasks": {
+            "orthrus_projection32_aic": {
+              "blocks": 1,
+              "min_us": 13.280000000000001,
+              "median_us": 13.280000000000001,
+              "max_us": 13.280000000000001
+            },
+            "orthrus_projection32_aiv": {
+              "blocks": 2,
+              "min_us": 13.020000000000001,
+              "median_us": 13.120000000000001,
+              "max_us": 13.22
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-n128-3.json",
+          "sha256": "454b80ffea360d3433a526d5081124ed0b386a9815881e282fc6bbba590075f5",
+          "device_task_window_us": 13.280000000000001,
+          "run_epoch": 592,
+          "block_records": 3,
+          "tasks": {
+            "orthrus_projection32_aic": {
+              "blocks": 1,
+              "min_us": 13.280000000000001,
+              "median_us": 13.280000000000001,
+              "max_us": 13.280000000000001
+            },
+            "orthrus_projection32_aiv": {
+              "blocks": 2,
+              "min_us": 13.000000000000002,
+              "median_us": 13.110000000000001,
+              "max_us": 13.22
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/gdn_ab-n128-4.json",
+          "sha256": "062d0e98116594e77902da6c9f1440b306d455d8ec90576bbc4c681bfb25251a",
+          "device_task_window_us": 13.36,
+          "run_epoch": 594,
+          "block_records": 3,
+          "tasks": {
+            "orthrus_projection32_aic": {
+              "blocks": 1,
+              "min_us": 13.36,
+              "median_us": 13.36,
+              "max_us": 13.36
+            },
+            "orthrus_projection32_aiv": {
+              "blocks": 2,
+              "min_us": 13.080000000000002,
+              "median_us": 13.180000000000001,
+              "max_us": 13.280000000000001
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "attention_o",
+      "backend": "native",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0078125,
+      "relative_l2": 3.692839527502656e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007378633599728346,
+      "wall_samples_seconds": [
+        0.0007640239782631397,
+        0.000754412729293108,
+        0.0007258527912199497,
+        0.0007480536587536335,
+        0.0007275929674506187,
+        0.0007457127794623375,
+        0.0007260129787027836,
+        0.000740353949368,
+        0.0007151933386921883,
+        0.0007377630099654198,
+        0.0007228432223200798,
+        0.0007442734204232693,
+        0.0007158140651881695,
+        0.0007321732118725777,
+        0.0007297629490494728,
+        0.0007710140198469162,
+        0.0007426128722727299,
+        0.0007719644345343113,
+        0.0007245731540024281,
+        0.0007477626204490662,
+        0.0007173130288720131,
+        0.0007514441385865211,
+        0.0007362528704106808,
+        0.0007475027814507484,
+        0.0007183938287198544,
+        0.0007476732134819031,
+        0.0007164631970226765,
+        0.0007379539310932159,
+        0.000723653007298708,
+        0.0007706433534622192,
+        0.000718842726200819,
+        0.0007599038071930408,
+        0.0007309527136385441,
+        0.000777744222432375,
+        0.0020090187899768353,
+        0.0007462631911039352,
+        0.0007290425710380077,
+        0.0007377727888524532,
+        0.000725223682820797,
+        0.0007454329170286655,
+        0.0007270732894539833,
+        0.0007351436652243137,
+        0.0007302630692720413,
+        0.000739803072065115,
+        0.0007341043092310429,
+        0.0007470529526472092,
+        0.0007270127534866333,
+        0.0007474943995475769,
+        0.0007598530501127243,
+        0.0007510730065405369
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-native-0.json",
+          "sha256": "f9d333907458757b17aaa725e9e989ba0d8af423c87965cac962fdbfcb1c2aad",
+          "device_task_window_us": 72.58,
+          "run_epoch": 762,
+          "block_records": 240,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 80,
+              "min_us": 13.64,
+              "median_us": 14.729999999999997,
+              "max_us": 17.08
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 13.64,
+              "median_us": 14.92,
+              "max_us": 17.54
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-native-1.json",
+          "sha256": "c56cbbec2797f2e3305e201b297904fe7a8a69dc3650bde920d45a11bf45b7ad",
+          "device_task_window_us": 68.68,
+          "run_epoch": 764,
+          "block_records": 240,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 80,
+              "min_us": 14.099999999999994,
+              "median_us": 15.82,
+              "max_us": 17.400000000000002
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 14.139999999999993,
+              "median_us": 15.889999999999999,
+              "max_us": 17.84
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-native-2.json",
+          "sha256": "1d95e9f0fdd6b4e0d88ee5f80fabc007b3bfb3b161275d535f6d148bb5b7f1fd",
+          "device_task_window_us": 75.78,
+          "run_epoch": 766,
+          "block_records": 240,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 80,
+              "min_us": 13.64,
+              "median_us": 15.209999999999997,
+              "max_us": 17.840000000000003
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 13.639999999999993,
+              "median_us": 15.35,
+              "max_us": 18.28
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-native-3.json",
+          "sha256": "278b074398ab6a587d1797d929aed620570cff10b3df01f9b27b64baf91fe42e",
+          "device_task_window_us": 72.72,
+          "run_epoch": 768,
+          "block_records": 240,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 80,
+              "min_us": 13.54,
+              "median_us": 14.369999999999997,
+              "max_us": 17.72
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 13.5,
+              "median_us": 14.429999999999996,
+              "max_us": 18.419999999999998
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-native-4.json",
+          "sha256": "46625b294f9feaee42f5c524d99a7c89ba3faeda5d000ae29e654dc3d2394630",
+          "device_task_window_us": 66.16,
+          "run_epoch": 770,
+          "block_records": 240,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 80,
+              "min_us": 13.68,
+              "median_us": 15.549999999999999,
+              "max_us": 17.400000000000002
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 13.64,
+              "median_us": 15.619999999999997,
+              "max_us": 18.1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "attention_o",
+      "backend": "n64",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0078125,
+      "relative_l2": 3.692839527502656e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007387080695480108,
+      "wall_samples_seconds": [
+        0.000737322960048914,
+        0.0007685539312660694,
+        0.0007505239918828011,
+        0.0007393932901322842,
+        0.000726102851331234,
+        0.0007225326262414455,
+        0.0007227840833365917,
+        0.0007142629474401474,
+        0.0007510730065405369,
+        0.0007217042148113251,
+        0.0007487242110073566,
+        0.0007237130776047707,
+        0.0007444228976964951,
+        0.0007270439527928829,
+        0.0007406529039144516,
+        0.0007517430931329727,
+        0.0007429332472383976,
+        0.0007519531063735485,
+        0.0007351930253207684,
+        0.0007476243190467358,
+        0.0007435241714119911,
+        0.0007614130154252052,
+        0.0007585738785564899,
+        0.0007332633249461651,
+        0.000749172642827034,
+        0.0007488937117159367,
+        0.0007248236797749996,
+        0.0007405932992696762,
+        0.0007254728116095066,
+        0.0007449439726769924,
+        0.0007297643460333347,
+        0.000735812820494175,
+        0.0007566642016172409,
+        0.0007330230437219143,
+        0.0009468742646276951,
+        0.0007453840225934982,
+        0.0007320628501474857,
+        0.000738013070076704,
+        0.0007380228489637375,
+        0.0007366640493273735,
+        0.000730494037270546,
+        0.0007336130365729332,
+        0.0007662633433938026,
+        0.0007352628745138645,
+        0.0007653031498193741,
+        0.0007338938303291798,
+        0.0007363543845713139,
+        0.000747723039239645,
+        0.0007609431631863117,
+        0.0007336228154599667
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-n64-0.json",
+          "sha256": "57ac17e6f4b5097291e985fd4869682b8736efb724cb426f86e76202714c486a",
+          "device_task_window_us": 67.22,
+          "run_epoch": 773,
+          "block_records": 240,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 80,
+              "min_us": 9.479999999999997,
+              "median_us": 10.350000000000001,
+              "max_us": 13.46
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 9.200000000000003,
+              "median_us": 10.359999999999998,
+              "max_us": 13.600000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-n64-1.json",
+          "sha256": "9dfd31ed9c307ee274b97ba4ceb988a20c78a2abc596058822b0cd17a99dd9cd",
+          "device_task_window_us": 62.18,
+          "run_epoch": 775,
+          "block_records": 240,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 80,
+              "min_us": 9.48,
+              "median_us": 10.520000000000003,
+              "max_us": 12.72
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 9.239999999999998,
+              "median_us": 10.440000000000001,
+              "max_us": 13.3
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-n64-2.json",
+          "sha256": "b0e96d35c52cc8af0b06d8b2b5bb40d19e48c6b77785813e82a37503f00a0fc5",
+          "device_task_window_us": 77.3,
+          "run_epoch": 777,
+          "block_records": 240,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 80,
+              "min_us": 9.739999999999995,
+              "median_us": 10.239999999999998,
+              "max_us": 12.82
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 9.420000000000002,
+              "median_us": 10.190000000000003,
+              "max_us": 13.020000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-n64-3.json",
+          "sha256": "d42a721fedda2f3530e306c3b4fb5aa345be19b53abe1c1e58e2aea09eb5ca1c",
+          "device_task_window_us": 74.84,
+          "run_epoch": 779,
+          "block_records": 240,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 80,
+              "min_us": 9.36,
+              "median_us": 10.170000000000002,
+              "max_us": 12.14
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 9.259999999999998,
+              "median_us": 10.16,
+              "max_us": 12.34
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-n64-4.json",
+          "sha256": "a22f444d38acd0e3a9adf35c5ddc27c52b44f8944e2d10a94b4d34217559d524",
+          "device_task_window_us": 70.94,
+          "run_epoch": 781,
+          "block_records": 240,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 80,
+              "min_us": 9.32,
+              "median_us": 10.41,
+              "max_us": 11.860000000000001
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 160,
+              "min_us": 9.12,
+              "median_us": 10.35,
+              "max_us": 12.2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "attention_o",
+      "backend": "n128",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0078125,
+      "relative_l2": 3.692839527502656e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007143279071897268,
+      "wall_samples_seconds": [
+        0.0007209330797195435,
+        0.0006953827105462551,
+        0.0007293131202459335,
+        0.0007237931713461876,
+        0.000723774079233408,
+        0.0006958725862205029,
+        0.000724653247743845,
+        0.0006884532049298286,
+        0.0007038428448140621,
+        0.0006975429132580757,
+        0.0007157428190112114,
+        0.0006918329745531082,
+        0.0007140128873288631,
+        0.0006934232078492641,
+        0.0007268539629876614,
+        0.0007332931272685528,
+        0.0007268441841006279,
+        0.0006898129358887672,
+        0.0007148529402911663,
+        0.0006906129419803619,
+        0.0007260730490088463,
+        0.0007016230374574661,
+        0.0007173633202910423,
+        0.0006951731629669666,
+        0.000717642717063427,
+        0.0007147230207920074,
+        0.0007178229279816151,
+        0.0006921528838574886,
+        0.0007319026626646519,
+        0.0006893728859722614,
+        0.0007448932155966759,
+        0.0006931927055120468,
+        0.0007146429270505905,
+        0.0006906329654157162,
+        0.0007317829877138138,
+        0.0006907130591571331,
+        0.0007136738859117031,
+        0.0007121129892766476,
+        0.0007366728968918324,
+        0.0007029129192233086,
+        0.0007445826195180416,
+        0.0006950930692255497,
+        0.000722984317690134,
+        0.0006973431445658207,
+        0.0007166429422795773,
+        0.0006926329806447029,
+        0.0007277126424014568,
+        0.0006908131763339043,
+        0.0007147039286792278,
+        0.0006911633536219597
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-n128-0.json",
+          "sha256": "d6485e5fefaf62145de833b0425de49a4062660d3f239df6feb01267aad7247d",
+          "device_task_window_us": 36.6,
+          "run_epoch": 784,
+          "block_records": 120,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 40,
+              "min_us": 15.54,
+              "median_us": 16.36,
+              "max_us": 18.599999999999998
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 80,
+              "min_us": 15.460000000000004,
+              "median_us": 16.34,
+              "max_us": 18.78
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-n128-1.json",
+          "sha256": "1e6c759f2ebabf0a3ca70b49d070ed458068f6fd07e4940733e343006938d883",
+          "device_task_window_us": 48.68,
+          "run_epoch": 786,
+          "block_records": 120,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 40,
+              "min_us": 14.759999999999998,
+              "median_us": 16.22,
+              "max_us": 18.2
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 80,
+              "min_us": 14.659999999999997,
+              "median_us": 16.17,
+              "max_us": 18.34
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-n128-2.json",
+          "sha256": "724aa4d155198aa627eabd4d65543537c31e6f154bbb150e25947e32229f7324",
+          "device_task_window_us": 50.4,
+          "run_epoch": 788,
+          "block_records": 120,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 40,
+              "min_us": 15.04,
+              "median_us": 16.490000000000002,
+              "max_us": 19.34
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 80,
+              "min_us": 14.86,
+              "median_us": 16.46,
+              "max_us": 19.46
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-n128-3.json",
+          "sha256": "bbb3b7456f1f3a544f9791e0b03cc93be66a9e64115ac85f74f9e15fbc2a8a16",
+          "device_task_window_us": 36.02,
+          "run_epoch": 790,
+          "block_records": 120,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 40,
+              "min_us": 15.079999999999998,
+              "median_us": 16.200000000000003,
+              "max_us": 18.400000000000002
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 80,
+              "min_us": 14.880000000000003,
+              "median_us": 16.269999999999996,
+              "max_us": 18.62
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/attention_o-n128-4.json",
+          "sha256": "d0fa66f9bae933b1c9fb5d3c50df10a8ea0cfd788732ec2b4de1f126efb8dc23",
+          "device_task_window_us": 35.86,
+          "run_epoch": 792,
+          "block_records": 120,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 40,
+              "min_us": 15.860000000000003,
+              "median_us": 16.740000000000002,
+              "max_us": 18.5
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 80,
+              "min_us": 15.660000000000002,
+              "median_us": 16.75,
+              "max_us": 18.62
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "full_q",
+      "backend": "native",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0078125,
+      "relative_l2": 3.296419163234532e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0008328284602612257,
+      "wall_samples_seconds": [
+        0.0008444641716778278,
+        0.0008469736203551292,
+        0.0008226442150771618,
+        0.0008441838435828686,
+        0.0008287630043923855,
+        0.0008478928357362747,
+        0.0008267839439213276,
+        0.0008421242237091064,
+        0.0008127540349960327,
+        0.0008365940302610397,
+        0.0008173640817403793,
+        0.0008295741863548756,
+        0.0008260440081357956,
+        0.0008269138634204865,
+        0.0008349940180778503,
+        0.0008625839836895466,
+        0.0008155638352036476,
+        0.0008498742245137691,
+        0.0008101440034806728,
+        0.000840493943542242,
+        0.0008148639462888241,
+        0.0008482341654598713,
+        0.0008192136883735657,
+        0.0008413339965045452,
+        0.0008101728744804859,
+        0.000846352893859148,
+        0.0008237338624894619,
+        0.0008310629054903984,
+        0.0008157640695571899,
+        0.0008396441116929054,
+        0.0008325441740453243,
+        0.0008423239924013615,
+        0.0008375039324164391,
+        0.00085114361718297,
+        0.0008153240196406841,
+        0.0008339839987456799,
+        0.0008182837627828121,
+        0.0008337539620697498,
+        0.000825144350528717,
+        0.000840804073959589,
+        0.0008205133490264416,
+        0.0008523738943040371,
+        0.0008199331350624561,
+        0.0008365740068256855,
+        0.0008153431117534637,
+        0.0008331127464771271,
+        0.0008197142742574215,
+        0.0008407840505242348,
+        0.000808423850685358,
+        0.0008349036797881126
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-native-0.json",
+          "sha256": "6ddd6cc25a91706c84d96abb3fb7413bcbc1f732b797266ba32e849378770a70",
+          "device_task_window_us": 172.66,
+          "run_epoch": 960,
+          "block_records": 576,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 192,
+              "min_us": 11.420000000000002,
+              "median_us": 12.299999999999997,
+              "max_us": 15.879999999999999
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 384,
+              "min_us": 11.54,
+              "median_us": 12.599999999999994,
+              "max_us": 16.340000000000003
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-native-1.json",
+          "sha256": "035ff4b812295ec2de63242a2a88aab3f3a034cd61f5d041ce4dcba0300ee282",
+          "device_task_window_us": 174.22,
+          "run_epoch": 962,
+          "block_records": 576,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 192,
+              "min_us": 11.62,
+              "median_us": 12.379999999999995,
+              "max_us": 15.860000000000001
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 384,
+              "min_us": 11.599999999999998,
+              "median_us": 12.659999999999997,
+              "max_us": 16.34
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-native-2.json",
+          "sha256": "2ecb4824cb07773c1e4d4650a6e404282889acf43827363a4bd605e374c53b4f",
+          "device_task_window_us": 161.34,
+          "run_epoch": 964,
+          "block_records": 576,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 192,
+              "min_us": 11.559999999999988,
+              "median_us": 12.509999999999998,
+              "max_us": 15.94
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 384,
+              "min_us": 11.599999999999994,
+              "median_us": 12.700000000000003,
+              "max_us": 16.439999999999998
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-native-3.json",
+          "sha256": "c63112bd17fad457d1aa5c4b1f29dfedf90da010581cb18a6383c99845e3b2eb",
+          "device_task_window_us": 174.3,
+          "run_epoch": 966,
+          "block_records": 576,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 192,
+              "min_us": 11.66,
+              "median_us": 12.470000000000013,
+              "max_us": 15.780000000000001
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 384,
+              "min_us": 11.719999999999999,
+              "median_us": 12.739999999999998,
+              "max_us": 16.22
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-native-4.json",
+          "sha256": "c3b19a21e05029636b6ec1c6fe17c96260f5a15fd8ebc4af4d0c1d8d80f7de5b",
+          "device_task_window_us": 153.92000000000002,
+          "run_epoch": 968,
+          "block_records": 576,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 192,
+              "min_us": 11.699999999999989,
+              "median_us": 12.620000000000001,
+              "max_us": 15.72
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 384,
+              "min_us": 11.639999999999986,
+              "median_us": 12.86999999999999,
+              "max_us": 16.259999999999998
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "full_q",
+      "backend": "n64",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0078125,
+      "relative_l2": 3.296419163234532e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0008440837264060974,
+      "wall_samples_seconds": [
+        0.0008510230109095573,
+        0.00083160400390625,
+        0.0008503231219947338,
+        0.0008400538936257362,
+        0.0008182143792510033,
+        0.0008402341045439243,
+        0.0008221338503062725,
+        0.0008358629420399666,
+        0.0008656238205730915,
+        0.0008587632328271866,
+        0.000843763817101717,
+        0.0008421232923865318,
+        0.0008584540337324142,
+        0.000842034351080656,
+        0.000848633237183094,
+        0.0008480241522192955,
+        0.0008619432337582111,
+        0.0008863043040037155,
+        0.0008302228525280952,
+        0.0008343742229044437,
+        0.0008363528177142143,
+        0.0008274638094007969,
+        0.0008547930046916008,
+        0.0008427542634308338,
+        0.000842544250190258,
+        0.0008444036357104778,
+        0.0008349940180778503,
+        0.0008299639448523521,
+        0.0008369740098714828,
+        0.000848112627863884,
+        0.0008614738471806049,
+        0.0008415332995355129,
+        0.0008552642539143562,
+        0.0008490839973092079,
+        0.0008404729887843132,
+        0.0008563641458749771,
+        0.0008535031229257584,
+        0.0008386936970055103,
+        0.0008473130874335766,
+        0.0008399342186748981,
+        0.00085097411647439,
+        0.0008534342050552368,
+        0.0008565443567931652,
+        0.0008590840734541416,
+        0.0008547543548047543,
+        0.0008407342247664928,
+        0.0008480637334287167,
+        0.0008318629115819931,
+        0.0008462341502308846,
+        0.0008406438864767551
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-n64-0.json",
+          "sha256": "df7b3436e4b3b69d81b979a8c9a8a4a85e33df34d4d46e899066fbc00c737bed",
+          "device_task_window_us": 174.6,
+          "run_epoch": 971,
+          "block_records": 576,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 192,
+              "min_us": 8.120000000000005,
+              "median_us": 8.909999999999997,
+              "max_us": 11.74
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 384,
+              "min_us": 7.899999999999999,
+              "median_us": 8.870000000000005,
+              "max_us": 11.88
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-n64-1.json",
+          "sha256": "444a364a5b8aef3cc3244683d15a5ed9b957c00b4f48724832608b74cadf2bcd",
+          "device_task_window_us": 171.42000000000002,
+          "run_epoch": 973,
+          "block_records": 576,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 192,
+              "min_us": 8.339999999999996,
+              "median_us": 9.0,
+              "max_us": 11.440000000000001
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 384,
+              "min_us": 8.04,
+              "median_us": 8.980000000000004,
+              "max_us": 11.620000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-n64-2.json",
+          "sha256": "399cb327b0f89be6c0631cba1396483f1e1534661b0672088e578cae08e1ad39",
+          "device_task_window_us": 156.98,
+          "run_epoch": 975,
+          "block_records": 576,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 192,
+              "min_us": 8.32,
+              "median_us": 8.939999999999998,
+              "max_us": 11.82
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 384,
+              "min_us": 8.079999999999998,
+              "median_us": 8.920000000000002,
+              "max_us": 11.94
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-n64-3.json",
+          "sha256": "e292bed23bb92aeca4522b313d7d5ffbc61e531d68cc35440623b88ca1a508e5",
+          "device_task_window_us": 170.36,
+          "run_epoch": 977,
+          "block_records": 576,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 192,
+              "min_us": 8.319999999999993,
+              "median_us": 8.919999999999991,
+              "max_us": 11.56
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 384,
+              "min_us": 8.060000000000002,
+              "median_us": 8.899999999999999,
+              "max_us": 11.760000000000002
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-n64-4.json",
+          "sha256": "863d8b48809c794143990b258f943011865eb12c9505b6e67c5f78422762009d",
+          "device_task_window_us": 175.1,
+          "run_epoch": 979,
+          "block_records": 576,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 192,
+              "min_us": 8.260000000000005,
+              "median_us": 9.029999999999996,
+              "max_us": 10.8
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 384,
+              "min_us": 8.0,
+              "median_us": 9.0,
+              "max_us": 11.0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "full_q",
+      "backend": "n128",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0078125,
+      "relative_l2": 3.296419163234532e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007683190051466227,
+      "wall_samples_seconds": [
+        0.0007801838219165802,
+        0.0007733828388154507,
+        0.0007802341133356094,
+        0.0007510427385568619,
+        0.0007701138965785503,
+        0.0007498627528548241,
+        0.0007629729807376862,
+        0.00075487419962883,
+        0.0007751132361590862,
+        0.0007556639611721039,
+        0.0007946132682263851,
+        0.0007563838735222816,
+        0.000779283232986927,
+        0.0007432326674461365,
+        0.0007758541032671928,
+        0.0007716328836977482,
+        0.000783153809607029,
+        0.0007471926510334015,
+        0.0007851938717067242,
+        0.0007660328410565853,
+        0.0008274037390947342,
+        0.0007480131462216377,
+        0.0007801339961588383,
+        0.0007480932399630547,
+        0.000766754150390625,
+        0.0007413127459585667,
+        0.0007772427052259445,
+        0.0007744939066469669,
+        0.0007858029566705227,
+        0.0007534842006862164,
+        0.0007816832512617111,
+        0.0007445737719535828,
+        0.0007621729746460915,
+        0.0007429728284478188,
+        0.0007698838599026203,
+        0.0007548830471932888,
+        0.0007971744053065777,
+        0.0007642330601811409,
+        0.0007741940207779408,
+        0.0007429826073348522,
+        0.0007797339931130409,
+        0.0007535829208791256,
+        0.0007776538841426373,
+        0.0007484829984605312,
+        0.0007706130854785442,
+        0.0007620831020176411,
+        0.0007883231155574322,
+        0.0007415139116346836,
+        0.0007764627225697041,
+        0.0007384428754448891
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-n128-0.json",
+          "sha256": "078c44d499ce13f399e0d4bfc1a5d1cc67c3341ed3d3fdce8394523f77960a42",
+          "device_task_window_us": 77.96000000000001,
+          "run_epoch": 982,
+          "block_records": 288,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 96,
+              "min_us": 13.14,
+              "median_us": 14.19,
+              "max_us": 16.32
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 12.800000000000004,
+              "median_us": 14.219999999999999,
+              "max_us": 16.42
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-n128-1.json",
+          "sha256": "524eef4409d06dd14d178a84f03eae2eda7309226711fa277ad77476749c3cd3",
+          "device_task_window_us": 77.66,
+          "run_epoch": 984,
+          "block_records": 288,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 96,
+              "min_us": 12.98,
+              "median_us": 13.940000000000001,
+              "max_us": 17.46
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 12.780000000000001,
+              "median_us": 13.96,
+              "max_us": 17.66
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-n128-2.json",
+          "sha256": "e963c0977d915bc63820cd1107a7fb4f6d4712ce17ba71c915d070cdbd160523",
+          "device_task_window_us": 88.9,
+          "run_epoch": 986,
+          "block_records": 288,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 96,
+              "min_us": 13.039999999999992,
+              "median_us": 14.020000000000003,
+              "max_us": 16.68
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 12.760000000000005,
+              "median_us": 13.95,
+              "max_us": 16.8
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-n128-3.json",
+          "sha256": "575554e014153465ee7c8c7977cf605f1e4cb9d3df0313bd5ba5fbcf68f73694",
+          "device_task_window_us": 77.2,
+          "run_epoch": 988,
+          "block_records": 288,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 96,
+              "min_us": 12.900000000000006,
+              "median_us": 13.839999999999996,
+              "max_us": 16.92
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 12.86,
+              "median_us": 13.869999999999997,
+              "max_us": 17.060000000000002
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_q-n128-4.json",
+          "sha256": "ca7f5014657f2888439493e575accf53fee158d6aff2d3ed61787c8e60e823df",
+          "device_task_window_us": 84.04,
+          "run_epoch": 990,
+          "block_records": 288,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 96,
+              "min_us": 13.040000000000006,
+              "median_us": 13.879999999999999,
+              "max_us": 16.3
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 192,
+              "min_us": 12.860000000000007,
+              "median_us": 13.94,
+              "max_us": 16.48
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "full_kv",
+      "backend": "native",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.001953125,
+      "relative_l2": 2.2629346858593635e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006678029894828796,
+      "wall_samples_seconds": [
+        0.0006948728114366531,
+        0.0006800130940973759,
+        0.0006587733514606953,
+        0.0006810827180743217,
+        0.0006618727929890156,
+        0.0006814431399106979,
+        0.0007461127825081348,
+        0.0006701531819999218,
+        0.0006466633640229702,
+        0.0006724032573401928,
+        0.0006373729556798935,
+        0.0006629130803048611,
+        0.0006415629759430885,
+        0.0006790230982005596,
+        0.0006434731185436249,
+        0.0006668027490377426,
+        0.0006430330686271191,
+        0.0006760032847523689,
+        0.0006462330929934978,
+        0.0006706328131258488,
+        0.0006454731337726116,
+        0.0006713834591209888,
+        0.0006453823298215866,
+        0.0006688032299280167,
+        0.0006467732600867748,
+        0.0006704232655465603,
+        0.0006592134013772011,
+        0.000675352755934,
+        0.0006569731049239635,
+        0.0006776731461286545,
+        0.0006511127576231956,
+        0.0006745131686329842,
+        0.000645563006401062,
+        0.0006879833526909351,
+        0.0006508831866085529,
+        0.0007363329641520977,
+        0.0006480729207396507,
+        0.0006689629517495632,
+        0.0006466628983616829,
+        0.0006815032102167606,
+        0.0006426428444683552,
+        0.0006930027157068253,
+        0.0006472533568739891,
+        0.0006786929443478584,
+        0.0006525730714201927,
+        0.0006874231621623039,
+        0.0006424630992114544,
+        0.0006845332682132721,
+        0.0006456333212554455,
+        0.0006882632151246071
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-native-0.json",
+          "sha256": "21652a4817b3bf20082f19496e56ef1f3ab2b1db7af6afc792af43c67eea67a9",
+          "device_task_window_us": 18.900000000000002,
+          "run_epoch": 1158,
+          "block_records": 48,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 16,
+              "min_us": 12.200000000000001,
+              "median_us": 12.77,
+              "max_us": 13.600000000000001
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 32,
+              "min_us": 12.24,
+              "median_us": 12.93,
+              "max_us": 14.100000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-native-1.json",
+          "sha256": "2a8ac3afae3b6cdbdd1cb116e704327873fd11e22e3031ef7f6558fa01ef9519",
+          "device_task_window_us": 19.12,
+          "run_epoch": 1160,
+          "block_records": 48,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 16,
+              "min_us": 12.22,
+              "median_us": 12.93,
+              "max_us": 13.299999999999999
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 32,
+              "min_us": 12.240000000000002,
+              "median_us": 13.11,
+              "max_us": 13.68
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-native-2.json",
+          "sha256": "2fa2489b30de675e71512c7562134905325427d39bede0d86937ec612e8159e1",
+          "device_task_window_us": 18.78,
+          "run_epoch": 1162,
+          "block_records": 48,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 16,
+              "min_us": 11.940000000000001,
+              "median_us": 12.66,
+              "max_us": 13.78
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 32,
+              "min_us": 11.98,
+              "median_us": 12.75,
+              "max_us": 14.26
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-native-3.json",
+          "sha256": "47d787aaee25299857c1e9d5b0fb5571b873f52ae663468ad567ccbad2988fa4",
+          "device_task_window_us": 18.88,
+          "run_epoch": 1164,
+          "block_records": 48,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 16,
+              "min_us": 12.18,
+              "median_us": 12.739999999999998,
+              "max_us": 13.24
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 32,
+              "min_us": 12.219999999999999,
+              "median_us": 12.899999999999999,
+              "max_us": 13.7
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-native-4.json",
+          "sha256": "637b824903daed3fb7c1b3a35c12f5699aad7543a5bb2d085c80e36545c9e7f4",
+          "device_task_window_us": 18.44,
+          "run_epoch": 1166,
+          "block_records": 48,
+          "tasks": {
+            "qwen_hidden_projection_aic_spmd": {
+              "blocks": 16,
+              "min_us": 12.080000000000002,
+              "median_us": 12.45,
+              "max_us": 13.38
+            },
+            "qwen_hidden_projection_aiv_spmd": {
+              "blocks": 32,
+              "min_us": 12.120000000000001,
+              "median_us": 12.8,
+              "max_us": 13.76
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "full_kv",
+      "backend": "n64",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.001953125,
+      "relative_l2": 2.2629346858593635e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006675783079117537,
+      "wall_samples_seconds": [
+        0.0006811032071709633,
+        0.0006960039027035236,
+        0.0006765932776033878,
+        0.0006990632973611355,
+        0.0006745727732777596,
+        0.0006904727779328823,
+        0.0006931731477379799,
+        0.0006850729696452618,
+        0.0006769429892301559,
+        0.000677863135933876,
+        0.0006776829250156879,
+        0.0006806529127061367,
+        0.0006576930172741413,
+        0.0006829630583524704,
+        0.0006538722664117813,
+        0.0006615328602492809,
+        0.0006636930629611015,
+        0.0006742426194250584,
+        0.0006554331630468369,
+        0.0006745830178260803,
+        0.0006675831973552704,
+        0.0006752233020961285,
+        0.0006626131944358349,
+        0.0006692227907478809,
+        0.000658723060041666,
+        0.0006784629076719284,
+        0.0006580227054655552,
+        0.0006736530922353268,
+        0.000666182953864336,
+        0.0006802929565310478,
+        0.0006600231863558292,
+        0.0006573433056473732,
+        0.0006580729968845844,
+        0.0006624329835176468,
+        0.0006735832430422306,
+        0.0006632432341575623,
+        0.0006581130437552929,
+        0.0006629130803048611,
+        0.0006593326106667519,
+        0.0006601428613066673,
+        0.0006676432676613331,
+        0.0006658430211246014,
+        0.0006636832840740681,
+        0.0006557228043675423,
+        0.0006675734184682369,
+        0.0006606429815292358,
+        0.0006668730638921261,
+        0.0006683729588985443,
+        0.0006579430773854256,
+        0.0006773229688405991
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-n64-0.json",
+          "sha256": "703cd71637dfc3df6fea51f02ed75df6c3acf9c5d79b06e877bc28d20b8fc3ab",
+          "device_task_window_us": 11.44,
+          "run_epoch": 1169,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 16,
+              "min_us": 8.94,
+              "median_us": 9.56,
+              "max_us": 11.24
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 32,
+              "min_us": 8.660000000000002,
+              "median_us": 9.360000000000001,
+              "max_us": 11.32
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-n64-1.json",
+          "sha256": "028c8ef10875bbf29bbbbcf11326c0ca2bfe300f429fe6cfac7ab17b7a172b2e",
+          "device_task_window_us": 11.06,
+          "run_epoch": 1171,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 16,
+              "min_us": 8.78,
+              "median_us": 9.71,
+              "max_us": 10.799999999999999
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 32,
+              "min_us": 8.500000000000002,
+              "median_us": 9.59,
+              "max_us": 10.88
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-n64-2.json",
+          "sha256": "049add4138237b98917435d0068dfce20c2c3eefa2ba1d47539fa20d2b1d38c6",
+          "device_task_window_us": 12.16,
+          "run_epoch": 1173,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 16,
+              "min_us": 8.84,
+              "median_us": 9.84,
+              "max_us": 11.98
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 32,
+              "min_us": 8.540000000000001,
+              "median_us": 9.66,
+              "max_us": 12.040000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-n64-3.json",
+          "sha256": "169006146d2144116284f081f484a20a80b5e17dd50799c7552f4c01b514fbbe",
+          "device_task_window_us": 11.620000000000001,
+          "run_epoch": 1175,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 16,
+              "min_us": 8.739999999999998,
+              "median_us": 9.73,
+              "max_us": 11.42
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 32,
+              "min_us": 8.46,
+              "median_us": 9.600000000000001,
+              "max_us": 11.420000000000002
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-n64-4.json",
+          "sha256": "80a9a2bc5ff5925e1acabe6a3657d2dde88db09620bec3199af6f326050745f2",
+          "device_task_window_us": 11.46,
+          "run_epoch": 1177,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 16,
+              "min_us": 8.82,
+              "median_us": 9.58,
+              "max_us": 11.360000000000001
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 32,
+              "min_us": 8.5,
+              "median_us": 9.41,
+              "max_us": 11.34
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "full_kv",
+      "backend": "n128",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.001953125,
+      "relative_l2": 2.2629346858593635e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006562024354934692,
+      "wall_samples_seconds": [
+        0.0006804033182561398,
+        0.0006609531119465828,
+        0.0006775930523872375,
+        0.000646613072603941,
+        0.000677863135933876,
+        0.00064898282289505,
+        0.0006856927648186684,
+        0.0006417930126190186,
+        0.0006589931435883045,
+        0.0006427331827580929,
+        0.0006705326959490776,
+        0.0006442130543291569,
+        0.0006745131686329842,
+        0.000638812780380249,
+        0.0006631831638514996,
+        0.0006371526978909969,
+        0.0006591426208615303,
+        0.0006524929776787758,
+        0.0006697727367281914,
+        0.0006445534527301788,
+        0.0006711333990097046,
+        0.000636592973023653,
+        0.000665013212710619,
+        0.0006404630839824677,
+        0.0006602630019187927,
+        0.0006384733133018017,
+        0.0006725429557263851,
+        0.0006412430666387081,
+        0.0006590527482330799,
+        0.0006501930765807629,
+        0.0006718332879245281,
+        0.0006450223736464977,
+        0.0006534131243824959,
+        0.0006463630124926567,
+        0.000673412811011076,
+        0.0006508328951895237,
+        0.0006705131381750107,
+        0.0006337631493806839,
+        0.0006716828793287277,
+        0.0006360830739140511,
+        0.000657122116535902,
+        0.000642992090433836,
+        0.0006635533645749092,
+        0.0006417930126190186,
+        0.0006619030609726906,
+        0.0006358930841088295,
+        0.0006683431565761566,
+        0.0006552827544510365,
+        0.000672132708132267,
+        0.000647042877972126
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-n128-0.json",
+          "sha256": "5e4d0c448f921346e53eb633b12111c516a1a87d3747ca1872b2bb2c184fd6f6",
+          "device_task_window_us": 15.4,
+          "run_epoch": 1180,
+          "block_records": 24,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 8,
+              "min_us": 13.24,
+              "median_us": 14.16,
+              "max_us": 14.52
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 16,
+              "min_us": 12.96,
+              "median_us": 14.020000000000001,
+              "max_us": 14.540000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-n128-1.json",
+          "sha256": "cb880835fc1bba19e3f5cc355b4ec792a0b49269adcf44c5ec94cd327cb3ac9a",
+          "device_task_window_us": 14.88,
+          "run_epoch": 1182,
+          "block_records": 24,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 8,
+              "min_us": 13.84,
+              "median_us": 14.129999999999999,
+              "max_us": 14.260000000000002
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 16,
+              "min_us": 13.580000000000002,
+              "median_us": 13.93,
+              "max_us": 14.24
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-n128-2.json",
+          "sha256": "9b645d8926eb10ce72adc28e408f2071f5bbac91fa1bb15b85426ef9773d9896",
+          "device_task_window_us": 14.900000000000002,
+          "run_epoch": 1184,
+          "block_records": 24,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 8,
+              "min_us": 13.3,
+              "median_us": 13.74,
+              "max_us": 13.959999999999999
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 16,
+              "min_us": 13.0,
+              "median_us": 13.59,
+              "max_us": 13.940000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-n128-3.json",
+          "sha256": "e5e803790823ecdd06ac41d861dce5fb10f1523579a34d1d467ffd674920a78d",
+          "device_task_window_us": 14.939999999999998,
+          "run_epoch": 1186,
+          "block_records": 24,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 8,
+              "min_us": 13.46,
+              "median_us": 13.790000000000001,
+              "max_us": 14.260000000000002
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 16,
+              "min_us": 13.200000000000001,
+              "median_us": 13.64,
+              "max_us": 14.32
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/full_kv-n128-4.json",
+          "sha256": "9d2ad6574228974933909788f0863b50c7b17a3efd6a0c2af69b9b8182cb0b89",
+          "device_task_window_us": 14.76,
+          "run_epoch": 1188,
+          "block_records": 24,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 8,
+              "min_us": 13.72,
+              "median_us": 13.989999999999998,
+              "max_us": 14.64
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 16,
+              "min_us": 13.459999999999999,
+              "median_us": 13.879999999999999,
+              "max_us": 14.620000000000001
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "norm",
+      "backend": "native",
+      "case": 0,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.001953125,
+      "relative_l2": 4.720064225693932e-06,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006650532595813274,
+      "wall_samples_seconds": [
+        0.0006705629639327526,
+        0.0006880029104650021,
+        0.0006805229932069778,
+        0.0006712330505251884,
+        0.0006954027339816093,
+        0.0006703827530145645,
+        0.0006648832932114601,
+        0.0006661727093160152,
+        0.000675152987241745,
+        0.0006549428217113018,
+        0.0006943927146494389,
+        0.000656783115118742,
+        0.0006567328236997128,
+        0.0006718728691339493,
+        0.0006612027063965797,
+        0.0006650830619037151,
+        0.0006987228989601135,
+        0.000666892621666193,
+        0.0006632530130445957,
+        0.0006607328541576862,
+        0.0006670928560197353,
+        0.0006668427959084511,
+        0.0006861328147351742,
+        0.0006932932883501053,
+        0.0006643426604568958,
+        0.0006551733240485191,
+        0.000663162674754858,
+        0.0006853030063211918,
+        0.0006557730957865715,
+        0.0006645130924880505,
+        0.0006554033607244492,
+        0.0006508626975119114,
+        0.000657323282212019,
+        0.000679653137922287,
+        0.0006650234572589397,
+        0.0006607132963836193,
+        0.0006586532108485699,
+        0.0006669731810688972,
+        0.0006591430865228176,
+        0.0006749727763235569,
+        0.0006657526828348637,
+        0.000665642786771059,
+        0.0006607831455767155,
+        0.0006515928544104099,
+        0.0006623929366469383,
+        0.0006750030443072319,
+        0.0006678029894828796,
+        0.0006595030426979065,
+        0.0006627519614994526,
+        0.0006601018831133842
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/norm-native-0.json",
+          "sha256": "0b0b244d1347c176a3a0f30da19061d572db6fd969928e18b34b026be9dfcd11",
+          "device_task_window_us": 40.06,
+          "run_epoch": 1246,
+          "block_records": 2,
+          "tasks": {
+            "qwen_rmsnorm": {
+              "blocks": 2,
+              "min_us": 40.04,
+              "median_us": 40.05,
+              "max_us": 40.06
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/norm-native-1.json",
+          "sha256": "85e4bf126a2ffec582a1b2d69df58fd1da1d3fe3fb5db6726697ce03097bd616",
+          "device_task_window_us": 39.82,
+          "run_epoch": 1248,
+          "block_records": 2,
+          "tasks": {
+            "qwen_rmsnorm": {
+              "blocks": 2,
+              "min_us": 39.4,
+              "median_us": 39.61,
+              "max_us": 39.82
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/norm-native-2.json",
+          "sha256": "1f239e969cba423c53e832336eb3d4bd8dfb3719a829a683d4aff5f2284cc7db",
+          "device_task_window_us": 39.6,
+          "run_epoch": 1250,
+          "block_records": 2,
+          "tasks": {
+            "qwen_rmsnorm": {
+              "blocks": 2,
+              "min_us": 39.24,
+              "median_us": 39.42,
+              "max_us": 39.6
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/norm-native-3.json",
+          "sha256": "9e55bf00d70a8ffdf67d5a0e6aa2ed3925b80e8e914b8e7a2891269af293d71c",
+          "device_task_window_us": 39.32,
+          "run_epoch": 1252,
+          "block_records": 2,
+          "tasks": {
+            "qwen_rmsnorm": {
+              "blocks": 2,
+              "min_us": 38.86,
+              "median_us": 39.08,
+              "max_us": 39.3
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/projection32-trial-profiles/norm-native-4.json",
+          "sha256": "3b5fcd494176ad638bc8cc01c7195b40c138191b60bd4995c05217effdeee8c6",
+          "device_task_window_us": 39.54,
+          "run_epoch": 1254,
+          "block_records": 2,
+          "tasks": {
+            "qwen_rmsnorm": {
+              "blocks": 2,
+              "min_us": 39.160000000000004,
+              "median_us": 39.34,
+              "max_us": 39.519999999999996
+            }
+          }
+        }
+      ]
+    },
+    {
+      "component": "gdn_qkv",
+      "backend": "native",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0078125,
+      "relative_l2": 2.198986112489365e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007810632232576609,
+      "wall_samples_seconds": [
+        0.0008093132637441158,
+        0.0008375141769647598,
+        0.000820924062281847,
+        0.0008382541127502918,
+        0.0007827728986740112,
+        0.0007971529848873615,
+        0.0007659043185412884,
+        0.0007790736854076385,
+        0.0007620933465659618,
+        0.000791334081441164,
+        0.0007624928839504719,
+        0.0007804231718182564,
+        0.0007779537700116634,
+        0.0007759639993309975,
+        0.0007651126943528652,
+        0.0007881741039454937,
+        0.0007977443747222424,
+        0.0008042939007282257,
+        0.0007651331834495068,
+        0.000802862923592329,
+        0.0007586437277495861,
+        0.0007858239114284515,
+        0.000754013191908598,
+        0.0007864227518439293,
+        0.0007606940343976021,
+        0.0007817032746970654,
+        0.0007650330662727356,
+        0.0007850839756429195,
+        0.0007823030464351177,
+        0.0008045928552746773,
+        0.0007738843560218811,
+        0.0007953536696732044,
+        0.0007801540195941925,
+        0.0009244340471923351,
+        0.000802983995527029,
+        0.0008203932084143162,
+        0.0007722042500972748,
+        0.0007826536893844604,
+        0.000760902650654316,
+        0.0007669930346310139,
+        0.0007576332427561283,
+        0.0007732836529612541,
+        0.0007487027905881405,
+        0.0007771439850330353,
+        0.0007533230818808079,
+        0.0007836329750716686,
+        0.0007612342014908791,
+        0.0007954337634146214,
+        0.0007607229053974152,
+        0.0007901731878519058
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "gdn_qkv",
+      "backend": "n64",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0078125,
+      "relative_l2": 2.198986112489365e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007974538020789623,
+      "wall_samples_seconds": [
+        0.000805483665317297,
+        0.000823283102363348,
+        0.0008113030344247818,
+        0.0008308440446853638,
+        0.0008007241412997246,
+        0.0008090939372777939,
+        0.0008050939068198204,
+        0.0007890826091170311,
+        0.0007964838296175003,
+        0.0008020540699362755,
+        0.0007705530151724815,
+        0.0007943739183247089,
+        0.0008094930090010166,
+        0.0007922528311610222,
+        0.0007974538020789623,
+        0.000779762864112854,
+        0.0007942328229546547,
+        0.0007791831158101559,
+        0.0007944442331790924,
+        0.0008171540684998035,
+        0.0007902528159320354,
+        0.0007907133549451828,
+        0.0007854541763663292,
+        0.0007977243512868881,
+        0.0007994133047759533,
+        0.0007961243391036987,
+        0.0008062534034252167,
+        0.0008006831631064415,
+        0.0008001839742064476,
+        0.0007906542159616947,
+        0.00079366285353899,
+        0.0008055730722844601,
+        0.0007921629585325718,
+        0.00360317574813962,
+        0.000804143026471138,
+        0.0008486141450703144,
+        0.0007867529056966305,
+        0.0007837130688130856,
+        0.0007734340615570545,
+        0.0007974538020789623,
+        0.0007983827963471413,
+        0.0007853326387703419,
+        0.0008023739792406559,
+        0.0007840427570044994,
+        0.0007877135649323463,
+        0.0007845237851142883,
+        0.000815283041447401,
+        0.0007684328593313694,
+        0.0008087940514087677,
+        0.0008153938688337803
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "gdn_qkv",
+      "backend": "n128",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0078125,
+      "relative_l2": 2.198986112489365e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007210930343717337,
+      "wall_samples_seconds": [
+        0.0007668030448257923,
+        0.0007337839342653751,
+        0.0008191438391804695,
+        0.0007170229218900204,
+        0.0007247729226946831,
+        0.0007164929993450642,
+        0.0007216227240860462,
+        0.0007108929567039013,
+        0.0007245028391480446,
+        0.0007260330021381378,
+        0.0007473938167095184,
+        0.0007101227529346943,
+        0.0007237829267978668,
+        0.0007015536539256573,
+        0.0007285433821380138,
+        0.000706713180989027,
+        0.000729123130440712,
+        0.0007016840390861034,
+        0.000723802950233221,
+        0.0007206234149634838,
+        0.0007333643734455109,
+        0.0007134829647839069,
+        0.0007549230940639973,
+        0.0007174932397902012,
+        0.0007570339366793633,
+        0.0007159831002354622,
+        0.0007294430397450924,
+        0.0007185237482190132,
+        0.0007371427491307259,
+        0.0007053529843688011,
+        0.0007273536175489426,
+        0.0007129330188035965,
+        0.0007342328317463398,
+        0.0007129544392228127,
+        0.0007806839421391487,
+        0.000707223080098629,
+        0.000726733822375536,
+        0.0007028132677078247,
+        0.0007489225827157497,
+        0.0007156427018344402,
+        0.000748773105442524,
+        0.0006983540952205658,
+        0.0007206229493021965,
+        0.000695312861353159,
+        0.0007202732376754284,
+        0.0006962227635085583,
+        0.0007215626537799835,
+        0.0007087741978466511,
+        0.0007541831582784653,
+        0.0007010828703641891
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "gdn_z",
+      "backend": "native",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.015625,
+      "relative_l2": 4.8409518058178946e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007109427824616432,
+      "wall_samples_seconds": [
+        0.0007275529205799103,
+        0.0007175528444349766,
+        0.0007058032788336277,
+        0.000713602639734745,
+        0.0007032728753983974,
+        0.0007147630676627159,
+        0.0006872727535665035,
+        0.0007134540937840939,
+        0.0006970330141484737,
+        0.0007185628637671471,
+        0.0006904839538037777,
+        0.0007179630920290947,
+        0.0006962628103792667,
+        0.0007156729698181152,
+        0.0007021930068731308,
+        0.0007413532584905624,
+        0.0006979829631745815,
+        0.0007486226968467236,
+        0.0007318542338907719,
+        0.000738214235752821,
+        0.0007012533023953438,
+        0.0007536439225077629,
+        0.0007027434185147285,
+        0.0007356144487857819,
+        0.0007002232596278191,
+        0.0007303738966584206,
+        0.0006923829205334187,
+        0.0007370435632765293,
+        0.0006938730366528034,
+        0.0007323343306779861,
+        0.000703922938555479,
+        0.0007163728587329388,
+        0.0007109628058969975,
+        0.0007156240753829479,
+        0.0006880927830934525,
+        0.0007371031679213047,
+        0.0007191626355051994,
+        0.0007156729698181152,
+        0.0006898432038724422,
+        0.0007052137516438961,
+        0.0006876732222735882,
+        0.0007155430503189564,
+        0.0006812429055571556,
+        0.0007007126696407795,
+        0.0006950930692255497,
+        0.0007084738463163376,
+        0.0006848429329693317,
+        0.000710922759026289,
+        0.0007104240357875824,
+        0.0007139630615711212
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "gdn_z",
+      "backend": "n64",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.015625,
+      "relative_l2": 4.8409518058178946e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007190234027802944,
+      "wall_samples_seconds": [
+        0.0007200529798865318,
+        0.0007164431735873222,
+        0.000718983355909586,
+        0.0007319138385355473,
+        0.0007155127823352814,
+        0.0006996840238571167,
+        0.0007248930633068085,
+        0.0007006530649960041,
+        0.0007234327495098114,
+        0.0007168632000684738,
+        0.0007090731523931026,
+        0.0007160226814448833,
+        0.0007413341663777828,
+        0.0007238327525556087,
+        0.0007238639518618584,
+        0.0007162629626691341,
+        0.0007251240313053131,
+        0.0007320926524698734,
+        0.0007311329245567322,
+        0.0007164729759097099,
+        0.0007136627100408077,
+        0.0007222127169370651,
+        0.0007258127443492413,
+        0.0007176129147410393,
+        0.0007211128249764442,
+        0.000723403412848711,
+        0.000708303414285183,
+        0.0007399930618703365,
+        0.0007127630524337292,
+        0.0007405229844152927,
+        0.0007035429589450359,
+        0.000707472674548626,
+        0.0007118042558431625,
+        0.000742793083190918,
+        0.0007402226328849792,
+        0.0007403241470456123,
+        0.0007242928259074688,
+        0.0007042628712952137,
+        0.0006941831670701504,
+        0.0007028128020465374,
+        0.0007270229980349541,
+        0.000704003032296896,
+        0.0007215538062155247,
+        0.0007102028466761112,
+        0.0007259529083967209,
+        0.0007018931210041046,
+        0.0007339133881032467,
+        0.0007106531411409378,
+        0.0007190634496510029,
+        0.0007098927162587643
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "gdn_z",
+      "backend": "n128",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.015625,
+      "relative_l2": 4.8409518058178946e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006795332301408052,
+      "wall_samples_seconds": [
+        0.0006941230967640877,
+        0.0007015340961515903,
+        0.0006933030672371387,
+        0.0006749629974365234,
+        0.0007011229172348976,
+        0.0006740931421518326,
+        0.0007092230953276157,
+        0.000670142937451601,
+        0.0006911926902830601,
+        0.0006560427136719227,
+        0.0006905030459165573,
+        0.0006561330519616604,
+        0.000707963015884161,
+        0.0006649130955338478,
+        0.0006973329000174999,
+        0.000661053229123354,
+        0.0007062628865242004,
+        0.0006665331311523914,
+        0.0006911531090736389,
+        0.0006789332255721092,
+        0.0006945929490029812,
+        0.0006675529293715954,
+        0.0006970330141484737,
+        0.0006632828153669834,
+        0.0006925431080162525,
+        0.0006661228835582733,
+        0.0006842631846666336,
+        0.0006679329089820385,
+        0.0006909030489623547,
+        0.0006667426787316799,
+        0.0006786631420254707,
+        0.0006643030792474747,
+        0.0006930730305612087,
+        0.0007382030598819256,
+        0.0007353327237069607,
+        0.0006733927875757217,
+        0.0006990027613937855,
+        0.0006686029955744743,
+        0.000703922938555479,
+        0.0006692227907478809,
+        0.0006862329319119453,
+        0.0006725229322910309,
+        0.0006854431703686714,
+        0.0006590825505554676,
+        0.0006879228167235851,
+        0.0006514126434922218,
+        0.000678403303027153,
+        0.0006653331220149994,
+        0.0006801332347095013,
+        0.0006496529094874859
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "gdn_ab",
+      "backend": "native",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0009765625,
+      "relative_l2": 1.0656435733835679e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006453779060393572,
+      "wall_samples_seconds": [
+        0.0006704931147396564,
+        0.0006519630551338196,
+        0.0006328928284347057,
+        0.0006588329561054707,
+        0.0006388723850250244,
+        0.0006627929396927357,
+        0.0006249132566154003,
+        0.0006547532975673676,
+        0.0006370530463755131,
+        0.0006674733012914658,
+        0.0006402833387255669,
+        0.0006800931878387928,
+        0.0006310930475592613,
+        0.0006682728417217731,
+        0.0006305128335952759,
+        0.0006628129631280899,
+        0.0006190831772983074,
+        0.0006614727899432182,
+        0.0006251526065170765,
+        0.0006616823375225067,
+        0.0006303125992417336,
+        0.0006611230783164501,
+        0.0006346330046653748,
+        0.0006572031415998936,
+        0.0006454628892242908,
+        0.0006526228971779346,
+        0.0006309431046247482,
+        0.000662023201584816,
+        0.0006367932073771954,
+        0.0006547528319060802,
+        0.0006525227800011635,
+        0.0006583230569958687,
+        0.0006511127576231956,
+        0.0006504729390144348,
+        0.00062568299472332,
+        0.0006538131274282932,
+        0.0006320229731500149,
+        0.0006509330123662949,
+        0.0006193029694259167,
+        0.0006452929228544235,
+        0.0006369226612150669,
+        0.0006438619457185268,
+        0.000634392723441124,
+        0.0006481227464973927,
+        0.0006304830312728882,
+        0.0006376630626618862,
+        0.0006231027655303478,
+        0.0006431331858038902,
+        0.0006277831271290779,
+        0.0006483327597379684
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "gdn_ab",
+      "backend": "n64",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0009765625,
+      "relative_l2": 1.0656435733835679e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006504722405225039,
+      "wall_samples_seconds": [
+        0.0006614131852984428,
+        0.0006755129434168339,
+        0.0006420230492949486,
+        0.0006722630932927132,
+        0.0006491029635071754,
+        0.0006699529476463795,
+        0.0006516729481518269,
+        0.0006556729786098003,
+        0.0006454833783209324,
+        0.000652083195745945,
+        0.0006439830176532269,
+        0.0006532329134643078,
+        0.0006554629653692245,
+        0.0006482033059000969,
+        0.0006403019651770592,
+        0.0006448728963732719,
+        0.0006494033150374889,
+        0.0006413529627025127,
+        0.0006494228728115559,
+        0.0006552920676767826,
+        0.0006526829674839973,
+        0.0006514731794595718,
+        0.000651263166218996,
+        0.0006432333029806614,
+        0.0006405329331755638,
+        0.0006505819037556648,
+        0.0006466731429100037,
+        0.0006496328860521317,
+        0.0006597228348255157,
+        0.0006441529840230942,
+        0.0006479732692241669,
+        0.0006502126343548298,
+        0.0006524217315018177,
+        0.0006450731307268143,
+        0.0006698630750179291,
+        0.0006471318192780018,
+        0.00065650325268507,
+        0.0006469227373600006,
+        0.0006618723273277283,
+        0.0006503625772893429,
+        0.000657293014228344,
+        0.0006513632833957672,
+        0.0006604031659662724,
+        0.0006483732722699642,
+        0.000664703082293272,
+        0.0006470433436334133,
+        0.0006348430179059505,
+        0.0006460719741880894,
+        0.0006718430668115616,
+        0.0006534028798341751
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "gdn_ab",
+      "backend": "n128",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0009765625,
+      "relative_l2": 1.0656435733835679e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006424179300665855,
+      "wall_samples_seconds": [
+        0.0006575128063559532,
+        0.0006427429616451263,
+        0.0006476729176938534,
+        0.0006238226778805256,
+        0.0006427229382097721,
+        0.0006307330913841724,
+        0.0006591328419744968,
+        0.0006318418309092522,
+        0.000642112921923399,
+        0.0006439029239118099,
+        0.0006509916856884956,
+        0.0006352430209517479,
+        0.0006569530814886093,
+        0.0006280830129981041,
+        0.0006419527344405651,
+        0.0006198128685355186,
+        0.000647692009806633,
+        0.0006221933290362358,
+        0.0006474130786955357,
+        0.0006336630322039127,
+        0.0006450428627431393,
+        0.0006262026727199554,
+        0.0006481022574007511,
+        0.0006238832138478756,
+        0.0006501730531454086,
+        0.000626852735877037,
+        0.0006619826890528202,
+        0.0006328332237899303,
+        0.0006528832018375397,
+        0.0006347917951643467,
+        0.0006506228819489479,
+        0.0006325631402432919,
+        0.0006681429222226143,
+        0.0006250021979212761,
+        0.0006458330899477005,
+        0.0006202831864356995,
+        0.0006491732783615589,
+        0.0006393031217157841,
+        0.000651543028652668,
+        0.0006222128868103027,
+        0.0006617028266191483,
+        0.0006341231055557728,
+        0.0006597130559384823,
+        0.0006307829171419144,
+        0.0006530927494168282,
+        0.0006221719086170197,
+        0.000661513302475214,
+        0.0006299628876149654,
+        0.0006758533418178558,
+        0.0006298027001321316
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "attention_o",
+      "backend": "native",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.015625,
+      "relative_l2": 3.692839527502656e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007067734841257334,
+      "wall_samples_seconds": [
+        0.0007173139601945877,
+        0.0007193032652139664,
+        0.0006969030946493149,
+        0.0007158434018492699,
+        0.0007176627404987812,
+        0.0007095029577612877,
+        0.0006852229125797749,
+        0.00070525286719203,
+        0.0007028039544820786,
+        0.000702262856066227,
+        0.0006834729574620724,
+        0.0007054940797388554,
+        0.0007131933234632015,
+        0.0007127029821276665,
+        0.0007013031281530857,
+        0.0007207631133496761,
+        0.0006898632273077965,
+        0.0006972029805183411,
+        0.0007006642408668995,
+        0.0007301131263375282,
+        0.0006862031295895576,
+        0.0007143937982618809,
+        0.0006917631253600121,
+        0.000726792961359024,
+        0.0006901430897414684,
+        0.0007143430411815643,
+        0.0006921626627445221,
+        0.0007318737916648388,
+        0.0007007229141891003,
+        0.0007662437856197357,
+        0.0007053427398204803,
+        0.0007125036790966988,
+        0.0006929030641913414,
+        0.0007022530771791935,
+        0.0006867628544569016,
+        0.0007080528885126114,
+        0.0006796331144869328,
+        0.0007051927968859673,
+        0.0006925039924681187,
+        0.000779333058744669,
+        0.0008043739944696426,
+        0.0007275231182575226,
+        0.0007202830165624619,
+        0.0007232129573822021,
+        0.0007008831016719341,
+        0.0007146629504859447,
+        0.0006926828064024448,
+        0.0007253829389810562,
+        0.00070987269282341,
+        0.0007139630615711212
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "attention_o",
+      "backend": "n64",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.015625,
+      "relative_l2": 3.692839527502656e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007050929125398397,
+      "wall_samples_seconds": [
+        0.0007034032605588436,
+        0.0007137428037822247,
+        0.000705293845385313,
+        0.0007201828993856907,
+        0.0007137940265238285,
+        0.0006935331039130688,
+        0.0007176632061600685,
+        0.0006962432526051998,
+        0.000707963015884161,
+        0.0006995927542448044,
+        0.0007098829373717308,
+        0.0007035429589450359,
+        0.0007017627358436584,
+        0.0007052426226437092,
+        0.0006891530938446522,
+        0.0007027341052889824,
+        0.0007102028466761112,
+        0.0007021632045507431,
+        0.0007036728784441948,
+        0.0007019028998911381,
+        0.0007008030079305172,
+        0.0007002530619502068,
+        0.0006862226873636246,
+        0.000690532848238945,
+        0.0007117632776498795,
+        0.0007154541090130806,
+        0.0007044728845357895,
+        0.0007346230559051037,
+        0.0007010125555098057,
+        0.0007556630298495293,
+        0.000715143047273159,
+        0.0007049432024359703,
+        0.0007017627358436584,
+        0.0007101427763700485,
+        0.0007076640613377094,
+        0.0006974129937589169,
+        0.0006991429254412651,
+        0.0006922530010342598,
+        0.0006995829753577709,
+        0.0007584239356219769,
+        0.0008370829746127129,
+        0.0007177628576755524,
+        0.0007305527105927467,
+        0.0006975331343710423,
+        0.0007458440959453583,
+        0.0007054731249809265,
+        0.0007388340309262276,
+        0.0007033529691398144,
+        0.000718564260751009,
+        0.0007136128842830658
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "attention_o",
+      "backend": "n128",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.015625,
+      "relative_l2": 3.692839527502656e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006759229581803083,
+      "wall_samples_seconds": [
+        0.0007090326398611069,
+        0.0006629927083849907,
+        0.0006914329715073109,
+        0.0006717629730701447,
+        0.0006870529614388943,
+        0.0006509930826723576,
+        0.0006896429695188999,
+        0.0006589731201529503,
+        0.0006778729148209095,
+        0.0006626131944358349,
+        0.0006752428598701954,
+        0.0006623431108891964,
+        0.00068310322239995,
+        0.0006607933901250362,
+        0.0006771031767129898,
+        0.0006543518975377083,
+        0.0006705229170620441,
+        0.0006683929823338985,
+        0.0006713126786053181,
+        0.0006550629623234272,
+        0.0006804331205785275,
+        0.000654253177344799,
+        0.0006788428872823715,
+        0.0006540426984429359,
+        0.0006748829036951065,
+        0.0006660530343651772,
+        0.0006925230845808983,
+        0.0006543630734086037,
+        0.000683843158185482,
+        0.0006741327233612537,
+        0.0006871628575026989,
+        0.0006600930355489254,
+        0.0006893528625369072,
+        0.000699253287166357,
+        0.0006846832111477852,
+        0.0006771129556000233,
+        0.0006680330261588097,
+        0.0006668530404567719,
+        0.0007144929841160774,
+        0.0007296730764210224,
+        0.0007650037296116352,
+        0.000712233129888773,
+        0.0006807129830121994,
+        0.000655303243547678,
+        0.0006921133026480675,
+        0.0006633531302213669,
+        0.0006808931939303875,
+        0.0006669731810688972,
+        0.0006877528503537178,
+        0.0006766030564904213
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "full_q",
+      "backend": "native",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.015625,
+      "relative_l2": 3.296419163234532e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0008176483679562807,
+      "wall_samples_seconds": [
+        0.000847293995320797,
+        0.000838263425976038,
+        0.000803094357252121,
+        0.0008205138146877289,
+        0.0008054440841078758,
+        0.0008232942782342434,
+        0.0008177226409316063,
+        0.0008235042914748192,
+        0.0008300440385937691,
+        0.0008393740281462669,
+        0.0008109128102660179,
+        0.0008168132044374943,
+        0.0008004540577530861,
+        0.0008102841675281525,
+        0.0007972228340804577,
+        0.0008256230503320694,
+        0.0007901936769485474,
+        0.0008379542268812656,
+        0.0008267238736152649,
+        0.0008523231372237206,
+        0.0008100043050944805,
+        0.0008262242190539837,
+        0.000806514173746109,
+        0.0008275429718196392,
+        0.0007966640405356884,
+        0.0008175740949809551,
+        0.0007992428727447987,
+        0.0008171526715159416,
+        0.0008077439852058887,
+        0.0008586039766669273,
+        0.0008131437934935093,
+        0.0008374839089810848,
+        0.0007894230075180531,
+        0.0008407640270888805,
+        0.0007903329096734524,
+        0.0008212733082473278,
+        0.0008071139454841614,
+        0.0008014831691980362,
+        0.000826522707939148,
+        0.0008425340056419373,
+        0.000795493833720684,
+        0.0008204136975109577,
+        0.0007881028577685356,
+        0.0008163140155375004,
+        0.0007912442088127136,
+        0.0008262735791504383,
+        0.0008072732016444206,
+        0.0008242540061473846,
+        0.0008653136901557446,
+        0.0008489540778100491
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "full_q",
+      "backend": "n64",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.015625,
+      "relative_l2": 3.296419163234532e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0008297583553940058,
+      "wall_samples_seconds": [
+        0.0008546542376279831,
+        0.000838553998619318,
+        0.0008499938994646072,
+        0.0008298829197883606,
+        0.000863982830196619,
+        0.0008327742107212543,
+        0.0008582239970564842,
+        0.0007953629828989506,
+        0.0007942430675029755,
+        0.0008461037650704384,
+        0.0008363043889403343,
+        0.0008436040952801704,
+        0.0008216029964387417,
+        0.0008357837796211243,
+        0.0008883839473128319,
+        0.0008263839408755302,
+        0.0008424138650298119,
+        0.000831094104796648,
+        0.0008270828984677792,
+        0.0008100341074168682,
+        0.000829633790999651,
+        0.0008552242070436478,
+        0.0008199233561754227,
+        0.0008460739627480507,
+        0.0008214837871491909,
+        0.0008245441131293774,
+        0.000838243868201971,
+        0.0008215643465518951,
+        0.0008291942067444324,
+        0.0008301744237542152,
+        0.0008192630484700203,
+        0.0008498542010784149,
+        0.0008256039582192898,
+        0.0008218437433242798,
+        0.0008292039856314659,
+        0.0008322740904986858,
+        0.0008438439108431339,
+        0.000806054100394249,
+        0.0008441535755991936,
+        0.000818273052573204,
+        0.0008267839439213276,
+        0.0008576139807701111,
+        0.0008222339674830437,
+        0.0008185827173292637,
+        0.0008246428333222866,
+        0.00082021439447999,
+        0.0008321641944348812,
+        0.0008132127113640308,
+        0.0008254526183009148,
+        0.0008366042748093605
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "full_q",
+      "backend": "n128",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.015625,
+      "relative_l2": 3.296419163234532e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0007499333005398512,
+      "wall_samples_seconds": [
+        0.0007677539251744747,
+        0.0007696030661463737,
+        0.0007644430734217167,
+        0.0007332139648497105,
+        0.0007839538156986237,
+        0.000740263145416975,
+        0.0007527642883360386,
+        0.0007426231168210506,
+        0.0007583936676383018,
+        0.000732573214918375,
+        0.0007563531398773193,
+        0.0007403343915939331,
+        0.0007603038102388382,
+        0.000745982863008976,
+        0.0007786941714584827,
+        0.0007432927377521992,
+        0.00075960299000144,
+        0.0007334030233323574,
+        0.0007689236663281918,
+        0.0007275729440152645,
+        0.0007594130001962185,
+        0.0007429230026900768,
+        0.0007507838308811188,
+        0.000746243167668581,
+        0.0007665930315852165,
+        0.0007485728710889816,
+        0.0007720342837274075,
+        0.0007756929844617844,
+        0.0007598032243549824,
+        0.0007308828644454479,
+        0.0007544839754700661,
+        0.0007247431203722954,
+        0.0007590032182633877,
+        0.0007415032014250755,
+        0.0007746941410005093,
+        0.0007227030582726002,
+        0.0007456927560269833,
+        0.000723112840205431,
+        0.000751142855733633,
+        0.0007275142706930637,
+        0.0007445733062922955,
+        0.0007290630601346493,
+        0.0007490827701985836,
+        0.0007580136880278587,
+        0.0008263937197625637,
+        0.0007347529754042625,
+        0.0007514827884733677,
+        0.0007366742938756943,
+        0.000759543851017952,
+        0.0007336330600082874
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "full_kv",
+      "backend": "native",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.00390625,
+      "relative_l2": 2.2629346858593635e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006881579756736755,
+      "wall_samples_seconds": [
+        0.0007016630843281746,
+        0.000697482842952013,
+        0.0006674029864370823,
+        0.0006920332089066505,
+        0.0006696530617773533,
+        0.0007287329062819481,
+        0.0006791329942643642,
+        0.0006984928622841835,
+        0.00068287318572402,
+        0.0006835232488811016,
+        0.0006565731018781662,
+        0.0007066731341183186,
+        0.0006729932501912117,
+        0.0006941230967640877,
+        0.0006585628725588322,
+        0.000688083004206419,
+        0.0006600632332265377,
+        0.0006882329471409321,
+        0.0006679431535303593,
+        0.0006873230449855328,
+        0.0006692027673125267,
+        0.0007051927968859673,
+        0.0006716526113450527,
+        0.0006983429193496704,
+        0.0006950236856937408,
+        0.0006900429725646973,
+        0.0006679934449493885,
+        0.0006900629960000515,
+        0.0006942129693925381,
+        0.000712172593921423,
+        0.0006661033257842064,
+        0.0006911628879606724,
+        0.0006773830391466618,
+        0.0007026428356766701,
+        0.0006866431795060635,
+        0.0006863130256533623,
+        0.0006763632409274578,
+        0.0006929431110620499,
+        0.0006944742053747177,
+        0.0006809127517044544,
+        0.0006851525977253914,
+        0.000697593204677105,
+        0.0006889537908136845,
+        0.0007593929767608643,
+        0.0006853831000626087,
+        0.0007152929902076721,
+        0.0006744228303432465,
+        0.0007124431431293488,
+        0.0006733029149472713,
+        0.0009115738794207573
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "full_kv",
+      "backend": "n64",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.00390625,
+      "relative_l2": 2.2629346858593635e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006928727962076664,
+      "wall_samples_seconds": [
+        0.0006958926096558571,
+        0.0006921030580997467,
+        0.000703183002769947,
+        0.0007058028131723404,
+        0.0006921025924384594,
+        0.0007452331483364105,
+        0.0006980327889323235,
+        0.0007242527790367603,
+        0.0006950930692255497,
+        0.000691782683134079,
+        0.0006938031874597073,
+        0.0006982432678341866,
+        0.0006996826268732548,
+        0.0006883232854306698,
+        0.000680393073707819,
+        0.0006924830377101898,
+        0.0006832731887698174,
+        0.0007032430730760098,
+        0.0006832028739154339,
+        0.0006907829083502293,
+        0.0006894329562783241,
+        0.000685723964124918,
+        0.000693262554705143,
+        0.0007358030416071415,
+        0.0006963629275560379,
+        0.0006963731721043587,
+        0.0007048826664686203,
+        0.0006936839781701565,
+        0.0007049627602100372,
+        0.0006933128461241722,
+        0.0007153339684009552,
+        0.000684813130646944,
+        0.0007056631147861481,
+        0.000686833169311285,
+        0.0006937440484762192,
+        0.0006983829662203789,
+        0.0007056430913507938,
+        0.0006883931346237659,
+        0.0006936332210898399,
+        0.000691272784024477,
+        0.0006905030459165573,
+        0.0006857733242213726,
+        0.0006892029196023941,
+        0.0006884331814944744,
+        0.0006897533312439919,
+        0.0006902539171278477,
+        0.0006900732405483723,
+        0.0006849928759038448,
+        0.0006864727474749088,
+        0.0006924541667103767
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "full_kv",
+      "backend": "n128",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.00390625,
+      "relative_l2": 2.2629346858593635e-05,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006910180673003197,
+      "wall_samples_seconds": [
+        0.0006965729407966137,
+        0.0006681429222226143,
+        0.0006919130682945251,
+        0.0006731129251420498,
+        0.0006869728676974773,
+        0.0006575929000973701,
+        0.0007029632106423378,
+        0.0006738030351698399,
+        0.0006912532262504101,
+        0.0006813439540565014,
+        0.0007035429589450359,
+        0.00070201326161623,
+        0.0006998642347753048,
+        0.0006899028085172176,
+        0.0006907829083502293,
+        0.0006945733912289143,
+        0.0007091229781508446,
+        0.0006901142187416553,
+        0.0007060132920742035,
+        0.0006683529354631901,
+        0.00070594297721982,
+        0.0006734533235430717,
+        0.0007172129116952419,
+        0.0006652232259511948,
+        0.0007045231759548187,
+        0.0006923931650817394,
+        0.0006966628134250641,
+        0.0006727930158376694,
+        0.0006936131976544857,
+        0.0006750430911779404,
+        0.0006955228745937347,
+        0.0006748130545020103,
+        0.0006956332363188267,
+        0.0006742831319570541,
+        0.0006977426819503307,
+        0.0006840531714260578,
+        0.0006948327645659447,
+        0.000662453006953001,
+        0.0007027126848697662,
+        0.0006628828123211861,
+        0.000697252806276083,
+        0.0006718030199408531,
+        0.0006914129480719566,
+        0.0006706328131258488,
+        0.000693982932716608,
+        0.0006659533828496933,
+        0.0006983131170272827,
+        0.000670372974127531,
+        0.0006898129358887672,
+        0.0006731431931257248
+      ],
+      "device_profiles": []
+    },
+    {
+      "component": "norm",
+      "backend": "native",
+      "case": 1,
+      "passed": true,
+      "inputs_byte_exact": true,
+      "max_abs": 0.0,
+      "relative_l2": 0.0,
+      "native_max_abs": 0.0,
+      "native_byte_exact": true,
+      "wall_median_seconds": 0.0006825285963714123,
+      "wall_samples_seconds": [
+        0.0007168329320847988,
+        0.0006968830712139606,
+        0.000694293063133955,
+        0.0006925230845808983,
+        0.0006850729696452618,
+        0.0006924131885170937,
+        0.0007186438888311386,
+        0.0006843525916337967,
+        0.000686032697558403,
+        0.0006853430531919003,
+        0.0006797527894377708,
+        0.0007060333155095577,
+        0.0006860531866550446,
+        0.0006778528913855553,
+        0.0006776032969355583,
+        0.0006800331175327301,
+        0.0006820829585194588,
+        0.0006851330399513245,
+        0.0007053138688206673,
+        0.0006764926947653294,
+        0.0006833132356405258,
+        0.0007037930190563202,
+        0.000681792851537466,
+        0.0006984327919781208,
+        0.0006800731644034386,
+        0.0006715627387166023,
+        0.0006795129738748074,
+        0.0006809928454458714,
+        0.0006788331083953381,
+        0.0006944229826331139,
+        0.0006829430349171162,
+        0.0006821141578257084,
+        0.0006808028556406498,
+        0.0006797229871153831,
+        0.0006752032786607742,
+        0.0007045827805995941,
+        0.0006766729056835175,
+        0.000707963015884161,
+        0.0008767535910010338,
+        0.0010762549936771393,
+        0.000708162784576416,
+        0.0006778831593692303,
+        0.0006756032817065716,
+        0.0006747930310666561,
+        0.0006717229261994362,
+        0.0006833230145275593,
+        0.000672162976115942,
+        0.0006666732951998711,
+        0.0006660730578005314,
+        0.0006636730395257473
+      ],
+      "device_profiles": []
+    }
+  ],
+  "rejected_compile": [
+    {
+      "component": "gdn_qkv",
+      "backend": "n256",
+      "error": "ValueError('Mat buffer usage (589824 bytes) exceeds platform limit (524288 bytes)\\nCheck failed: limit == 0 || used <= limit at /results/pypto-core/src/ir/transforms/allocate_memory_addr_pass.cpp:483')"
+    },
+    {
+      "component": "gdn_z",
+      "backend": "n256",
+      "error": "ValueError('Mat buffer usage (589824 bytes) exceeds platform limit (524288 bytes)\\nCheck failed: limit == 0 || used <= limit at /results/pypto-core/src/ir/transforms/allocate_memory_addr_pass.cpp:483')"
+    },
+    {
+      "component": "attention_o",
+      "backend": "n256",
+      "error": "ValueError('Mat buffer usage (589824 bytes) exceeds platform limit (524288 bytes)\\nCheck failed: limit == 0 || used <= limit at /results/pypto-core/src/ir/transforms/allocate_memory_addr_pass.cpp:483')"
+    },
+    {
+      "component": "full_q",
+      "backend": "n256",
+      "error": "ValueError('Mat buffer usage (589824 bytes) exceeds platform limit (524288 bytes)\\nCheck failed: limit == 0 || used <= limit at /results/pypto-core/src/ir/transforms/allocate_memory_addr_pass.cpp:483')"
+    },
+    {
+      "component": "full_kv",
+      "backend": "n256",
+      "error": "ValueError('Mat buffer usage (589824 bytes) exceeds platform limit (524288 bytes)\\nCheck failed: limit == 0 || used <= limit at /results/pypto-core/src/ir/transforms/allocate_memory_addr_pass.cpp:483')"
+    },
+    {
+      "component": "norm",
+      "backend": "rows1",
+      "error": "PartialCodegenError('1 function(s) failed to compile:\\n\\n  Function              | Error\\n  ----------------------+--------------------------------------------------------------\\n  orthrus_input_norm32  | ptoas compilation failed: (exit code 1)\\n                        | loc(\"/data/disk1/wangzili/orthrus-\\n                        | qwen38-pypto-20261105/source-projection32-\\n                        | r1/src/blockspec/pypto_qwen38/_projection_trials.py\":61:13):\\n                        | error: \\'pto.alloc_tile\\' op expects result col-major none_box\\n                        | tile column byte size (rows * sizeof(dtype)) to be 32-byte\\n                        | aligned, but got 4 bytes\\n  ----------------------+--------------------------------------------------------------\\n\\n  Full details: build_output/_jit_entry_20261109_032234_c93fxdkt/next_levels/norm/report/codegen_errors.txt')"
+    },
+    {
+      "component": "norm",
+      "backend": "rows2",
+      "error": "PartialCodegenError('1 function(s) failed to compile:\\n\\n  Function              | Error\\n  ----------------------+--------------------------------------------------------------\\n  orthrus_input_norm32  | ptoas compilation failed: (exit code 1)\\n                        | loc(\"/data/disk1/wangzili/orthrus-\\n                        | qwen38-pypto-20261105/source-projection32-\\n                        | r1/src/blockspec/pypto_qwen38/_projection_trials.py\":61:13):\\n                        | error: \\'pto.alloc_tile\\' op expects result col-major none_box\\n                        | tile column byte size (rows * sizeof(dtype)) to be 32-byte\\n                        | aligned, but got 8 bytes\\n  ----------------------+--------------------------------------------------------------\\n\\n  Full details: build_output/_jit_entry_20261109_032234_1229fet5/next_levels/norm/report/codegen_errors.txt')"
+    }
+  ],
+  "artifact_directories": {
+    "gdn_qkv/native": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032215_c0j0fx83",
+    "gdn_qkv/n64": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032216_5xrhdwos",
+    "gdn_qkv/n128": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032216_r7zh7_fm",
+    "gdn_z/native": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032220__uynml7r",
+    "gdn_z/n64": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032221_htfa8taz",
+    "gdn_z/n128": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032221_te2m27aj",
+    "gdn_ab/native": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032222_dugfk6c1",
+    "gdn_ab/n64": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032222_jwg1shrl",
+    "gdn_ab/n128": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032223_193blue1",
+    "attention_o/native": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032227_w1y_tq8e",
+    "attention_o/n64": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032227_4axlxs8y",
+    "attention_o/n128": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032228_t3_5kos1",
+    "full_q/native": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032230_8ivayzdn",
+    "full_q/n64": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032231_hml2lmrg",
+    "full_q/n128": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032231_wukdjw_w",
+    "full_kv/native": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032232_pgo33587",
+    "full_kv/n64": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032232__zr6jble",
+    "full_kv/n128": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032233_wn3n_uca",
+    "norm/native": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/work/build_output/_jit_entry_20261109_032233_cyqxxkfq"
+  },
+  "npu_execution": true
+}

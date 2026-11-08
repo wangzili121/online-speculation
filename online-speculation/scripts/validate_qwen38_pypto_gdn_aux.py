@@ -18,6 +18,7 @@ def main():
     p.add_argument("--device", type=int, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--repeats", type=int, default=30)
+    p.add_argument("--rows", type=int, choices=(16, 32), default=16)
     p.add_argument("--components", nargs="+", choices=("gates", "tail", "conv"), default=["gates", "tail", "conv"])
     a = p.parse_args()
     if a.output.exists() or a.device < 0 or a.repeats < 3 or len(set(a.components)) != len(a.components):
@@ -33,7 +34,7 @@ def main():
     from blockspec.pypto_qwen38.gdn import convolution_golden
     from summarize_qwen38_pypto_profile import summarize
 
-    report = dict(passed=False, scope="gdn_auxiliary_only", cases=[], runtime=runtime_identity(pypto))
+    report = dict(passed=False, scope="gdn_auxiliary_only", rows=a.rows, cases=[], runtime=runtime_identity(pypto))
     worker, handles = None, []
     try:
         torch.set_num_threads(4)
@@ -43,19 +44,23 @@ def main():
             raise RuntimeError("real NPU required")
         gen = torch.Generator().manual_seed(211)
         rand = lambda shape, scale=1.: (torch.randn(shape, generator=gen) * scale).bfloat16().share_memory_()
-        av, bv = rand((16, 128)), rand((16, 128))
+        T = a.rows
+        av, bv = rand((T, 128)), rand((T, 128))
         al, dt = rand((1, 64), .2).float().share_memory_(), rand((1, 64), .2)
-        decay, beta = [torch.empty((16, 48)).share_memory_() for _ in range(2)]
-        core, z, nw, ow = rand((16, 48, 128)), rand((16, 6144)), rand((1, 128), .2), rand((5120, 6144), .01)
-        gated, attention = rand((768, 128)), rand((16, 5120))
+        decay, beta = [torch.empty((T, 48)).share_memory_() for _ in range(2)]
+        core, z, nw, ow = rand((T, 48, 128)), rand((T, 6144)), rand((1, 128), .2), rand((5120, 6144), .01)
+        gated, attention = rand((T * 48, 128)), rand((T, 5120))
         projected, cw, history, convolved = rand((32, 10240)), rand((4, 10240), .1), rand((4, 10240)), rand((32, 10240))
         groups = dict(gates=[av, bv, al, dt, decay, beta], tail=[core, z, nw, ow, gated, attention],
                       conv=[projected, cw, history, convolved])
         groups = {name: groups[name] for name in a.components}
         outputs_per_group = dict(gates=2, tail=2, conv=1)
         programs = {}
-        for backend in ("native", "fused"):
-            for name, entry in make_auxiliary_entries(a.source, backend=backend).items():
+        # 原生辅助函数固定 16 行；32 行入口独立对照 Torch，而非伪造原生标签。
+        backends = ("native", "fused") if T == 16 else ("fused",)
+        report["backends"] = backends
+        for backend in backends:
+            for name, entry in make_auxiliary_entries(a.source, backend=backend, rows=T).items():
                 if name not in groups:
                     continue
                 print(f"compiling {name} {backend}", flush=True)
@@ -78,11 +83,11 @@ def main():
             # 保留中间 BF16 舍入，参考不调用待测 PyPTO 实现。
             gref = -al[:, :48].exp() * torch.log1p((av[:, :48].float() + dt[:, :48].float()).exp())
             bref = bv[:, :48].float().sigmoid().bfloat16().float()
-            x = core.float().reshape(768, 128)
+            x = core.float().reshape(T * 48, 128)
             normalized = (x * (x.square().mean(-1, keepdim=True) + 1e-6).rsqrt()).bfloat16()
             weighted = (normalized.float() * nw.float()).bfloat16()
-            gated_ref = (weighted.float() * torch.nn.functional.silu(z.float().reshape(768, 128))).bfloat16()
-            attn_ref = gated_ref.reshape(16, 6144) @ ow.T
+            gated_ref = (weighted.float() * torch.nn.functional.silu(z.float().reshape(T * 48, 128))).bfloat16()
+            attn_ref = gated_ref.reshape(T, 6144) @ ow.T
             refs = dict(gates=[gref, bref], tail=[gated_ref, attn_ref],
                         conv=[convolution_golden(projected, cw, history)])
             for name, group in groups.items():
@@ -90,16 +95,16 @@ def main():
                 for t, handle in zip(group[:-count], device[name][:-count], strict=True):
                     worker.copy_to(handle.data_ptr, t.data_ptr(), t.numel() * t.element_size())
                 timings, outputs = {}, {}
-                for backend in ("native", "fused"):
+                for backend in backends:
                     timings[backend] = []
                     for _ in range(5):
                         worker.run(programs[name, backend], *device[name], config=config)
                 for repeat in range(a.repeats):
-                    for backend in (("native", "fused") if repeat % 2 == 0 else ("fused", "native")):
+                    for backend in (backends if repeat % 2 == 0 else tuple(reversed(backends))):
                         start = time.perf_counter()
                         worker.run(programs[name, backend], *device[name], config=config)
                         timings[backend].append(time.perf_counter() - start)
-                for backend in ("native", "fused"):
+                for backend in backends:
                     program = programs[name, backend]
                     worker.run(program, *device[name], config=config)
                     for t, handle in zip(group[-count:], device[name][-count:], strict=True):
@@ -128,7 +133,7 @@ def main():
                                device_profiles=profiles, inputs_byte_exact=True)
                     report["cases"].append(row)
                     print(json.dumps(row), flush=True)
-                if any(not torch.equal(x, y) for x, y in zip(outputs["native"], outputs["fused"], strict=True)):
+                if "native" in outputs and any(not torch.equal(x, y) for x, y in zip(outputs["native"], outputs["fused"], strict=True)):
                     raise AssertionError("auxiliary fusion changed native rounded results")
         report["passed"] = True
     except BaseException as error:

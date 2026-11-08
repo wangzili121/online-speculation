@@ -3,12 +3,18 @@
 from .baseline import native_module
 
 
-def make_auxiliary(source, *, backend="fused"):
+def make_auxiliary(source, *, backend="fused", rows=16):
     if backend not in {"native", "fused"}:
         raise ValueError("auxiliary backend must be native or fused")
+    if type(rows) is not int or rows not in {16, 32} or rows == 32 and backend == "native":
+        raise ValueError("rows must be 16 or 32; native reference uses 16 rows")
     import pypto.language as pl
     model = native_module(source, "model")
     linear = model.linear_hidden_projection_inline
+    T, FLAT = rows, rows * 48
+    if rows == 32:
+        from .projection_programs import make_projection
+        linear, _ = make_projection(source, 6144, 5120)
 
     @pl.jit.inline
     def padded_gates(a: pl.Tensor, b: pl.Tensor, a_log: pl.Tensor, dt_bias: pl.Tensor,
@@ -40,26 +46,26 @@ def make_auxiliary(source, *, backend="fused"):
     def fused_gates(a: pl.Tensor, b: pl.Tensor, a_log: pl.Tensor, dt_bias: pl.Tensor,
                     decay: pl.Tensor, beta: pl.Tensor):
         with pl.spmd(1, name_hint="orthrus_gdn_compact_gates"):
-            row = pl.tile.get_block_idx() * 16
-            av = pl.cast(pl.slice(a, [16, 64], [row, 0]), pl.FP32)
-            bv = pl.cast(pl.slice(b, [16, 64], [row, 0]), pl.FP32)
+            row = pl.tile.get_block_idx() * T
+            av = pl.cast(pl.slice(a, [T, 64], [row, 0]), pl.FP32)
+            bv = pl.cast(pl.slice(b, [T, 64], [row, 0]), pl.FP32)
             bias = pl.cast(pl.slice(dt_bias, [1, 64], [0, 0]), pl.FP32)
             parameter = pl.slice(a_log, [1, 64], [0, 0])
             softplus = pl.log(pl.add(pl.exp(pl.col_expand_add(av, bias)), 1.))
             g = pl.mul(pl.col_expand_mul(softplus, pl.exp(parameter)), -1.)
             # beta 必须保留原生 sigmoid 的 BF16 舍入，再转 FP32 给递推。
             b16 = pl.cast(pl.recip(pl.add(pl.exp(pl.neg(bv)), 1.)), pl.BF16, mode="rint")
-            decay[0:16, 0:48] = pl.slice(g, [16, 48], [0, 0])
-            beta[0:16, 0:48] = pl.cast(pl.slice(b16, [16, 48], [0, 0]), pl.FP32)
+            decay[0:T, 0:48] = pl.slice(g, [T, 48], [0, 0])
+            beta[0:T, 0:48] = pl.cast(pl.slice(b16, [T, 48], [0, 0]), pl.FP32)
         return decay, beta
 
     @pl.jit.inline
     def fused_tail(core: pl.Tensor, z: pl.Tensor, norm_weight: pl.Tensor, out_weight: pl.Tensor,
                    gated: pl.Tensor, attention: pl.Tensor):
-        # Z 本来就是连续的 [16,48*128]，reshape 即可，不需要逐 head 复制。
-        zr = pl.reshape(z, [768, 128])
-        cr = pl.reshape(core, [768, 128])
-        with pl.spmd(48, name_hint="orthrus_gdn_gated_norm"):
+        # Z 本来就是连续的 [T,48*128]，reshape 即可，不需要逐 head 复制。
+        zr = pl.reshape(z, [FLAT, 128])
+        cr = pl.reshape(core, [FLAT, 128])
+        with pl.spmd(FLAT // 16, name_hint="orthrus_gdn_gated_norm"):
             row = pl.tile.get_block_idx() * 16
             x = pl.cast(pl.slice(cr, [16, 128], [row, 0]), pl.FP32)
             gate = pl.cast(pl.slice(zr, [16, 128], [row, 0]), pl.FP32)
@@ -70,7 +76,7 @@ def make_auxiliary(source, *, backend="fused"):
             weighted = pl.cast(pl.col_expand_mul(pl.cast(normalized, pl.FP32), weight), pl.BF16, mode="rint")
             silu = pl.div(gate, pl.add(pl.exp(pl.neg(gate)), 1.))
             gated[row:row + 16, 0:128] = pl.cast(pl.mul(pl.cast(weighted, pl.FP32), silu), pl.BF16, mode="rint")
-        projection = pl.reshape(gated, [16, 6144])
+        projection = pl.reshape(gated, [T, 6144])
         attention = linear(projection, out_weight, attention)
         return gated, attention
 
@@ -79,8 +85,8 @@ def make_auxiliary(source, *, backend="fused"):
     return gates, tail
 
 
-def make_auxiliary_entries(source, *, backend="fused"):
-    gates, tail = make_auxiliary(source, backend=backend)
+def make_auxiliary_entries(source, *, backend="fused", rows=16):
+    gates, tail = make_auxiliary(source, backend=backend, rows=rows)
     from .gdn_convolution_programs import make_convolution
     convolution = make_convolution(source, backend=backend)
     import pypto.language as pl

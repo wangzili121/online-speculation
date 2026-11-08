@@ -76,6 +76,26 @@ HTTP completion、chat、SSE、后端配置与正常退出通过；三种 Attent
 
 取消最终矩阵回写的独立候选仅将递推窗口从 200.50 降至 198.74 μs，约 0.9%；当前保留输出完整状态的统一契约，不将此候选接入模型。原始结果、实验源码和重复时间线见 `validation/pypto-qwen38/kernel-optimization-20261109/`。
 
+## K32 投影和输入归一化
+
+`projection_programs.py` 为 draft 提供整块投影与 RMSNorm。投影一次处理 32 行，保持原生 K512 的 FP32 累加顺序，避免两段 16 行重复读取同一权重；宽投影选 N128，小投影选 N64。归一化将一行划成八段后计算整行均方，分段仅用于满足 A2 tile 对齐，不改变归一化范围。
+
+独立入口对六种实际投影形状、两组输入和三个 RMSNorm 入口共执行 42 项检查，全部通过；投影与原生逐字节相同。归一化因归约顺序不同存在 BF16 舍入差异，使用原定 `rtol=.02, atol=.002` 检查 Torch 参考。输入和参数逐字节不变。
+
+| 计算段，32 个位置 | 原生 16+16 设备窗口 | K32 设备窗口 |
+| --- | --- | --- |
+| GDN QKV 投影 | 134.72 μs | 73.48 μs |
+| GDN Z 投影 | 86.18 μs | 45.88 μs |
+| GDN A/B 单个投影 | 12.84 μs | 9.38 μs |
+| O projection | 76.42 μs | 36.50 μs |
+| Full Attention Q 投影 | 164.80 μs | 88.34 μs |
+| Full Attention K/V 单个投影 | 18.10 μs | 11.52 μs |
+| 输入 RMSNorm | 31.82 μs | 7.06 μs |
+
+每项预热五次、交错计时 50 次，设备窗口另采五次取中位数。这里是独立阶段的结果，整层和整网收益另行对照。32 行 gate 与 gated norm/O projection 也通过六项 Torch 检查。最终 packed 递推重新比较 value 分块 16/32/64，K32 窗口约为 327/231/201 μs，因此保留 64。
+
+结果、实验源码及 345 份重复时间线在 `validation/pypto-qwen38/projection-kernels-20261109/`；N256 宽投影超出 A2 片上内存，未纳入可用接口。
+
 ## 运行
 
 使用 [固定环境](QWEN38_PYPTO_PORT.md#固定基线)，在 `online-speculation/` 下执行：
@@ -87,3 +107,11 @@ python scripts/validate_qwen38_pypto_gdn.py \
 ```
 
 所有参数驻留设备后开始计时，不需要加载完整 27B 或训练好的 head。该入口显式要求 ONBOARD，不能把模拟器结果作为 NPU 性能。
+
+投影和输入 RMSNorm 的独立验收：
+
+```bash
+python scripts/validate_qwen38_pypto_projection.py \
+  --source /sources/OneServing --device 0 --repeats 50 \
+  --output /results/projection.json
+```
