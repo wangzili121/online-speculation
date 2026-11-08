@@ -18,8 +18,10 @@ def main():
     p.add_argument("--device", type=int, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--repeats", type=int, default=50)
+    p.add_argument("--components", nargs="+", choices=("gdn_qkv", "gdn_z", "gdn_ab", "attention_o", "full_q", "full_kv", "mlp_up", "mlp_down", "norm"),
+                   default=["gdn_qkv", "gdn_z", "gdn_ab", "attention_o", "full_q", "full_kv", "mlp_up", "mlp_down", "norm"])
     a = p.parse_args()
-    if a.output.exists() or a.device < 0 or a.repeats < 3:
+    if a.output.exists() or a.device < 0 or a.repeats < 3 or len(set(a.components)) != len(a.components):
         p.error("new output, assigned device and at least three repetitions required")
     logging.getLogger("simpler").setLevel(logging.WARNING)
     import torch
@@ -42,9 +44,12 @@ def main():
         gen = torch.Generator().manual_seed(233)
         rand = lambda shape, scale=.5: (torch.randn(shape, generator=gen) * scale).bfloat16().share_memory_()
         shapes = dict(gdn_qkv=(5120, 10240), gdn_z=(5120, 6144), gdn_ab=(5120, 128),
-                      attention_o=(6144, 5120), full_q=(5120, 12288), full_kv=(5120, 1024))
+                      attention_o=(6144, 5120), full_q=(5120, 12288), full_kv=(5120, 1024),
+                      mlp_up=(5120, 17408), mlp_down=(17408, 5120))
         groups, programs = {}, {}
         for name, (inputs, outputs) in shapes.items():
+            if name not in a.components:
+                continue
             x, w, y = rand((32, inputs)), rand((outputs, inputs), .02), rand((32, outputs))
             groups[name] = [x, w, y]
             candidates = {"native": dict(native=True)}
@@ -55,13 +60,14 @@ def main():
                 program = make_projection(a.source, inputs, outputs, **options)[1].compile(*groups[name], config=config)
                 programs[name][backend] = program
                 report["artifact_directories"][name + "/" + backend] = str(program.output_dir)
-        groups["norm"] = [rand((32, 5120)), (1 + rand((1, 5120), .2).float()).share_memory_(), rand((32, 5120))]
-        programs["norm"] = {}
-        for backend, options in dict(native=dict(native=True), rows1=dict(row_tile=1), rows2=dict(row_tile=2)).items():
-            print("compiling norm", backend, flush=True)
-            program = make_norm(a.source, **options)[1].compile(*groups["norm"], config=config)
-            programs["norm"][backend] = program
-            report["artifact_directories"]["norm/" + backend] = str(program.output_dir)
+        if "norm" in a.components:
+            groups["norm"] = [rand((32, 5120)), (1 + rand((1, 5120), .2).float()).share_memory_(), rand((32, 5120))]
+            programs["norm"] = {}
+            for backend, options in dict(native=dict(native=True), rows1=dict(row_tile=1), rows2=dict(row_tile=2)).items():
+                print("compiling norm", backend, flush=True)
+                program = make_norm(a.source, **options)[1].compile(*groups["norm"], config=config)
+                programs["norm"][backend] = program
+                report["artifact_directories"]["norm/" + backend] = str(program.output_dir)
         all_tensors = [t for group in groups.values() for t in group]
         worker = DistributedWorker([p for group in programs.values() for p in group.values()],
                                    config=config, inherited_host_tensors=all_tensors)

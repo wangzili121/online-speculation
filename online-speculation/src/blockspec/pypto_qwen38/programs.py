@@ -1,8 +1,8 @@
 """Draft orchestration built from the pinned model's existing PyPTO primitives.
 
-The native primitives operate on 16 rows. A K32 layer therefore prepares both
-halves before full attention, rather than finishing the first half's network
-before the second half exists. No target cache is an output of these graphs.
+The native comparison path operates on 16 rows; the optimized paths prepare
+and project K32 directly. Full attention sees all active block K/V before it
+runs. No target cache is an output of these graphs.
 """
 
 from .baseline import native_module
@@ -143,9 +143,12 @@ def make_programs(source, *, attention_backend="native", group_size=1, gdn_backe
             result[row:row + 16, 0:5120] = following
         return result
 
+    if gdn_backend == "vector" or attention_backend == "paged":
+        from .shared_programs import make_shared_tail
+        shared_block = make_shared_tail(source)
     if gdn_backend == "vector":
         from .gdn_block_programs import make_block_layer
-        gdn = make_block_layer(source, shared_tail)
+        gdn = make_block_layer(source, shared_block)
 
     @pl.jit
     def full_prepare(hidden: pl.Tensor, input_gamma: pl.Tensor,
@@ -175,6 +178,10 @@ def make_programs(source, *, attention_backend="native", group_size=1, gdn_backe
             value[row:row + 16, 0:1024] = val
             gate[row:row + 16, 0:6144] = gating
         return query, key, value, gate
+
+    if attention_backend == "paged":
+        from .full_preparation_programs import make_prepare
+        full_prepare = make_prepare(source)
 
     @pl.jit
     def native_full(hidden: pl.Tensor, post_gamma: pl.Tensor,
@@ -257,6 +264,9 @@ def make_programs(source, *, attention_backend="native", group_size=1, gdn_backe
             return result
 
         full = fused_full
+        if attention_backend == "paged":
+            from .full_preparation_programs import make_post
+            full = make_post(source, paged, shared_block)
 
     @pl.jit
     def finish(hidden: pl.Tensor, gamma: pl.Tensor, weight: pl.Tensor, logits: pl.Out[pl.Tensor]):

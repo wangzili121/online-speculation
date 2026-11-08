@@ -1,0 +1,1361 @@
+{
+  "passed": true,
+  "scope": "same_worker_real_27b_gdn_comparison",
+  "rounds": [
+    {
+      "backend": "full32",
+      "round": 0,
+      "seconds": 1.3640737649984658,
+      "phases": {
+        "device_seconds": 0.15882834885269403,
+        "weights_seconds": 1.188221181742847,
+        "compute_dispatches": 66,
+        "inputs_seconds": 0.004618190228939056,
+        "embedding_seconds": 0.0013473858125507832,
+        "gdn_seconds": 0.11243885941803455,
+        "full_layer_seconds": 0.04053914360702038,
+        "finish_seconds": 0.00450296001508832,
+        "readback_seconds": 0.0023817410692572594,
+        "select_seconds": 0.009155130945146084,
+        "total_seconds": 1.3640737649984658
+      }
+    },
+    {
+      "backend": "full16",
+      "round": 0,
+      "seconds": 1.361666854005307,
+      "phases": {
+        "device_seconds": 0.16111567802727222,
+        "weights_seconds": 1.183324535842985,
+        "compute_dispatches": 66,
+        "inputs_seconds": 0.004708811175078154,
+        "embedding_seconds": 0.001495766919106245,
+        "gdn_seconds": 0.11202015820890665,
+        "full_layer_seconds": 0.042675781063735485,
+        "finish_seconds": 0.004923971835523844,
+        "readback_seconds": 0.0023760111071169376,
+        "select_seconds": 0.009304590988904238,
+        "total_seconds": 1.361666854005307
+      }
+    },
+    {
+      "backend": "full16",
+      "round": 1,
+      "seconds": 1.3523324131965637,
+      "phases": {
+        "device_seconds": 0.15742849465459585,
+        "weights_seconds": 1.1778276786208153,
+        "compute_dispatches": 66,
+        "inputs_seconds": 0.00480249198153615,
+        "embedding_seconds": 0.001515476033091545,
+        "gdn_seconds": 0.1093289814889431,
+        "full_layer_seconds": 0.041424574330449104,
+        "finish_seconds": 0.0051594628021121025,
+        "readback_seconds": 0.002345641143620014,
+        "select_seconds": 0.009162301197648048,
+        "total_seconds": 1.3523324131965637
+      }
+    },
+    {
+      "backend": "full32",
+      "round": 1,
+      "seconds": 1.3505114247091115,
+      "phases": {
+        "device_seconds": 0.1587035614065826,
+        "weights_seconds": 1.1748769194819033,
+        "compute_dispatches": 66,
+        "inputs_seconds": 0.00482034171000123,
+        "embedding_seconds": 0.0014943568967282772,
+        "gdn_seconds": 0.11142891831696033,
+        "full_layer_seconds": 0.04071811446920037,
+        "finish_seconds": 0.005062171723693609,
+        "readback_seconds": 0.002389871049672365,
+        "select_seconds": 0.008887540083378553,
+        "total_seconds": 1.3505114247091115
+      }
+    }
+  ],
+  "runtime": {
+    "pypto": "98752784548b777b2377a9084411c3716eb341d6",
+    "simpler": "c1f89ea431f5306f78c0e4ab9573c829756d7f1e",
+    "pto_isa": "418de18dde8fa33773dc5c384fdfe5506463b628",
+    "ptoas": "0.65",
+    "ptoas_executable_version": "0.65"
+  },
+  "group_size": 1,
+  "profiles": {
+    "full32": [],
+    "full16": []
+  },
+  "startup_seconds": 251.4588123173453,
+  "head_sha256": "9c1d292e1eb2c1a5f1329e2af5b82300f3166cb2d9071c002e580aeb66eb59b7",
+  "head_manifest": {
+    "format": "orthrus-qwen38-native-tp-v1",
+    "base_config_sha256": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+    "base_index_sha256": "77042094076611b69791a610065f28b7013b8c621795fa86ddccc8bac7d1b9df",
+    "tp_size": 4,
+    "block_size": 32,
+    "mask_token_id": 1,
+    "hybrid_policy": "orthrus_qwen35_reference"
+  },
+  "head_storage": "stream",
+  "initial_history_sha256": "f0aa9e17470c209d661a7bf01cd6a51deb5af34b6bded5b345f3504e8e3ade03",
+  "microbench_layer3": {
+    "full32": {
+      "wall_samples_seconds": [
+        0.002334481105208397,
+        0.0023378999903798103,
+        0.0023020701482892036,
+        0.0023103300482034683,
+        0.0023065200075507164,
+        0.0023017404600977898,
+        0.0022792010568082333,
+        0.0022831098176538944,
+        0.00228734128177166,
+        0.002295849844813347,
+        0.002292680088430643,
+        0.002292579971253872,
+        0.002268330194056034,
+        0.0023129298351705074,
+        0.0022824499756097794,
+        0.0022814003750681877,
+        0.0022972803562879562,
+        0.002283710055053234,
+        0.002275689970701933,
+        0.0022861999459564686,
+        0.0022931708954274654,
+        0.0022850600071251392,
+        0.002306140959262848,
+        0.0022875401191413403,
+        0.0022813202813267708,
+        0.002319609746336937,
+        0.0023059812374413013,
+        0.002311381045728922,
+        0.002281260211020708,
+        0.0022912812419235706,
+        0.0022866795770823956,
+        0.002290199976414442,
+        0.002278850879520178,
+        0.0022856099531054497,
+        0.0022749407216906548,
+        0.002286899834871292,
+        0.002295081038028002,
+        0.0022847000509500504,
+        0.0023060510866343975,
+        0.002275800332427025,
+        0.0022903303615748882,
+        0.002401490695774555,
+        0.002281390130519867,
+        0.0023024198599159718,
+        0.0022840197198092937,
+        0.0022880700416862965,
+        0.002297051250934601,
+        0.0022842399775981903,
+        0.002293400000780821,
+        0.0022846697829663754
+      ],
+      "wall_median_seconds": 0.0022891350090503693,
+      "profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/full-preparation32-isolation/layer3-full32-0.json",
+          "sha256": "a8a0f9229f84b4a895b43a4ac772408bdbdc4d36d23e1cab20b7ef4793faa763",
+          "device_task_window_us": 722.78,
+          "run_epoch": 264,
+          "block_records": 1361,
+          "tasks": {
+            "orthrus_projection32_aic_spmd": {
+              "blocks": 40,
+              "min_us": 27.940000000000005,
+              "median_us": 30.38,
+              "max_us": 32.900000000000006
+            },
+            "orthrus_projection32_aiv_spmd": {
+              "blocks": 80,
+              "min_us": 27.560000000000002,
+              "median_us": 30.369999999999997,
+              "max_us": 33.2
+            },
+            "orthrus_residual32_spmd": {
+              "blocks": 32,
+              "min_us": 1.9799999999999898,
+              "median_us": 2.990000000000002,
+              "max_us": 5.11999999999999
+            },
+            "orthrus_input_norm32_spmd": {
+              "blocks": 32,
+              "min_us": 3.9599999999999937,
+              "median_us": 5.82,
+              "max_us": 7.259999999999991
+            },
+            "orthrus_projection32_0_aic_spmd": {
+              "blocks": 136,
+              "min_us": 20.80000000000001,
+              "median_us": 24.879999999999995,
+              "max_us": 29.5
+            },
+            "orthrus_projection32_0_aiv_spmd": {
+              "blocks": 272,
+              "min_us": 20.879999999999995,
+              "median_us": 24.879999999999995,
+              "max_us": 29.460000000000008
+            },
+            "orthrus_projection32_1_aic_spmd": {
+              "blocks": 136,
+              "min_us": 22.920000000000016,
+              "median_us": 25.590000000000018,
+              "max_us": 31.160000000000025
+            },
+            "orthrus_projection32_1_aiv_spmd": {
+              "blocks": 272,
+              "min_us": 21.680000000000007,
+              "median_us": 25.66000000000001,
+              "max_us": 31.180000000000007
+            },
+            "orthrus_swiglu32_spmd": {
+              "blocks": 136,
+              "min_us": 2.0799999999999272,
+              "median_us": 4.190000000000055,
+              "max_us": 10.519999999999982
+            },
+            "orthrus_projection32_2_aic_spmd": {
+              "blocks": 40,
+              "min_us": 76.0,
+              "median_us": 79.11000000000001,
+              "max_us": 89.38
+            },
+            "orthrus_projection32_2_aiv_spmd": {
+              "blocks": 80,
+              "min_us": 75.80000000000007,
+              "median_us": 79.03999999999996,
+              "max_us": 89.34000000000003
+            },
+            "orthrus_residual32_0_spmd": {
+              "blocks": 32,
+              "min_us": 2.0,
+              "median_us": 3.349999999999966,
+              "max_us": 5.099999999999909
+            },
+            "orthrus_l1_zero_source": {
+              "blocks": 1,
+              "min_us": 2.0,
+              "median_us": 2.0,
+              "max_us": 2.0
+            },
+            "orthrus_direct_paged_attention_aic_spmd": {
+              "blocks": 24,
+              "min_us": 6.939999999999998,
+              "median_us": 9.330000000000002,
+              "max_us": 11.1
+            },
+            "orthrus_direct_paged_attention_aiv_spmd": {
+              "blocks": 48,
+              "min_us": 6.300000000000001,
+              "median_us": 10.04,
+              "max_us": 13.059999999999999
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/full-preparation32-isolation/layer3-full32-1.json",
+          "sha256": "e2b2835f8f4251213d4958a6b1a6a7040c3f023075adaadc8b1d460ce29d5ab2",
+          "device_task_window_us": 718.5600000000001,
+          "run_epoch": 268,
+          "block_records": 1361,
+          "tasks": {
+            "func_9_j_spmd": {
+              "blocks": 40,
+              "min_us": 28.320000000000007,
+              "median_us": 31.450000000000003,
+              "max_us": 33.1
+            },
+            "func_10_k_spmd": {
+              "blocks": 80,
+              "min_us": 28.319999999999993,
+              "median_us": 31.42,
+              "max_us": 33.059999999999995
+            },
+            "func_11_l_spmd": {
+              "blocks": 32,
+              "min_us": 2.019999999999996,
+              "median_us": 2.8999999999999986,
+              "max_us": 5.280000000000001
+            },
+            "func_12_m_spmd": {
+              "blocks": 32,
+              "min_us": 3.259999999999991,
+              "median_us": 5.339999999999996,
+              "max_us": 6.760000000000005
+            },
+            "func_13_n_spmd": {
+              "blocks": 136,
+              "min_us": 21.379999999999995,
+              "median_us": 23.870000000000005,
+              "max_us": 29.75999999999999
+            },
+            "func_14_o_spmd": {
+              "blocks": 272,
+              "min_us": 21.379999999999995,
+              "median_us": 23.94999999999999,
+              "max_us": 29.819999999999993
+            },
+            "func_15_p_spmd": {
+              "blocks": 136,
+              "min_us": 22.019999999999982,
+              "median_us": 24.97999999999999,
+              "max_us": 29.69999999999996
+            },
+            "func_16_q_spmd": {
+              "blocks": 272,
+              "min_us": 21.900000000000034,
+              "median_us": 24.94999999999999,
+              "max_us": 29.619999999999976
+            },
+            "func_17_r_spmd": {
+              "blocks": 136,
+              "min_us": 2.019999999999982,
+              "median_us": 4.020000000000039,
+              "max_us": 11.180000000000007
+            },
+            "func_18_s_spmd": {
+              "blocks": 40,
+              "min_us": 75.72000000000003,
+              "median_us": 79.94,
+              "max_us": 88.82000000000005
+            },
+            "func_19_t_spmd": {
+              "blocks": 80,
+              "min_us": 75.5,
+              "median_us": 79.98999999999995,
+              "max_us": 88.89999999999998
+            },
+            "func_20_u_spmd": {
+              "blocks": 32,
+              "min_us": 1.7999999999999545,
+              "median_us": 2.8099999999999454,
+              "max_us": 4.540000000000077
+            },
+            "func_0_a": {
+              "blocks": 1,
+              "min_us": 2.02,
+              "median_us": 2.02,
+              "max_us": 2.02
+            },
+            "func_1_b_spmd": {
+              "blocks": 24,
+              "min_us": 6.919999999999998,
+              "median_us": 12.280000000000001,
+              "max_us": 14.180000000000003
+            },
+            "func_2_c_spmd": {
+              "blocks": 48,
+              "min_us": 6.420000000000002,
+              "median_us": 12.85,
+              "max_us": 16.220000000000002
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/full-preparation32-isolation/layer3-full32-2.json",
+          "sha256": "259a93f64667c20436f57c177c723415b0ded8400815a4b69992e0e767b8a987",
+          "device_task_window_us": 721.58,
+          "run_epoch": 272,
+          "block_records": 1361,
+          "tasks": {
+            "func_9_j_spmd": {
+              "blocks": 40,
+              "min_us": 28.700000000000003,
+              "median_us": 31.009999999999998,
+              "max_us": 34.56
+            },
+            "func_10_k_spmd": {
+              "blocks": 80,
+              "min_us": 28.700000000000003,
+              "median_us": 30.980000000000004,
+              "max_us": 34.58
+            },
+            "func_11_l_spmd": {
+              "blocks": 32,
+              "min_us": 1.9399999999999977,
+              "median_us": 2.759999999999998,
+              "max_us": 4.060000000000002
+            },
+            "func_12_m_spmd": {
+              "blocks": 32,
+              "min_us": 3.3599999999999994,
+              "median_us": 4.579999999999998,
+              "max_us": 6.819999999999993
+            },
+            "func_13_n_spmd": {
+              "blocks": 136,
+              "min_us": 20.619999999999948,
+              "median_us": 24.889999999999986,
+              "max_us": 28.180000000000007
+            },
+            "func_14_o_spmd": {
+              "blocks": 272,
+              "min_us": 20.560000000000002,
+              "median_us": 24.870000000000005,
+              "max_us": 28.180000000000007
+            },
+            "func_15_p_spmd": {
+              "blocks": 136,
+              "min_us": 22.71999999999997,
+              "median_us": 25.04000000000002,
+              "max_us": 30.78
+            },
+            "func_16_q_spmd": {
+              "blocks": 272,
+              "min_us": 22.680000000000007,
+              "median_us": 25.05000000000001,
+              "max_us": 30.840000000000003
+            },
+            "func_17_r_spmd": {
+              "blocks": 136,
+              "min_us": 1.9800000000000182,
+              "median_us": 3.5,
+              "max_us": 10.739999999999952
+            },
+            "func_18_s_spmd": {
+              "blocks": 40,
+              "min_us": 73.74000000000001,
+              "median_us": 77.69,
+              "max_us": 92.68000000000006
+            },
+            "func_19_t_spmd": {
+              "blocks": 80,
+              "min_us": 73.65999999999997,
+              "median_us": 77.75,
+              "max_us": 92.75999999999999
+            },
+            "func_20_u_spmd": {
+              "blocks": 32,
+              "min_us": 2.060000000000059,
+              "median_us": 3.0300000000000296,
+              "max_us": 3.840000000000032
+            },
+            "func_0_a": {
+              "blocks": 1,
+              "min_us": 1.98,
+              "median_us": 1.98,
+              "max_us": 1.98
+            },
+            "func_1_b_spmd": {
+              "blocks": 24,
+              "min_us": 6.940000000000001,
+              "median_us": 11.75,
+              "max_us": 13.52
+            },
+            "func_2_c_spmd": {
+              "blocks": 48,
+              "min_us": 6.239999999999998,
+              "median_us": 12.530000000000001,
+              "max_us": 15.54
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/full-preparation32-isolation/layer3-full32-3.json",
+          "sha256": "9ec259b5ed2308bdfa81d0369c1fa9db36c5298686705b4dfa9b345e7963fcd7",
+          "device_task_window_us": 721.46,
+          "run_epoch": 276,
+          "block_records": 1361,
+          "tasks": {
+            "func_9_j_spmd": {
+              "blocks": 40,
+              "min_us": 28.46,
+              "median_us": 30.340000000000003,
+              "max_us": 33.7
+            },
+            "func_10_k_spmd": {
+              "blocks": 80,
+              "min_us": 28.04,
+              "median_us": 30.180000000000003,
+              "max_us": 33.86000000000001
+            },
+            "func_11_l_spmd": {
+              "blocks": 32,
+              "min_us": 1.8599999999999994,
+              "median_us": 2.730000000000004,
+              "max_us": 3.8599999999999994
+            },
+            "func_12_m_spmd": {
+              "blocks": 32,
+              "min_us": 3.1599999999999966,
+              "median_us": 4.819999999999993,
+              "max_us": 6.280000000000001
+            },
+            "func_13_n_spmd": {
+              "blocks": 136,
+              "min_us": 22.659999999999968,
+              "median_us": 24.980000000000004,
+              "max_us": 29.099999999999966
+            },
+            "func_14_o_spmd": {
+              "blocks": 272,
+              "min_us": 22.660000000000025,
+              "median_us": 24.970000000000027,
+              "max_us": 29.139999999999986
+            },
+            "func_15_p_spmd": {
+              "blocks": 136,
+              "min_us": 20.80000000000001,
+              "median_us": 25.430000000000007,
+              "max_us": 32.31999999999999
+            },
+            "func_16_q_spmd": {
+              "blocks": 272,
+              "min_us": 20.80000000000001,
+              "median_us": 25.489999999999995,
+              "max_us": 32.28
+            },
+            "func_17_r_spmd": {
+              "blocks": 136,
+              "min_us": 2.0399999999999636,
+              "median_us": 4.209999999999951,
+              "max_us": 10.899999999999977
+            },
+            "func_18_s_spmd": {
+              "blocks": 40,
+              "min_us": 77.89999999999998,
+              "median_us": 80.70999999999998,
+              "max_us": 86.55999999999995
+            },
+            "func_19_t_spmd": {
+              "blocks": 80,
+              "min_us": 77.63999999999999,
+              "median_us": 80.57999999999998,
+              "max_us": 86.69999999999993
+            },
+            "func_20_u_spmd": {
+              "blocks": 32,
+              "min_us": 2.3199999999999363,
+              "median_us": 4.079999999999984,
+              "max_us": 5.460000000000036
+            },
+            "func_0_a": {
+              "blocks": 1,
+              "min_us": 2.02,
+              "median_us": 2.02,
+              "max_us": 2.02
+            },
+            "func_1_b_spmd": {
+              "blocks": 24,
+              "min_us": 6.82,
+              "median_us": 8.840000000000002,
+              "max_us": 10.16
+            },
+            "func_2_c_spmd": {
+              "blocks": 48,
+              "min_us": 6.600000000000001,
+              "median_us": 9.2,
+              "max_us": 12.080000000000002
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/full-preparation32-isolation/layer3-full32-4.json",
+          "sha256": "63a4fc71cf5ee387a6836ff0b150bf9d8417482e5eaa8ac2a15e4a463adb318c",
+          "device_task_window_us": 710.5600000000001,
+          "run_epoch": 280,
+          "block_records": 1361,
+          "tasks": {
+            "func_9_j_spmd": {
+              "blocks": 40,
+              "min_us": 29.86,
+              "median_us": 31.76,
+              "max_us": 34.84
+            },
+            "func_10_k_spmd": {
+              "blocks": 80,
+              "min_us": 29.439999999999998,
+              "median_us": 31.759999999999998,
+              "max_us": 34.86
+            },
+            "func_11_l_spmd": {
+              "blocks": 32,
+              "min_us": 2.4000000000000057,
+              "median_us": 3.700000000000003,
+              "max_us": 5.6000000000000085
+            },
+            "func_12_m_spmd": {
+              "blocks": 32,
+              "min_us": 3.039999999999992,
+              "median_us": 4.219999999999999,
+              "max_us": 5.659999999999997
+            },
+            "func_13_n_spmd": {
+              "blocks": 136,
+              "min_us": 20.819999999999993,
+              "median_us": 24.50999999999999,
+              "max_us": 28.900000000000006
+            },
+            "func_14_o_spmd": {
+              "blocks": 272,
+              "min_us": 20.860000000000014,
+              "median_us": 24.47999999999999,
+              "max_us": 28.840000000000003
+            },
+            "func_15_p_spmd": {
+              "blocks": 136,
+              "min_us": 22.319999999999993,
+              "median_us": 25.319999999999993,
+              "max_us": 31.08000000000004
+            },
+            "func_16_q_spmd": {
+              "blocks": 272,
+              "min_us": 22.360000000000014,
+              "median_us": 25.28,
+              "max_us": 31.19999999999999
+            },
+            "func_17_r_spmd": {
+              "blocks": 136,
+              "min_us": 1.900000000000091,
+              "median_us": 3.849999999999966,
+              "max_us": 7.960000000000036
+            },
+            "func_18_s_spmd": {
+              "blocks": 40,
+              "min_us": 72.65999999999997,
+              "median_us": 78.92000000000002,
+              "max_us": 91.13999999999999
+            },
+            "func_19_t_spmd": {
+              "blocks": 80,
+              "min_us": 72.0200000000001,
+              "median_us": 79.0,
+              "max_us": 91.10000000000002
+            },
+            "func_20_u_spmd": {
+              "blocks": 32,
+              "min_us": 2.080000000000041,
+              "median_us": 3.079999999999984,
+              "max_us": 4.740000000000009
+            },
+            "func_0_a": {
+              "blocks": 1,
+              "min_us": 1.94,
+              "median_us": 1.94,
+              "max_us": 1.94
+            },
+            "func_1_b_spmd": {
+              "blocks": 24,
+              "min_us": 6.68,
+              "median_us": 9.229999999999999,
+              "max_us": 11.700000000000003
+            },
+            "func_2_c_spmd": {
+              "blocks": 48,
+              "min_us": 6.280000000000001,
+              "median_us": 10.0,
+              "max_us": 13.560000000000002
+            }
+          }
+        }
+      ]
+    },
+    "full16": {
+      "wall_samples_seconds": [
+        0.0024366499856114388,
+        0.0024793720804154873,
+        0.0024055009707808495,
+        0.0023871813900768757,
+        0.002432140987366438,
+        0.00240628095343709,
+        0.002421639859676361,
+        0.0023889211006462574,
+        0.0023936303332448006,
+        0.002389920875430107,
+        0.00239113112911582,
+        0.0023892512544989586,
+        0.002400351222604513,
+        0.0023757913149893284,
+        0.0023702909238636494,
+        0.0024147708900272846,
+        0.002387880813330412,
+        0.0024210410192608833,
+        0.0023904009722173214,
+        0.002377730328589678,
+        0.002382799983024597,
+        0.00240120105445385,
+        0.0023869299329817295,
+        0.002407941035926342,
+        0.002389540895819664,
+        0.002426441293209791,
+        0.0024115899577736855,
+        0.002423000056296587,
+        0.0024238708429038525,
+        0.002375320065766573,
+        0.0023928312584757805,
+        0.00239393999800086,
+        0.0023816502653062344,
+        0.0024315211921930313,
+        0.002405680250376463,
+        0.0023969910107553005,
+        0.002427550032734871,
+        0.002393420785665512,
+        0.002389269880950451,
+        0.002401040866971016,
+        0.0023885411210358143,
+        0.002396451309323311,
+        0.0023961407132446766,
+        0.002388810273259878,
+        0.002396159805357456,
+        0.0024009509943425655,
+        0.0023775999434292316,
+        0.0023652310483157635,
+        0.002397150732576847,
+        0.0024179108440876007
+      ],
+      "wall_median_seconds": 0.0023961502593010664,
+      "profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/full-preparation32-isolation/layer3-full16-0.json",
+          "sha256": "bb2ba27c02adb66bd701cf911348cf57ff9637ffa088d5939246d1f0ffcb4579",
+          "device_task_window_us": 720.94,
+          "run_epoch": 284,
+          "block_records": 1361,
+          "tasks": {
+            "func_9_j_spmd": {
+              "blocks": 40,
+              "min_us": 27.120000000000005,
+              "median_us": 30.979999999999997,
+              "max_us": 33.040000000000006
+            },
+            "func_10_k_spmd": {
+              "blocks": 80,
+              "min_us": 27.060000000000002,
+              "median_us": 30.850000000000005,
+              "max_us": 33.08
+            },
+            "func_11_l_spmd": {
+              "blocks": 32,
+              "min_us": 1.8999999999999915,
+              "median_us": 2.8300000000000054,
+              "max_us": 5.260000000000005
+            },
+            "func_12_m_spmd": {
+              "blocks": 32,
+              "min_us": 2.9399999999999977,
+              "median_us": 5.1200000000000045,
+              "max_us": 7.460000000000008
+            },
+            "func_13_n_spmd": {
+              "blocks": 136,
+              "min_us": 21.899999999999977,
+              "median_us": 24.839999999999975,
+              "max_us": 29.74000000000001
+            },
+            "func_14_o_spmd": {
+              "blocks": 272,
+              "min_us": 21.720000000000027,
+              "median_us": 24.78,
+              "max_us": 29.78000000000003
+            },
+            "func_15_p_spmd": {
+              "blocks": 136,
+              "min_us": 23.5,
+              "median_us": 25.629999999999995,
+              "max_us": 30.78
+            },
+            "func_16_q_spmd": {
+              "blocks": 272,
+              "min_us": 23.22,
+              "median_us": 25.590000000000003,
+              "max_us": 30.839999999999975
+            },
+            "func_17_r_spmd": {
+              "blocks": 136,
+              "min_us": 2.0,
+              "median_us": 3.230000000000018,
+              "max_us": 7.899999999999977
+            },
+            "func_18_s_spmd": {
+              "blocks": 40,
+              "min_us": 73.75999999999999,
+              "median_us": 78.13,
+              "max_us": 92.17999999999995
+            },
+            "func_19_t_spmd": {
+              "blocks": 80,
+              "min_us": 73.74000000000001,
+              "median_us": 78.10000000000002,
+              "max_us": 92.12
+            },
+            "func_20_u_spmd": {
+              "blocks": 32,
+              "min_us": 2.4600000000000364,
+              "median_us": 3.75,
+              "max_us": 5.360000000000014
+            },
+            "func_0_a": {
+              "blocks": 1,
+              "min_us": 2.04,
+              "median_us": 2.04,
+              "max_us": 2.04
+            },
+            "func_1_b_spmd": {
+              "blocks": 24,
+              "min_us": 6.780000000000001,
+              "median_us": 10.33,
+              "max_us": 11.739999999999998
+            },
+            "func_2_c_spmd": {
+              "blocks": 48,
+              "min_us": 6.460000000000001,
+              "median_us": 11.100000000000001,
+              "max_us": 13.619999999999997
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/full-preparation32-isolation/layer3-full16-1.json",
+          "sha256": "9706737418995785dd185aaed449d33be4634de6dea86c547b842db41e2a9e27",
+          "device_task_window_us": 725.66,
+          "run_epoch": 288,
+          "block_records": 1361,
+          "tasks": {
+            "func_9_j_spmd": {
+              "blocks": 40,
+              "min_us": 27.740000000000002,
+              "median_us": 30.700000000000003,
+              "max_us": 33.099999999999994
+            },
+            "func_10_k_spmd": {
+              "blocks": 80,
+              "min_us": 27.36,
+              "median_us": 30.64,
+              "max_us": 33.379999999999995
+            },
+            "func_11_l_spmd": {
+              "blocks": 32,
+              "min_us": 1.7999999999999972,
+              "median_us": 2.8399999999999963,
+              "max_us": 4.079999999999998
+            },
+            "func_12_m_spmd": {
+              "blocks": 32,
+              "min_us": 3.1799999999999926,
+              "median_us": 3.759999999999998,
+              "max_us": 4.959999999999994
+            },
+            "func_13_n_spmd": {
+              "blocks": 136,
+              "min_us": 21.5,
+              "median_us": 24.670000000000016,
+              "max_us": 27.659999999999997
+            },
+            "func_14_o_spmd": {
+              "blocks": 272,
+              "min_us": 21.420000000000016,
+              "median_us": 24.639999999999986,
+              "max_us": 27.879999999999995
+            },
+            "func_15_p_spmd": {
+              "blocks": 136,
+              "min_us": 23.120000000000005,
+              "median_us": 25.55000000000001,
+              "max_us": 30.22
+            },
+            "func_16_q_spmd": {
+              "blocks": 272,
+              "min_us": 22.819999999999993,
+              "median_us": 25.539999999999992,
+              "max_us": 30.22
+            },
+            "func_17_r_spmd": {
+              "blocks": 136,
+              "min_us": 2.019999999999982,
+              "median_us": 3.900000000000034,
+              "max_us": 8.139999999999986
+            },
+            "func_18_s_spmd": {
+              "blocks": 40,
+              "min_us": 74.34000000000003,
+              "median_us": 78.13,
+              "max_us": 91.12
+            },
+            "func_19_t_spmd": {
+              "blocks": 80,
+              "min_us": 73.98000000000002,
+              "median_us": 78.00999999999999,
+              "max_us": 91.16000000000008
+            },
+            "func_20_u_spmd": {
+              "blocks": 32,
+              "min_us": 1.9399999999999409,
+              "median_us": 2.8100000000000023,
+              "max_us": 4.100000000000023
+            },
+            "func_0_a": {
+              "blocks": 1,
+              "min_us": 1.94,
+              "median_us": 1.94,
+              "max_us": 1.94
+            },
+            "func_1_b_spmd": {
+              "blocks": 24,
+              "min_us": 6.699999999999999,
+              "median_us": 9.95,
+              "max_us": 11.56
+            },
+            "func_2_c_spmd": {
+              "blocks": 48,
+              "min_us": 6.200000000000003,
+              "median_us": 10.98,
+              "max_us": 13.54
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/full-preparation32-isolation/layer3-full16-2.json",
+          "sha256": "2f8a1c6fde6d843260ab924745f03e0612ba54479c0aa71a2de7f008847a5063",
+          "device_task_window_us": 720.28,
+          "run_epoch": 292,
+          "block_records": 1361,
+          "tasks": {
+            "func_9_j_spmd": {
+              "blocks": 40,
+              "min_us": 29.019999999999996,
+              "median_us": 31.330000000000005,
+              "max_us": 34.28
+            },
+            "func_10_k_spmd": {
+              "blocks": 80,
+              "min_us": 29.040000000000006,
+              "median_us": 31.300000000000004,
+              "max_us": 34.28
+            },
+            "func_11_l_spmd": {
+              "blocks": 32,
+              "min_us": 1.9599999999999937,
+              "median_us": 3.3499999999999943,
+              "max_us": 4.340000000000003
+            },
+            "func_12_m_spmd": {
+              "blocks": 32,
+              "min_us": 3.019999999999996,
+              "median_us": 4.280000000000001,
+              "max_us": 6.460000000000008
+            },
+            "func_13_n_spmd": {
+              "blocks": 136,
+              "min_us": 21.19999999999999,
+              "median_us": 24.72999999999999,
+              "max_us": 31.120000000000005
+            },
+            "func_14_o_spmd": {
+              "blocks": 272,
+              "min_us": 21.159999999999968,
+              "median_us": 24.72,
+              "max_us": 31.19999999999999
+            },
+            "func_15_p_spmd": {
+              "blocks": 136,
+              "min_us": 22.95999999999998,
+              "median_us": 25.379999999999995,
+              "max_us": 30.079999999999984
+            },
+            "func_16_q_spmd": {
+              "blocks": 272,
+              "min_us": 22.75999999999999,
+              "median_us": 25.35999999999997,
+              "max_us": 30.02000000000001
+            },
+            "func_17_r_spmd": {
+              "blocks": 136,
+              "min_us": 2.0,
+              "median_us": 3.160000000000025,
+              "max_us": 7.839999999999975
+            },
+            "func_18_s_spmd": {
+              "blocks": 40,
+              "min_us": 74.91999999999996,
+              "median_us": 78.27000000000004,
+              "max_us": 92.34000000000003
+            },
+            "func_19_t_spmd": {
+              "blocks": 80,
+              "min_us": 74.82000000000005,
+              "median_us": 78.40000000000003,
+              "max_us": 92.32000000000005
+            },
+            "func_20_u_spmd": {
+              "blocks": 32,
+              "min_us": 1.9399999999999409,
+              "median_us": 2.6299999999999955,
+              "max_us": 4.32000000000005
+            },
+            "func_0_a": {
+              "blocks": 1,
+              "min_us": 1.94,
+              "median_us": 1.94,
+              "max_us": 1.94
+            },
+            "func_1_b_spmd": {
+              "blocks": 24,
+              "min_us": 6.66,
+              "median_us": 9.48,
+              "max_us": 11.02
+            },
+            "func_2_c_spmd": {
+              "blocks": 48,
+              "min_us": 6.34,
+              "median_us": 9.879999999999999,
+              "max_us": 13.2
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/full-preparation32-isolation/layer3-full16-3.json",
+          "sha256": "95ae0009e1c828cd69ae4c866f43af02d63ff8426ad0cf5d29d8fe161ef0cfee",
+          "device_task_window_us": 718.4,
+          "run_epoch": 296,
+          "block_records": 1361,
+          "tasks": {
+            "func_9_j_spmd": {
+              "blocks": 40,
+              "min_us": 27.660000000000004,
+              "median_us": 29.54,
+              "max_us": 34.06
+            },
+            "func_10_k_spmd": {
+              "blocks": 80,
+              "min_us": 27.18,
+              "median_us": 29.499999999999996,
+              "max_us": 34.260000000000005
+            },
+            "func_11_l_spmd": {
+              "blocks": 32,
+              "min_us": 1.9000000000000057,
+              "median_us": 2.9000000000000057,
+              "max_us": 5.340000000000003
+            },
+            "func_12_m_spmd": {
+              "blocks": 32,
+              "min_us": 3.5600000000000023,
+              "median_us": 4.479999999999997,
+              "max_us": 6.280000000000001
+            },
+            "func_13_n_spmd": {
+              "blocks": 136,
+              "min_us": 22.480000000000018,
+              "median_us": 24.939999999999998,
+              "max_us": 29.200000000000017
+            },
+            "func_14_o_spmd": {
+              "blocks": 272,
+              "min_us": 22.319999999999993,
+              "median_us": 24.83999999999999,
+              "max_us": 29.180000000000007
+            },
+            "func_15_p_spmd": {
+              "blocks": 136,
+              "min_us": 22.139999999999986,
+              "median_us": 25.24000000000001,
+              "max_us": 29.859999999999985
+            },
+            "func_16_q_spmd": {
+              "blocks": 272,
+              "min_us": 22.139999999999986,
+              "median_us": 25.189999999999998,
+              "max_us": 29.980000000000018
+            },
+            "func_17_r_spmd": {
+              "blocks": 136,
+              "min_us": 2.080000000000041,
+              "median_us": 3.8400000000000034,
+              "max_us": 8.04000000000002
+            },
+            "func_18_s_spmd": {
+              "blocks": 40,
+              "min_us": 74.56000000000006,
+              "median_us": 80.72999999999996,
+              "max_us": 88.70000000000005
+            },
+            "func_19_t_spmd": {
+              "blocks": 80,
+              "min_us": 74.13999999999999,
+              "median_us": 80.87,
+              "max_us": 88.63999999999999
+            },
+            "func_20_u_spmd": {
+              "blocks": 32,
+              "min_us": 1.740000000000009,
+              "median_us": 2.680000000000007,
+              "max_us": 4.400000000000091
+            },
+            "func_0_a": {
+              "blocks": 1,
+              "min_us": 2.2600000000000002,
+              "median_us": 2.2600000000000002,
+              "max_us": 2.2600000000000002
+            },
+            "func_1_b_spmd": {
+              "blocks": 24,
+              "min_us": 6.699999999999999,
+              "median_us": 13.8,
+              "max_us": 15.32
+            },
+            "func_2_c_spmd": {
+              "blocks": 48,
+              "min_us": 6.460000000000001,
+              "median_us": 14.280000000000001,
+              "max_us": 17.34
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/full-preparation32-isolation/layer3-full16-4.json",
+          "sha256": "8ecc4e571a67832aab680364bbf0681c8dbe23d2bcfdcb093c4a3343cb9fede8",
+          "device_task_window_us": 729.24,
+          "run_epoch": 300,
+          "block_records": 1361,
+          "tasks": {
+            "func_9_j_spmd": {
+              "blocks": 40,
+              "min_us": 28.400000000000006,
+              "median_us": 31.15,
+              "max_us": 33.739999999999995
+            },
+            "func_10_k_spmd": {
+              "blocks": 80,
+              "min_us": 28.39999999999999,
+              "median_us": 30.959999999999997,
+              "max_us": 33.8
+            },
+            "func_11_l_spmd": {
+              "blocks": 32,
+              "min_us": 1.8999999999999915,
+              "median_us": 3.200000000000003,
+              "max_us": 4.700000000000003
+            },
+            "func_12_m_spmd": {
+              "blocks": 32,
+              "min_us": 3.1400000000000006,
+              "median_us": 5.349999999999994,
+              "max_us": 7.47999999999999
+            },
+            "func_13_n_spmd": {
+              "blocks": 136,
+              "min_us": 21.0,
+              "median_us": 24.950000000000017,
+              "max_us": 28.76000000000002
+            },
+            "func_14_o_spmd": {
+              "blocks": 272,
+              "min_us": 21.019999999999982,
+              "median_us": 24.939999999999998,
+              "max_us": 28.73999999999998
+            },
+            "func_15_p_spmd": {
+              "blocks": 136,
+              "min_us": 22.54000000000002,
+              "median_us": 25.62000000000002,
+              "max_us": 32.30000000000001
+            },
+            "func_16_q_spmd": {
+              "blocks": 272,
+              "min_us": 22.360000000000014,
+              "median_us": 25.61,
+              "max_us": 32.34
+            },
+            "func_17_r_spmd": {
+              "blocks": 136,
+              "min_us": 2.0400000000000773,
+              "median_us": 3.2199999999999704,
+              "max_us": 6.439999999999998
+            },
+            "func_18_s_spmd": {
+              "blocks": 40,
+              "min_us": 76.10000000000002,
+              "median_us": 79.41999999999996,
+              "max_us": 90.9799999999999
+            },
+            "func_19_t_spmd": {
+              "blocks": 80,
+              "min_us": 76.06000000000006,
+              "median_us": 79.52999999999997,
+              "max_us": 90.91999999999996
+            },
+            "func_20_u_spmd": {
+              "blocks": 32,
+              "min_us": 2.0,
+              "median_us": 2.590000000000032,
+              "max_us": 3.5
+            },
+            "func_0_a": {
+              "blocks": 1,
+              "min_us": 2.04,
+              "median_us": 2.04,
+              "max_us": 2.04
+            },
+            "func_1_b_spmd": {
+              "blocks": 24,
+              "min_us": 6.860000000000003,
+              "median_us": 13.16,
+              "max_us": 14.940000000000001
+            },
+            "func_2_c_spmd": {
+              "blocks": 48,
+              "min_us": 6.600000000000001,
+              "median_us": 13.98,
+              "max_us": 16.84
+            }
+          }
+        }
+      ]
+    }
+  },
+  "signatures": {
+    "full32": {
+      "candidates": [
+        353,
+        353,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        13,
+        16,
+        13,
+        11,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        16,
+        13,
+        13,
+        13,
+        16,
+        13,
+        13,
+        13
+      ],
+      "logits_sha256": "5c9531297212a830c4ac67ea9a0c5393b0c748fcab325ee7cba3b7a133c7b251"
+    },
+    "full16": {
+      "candidates": [
+        353,
+        353,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        13,
+        16,
+        13,
+        11,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        16,
+        13,
+        13,
+        13,
+        16,
+        13,
+        13,
+        13
+      ],
+      "logits_sha256": "b654701cfba9ad1c33476c64a2964dbe9f789cbf16c0f53f0244ff4f89eee763"
+    }
+  },
+  "logits_comparison": {
+    "max_abs": 0.25,
+    "relative_l2": 0.00392504595220089,
+    "argmax_agreement": 31,
+    "rows": 31
+  },
+  "target_cache_unchanged": true,
+  "medians": {
+    "full32": 1.3572925948537886,
+    "full16": 1.3569996336009353
+  },
+  "verification_and_replay_passed": true,
+  "verifier_cases": [
+    {
+      "case": "all_accepted",
+      "accepted": 31,
+      "committed_inputs": 32,
+      "history_matches_replay": true,
+      "continuation_matches": true,
+      "passed": true
+    },
+    {
+      "case": "reject_at_0",
+      "accepted": 0,
+      "committed_inputs": 1,
+      "history_matches_replay": true,
+      "continuation_matches": true,
+      "passed": true
+    },
+    {
+      "case": "reject_at_15",
+      "accepted": 15,
+      "committed_inputs": 16,
+      "history_matches_replay": true,
+      "continuation_matches": true,
+      "passed": true
+    },
+    {
+      "case": "reject_at_16",
+      "accepted": 16,
+      "committed_inputs": 17,
+      "history_matches_replay": true,
+      "continuation_matches": true,
+      "passed": true
+    },
+    {
+      "case": "reject_at_30",
+      "accepted": 30,
+      "committed_inputs": 31,
+      "history_matches_replay": true,
+      "continuation_matches": true,
+      "passed": true
+    },
+    {
+      "case": "budget_1",
+      "accepted": 1,
+      "committed_inputs": 1,
+      "history_matches_replay": true,
+      "continuation_matches": true,
+      "passed": true
+    },
+    {
+      "case": "budget_16",
+      "accepted": 16,
+      "committed_inputs": 16,
+      "history_matches_replay": true,
+      "continuation_matches": true,
+      "passed": true
+    },
+    {
+      "case": "stop_token",
+      "accepted": 17,
+      "committed_inputs": 17,
+      "history_matches_replay": true,
+      "continuation_matches": true,
+      "passed": true
+    }
+  ]
+}

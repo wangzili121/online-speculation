@@ -1,6 +1,6 @@
 # Orthrus-Qwen3.8 Attention 开发与调优任务
 
-本任务优化 draft 的分页双向 Attention。主模型的投影、norm、MLP 和 LM head 继续复用原生实现；GDN 的递推及前后处理另见 [GDN kernel](QWEN38_PYPTO_GDN_KERNEL_TASK.md)。完整投机流程由外层负责起草、验证、提交与恢复。
+本任务优化 draft 的分页双向 Attention。主模型执行保持原样；draft 引用共享权重，并按 K32 组织投影和 MLP；GDN 的递推及前后处理另见 [GDN kernel](QWEN38_PYPTO_GDN_KERNEL_TASK.md)。完整投机流程由外层负责起草、验证、提交与恢复。
 
 ## 输入输出
 
@@ -45,7 +45,7 @@ K32 整块 query 进一步使用 128/256 行 KV 分块：容量为 128 时保持
 
 ## 接回完整模型
 
-服务、完整 draft 验证与 benchmark 均提供 `--attention-backend native|fused|paged`，默认保留 `native`。`fused` 和 `paged` 替换 Full Attention 核心，后者同时将该层的准备和计算合为一次 HOST 提交；GDN 策略和 head 参数契约相同。O projection、共享 MLP、验证与回滚仍使用现有计算。
+服务、完整 draft 验证与 benchmark 均提供 `--attention-backend native|fused|paged`，默认保留 `native`。`fused` 和 `paged` 替换 Full Attention 核心，后者同时将该层的准备和计算合为一次 HOST 提交；GDN 策略和 head 参数契约相同。O projection 和共享 MLP 可按 K32 执行，参数直接引用主模型；验证与回滚不因 Attention 实现改变。
 
 `--draft-group-size 4 --head-transfer packed` 在 `paged` 后端上进一步将 3 个 GDN 层和 1 个 Full Attention 层合并提交；这是执行编排配置，K 仍为 32。独立核的输入与参考保持不变；整网分配、参数视图和缓存检查见 [执行与验证](QWEN38_PYPTO_PAGED_VALIDATION.md#四层合并执行)。
 

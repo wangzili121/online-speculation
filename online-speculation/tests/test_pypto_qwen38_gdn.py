@@ -59,6 +59,13 @@ def test_model_rejects_unknown_recurrence_before_loading_the_runtime():
         NeuralDraft(None, None, gdn_backend="unknown")
 
 
+@pytest.mark.parametrize("rows,backend", [(0, "fused"), (17, "fused"), (True, "fused"), (32, "native")])
+def test_auxiliary_rejects_incompatible_native_or_block_width(rows, backend):
+    from blockspec.pypto_qwen38.gdn_aux_programs import make_auxiliary
+    with pytest.raises(ValueError, match="rows"):
+        make_auxiliary(None, rows=rows, backend=backend)
+
+
 def test_convolution_uses_three_previous_inputs_and_preserves_initial_state():
     source = torch.tensor([[5., 6.], [7., 8.]])
     history = torch.tensor([[99., 99.], [1., 2.], [3., 4.], [5., 6.]])

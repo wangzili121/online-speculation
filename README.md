@@ -4,7 +4,7 @@ PyPTO Serving 支持真实 27B 的 K32 draft、共享 backbone/history、缓存�
 
 PyPTO 提供 `native`、`fused` 和 `paged` 三种 Attention 后端。直接分页路径已通过真实 27B 的 K32 起草、六个历史边界、cache 只读及拒绝恢复检查；默认保留原生后端。[接入计划](online-speculation/docs/QWEN38_PYPTO_PLAN.md)、[kernel 任务](online-speculation/docs/QWEN38_PYPTO_KERNEL_TASK.md)和[分页实现验证](online-speculation/docs/QWEN38_PYPTO_PAGED_VALIDATION.md)说明接口与实测结果。
 
-PyPTO 可选 `--attention-backend paged --draft-group-size 4 --head-transfer packed`，将连续四层合并提交，K32 的 HOST 计算提交由 66 次降为 18 次；同 worker 的起草耗时中位数从 2.600 s 降到 2.315 s，logits 和候选不变。[验证与复现](online-speculation/docs/QWEN38_PYPTO_PAGED_VALIDATION.md#四层合并执行)。
+PyPTO 的优化配置为 `--attention-backend paged --gdn-backend vector --draft-group-size 4 --head-transfer packed`：直接读取分页历史，整块执行 GDN、投影和共享 MLP，K32 的 HOST 计算提交由 66 次降为 18 次。[GDN 与 K32 调优](online-speculation/docs/QWEN38_PYPTO_GDN_KERNEL_TASK.md)包含独立算子、整层、整轮起草及 NUMA 对照。
 
 Qwen3.8-27B 的 Orthrus 投机推理与 draft 更新实现。draft 复用冻结的主模型 backbone，推理读取主模型历史缓存，候选由原生 vLLM-Ascend 验证。支持在线 last-N 更新和独立离线全层更新，均只更新 draft mixer，不训练主模型。
 

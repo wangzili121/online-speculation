@@ -29,14 +29,15 @@ Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标
 - `tp_programs.py`：组合原生 Linear、residual 和 PyPTO 内置 Sum，提供行并行投影、整块归约及归约后的 residual 组件；完整 TP 模型执行器尚未接入。
 - `greedy.py`：比较整块候选；第一次拒绝时输出目标 token，全接受时输出 bonus；输出上限和停止 token 同样限制提交长度。
 - `target.py`：在原生 runner 上执行验证，批量读取有效 logits 行；需要拒绝后缀时，恢复验证前的 GDN 状态和页表长度，再仅重放接受前缀。状态快照使用预注册共享缓冲，每个存活快照独占一个槽；池满时回退到独立副本。
-- `programs.py` / `group_programs.py`：组合原生投影、norm、GDN、Full Attention 和 MLP，可按层或四层提交。原生投影和 GDN 使用 16 行 tile；Full Attention 先准备整个 K32 块的 K/V，分页核心使用 32 行 query，读取主模型历史但不写目标缓存。
+- `programs.py` / `group_programs.py`：组合原生投影、norm、GDN、Full Attention 和 MLP，可按层或四层提交。原生对照保留 16 行 tile；优化路径以 K32 准备和投影，Full Attention 先准备整个块的 K/V，分页核心使用 32 行 query，读取主模型历史但不写目标缓存。
 - `attention.py` / `attention_programs.py` / `paged_attention_programs.py`：独立 Torch 参考、融合/分阶段对照及直接分页 Attention；接收原生完整 KV pool 和层号，读取真实历史与临时块，输出门控后的 Attention。
 - `gdn_programs.py` / `gdn_convolution_programs.py` / `gdn_aux_programs.py`：Vector 递推、只读 K32 卷积、gate 及 gated norm。`gdn_block_programs.py` 将这些阶段接到整层，直接读取 packed QKV 和目标历史，省去展开复制及两段之间的矩阵交接。
+- `projection_programs.py` / `shared_programs.py`：为 draft 提供 K32 投影、RMSNorm 和共享 MLP，减少分成两段时重复读取权重；共享参数仍直接引用主模型 bank。
 - `draft.py`：将 draft 与目标程序提前注册到同一 worker，共享 embedding、norm、MLP 和 LM head，组织各层计算与输出读取。
 
 Q/K/V-packed 的 GDN 投影与卷积按 Q、K、V 三段分别合并；O projection 按列合并；复制 norm 必须在各 rank 一致。真实 vLLM head 的 `A_log` 是 FP32，转换时保持原精度；decay/beta 编排使用相同公式，去掉原生辅助函数对该参数的重复转换。其他参数按实际 dtype 校验。
 
-Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthrus_qwen35_reference` 因果递推，在目标状态的临时副本上计算。以上计算公式和 `programs.py` 未因本次缓冲优化而改变，主模型继续使用固定 OneServing 的原生程序。
+Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthrus_qwen35_reference` 因果递推，在目标状态的临时副本上计算。执行分块不改变模型公式，主模型继续使用固定 OneServing 的原生程序。
 
 初版事务适配仅针对 TP1、一个活动请求。原生 scheduler 每次消费一个 token，适配器缓存已验证的输出前缀，逐个交付；后续交付不再次运行模型，且检查请求位置和 anchor，拒绝错位的旧缓冲。真实 draft 应提供 `propose(request, anchor, width)`，读取已提交历史，不写入目标缓存。
 
@@ -50,15 +51,15 @@ Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthr
 | `fused` | 保留连续 KV 准备，将 QK、softmax、PV 和输出门控融合 |
 | `paged` | 按页表直接搬历史与临时块到 L1，不生成连续 KV 副本；融合 Attention/门控，按长度选择 128/256/512 容量，使用 32 行 query tile |
 
-`paged` 还将 Full Attention 的 QKV 准备与该层后续计算合为一次 HOST 提交，K32 的计算提交数由 82 降为 66。QKV 投影、norm/RoPE、O projection、共享 MLP 及 GDN 的计算仍复用原生实现；HOST 编排合并不表示这些计算融合成一个硬件 kernel。
+`paged` 还将 Full Attention 的 QKV 准备与该层后续计算合为一次 HOST 提交，K32 的计算提交数由 82 降为 66。QKV、O projection 和共享 MLP 的公式与权重不变，draft 可使用 K32 执行分块；HOST 编排合并不表示这些计算融合成一个硬件 kernel。
 
-真实 27B 的同 worker 对照中，原生与分页路径的完整有效 logits 和 31 个候选逐字节相同；目标 cache 只读、接受前缀重放及六个历史边界后的 greedy 续写均通过。六轮起草中位数为 2.417 s / 2.401 s，其中约 2.05 s 用于逐层上传 head。独立 Attention 的收益没有转化为明显的整轮提速，默认后端保持不变。
+分页核心保留原生中间舍入，独立检查与 Torch 参考通过。完整 draft 的 K32 归一化会改变部分浮点归约顺序，逐层采用固定相对 L2 门槛检查，不以 logits 逐字节相同作为替代实现的前提。目标 cache 必须保持不变，验证和恢复后的 greedy 续写必须与 target-only 相同；起草与服务性能分开验收。
 
 独立输入、Torch 参考、计时范围与调优入口见 [kernel 任务说明](QWEN38_PYPTO_KERNEL_TASK.md)，本轮原始数据和复现方式见 [分页 Attention 验证](QWEN38_PYPTO_PAGED_VALIDATION.md)。原生/融合路径的逐层对照及 TP4→TP2 文件重载记录见 [逐层对照与重载验证](QWEN38_PYPTO_PAIRED_VALIDATION.md)。
 
 ## 可选 GDN 后端
 
-`--gdn-backend native|vector` 独立控制 GDN，默认保留 `native`。`vector` 先用原生投影准备 K32，再从只读历史计算整块因果卷积，直接读取卷积后的 packed QKV，完成 Q/K 归一化和一次 K32 递推；最后执行 gated norm、原生 O projection 和共享 MLP。它不把 GDN 改为双向，不写回 AR 状态，也不依赖未来模型分支的接口。
+`--gdn-backend native|vector` 独立控制 GDN，默认保留 `native`。`vector` 先用整块投影和归一化准备 K32，再从只读历史计算整块因果卷积，直接读取卷积后的 packed QKV，完成 Q/K 归一化和一次 K32 递推；最后执行 gated norm、K32 O projection 和共享 MLP。它不把 GDN 改为双向，不写回 AR 状态，也不依赖未来模型分支的接口。
 
 这一条路径由多个设备阶段组成，HOST 合并提交不等于整层只有一个硬件 kernel。独立参考、计时范围及接回结果见 [GDN kernel](QWEN38_PYPTO_GDN_KERNEL_TASK.md)。与分页 Attention、四层编排一起选择时，启动参数为：
 
@@ -68,6 +69,8 @@ Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthr
 ```
 
 所有模型计算仍在 PyPTO/NPU 中执行；Torch 用于加载参数、主机侧编排和独立正确性参考。
+
+流式上传 head 时，应在参数分配前将进程绑定到所用 NPU 的本地 CPU。先从 `npu-smi info` 的 PCIe Bus-Id 找到 `/sys/bus/pci/devices/<BDF>/local_cpulist`，并确认 CPU 属于进程允许集合，再用 `taskset -c <CPU列表>` 启动原有命令。CPU 编号取决于服务器拓扑。实测同一 NPU、同一程序，仅将 head 主机内存由远端改为本地，完整起草由约 1.740 降至 1.094 s，logits 相同；记录见 [K32 与 NUMA 对照](validation/pypto-qwen38/k32-integration-20261109/)。
 
 可选 `--draft-group-size 4 --attention-backend paged --head-transfer packed` 将 3 个 GDN 层和 1 个 Full Attention 层合并为一次 HOST 提交，并按组上传 head；K32 的计算提交由 66 次降为 18 次。模型计算不变，约增加 0.45 GiB 流式暂存。同 worker 六轮对照起草耗时为 2.600 / 2.315 s，logits 与候选逐字节相同；六个历史边界、八组 verifier 用例及直接启动服务检查均通过。实际配置和记录见 [执行与验证](QWEN38_PYPTO_PAGED_VALIDATION.md#四层合并执行)。
 

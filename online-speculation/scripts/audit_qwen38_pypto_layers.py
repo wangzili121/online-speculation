@@ -13,9 +13,10 @@ def main():
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--head-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--cpu-threads", type=int, default=4)
     args = parser.parse_args()
-    if args.output.exists():
-        parser.error("output must be new")
+    if args.output.exists() or args.cpu_threads < 1:
+        parser.error("new output and a positive CPU thread count required")
     import torch
     import transformers
     from safetensors import safe_open
@@ -25,9 +26,10 @@ def main():
     from blockspec.pypto_qwen38.hf_reference import layer_reference
     from blockspec.pypto_qwen38.inspection import head_digest
 
-    torch.set_num_threads(4)
+    torch.set_num_threads(args.cpu_threads)
     report = dict(passed=False, scope="same_input_real_weight_hf_draft_layers", npu_execution=False,
-                  transformers=transformers.__version__, layers=[], relative_l2_limit=.02)
+                  transformers=transformers.__version__, torch_threads=args.cpu_threads,
+                  layers=[], relative_l2_limit=.02)
     try:
         head = HeadSource(args.model, args.head_dir)
         parent = json.loads((args.capture_dir.parent / "result.json").read_text())

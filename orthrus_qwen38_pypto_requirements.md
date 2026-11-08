@@ -37,7 +37,7 @@ draft 每轮输入一个块：`anchor + (K-1) 个 MASK`。anchor 是已经确定
 
 本文的算子设计基线为 `pypto-lib` PR #1503 的提交 `1d454a1b8f7af18c9b176d8aeaa60dc565a6a9e9`，下文该基线的文件均位于 `models/qwen3_8_27b/`。可运行接入采用固定的 OneServing `7aa40ba` 交付包及配套 PyPTO，支持单卡、单活动请求、512 个总位置；环境和运行入口见 [PyPTO Serving 接入](online-speculation/docs/QWEN38_PYPTO_PORT.md)。这两份基线的接口不同，下面的计算契约相同。
 
-**Orthrus 主要扩展 Full Attention 和 GDN 的调用方式**。Full Attention 一次计算 K 行 query，每行读取同一段历史和整个草稿块；GDN 则先复制主模型的历史状态，再用这份数据依次计算 K 个位置，不修改主模型原来的状态。这两条路径已在可运行接入中实现；以下解释计算要求，最后说明整网验证范围。
+**Orthrus 主要扩展 Full Attention 和 GDN 的调用方式**。Full Attention 一次计算 K 行 query，每行读取同一段历史和整个草稿块；GDN 则以主模型的历史状态为初值，依次计算 K 个位置，只更新临时状态。这两条路径已在可运行接入中实现；以下解释计算要求，最后说明整网验证范围。
 
 投影、norm、RoPE 和 MLP 的公式可以沿用。接入时仍要给它们绑定正确的 draft 或共享权重，按 TP 规格分片，再与主模型交换历史。下面先说明这两类模块内部要改什么，第 3 节再把它们放回完整推理流程。
 
@@ -412,7 +412,7 @@ class GatedRMSNorm(nn.Module):
 
 这两条路径接通后，每类层内部的计算就有了基础。接下来还要把它们放回完整模型，使用共享层传递当前块的特征，再交给主模型验证。norm、投影等可以继续复用或按性能融合，最终 kernel 数量由实现方式决定。
 
-可运行 PyPTO 接入已覆盖两行要求。Full Attention 将分页历史与临时块直接搬入 L1，计算 K32 双向 Attention 和输出门控。GDN 保留原生对照，并提供整块执行：投影仍按两个 16 行 tile 准备，随后只读历史计算 K32 卷积，直接从 packed QKV 完成 Q/K 归一化与一次递推，再做 gated norm。这样省去 QKV 展开、历史初态复制和两段间的矩阵交接，不改变公式或 GDN 的因果顺序。共享投影与 MLP 仍用交付包原生计算；四层合并是 HOST 编排，不表示整个模型层只有一个硬件 kernel。
+可运行 PyPTO 接入已覆盖两行要求。Full Attention 将分页历史与临时块直接搬入 L1，计算 K32 双向 Attention 和输出门控。GDN 保留原生对照，并提供整块执行：使用 K32 投影和归一化准备整块特征，只读历史计算卷积，直接从 packed QKV 完成 Q/K 归一化与一次递推，再做 gated norm 和输出投影。共享 MLP 也按 32 行执行，直接引用主模型权重，减少两段 16 行重复读取权重的开销；主模型执行路径保持原样。这些改动不改变公式或 GDN 的因果顺序；四层合并仍是 HOST 编排，不表示整个模型层只有一个硬件 kernel。
 
 独立 kernel 已覆盖零/非零历史、部分有效块、输入不变和数值对照；GDN 的接口、前后处理与计时口径见 [GDN 开发说明](online-speculation/docs/QWEN38_PYPTO_GDN_KERNEL_TASK.md)。最终计算边界由实测决定，不预设未来主模型优化版本的接口可以直接复用。
 
@@ -443,7 +443,7 @@ class GatedRMSNorm(nn.Module):
 
 `OrthrusRunner` 对接原生 scheduler，`NativeTarget` 调用原生 AR 程序分块验证候选；批量回读有效 logits 后做 greedy 校正。拒绝后缀时恢复 GDN 和页表长度，只重放接受前缀；已验证输出由 scheduler 逐 token 交付。缓存分配、页表和接受决策由引擎管理，算子按传入的长度和布局读写数据。
 
-`--draft-group-size 4` 将 3 个 GDN 层与 1 个 Full Attention 层编排为一次 HOST 提交，head 同时按组上传。该配置只改变执行粒度，K 仍为 32；共享层继续使用原生计算。完整 TP 尚需对接原生的局部 backbone 和归约接口。
+`--draft-group-size 4` 将 3 个 GDN 层与 1 个 Full Attention 层编排为一次 HOST 提交，head 同时按组上传。该配置只改变执行粒度，K 仍为 32；共享层直接使用主模型参数，draft 可以采用适合 K32 的执行分块。完整 TP 尚需对接原生的局部 backbone 和归约接口。
 
 跨卡时还要调整尺寸。参考 PR 使用单卡完整规格，现有 Torch-NPU 接入则有 TP 分片：TP2 每 rank 的 Full Attention 为 12 个 Q head、2 个 KV head，GDN 为 8 个 Q/K head、24 个 V head；TP4 分别为 6/1 和 4/12。因此 PyPTO 入口需要按 TP 配置接收尺寸和分片权重，不能固定为单卡常量。加载 head 时也要核对基模、K、mask token、混合层策略和 TP 规格。
 

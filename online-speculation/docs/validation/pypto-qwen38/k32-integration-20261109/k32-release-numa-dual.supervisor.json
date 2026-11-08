@@ -1,0 +1,27 @@
+{
+  "passed": true,
+  "physical_device": 5,
+  "command": [
+    "/usr/bin/taskset",
+    "-c",
+    "0-23",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/source-k32-numa-dual-r1/scripts/compare_qwen38_pypto_gdn.py",
+    "--device",
+    "0",
+    "--output-dir",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261109/k32-release-numa-dual",
+    "--source",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/OneServing",
+    "--model",
+    "/data/disk/wangzili/models/Qwen3.8-27B",
+    "--head-dir",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/heads/trained-v4",
+    "--draft-group-size",
+    "4",
+    "--remote-cpus",
+    "144-167"
+  ],
+  "pid": 320569,
+  "returncode": 0
+}
