@@ -6,6 +6,8 @@ import json
 import logging
 from pathlib import Path
 import statistics
+import shutil
+import hashlib
 import time
 
 
@@ -19,9 +21,10 @@ def main():
     parser.add_argument("--query-tile", type=int, choices=(8, 16, 32), default=16)
     parser.add_argument("--backend", choices=("fused", "staged", "paged", "both", "all"), default="fused")
     parser.add_argument("--profile", action="store_true", help="collect a separate final-case chip swimlane, outside timing")
+    parser.add_argument("--profile-repeats", type=int, default=5)
     parser.add_argument("--tune-paged", action="store_true", help="compare paged query tiles 16/32 in the same worker")
     args = parser.parse_args()
-    if args.device < 0 or args.repeats < 3 or args.output.exists():
+    if args.device < 0 or args.repeats < 3 or args.output.exists() or args.profile_repeats < 1:
         parser.error("require an assigned device, 3+ repeats and a new output")
     if args.tune_paged and (args.backend != "all" or args.query_tile != 16):
         parser.error("tune-paged requires backend=all and query-tile=16")
@@ -37,6 +40,7 @@ def main():
     from blockspec.pypto_qwen38.attention_programs import make_attention
     from blockspec.pypto_qwen38.paged_attention_programs import make_paged_attention
     from blockspec.pypto_qwen38.baseline import runtime_identity
+    from summarize_qwen38_pypto_profile import summarize
 
     shape = AttentionShape(query_tile=args.query_tile)
     report = dict(passed=False, scope="standalone_paged_draft_attention", npu_execution=False,
@@ -66,8 +70,12 @@ def main():
         if args.tune_paged:
             backends.append("paged32")
         programs = {}
+        configurations = {}
         for backend in backends:
-            candidate_shape = AttentionShape(query_tile=32) if backend == "paged32" else shape
+            print(f"compiling Attention {backend}", flush=True)
+            tile = 32 if backend == "paged32" else args.query_tile
+            candidate_shape = AttentionShape(query_tile=tile)
+            configurations[backend] = dict(query_tile=tile)
             factory = (make_paged_attention(candidate_shape, physical_pages=kp.shape[2], pool_layers=2) if backend.startswith("paged") else
                        make_attention(shape, backend=backend, physical_pages=kp.shape[2], pool_layers=2))
             programs[backend] = factory[1].compile(*tensors, 0, 32, 0, config=config)
@@ -132,7 +140,7 @@ def main():
                 torch.testing.assert_close(output.float(), native.float(), rtol=.02, atol=.002)
                 torch.testing.assert_close(output.float(), expected.float(), rtol=.03, atol=.004)
                 row = dict(past=past, width=width, cache_layer=cache_layer, backend=backend,
-                           query_tile=32 if backend == "paged32" else args.query_tile, passed=True, inputs_byte_exact=True,
+                           **configurations[backend], passed=True, inputs_byte_exact=True,
                            poisoned_inactive_inputs=True,
                            native_max_abs=(output.float() - native.float()).abs().max().item(),
                            sdpa_max_abs=(output.float() - expected.float()).abs().max().item(),
@@ -141,8 +149,22 @@ def main():
                 report["cases"].append(row)
                 if args.profile and case_index in {0, len(cases) - 1} and not args.simulate:
                     from dataclasses import replace
-                    worker.run(compiled, *handles, past, width, cache_layer,
-                               config=replace(config, enable_chip_swimlane=1))
+                    row["device_profiles"] = []
+                    for sample in range(args.profile_repeats):
+                        worker.run(compiled, *handles, past, width, cache_layer,
+                                   config=replace(config, enable_chip_swimlane=1))
+                        profiles = list(Path(compiled.output_dir).rglob("merged_swimlane*.json"))
+                        if not profiles:
+                            raise FileNotFoundError("missing Attention device profile")
+                        path = max(profiles, key=lambda p: p.stat().st_mtime_ns)
+                        data = path.read_bytes()
+                        saved = args.output.parent / (args.output.stem + "-profiles") / f"c{case_index}-{backend}-{sample}.json"
+                        saved.parent.mkdir(exist_ok=True)
+                        if saved.exists():
+                            raise FileExistsError(saved)
+                        shutil.copyfile(path, saved)
+                        row["device_profiles"].append(dict(path=str(saved), sha256=hashlib.sha256(data).hexdigest(),
+                                                           **summarize(json.loads(data))))
                     row["profile_requested"] = True
                 print(json.dumps(row), flush=True)
         report["passed"] = True

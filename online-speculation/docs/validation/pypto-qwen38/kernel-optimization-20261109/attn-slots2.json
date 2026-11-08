@@ -1,0 +1,26 @@
+{
+  "passed": false,
+  "scope": "standalone_paged_draft_attention",
+  "npu_execution": false,
+  "full_model": false,
+  "shape": {
+    "block_size": 32,
+    "q_heads": 24,
+    "kv_heads": 4,
+    "head_dim": 256,
+    "context": 512,
+    "page_size": 16,
+    "query_tile": 32
+  },
+  "runtime_log_level": "WARNING",
+  "cases": [],
+  "runtime": {
+    "pypto": "98752784548b777b2377a9084411c3716eb341d6",
+    "simpler": "c1f89ea431f5306f78c0e4ab9573c829756d7f1e",
+    "pto_isa": "418de18dde8fa33773dc5c384fdfe5506463b628",
+    "ptoas": "0.65",
+    "ptoas_executable_version": "0.65"
+  },
+  "platform": "a2a3",
+  "error": "ValueError('Vec buffer usage (196736 bytes) exceeds platform limit (188416 bytes). The first 65536 bytes of that space are reserved by system.reserve_buffer, so tiles are allocated above them \u2014 this is the cross-core pipe ring. Lower its depth with optimizations=[pl.cross_core_slot(slot_num=N)] on the enclosing pl.at(...), or shrink the tile that crosses the cube/vector boundary\\nCheck failed: limit == 0 || used <= limit at /results/pypto-core/src/ir/transforms/allocate_memory_addr_pass.cpp:483')"
+}

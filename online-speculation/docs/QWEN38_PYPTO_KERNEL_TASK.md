@@ -1,6 +1,6 @@
 # Orthrus-Qwen3.8 Attention 开发与调优任务
 
-本任务优化 draft 的分页双向 Attention。主模型的投影、norm、GDN、MLP 和 LM head 继续复用原生实现；完整投机流程由外层负责起草、验证、提交与恢复。
+本任务优化 draft 的分页双向 Attention。主模型的投影、norm、MLP 和 LM head 继续复用原生实现；GDN 的递推及前后处理另见 [GDN kernel](QWEN38_PYPTO_GDN_KERNEL_TASK.md)。完整投机流程由外层负责起草、验证、提交与恢复。
 
 ## 输入输出
 
@@ -36,6 +36,10 @@ python scripts/validate_qwen38_pypto_attention.py \
 `--profile` 在计时之外另采集设备时间线，使用 `scripts/summarize_qwen38_pypto_profile.py` 汇总最后一组输入的任务窗口，不能将并行 block 耗时相加。模拟器只用于功能检查，不提供性能结论；驱动显式检查运行模式，避免平台参数将 SIM 覆盖为 ONBOARD。本次真实 NPU 已通过；当前固定主机环境缺少模拟器要求的 `g++-15`，不报告模拟器通过。
 
 实测与原始数据见 [分页 Attention 验证](QWEN38_PYPTO_PAGED_VALIDATION.md)。
+
+K32 整块 query 进一步使用 128/256 行 KV 分块：容量为 128 时保持短分块，其余使用 256，减少 QK/PV 交接。13 组输入的前后对照共 26 项通过；480 位置历史下，设备窗口中位数为 52.26 → 47.76 μs，空历史为 28.24 → 27.16 μs。设备时间线各采五次；墙钟调用包含约 0.8 ms 的主机调度，不能据其微小差异推断 kernel 收益。
+
+同时比较了更小的 KV 分块、双 head 共用 KV 及双流水槽。前两项虽通过数值检查，但长历史设备窗口约增至 63–64 μs；双流水槽和更大的双 head query tile 超出 A2 Vector 内存。当前不启用这些候选，也不假定其他模型的融合粒度在本形状下更快。记录与实验源码归档在 `validation/pypto-qwen38/kernel-optimization-20261109/`。
 
 验证和 Torch 参考独立于候选实现。调优不得修改输入、可见性、舍入约定、golden、误差门槛或跳过只读检查。可探索 query tile、K/V 搬运、混合核流水和中间存储；改变 kernel 数量不改变被测入口范围。
 

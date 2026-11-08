@@ -7,7 +7,9 @@ def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity):
     import pypto.language as pl
 
     K, HQ, HK, D = shape.block_size, shape.q_heads, shape.kv_heads, shape.head_dim
-    M, C, PAGE, SPAN = shape.query_tile, capacity, shape.page_size, 128
+    M, C, PAGE = shape.query_tile, capacity, shape.page_size
+    # K32 整块 query 用较宽的 KV tile，减少 QK/PV 的跨核交接。
+    SPAN = min(capacity, 256) if M == 32 else 128
     ROWS = pool_layers * HK * physical_pages * PAGE
     SLOTS = 1 if M == 32 else 2
 
@@ -60,7 +62,7 @@ def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity):
         second = pair(q, block, pool, zero, table, bias, layer, head, past, width, start + 2 * SPAN)
         return pl.concat(first, second)
 
-    score_kernel = scores if capacity == 128 else pair if capacity == 256 else quad
+    score_kernel = scores if C // SPAN == 1 else pair if C // SPAN == 2 else quad
 
     @pl.jit.inline
     def paged(query: pl.Tensor, key: pl.Tensor, value: pl.Tensor, gate: pl.Tensor,

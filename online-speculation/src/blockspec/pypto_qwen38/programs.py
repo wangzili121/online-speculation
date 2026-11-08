@@ -8,11 +8,13 @@ before the second half exists. No target cache is an output of these graphs.
 from .baseline import native_module
 
 
-def make_programs(source, *, attention_backend="native", group_size=1):
+def make_programs(source, *, attention_backend="native", group_size=1, gdn_backend="native"):
     if attention_backend not in {"native", "fused", "paged"}:
         raise ValueError("attention backend must be native, fused or paged")
     if type(group_size) is not int or group_size not in {1, 4} or group_size == 4 and attention_backend != "paged":
         raise ValueError("group_size must be 1 or 4; groups of four require the paged backend")
+    if gdn_backend not in {"native", "vector"}:
+        raise ValueError("gdn_backend must be native or vector")
     import pypto.language as pl
 
     model = native_module(source, "model")
@@ -140,6 +142,10 @@ def make_programs(source, *, attention_backend="native", group_size=1):
             following = shared_tail(current, attn, post_gamma, mlp_gate, mlp_up, mlp_down, following, layer)
             result[row:row + 16, 0:5120] = following
         return result
+
+    if gdn_backend == "vector":
+        from .gdn_block_programs import make_block_layer
+        gdn = make_block_layer(source, shared_tail)
 
     @pl.jit
     def full_prepare(hidden: pl.Tensor, input_gamma: pl.Tensor,

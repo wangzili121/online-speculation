@@ -4,6 +4,21 @@ import torch
 
 
 @torch.inference_mode()
+def convolution_golden(projected, weight, history):
+    """宽度 4 的逐通道卷积及 SiLU，保留卷积后的原生舍入。"""
+    if projected.ndim != 2 or weight.shape != (4, projected.shape[1]) or history.shape != weight.shape:
+        raise ValueError("projected rows and matching four-tap weights/history required")
+    state, w = history.float().clone(), weight.float()
+    result = torch.empty_like(projected)
+    for token, current in enumerate(projected.float()):
+        value = (state[1] * w[0] + state[2] * w[1]) + (state[3] * w[2] + current * w[3])
+        value = value.to(projected.dtype).float()
+        result[token] = torch.nn.functional.silu(value).to(projected.dtype)
+        state = torch.cat((state[1:], current[None]), dim=0)
+    return result
+
+
+@torch.inference_mode()
 def recurrence_golden(query, key, value, log_decay, beta, initial_state, width):
     """输入为卷积后的 Q/K/V；返回有效输出和最终临时状态，不修改历史。"""
     rows, heads, dim = query.shape

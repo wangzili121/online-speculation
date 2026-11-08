@@ -58,6 +58,7 @@ def main():
     p.add_argument("--head-transfer", choices=("individual", "packed"))
     p.add_argument("--attention-backend", choices=("native", "fused", "paged"), default="native")
     p.add_argument("--draft-group-size", type=int, choices=(1, 4), default=1)
+    p.add_argument("--gdn-backend", choices=("native", "vector"), default="native")
     p.add_argument("--save-logits", action="store_true")
     p.add_argument("--compare-transfer", action="store_true")
     a = p.parse_args()
@@ -85,10 +86,11 @@ def main():
         if a.head_transfer is not None:
             kw["head_transfer"] = a.head_transfer
         report["attention_backend"] = a.attention_backend
+        report["gdn_backend"] = a.gdn_backend
         if a.draft_group_size == 4:
             kw.setdefault("head_transfer", "packed")
         engine = make_engine(a.source, a.model, a.device, source, attention_backend=a.attention_backend,
-                             group_size=a.draft_group_size, **kw)
+                             group_size=a.draft_group_size, gdn_backend=a.gdn_backend, **kw)
         start = time.monotonic()
         engine.start()
         report["startup_seconds"] = time.monotonic() - start

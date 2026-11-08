@@ -27,6 +27,10 @@ def main():
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--device", type=int, required=True)
     parser.add_argument("--head-dir", type=Path, help="enable the Orthrus runner instead of target-only")
+    parser.add_argument("--attention-backend", choices=("native", "fused", "paged"), default="native")
+    parser.add_argument("--gdn-backend", choices=("native", "vector"), default="native")
+    parser.add_argument("--draft-group-size", type=int, choices=(1, 4), default=1)
+    parser.add_argument("--head-transfer", choices=("individual", "packed"))
     parser.add_argument("--tokens", type=int, default=8)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--startup-timeout", type=float, default=900)
@@ -34,6 +38,9 @@ def main():
     if (args.device < 0 or args.output_dir.exists() or args.startup_timeout <= 0
             or not 3 <= args.tokens <= 64):
         parser.error("require an assigned device, new output directory, positive timeout and 3..64 tokens")
+    if not args.head_dir and (args.attention_backend != "native" or args.gdn_backend != "native"
+                             or args.draft_group_size != 1 or args.head_transfer):
+        parser.error("draft configuration requires --head-dir")
     args.output_dir.mkdir(parents=True)
     with socket.socket() as endpoint:
         endpoint.bind(("127.0.0.1", 0))
@@ -44,11 +51,14 @@ def main():
                "--source", str(args.source), "--model", str(args.model),
                "--port", str(port)]
     if args.head_dir:
-        command += ["--device", str(args.device), "--head-dir", str(args.head_dir)]
+        transfer = args.head_transfer or ("packed" if args.draft_group_size == 4 else "individual")
+        command += ["--device", str(args.device), "--head-dir", str(args.head_dir),
+                    "--attention-backend", args.attention_backend, "--gdn-backend", args.gdn_backend,
+                    "--draft-group-size", str(args.draft_group_size), "--head-transfer", transfer]
     else:
         command += ["--devices", str(args.device), "--tp", "1"]
     scope = "orthrus_qwen38_http" if args.head_dir else "native_qwen38_target_only_http"
-    report = dict(scope=scope, orthrus_enabled=bool(args.head_dir), passed=False)
+    report = dict(scope=scope, orthrus_enabled=bool(args.head_dir), passed=False, command=command)
     server = None
     start = time.monotonic()
     with (args.output_dir / "server.log").open("xb") as log:
@@ -115,6 +125,10 @@ def main():
                 counters = report["metrics"].get("orthrus", {})
                 if counters.get("rounds", 0) < 1 or counters.get("neural_draft_rounds", 0) < 1:
                     raise AssertionError("HTTP requests did not execute the neural draft")
+                if (counters.get("gdn_backend") != args.gdn_backend
+                        or counters.get("attention_backend") != args.attention_backend
+                        or counters.get("draft_group_size") != args.draft_group_size):
+                    raise AssertionError("HTTP service did not use the selected draft configuration")
             report["passed"] = True
         except BaseException as error:
             report["error"] = repr(error)

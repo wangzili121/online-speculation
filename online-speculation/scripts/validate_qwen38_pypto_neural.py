@@ -150,6 +150,69 @@ def audit_round(engine, source, width, audit, *, prompt_ids=None):
         native.release(request)
 
 
+def audit_slot_reuse(engine, source):
+    """相同上下文放到不同状态槽/物理页，候选和 logits 应相同。"""
+    from blockspec.pypto_qwen38.baseline import native_module
+    from compare_qwen38_pypto_draft import tensor_digest
+    schedule = native_module(source, "schedule")
+    native, draft = engine.runner.native, engine.runner.draft
+    active = []
+    held_pages = None
+
+    def prepare(text):
+        request = schedule.RequestState(engine.tokenizer.encode(text, add_special_tokens=False), 40, frozenset())
+        native.admit(request)
+        active.append(request)
+        for position in range(0, len(request.prompt_ids), 16):
+            tokens = tuple(request.prompt_ids[position:position + 16])
+            anchor = native.run_batch([schedule.BatchSlot(request, tokens, position, "prefill",
+                                       position + len(tokens) == len(request.prompt_ids))])[0]
+        request.generated.append(anchor)
+        request.prefill_offset = len(request.prompt_ids)
+        return request, anchor
+
+    def propose(request, anchor):
+        before = resident_checksum(native)
+        result = dict(slot=native.requests[request.request_id].slot,
+                      pages=list(native.requests[request.request_id].pages.pages),
+                      candidates=draft.propose(request, anchor, 32),
+                      logits_sha256=tensor_digest(draft.host_logits[:31]))
+        if before != resident_checksum(native):
+            raise AssertionError("draft modified target cache during slot check")
+        return result
+
+    try:
+        first, anchor = prepare("Hello")
+        expected = propose(first, anchor)
+        native.release(first)
+        active.remove(first)
+        # 原生 prefill 会自动 compact 到 slot 0，不能靠另挂一个请求强占槽位。
+        # 保留一页改变物理页分配，再在 prefill 后显式迁移本请求的 GDN 状态。
+        held_pages = native.cache.new_request()
+        native.cache.reserve(held_pages, 1)
+        second, second_anchor = prepare("Hello")
+        resident = native.requests[second.request_id]
+        old_slot, new_slot = resident.slot, (resident.slot + 1) % len(native.slot_ids)
+        native._write_state(new_slot, *native._read_state(old_slot))
+        native._write_state(old_slot, native.zero_conv, native.zero_recurrent)
+        native.slot_ids[old_slot] = None
+        native.slot_ids[new_slot] = second.request_id
+        resident.slot = new_slot
+        actual = propose(second, second_anchor)
+        if (anchor != second_anchor or expected["slot"] == actual["slot"]
+                or expected["pages"] == actual["pages"]
+                or any(expected[k] != actual[k] for k in ("candidates", "logits_sha256"))):
+            raise AssertionError("draft depends on the physical slot or page allocation")
+        return dict(passed=True, first_slot=expected["slot"], second_slot=actual["slot"],
+                    first_pages=expected["pages"], second_pages=actual["pages"], state_relocated=True,
+                    target_cache_unchanged=True, logits_byte_exact=True)
+    finally:
+        for request in reversed(active):
+            native.release(request)
+        if held_pages is not None:
+            native.cache.release(held_pages)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
@@ -161,6 +224,7 @@ def main():
     parser.add_argument("--audit-block", action="store_true", help="audit a full K32 round and cache bytes")
     parser.add_argument("--attention-backend", choices=("native", "fused", "paged"), default="native")
     parser.add_argument("--draft-group-size", type=int, choices=(1, 4), default=1)
+    parser.add_argument("--gdn-backend", choices=("native", "vector"), default="native")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists() or args.device < 0 or not 3 <= args.tokens <= 64 or args.request_timeout <= 0:
@@ -177,8 +241,10 @@ def main():
         head = HeadSource(args.model, args.head_dir)
         report.update(head_source="trained", head_tp=head.tp, block_size=head.block_size)
         report["attention_backend"] = args.attention_backend
+        report["gdn_backend"] = args.gdn_backend
         engine = make_engine(args.source, args.model, args.device, head, attention_backend=args.attention_backend,
-                             group_size=args.draft_group_size, head_transfer="packed" if args.draft_group_size == 4 else "individual")
+                             group_size=args.draft_group_size, gdn_backend=args.gdn_backend,
+                             head_transfer="packed" if args.draft_group_size == 4 else "individual")
         runner = engine.runner
         engine.start()
         if args.audit_block:

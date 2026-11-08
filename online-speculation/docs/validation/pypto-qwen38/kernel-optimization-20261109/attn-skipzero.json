@@ -1,0 +1,26 @@
+{
+  "passed": false,
+  "scope": "standalone_paged_draft_attention",
+  "npu_execution": false,
+  "full_model": false,
+  "shape": {
+    "block_size": 32,
+    "q_heads": 24,
+    "kv_heads": 4,
+    "head_dim": 256,
+    "context": 512,
+    "page_size": 16,
+    "query_tile": 32
+  },
+  "runtime_log_level": "WARNING",
+  "cases": [],
+  "runtime": {
+    "pypto": "98752784548b777b2377a9084411c3716eb341d6",
+    "simpler": "c1f89ea431f5306f78c0e4ab9573c829756d7f1e",
+    "pto_isa": "418de18dde8fa33773dc5c384fdfe5506463b628",
+    "ptoas": "0.65",
+    "ptoas_executable_version": "0.65"
+  },
+  "platform": "a2a3",
+  "error": "PartialCodegenError('3 function(s) failed to compile:\\n\\n  Function                          | Error\\n  ----------------------------------+--------------------------------------------------------------\\n  orthrus_direct_paged_attention    | ptoas compilation failed: (exit code 1)\\n                                    | loc(\"/data/disk1/wangzili/orthrus-\\n                                    | qwen38-pypto-20261105/source-attn-skipzero/src/blockspec/pyp\\n                                    | to_qwen38/_attention_trial.py\":22:9): error: \\'pto.tmov\\' op\\n                                    | expects a supported tmov address-space pair for this target\\n  ----------------------------------+--------------------------------------------------------------\\n  orthrus_direct_paged_attention_0  | ptoas compilation failed: (exit code 1)\\n                                    | loc(\"/data/disk1/wangzili/orthrus-\\n                                    | qwen38-pypto-20261105/source-attn-skipzero/src/blockspec/pyp\\n                                    | to_qwen38/_attention_trial.py\":22:9): error: \\'pto.tmov\\' op\\n                                    | expects a supported tmov address-space pair for this target\\n  ----------------------------------+--------------------------------------------------------------\\n  orthrus_direct_paged_attention_1  | ptoas compilation failed: (exit code 1)\\n                                    | loc(\"/data/disk1/wangzili/orthrus-\\n                                    | qwen38-pypto-20261105/source-attn-skipzero/src/blockspec/pyp\\n                                    | to_qwen38/_attention_trial.py\":22:9): error: \\'pto.tmov\\' op\\n                                    | expects a supported tmov address-space pair for this target\\n  ----------------------------------+--------------------------------------------------------------\\n\\n  Full details: build_output/_jit_entry_20261109_022405_q11doazt/next_levels/attention/report/codegen_errors.txt')"
+}

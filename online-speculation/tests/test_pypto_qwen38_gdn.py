@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from blockspec.pypto_qwen38.gdn import recurrence_golden
+from blockspec.pypto_qwen38.gdn import recurrence_golden, convolution_golden
 
 
 def test_one_step_matches_explicit_outer_product_update_and_preserves_history():
@@ -48,3 +48,22 @@ def test_invalid_kernel_options_fail_before_loading_the_runtime(options):
     from blockspec.pypto_qwen38.gdn_programs import make_recurrence
     with pytest.raises(ValueError):
         make_recurrence(None, **options)
+
+
+def test_model_rejects_unknown_recurrence_before_loading_the_runtime():
+    from blockspec.pypto_qwen38.programs import make_programs
+    from blockspec.pypto_qwen38.draft import NeuralDraft
+    with pytest.raises(ValueError, match="gdn_backend"):
+        make_programs(None, gdn_backend="unknown")
+    with pytest.raises(ValueError, match="gdn_backend"):
+        NeuralDraft(None, None, gdn_backend="unknown")
+
+
+def test_convolution_uses_three_previous_inputs_and_preserves_initial_state():
+    source = torch.tensor([[5., 6.], [7., 8.]])
+    history = torch.tensor([[99., 99.], [1., 2.], [3., 4.], [5., 6.]])
+    before = history.clone()
+    weight = torch.ones(4, 2)
+    expected = torch.nn.functional.silu(torch.tensor([[14., 18.], [20., 24.]]))
+    torch.testing.assert_close(convolution_golden(source, weight, history), expected)
+    assert torch.equal(history, before)

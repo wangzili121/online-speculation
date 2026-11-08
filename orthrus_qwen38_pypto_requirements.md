@@ -412,7 +412,9 @@ class GatedRMSNorm(nn.Module):
 
 这两条路径接通后，每类层内部的计算就有了基础。接下来还要把它们放回完整模型，使用共享层传递当前块的特征，再交给主模型验证。norm、投影等可以继续复用或按性能融合，最终 kernel 数量由实现方式决定。
 
-可运行 PyPTO 接入已覆盖两行要求：Full Attention 采用 K32 分页双向计算，GDN 从目标历史的临时副本连续处理两个 16 行 tile。共享层仍调用交付包的原生计算；可选四层合并 HOST 编排进一步减少提交次数，不改变上述公式。
+可运行 PyPTO 接入已覆盖两行要求。Full Attention 将分页历史与临时块直接搬入 L1，计算 K32 双向 Attention 和输出门控。GDN 保留原生对照，并提供整块执行：投影仍按两个 16 行 tile 准备，随后只读历史计算 K32 卷积，直接从 packed QKV 完成 Q/K 归一化与一次递推，再做 gated norm。这样省去 QKV 展开、历史初态复制和两段间的矩阵交接，不改变公式或 GDN 的因果顺序。共享投影与 MLP 仍用交付包原生计算；四层合并是 HOST 编排，不表示整个模型层只有一个硬件 kernel。
+
+独立 kernel 已覆盖零/非零历史、部分有效块、输入不变和数值对照；GDN 的接口、前后处理与计时口径见 [GDN 开发说明](online-speculation/docs/QWEN38_PYPTO_GDN_KERNEL_TASK.md)。最终计算边界由实测决定，不预设未来主模型优化版本的接口可以直接复用。
 
 ## 3. 模型执行与推理引擎接入
 
@@ -460,9 +462,11 @@ python scripts/run_in_runtime.py scripts/validate_qwen38_vllm.py \
 
 现有验证分为两层。计算上，已对照双向 Full Attention、非零初态 GDN、跨分段状态和相关前后处理；真实模型上，已在 27B、TP2 中覆盖 K=2/8/17/32 的起草与原生验证、全接受和连续拒绝后的恢复、分页历史、缓存隔离、head 导出重载及采样校准。另有 TP4 加载和 draft 更新记录，训练反向不列入本次 PyPTO 需求。
 
-PyPTO 路径也已在真实 27B、K32 上完成独立验证：52 项 Attention 检查、128 项真实输入逐层 HF 对照、六个历史边界、八组全接受/拒绝/截断用例、TP2 文件重载及 scheduler 续写均通过。原生与分页后端、分页逐层与四层合并两组对照的有效 logits 和候选均逐字节相同。CPU 回归共 372 项通过。
+当前 PyPTO 组合通过 383 项 CPU 回归，52 项 Attention、84 项 GDN 递推和 18 项前后处理独立 NPU 检查。在真实 27B、K32 上，以每层实际输入对照 HF 计算，128 项通过，最大相对 L2 约 0.285%，小于固定的 2% 门槛。Vector 与原生 Cube 点积的浮点次序不同，这一组不要求 logits 逐字节一致。
 
-上述 PyPTO 验证范围为 TP1、一个活动请求、512 个总位置及 greedy。四层合并将单轮起草耗时中位数从 2.600 s 降为 2.315 s，不能当作业务吞吐收益；当前仍主要受流式 head 上传限制。完整 TP、长上下文和采样需要单独接入与验证。代码入口、原始记录和复现命令见 [执行与验证](online-speculation/docs/QWEN38_PYPTO_PAGED_VALIDATION.md)。
+六个历史边界、八组全接受/拒绝/截断用例、目标缓存不变、接受前缀回放、非零槽位与换页、scheduler 续写均通过。HTTP completion、chat、SSE、后端配置和正常退出也通过；不同 Attention 后端搭配新 GDN 的直接服务检查均通过。原始记录由 [GDN 开发说明](online-speculation/docs/QWEN38_PYPTO_GDN_KERNEL_TASK.md)汇总。
+
+整网范围为 TP1、一个活动请求、512 个总位置及 greedy。GDN 首层设备窗口由 4.001 降为 2.271 ms；四层编排下，六轮同 worker 对照的完整起草中位数由 1.401 降为 1.321 s，约减少 5.7%。head 仍流式上传，起草收益不等同于服务吞吐收益。完整 TP、长上下文和采样另行接入与验证。
 
 ## 参考资料
 

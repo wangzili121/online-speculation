@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--mode", choices=("environment", "head", "compile"), default="environment")
     parser.add_argument("--attention-backend", choices=("native", "fused", "paged"), default="native")
     parser.add_argument("--draft-group-size", type=int, choices=(1, 4), default=1)
+    parser.add_argument("--gdn-backend", choices=("native", "vector"), default="native")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
@@ -64,9 +65,11 @@ def main():
                 from blockspec.pypto_qwen38.draft import NeuralDraft
                 report.update(runtime_identity(pypto))
                 report["attention_backend"] = args.attention_backend
+                report["gdn_backend"] = args.gdn_backend
                 draft = NeuralDraft(args.source, head, attention_backend=args.attention_backend,
                                     group_size=args.draft_group_size,
-                                    head_transfer="packed" if args.draft_group_size == 4 else "individual")
+                                    head_transfer="packed" if args.draft_group_size == 4 else "individual",
+                                    gdn_backend=args.gdn_backend)
                 config = RunConfig(platform="a2a3", distributed_config=DistributedConfig(
                     device_ids=[0], num_sub_workers=0))
                 draft.compile(native_module(args.source, "runtime").single_meta_samples(), config)

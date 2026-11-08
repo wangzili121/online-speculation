@@ -41,9 +41,11 @@ def metadata(head, native_samples):
 class NeuralDraft:
     context = 512
 
-    def __init__(self, source, head, *, head_storage="auto", head_transfer="individual", attention_backend="native", group_size=1):
+    def __init__(self, source, head, *, head_storage="auto", head_transfer="individual", attention_backend="native", group_size=1, gdn_backend="native"):
         if attention_backend not in {"native", "fused", "paged"}:
             raise ValueError("attention backend must be native, fused or paged")
+        if gdn_backend not in {"native", "vector"}:
+            raise ValueError("gdn_backend must be native or vector")
         if (type(group_size) is not int or group_size not in {1, 4}
                 or group_size == 4 and (attention_backend != "paged" or head_transfer != "packed")):
             raise ValueError("group_size=4 requires paged attention and packed head transfer")
@@ -51,6 +53,7 @@ class NeuralDraft:
             raise ValueError("rank-local heads require a full-model TP executor; the pinned native executor is TP1")
         self.source, self.head = source, head
         self.attention_backend = attention_backend
+        self.gdn_backend = gdn_backend
         self.group_size = group_size
         self.block_size = head.block_size
         self.programs, self.handles = {}, []
@@ -62,7 +65,8 @@ class NeuralDraft:
 
     def compile(self, samples, config):
         inputs = metadata(self.head, samples)
-        for name, program in make_programs(self.source, attention_backend=self.attention_backend, group_size=self.group_size).items():
+        for name, program in make_programs(self.source, attention_backend=self.attention_backend, group_size=self.group_size,
+                                         gdn_backend=self.gdn_backend).items():
             print(f"compiling Orthrus {name}", flush=True)
             self.programs[name] = program.compile(*inputs[name], config=config)
         return list(self.programs.values())
@@ -190,11 +194,11 @@ class NeuralDraft:
 
 
 def make_runner(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
-                attention_backend="native", group_size=1, **callbacks):
+                attention_backend="native", group_size=1, gdn_backend="native", **callbacks):
     """Create a native runner with additional graphs; leave native source intact."""
     runtime = native_module(source, "runtime")
     draft = NeuralDraft(source, head, head_storage=head_storage, head_transfer=head_transfer,
-                        attention_backend=attention_backend, group_size=group_size)
+                        attention_backend=attention_backend, group_size=group_size, gdn_backend=gdn_backend)
 
     class PreparedRunner(runtime.ModelRunner):
         def start(self):
@@ -235,7 +239,7 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
 
 
 def make_engine(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
-                attention_backend="native", group_size=1):
+                attention_backend="native", group_size=1, gdn_backend="native"):
     class Engine(native_module(source, "engine").InferenceEngine):
         def snapshot(self):
             result = super().snapshot()
@@ -247,6 +251,7 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                                      head_storage=runner.draft.storage,
                                      head_transfer=runner.draft.weights.transfer,
                                      attention_backend=runner.draft.attention_backend,
+                                     gdn_backend=runner.draft.gdn_backend,
                                      draft_group_size=runner.draft.group_size,
                                      head_preparation_seconds=head.preparation_seconds,
                                      last_draft_timings=dict(runner.draft.last_timings))
@@ -257,6 +262,7 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                                 head_transfer=head_transfer,
                                 attention_backend=attention_backend,
                                 group_size=group_size,
+                                gdn_backend=gdn_backend,
                                 on_cache_event=engine._on_cache)
     engine.scheduler.runner = engine.runner
     return engine
