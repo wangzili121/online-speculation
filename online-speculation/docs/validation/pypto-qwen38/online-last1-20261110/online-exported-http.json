@@ -1,0 +1,503 @@
+{
+  "scope": "orthrus_qwen38_http",
+  "orthrus_enabled": true,
+  "passed": true,
+  "command": [
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/source-online-r20/scripts/serve_qwen38_pypto.py",
+    "--source",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/OneServing",
+    "--model",
+    "/data/disk/wangzili/models/Qwen3.8-27B",
+    "--port",
+    "34525",
+    "--device",
+    "0",
+    "--head-dir",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261110/online-head-export",
+    "--attention-backend",
+    "paged",
+    "--gdn-backend",
+    "vector",
+    "--draft-group-size",
+    "4",
+    "--head-transfer",
+    "packed"
+  ],
+  "health": {
+    "status": "ready",
+    "model": "Qwen3.8-27B-PyPTO",
+    "device": 0,
+    "active": 0,
+    "queued": 0,
+    "batches": 0,
+    "pid": 3175131,
+    "host_peak_rss_kib": 20326856
+  },
+  "startup_seconds": 235.21591056976467,
+  "completion": {
+    "id": "cmpl-5bdfce2b982940bf89709662601a6370",
+    "object": "text_completion",
+    "created": 1794254812,
+    "model": "Qwen3.8-27B-PyPTO",
+    "choices": [
+      {
+        "index": 0,
+        "text": ", I'm",
+        "token_ids": [
+          11,
+          353,
+          2688
+        ],
+        "finish_reason": "length"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 1,
+      "completion_tokens": 3,
+      "total_tokens": 4
+    },
+    "metrics": {
+      "ttft_ms": 338.016786,
+      "tpot_ms": 796.3160355,
+      "output_tokens": 3,
+      "prompt_tokens": 1
+    }
+  },
+  "chat": {
+    "id": "chatcmpl-1a25bc3cddcb48fcaef5ca5a50ef7cd5",
+    "object": "chat.completion",
+    "created": 1794254814,
+    "model": "Qwen3.8-27B-PyPTO",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "2"
+        },
+        "token_ids": [
+          17,
+          248046
+        ],
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 23,
+      "completion_tokens": 2,
+      "total_tokens": 25
+    },
+    "metrics": {
+      "ttft_ms": 468.174604,
+      "tpot_ms": 1549.360596,
+      "output_tokens": 2,
+      "prompt_tokens": 23
+    }
+  },
+  "sse": {
+    "done": true,
+    "token_ids": [
+      9419,
+      0,
+      248046
+    ],
+    "events": [
+      {
+        "id": "chatcmpl-1821521d01d447f5b3f0cb6b496fc587",
+        "object": "chat.completion.chunk",
+        "created": 1794254816,
+        "model": "Qwen3.8-27B-PyPTO",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "role": "assistant"
+            },
+            "finish_reason": null
+          }
+        ]
+      },
+      {
+        "id": "chatcmpl-1821521d01d447f5b3f0cb6b496fc587",
+        "object": "chat.completion.chunk",
+        "created": 1794254816,
+        "model": "Qwen3.8-27B-PyPTO",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "content": "Hello"
+            },
+            "token_ids": [
+              9419
+            ],
+            "finish_reason": null
+          }
+        ]
+      },
+      {
+        "id": "chatcmpl-1821521d01d447f5b3f0cb6b496fc587",
+        "object": "chat.completion.chunk",
+        "created": 1794254816,
+        "model": "Qwen3.8-27B-PyPTO",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "content": "!"
+            },
+            "token_ids": [
+              0
+            ],
+            "finish_reason": null
+          }
+        ]
+      },
+      {
+        "id": "chatcmpl-1821521d01d447f5b3f0cb6b496fc587",
+        "object": "chat.completion.chunk",
+        "created": 1794254816,
+        "model": "Qwen3.8-27B-PyPTO",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "content": ""
+            },
+            "token_ids": [
+              248046
+            ],
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      {
+        "id": "chatcmpl-1821521d01d447f5b3f0cb6b496fc587",
+        "object": "chat.completion.chunk",
+        "created": 1794254816,
+        "model": "Qwen3.8-27B-PyPTO",
+        "choices": [],
+        "usage": {
+          "prompt_tokens": 16,
+          "completion_tokens": 3,
+          "total_tokens": 19
+        },
+        "metrics": {
+          "ttft_ms": 337.183503,
+          "tpot_ms": 736.52269,
+          "output_tokens": 3,
+          "prompt_tokens": 16
+        }
+      }
+    ]
+  },
+  "metrics": {
+    "device": 0,
+    "scheduler": {
+      "active": 0,
+      "queued": 0,
+      "batches": 9
+    },
+    "prefix_cache_enabled": false,
+    "requests": {
+      "completed": 3,
+      "cancelled": 0,
+      "errors": 0
+    },
+    "timing_ms": {
+      "ttft_ms": {
+        "p50": 338.016786,
+        "p95": 455.1588222,
+        "p99": 465.57144764
+      },
+      "tpot_ms": {
+        "p50": 796.3160355,
+        "p95": 1474.0561399499998,
+        "p99": 1534.2997047899999
+      }
+    },
+    "cache": {
+      "free_blocks": 255,
+      "used_blocks": 0,
+      "cached_prefixes": 0,
+      "hits": 0,
+      "misses": 0,
+      "evictions": 0
+    },
+    "memory": {
+      "committed_bytes": 62233099724,
+      "hbm_used_bytes": 62719336448,
+      "peak_committed_bytes": 62233099724,
+      "peak_hbm_used_bytes": 62723043328
+    },
+    "provenance": {
+      "source_tree_sha256": "05e87f7990a183b743345c0904af3a5909e8df9d57c7c35d95722ba949c19ed1",
+      "pypto_path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/__init__.py",
+      "pypto_init_sha256": "bf20697b19d097f9b241342d857cb69677bb9969d5e94cfaef00edf4a4e884bc",
+      "simpler_path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/runtime/python/simpler/__init__.py",
+      "simpler_init_sha256": "1a73a8b2ee212cc61ed17234604090dc58fd0ac3ca05bd625c3ada38c9b36979",
+      "package_manifest_sha256": "development-source"
+    },
+    "recent_requests": [
+      {
+        "request_id": "57bc088bdd0a471fb16525f1dad6688d",
+        "ttft_ms": 338.016786,
+        "tpot_ms": 796.3160355,
+        "output_tokens": 3,
+        "prompt_tokens": 1
+      },
+      {
+        "request_id": "8943fb9a6e844d35b383ca23de725360",
+        "ttft_ms": 468.174604,
+        "tpot_ms": 1549.360596,
+        "output_tokens": 2,
+        "prompt_tokens": 23
+      },
+      {
+        "request_id": "6ab8ee97448e469fbe4d80480598ec74",
+        "ttft_ms": 337.183503,
+        "tpot_ms": 736.52269,
+        "output_tokens": 3,
+        "prompt_tokens": 16
+      }
+    ],
+    "recent_events": [
+      {
+        "event": "device_complete",
+        "time_ns": 4124379441066818,
+        "batch": 6
+      },
+      {
+        "event": "batch_complete",
+        "time_ns": 4124379441074999,
+        "batch": 6
+      },
+      {
+        "event": "cache_release",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 2,
+        "refs": 0
+      },
+      {
+        "event": "cache_reclaim",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 2
+      },
+      {
+        "event": "cache_release",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 3,
+        "refs": 0
+      },
+      {
+        "event": "cache_reclaim",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 3
+      },
+      {
+        "event": "cache_request_release",
+        "namespace": "qwen3.8-27b-v2"
+      },
+      {
+        "event": "finished",
+        "time_ns": 4124379441138589,
+        "request_id": "8943fb9a6e844d35b383ca23de725360",
+        "reason": "done",
+        "metrics": {
+          "ttft_ms": 468.174604,
+          "tpot_ms": 1549.360596,
+          "output_tokens": 2,
+          "prompt_tokens": 23
+        }
+      },
+      {
+        "event": "queued",
+        "time_ns": 4124379444778775,
+        "request_id": "6ab8ee97448e469fbe4d80480598ec74"
+      },
+      {
+        "event": "admitted",
+        "time_ns": 4124379639940606,
+        "request_id": "6ab8ee97448e469fbe4d80480598ec74",
+        "prefix_tokens": 0
+      },
+      {
+        "event": "batch_submit",
+        "time_ns": 4124379639969117,
+        "batch": 7,
+        "slots": [
+          {
+            "request_id": "6ab8ee97448e469fbe4d80480598ec74",
+            "phase": "prefill",
+            "position": 0,
+            "tokens": 16
+          }
+        ]
+      },
+      {
+        "event": "device_submit",
+        "time_ns": 4124379640024637,
+        "batch": 7
+      },
+      {
+        "event": "cache_allocate",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 4
+      },
+      {
+        "event": "cache_reserve",
+        "namespace": "qwen3.8-27b-v2",
+        "pages": 1,
+        "end": 16
+      },
+      {
+        "event": "device_complete",
+        "time_ns": 4124379781921347,
+        "batch": 7
+      },
+      {
+        "event": "batch_complete",
+        "time_ns": 4124379781932127,
+        "batch": 7
+      },
+      {
+        "event": "batch_submit",
+        "time_ns": 4124379782001338,
+        "batch": 8,
+        "slots": [
+          {
+            "request_id": "6ab8ee97448e469fbe4d80480598ec74",
+            "phase": "decode",
+            "position": 16,
+            "tokens": 1
+          }
+        ]
+      },
+      {
+        "event": "device_submit",
+        "time_ns": 4124379782038978,
+        "batch": 8
+      },
+      {
+        "event": "cache_allocate",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 5
+      },
+      {
+        "event": "cache_reserve",
+        "namespace": "qwen3.8-27b-v2",
+        "pages": 2,
+        "end": 18
+      },
+      {
+        "event": "device_complete",
+        "time_ns": 4124381254759217,
+        "batch": 8
+      },
+      {
+        "event": "batch_complete",
+        "time_ns": 4124381254766057,
+        "batch": 8
+      },
+      {
+        "event": "batch_submit",
+        "time_ns": 4124381254813317,
+        "batch": 9,
+        "slots": [
+          {
+            "request_id": "6ab8ee97448e469fbe4d80480598ec74",
+            "phase": "decode",
+            "position": 17,
+            "tokens": 1
+          }
+        ]
+      },
+      {
+        "event": "device_submit",
+        "time_ns": 4124381254839868,
+        "batch": 9
+      },
+      {
+        "event": "device_complete",
+        "time_ns": 4124381254983498,
+        "batch": 9
+      },
+      {
+        "event": "batch_complete",
+        "time_ns": 4124381254986508,
+        "batch": 9
+      },
+      {
+        "event": "cache_release",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 4,
+        "refs": 0
+      },
+      {
+        "event": "cache_reclaim",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 4
+      },
+      {
+        "event": "cache_release",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 5,
+        "refs": 0
+      },
+      {
+        "event": "cache_reclaim",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 5
+      },
+      {
+        "event": "cache_request_release",
+        "namespace": "qwen3.8-27b-v2"
+      },
+      {
+        "event": "finished",
+        "time_ns": 4124381255031618,
+        "request_id": "6ab8ee97448e469fbe4d80480598ec74",
+        "reason": "done",
+        "metrics": {
+          "ttft_ms": 337.183503,
+          "tpot_ms": 736.52269,
+          "output_tokens": 3,
+          "prompt_tokens": 16
+        }
+      }
+    ],
+    "orthrus": {
+      "block_size": 32,
+      "rounds": 3,
+      "accepted": 3,
+      "restores": 1,
+      "neural_draft_rounds": 3,
+      "last_draft_seconds": 1.345663895830512,
+      "head_storage": "stream",
+      "head_transfer": "packed",
+      "attention_backend": "paged",
+      "gdn_backend": "vector",
+      "serving_backend": "device",
+      "weight_backend": "pypto",
+      "head_preparation_backend": "pypto",
+      "draft_group_size": 4,
+      "head_preparation_seconds": 35.778037257958204,
+      "last_draft_timings": {
+        "device_seconds": 0.14659553905948997,
+        "weights_seconds": 1.1958695305511355,
+        "compute_dispatches": 18,
+        "inputs_seconds": 0.001392747275531292,
+        "embedding_seconds": 0.0011560749262571335,
+        "group_seconds": 0.14082030300050974,
+        "finish_seconds": 0.004619161132723093,
+        "readback_seconds": 0.0,
+        "select_seconds": 0.0013723359443247318,
+        "total_seconds": 1.345663895830512
+      }
+    }
+  },
+  "server_returncode": -15,
+  "clean_shutdown": true,
+  "seconds": 246.2005276759155
+}

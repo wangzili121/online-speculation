@@ -327,8 +327,20 @@ def validate_optimizer(args, config):
         state = DeviceOptimizer(programs, worker)
         device_banks = None
         if args.device_init:
-            device_banks = [worker.alloc_tensor(tuple(banks[name].shape), banks[name].dtype, init=banks[name]) for name in order]
-            handles += device_banks
+            device_banks = []
+            for name in order:
+                value = banks[name]
+                if args.tensor_views:
+                    from pypto.runtime.task_interface import DataType
+                    payload = torch.cat((torch.zeros(64, dtype=torch.uint8), value.view(torch.uint8).reshape(-1)))
+                    parent = worker.alloc_tensor(tuple(payload.shape), torch.uint8, init=payload)
+                    dtype = DataType.FLOAT32 if value.dtype == torch.float32 else DataType.BFLOAT16
+                    device_banks.append(parent.buffer.tensor(tuple(value.shape), dtype, byte_offset=64))
+                    handles.append(parent)
+                else:
+                    handle = worker.alloc_tensor(tuple(value.shape), value.dtype, init=value)
+                    device_banks.append(handle)
+                    handles.append(handle)
         state.initialize(Head(), {name: raw[name] for name in order if "gamma" in name}, device_banks=device_banks)
         weights = DraftWeights(Head())
         weights.worker = worker

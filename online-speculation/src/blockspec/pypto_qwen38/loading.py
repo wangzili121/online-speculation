@@ -15,6 +15,16 @@ def dtype_name(dtype):
     return "bf16" if dtype == torch.bfloat16 else "fp32"
 
 
+def tensor_layout(value):
+    """句柄使用 Torch 元数据；Runtime Tensor 视图使用 shapes 和 dtype wire value。"""
+    shape = getattr(value, "shape", None)
+    if shape is not None:
+        return tuple(shape), value.dtype
+    from pypto.runtime.task_interface import DataType
+    dtype = {DataType.BFLOAT16.value: torch.bfloat16, DataType.FLOAT32.value: torch.float32}.get(value.dtype)
+    return tuple(value.shapes), dtype
+
+
 class LoadingPrograms:
     """先编译/注册所有规格，再启动 worker；不依赖运行时动态注册。"""
 
@@ -96,7 +106,8 @@ class DeviceLoader:
         self.worker.run(program, *args, config=self.registry.config)
 
     def zero(self, target):
-        self.run(self.registry.programs[("zero", tuple(target.shape), target.dtype)], target)
+        shape, dtype = tensor_layout(target)
+        self.run(self.registry.programs[("zero", shape, dtype)], target)
 
     def check(self, flags, message):
         self.worker.copy_from(self.flags_host.data_ptr(), flags.data_ptr, 32)
@@ -112,8 +123,8 @@ class DeviceLoader:
         sr, sc = source_offset
         tr, tc = target_offset
         if (any(type(n) is not int or n < 0 for n in (*source_offset, *target_offset))
-                or tuple(source.shape) != key[0] or source.dtype != key[2]
-                or tuple(target.shape) != key[1] or target.dtype != key[3]
+                or tensor_layout(source) != (key[0], key[2])
+                or tensor_layout(target) != (key[1], key[3])
                 or tr + rows > tm or tc + cols > tn
                 or (key[4] and (sc != 0 or sr + cols > sm))
                 or (not key[4] and (sr + rows > sm or sc + cols > sn))):
@@ -121,7 +132,8 @@ class DeviceLoader:
         program, rows, chain = self.registry.copies[key]
         if key[4]:
             from pypto.runtime.task_interface import DataType
-            source = source.buffer.tensor((1, prod(source.shape)), DataType.INT16)
+            source = source.buffer.tensor((1, prod(key[0])), DataType.INT16,
+                                          byte_offset=getattr(source, "byte_offset", 0))
         temporaries = []
         try:
             flags = self.allocate((rows, 8), torch.float32)
