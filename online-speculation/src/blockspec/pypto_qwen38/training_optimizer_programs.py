@@ -5,18 +5,21 @@ def make_stats(shape):
     from math import prod
     import pypto.language as pl
     N = prod(shape)
-    T = 1024 if N % 1024 == 0 else min(128, N)
+    T = min(4096, N)
     if N % T:
         raise ValueError("aligned gradient tensor required")
 
     @pl.jit
     def stats(value: pl.Tensor, sums: pl.Out[pl.Tensor], flags: pl.Out[pl.Tensor]):
         x = pl.reshape(value, [N // T, T])
-        with pl.spmd(N // T, name_hint="orthrus_gradient_statistics"):
-            row = pl.tile.get_block_idx()
-            block = pl.reshape(pl.slice(x, [1, T], [row, 0]), [8, T // 8])
-            sums[row:row + 1, 0:8] = pl.reshape(pl.row_sum(pl.mul(block, block)), [1, 8])
-            flags[row:row + 1, 0:8] = pl.reshape(pl.row_min(pl.cmp(pl.abs(block), 3.4028234663852886e38, cmp_type=3)), [1, 8])
+        with pl.spmd((N // T + 15) // 16, name_hint="orthrus_gradient_statistics"):
+            base = pl.tile.get_block_idx() * 16
+            for part in pl.range(16):
+                row = base + part
+                if row < N // T:
+                    block = pl.reshape(pl.slice(x, [1, T], [row, 0]), [8, T // 8])
+                    sums[row:row + 1, 0:8] = pl.reshape(pl.row_sum(pl.mul(block, block)), [1, 8])
+                    flags[row:row + 1, 0:8] = pl.reshape(pl.row_min(pl.cmp(pl.abs(block), 3.4028234663852886e38, cmp_type=3)), [1, 8])
         return sums, flags
 
     @pl.jit.host
@@ -37,10 +40,13 @@ def make_reduce(rows):
             row = pl.tile.get_block_idx() * 64
             padded[row:row + 64, 0:8] = pl.full([64, 8], dtype=pl.FP32, value=0.)
             good[row:row + 64, 0:8] = pl.full([64, 8], dtype=pl.FP32, value=1.)
-        with pl.spmd(rows, name_hint="orthrus_gradient_actual"):
-            row = pl.tile.get_block_idx()
-            padded[row:row + 1, 0:8] = pl.slice(sums, [1, 8], [row, 0])
-            good[row:row + 1, 0:8] = pl.slice(flags, [1, 8], [row, 0])
+        with pl.spmd(R, name_hint="orthrus_gradient_actual"):
+            base = pl.tile.get_block_idx() * 64
+            for part in pl.range(64):
+                row = base + part
+                if row < rows:
+                    padded[row:row + 1, 0:8] = pl.slice(sums, [1, 8], [row, 0])
+                    good[row:row + 1, 0:8] = pl.slice(flags, [1, 8], [row, 0])
         with pl.spmd(R, name_hint="orthrus_gradient_reduce"):
             row = pl.tile.get_block_idx()
             out_sums[row:row + 1, 0:8] = pl.col_sum(pl.slice(padded, [64, 8], [row * 64, 0]))
@@ -58,7 +64,7 @@ def make_publish(shape, *, gamma=False, inline=False):
     import pypto.language as pl
     kernel = pl.jit.inline if inline else pl.jit
     N = prod(shape)
-    T = min(128, N)
+    T = min(2048, N)
     if N % T:
         raise ValueError("aligned parameter required")
     if gamma:
@@ -66,19 +72,25 @@ def make_publish(shape, *, gamma=False, inline=False):
         def publish(master: pl.Tensor, execution: pl.Out[pl.Tensor]):
             x = pl.reshape(master, [N // T, T])
             y = pl.reshape(execution, [N // T, T])
-            with pl.spmd(N // T, name_hint="orthrus_publish_norm"):
-                row = pl.tile.get_block_idx()
-                raw = pl.cast(pl.slice(x, [1, T], [row, 0]), pl.BF16, mode="rint")
-                y[row:row + 1, 0:T] = pl.add(pl.cast(raw, pl.FP32), 1.)
+            with pl.spmd((N // T + 15) // 16, name_hint="orthrus_publish_norm"):
+                base = pl.tile.get_block_idx() * 16
+                for part in pl.range(16):
+                    row = base + part
+                    if row < N // T:
+                        raw = pl.cast(pl.slice(x, [1, T], [row, 0]), pl.BF16, mode="rint")
+                        y[row:row + 1, 0:T] = pl.add(pl.cast(raw, pl.FP32), 1.)
             return execution
     else:
         @kernel
         def publish(master: pl.Tensor, execution: pl.Out[pl.Tensor]):
             x = pl.reshape(master, [N // T, T])
             y = pl.reshape(execution, [N // T, T])
-            with pl.spmd(N // T, name_hint="orthrus_publish_projection"):
-                row = pl.tile.get_block_idx()
-                y[row:row + 1, 0:T] = pl.cast(pl.slice(x, [1, T], [row, 0]), pl.BF16, mode="rint")
+            with pl.spmd((N // T + 15) // 16, name_hint="orthrus_publish_projection"):
+                base = pl.tile.get_block_idx() * 16
+                for part in pl.range(16):
+                    row = base + part
+                    if row < N // T:
+                        y[row:row + 1, 0:T] = pl.cast(pl.slice(x, [1, T], [row, 0]), pl.BF16, mode="rint")
             return execution
 
     @pl.jit.host
@@ -122,16 +134,19 @@ def make_accumulate(shape):
     from math import prod
     import pypto.language as pl
     N = prod(shape)
-    T = min(128, N)
+    T = min(2048, N)
 
     @pl.jit
     def add(total: pl.Tensor, gradient: pl.Tensor, output: pl.Out[pl.Tensor]):
         a = pl.reshape(total, [N // T, T])
         b = pl.reshape(gradient, [N // T, T])
         out = pl.reshape(output, [N // T, T])
-        with pl.spmd(N // T, name_hint="orthrus_accumulate_master_gradient"):
-            row = pl.tile.get_block_idx()
-            out[row:row + 1, 0:T] = pl.add(pl.slice(a, [1, T], [row, 0]), pl.slice(b, [1, T], [row, 0]))
+        with pl.spmd((N // T + 15) // 16, name_hint="orthrus_accumulate_master_gradient"):
+            base = pl.tile.get_block_idx() * 16
+            for part in pl.range(16):
+                row = base + part
+                if row < N // T:
+                    out[row:row + 1, 0:T] = pl.add(pl.slice(a, [1, T], [row, 0]), pl.slice(b, [1, T], [row, 0]))
         return output
 
     @pl.jit.host

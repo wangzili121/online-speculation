@@ -103,6 +103,7 @@ class DeviceOptimizer:
         resident = {} if device_banks is None else dict(zip(order, device_banks, strict=True))
         import torch
         loader = DeviceLoader(self.programs.loader, self.worker)
+        completed = False
         try:
             for name, shape in self.programs.shapes.items():
                 raw = raw_norms[name] if "gamma" in name else host[name]
@@ -122,8 +123,15 @@ class DeviceOptimizer:
                     loader.check(flags, "raw training norm does not match the loaded inference head")
                     loader.free(flags)
                     loader.free(expected)
+            completed = True
         finally:
-            loader.close()
+            try:
+                loader.close()
+            except BaseException:
+                if completed:
+                    raise
+                import logging
+                logging.getLogger(__name__).exception("optimizer initializer cleanup failed")
 
     def render(self, index, states):
         if self.programs.combined:

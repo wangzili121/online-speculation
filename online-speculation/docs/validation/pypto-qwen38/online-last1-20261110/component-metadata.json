@@ -1,0 +1,18 @@
+{
+  "cpu": "source-online-r15",
+  "online-suffix-tiled.json": "source-online-r16",
+  "real-shape-suffix.json": "source-online-r16",
+  "real-shape-optimizer.json": "source-online-r15",
+  "online-optimizer-device-init.json": "source-online-r15",
+  "full_shape": {
+    "hidden": 5120,
+    "intermediate": 17408,
+    "vocabulary": 248320,
+    "q_heads": 24,
+    "kv_heads": 4,
+    "dimension": 256,
+    "context": 512,
+    "block": 32
+  },
+  "note": "Real-shape suffix checks execution, finiteness and nonzero gradients. Small suffix compares all 77 intermediates with independent Torch autograd. Optimizer is checked against independent FP64 norm and Torch Adam."
+}

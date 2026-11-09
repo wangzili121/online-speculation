@@ -163,7 +163,11 @@ class OnlineLearner:
                     self.shared[name] = target
             print("online learner ready", flush=True)
         except BaseException:
-            self.close()
+            try:
+                self.close()
+            except BaseException:
+                import logging
+                logging.getLogger(__name__).exception("online learner cleanup failed after startup error")
             raise
 
     def begin(self, draft, past, width):
@@ -238,19 +242,22 @@ class OnlineLearner:
         self.current = None
         self.replay.clear()
         self.pool.clear()
-        if self.workspace is not None:
-            self.workspace.close()
-            self.workspace = None
-        if self.optimizer is not None:
-            self.optimizer.close()
-            self.optimizer = None
-        if self.trainer is not None and getattr(self, "dedicated", False):
-            while self.training_handles:
-                self.trainer.free_tensor(self.training_handles[-1])
-                self.training_handles.pop()
-            self.trainer.close()
-            self.trainer = None
-        if self.native is not None:
-            while self.handles:
-                self.native.worker.free_tensor(self.handles[-1])
-                self.handles.pop()
+        try:
+            if self.trainer is not None and getattr(self, "dedicated", False):
+                # 独立 worker 拥有全部训练分配；整棵运行时关闭也覆盖设备故障后的清理。
+                self.trainer.close()
+                self.trainer = None
+                self.workspace = self.optimizer = None
+                self.training_handles.clear()
+            else:
+                if self.workspace is not None:
+                    self.workspace.close()
+                    self.workspace = None
+                if self.optimizer is not None:
+                    self.optimizer.close()
+                    self.optimizer = None
+        finally:
+            if self.native is not None:
+                while self.handles:
+                    self.native.worker.free_tensor(self.handles[-1])
+                    self.handles.pop()

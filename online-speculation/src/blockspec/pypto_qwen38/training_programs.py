@@ -86,7 +86,7 @@ def make_adam(shape, *, beta1=.9, beta2=.999, epsilon=1e-8, inline=False):
     """FP32 master/moments；写候选状态，调用方确认后才发布执行权重。"""
     from math import prod
     N = prod(shape)
-    T = min(128, N)
+    T = min(2048, N)
     if N % T:
         raise ValueError("complete T-element parameter tiles required")
     import pypto.language as pl
@@ -104,16 +104,19 @@ def make_adam(shape, *, beta1=.9, beta2=.999, epsilon=1e-8, inline=False):
         op = pl.reshape(next_master, [N // T, T])
         om = pl.reshape(next_first, [N // T, T])
         ov = pl.reshape(next_second, [N // T, T])
-        with pl.spmd(N // T, name_hint="orthrus_adam_candidate"):
-            row = pl.tile.get_block_idx()
-            grad = pl.mul(pl.slice(g, [1, T], [row, 0]), clip)
-            mean = pl.add(pl.mul(pl.slice(m, [1, T], [row, 0]), beta1), pl.mul(grad, 1. - beta1))
-            variance = pl.add(pl.mul(pl.slice(v, [1, T], [row, 0]), beta2), pl.mul(pl.mul(grad, grad), 1. - beta2))
-            denominator = pl.add(pl.sqrt(pl.div(variance, correction2)), epsilon)
-            update = pl.div(pl.mul(mean, rate), pl.mul(denominator, correction1))
-            op[row:row + 1, 0:T] = pl.sub(pl.slice(p, [1, T], [row, 0]), update)
-            om[row:row + 1, 0:T] = mean
-            ov[row:row + 1, 0:T] = variance
+        with pl.spmd((N // T + 15) // 16, name_hint="orthrus_adam_candidate"):
+            base = pl.tile.get_block_idx() * 16
+            for part in pl.range(16):
+                row = base + part
+                if row < N // T:
+                    grad = pl.mul(pl.slice(g, [1, T], [row, 0]), clip)
+                    mean = pl.add(pl.mul(pl.slice(m, [1, T], [row, 0]), beta1), pl.mul(grad, 1. - beta1))
+                    variance = pl.add(pl.mul(pl.slice(v, [1, T], [row, 0]), beta2), pl.mul(pl.mul(grad, grad), 1. - beta2))
+                    denominator = pl.add(pl.sqrt(pl.div(variance, correction2)), epsilon)
+                    update = pl.div(pl.mul(mean, rate), pl.mul(denominator, correction1))
+                    op[row:row + 1, 0:T] = pl.sub(pl.slice(p, [1, T], [row, 0]), update)
+                    om[row:row + 1, 0:T] = mean
+                    ov[row:row + 1, 0:T] = variance
         return next_master, next_first, next_second
 
     @pl.jit.host
@@ -146,27 +149,38 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
     TA = int(transpose_a)
     TB = int(transpose_b)
     if gradient_weight:
+        tasks = batches * (M // MT) * (N // NT)
         @kernel
         def linear(a: pl.Tensor, b: pl.Tensor, output: pl.InOut[pl.Tensor]):
-            with pl.spmd(batches * (M // MT) * (N // NT), name_hint="orthrus_training_linear"):
-                task = pl.tile.get_block_idx()
-                head = task // ((M // MT) * (N // NT))
-                task = task % ((M // MT) * (N // NT))
-                row = task // (N // NT) * MT
-                col = task % (N // NT) * NT
-                acc = pl.create_tensor([MT, NT], dtype=pl.FP32)
-                for step in pl.pipeline(K // KT, stage=2):
-                    begin = step * KT
-                    x = pl.slice(a, [AR, AC], [head * a_shape[0] + TA * begin + (1 - TA) * row,
-                                               TA * row + (1 - TA) * begin])
-                    w = pl.slice(b, [BR, BC], [head // b_repeats * b_shape[0] + TB * col + (1 - TB) * begin,
-                                               TB * begin + (1 - TB) * col])
-                    acc = pl.matmul_acc(acc, x, w, a_trans=transpose_a, b_trans=transpose_b, init_cond=(step == 0))
-                rounded = pl.cast(acc, pl.BF16, mode="rint")
-                result = pl.cast(rounded, pl.FP32)
-                if accumulate:
-                    result = pl.add(result, pl.slice(output, [MT, NT], [head * M + row, col]))
-                output[head * M + row:head * M + row + MT, col:col + NT] = result
+            # 多个输出 tile 复用同一组 Cube→Vector 缓冲，避免临时量随整张 dW 矩阵放大。
+            with pl.spmd((tasks + 15) // 16, name_hint="orthrus_training_linear"):
+                base = pl.tile.get_block_idx() * 16
+                for part in pl.range(16):
+                    task = base + part
+                    if task < tasks:
+                        head = task // ((M // MT) * (N // NT))
+                        local = task % ((M // MT) * (N // NT))
+                        row = local // (N // NT) * MT
+                        col = local % (N // NT) * NT
+                        if K == KT:
+                            # dW 沿 K32 token 维归约，一次 Cube 即可。
+                            x = pl.slice(a, [AR, AC], [head * a_shape[0] + (1 - TA) * row, TA * row])
+                            w = pl.slice(b, [BR, BC], [head // b_repeats * b_shape[0] + TB * col, (1 - TB) * col])
+                            acc = pl.matmul(x, w, a_trans=transpose_a, b_trans=transpose_b, out_dtype=pl.FP32)
+                        else:
+                            acc = pl.create_tensor([MT, NT], dtype=pl.FP32)
+                            for step in pl.pipeline(K // KT, stage=2):
+                                begin = step * KT
+                                x = pl.slice(a, [AR, AC], [head * a_shape[0] + TA * begin + (1 - TA) * row,
+                                                           TA * row + (1 - TA) * begin])
+                                w = pl.slice(b, [BR, BC], [head // b_repeats * b_shape[0] + TB * col + (1 - TB) * begin,
+                                                           TB * begin + (1 - TB) * col])
+                                acc = pl.matmul_acc(acc, x, w, a_trans=transpose_a, b_trans=transpose_b, init_cond=(step == 0))
+                        rounded = pl.cast(acc, pl.BF16, mode="rint")
+                        result = pl.cast(rounded, pl.FP32)
+                        if accumulate:
+                            result = pl.add(result, pl.slice(output, [MT, NT], [head * M + row, col]))
+                        output[head * M + row:head * M + row + MT, col:col + NT] = result
             return output
 
     else:

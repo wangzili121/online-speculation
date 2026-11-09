@@ -19,6 +19,7 @@ def main():
     p.add_argument("--device-init", action="store_true", help="initialize masters from existing device head banks")
     p.add_argument("--bridge", action="store_true", help="validate isolated workers and cross-device byte copies")
     p.add_argument("--learner-device", type=int)
+    p.add_argument("--real-shape", action="store_true", help="exercise all six real 27B parameter dimensions")
     a = p.parse_args()
     if a.output.exists():
         p.error("new output required")
@@ -113,12 +114,13 @@ def main():
 
 
 def suffix(args, config):
+    import time
     import torch
     from pypto.runtime import DistributedWorker
     from blockspec.pypto_qwen38.training_graph import LastLayerGraph, SuffixShape
     from blockspec.pypto_qwen38.training_executor import TrainingPrograms, TrainingWorkspace
     from blockspec.pypto_qwen38.training_reference import evaluate
-    graph = LastLayerGraph(SuffixShape(hidden=128, intermediate=256, vocabulary=128,
+    graph = LastLayerGraph() if args.real_shape else LastLayerGraph(SuffixShape(hidden=128, intermediate=256, vocabulary=128,
         q_heads=4, kv_heads=2, dimension=64, context=64, rotary=32))
     programs = TrainingPrograms(graph, config, combined=args.combined, accumulate_gradients=args.accumulate_gradients)
     worker = workspace = None
@@ -141,28 +143,35 @@ def suffix(args, config):
                 destination[name] = worker.alloc_tensor(value.shape, torch.float32, init=zero)
                 handles.append(destination[name])
                 accumulated[value.name] = zero
-        for past, width, valid in ((0, 32, 31), (7, 17, 4), (32, 32, 1)):
-            expected = evaluate(graph, inputs, past=past, width=width, valid=valid)
-            if destination is not None:
+        cases = ((32, 32, 17),) if args.real_shape else ((0, 32, 31), (7, 17, 4), (32, 32, 1))
+        report["scope"] = "real_shape_finiteness" if args.real_shape else "torch_numerical_comparison"
+        for past, width, valid in cases:
+            expected = None if args.real_shape else evaluate(graph, inputs, past=past, width=width, valid=valid)
+            if destination is not None and expected is not None:
                 for value in graph.gradients.values():
                     accumulated[value.name] = accumulated[value.name] + expected[value.name]
                     expected[value.name] = accumulated[value.name]
+            start = time.monotonic()
             actual = workspace.run(device, past=past, width=width, valid=valid, gradients=destination)
+            seconds = time.monotonic()-start
             # 每个阶段都核对；不能只看最终 loss 而漏掉错误梯度。
             errors = []
             for node in graph.nodes:
                 for value in node.outputs:
-                    tensor = expected[value.name].detach()
-                    returned = torch.empty(tuple(tensor.shape), dtype=tensor.dtype)
+                    tensor = None if expected is None else expected[value.name].detach()
+                    returned = torch.empty(value.shape, dtype=torch.bfloat16 if value.dtype == "bf16" else torch.float32)
                     handle = workspace.values[value.name]
                     worker.copy_from(returned.data_ptr(), handle.data_ptr, returned.numel() * returned.element_size())
-                    error = float((returned.float()-tensor.float()).norm() / tensor.float().norm().clamp_min(1e-20))
+                    error = 0. if tensor is None else float((returned.float()-tensor.float()).norm() / tensor.float().norm().clamp_min(1e-20))
                     if not torch.isfinite(returned).all() or error > .03:
                         raise AssertionError((node.kind, value.name, past, width, valid, error))
+                    if tensor is None and value.name in {v.name for v in graph.gradients.values()}:
+                        assert torch.count_nonzero(returned), value.name
                     errors.append(error)
             assert len(actual) == 6
             report["cases"].append(dict(past=past, width=width, valid=valid,
-                                        checked_tensors=len(errors), max_relative_l2=max(errors), passed=True))
+                checked_tensors=len(errors), execution_seconds=seconds,
+                max_relative_l2=None if expected is None else max(errors), passed=True))
         report["passed"] = True
     except BaseException as error:
         report["error"] = repr(error)
@@ -291,7 +300,7 @@ def validate_optimizer(args, config):
     from blockspec.pypto_qwen38.training_graph import LastLayerGraph, SuffixShape
     from blockspec.pypto_qwen38.online_optimizer import DeviceOptimizer, OptimizerPrograms
     from blockspec.pypto_qwen38.weights import DraftWeights
-    graph = LastLayerGraph(SuffixShape(hidden=128, intermediate=256, vocabulary=128,
+    graph = LastLayerGraph() if args.real_shape else LastLayerGraph(SuffixShape(hidden=128, intermediate=256, vocabulary=128,
         q_heads=4, kv_heads=2, dimension=64, context=64, rotary=32))
     programs = OptimizerPrograms(graph, config, clip_norm=.1, combined=args.combined)
     order = ("q_weight", "k_weight", "v_weight", "q_gamma", "k_gamma", "o_weight")
@@ -335,10 +344,15 @@ def validate_optimizer(args, config):
                 g = parameter.grad
                 worker.copy_to(gradients[name].data_ptr, g.data_ptr(), g.numel()*4)
             state.accumulate(gradients)
-            norm = torch.nn.utils.clip_grad_norm_(list(reference.values()), .1)
+            # 大矩阵的顺序 FP32 norm 会积累误差；使用独立 FP64 范数核对设备归约。
+            norm = torch.linalg.vector_norm(torch.stack([
+                torch.linalg.vector_norm(parameter.grad, dtype=torch.float64) for parameter in reference.values()]))
+            clip = min(1., .1/(float(norm)+1e-6))
+            for parameter in reference.values():
+                parameter.grad.mul_(clip)
             result = state.step(weights, 1e-3)
             opt.step()
-            torch.testing.assert_close(torch.tensor(result["gradient_norm"]), norm, rtol=1e-4, atol=1e-6)
+            torch.testing.assert_close(torch.tensor(result["gradient_norm"]), norm.float(), rtol=1e-4, atol=1e-6)
             for name, parameter in reference.items():
                 for actual, expected in zip(state.state[name], (parameter, opt.state[parameter]["exp_avg"],
                                                                 opt.state[parameter]["exp_avg_sq"]), strict=True):
@@ -350,7 +364,8 @@ def validate_optimizer(args, config):
                 torch.testing.assert_close(read(state.tensors()[name]), expected, atol=0, rtol=0)
             assert weights.version == step and state.steps == step
             assert tuple(weights.overrides[63]) == tuple(state.tensors()[name] for name in order)
-            report["cases"].append(dict(name="clipped_adam_publish", step=step, **result, passed=True))
+            report["cases"].append(dict(name="clipped_adam_publish", step=step,
+                reference_fp64_norm=float(norm), **result, passed=True))
         before = {name: read(tensors[0]).clone() for name, tensors in state.state.items()}
         old_banks = weights.overrides[63]
         state.zero_grad()

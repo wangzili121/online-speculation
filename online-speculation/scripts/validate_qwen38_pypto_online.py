@@ -84,6 +84,7 @@ def main():
             print(json.dumps(row), flush=True)
         native.release(request)
         request = None
+        del initial
         engine.scheduler.runner = native
         baseline = collect(engine, 3, 1200)
         deadline = time.monotonic()+30
