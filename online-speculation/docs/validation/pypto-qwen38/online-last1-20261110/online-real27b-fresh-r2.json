@@ -1,0 +1,87 @@
+{
+  "passed": true,
+  "cases": [
+    {
+      "name": "k32_online_round",
+      "iteration": 0,
+      "accepted": 1,
+      "target_history_unchanged": true,
+      "greedy_matches": true,
+      "version": 0,
+      "passed": true
+    },
+    {
+      "name": "k32_online_round",
+      "iteration": 1,
+      "accepted": 1,
+      "target_history_unchanged": true,
+      "greedy_matches": true,
+      "version": 1,
+      "passed": true,
+      "replay_logits_relative_l2": 2.49383992922958e-05,
+      "update_seconds": 6.3225625162012875,
+      "loss": 0.666512668132782,
+      "reached_positions": 4,
+      "gradient_norm": 1.482939600944519,
+      "clip_scale": 0.6743358969688416,
+      "checkpoint": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261110/online-real27b-fresh-r2.updates/step-00000001"
+    },
+    {
+      "name": "k32_online_round",
+      "iteration": 2,
+      "accepted": 1,
+      "target_history_unchanged": true,
+      "greedy_matches": true,
+      "version": 1,
+      "passed": true
+    },
+    {
+      "name": "k32_online_round",
+      "iteration": 3,
+      "accepted": 1,
+      "target_history_unchanged": true,
+      "greedy_matches": true,
+      "version": 2,
+      "passed": true,
+      "replay_logits_relative_l2": 0.0,
+      "update_seconds": 6.169734456110746,
+      "loss": 0.6588795781135559,
+      "reached_positions": 4,
+      "gradient_norm": 1.5362310409545898,
+      "clip_scale": 0.6509433388710022,
+      "checkpoint": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261110/online-real27b-fresh-r2.updates/step-00000002"
+    },
+    {
+      "name": "scheduler_online",
+      "greedy_matches": true,
+      "before_version": 2,
+      "after_version": 3,
+      "passed": true
+    },
+    {
+      "name": "checkpoint_restore_http_update",
+      "restored_version": 3,
+      "final_version": 4,
+      "completion_tokens": 3,
+      "text": ", I'm",
+      "token_ids": [
+        11,
+        353,
+        2688
+      ],
+      "health_ready": true,
+      "passed": true
+    }
+  ],
+  "memory_after_requests": {
+    "serving": [
+      2265124864,
+      65452113920
+    ],
+    "learner": [
+      53307777024,
+      65452113920
+    ],
+    "learner_device": 0
+  }
+}

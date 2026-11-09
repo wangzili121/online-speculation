@@ -25,7 +25,7 @@ ASCEND_RT_VISIBLE_DEVICES=0,1 python scripts/serve_qwen38_pypto.py \
 
 首次初始化需要原训练 head 的 BF16 norm；已转换 bank 中的 `1 + weight` 不能保证精确还原原值。`--head-dir` 直接使用原训练 head 时，可以省略 `--learner-head-dir`。每次更新可保存 `step-00000001` 等目录，包含六组参数的 FP32 master、Adam moment、步数和基模/head 哈希；重启用 `--resume-online /data/online-heads/step-00000001` 恢复，不需要重新初始化 norm。此 checkpoint 是 last-1 续训状态，不是原有完整 head 目录的替代格式。
 
-`--device` 与 `--learner-device` 使用可见设备序号。设备内存足够时可省略独立学习卡；当前 64 GB A2 的单卡整模型在线配置不能容纳全部状态。末层反向组合为一个 CHIP 入口，内部仍有多个计算阶段；梯度直接累加到候选 master 缓冲，提交后旧 master 轮换为下一次梯度缓冲，减少约 800 MiB 重复存储，保留两套执行参数用于安全切换。
+`--device` 与 `--learner-device` 使用可见设备序号；示例中的物理卡号按升序列出。设备内存足够时可省略独立学习卡；当前 64 GB A2 的单卡整模型在线配置不能容纳全部状态。末层反向组合为一个 CHIP 入口，内部仍有多个计算阶段；梯度直接累加到候选 master 缓冲，提交后旧 master 轮换为下一次梯度缓冲，减少约 800 MiB 重复存储，保留两套执行参数用于安全切换。
 
 若仅需固定 head 推理，可以将在线 checkpoint 导出为标准 PyPTO head；`--head-dir` 仍指向初始化时使用的原 head，不能换成其他版本：
 
@@ -41,7 +41,7 @@ python scripts/prepare_qwen38_pypto_head.py \
 一次在线更新按下面的调用关系执行：
 
 ```text
-NeuralDraft.propose → OnlineLearner.begin       保存冻结前段的输出及历史
+NeuralDraft.propose → OnlineLearner.begin       保存 draft 前 63 层输出及 AR 历史
 NativeTarget.forward → FeedbackBlock.teacher   收集 verifier 教师 logits
 OrthrusRunner.run_batch → OnlineLearner.observe
   → OnlineLearner.update → TrainingWorkspace.run  重放末层并计算显式梯度
@@ -50,7 +50,9 @@ OrthrusRunner.run_batch → OnlineLearner.observe
 
 `training_graph.py` 定义前向与链式求导，`training_*_programs.py` 实现对应的设备计算，`online_checkpoint.py` 保存和恢复已提交状态。不更新 GDN，也不将该入口当作通用 last-N 或全层训练。
 
-独立检查使用 `scripts/validate_qwen38_pypto_training.py` 的 `--suffix` / `--optimizer`；真实模型闭环使用 `scripts/validate_qwen38_pypto_online.py`。当前独立手写梯度与优化器检查已通过，真实模型在线闭环仍在联调。
+独立检查使用 `scripts/validate_qwen38_pypto_training.py` 的 `--suffix` / `--optimizer`：小尺寸核对全部 77 个前向/反向中间结果，真实尺寸检查执行与梯度有限性；优化器对照覆盖四步 Adam、全局裁剪、非有限值拦截及恢复后下一步精确一致。另覆盖真实 Runtime Tensor 视图及非零偏移加载。
+
+真实 27B 在两张 A2 上通过从 head 初始化和从 checkpoint 冷启动的完整检查：两块 K32 反馈共同更新、新 head 在下一轮生效、目标缓存不变、greedy 结果与 target-only 相同，以及 scheduler/HTTP 自动更新。导出 head 的前 63 层逐字节不变，末层与 checkpoint 一致；另起服务通过 completion、chat 和 SSE，三次请求无错误。CPU 回归共 445 项通过。[原始记录与验证范围](validation/pypto-qwen38/online-last1-20261110/README.md)包含对应命令和结果；这些是功能检查，不用于评价训练质量或加速收益。
 
 ## 固定基线
 
