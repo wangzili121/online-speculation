@@ -157,8 +157,10 @@ class OnlineLearner:
                 offsets = dict(input_gamma=(3, 63*H*4), post_gamma=(4, 63*H*4), final_gamma=(1, 0),
                     lm_head=(2, 0), mlp_gate=(5, 63*I*H*2), mlp_up=(6, 63*I*H*2), mlp_down=(7, 63*I*H*2))
                 for name, (bank, offset) in offsets.items():
-                    source = self.shared[name]
-                    target = self.alloc(source.shape, source.dtype, training=True)
+                    # view 的 shapes/DataType 与 worker 句柄接口不同；以训练图契约分配。
+                    spec = self.graph.inputs[name]
+                    target = self.alloc(spec.shape, torch.float32 if spec.dtype == "fp32" else torch.bfloat16,
+                                        training=True)
                     self.bridge.copy(native.worker, native.banks[bank], self.trainer, target, source_offset=offset)
                     self.shared[name] = target
             print("online learner ready", flush=True)

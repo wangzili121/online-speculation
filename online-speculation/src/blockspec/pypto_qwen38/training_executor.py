@@ -89,7 +89,13 @@ class TrainingWorkspace:
         for name, value in self.programs.graph.inputs.items():
             tensor = inputs[name]
             dtype = torch.bfloat16 if value.dtype == "bf16" else torch.float32
-            if tuple(tensor.shape) != value.shape or tensor.dtype != dtype:
+            shape, actual_dtype = getattr(tensor, "shape", None), tensor.dtype
+            if shape is None:
+                from pypto.runtime.task_interface import DataType
+                shape = tensor.shapes
+                actual_dtype = {DataType.BFLOAT16.value: torch.bfloat16,
+                                DataType.FLOAT32.value: torch.float32}.get(actual_dtype)
+            if tuple(shape) != value.shape or actual_dtype != dtype:
                 raise ValueError(f"suffix input shape changed: {name}")
         values = {**inputs, **self.values}
         if self.programs.combined:

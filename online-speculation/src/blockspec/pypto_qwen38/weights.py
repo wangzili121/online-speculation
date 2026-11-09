@@ -151,7 +151,7 @@ class DraftWeights:
         span, parent, views = self.packed[base]
         length = span.numel()
         if base + 3 in self.overrides:
-            length = views[3][0].data_ptr - parent.data_ptr
+            length = self.head.banks(base + 3)[0].data_ptr() - span.data_ptr()
         self.worker.copy_to(parent.data_ptr, span.data_ptr(), length, worker_id=self.worker_id)
         return tuple(self.overrides.get(base + i, values) for i, values in enumerate(views))
 

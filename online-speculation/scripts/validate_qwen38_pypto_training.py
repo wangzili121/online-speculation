@@ -17,6 +17,7 @@ def main():
     p.add_argument("--feedback", action="store_true", help="validate private paged history and teacher capture")
     p.add_argument("--accumulate-gradients", action="store_true", help="write VJP directly into external replay gradients")
     p.add_argument("--device-init", action="store_true", help="initialize masters from existing device head banks")
+    p.add_argument("--tensor-views", action="store_true", help="exercise shared frozen-weight Tensor views")
     p.add_argument("--bridge", action="store_true", help="validate isolated workers and cross-device byte copies")
     p.add_argument("--learner-device", type=int)
     p.add_argument("--real-shape", action="store_true", help="exercise all six real 27B parameter dimensions")
@@ -135,6 +136,10 @@ def suffix(args, config):
             inputs[name] = x
             device[name] = worker.alloc_tensor(value.shape, x.dtype, init=x)
             handles.append(device[name])
+            if args.tensor_views:
+                from pypto.runtime.task_interface import DataType
+                dtype = DataType.FLOAT32 if x.dtype == torch.float32 else DataType.BFLOAT16
+                device[name] = device[name].buffer.tensor(value.shape, dtype)
         accumulated, destination = {}, None
         if args.accumulate_gradients:
             destination = {}

@@ -479,6 +479,19 @@ def test_packed_stream_reuses_owned_buffers_and_copies_each_layer_or_group_once(
                     assert torch.equal(actual.payload, expected)
     assert worker.uploads == 128 // group_size
     if group_size == 4:
+        # Runtime Tensor 视图没有 data_ptr；发布后仅上传前三层，不覆盖备用的旧 Full 区域。
+        views = weights.packed[60][2][3]
+        for value in views:
+            value.payload.fill_(-1234)
+        replacement = tuple(SimpleNamespace(shape=value.shape, dtype=value.dtype, payload=value + 1)
+                            for value in head.banks(63))
+        weights.publish(63, replacement, expected_version=0)
+        groups = weights.for_group(60)
+        assert groups[3] == replacement
+        assert all(torch.all(value.payload == -1234) for value in views)
+        for layer, banks in enumerate(groups[:3], 60):
+            assert all(torch.equal(value.payload, expected)
+                       for value, expected in zip(banks, head.banks(layer), strict=True))
         with pytest.raises(RuntimeError, match="for_group"):
             weights.for_layer(0)
     weights.close()

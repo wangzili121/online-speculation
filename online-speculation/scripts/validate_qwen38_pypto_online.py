@@ -13,6 +13,8 @@ def main():
         p.add_argument("--" + name, type=Path, required=True)
     p.add_argument("--device", type=int, required=True)
     p.add_argument("--learner-device", type=int)
+    p.add_argument("--resume-online", type=Path, help="repeat the closed loop from a saved optimizer state")
+    p.add_argument("--replay-blocks", type=int, choices=(1, 2), default=1)
     args = p.parse_args()
     if args.output.exists():
         p.error("new output required")
@@ -32,11 +34,17 @@ def main():
         head = HeadSource(args.model, args.head_dir)
         engine = make_engine(args.source, args.model, args.device, head, head_transfer="packed",
             attention_backend="paged", group_size=4, gdn_backend="vector",
-            online_config=OnlineConfig(stride=1, replay_blocks=1, raw_head_dir=str(args.learner_head_dir),
-                learner_device=args.learner_device, checkpoint_dir=str(args.output.with_suffix(".updates"))))
+            online_config=OnlineConfig(stride=args.replay_blocks, replay_blocks=args.replay_blocks,
+                raw_head_dir=str(args.learner_head_dir),
+                learner_device=args.learner_device, resume_dir=None if args.resume_online is None else str(args.resume_online),
+                checkpoint_dir=str(args.output.with_suffix(".updates"))))
         engine.start()
         native, draft = engine.runner.native, engine.runner.draft
         learner = draft.learner
+        initial_version = draft.weights.version
+        if args.resume_online is not None:
+            assert initial_version == learner.optimizer.steps > 0
+            report["cases"].append(dict(name="cold_start_resume", version=initial_version, passed=True))
         schedule = native_module(args.source, "schedule")
         request = schedule.RequestState(engine.tokenizer.encode("Hello", add_special_tokens=False), 40, frozenset())
         native.admit(request)
@@ -52,16 +60,16 @@ def main():
             token = target.forward([token])[0]
             expected.append(token)
         target.restore(initial)
-        previous = None
-        for iteration in range(2):
+        previous, previous_version = None, None
+        for iteration in range(2 * args.replay_blocks):
             target.restore(initial)
             before = resident_checksum(native)
             candidates = draft.propose(request, anchor, 32)
             logits = draft.read_logits(31).clone()
             assert resident_checksum(native) == before, "draft mutated target history"
-            if previous is not None:
+            if previous is not None and previous_version != draft.weights.version:
                 assert not torch.equal(logits, previous), "published head did not change the next draft"
-            previous = logits
+            previous, previous_version = logits, draft.weights.version
             collector = learner.current
             checked_target = NativeTarget(native, request, schedule.BatchSlot, collector=collector)
             result = verify_transaction(checked_target, anchor, candidates, budget=32)
@@ -69,17 +77,22 @@ def main():
             history = history_checksum(native, request)
             start = time.monotonic()
             update = learner.observe(result)
-            assert update["version"] == iteration + 1 and update["gradient_norm"] > 0
-            handle = learner.workspace.values[learner.graph.logits.name]
-            replay_logits = torch.empty((32, 248320), dtype=torch.bfloat16)
-            learner.trainer.copy_from(replay_logits.data_ptr(), handle.data_ptr, replay_logits.numel()*2)
-            replay_error = float((replay_logits[:31].float()-logits.float()).norm()/logits.float().norm())
-            assert replay_error < .02, ("training suffix differs from serving forward", replay_error)
             assert history_checksum(native, request) == history, "training modified target history"
             row = dict(name="k32_online_round", iteration=iteration, accepted=result.accepted,
                        target_history_unchanged=True, greedy_matches=True,
-                       replay_logits_relative_l2=replay_error,
-                       update_seconds=time.monotonic()-start, **update, passed=True)
+                       version=draft.weights.version, passed=True)
+            if (iteration + 1) % args.replay_blocks == 0:
+                assert update["version"] == initial_version + (iteration + 1) // args.replay_blocks
+                assert update["gradient_norm"] > 0
+                handle = learner.workspace.values[learner.graph.logits.name]
+                replay_logits = torch.empty((32, 248320), dtype=torch.bfloat16)
+                learner.trainer.copy_from(replay_logits.data_ptr(), handle.data_ptr, replay_logits.numel()*2)
+                replay_error = float((replay_logits[:31].float()-logits.float()).norm()/logits.float().norm())
+                assert replay_error < .02, ("training suffix differs from serving forward", replay_error)
+                row.update(replay_logits_relative_l2=replay_error,
+                           update_seconds=time.monotonic()-start, **update)
+            else:
+                assert update is None and draft.weights.version == previous_version
             report["cases"].append(row)
             print(json.dumps(row), flush=True)
         native.release(request)
@@ -94,8 +107,10 @@ def main():
             time.sleep(.01)
         engine.scheduler.runner = engine.runner
         old_version = draft.weights.version
-        actual = collect(engine, 3, 1200)
-        assert actual == baseline and draft.weights.version > old_version
+        for _ in range(args.replay_blocks):
+            actual = collect(engine, 3, 1200)
+            assert actual == baseline
+        assert draft.weights.version > old_version
         report["cases"].append(dict(name="scheduler_online", greedy_matches=True,
             before_version=old_version, after_version=draft.weights.version, passed=True))
         deadline = time.monotonic()+30
@@ -115,9 +130,10 @@ def main():
         learner.optimizer = DeviceOptimizer(learner.optimization, learner.trainer)
         restore(learner.optimizer, learner.publisher, checkpoint, learner.head_identity)
         assert learner.optimizer.steps == draft.weights.version == version
-        response = http_round(engine, args.source)
+        for _ in range(args.replay_blocks):
+            response = http_round(engine, args.source)
+            assert response["token_ids"] == baseline
         assert draft.weights.version > version
-        assert response["token_ids"] == baseline
         report["cases"].append(dict(name="checkpoint_restore_http_update", restored_version=version,
             final_version=draft.weights.version, **response, passed=True))
         report["memory_after_requests"] = dict(serving=native.worker.device_memory_info(),

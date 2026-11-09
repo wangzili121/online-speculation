@@ -38,7 +38,17 @@ python scripts/prepare_qwen38_pypto_head.py \
 
 该步骤在 NPU 上从 FP32 master 生成执行参数，只替换输出文件的最后一层，保留原 head 文件与冻结层。导出的目录可用于固定 head 推理；继续在线训练时仍使用原 head 与对应 optimizer checkpoint。
 
-代码入口为 `online.py`（反馈与重放）、`training_graph.py`（显式计算图）、`training_*_programs.py`（设备前向/反向）、`online_optimizer.py`（裁剪和发布）、`online_bridge.py`（跨 worker 搬运与切换）、`online_checkpoint.py`（文件保存/恢复）。不更新 GDN，也不将该入口当作通用 last-N 或全层训练。
+一次在线更新按下面的调用关系执行：
+
+```text
+NeuralDraft.propose → OnlineLearner.begin       保存冻结前段的输出及历史
+NativeTarget.forward → FeedbackBlock.teacher   收集 verifier 教师 logits
+OrthrusRunner.run_batch → OnlineLearner.observe
+  → OnlineLearner.update → TrainingWorkspace.run  重放末层并计算显式梯度
+  → DeviceOptimizer.step → HeadPublisher.publish  裁剪、Adam、复制及版本切换
+```
+
+`training_graph.py` 定义前向与链式求导，`training_*_programs.py` 实现对应的设备计算，`online_checkpoint.py` 保存和恢复已提交状态。不更新 GDN，也不将该入口当作通用 last-N 或全层训练。
 
 独立检查使用 `scripts/validate_qwen38_pypto_training.py` 的 `--suffix` / `--optimizer`；真实模型闭环使用 `scripts/validate_qwen38_pypto_online.py`。当前独立手写梯度与优化器检查已通过，真实模型在线闭环仍在联调。
 
