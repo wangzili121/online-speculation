@@ -78,8 +78,7 @@ def restore(optimizer, weights, directory, head_identity):
             optimizer.worker.copy_to(handle.data_ptr, value.data_ptr(), value.numel()*4)
     for column in range(3):
         optimizer.statistics({name: handles[column] for name, handles in optimizer.state.items()})
-    for name, handles in optimizer.state.items():
-        optimizer.run(optimizer.programs.entries[name][2], handles[0], optimizer.execution[name][0])
+    optimizer.render(0, optimizer.state)
     banks = tuple(optimizer.execution[name][0] for name in
                   ("q_weight", "k_weight", "v_weight", "q_gamma", "k_gamma", "o_weight"))
     weights.publish(63, banks, expected_version=0)

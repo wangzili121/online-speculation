@@ -53,15 +53,16 @@ def make_reduce(rows):
     return entry, R
 
 
-def make_publish(shape, *, gamma=False):
+def make_publish(shape, *, gamma=False, inline=False):
     from math import prod
     import pypto.language as pl
+    kernel = pl.jit.inline if inline else pl.jit
     N = prod(shape)
     T = min(128, N)
     if N % T:
         raise ValueError("aligned parameter required")
     if gamma:
-        @pl.jit
+        @kernel
         def publish(master: pl.Tensor, execution: pl.Out[pl.Tensor]):
             x = pl.reshape(master, [N // T, T])
             y = pl.reshape(execution, [N // T, T])
@@ -71,7 +72,7 @@ def make_publish(shape, *, gamma=False):
                 y[row:row + 1, 0:T] = pl.add(pl.cast(raw, pl.FP32), 1.)
             return execution
     else:
-        @pl.jit
+        @kernel
         def publish(master: pl.Tensor, execution: pl.Out[pl.Tensor]):
             x = pl.reshape(master, [N // T, T])
             y = pl.reshape(execution, [N // T, T])
@@ -83,7 +84,7 @@ def make_publish(shape, *, gamma=False):
     @pl.jit.host
     def entry(master: pl.Tensor, execution: pl.Out[pl.Tensor]):
         publish(master, execution, device=0)
-    return entry
+    return publish if inline else entry
 
 
 def make_global_stats(max_norm):

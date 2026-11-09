@@ -270,11 +270,19 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
                 base_loading = BaseLoading(runtime, self.model_root, self.config)
                 programs += list(base_loading.registry.programs.values())
             from pypto.runtime import ReadOnlyHostTensor
+            if learner is not None:
+                count = sum(sum((path/"kernel_config.py").exists() for path in (program.output_dir/"next_levels").iterdir())
+                            for program in (self.prefill, self.decode, *programs))
+                print(f"online runtime: {count} registered chip entries", flush=True)
+                if count > 64:
+                    raise RuntimeError(f"online program set exceeds pinned runtime capacity: {count} > 64")
             self.worker = runtime.DistributedWorker([self.prefill, self.decode, *programs], config=self.config,
                 inherited_host_tensors=[ReadOnlyHostTensor(head.shared_weights), draft.host_logits,
                                         self.verification_logits, self.verification_states.storage,
                                         *(self.device_serving.host_tensors if self.device_serving else [])])
             try:
+                if learner is not None:
+                    print("online runtime: loading shared target banks", flush=True)
                 if base_loading is not None:
                     for handle in base_loading.banks(self.worker):
                         self.banks.append(handle)
@@ -329,6 +337,16 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                 attention_backend="native", group_size=1, gdn_backend="native", device_serving=True, weight_backend="pypto",
                 online_config=None):
     class Engine(native_module(source, "engine").InferenceEngine):
+        def start(self):
+            if online_config is None:
+                return super().start()
+            # 在线入口还需编译/启动训练 worker；不受原生纯推理的十分钟启动窗口限制。
+            self.scheduler.thread.start()
+            if not self.scheduler.ready.wait(timeout=1800):
+                raise RuntimeError("online model runner startup timed out")
+            if self.scheduler.error is not None:
+                raise RuntimeError("online model runner failed to start") from self.scheduler.error
+
         def snapshot(self):
             result = super().snapshot()
             runner = self.runner
@@ -349,7 +367,8 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
             if runner.native.learner is not None:
                 learner = runner.native.learner
                 result["orthrus"]["online"] = dict(last_layers=1, rounds=learner.rounds, updates=learner.updates,
-                    version=runner.draft.weights.version, last_result=learner.last_result)
+                    version=runner.draft.weights.version, last_result=learner.last_result,
+                    learner_device=online_config.learner_device)
             return result
 
     engine = Engine(model_root, device, max_active=1, prefix_cache=False)

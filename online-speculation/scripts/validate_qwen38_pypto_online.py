@@ -12,6 +12,7 @@ def main():
     for name in ("source", "model", "head-dir", "learner-head-dir", "output"):
         p.add_argument("--" + name, type=Path, required=True)
     p.add_argument("--device", type=int, required=True)
+    p.add_argument("--learner-device", type=int)
     args = p.parse_args()
     if args.output.exists():
         p.error("new output required")
@@ -31,7 +32,8 @@ def main():
         head = HeadSource(args.model, args.head_dir)
         engine = make_engine(args.source, args.model, args.device, head, head_transfer="packed",
             attention_backend="paged", group_size=4, gdn_backend="vector",
-            online_config=OnlineConfig(stride=1, replay_blocks=1, raw_head_dir=str(args.learner_head_dir)))
+            online_config=OnlineConfig(stride=1, replay_blocks=1, raw_head_dir=str(args.learner_head_dir),
+                learner_device=args.learner_device, checkpoint_dir=str(args.output.with_suffix(".updates"))))
         engine.start()
         native, draft = engine.runner.native, engine.runner.draft
         learner = draft.learner
@@ -70,7 +72,7 @@ def main():
             assert update["version"] == iteration + 1 and update["gradient_norm"] > 0
             handle = learner.workspace.values[learner.graph.logits.name]
             replay_logits = torch.empty((32, 248320), dtype=torch.bfloat16)
-            native.worker.copy_from(replay_logits.data_ptr(), handle.data_ptr, replay_logits.numel()*2)
+            learner.trainer.copy_from(replay_logits.data_ptr(), handle.data_ptr, replay_logits.numel()*2)
             replay_error = float((replay_logits[:31].float()-logits.float()).norm()/logits.float().norm())
             assert replay_error < .02, ("training suffix differs from serving forward", replay_error)
             assert history_checksum(native, request) == history, "training modified target history"
@@ -109,25 +111,33 @@ def main():
         draft.weights.overrides.clear()
         draft.weights.version = 0
         learner.optimizer.close()
-        learner.optimizer = DeviceOptimizer(learner.optimization, native.worker)
-        restore(learner.optimizer, draft.weights, checkpoint, learner.head_identity)
+        learner.optimizer = DeviceOptimizer(learner.optimization, learner.trainer)
+        restore(learner.optimizer, learner.publisher, checkpoint, learner.head_identity)
         assert learner.optimizer.steps == draft.weights.version == version
         response = http_round(engine, args.source)
         assert draft.weights.version > version
+        assert response["token_ids"] == baseline
         report["cases"].append(dict(name="checkpoint_restore_http_update", restored_version=version,
             final_version=draft.weights.version, **response, passed=True))
+        report["memory_after_requests"] = dict(serving=native.worker.device_memory_info(),
+            learner=learner.trainer.device_memory_info(), learner_device=args.learner_device)
         report["passed"] = True
     except BaseException as error:
         report["error"] = repr(error)
         raise
     finally:
-        if engine is not None:
-            if request is not None:
-                engine.runner.native.release(request)
-            engine.scheduler.runner = engine.runner
-            engine.stop()
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(report, indent=2)+"\n")
+        try:
+            if engine is not None:
+                if request is not None:
+                    engine.runner.native.release(request)
+                engine.scheduler.runner = engine.runner
+                engine.stop()
+        except BaseException as error:
+            report.update(passed=False, cleanup_error=repr(error))
+            raise
+        finally:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(report, indent=2)+"\n")
 
 
 def http_round(engine, source):
@@ -157,7 +167,8 @@ def http_round(engine, source):
                              headers={"Content-Type": "application/json"}), timeout=1200) as response:
             result = json.load(response)
         assert result["usage"]["completion_tokens"] == 3
-        return dict(completion_tokens=3, text=result["choices"][0]["text"], health_ready=True)
+        return dict(completion_tokens=3, text=result["choices"][0]["text"],
+                    token_ids=result["choices"][0]["token_ids"], health_ready=True)
     finally:
         server.should_exit = True
         thread.join(timeout=30)

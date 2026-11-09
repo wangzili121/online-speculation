@@ -71,3 +71,41 @@ def test_checkpoint_binds_head_and_tensor_schema(tmp_path):
         file.write(b"corrupt")
     with pytest.raises(ValueError, match="SHA256"):
         read(tmp_path, manifest["head"], {"q_gamma": (1, 64)})
+
+
+def test_nonfinite_update_preserves_verified_response():
+    learner = OnlineLearner(None, OnlineConfig(stride=1, replay_blocks=1))
+    learner.draft = SimpleNamespace(weights=SimpleNamespace(version=3))
+    block = FeedbackBlock(learner, {})
+    block.width = block.rows = 32
+    learner.current = block
+    def fail():
+        raise FloatingPointError("nonfinite gradient")
+    learner.update = fail
+    result = learner.observe(SimpleNamespace(accepted=0, tokens=(3,)))
+    assert result == dict(skipped=True, reason="nonfinite gradient", version=3)
+    assert learner.current is None and not learner.replay and learner.rounds == 1
+
+
+def test_cross_device_publication_waits_for_every_bank():
+    from blockspec.pypto_qwen38.online_bridge import HeadPublisher
+    banks = tuple(torch.zeros((1, 64)) for _ in range(6))
+    weights = DraftWeights(SimpleNamespace(banks=lambda layer: banks))
+    weights.worker = object()
+    attempts = []
+    def broken(*args):
+        attempts.append(args)
+        if len(attempts) == 2:
+            raise RuntimeError("copy failed")
+    learner = SimpleNamespace(trainer=object(), native=SimpleNamespace(worker=object()),
+        bridge=SimpleNamespace(copy=broken), serving_banks=(banks, banks))
+    publisher = HeadPublisher(learner, weights)
+    with pytest.raises(RuntimeError, match="copy"):
+        publisher.publish(63, banks, expected_version=0)
+    assert weights.version == 0 and not weights.overrides and publisher.active == 0
+    learner.bridge.copy = lambda *args: attempts.append(args)
+    publisher.publish(63, banks, expected_version=0)
+    assert weights.version == 1 and publisher.active == 1 and len(attempts) == 8
+    with pytest.raises(RuntimeError, match="stale"):
+        publisher.publish(63, banks, expected_version=0)
+    assert len(attempts) == 8

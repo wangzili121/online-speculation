@@ -1,8 +1,9 @@
 """训练重放的 head 布局、部分 RoPE、历史读取和 softmax VJP。"""
 
 
-def make_layout(s, kind, **options):
+def make_layout(s, kind, *, inline=False, **options):
     import pypto.language as pl
+    kernel = pl.jit.inline if inline else pl.jit
     D = s.dimension
     K = s.block
     Q = s.q_heads
@@ -15,7 +16,7 @@ def make_layout(s, kind, **options):
     stride = D * (2 if interleaved else 1)
     gate_offset = D if gate else 0
 
-    @pl.jit
+    @kernel
     def layout(x: pl.Tensor, out: pl.Out[pl.Tensor]):
         with pl.spmd(heads * K, name_hint="orthrus_training_head_layout"):
             task = pl.tile.get_block_idx()
@@ -28,7 +29,7 @@ def make_layout(s, kind, **options):
                 out[row:row + 1, head * D:head * D + D] = pl.slice(x, [1, D], [task, 0])
         return out
 
-    @pl.jit
+    @kernel
     def q_join(q: pl.Tensor, g: pl.Tensor, out: pl.Out[pl.Tensor]):
         with pl.spmd(Q * K, name_hint="orthrus_query_gate_backward_join"):
             task = pl.tile.get_block_idx()
@@ -38,7 +39,7 @@ def make_layout(s, kind, **options):
             out[row:row + 1, head * 2 * D + D:(head + 1) * 2 * D] = pl.slice(g, [1, D], [task, 0])
         return out
 
-    @pl.jit
+    @kernel
     def join(block: pl.Tensor, history: pl.Tensor, out: pl.Out[pl.Tensor],
              past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32]):
         with pl.spmd(V * C, name_hint="orthrus_training_kv_join"):
@@ -54,7 +55,7 @@ def make_layout(s, kind, **options):
             out[task:task + 1, 0:D] = value
         return out
 
-    @pl.jit
+    @kernel
     def reduce_block(x: pl.Tensor, out: pl.Out[pl.Tensor],
                      past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32]):
         with pl.spmd(V * K, name_hint="orthrus_gqa_block_backward"):
@@ -88,16 +89,19 @@ def make_layout(s, kind, **options):
             reduce_block(x, out, past, width, device=0)
     else:
         raise ValueError(kind)
+    if inline:
+        return {"layout": layout, "q_join": q_join, "join": join, "reduce_block": reduce_block}[kind]
     return entry
 
 
-def make_rope(s, rows, *, backward=False):
+def make_rope(s, rows, *, backward=False, inline=False):
     import pypto.language as pl
+    kernel = pl.jit.inline if inline else pl.jit
     K = s.block
     D = s.dimension
     R = s.rotary
 
-    @pl.jit
+    @kernel
     def rope(x: pl.Tensor, cos: pl.Tensor, sin: pl.Tensor, out: pl.Out[pl.Tensor]):
         with pl.spmd(rows, name_hint="orthrus_training_partial_rope"):
             row = pl.tile.get_block_idx()
@@ -121,14 +125,17 @@ def make_rope(s, rows, *, backward=False):
     @pl.jit.host
     def entry(x: pl.Tensor, cos: pl.Tensor, sin: pl.Tensor, out: pl.Out[pl.Tensor]):
         rope(x, cos, sin, out, device=0)
+    if inline:
+        return rope
     return entry
 
 
-def make_softmax(rows, columns, *, backward=False):
+def make_softmax(rows, columns, *, backward=False, inline=False):
     import pypto.language as pl
+    kernel = pl.jit.inline if inline else pl.jit
     C = columns
 
-    @pl.jit
+    @kernel
     def forward(x: pl.Tensor, probability: pl.Out[pl.Tensor], rounded: pl.Out[pl.Tensor],
                 past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32]):
         with pl.spmd(rows, name_hint="orthrus_training_attention_softmax"):
@@ -149,7 +156,7 @@ def make_softmax(rows, columns, *, backward=False):
             rounded[row:row + 1, 0:C] = pl.cast(result, pl.BF16, mode="rint")
         return probability, rounded
 
-    @pl.jit
+    @kernel
     def vjp(probability: pl.Tensor, dy: pl.Tensor, dx: pl.Out[pl.Tensor]):
         with pl.spmd(rows, name_hint="orthrus_attention_softmax_backward"):
             row = pl.tile.get_block_idx()
@@ -170,4 +177,6 @@ def make_softmax(rows, columns, *, backward=False):
         def entry(x: pl.Tensor, probability: pl.Out[pl.Tensor], rounded: pl.Out[pl.Tensor],
                   past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32]):
             forward(x, probability, rounded, past, width, device=0)
+    if inline:
+        return vjp if backward else forward
     return entry

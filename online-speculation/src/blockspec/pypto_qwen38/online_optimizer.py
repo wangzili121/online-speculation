@@ -9,9 +9,10 @@ from .training_optimizer_programs import (make_accumulate, make_global_stats, ma
 
 
 class OptimizerPrograms:
-    def __init__(self, graph, config, *, clip_norm):
+    def __init__(self, graph, config, *, clip_norm, combined=False):
         import torch
         self.graph, self.config = graph, config
+        self.combined = combined
         self.loader = LoadingPrograms(config)
         self.names = tuple(graph.gradients)
         self.shapes = {name: value.shape for name, value in graph.gradients.items()}
@@ -24,7 +25,7 @@ class OptimizerPrograms:
             self.loader.zero(shape, torch.float32)
             if shape not in cache:
                 args = [meta(shape) for _ in range(7)]
-                adam = make_adam(shape).compile(*args, 1e-5, .1, .001, 1., config=config)
+                adam = None if combined else make_adam(shape).compile(*args, 1e-5, .1, .001, 1., config=config)
                 accumulate = make_accumulate(shape).compile(meta(shape), meta(shape), meta(shape), config=config)
                 stat, rows = make_stats(shape)
                 stat = stat.compile(meta(shape), meta((rows, 8)), meta((rows, 8)), config=config)
@@ -37,18 +38,29 @@ class OptimizerPrograms:
                 cache[shape] = adam, accumulate, stat, rows, chain
             adam, accumulate, stat, rows, chain = cache[shape]
             dtype = torch.float32 if "gamma" in name else torch.bfloat16
-            publish = make_publish(shape, gamma="gamma" in name).compile(meta(shape), meta(shape, dtype), config=config)
+            publish = None if combined else make_publish(shape, gamma="gamma" in name).compile(meta(shape), meta(shape, dtype), config=config)
             self.entries[name] = adam, accumulate, publish
             self.stats[name] = stat, rows, chain
         self.global_stats = make_global_stats(clip_norm).compile(*[meta((1, 8)) for _ in range(12)], meta((3, 8)), config=config)
         self.equal = make_norm_equal(graph.shape.dimension).compile(meta((1, graph.shape.dimension)),
             meta((1, graph.shape.dimension)), meta((1, 8)), config=config)
+        if combined:
+            from .optimizer_pipeline import make_pipeline
+            render, candidate = [], []
+            for name, shape in self.shapes.items():
+                execution = meta(shape, torch.float32 if "gamma" in name else torch.bfloat16)
+                render += [meta(shape), execution]
+                candidate += [*[meta(shape) for _ in range(7)], execution]
+            self.render = make_pipeline(self.shapes, update=False).compile(*render, config=config)
+            self.candidate_update = make_pipeline(self.shapes, update=True).compile(*candidate, 1e-5, .1, .001, 1., config=config)
 
     def programs(self):
         result = list(self.loader.programs.values()) + [self.global_stats, self.equal]
         for name in self.names:
-            result += list(self.entries[name])
+            result += [p for p in self.entries[name] if p is not None]
             result += [self.stats[name][0], *(entry for entry, _ in self.stats[name][2])]
+        if self.combined:
+            result += [self.render, self.candidate_update]
         return list({id(p): p for p in result}.values())
 
 
@@ -65,7 +77,8 @@ class DeviceOptimizer:
                 self.candidate[name] = [self.alloc(shape, torch.float32) for _ in range(3)]
                 dtype = torch.float32 if "gamma" in name else torch.bfloat16
                 self.execution[name] = [self.alloc(shape, dtype) for _ in range(2)]
-                self.accum[name] = self.alloc(shape, torch.float32)
+                # 梯度用完后，该缓冲直接变为候选 master；提交后旧 master 轮换为下一次梯度缓冲。
+                self.accum[name] = self.candidate[name][0]
                 _, rows, chain = programs.stats[name]
                 self.stat_buffers[name] = [[self.alloc((count, 8), torch.float32) for _ in range(2)]
                                             for count in (rows, *(count for _, count in chain))]
@@ -83,21 +96,25 @@ class DeviceOptimizer:
     def run(self, program, *args):
         self.worker.run(program, *args, config=self.programs.config)
 
-    def initialize(self, head, raw_norms):
+    def initialize(self, head, raw_norms, *, device_banks=None):
         """投影从已验证 bank 初始化，norm 必须提供原始 BF16，避免 1+gamma 逆变换丢信息。"""
         order = ("q_weight", "k_weight", "v_weight", "q_gamma", "k_gamma", "o_weight")
         host = dict(zip(order, head.banks(63), strict=True))
+        resident = {} if device_banks is None else dict(zip(order, device_banks, strict=True))
         import torch
         loader = DeviceLoader(self.programs.loader, self.worker)
         try:
             for name, shape in self.programs.shapes.items():
                 raw = raw_norms[name] if "gamma" in name else host[name]
-                source = loader.allocate(shape, torch.bfloat16, init=raw.reshape(shape))
+                external = name in resident and "gamma" not in name
+                source = resident[name] if external else loader.allocate(shape, torch.bfloat16, init=raw.reshape(shape))
                 loader.copy(self.programs.casts[name], source, self.state[name][0])
-                loader.free(source)
-                for value in (*self.state[name][1:], *self.candidate[name], self.accum[name]):
+                if not external:
+                    loader.free(source)
+                for value in (*self.state[name][1:], *self.candidate[name]):
                     loader.zero(value)
-                self.run(self.programs.entries[name][2], self.state[name][0], self.execution[name][0])
+            self.render(0, self.state)
+            for name, shape in self.programs.shapes.items():
                 if "gamma" in name:
                     expected = loader.allocate(shape, torch.float32, init=host[name])
                     flags = loader.allocate((1, 8), torch.float32)
@@ -107,6 +124,14 @@ class DeviceOptimizer:
                     loader.free(expected)
         finally:
             loader.close()
+
+    def render(self, index, states):
+        if self.programs.combined:
+            args = [value for name in self.programs.names for value in (states[name][0], self.execution[name][index])]
+            self.run(self.programs.render, *args)
+        else:
+            for name in self.programs.names:
+                self.run(self.programs.entries[name][2], states[name][0], self.execution[name][index])
 
     def zero_grad(self):
         loader = DeviceLoader(self.programs.loader, self.worker)
@@ -142,17 +167,25 @@ class DeviceOptimizer:
     def step(self, weights, learning_rate):
         norm, scale = self.statistics(self.accum)
         next_step, next_index = self.steps + 1, 1 - self.index
-        for name in self.programs.names:
-            master, first, second = self.state[name]
-            self.run(self.programs.entries[name][0], master, self.accum[name], first, second,
-                     *self.candidate[name], learning_rate, 1-.9**next_step, 1-.999**next_step, scale)
+        if self.programs.combined:
+            args = [value for name in self.programs.names for value in
+                    (self.state[name][0], self.accum[name], *self.state[name][1:],
+                     *self.candidate[name], self.execution[name][next_index])]
+            self.run(self.programs.candidate_update, *args,
+                     learning_rate, 1-.9**next_step, 1-.999**next_step, scale)
+        else:
+            for name in self.programs.names:
+                master, first, second = self.state[name]
+                self.run(self.programs.entries[name][0], master, self.accum[name], first, second,
+                         *self.candidate[name], learning_rate, 1-.9**next_step, 1-.999**next_step, scale)
         self.statistics({name: state[0] for name, state in self.candidate.items()})
-        for name in self.programs.names:
-            self.run(self.programs.entries[name][2], self.candidate[name][0], self.execution[name][next_index])
+        if not self.programs.combined:
+            self.render(next_index, self.candidate)
         banks = tuple(self.execution[name][next_index] for name in
                       ("q_weight", "k_weight", "v_weight", "q_gamma", "k_gamma", "o_weight"))
         weights.publish(63, banks, expected_version=self.steps)
         self.state, self.candidate = self.candidate, self.state
+        self.accum = {name: handles[0] for name, handles in self.candidate.items()}
         self.steps, self.index = next_step, next_index
         return dict(version=self.steps, gradient_norm=norm, clip_scale=scale)
 

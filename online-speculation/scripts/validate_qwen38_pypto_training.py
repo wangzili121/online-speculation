@@ -13,6 +13,12 @@ def main():
     p.add_argument("--vocabulary", type=int, default=1024)
     p.add_argument("--suffix", action="store_true", help="validate the complete last-layer forward/backward")
     p.add_argument("--optimizer", action="store_true", help="validate clipping, Adam states and atomic publication")
+    p.add_argument("--combined", action="store_true", help="compile the suffix as one CHIP entry")
+    p.add_argument("--feedback", action="store_true", help="validate private paged history and teacher capture")
+    p.add_argument("--accumulate-gradients", action="store_true", help="write VJP directly into external replay gradients")
+    p.add_argument("--device-init", action="store_true", help="initialize masters from existing device head banks")
+    p.add_argument("--bridge", action="store_true", help="validate isolated workers and cross-device byte copies")
+    p.add_argument("--learner-device", type=int)
     a = p.parse_args()
     if a.output.exists():
         p.error("new output required")
@@ -28,6 +34,12 @@ def main():
     config = RunConfig(backend_type=BackendType.Ascend910B, execution_mode=ExecutionMode.ONBOARD,
                        distributed_config=DistributedConfig(device_ids=[a.device], num_sub_workers=0))
     empty = lambda shape, dtype=torch.bfloat16: torch.empty(shape, dtype=dtype, device="meta")
+    if a.bridge:
+        if a.learner_device is None or a.learner_device == a.device:
+            p.error("bridge validation needs two different visible devices")
+        return bridge(a, config)
+    if a.feedback:
+        return feedback(a, config)
     if a.optimizer:
         return validate_optimizer(a, config)
     if a.suffix:
@@ -108,7 +120,7 @@ def suffix(args, config):
     from blockspec.pypto_qwen38.training_reference import evaluate
     graph = LastLayerGraph(SuffixShape(hidden=128, intermediate=256, vocabulary=128,
         q_heads=4, kv_heads=2, dimension=64, context=64, rotary=32))
-    programs = TrainingPrograms(graph, config)
+    programs = TrainingPrograms(graph, config, combined=args.combined, accumulate_gradients=args.accumulate_gradients)
     worker = workspace = None
     handles, report = [], dict(passed=False, cases=[])
     try:
@@ -121,9 +133,21 @@ def suffix(args, config):
             inputs[name] = x
             device[name] = worker.alloc_tensor(value.shape, x.dtype, init=x)
             handles.append(device[name])
+        accumulated, destination = {}, None
+        if args.accumulate_gradients:
+            destination = {}
+            for name, value in graph.gradients.items():
+                zero = torch.zeros(value.shape)
+                destination[name] = worker.alloc_tensor(value.shape, torch.float32, init=zero)
+                handles.append(destination[name])
+                accumulated[value.name] = zero
         for past, width, valid in ((0, 32, 31), (7, 17, 4), (32, 32, 1)):
             expected = evaluate(graph, inputs, past=past, width=width, valid=valid)
-            actual = workspace.run(device, past=past, width=width, valid=valid)
+            if destination is not None:
+                for value in graph.gradients.values():
+                    accumulated[value.name] = accumulated[value.name] + expected[value.name]
+                    expected[value.name] = accumulated[value.name]
+            actual = workspace.run(device, past=past, width=width, valid=valid, gradients=destination)
             # 每个阶段都核对；不能只看最终 loss 而漏掉错误梯度。
             errors = []
             for node in graph.nodes:
@@ -153,6 +177,114 @@ def suffix(args, config):
         args.output.write_text(json.dumps(report, indent=2) + "\n")
 
 
+def bridge(args, config):
+    from dataclasses import replace
+    import torch
+    from pypto.runtime import DistributedWorker
+    from blockspec.pypto_qwen38.online_feedback_programs import make_loss_sum
+    from blockspec.pypto_qwen38.online_bridge import TensorBridge
+    workers, report = [], dict(passed=False, cases=[])
+    try:
+        for device in (args.device, args.learner_device):
+            cfg = replace(config, distributed_config=replace(config.distributed_config, device_ids=[device]))
+            program = make_loss_sum().compile(torch.empty((32, 8), device="meta"),
+                                              torch.empty((1, 8), device="meta"), config=cfg)
+            worker = DistributedWorker([program], config=cfg)
+            workers.append((worker, program, cfg, []))
+        for i, (worker, program, cfg, owned) in enumerate(workers):
+            x = worker.alloc_tensor((32, 8), torch.float32, init=torch.full((32, 8), float(i+1)))
+            owned.append(x)
+            y = worker.alloc_tensor((1, 8), torch.float32)
+            owned.append(y)
+            worker.run(program, x, y, config=cfg)
+            actual = torch.empty(1, 8)
+            worker.copy_from(actual.data_ptr(), y.data_ptr, 32)
+            torch.testing.assert_close(actual, torch.full((1, 8), 32.*(i+1)), atol=0, rtol=0)
+        transfer = TensorBridge()
+        a, b = workers
+        transfer.copy(a[0], a[3][0], b[0], b[3][0])
+        b[0].run(b[1], b[3][0], b[3][1], config=b[2])
+        b[0].copy_from(actual.data_ptr(), b[3][1].data_ptr, 32)
+        torch.testing.assert_close(actual, torch.full((1, 8), 32.), atol=0, rtol=0)
+        tail = a[0].alloc_tensor((1, 8), torch.float32)
+        a[3].append(tail)
+        transfer.copy(b[0], b[3][0], a[0], tail, source_offset=31*8*4)
+        a[0].copy_from(actual.data_ptr(), tail.data_ptr, 32)
+        torch.testing.assert_close(actual, torch.ones(1, 8), atol=0, rtol=0)
+        report.update(passed=True, devices=[args.device, args.learner_device], copied_bytes=transfer.bytes,
+            cases=[dict(name=name, passed=True) for name in ("isolated_compute", "forward_copy", "reverse_offset_copy")])
+    except BaseException as error:
+        report["error"] = repr(error)
+        raise
+    finally:
+        for worker, _, _, owned in reversed(workers):
+            for handle in reversed(owned):
+                worker.free_tensor(handle)
+            worker.close()
+        args.output.write_text(json.dumps(report, indent=2)+"\n")
+
+
+def feedback(args, config):
+    import torch
+    from pypto.runtime import DistributedWorker
+    from blockspec.pypto_qwen38.online_feedback_programs import make_history, make_teacher, make_loss_sum
+    empty = lambda shape, dtype=torch.bfloat16: torch.empty(shape, dtype=dtype, device="meta")
+    shape = (16, 4, 37, 16, 256)
+    history = make_history(37).compile(empty(shape), empty(shape), empty((32,), torch.int32),
+        empty((2048, 256)), empty((2048, 256)), 0, config=config)
+    teacher = make_teacher().compile(empty((8, 16, 248320)), empty((32, 248320)), 0, 0, 16, config=config)
+    loss = make_loss_sum().compile(empty((32, 8), torch.float32), empty((1, 8), torch.float32), config=config)
+    worker, handles, report = None, [], dict(passed=False, cases=[])
+    try:
+        worker = DistributedWorker([history, teacher, loss], config=config)
+        def alloc(value):
+            handle = worker.alloc_tensor(tuple(value.shape), value.dtype, init=value)
+            handles.append(handle)
+            return handle
+        def read(handle):
+            value = torch.empty(tuple(handle.shape), dtype=handle.dtype)
+            worker.copy_from(value.data_ptr(), handle.data_ptr, value.numel()*value.element_size())
+            return value
+        k, v = torch.randn(shape).bfloat16(), torch.randn(shape).bfloat16()
+        table = torch.randperm(37)[:32].to(torch.int32)
+        dk, dv, dt = alloc(k), alloc(v), alloc(table)
+        out = [alloc(torch.empty(2048, 256).bfloat16()) for _ in range(2)]
+        for past in (0, 1, 17, 255, 480):
+            worker.run(history, dk, dv, dt, *out, past, config=config)
+            for source, handle in zip((k, v), out, strict=True):
+                expected = torch.zeros(4, 512, 256).bfloat16()
+                for row in range(past):
+                    expected[:, row] = source[15, :, int(table[row//16]), row%16]
+                torch.testing.assert_close(read(handle).reshape(4, 512, 256), expected, atol=0, rtol=0)
+            report["cases"].append(dict(name="private_history", past=past, passed=True))
+        torch.testing.assert_close(read(dk), k, atol=0, rtol=0)
+        torch.testing.assert_close(read(dv), v, atol=0, rtol=0)
+        source = torch.randn(8, 16, 248320).bfloat16()
+        output = torch.full((32, 248320), float("nan"), dtype=torch.bfloat16)
+        ds, do = alloc(source), alloc(output)
+        worker.run(teacher, ds, do, 48, 0, 16, config=config)
+        worker.run(teacher, ds, do, 112, 16, 1, config=config)
+        actual = read(do)
+        torch.testing.assert_close(actual[:16], source[3], atol=0, rtol=0)
+        torch.testing.assert_close(actual[16], source[7, 0], atol=0, rtol=0)
+        assert torch.isnan(actual[17:]).all()
+        values = torch.randn(32, 1).expand(32, 8).contiguous()
+        summed = alloc(torch.empty(1, 8))
+        worker.run(loss, alloc(values), summed, config=config)
+        torch.testing.assert_close(read(summed), values.sum(0, keepdim=True), atol=1e-5, rtol=1e-5)
+        report["cases"].append(dict(name="teacher_slot_offset_and_loss_summary", passed=True))
+        report["passed"] = True
+    except BaseException as error:
+        report["error"] = repr(error)
+        raise
+    finally:
+        if worker is not None:
+            for handle in reversed(handles):
+                worker.free_tensor(handle)
+            worker.close()
+        args.output.write_text(json.dumps(report, indent=2)+"\n")
+
+
 def validate_optimizer(args, config):
     import torch
     from pypto.runtime import DistributedWorker
@@ -161,7 +293,7 @@ def validate_optimizer(args, config):
     from blockspec.pypto_qwen38.weights import DraftWeights
     graph = LastLayerGraph(SuffixShape(hidden=128, intermediate=256, vocabulary=128,
         q_heads=4, kv_heads=2, dimension=64, context=64, rotary=32))
-    programs = OptimizerPrograms(graph, config, clip_norm=.1)
+    programs = OptimizerPrograms(graph, config, clip_norm=.1, combined=args.combined)
     order = ("q_weight", "k_weight", "v_weight", "q_gamma", "k_gamma", "o_weight")
     raw, banks = {}, {}
     for name in order:
@@ -179,7 +311,11 @@ def validate_optimizer(args, config):
     try:
         worker = DistributedWorker(programs.programs(), config=config)
         state = DeviceOptimizer(programs, worker)
-        state.initialize(Head(), {name: raw[name] for name in order if "gamma" in name})
+        device_banks = None
+        if args.device_init:
+            device_banks = [worker.alloc_tensor(tuple(banks[name].shape), banks[name].dtype, init=banks[name]) for name in order]
+            handles += device_banks
+        state.initialize(Head(), {name: raw[name] for name in order if "gamma" in name}, device_banks=device_banks)
         weights = DraftWeights(Head())
         weights.worker = worker
         reference = {name: torch.nn.Parameter(value.float()) for name, value in raw.items()}

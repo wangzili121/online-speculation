@@ -10,20 +10,35 @@ Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标
 
 采集轮次保留末层输入、anchor 之前的私有历史副本及 verifier 教师 logits，只用真正验证到的行计算 TV loss。多个 replay 块统一按有效位置总数归一化。FP32 master、梯度、Adam 状态、裁剪和执行参数转换均在 NPU 上完成；Torch autograd 只用于独立验证。更新先写候选缓冲，有限值检查通过后，才在两轮起草之间发布新版本。主模型 cache 不参与参数发布。
 
+64 GB A2 的完整主模型占用较高，在线更新使用第二张 NPU：推理卡继续运行共享主干的 target/draft，学习卡只加载最后一层所需的冻结 MLP、norm、LM head 及学习器状态。两边通过有界主机缓冲搬运字节；反向与优化器计算在学习卡执行。更新后的六组 head 参数复制到推理卡的备用缓冲，全部就绪后切换引用。这是两个独立 worker，模型仍为 TP1。
+
 ```bash
-python scripts/serve_qwen38_pypto.py \
+ASCEND_RT_VISIBLE_DEVICES=0,1 python scripts/serve_qwen38_pypto.py \
   --source /path/to/OneServing --model /models/Qwen3.8-27B \
   --head-dir /models/orthrus-pypto-head \
   --learner-head-dir /models/orthrus-raw-head --device 0 \
   --attention-backend paged --gdn-backend vector \
   --draft-group-size 4 --head-transfer packed \
-  --online --last-layers 1 --update-stride 16 --replay-blocks 2 \
+  --online --learner-device 1 --last-layers 1 --update-stride 16 --replay-blocks 2 \
   --learning-rate 1e-5 --checkpoint-dir /data/online-heads
 ```
 
 首次初始化需要原训练 head 的 BF16 norm；已转换 bank 中的 `1 + weight` 不能保证精确还原原值。`--head-dir` 直接使用原训练 head 时，可以省略 `--learner-head-dir`。每次更新可保存 `step-00000001` 等目录，包含六组参数的 FP32 master、Adam moment、步数和基模/head 哈希；重启用 `--resume-online /data/online-heads/step-00000001` 恢复，不需要重新初始化 norm。此 checkpoint 是 last-1 续训状态，不是原有完整 head 目录的替代格式。
 
-代码入口为 `online.py`（反馈与重放）、`training_graph.py`（显式计算图）、`training_*_programs.py`（设备前向/反向）、`online_optimizer.py`（裁剪和发布）、`online_checkpoint.py`（文件保存/恢复）。不更新 GDN，也不将该入口当作通用 last-N 或全层训练。
+`--device` 与 `--learner-device` 使用可见设备序号。设备内存足够时可省略独立学习卡；当前 64 GB A2 的单卡整模型在线配置不能容纳全部状态。末层反向组合为一个 CHIP 入口，内部仍有多个计算阶段；梯度直接累加到候选 master 缓冲，提交后旧 master 轮换为下一次梯度缓冲，减少约 800 MiB 重复存储，保留两套执行参数用于安全切换。
+
+若仅需固定 head 推理，可以将在线 checkpoint 导出为标准 PyPTO head；`--head-dir` 仍指向初始化时使用的原 head，不能换成其他版本：
+
+```bash
+python scripts/prepare_qwen38_pypto_head.py \
+  --model /models/Qwen3.8-27B --head-dir /models/orthrus-pypto-head \
+  --online-checkpoint /data/online-heads/step-00000001 \
+  --device 0 --output-dir /models/orthrus-updated-pypto-head
+```
+
+该步骤在 NPU 上从 FP32 master 生成执行参数，只替换输出文件的最后一层，保留原 head 文件与冻结层。导出的目录可用于固定 head 推理；继续在线训练时仍使用原 head 与对应 optimizer checkpoint。
+
+代码入口为 `online.py`（反馈与重放）、`training_graph.py`（显式计算图）、`training_*_programs.py`（设备前向/反向）、`online_optimizer.py`（裁剪和发布）、`online_bridge.py`（跨 worker 搬运与切换）、`online_checkpoint.py`（文件保存/恢复）。不更新 GDN，也不将该入口当作通用 last-N 或全层训练。
 
 独立检查使用 `scripts/validate_qwen38_pypto_training.py` 的 `--suffix` / `--optimizer`；真实模型闭环使用 `scripts/validate_qwen38_pypto_online.py`。当前独立手写梯度与优化器检查已通过，真实模型在线闭环仍在联调。
 

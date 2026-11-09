@@ -97,6 +97,30 @@ def test_host_prepared_head_cannot_claim_pypto_provenance(tmp_path, small_weight
         save(head, tmp_path / "bad")
 
 
+def test_updated_head_export_preserves_frozen_layers_and_source(tmp_path, small_weights):
+    import ctypes
+    model, source, _ = fixture_head(tmp_path, small_weights)
+    before = source.shared_weights.clone()
+    updated = [(bank + .125).contiguous() for bank in source.banks(63)]
+    devices = [SimpleNamespace(shape=tuple(bank.shape), dtype=bank.dtype, data_ptr=bank.data_ptr()) for bank in updated]
+    class CopyWorker:
+        @staticmethod
+        def copy_from(target, pointer, size, *, src_offset=0):
+            ctypes.memmove(target, pointer+src_offset, size)
+    output = tmp_path/"updated"
+    save(source, output, last_layer=devices, worker=CopyWorker())
+    actual = HeadSource(model, output)
+    actual.prepare()
+    torch.testing.assert_close(source.shared_weights, before, atol=0, rtol=0)
+    for layer in range(64):
+        expected = updated if layer == 63 else source.banks(layer)
+        for got, wanted in zip(actual.banks(layer), expected, strict=True):
+            torch.testing.assert_close(got, wanted, atol=0, rtol=0)
+    with pytest.raises(ValueError, match="six"):
+        save(source, tmp_path/"invalid", last_layer=devices[:5], worker=CopyWorker())
+    assert not (tmp_path/"invalid").exists()
+
+
 @pytest.mark.parametrize("offset", ((-1, 0), (0, 128), (True, 0)))
 def test_device_copy_bounds_rejected_before_dispatch(offset):
     loader = object.__new__(DeviceLoader)

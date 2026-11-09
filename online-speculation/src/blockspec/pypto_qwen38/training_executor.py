@@ -7,11 +7,20 @@ from .training_programs import make_element, make_linear, make_rms, make_tv
 
 
 class TrainingPrograms:
-    def __init__(self, graph, config):
+    def __init__(self, graph, config, *, combined=False, accumulate_gradients=False):
         import torch
         self.graph, self.config, self.programs, self.sequence = graph, config, {}, []
+        self.combined = combined
+        self.accumulate_gradients = accumulate_gradients
+        if accumulate_gradients and not combined:
+            raise ValueError("direct gradient accumulation requires the combined suffix")
         def meta(value):
             return torch.empty(value.shape, dtype=getattr(torch, "bfloat16" if value.dtype == "bf16" else "float32"), device="meta")
+        if combined:
+            from .training_pipeline import make_pipeline
+            entry, self.arguments = make_pipeline(graph, accumulate=accumulate_gradients)
+            self.programs["suffix"] = entry.compile(*map(meta, self.arguments), 0, 32, 31, 31, config=config)
+            return
         for node in graph.nodes:
             key = json.dumps((node.kind, [(v.shape, v.dtype) for v in (*node.inputs, *node.outputs)], node.options), sort_keys=True)
             extra = ()
@@ -49,8 +58,11 @@ class TrainingWorkspace:
         self.programs, self.worker, self.values = programs, worker, {}
         self.handles = []
         try:
+            external = {value.name for value in programs.graph.gradients.values()} if programs.accumulate_gradients else set()
             for node in programs.graph.nodes:
                 for value in node.outputs:
+                    if value.name in external:
+                        continue
                     dtype = torch.bfloat16 if value.dtype == "bf16" else torch.float32
                     tensor = worker.alloc_tensor(value.shape, dtype)
                     self.values[value.name] = tensor
@@ -59,18 +71,31 @@ class TrainingWorkspace:
             self.close()
             raise
 
-    def run(self, inputs, *, past, width, valid, normalizer=None):
+    def run(self, inputs, *, past, width, valid, normalizer=None, gradients=None):
+        import torch
         s = self.programs.graph.shape
         normalizer = valid if normalizer is None else normalizer
         if normalizer < valid:
             raise ValueError("normalizer must include all reached positions")
         if not 0 <= past <= s.context - width or not 2 <= width <= s.block or not 1 <= valid < width:
             raise ValueError("history, block and reached-row boundary required")
+        if self.programs.accumulate_gradients:
+            if gradients is None or set(gradients) != set(self.programs.graph.gradients):
+                raise ValueError("six external gradient destinations required")
+            if any(tuple(gradients[name].shape) != value.shape or gradients[name].dtype != torch.float32
+                   for name, value in self.programs.graph.gradients.items()):
+                raise ValueError("external gradients must match the FP32 parameter schema")
+            self.values.update({value.name: gradients[name] for name, value in self.programs.graph.gradients.items()})
         for name, value in self.programs.graph.inputs.items():
             tensor = inputs[name]
-            if tuple(tensor.shape) != value.shape:
+            dtype = torch.bfloat16 if value.dtype == "bf16" else torch.float32
+            if tuple(tensor.shape) != value.shape or tensor.dtype != dtype:
                 raise ValueError(f"suffix input shape changed: {name}")
         values = {**inputs, **self.values}
+        if self.programs.combined:
+            self.worker.run(self.programs.programs["suffix"], *(values[v.name] for v in self.programs.arguments),
+                            past, width, valid, normalizer, config=self.programs.config)
+            return {name: values[value.name] for name, value in self.programs.graph.gradients.items()}
         for node, program in zip(self.programs.graph.nodes, self.programs.sequence, strict=True):
             extra = ((past, width) if node.kind in {"join", "reduce_block", "softmax"}
                      else (valid, normalizer) if node.kind == "tv" else ())

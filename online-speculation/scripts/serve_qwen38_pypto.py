@@ -25,6 +25,8 @@ def main():
     parser.add_argument("--update-stride", type=int, default=16)
     parser.add_argument("--replay-blocks", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument("--clip-norm", type=float, default=1.)
+    parser.add_argument("--learner-device", type=int, help="separate visible NPU for last-1 replay and optimizer")
     parser.add_argument("--learner-head-dir", type=Path, help="raw training head when --head-dir uses prepared banks")
     parser.add_argument("--checkpoint-dir", type=Path, help="save each committed update into a versioned directory")
     parser.add_argument("--resume-online", type=Path, help="resume a saved last-layer Adam checkpoint")
@@ -33,6 +35,9 @@ def main():
     args = parser.parse_args()
     if args.device < 0 or not 1 <= args.port <= 65535:
         parser.error("require an assigned nonnegative device and a valid port")
+    if not args.online and any(value is not None for value in
+                               (args.learner_head_dir, args.checkpoint_dir, args.resume_online, args.learner_device)):
+        parser.error("learner/checkpoint options require --online")
     import asyncio
     import pypto
     import uvicorn
@@ -48,8 +53,9 @@ def main():
     if args.online:
         from blockspec.pypto_qwen38.online import OnlineConfig
         online_config = OnlineConfig(last_layers=args.last_layers, stride=args.update_stride,
-            replay_blocks=args.replay_blocks, learning_rate=args.learning_rate, raw_head_dir=args.learner_head_dir,
-            checkpoint_dir=args.checkpoint_dir, resume_dir=args.resume_online)
+            replay_blocks=args.replay_blocks, learning_rate=args.learning_rate, clip_norm=args.clip_norm,
+            raw_head_dir=args.learner_head_dir,
+            checkpoint_dir=args.checkpoint_dir, resume_dir=args.resume_online, learner_device=args.learner_device)
 
     @asynccontextmanager
     async def lifespan(application):

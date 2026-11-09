@@ -64,9 +64,23 @@ def load(head):
     head.shared_weights, head._prepared = storage, banks
 
 
-def save(head, directory):
+def save(head, directory, *, last_layer=None, worker=None):
     if head._prepared is None or getattr(head, "preparation_backend", None) != "pypto":
         raise ValueError("only a PyPTO-prepared head may be exported")
+    patches = []
+    if last_layer is not None:
+        from math import prod
+        expected = head.banks(63)
+        if worker is None or len(last_layer) != len(expected):
+            raise ValueError("all six device banks and their worker required")
+        for original, updated in zip(expected, last_layer, strict=True):
+            if tuple(original.shape) != tuple(updated.shape) or original.dtype != updated.dtype:
+                raise ValueError("exported last-layer schema changed")
+            offset = original.data_ptr()-head.shared_weights.data_ptr()
+            size = prod(original.shape)*original.element_size()
+            if offset < 0 or offset+size > head.shared_weights.numel():
+                raise ValueError("last-layer bank is outside the canonical payload")
+            patches.append((offset, size, updated))
     directory = Path(directory)
     directory.mkdir(parents=False, exist_ok=False)
     data = memoryview(head.shared_weights.numpy())
@@ -77,6 +91,20 @@ def save(head, directory):
             chunk = data[start:start + (16 << 20)]
             file.write(chunk)
             digest.update(chunk)
+    if patches:
+        import torch
+        scratch = torch.empty(16 << 20, dtype=torch.uint8)
+        with (directory/"weights.bin.part").open("r+b") as file:
+            for target, size, updated in patches:
+                file.seek(target)
+                for offset in range(0, size, scratch.numel()):
+                    count = min(scratch.numel(), size-offset)
+                    worker.copy_from(scratch.data_ptr(), updated.data_ptr, count, src_offset=offset)
+                    file.write(memoryview(scratch.numpy())[:count])
+        digest = hashlib.sha256()
+        with (directory/"weights.bin.part").open("rb") as file:
+            while chunk := file.read(16 << 20):
+                digest.update(chunk)
     (directory / "weights.bin.part").rename(directory / "weights.bin")
     manifest = dict(format=FORMAT, contract=contract(head), runtime_tp=head.layout.size,
                     runtime_rank=head.layout.rank, producer_pypto=PYPTO_COMMIT,

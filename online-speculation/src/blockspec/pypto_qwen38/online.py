@@ -1,7 +1,7 @@
 """串行 last-1 在线重放：只更新 draft，AR 历史和共享 backbone 保持只读。"""
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 
 from .online_feedback_programs import make_copy, make_history, make_loss_sum, make_teacher
@@ -20,6 +20,7 @@ class OnlineConfig:
     raw_head_dir: str | None = None
     checkpoint_dir: str | None = None
     resume_dir: str | None = None
+    learner_device: int | None = None
 
     def __post_init__(self):
         if (self.last_layers != 1 or type(self.stride) is not int or self.stride < 1
@@ -27,11 +28,14 @@ class OnlineConfig:
                 or not math.isfinite(self.learning_rate) or self.learning_rate <= 0
                 or not math.isfinite(self.clip_norm) or self.clip_norm <= 0):
             raise ValueError("last-1, bounded replay and positive finite optimizer scales required")
+        if self.learner_device is not None and (type(self.learner_device) is not int or self.learner_device < 0):
+            raise ValueError("learner device must be a nonnegative visible device")
 
 
 class FeedbackBlock:
     def __init__(self, owner, inputs):
         self.owner, self.inputs = owner, inputs
+        self.training_inputs = inputs
         self.rows = self.valid = self.past = self.width = 0
 
     def teacher(self, native, slot, count):
@@ -53,24 +57,34 @@ class OnlineLearner:
         self.current = None
         self.replay, self.pool, self.handles = deque(), [], []
         self.workspace = self.optimizer = self.native = None
+        self.trainer = None
+        self.training_handles = []
 
     def compile(self, samples, config):
         import torch
         self.config = config
-        self.training = TrainingPrograms(self.graph, config)
-        self.optimization = OptimizerPrograms(self.graph, config, clip_norm=self.options.clip_norm)
+        self.dedicated = self.options.learner_device is not None
+        if self.dedicated and self.options.learner_device in config.distributed_config.device_ids:
+            raise ValueError("dedicated learner must use a different visible device")
+        self.training_config = (replace(config, distributed_config=replace(config.distributed_config,
+                                  device_ids=[self.options.learner_device])) if self.dedicated else config)
+        self.training = TrainingPrograms(self.graph, self.training_config, combined=True, accumulate_gradients=True)
+        self.optimization = OptimizerPrograms(self.graph, self.training_config, clip_norm=self.options.clip_norm, combined=True)
         meta = lambda shape, dtype=torch.bfloat16: torch.empty(shape, dtype=dtype, device="meta")
         self.history_program = make_history(samples[31].shape[2]).compile(samples[31], samples[32],
             meta((32,), torch.int32), meta((2048, 256)), meta((2048, 256)), 0, config=config)
         self.teacher_program = make_teacher().compile(meta((8, 16, 248320)), meta((32, 248320)), 0, 0, 16, config=config)
         self.rope_program = make_copy(32, 64).compile(meta((32, 64)), meta((32, 64)), config=config)
-        self.loss_program = make_loss_sum().compile(meta((32, 8), torch.float32), meta((1, 8), torch.float32), config=config)
-        return [*self.training.programs.values(), *self.optimization.programs(),
-                self.history_program, self.teacher_program, self.rope_program, self.loss_program]
+        self.loss_program = make_loss_sum().compile(meta((32, 8), torch.float32), meta((1, 8), torch.float32), config=self.training_config)
+        self.training_programs = [*self.training.programs.values(), *self.optimization.programs(), self.loss_program]
+        return [*(() if self.dedicated else self.training_programs),
+                self.history_program, self.teacher_program, self.rope_program]
 
-    def alloc(self, shape, dtype):
-        value = self.native.worker.alloc_tensor(shape, dtype)
-        self.handles.append(value)
+    def alloc(self, shape, dtype, *, training=False):
+        separate = training and self.dedicated
+        worker = self.trainer if separate else self.native.worker
+        value = worker.alloc_tensor(shape, dtype)
+        (self.training_handles if separate else self.handles).append(value)
         return value
 
     def run(self, program, *args):
@@ -86,7 +100,7 @@ class OnlineLearner:
         from .online_checkpoint import identity, restore
         self.head_identity = identity(self.head)
         raw = self.head
-        if self.options.raw_head_dir is not None:
+        if self.options.raw_head_dir is not None and self.options.resume_dir is None:
             raw = HeadSource(self.head.model_root, self.options.raw_head_dir,
                              block_size=self.head.block_size, mask_token_id=self.head.mask_token_id)
         if raw.prepared_manifest is not None and self.options.resume_dir is None:
@@ -98,21 +112,40 @@ class OnlineLearner:
                 with safe_open(path, framework="pt", device="cpu") as file:
                     raw_norms[name] = file.get_tensor(key)
         try:
-            self.workspace = TrainingWorkspace(self.training, native.worker)
-            self.optimizer = DeviceOptimizer(self.optimization, native.worker)
-            self.loss_device = self.alloc((1, 8), torch.float32)
-            self.loss_host = torch.empty((1, 8), dtype=torch.float32)
-            if self.options.resume_dir is None:
-                self.optimizer.initialize(self.head, raw_norms)
+            if self.dedicated:
+                from pypto.runtime import DistributedWorker
+                from .online_bridge import TensorBridge, HeadPublisher
+                self.trainer = DistributedWorker(self.training_programs, config=self.training_config)
+                self.bridge = TensorBridge()
             else:
-                restore(self.optimizer, draft.weights, self.options.resume_dir, self.head_identity)
+                self.trainer = native.worker
+            print("online training free bytes before workspace", self.trainer.device_memory_info()[0], flush=True)
+            self.workspace = TrainingWorkspace(self.training, self.trainer)
+            self.optimizer = DeviceOptimizer(self.optimization, self.trainer)
+            self.loss_device = self.alloc((1, 8), torch.float32, training=True)
+            self.loss_host = torch.empty((1, 8), dtype=torch.float32)
+            self.publisher = draft.weights
+            if self.dedicated:
+                self.serving_banks = [tuple(self.alloc(value.shape, torch.float32 if "gamma" in name else torch.bfloat16)
+                    for name, value in ((name, self.graph.inputs[name]) for name in
+                    ("q_weight", "k_weight", "v_weight", "q_gamma", "k_gamma", "o_weight"))) for _ in range(2)]
+                self.publisher = HeadPublisher(self, draft.weights)
+            if self.options.resume_dir is None:
+                self.optimizer.initialize(self.head, raw_norms,
+                    device_banks=None if self.dedicated else draft.weights.for_group(60)[3])
+            else:
+                restore(self.optimizer, self.publisher, self.options.resume_dir, self.head_identity)
                 self.updates = self.optimizer.steps
                 self.rounds = self.updates * self.options.stride
+            print("online training free bytes after optimizer", self.trainer.device_memory_info()[0], flush=True)
             for _ in range(self.options.replay_blocks):
                 values = {}
                 for name in ("hidden", "history_key", "history_value", "cos", "sin", "teacher"):
                     values[name] = self.alloc(self.graph.inputs[name].shape, torch.bfloat16)
-                self.pool.append(FeedbackBlock(self, values))
+                block = FeedbackBlock(self, values)
+                if self.dedicated:
+                    block.training_inputs = {name: self.alloc(value.shape, value.dtype, training=True) for name, value in values.items()}
+                self.pool.append(block)
             def view(bank, shape, offset, dtype=DataType.BFLOAT16):
                 return bank.buffer.tensor(shape, dtype, byte_offset=offset)
             H, I = 5120, 17408
@@ -120,6 +153,15 @@ class OnlineLearner:
                 post_gamma=view(native.banks[4], (1, H), 63*H*4, DataType.FLOAT32), final_gamma=native.banks[1],
                 lm_head=native.banks[2], mlp_gate=view(native.banks[5], (I, H), 63*I*H*2),
                 mlp_up=view(native.banks[6], (I, H), 63*I*H*2), mlp_down=view(native.banks[7], (H, I), 63*I*H*2))
+            if self.dedicated:
+                offsets = dict(input_gamma=(3, 63*H*4), post_gamma=(4, 63*H*4), final_gamma=(1, 0),
+                    lm_head=(2, 0), mlp_gate=(5, 63*I*H*2), mlp_up=(6, 63*I*H*2), mlp_down=(7, 63*I*H*2))
+                for name, (bank, offset) in offsets.items():
+                    source = self.shared[name]
+                    target = self.alloc(source.shape, source.dtype, training=True)
+                    self.bridge.copy(native.worker, native.banks[bank], self.trainer, target, source_offset=offset)
+                    self.shared[name] = target
+            print("online learner ready", flush=True)
         except BaseException:
             self.close()
             raise
@@ -150,7 +192,13 @@ class OnlineLearner:
             block.valid = min(result.accepted + 1, block.width - 1, len(result.tokens))
             self.replay.append(block)
         if self.rounds % self.options.stride == 0 and self.replay:
-            return self.update()
+            try:
+                return self.update()
+            except FloatingPointError as error:
+                # 数值不合法的候选没有发布；继续交付本轮已经验证过的 token。
+                self.replay.clear()
+                self.last_result = dict(skipped=True, reason=str(error), version=self.draft.weights.version)
+                return self.last_result
         return None
 
     def update(self):
@@ -159,17 +207,19 @@ class OnlineLearner:
         positions = sum(item.valid for item in self.replay)
         loss = 0.
         for item in self.replay:
-            inputs = {**self.shared, **item.inputs, **self.optimizer.tensors()}
-            gradients = self.workspace.run(inputs, past=item.past, width=item.width,
-                                            valid=item.valid, normalizer=positions)
-            self.optimizer.accumulate(gradients)
+            if self.dedicated:
+                for name, value in item.inputs.items():
+                    self.bridge.copy(self.native.worker, value, self.trainer, item.training_inputs[name])
+            inputs = {**self.shared, **item.training_inputs, **self.optimizer.tensors()}
+            self.workspace.run(inputs, past=item.past, width=item.width,
+                               valid=item.valid, normalizer=positions, gradients=self.optimizer.accum)
             handle = self.workspace.values[self.graph.losses.name]
-            self.run(self.loss_program, handle, self.loss_device)
-            self.native.worker.copy_from(self.loss_host.data_ptr(), self.loss_device.data_ptr, 32)
+            self.trainer.run(self.loss_program, handle, self.loss_device, config=self.training_config)
+            self.trainer.copy_from(self.loss_host.data_ptr(), self.loss_device.data_ptr, 32)
             loss += ctypes.c_float.from_address(self.loss_host.data_ptr()).value
         if not math.isfinite(loss):
             raise FloatingPointError("nonfinite online loss; head not published")
-        result = self.optimizer.step(self.draft.weights, self.options.learning_rate)
+        result = self.optimizer.step(self.publisher, self.options.learning_rate)
         self.updates += 1
         self.last_result = dict(loss=loss, reached_positions=positions, **result)
         if self.options.checkpoint_dir is not None:
@@ -194,6 +244,12 @@ class OnlineLearner:
         if self.optimizer is not None:
             self.optimizer.close()
             self.optimizer = None
+        if self.trainer is not None and getattr(self, "dedicated", False):
+            while self.training_handles:
+                self.trainer.free_tensor(self.training_handles[-1])
+                self.training_handles.pop()
+            self.trainer.close()
+            self.trainer = None
         if self.native is not None:
             while self.handles:
                 self.native.worker.free_tensor(self.handles[-1])

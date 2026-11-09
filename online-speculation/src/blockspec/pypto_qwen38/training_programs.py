@@ -1,7 +1,7 @@
 """在线训练的显式梯度 kernel；模型值和优化器状态均在设备计算。"""
 
 
-def make_tv(rows, vocabulary):
+def make_tv(rows, vocabulary, *, inline=False):
     """完整词表 TV 及 d(logits)，只监督 verifier 真正走到的行。"""
     if rows < 1 or vocabulary % 64:
         raise ValueError("positive rows and a 64-aligned vocabulary required")
@@ -10,7 +10,8 @@ def make_tv(rows, vocabulary):
     if vocabulary % T:
         raise ValueError("complete vocabulary tiles required")
 
-    @pl.jit
+    kernel = pl.jit.inline if inline else pl.jit
+    @kernel
     def tv(student: pl.Tensor, teacher: pl.Tensor, gradient: pl.Out[pl.Tensor],
            losses: pl.Out[pl.Tensor], valid: pl.Scalar[pl.INT32], normalizer: pl.Scalar[pl.INT32]):
         with pl.spmd(rows, name_hint="orthrus_tv_backward"):
@@ -78,10 +79,10 @@ def make_tv(rows, vocabulary):
               losses: pl.Out[pl.Tensor], valid: pl.Scalar[pl.INT32], normalizer: pl.Scalar[pl.INT32]):
         tv(student, teacher, gradient, losses, valid, normalizer, device=0)
 
-    return entry
+    return tv if inline else entry
 
 
-def make_adam(shape, *, beta1=.9, beta2=.999, epsilon=1e-8):
+def make_adam(shape, *, beta1=.9, beta2=.999, epsilon=1e-8, inline=False):
     """FP32 master/moments；写候选状态，调用方确认后才发布执行权重。"""
     from math import prod
     N = prod(shape)
@@ -90,7 +91,8 @@ def make_adam(shape, *, beta1=.9, beta2=.999, epsilon=1e-8):
         raise ValueError("complete T-element parameter tiles required")
     import pypto.language as pl
 
-    @pl.jit
+    kernel = pl.jit.inline if inline else pl.jit
+    @kernel
     def adam(master: pl.Tensor, gradient: pl.Tensor, first: pl.Tensor, second: pl.Tensor,
              next_master: pl.Out[pl.Tensor], next_first: pl.Out[pl.Tensor], next_second: pl.Out[pl.Tensor],
              rate: pl.Scalar[pl.FP32], correction1: pl.Scalar[pl.FP32], correction2: pl.Scalar[pl.FP32],
@@ -122,13 +124,14 @@ def make_adam(shape, *, beta1=.9, beta2=.999, epsilon=1e-8):
         adam(master, gradient, first, second, next_master, next_first, next_second,
              rate, correction1, correction2, clip, device=0)
 
-    return entry
+    return adam if inline else entry
 
 
 def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradient_weight=False,
-                batches=1, b_repeats=1):
+                batches=1, b_repeats=1, inline=False, accumulate=False):
     """前向与显式线性 VJP 共用矩阵乘；激活/参数梯度按 BF16 执行语义舍入。"""
     import pypto.language as pl
+    kernel = pl.jit.inline if inline else pl.jit
     M, K = a_shape[::-1] if transpose_a else a_shape
     kb, N = b_shape[::-1] if transpose_b else b_shape
     if K != kb or M % 32 or N % 64 or K % 32:
@@ -143,8 +146,8 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
     TA = int(transpose_a)
     TB = int(transpose_b)
     if gradient_weight:
-        @pl.jit
-        def linear(a: pl.Tensor, b: pl.Tensor, output: pl.Out[pl.Tensor]):
+        @kernel
+        def linear(a: pl.Tensor, b: pl.Tensor, output: pl.InOut[pl.Tensor]):
             with pl.spmd(batches * (M // MT) * (N // NT), name_hint="orthrus_training_linear"):
                 task = pl.tile.get_block_idx()
                 head = task // ((M // MT) * (N // NT))
@@ -160,11 +163,14 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
                                                TB * begin + (1 - TB) * col])
                     acc = pl.matmul_acc(acc, x, w, a_trans=transpose_a, b_trans=transpose_b, init_cond=(step == 0))
                 rounded = pl.cast(acc, pl.BF16, mode="rint")
-                output[head * M + row:head * M + row + MT, col:col + NT] = pl.cast(rounded, pl.FP32)
+                result = pl.cast(rounded, pl.FP32)
+                if accumulate:
+                    result = pl.add(result, pl.slice(output, [MT, NT], [head * M + row, col]))
+                output[head * M + row:head * M + row + MT, col:col + NT] = result
             return output
 
     else:
-        @pl.jit
+        @kernel
         def linear(a: pl.Tensor, b: pl.Tensor, output: pl.Out[pl.Tensor]):
             with pl.spmd(batches * (M // MT) * (N // NT), name_hint="orthrus_training_linear"):
                 task = pl.tile.get_block_idx()
@@ -188,10 +194,12 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
     def entry(a: pl.Tensor, b: pl.Tensor, output: pl.Out[pl.Tensor]):
         linear(a, b, output, device=0)
 
+    if inline:
+        return linear
     return entry
 
 
-def make_element(shape, kind, *, scale=1.):
+def make_element(shape, kind, *, scale=1., inline=False):
     """BF16 激活的逐元素前向/VJP，保持运算边界的舍入。"""
     names = ("add", "mul", "silu", "sigmoid", "silu_grad", "sigmoid_grad", "scale", "copy")
     op = names.index(kind)
@@ -200,8 +208,9 @@ def make_element(shape, kind, *, scale=1.):
     if N % 128:
         raise ValueError("aligned elementwise tensor required")
     import pypto.language as pl
+    kernel = pl.jit.inline if inline else pl.jit
 
-    @pl.jit
+    @kernel
     def element(a: pl.Tensor, b: pl.Tensor, output: pl.Out[pl.Tensor]):
         x = pl.reshape(a, [N // 128, 128])
         y = pl.reshape(b, [N // 128, 128])
@@ -235,18 +244,21 @@ def make_element(shape, kind, *, scale=1.):
     def entry(a: pl.Tensor, b: pl.Tensor, output: pl.Out[pl.Tensor]):
         element(a, b, output, device=0)
 
+    if inline:
+        return element
     return entry
 
 
-def make_rms(rows, dimension, *, mode="forward"):
+def make_rms(rows, dimension, *, mode="forward", inline=False, accumulate=False):
     """RMSNorm 前向、输入梯度或共享 Q/K norm 参数梯度。gamma 已包含 1。"""
     if dimension % 64 or rows % 32 or mode not in {"forward", "input", "weight"}:
         raise ValueError("aligned RMSNorm shape and a supported mode required")
     import pypto.language as pl
+    kernel = pl.jit.inline if inline else pl.jit
     D = dimension
     INV_D = 1. / D
 
-    @pl.jit
+    @kernel
     def forward(x: pl.Tensor, gamma: pl.Tensor, y: pl.Out[pl.Tensor], inv: pl.Out[pl.Tensor]):
         with pl.spmd(rows, name_hint="orthrus_rms_saved_forward"):
             row = pl.tile.get_block_idx()
@@ -261,7 +273,7 @@ def make_rms(rows, dimension, *, mode="forward"):
             inv[row:row + 1, 0:8] = pl.reshape(r, [1, 8])
         return y, inv
 
-    @pl.jit
+    @kernel
     def input_grad(x: pl.Tensor, gamma: pl.Tensor, inv: pl.Tensor, dy: pl.Tensor, dx: pl.Out[pl.Tensor]):
         with pl.spmd(rows, name_hint="orthrus_rms_input_backward"):
             row = pl.tile.get_block_idx()
@@ -277,8 +289,8 @@ def make_rms(rows, dimension, *, mode="forward"):
             dx[row:row + 1, 0:D] = pl.cast(pl.reshape(grad, [1, D]), pl.BF16, mode="rint")
         return dx
 
-    @pl.jit
-    def weight_grad(x: pl.Tensor, inv: pl.Tensor, dy: pl.Tensor, dg: pl.Out[pl.Tensor]):
+    @kernel
+    def weight_grad(x: pl.Tensor, inv: pl.Tensor, dy: pl.Tensor, dg: pl.InOut[pl.Tensor]):
         with pl.spmd(D // 64, name_hint="orthrus_rms_weight_backward"):
             col = pl.tile.get_block_idx() * 64
             acc = pl.full([1, 64], dtype=pl.FP32, value=0.)
@@ -289,7 +301,10 @@ def make_rms(rows, dimension, *, mode="forward"):
                 r = pl.mul(pl.row_sum(pl.slice(inv, [32, 8], [row, 0])), .125)
                 acc = pl.add(acc, pl.col_sum(pl.row_expand_mul(pl.mul(z, d), r)))
             # 训练 raw norm 是 BF16；转回 master FP32 前保留该梯度舍入。
-            dg[0:1, col:col + 64] = pl.cast(pl.cast(acc, pl.BF16, mode="rint"), pl.FP32)
+            result = pl.cast(pl.cast(acc, pl.BF16, mode="rint"), pl.FP32)
+            if accumulate:
+                result = pl.add(result, pl.slice(dg, [1, 64], [0, col]))
+            dg[0:1, col:col + 64] = result
         return dg
 
     if mode == "forward":
@@ -304,4 +319,6 @@ def make_rms(rows, dimension, *, mode="forward"):
         @pl.jit.host
         def entry(x: pl.Tensor, inv: pl.Tensor, dy: pl.Tensor, dg: pl.Out[pl.Tensor]):
             weight_grad(x, inv, dy, dg, device=0)
+    if inline:
+        return {"forward": forward, "input": input_grad, "weight": weight_grad}[mode]
     return entry
