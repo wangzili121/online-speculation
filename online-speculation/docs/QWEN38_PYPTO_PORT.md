@@ -1,8 +1,31 @@
 # Orthrus-Qwen3.8 PyPTO Serving 迁移
 
-本分支基于 OneServing 的 Qwen3.8 独立交付包接入 Orthrus。原生模型保持不变，训练仍由现有 PyTorch 路径完成，推理侧读取相同的 draft head。
+本分支基于 OneServing 的 Qwen3.8 独立交付包接入 Orthrus。原生模型保持不变，推理读取原有训练路径导出的 draft head。另提供 PyPTO last-1 在线更新入口，完整离线训练与其他 last-N 配置继续使用现有 PyTorch 路径。
 
 Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标缓存只读、拒绝恢复、greedy 对照及 HTTP 检查。测试覆盖完整 64 层，主模型与 draft 在同一 worker 中共享 backbone。参数转换在启动阶段完成，推理复用已分配的缓冲。**目前为 TP1、一个活动请求、512 个总位置；起草阶段计时与服务吞吐分别验收。**
+
+## PyPTO last-1 在线更新
+
+`--online` 使用显式前向和手写反向更新最后一层 Full Attention 的 Q/K/V/O 投影及 Q/K norm，主模型参数始终冻结。反向仍经过该层共享 MLP、norm 和 LM head，以计算 draft 参数所需梯度；在第 63 层输入处停止，不回传前面 63 层或目标模型历史。
+
+采集轮次保留末层输入、anchor 之前的私有历史副本及 verifier 教师 logits，只用真正验证到的行计算 TV loss。多个 replay 块统一按有效位置总数归一化。FP32 master、梯度、Adam 状态、裁剪和执行参数转换均在 NPU 上完成；Torch autograd 只用于独立验证。更新先写候选缓冲，有限值检查通过后，才在两轮起草之间发布新版本。主模型 cache 不参与参数发布。
+
+```bash
+python scripts/serve_qwen38_pypto.py \
+  --source /path/to/OneServing --model /models/Qwen3.8-27B \
+  --head-dir /models/orthrus-pypto-head \
+  --learner-head-dir /models/orthrus-raw-head --device 0 \
+  --attention-backend paged --gdn-backend vector \
+  --draft-group-size 4 --head-transfer packed \
+  --online --last-layers 1 --update-stride 16 --replay-blocks 2 \
+  --learning-rate 1e-5 --checkpoint-dir /data/online-heads
+```
+
+首次初始化需要原训练 head 的 BF16 norm；已转换 bank 中的 `1 + weight` 不能保证精确还原原值。`--head-dir` 直接使用原训练 head 时，可以省略 `--learner-head-dir`。每次更新可保存 `step-00000001` 等目录，包含六组参数的 FP32 master、Adam moment、步数和基模/head 哈希；重启用 `--resume-online /data/online-heads/step-00000001` 恢复，不需要重新初始化 norm。此 checkpoint 是 last-1 续训状态，不是原有完整 head 目录的替代格式。
+
+代码入口为 `online.py`（反馈与重放）、`training_graph.py`（显式计算图）、`training_*_programs.py`（设备前向/反向）、`online_optimizer.py`（裁剪和发布）、`online_checkpoint.py`（文件保存/恢复）。不更新 GDN，也不将该入口当作通用 last-N 或全层训练。
+
+独立检查使用 `scripts/validate_qwen38_pypto_training.py` 的 `--suffix` / `--optimizer`；真实模型闭环使用 `scripts/validate_qwen38_pypto_online.py`。当前独立手写梯度与优化器检查已通过，真实模型在线闭环仍在联调。
 
 ## 固定基线
 
@@ -362,4 +385,4 @@ Orthrus HTTP 检查在 61 的单张 A2 上通过，加载的是 TP2 在线 last-
 
 早期容器中的设备枚举错误记录保留在 `port-20261105/`。本次通过用户目录下的原生环境完成验证，没有修改 OneServing 模型源码；原容器启动失败的具体原因仍未确认。
 
-后续扩展请求边界，并随原生模型演进接入完整 TP、head 驻留、上下文和采样。训练和在线更新继续使用现有 PyTorch 路径，PyPTO 加载导出的 head；重启换入不等于进程内在线更新。
+后续扩展请求边界，并随原生模型演进接入完整 TP、head 驻留、上下文和采样。完整训练和其他 last-N 更新继续使用现有 PyTorch 路径；本分支的 PyPTO 在线入口限定 last-1，重启加载完整 head 与进程内在线更新是不同操作。

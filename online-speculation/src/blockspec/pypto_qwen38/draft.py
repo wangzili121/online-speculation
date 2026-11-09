@@ -35,6 +35,8 @@ def metadata(head, native_samples):
     inputs["group"] = [hidden, *native_samples[4:9], *group_weights, *full, cos, sin, q, k, v, gate,
                        *native_samples[29:33], empty((32,), torch.int32), empty((16, 512), torch.float32),
                        empty((32, 5120)), empty((32, 5120)), result, 0, 0, 0, 32]
+    inputs["group_prefix"] = [hidden, *native_samples[4:9], *group_weights, *native_samples[29:31],
+                               empty((32, 5120)), empty((32, 5120)), result, 60, 0]
     return inputs
 
 
@@ -61,12 +63,13 @@ class NeuralDraft:
         self.rounds = 0
         self.last_seconds = None
         self.last_timings = {}
+        self.learner = None
         self.weights = DraftWeights(head, head_storage, head_transfer, group_size=group_size)
 
     def compile(self, samples, config):
         inputs = metadata(self.head, samples)
         for name, program in make_programs(self.source, attention_backend=self.attention_backend, group_size=self.group_size,
-                                         gdn_backend=self.gdn_backend).items():
+                                         gdn_backend=self.gdn_backend, online=self.learner is not None).items():
             print(f"compiling Orthrus {name}", flush=True)
             self.programs[name] = program.compile(*inputs[name], config=config)
         return list(self.programs.values())
@@ -85,6 +88,8 @@ class NeuralDraft:
                     {"embedding", "gdn", "full_prepare", "full", "finish"})
         if self.group_size == 4:
             expected = {"embedding", "group", "finish"}
+            if self.learner is not None:
+                expected |= {"group_prefix", "full_layer"}
         if self.native is not None or set(self.programs) != expected:
             raise RuntimeError("draft programs must be registered before starting the native worker")
         self.native = native
@@ -157,6 +162,7 @@ class NeuralDraft:
             mask[:, :past + width] = 0
             self._upload(mask, self.mask)
         self.last_timings["inputs_seconds"] = time.monotonic() - start
+        feedback = self.learner.begin(self, past, width) if self.learner is not None else None
         banks = native.banks
         self._run("embedding", [self.ids, banks[0], self.hidden[0]])
         for layer in range(0, 64, self.group_size):
@@ -166,6 +172,14 @@ class NeuralDraft:
             index = layer // self.group_size % 2
             current, output = self.hidden[index], self.hidden[1 - index]
             if self.group_size == 4:
+                if layer == 60 and feedback is not None:
+                    self._run("group_prefix", [current, *banks[3:8],
+                        *(handle for group in weights[:3] for handle in group), *native.resident[:2],
+                        *self.group_scratch, feedback.inputs["hidden"], layer, resident.slot])
+                    self._run("full_layer", [feedback.inputs["hidden"], *banks[3:8], *weights[3], self.cos, self.sin,
+                        self.query, self.key, self.value, self.gate, *native.resident[2:], self.table,
+                        self.mask, output, 63, past, width])
+                    continue
                 flat = [handle for group in weights for handle in group]
                 self._run("group", [current, *banks[3:8], *flat, self.cos, self.sin,
                                     self.query, self.key, self.value, self.gate, *native.resident,
@@ -211,13 +225,19 @@ class NeuralDraft:
 
 def make_runner(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
                 attention_backend="native", group_size=1, gdn_backend="native", device_serving=True,
-                weight_backend="pypto", **callbacks):
+                weight_backend="pypto", online_config=None, **callbacks):
     """Create a native runner with additional graphs; leave native source intact."""
     runtime = native_module(source, "runtime")
     if weight_backend not in {"pypto", "host"}:
         raise ValueError("weight backend must be pypto or host")
     draft = NeuralDraft(source, head, head_storage=head_storage, head_transfer=head_transfer,
                         attention_backend=attention_backend, group_size=group_size, gdn_backend=gdn_backend)
+    learner = None
+    if online_config is not None:
+        if (attention_backend, group_size, gdn_backend, device_serving) != ("paged", 4, "vector", True):
+            raise ValueError("online updates require paged attention, vector GDN, groups of four and device serving")
+        from .online import OnlineLearner
+        learner = draft.learner = OnlineLearner(head, online_config)
 
     class PreparedRunner(runtime.ModelRunner):
         device_serving = None
@@ -231,6 +251,8 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
             self.prefill = runtime.prefill_fwd.compile(*samples, 1, config=self.config)
             self.decode = runtime.decode_fwd.compile(*samples, 1, config=self.config)
             programs = draft.compile(samples, self.config)
+            if learner is not None:
+                programs += learner.compile(samples, self.config)
             draft.prepare_host()
             self.rope = runtime.rotary_tables(self.model_root)
             if any(value.shape != (512, 64) for value in self.rope.values()):
@@ -275,8 +297,12 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
 
         def close(self):
             try:
-                if self.device_serving is not None:
-                    self.device_serving.close()
+                try:
+                    if learner is not None:
+                        learner.close()
+                finally:
+                    if self.device_serving is not None:
+                        self.device_serving.close()
             finally:
                 super().close()
 
@@ -295,11 +321,13 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
 
     native = PreparedRunner(model_root, device, **callbacks)
     native.weight_backend = weight_backend
+    native.learner = learner
     return OrthrusRunner(native, draft, native_module(source, "schedule").BatchSlot)
 
 
 def make_engine(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
-                attention_backend="native", group_size=1, gdn_backend="native", device_serving=True, weight_backend="pypto"):
+                attention_backend="native", group_size=1, gdn_backend="native", device_serving=True, weight_backend="pypto",
+                online_config=None):
     class Engine(native_module(source, "engine").InferenceEngine):
         def snapshot(self):
             result = super().snapshot()
@@ -318,6 +346,10 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                                      draft_group_size=runner.draft.group_size,
                                      head_preparation_seconds=head.preparation_seconds,
                                      last_draft_timings=dict(runner.draft.last_timings))
+            if runner.native.learner is not None:
+                learner = runner.native.learner
+                result["orthrus"]["online"] = dict(last_layers=1, rounds=learner.rounds, updates=learner.updates,
+                    version=runner.draft.weights.version, last_result=learner.last_result)
             return result
 
     engine = Engine(model_root, device, max_active=1, prefix_cache=False)
@@ -328,6 +360,7 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                                 gdn_backend=gdn_backend,
                                 device_serving=device_serving,
                                 weight_backend=weight_backend,
+                                online_config=online_config,
                                 on_cache_event=engine._on_cache)
     engine.scheduler.runner = engine.runner
     return engine

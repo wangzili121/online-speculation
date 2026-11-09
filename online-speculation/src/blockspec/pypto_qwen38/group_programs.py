@@ -37,3 +37,31 @@ def make_group_host(gdn, prepare, full):
              key_pool, value_pool, table, mask, result, base + 3, past, width, device=0)
 
     return group_host
+
+
+def make_group_prefix(gdn):
+    """采集轮次将末组拆为 3 个 GDN + Full，最后一层输入直接写私有缓冲。"""
+    import pypto.language as pl
+
+    @pl.jit.host
+    def prefix(hidden: pl.Tensor, input_gamma: pl.Tensor, post_gamma: pl.Tensor,
+               mlp_gate: pl.Tensor, mlp_up: pl.Tensor, mlp_down: pl.Tensor,
+               qkv0: pl.Tensor, z0: pl.Tensor, a0: pl.Tensor, b0: pl.Tensor,
+               conv0: pl.Tensor, log0: pl.Tensor, dt0: pl.Tensor, norm0: pl.Tensor, out0: pl.Tensor,
+               qkv1: pl.Tensor, z1: pl.Tensor, a1: pl.Tensor, b1: pl.Tensor,
+               conv1: pl.Tensor, log1: pl.Tensor, dt1: pl.Tensor, norm1: pl.Tensor, out1: pl.Tensor,
+               qkv2: pl.Tensor, z2: pl.Tensor, a2: pl.Tensor, b2: pl.Tensor,
+               conv2: pl.Tensor, log2: pl.Tensor, dt2: pl.Tensor, norm2: pl.Tensor, out2: pl.Tensor,
+               conv_history: pl.Tensor, recurrent_history: pl.Tensor,
+               scratch0: pl.Out[pl.Tensor], scratch1: pl.Out[pl.Tensor], boundary: pl.Out[pl.Tensor],
+               base: pl.Scalar[pl.INT32], slot: pl.Scalar[pl.INT32]):
+        first = gdn(hidden, input_gamma, post_gamma, mlp_gate, mlp_up, mlp_down,
+                    qkv0, z0, a0, b0, conv0, log0, dt0, norm0, out0,
+                    conv_history, recurrent_history, scratch0, base, slot, device=0)
+        second = gdn(first, input_gamma, post_gamma, mlp_gate, mlp_up, mlp_down,
+                     qkv1, z1, a1, b1, conv1, log1, dt1, norm1, out1,
+                     conv_history, recurrent_history, scratch1, base + 1, slot, device=0)
+        gdn(second, input_gamma, post_gamma, mlp_gate, mlp_up, mlp_down,
+            qkv2, z2, a2, b2, conv2, log2, dt2, norm2, out2,
+            conv_history, recurrent_history, boundary, base + 2, slot, device=0)
+    return prefix

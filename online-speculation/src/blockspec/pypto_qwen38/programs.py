@@ -8,7 +8,7 @@ runs. No target cache is an output of these graphs.
 from .baseline import native_module
 
 
-def make_programs(source, *, attention_backend="native", group_size=1, gdn_backend="native"):
+def make_programs(source, *, attention_backend="native", group_size=1, gdn_backend="native", online=False):
     if attention_backend not in {"native", "fused", "paged"}:
         raise ValueError("attention backend must be native, fused or paged")
     if type(group_size) is not int or group_size not in {1, 4} or group_size == 4 and attention_backend != "paged":
@@ -338,8 +338,11 @@ def make_programs(source, *, attention_backend="native", group_size=1, gdn_backe
         finish(hidden, gamma, weight, logits, device=0)
 
     if group_size == 4:
-        from .group_programs import make_group_host
-        return dict(embedding=embed_host, group=make_group_host(gdn, full_prepare, full), finish=finish_host)
+        from .group_programs import make_group_host, make_group_prefix
+        result = dict(embedding=embed_host, group=make_group_host(gdn, full_prepare, full), finish=finish_host)
+        if online:
+            result.update(group_prefix=make_group_prefix(gdn), full_layer=full_layer_host)
+        return result
     if attention_backend == "paged":
         return dict(embedding=embed_host, gdn=gdn_host, full_layer=full_layer_host, finish=finish_host)
     return dict(embedding=embed_host, gdn=gdn_host, full_prepare=prepare_host, full=full_host, finish=finish_host)

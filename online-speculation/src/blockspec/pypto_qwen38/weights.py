@@ -18,6 +18,21 @@ class DraftWeights:
         self.worker = None
         self.handles, self.resident, self.buffers = [], {}, {}
         self.storage = None
+        self.overrides = {}
+        self.version = 0
+
+    def publish(self, layer, values, *, expected_version):
+        """在同步起草轮次之间替换整层引用；不原地改正在被读取的 bank。"""
+        if self.worker is None or expected_version != self.version or layer != 63:
+            raise RuntimeError("a started last-layer head and its current version required")
+        values = tuple(values)
+        expected = self.head.banks(layer)
+        if len(values) != len(expected) or any(tuple(a.shape) != tuple(b.shape) or a.dtype != b.dtype
+                                              for a, b in zip(values, expected, strict=True)):
+            raise ValueError("published head layout changed")
+        # 所有检查均在提交前完成；bank 的 owner 由 learner 保留至下一轮安全边界。
+        self.overrides = {**self.overrides, layer: values}
+        self.version += 1
 
     def _allocate(self, value, *, initialize):
         handle = self.worker.alloc_tensor(
@@ -130,16 +145,21 @@ class DraftWeights:
         if self.group_size != 4 or type(base) is not int or base not in range(0, 64, 4):
             raise ValueError("a four-layer head and an aligned group base are required")
         if self.storage == "resident":
-            return tuple(self.resident[layer] for layer in range(base, base + 4))
+            return tuple(self.overrides.get(layer, self.resident[layer]) for layer in range(base, base + 4))
         if self.storage != "stream":
             raise RuntimeError("head device weights are not started")
         span, parent, views = self.packed[base]
-        self.worker.copy_to(parent.data_ptr, span.data_ptr(), span.numel(), worker_id=self.worker_id)
-        return views
+        length = span.numel()
+        if base + 3 in self.overrides:
+            length = views[3][0].data_ptr - parent.data_ptr
+        self.worker.copy_to(parent.data_ptr, span.data_ptr(), length, worker_id=self.worker_id)
+        return tuple(self.overrides.get(base + i, values) for i, values in enumerate(views))
 
     def for_layer(self, layer):
         if self.group_size != 1:
             raise RuntimeError("four-layer weights must be consumed through for_group")
+        if layer in self.overrides:
+            return self.overrides[layer]
         if self.storage == "resident":
             return self.resident[layer]
         if self.storage != "stream":
@@ -164,6 +184,8 @@ class DraftWeights:
         self.resident.clear()
         self.buffers.clear()
         self.packed.clear()
+        self.overrides.clear()
+        self.version = 0
         while self.handles:
             self.worker.free_tensor(self.handles[-1], worker_id=self.worker_id)
             self.handles.pop()

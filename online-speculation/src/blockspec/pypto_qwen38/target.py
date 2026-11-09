@@ -49,8 +49,9 @@ class SnapshotPool:
 
 
 class NativeTarget:
-    def __init__(self, runner, request, slot_type, *, rows=16):
+    def __init__(self, runner, request, slot_type, *, rows=16, collector=None):
         self.runner, self.request, self.slot_type, self.rows = runner, request, slot_type, rows
+        self.collector = collector
 
     @property
     def resident(self):
@@ -108,9 +109,13 @@ class NativeTarget:
             serving = getattr(self.runner, "device_serving", None)
             if serving is not None:
                 self.runner.run_verifier([slot])
+                if self.collector is not None:
+                    self.collector.teacher(self.runner, self.resident.slot, len(tokens))
                 output.extend(serving.select(self.runner.logits, self.resident.slot * 16, len(tokens), target=True))
                 continue
             self.runner.run_batch([slot])
+            if self.collector is not None:
+                self.collector.teacher(self.runner, self.resident.slot, len(tokens))
             host = getattr(self.runner, "verification_logits", None)
             if host is not None:
                 # 一次读取当前 tile 的有效行，复用 fork 前注册的共享主机缓冲。
@@ -160,6 +165,8 @@ class OrthrusRunner:
         try:
             self.native.start()
             self.draft.start(self.native)
+            if getattr(self.native, "learner", None) is not None:
+                self.native.learner.start(self.native, self.draft)
         except BaseException:
             self.close()
             raise
@@ -203,12 +210,21 @@ class OrthrusRunner:
         width = min(self.draft.block_size, self.draft.context - slot.position, remaining)
         if width < 2:
             return self.native.run_batch(slots)
-        candidates = tuple(self.draft.propose(request, slot.token_ids[0], width))
-        if len(candidates) != width - 1:
-            raise RuntimeError("draft must propose exactly K-1 tokens")
-        target = NativeTarget(self.native, request, self.slot_type)
-        result = verify_transaction(target, slot.token_ids[0], candidates,
-                                    budget=remaining, stop_tokens=request.stop_token_ids)
+        learner = getattr(self.draft, "learner", None)
+        try:
+            candidates = tuple(self.draft.propose(request, slot.token_ids[0], width))
+            if len(candidates) != width - 1:
+                raise RuntimeError("draft must propose exactly K-1 tokens")
+            target = NativeTarget(self.native, request, self.slot_type,
+                                  **({"collector": learner.current} if learner is not None else {}))
+            result = verify_transaction(target, slot.token_ids[0], candidates,
+                                        budget=remaining, stop_tokens=request.stop_token_ids)
+            if learner is not None:
+                learner.observe(result)
+        except BaseException:
+            if learner is not None:
+                learner.abort()
+            raise
         self.rounds += 1
         self.accepted += result.accepted
         self.restores += result.committed_inputs < width

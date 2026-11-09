@@ -20,6 +20,14 @@ def main():
     parser.add_argument("--serving-backend", choices=("device", "host"), default="device",
                         help="input preparation, greedy selection and GDN transaction snapshots")
     parser.add_argument("--weight-backend", choices=("pypto", "host"), default="pypto")
+    parser.add_argument("--online", action="store_true")
+    parser.add_argument("--last-layers", type=int, choices=(1,), default=1)
+    parser.add_argument("--update-stride", type=int, default=16)
+    parser.add_argument("--replay-blocks", type=int, default=2)
+    parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument("--learner-head-dir", type=Path, help="raw training head when --head-dir uses prepared banks")
+    parser.add_argument("--checkpoint-dir", type=Path, help="save each committed update into a versioned directory")
+    parser.add_argument("--resume-online", type=Path, help="resume a saved last-layer Adam checkpoint")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
@@ -36,6 +44,12 @@ def main():
     head = HeadSource(args.model, args.head_dir)
     native_module(args.source, "weight").verify_model_identity(args.model)
     app = native_module(args.source, "api").app
+    online_config = None
+    if args.online:
+        from blockspec.pypto_qwen38.online import OnlineConfig
+        online_config = OnlineConfig(last_layers=args.last_layers, stride=args.update_stride,
+            replay_blocks=args.replay_blocks, learning_rate=args.learning_rate, raw_head_dir=args.learner_head_dir,
+            checkpoint_dir=args.checkpoint_dir, resume_dir=args.resume_online)
 
     @asynccontextmanager
     async def lifespan(application):
@@ -43,7 +57,7 @@ def main():
                              head_storage=args.head_storage, head_transfer=args.head_transfer,
                              attention_backend=args.attention_backend, group_size=args.draft_group_size,
                              gdn_backend=args.gdn_backend, device_serving=args.serving_backend == "device",
-                             weight_backend=args.weight_backend)
+                             weight_backend=args.weight_backend, online_config=online_config)
         application.state.engine = engine
         try:
             await asyncio.to_thread(engine.start)
