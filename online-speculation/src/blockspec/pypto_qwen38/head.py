@@ -63,6 +63,8 @@ class HeadSource:
         self._prepared = None
         self.shared_weights = None
         self.preparation_seconds = 0.0
+        self.preparation_backend = None
+        self.prepared_manifest = None
         self.block_size, self.mask_token_id = block_size, mask_token_id
         config = json.loads((self.model_root / "config.json").read_text())["text_config"]
         expected = dict(hidden_size=HIDDEN, num_hidden_layers=64, num_attention_heads=24,
@@ -80,6 +82,10 @@ class HeadSource:
         self.tp = 1
         if self.directory:
             manifest = read_manifest(self.directory)
+            from .prepared_head import FORMAT, configure
+            if manifest.get("format") == FORMAT:
+                configure(self, manifest)
+                return
             self.tp = manifest.get("tp_size")
             if type(self.tp) is not int or self.tp not in {1, 2, 4}:
                 raise ValueError("head must use native TP1/TP2/TP4 shards")
@@ -109,6 +115,8 @@ class HeadSource:
     def layer(self, layer):
         if type(layer) is not int or not 0 <= layer < 64:
             raise ValueError("layer must be in 0..63")
+        if self.prepared_manifest is not None:
+            raise ValueError("prepared inference banks are not raw training tensors")
         result = {}
         for name in tensor_schema(layer):
             if self.directory:
@@ -130,6 +138,8 @@ class HeadSource:
         return result
 
     def banks(self, layer):
+        if self.prepared_manifest is not None and self._prepared is None:
+            self.prepare()
         if self._prepared is not None:
             if type(layer) is not int or not 0 <= layer < 64:
                 raise ValueError("layer must be in 0..63")
@@ -156,6 +166,12 @@ class HeadSource:
         if self._prepared is not None:
             return
         start = time.monotonic()
+        if self.prepared_manifest is not None:
+            from .prepared_head import load
+            load(self)
+            self.preparation_backend = "pypto"
+            self.preparation_seconds = time.monotonic() - start
+            return
         layers = [self.banks(layer) for layer in range(64)]
         for layer, values in enumerate(layers):
             if layer % 4 != 3:
@@ -181,4 +197,12 @@ class HeadSource:
                 current.append(target)
             prepared.append(tuple(current))
         self.shared_weights, self._prepared = storage, tuple(prepared)
+        self.preparation_backend = "host"
         self.preparation_seconds = time.monotonic() - start
+
+    def prepare_on_device(self, config):
+        if self._prepared is not None or self.prepared_manifest is not None:
+            return self.prepare()
+        from .head_loading import prepare_head
+        prepare_head(self, config)
+        self.preparation_backend = "pypto"

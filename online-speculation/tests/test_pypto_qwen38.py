@@ -279,6 +279,7 @@ def tiny_head(monkeypatch):
     head = HeadSource.__new__(HeadSource)
     head._prepared = head.shared_weights = None
     head.preparation_seconds = 0.0
+    head.prepared_manifest = head.preparation_backend = None
     full = {name: torch.arange(256, dtype=torch.bfloat16) / 256
             if name.endswith("norm.weight") else torch.ones((2, 2), dtype=torch.bfloat16)
             for name in ("q_proj.weight", "k_proj.weight", "v_proj.weight", "o_proj.weight",

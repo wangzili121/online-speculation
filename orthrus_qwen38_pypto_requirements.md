@@ -441,6 +441,8 @@ class GatedRMSNorm(nn.Module):
 
 当前接入在同一个 OneServing `DistributedWorker` 中运行主模型和完整 draft。`HeadSource` 读取训练 head，`DraftWeights` 管理驻留或流式上传，`NeuralDraft.propose` 绑定共享 backbone 与目标历史；Full Attention 读取分页池，GDN 在私有工作区更新状态。PyPTO 执行全部模型计算。
 
+参数加载默认也由 PyPTO 完成数值整理：在 NPU 上合并 head 分片、转置卷积、补零及转换 norm，主模型矩阵按层直接 DMA 到最终 bank。已转换的 head 可以保存后重载。磁盘读取、manifest 解析和文件哈希保留主机接口；这与每轮起草时的参数上传分开处理。
+
 `OrthrusRunner` 对接原生 scheduler，`NativeTarget` 调用原生 AR 程序分块验证候选；logits 在设备端检查并选出 token，只回传少量整数，再由主机确定接受前缀。拒绝后缀时在设备内恢复 GDN，回收新页并恢复长度，只重放接受前缀；已验证输出由 scheduler 逐 token 交付。输入 MASK、RoPE 查表和 Attention mask 同样由 PyPTO kernel 准备。缓存分配、页表和接受决策由引擎管理，算子按传入的长度和布局读写数据。
 
 `--draft-group-size 4` 将 3 个 GDN 层与 1 个 Full Attention 层编排为一次 HOST 提交，head 同时按组上传。该配置只改变执行粒度，K 仍为 32；共享层直接使用主模型参数，draft 可以采用适合 K32 的执行分块。完整 TP 尚需对接原生的局部 backbone 和归约接口。
@@ -462,7 +464,7 @@ python scripts/run_in_runtime.py scripts/validate_qwen38_vllm.py \
 
 现有验证分为两层。计算上，已对照双向 Full Attention、非零初态 GDN、跨分段状态和相关前后处理；真实模型上，已在 27B、TP2 中覆盖 K=2/8/17/32 的起草与原生验证、全接受和连续拒绝后的恢复、分页历史、缓存隔离、head 导出重载及采样校准。另有 TP4 加载和 draft 更新记录，训练反向不列入本次 PyPTO 需求。
 
-当前 PyPTO 组合通过 400 项 CPU 回归，独立 NPU 检查覆盖分页 Attention、GDN 递推、前后处理及 K32 投影；投影和 norm 的两组检查合计 54 项。在真实 27B、K32 上，以每层实际输入对照 HF 计算，128 项通过，最大相对 L2 约 0.321%，小于固定的 2% 门槛。Vector 与原生 Cube 点积的浮点次序不同，这一组不要求 logits 逐字节一致。
+当前 PyPTO 组合通过 430 项 CPU 回归，独立 NPU 检查覆盖分页 Attention、GDN 递推、前后处理及 K32 投影；投影和 norm 的两组检查合计 54 项。在真实 27B、K32 上，以每层实际输入对照 HF 计算，128 项通过，最大相对 L2 约 0.321%，小于固定的 2% 门槛。Vector 与原生 Cube 点积的浮点次序不同，这一组不要求 logits 逐字节一致。
 
 六个历史边界、八组全接受/拒绝/截断用例、目标缓存不变、接受前缀回放、非零槽位与换页、scheduler 续写均通过。HTTP completion、chat、SSE、后端配置和正常退出也通过；不同 Attention 后端搭配新 GDN 的直接服务检查均通过。原始记录由 [GDN 开发说明](online-speculation/docs/QWEN38_PYPTO_GDN_KERNEL_TASK.md)汇总。
 

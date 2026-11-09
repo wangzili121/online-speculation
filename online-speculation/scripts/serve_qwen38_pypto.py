@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--gdn-backend", choices=("native", "vector"), default="native")
     parser.add_argument("--serving-backend", choices=("device", "host"), default="device",
                         help="input preparation, greedy selection and GDN transaction snapshots")
+    parser.add_argument("--weight-backend", choices=("pypto", "host"), default="pypto")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
@@ -41,7 +42,8 @@ def main():
         engine = make_engine(args.source, args.model, args.device, head,
                              head_storage=args.head_storage, head_transfer=args.head_transfer,
                              attention_backend=args.attention_backend, group_size=args.draft_group_size,
-                             gdn_backend=args.gdn_backend, device_serving=args.serving_backend == "device")
+                             gdn_backend=args.gdn_backend, device_serving=args.serving_backend == "device",
+                             weight_backend=args.weight_backend)
         application.state.engine = engine
         try:
             await asyncio.to_thread(engine.start)

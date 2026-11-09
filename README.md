@@ -6,6 +6,8 @@ PyPTO 提供 `native`、`fused` 和 `paged` 三种 Attention 后端。直接分�
 
 PyPTO 的优化配置为 `--attention-backend paged --gdn-backend vector --draft-group-size 4 --head-transfer packed`：直接读取分页历史，整块执行 GDN、投影和共享 MLP，K32 的 HOST 计算提交由 66 次降为 18 次。[GDN 与 K32 调优](online-speculation/docs/QWEN38_PYPTO_GDN_KERNEL_TASK.md)包含独立算子、整层、整轮起草及 NUMA 对照。
 
+PyPTO 路径默认在 NPU 上整理 head 权重，主模型矩阵直接加载到最终设备布局。可用 `scripts/prepare_qwen38_pypto_head.py` 保存转换后的 head，之后通过 `--head-dir` 直接加载；文件读取与哈希校验仍由主机完成。[权重准备与复用](online-speculation/docs/QWEN38_PYPTO_PORT.md#权重准备与复用)说明命令和格式。
+
 Qwen3.8-27B 的 Orthrus 投机推理与 draft 更新实现。draft 复用冻结的主模型 backbone，推理读取主模型历史缓存，候选由原生 vLLM-Ascend 验证。支持在线 last-N 更新和独立离线全层更新，均只更新 draft mixer，不训练主模型。
 
 Full Attention 在块内采用双向注意力，GDN 使用 `orthrus_qwen35_reference` 的因果递推策略。

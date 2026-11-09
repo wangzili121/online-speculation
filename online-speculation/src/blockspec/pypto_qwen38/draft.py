@@ -210,9 +210,12 @@ class NeuralDraft:
 
 
 def make_runner(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
-                attention_backend="native", group_size=1, gdn_backend="native", device_serving=True, **callbacks):
+                attention_backend="native", group_size=1, gdn_backend="native", device_serving=True,
+                weight_backend="pypto", **callbacks):
     """Create a native runner with additional graphs; leave native source intact."""
     runtime = native_module(source, "runtime")
+    if weight_backend not in {"pypto", "host"}:
+        raise ValueError("weight backend must be pypto or host")
     draft = NeuralDraft(source, head, head_storage=head_storage, head_transfer=head_transfer,
                         attention_backend=attention_backend, group_size=group_size, gdn_backend=gdn_backend)
 
@@ -222,6 +225,8 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
         def start(self):
             if self.worker is not None:
                 raise RuntimeError("model runner is already started")
+            if weight_backend == "pypto":
+                head.prepare_on_device(self.config)
             samples = runtime.single_meta_samples()
             self.prefill = runtime.prefill_fwd.compile(*samples, 1, config=self.config)
             self.decode = runtime.decode_fwd.compile(*samples, 1, config=self.config)
@@ -237,14 +242,23 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
                 from .serving import DeviceServing
                 self.device_serving = DeviceServing(head.mask_token_id)
                 programs += self.device_serving.compile(self.config, self.zero_conv.shape, self.zero_recurrent.shape)
+            base_loading = None
+            if weight_backend == "pypto":
+                from .base_loading import BaseLoading
+                base_loading = BaseLoading(runtime, self.model_root, self.config)
+                programs += list(base_loading.registry.programs.values())
             from pypto.runtime import ReadOnlyHostTensor
             self.worker = runtime.DistributedWorker([self.prefill, self.decode, *programs], config=self.config,
                 inherited_host_tensors=[ReadOnlyHostTensor(head.shared_weights), draft.host_logits,
                                         self.verification_logits, self.verification_states.storage,
                                         *(self.device_serving.host_tensors if self.device_serving else [])])
             try:
-                for _, host in runtime.TextWeights(self.model_root).banks():
-                    self.banks.append(self.worker.alloc_tensor(tuple(host.shape), host.dtype, init=host))
+                if base_loading is not None:
+                    for handle in base_loading.banks(self.worker):
+                        self.banks.append(handle)
+                else:
+                    for _, host in runtime.TextWeights(self.model_root).banks():
+                        self.banks.append(self.worker.alloc_tensor(tuple(host.shape), host.dtype, init=host))
                 pool_shape = (16, 4, runtime.POOL_BLOCKS, 16, 256)
                 for shape, dtype in (((8, *runtime.CONV_SHAPE), torch.bfloat16),
                                      ((8, *runtime.RECURRENT_SHAPE), torch.float32),
@@ -280,11 +294,12 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
             return self.device_serving.compact(slots)
 
     native = PreparedRunner(model_root, device, **callbacks)
+    native.weight_backend = weight_backend
     return OrthrusRunner(native, draft, native_module(source, "schedule").BatchSlot)
 
 
 def make_engine(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
-                attention_backend="native", group_size=1, gdn_backend="native", device_serving=True):
+                attention_backend="native", group_size=1, gdn_backend="native", device_serving=True, weight_backend="pypto"):
     class Engine(native_module(source, "engine").InferenceEngine):
         def snapshot(self):
             result = super().snapshot()
@@ -298,6 +313,8 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                                      attention_backend=runner.draft.attention_backend,
                                      gdn_backend=runner.draft.gdn_backend,
                                      serving_backend="device" if runner.native.device_serving is not None else "host",
+                                     weight_backend=runner.native.weight_backend,
+                                     head_preparation_backend=head.preparation_backend,
                                      draft_group_size=runner.draft.group_size,
                                      head_preparation_seconds=head.preparation_seconds,
                                      last_draft_timings=dict(runner.draft.last_timings))
@@ -310,6 +327,7 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                                 group_size=group_size,
                                 gdn_backend=gdn_backend,
                                 device_serving=device_serving,
+                                weight_backend=weight_backend,
                                 on_cache_event=engine._on_cache)
     engine.scheduler.runner = engine.runner
     return engine

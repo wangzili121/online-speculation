@@ -24,6 +24,9 @@ Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标
 
 - `baseline.py`：检查 OneServing 与运行时版本，在独立模块命名空间导入原生代码。
 - `head.py`：读取 `orthrus-qwen38-native-tp-v1`，检查基模哈希、K、mask、混合层策略和 tensor schema，按运行 rank 读取 TP1/2/4 checkpoint 的对应参数，并准备共享主机布局。当前服务运行 TP1，会合并训练分片。
+- `loading.py` / `loading_programs.py`：加载阶段的 PyPTO 转换、有限值和副本检查，以及纯数据搬运；文件读取与形状、偏移等元数据继续由主机提供。
+- `head_loading.py` / `base_loading.py`：将训练 head 的各 rank 区间合并为推理 bank，并按层加载主模型到最终设备位置，避免 CPU 上的矩阵拼接和数值变换。
+- `prepared_head.py`：保存已转换的 head；用基模、TP、K、mask、schema 和文件哈希约束缓存，启动时直接读取字节和建立 bank 视图。
 - `tp.py`：定义各 rank 的 heads 范围和 KV/GDN 状态形状，按参数布局重分片，检查目标历史的形状是否相容。
 - `weights.py`：设备内存充足时保留全部 head；否则逐层或按四层复用暂存缓冲。打包上传通过公开的 `Buffer.tensor` 创建具有同一内存 owner 的参数视图，同组各层参数同时有效。
 - `tp_programs.py`：组合原生 Linear、residual 和 PyPTO 内置 Sum，提供行并行投影、整块归约及归约后的 residual 组件；完整 TP 模型执行器尚未接入。
@@ -69,7 +72,7 @@ Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthr
 --draft-group-size 4 --head-transfer packed
 ```
 
-所有模型前向均在 PyPTO/NPU 中执行。默认还将输入张量准备、logits 有限值检查/greedy 选择、GDN 事务快照移至设备端。Torch/safetensors 仍用于启动时读取、校验、重排权重及创建主机缓冲；参数的设备分配、上传和常驻由 PyPTO 运行时负责。磁盘 I/O 不需要改写成计算 kernel。
+所有模型前向均在 PyPTO/NPU 中执行。默认还将输入张量准备、logits 有限值检查/greedy 选择、GDN 事务快照移至设备端。权重加载默认使用 PyPTO 做分片合并、转置、补零、norm 加一、类型转换及数值检查；Torch/safetensors 用于文件读取和主机缓冲描述，参数分配、上传和常驻由 PyPTO 运行时负责。
 
 流式上传 head 时，应在参数分配前将进程绑定到所用 NPU 的本地 CPU。先从 `npu-smi info` 的 PCIe Bus-Id 找到 `/sys/bus/pci/devices/<BDF>/local_cpulist`，并确认 CPU 属于进程允许集合，再用 `taskset -c <CPU列表>` 启动原有命令。CPU 编号取决于服务器拓扑。实测同一 NPU、同一程序，仅将 head 主机内存由远端改为本地，完整起草由约 1.740 降至 1.094 s，logits 相同；记录见 [K32 与 NUMA 对照](validation/pypto-qwen38/k32-integration-20261109/)。
 
@@ -94,7 +97,9 @@ Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthr
 
 | 工作 | 执行位置 |
 | --- | --- |
-| 读取 safetensors、校验 head、合并训练分片 | 启动时在 CPU 完成，复用 Torch/safetensors |
+| 读取 safetensors、解析 manifest、校验文件 SHA256 | CPU 文件接口；当前固定版本没有相应的 PyPTO 计算 kernel |
+| 合并训练分片、卷积转置、补零、norm 加一和类型转换 | PyPTO；数值有限性和跨 rank 复制参数的一致性同样在设备检查 |
+| 拼接主模型各层的完整矩阵 | PyPTO 运行时直接 DMA 到最终 bank 的偏移，不先创建 CPU 拼接矩阵 |
 | 分配 NPU 内存、上传及保留参数 | PyPTO 运行时，通过 CANN 完成设备分配与数据传输 |
 | 主模型和 draft 的完整前向 | PyPTO kernel，继续共享 backbone 与目标历史 |
 | draft MASK 输入、目标因果 mask、RoPE 查表 | PyPTO kernel；RoPE 表常驻 NPU，页号来自 CPU 分配器 |
@@ -126,6 +131,26 @@ python scripts/compare_qwen38_pypto_serving.py \
 | 首位拒绝事务，包含快照、恢复和前缀重放 | 0.446 s | 0.409 s |
 
 起草辅助阶段显著缩短，整轮仍由约 1 秒的 head 上传主导，当前样本没有体现稳定的整轮提速。事务计时使用主模型生成的候选构造接受/拒绝控制组，不代表测试 head 的实际接受率。两边完整 logits、候选和 verifier 历史相同；八组事务、七个历史边界（含 476 位置）、物理页/槽位复用通过；HTTP completion、chat、SSE 和正常退出通过，另通过 400 项 CPU 回归。原始数据、独立核检查和源码哈希见 [设备端收尾验证](validation/pypto-qwen38/device-serving-20261109/)。
+
+### 权重准备与复用
+
+`--weight-backend pypto` 为默认值。读取原始 head 时，先在一个短期 PyPTO worker 中逐个转换参数；该 worker 退出后再创建模型 worker。单卡流式 head 仍需一份规范布局的共享主机缓冲，但其中的参数由 NPU 计算，不在每轮或模型启动时重新进行 CPU 张量转换。`--weight-backend host` 保留原始转换路径作为独立对照。
+
+同一个 head 多次启动时，可以先保存转换结果：
+
+```bash
+python scripts/prepare_qwen38_pypto_head.py \
+  --model /models/Qwen3.8-27B --head-dir /models/orthrus-training-head \
+  --device 0 --output-dir /models/orthrus-pypto-head
+```
+
+之后将服务原有的 `--head-dir` 指向 `/models/orthrus-pypto-head`。格式为 `orthrus-qwen38-pypto-banks-v1`，记录原 head 契约、运行 TP/rank、PyPTO 版本和完整数据哈希。加载时只读取字节、校验文件和建立类型视图，不再进行权重数值运算；缺少完成后的 manifest、基模或 TP 不符、长度不符或数据损坏都会拒绝。更换训练 head 后重新生成一个目录并重启服务。
+
+该预处理只在加载时执行。矩阵、转置、归约等计算采用 PyPTO 基础算子；磁盘读取、JSON 解析和 SHA256 继续使用主机接口，PyPTO 自身的程序和工具链校验也使用这类主机接口。
+
+本轮用真实 27B 与 TP4 测试 head 在单卡 A2 复验：64 层、528 个 head bank 和主模型全部 23 个 bank 均与独立 CPU 加载结果逐字节一致；转换结果保存、重载后仍一致。新路径的完整 K32 logits 和候选与旧路径相同，目标缓存只读、接受前缀恢复、后续续写及 scheduler 输出通过；HTTP completion、chat、SSE 与正常退出也通过。另通过 11 项独立 NPU 检查和 430 项 CPU 回归，原始记录见 [权重加载验证](validation/pypto-qwen38/weight-loading-20261109/)。
+
+首次 NPU 准备约 155 s（含编译），CPU 对照约 41 s，保存后的 head 重载约 32 s。迁移并未加快首次转换；多次使用同一 head 时，应保存转换结果后加载。该加载计时不代表每轮起草或服务吞吐。
 
 ## 完整 TP 的接入准备
 
