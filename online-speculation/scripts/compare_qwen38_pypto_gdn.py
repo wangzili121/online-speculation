@@ -99,10 +99,10 @@ def main():
         for step in range(args.rounds):
             for backend in (list(programs) if step % 2 == 0 else list(reversed(programs))):
                 candidates = propose(backend)
-                signature = dict(candidates=candidates, logits_sha256=tensor_digest(draft.host_logits[:31]))
+                signature = dict(candidates=candidates, logits_sha256=tensor_digest(draft.read_logits(31)))
                 if backend in signatures and signature != signatures[backend]:
                     raise AssertionError("repeated GDN draft was not deterministic")
-                signatures[backend], logits[backend] = signature, draft.host_logits[:31].float().clone()
+                signatures[backend], logits[backend] = signature, draft.read_logits(31).float().clone()
                 row = dict(backend=backend, round=step, seconds=draft.last_seconds, phases=dict(draft.last_timings))
                 report["rounds"].append(row)
                 print(json.dumps(row), flush=True)
@@ -144,7 +144,7 @@ def main():
                     propose(backend)
                 finally:
                     draft._run = original_run
-                if tensor_digest(draft.host_logits[:31]) != signatures[backend]["logits_sha256"]:
+                if tensor_digest(draft.read_logits(31)) != signatures[backend]["logits_sha256"]:
                     raise AssertionError("profiling changed draft logits")
             report["profiles"][backend] = profiles
         report["target_cache_unchanged"] = before == resident_checksum(native)

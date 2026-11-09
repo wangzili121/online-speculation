@@ -15,7 +15,7 @@ from .greedy import host_greedy_tokens, verify_transaction
 class Snapshot:
     length: int
     pages: tuple[int, ...]
-    state: tuple
+    state: object
 
 
 class SnapshotPool:
@@ -58,6 +58,13 @@ class NativeTarget:
 
     def snapshot(self):
         resident = self.resident
+        serving = getattr(self.runner, "device_serving", None)
+        if serving is not None:
+            state = serving.acquire(resident.slot)
+            if state is not None:
+                snapshot = Snapshot(resident.pages.length, tuple(resident.pages.pages), state)
+                weakref.finalize(snapshot, serving.release, state.index)
+                return snapshot
         pool = getattr(self.runner, "verification_states", None)
         entry = None if pool is None else pool.acquire()
         if entry is not None:
@@ -80,7 +87,14 @@ class NativeTarget:
         pages = resident.pages
         if tuple(pages.pages[:len(snapshot.pages)]) != snapshot.pages:
             raise RuntimeError("verification replaced committed target pages")
-        self.runner._write_state(resident.slot, *snapshot.state)
+        from .serving import DeviceState
+        if isinstance(snapshot.state, DeviceState):
+            serving = getattr(self.runner, "device_serving", None)
+            if serving is None:
+                raise RuntimeError("device snapshot requires its original runner")
+            serving.restore(snapshot.state, resident.slot)
+        else:
+            self.runner._write_state(resident.slot, *snapshot.state)
         for page in pages.pages[len(snapshot.pages):]:
             self.runner.cache._drop(page)
         del pages.pages[len(snapshot.pages):]
@@ -91,6 +105,11 @@ class NativeTarget:
         for offset in range(0, len(inputs), self.rows):
             tokens = tuple(inputs[offset:offset + self.rows])
             slot = self.slot_type(self.request, tokens, self.resident.pages.length, "decode", False)
+            serving = getattr(self.runner, "device_serving", None)
+            if serving is not None:
+                self.runner.run_verifier([slot])
+                output.extend(serving.select(self.runner.logits, self.resident.slot * 16, len(tokens), target=True))
+                continue
             self.runner.run_batch([slot])
             host = getattr(self.runner, "verification_logits", None)
             if host is not None:

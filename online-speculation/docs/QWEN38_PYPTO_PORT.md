@@ -28,11 +28,12 @@ Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标
 - `weights.py`：设备内存充足时保留全部 head；否则逐层或按四层复用暂存缓冲。打包上传通过公开的 `Buffer.tensor` 创建具有同一内存 owner 的参数视图，同组各层参数同时有效。
 - `tp_programs.py`：组合原生 Linear、residual 和 PyPTO 内置 Sum，提供行并行投影、整块归约及归约后的 residual 组件；完整 TP 模型执行器尚未接入。
 - `greedy.py`：比较整块候选；第一次拒绝时输出目标 token，全接受时输出 bonus；输出上限和停止 token 同样限制提交长度。
-- `target.py`：在原生 runner 上执行验证，批量读取有效 logits 行；需要拒绝后缀时，恢复验证前的 GDN 状态和页表长度，再仅重放接受前缀。状态快照使用预注册共享缓冲，每个存活快照独占一个槽；池满时回退到独立副本。
+- `target.py`：在原生 runner 上执行验证；需要拒绝后缀时，恢复验证前的 GDN 状态和页表长度，再仅重放接受前缀。正常事务使用设备快照，每个存活快照独占一个槽；嵌套快照超出设备池时保留主机副本回退。
 - `programs.py` / `group_programs.py`：组合原生投影、norm、GDN、Full Attention 和 MLP，可按层或四层提交。原生对照保留 16 行 tile；优化路径以 K32 准备和投影，Full Attention 先准备整个块的 K/V，分页核心使用 32 行 query，读取主模型历史但不写目标缓存。
 - `attention.py` / `attention_programs.py` / `paged_attention_programs.py`：独立 Torch 参考、融合/分阶段对照及直接分页 Attention；接收原生完整 KV pool 和层号，读取真实历史与临时块，输出门控后的 Attention。
 - `gdn_programs.py` / `gdn_convolution_programs.py` / `gdn_aux_programs.py`：Vector 递推、只读 K32 卷积、gate 及 gated norm。`gdn_block_programs.py` 将这些阶段接到整层，直接读取 packed QKV 和目标历史，省去展开复制及两段之间的矩阵交接。
 - `projection_programs.py` / `shared_programs.py`：为 draft 提供 K32 投影、RMSNorm 和共享 MLP，减少分成两段时重复读取权重；共享参数仍直接引用主模型 bank。
+- `serving.py` / `serving_programs.py`：设备端准备 draft 与目标模型的 RoPE/mask，在设备上检查 logits 并选 token，以及在设备内保存/恢复 GDN 状态；磁盘读取、页分配和请求调度仍由主机负责。
 - `draft.py`：将 draft 与目标程序提前注册到同一 worker，共享 embedding、norm、MLP 和 LM head，组织各层计算与输出读取。
 
 Q/K/V-packed 的 GDN 投影与卷积按 Q、K、V 三段分别合并；O projection 按列合并；复制 norm 必须在各 rank 一致。真实 vLLM head 的 `A_log` 是 FP32，转换时保持原精度；decay/beta 编排使用相同公式，去掉原生辅助函数对该参数的重复转换。其他参数按实际 dtype 校验。
@@ -68,7 +69,7 @@ Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthr
 --draft-group-size 4 --head-transfer packed
 ```
 
-所有模型计算仍在 PyPTO/NPU 中执行；Torch 用于加载参数、主机侧编排和独立正确性参考。
+所有模型前向均在 PyPTO/NPU 中执行。默认还将输入张量准备、logits 有限值检查/greedy 选择、GDN 事务快照移至设备端。Torch/safetensors 仍用于启动时读取、校验、重排权重及创建主机缓冲；参数的设备分配、上传和常驻由 PyPTO 运行时负责。磁盘 I/O 不需要改写成计算 kernel。
 
 流式上传 head 时，应在参数分配前将进程绑定到所用 NPU 的本地 CPU。先从 `npu-smi info` 的 PCIe Bus-Id 找到 `/sys/bus/pci/devices/<BDF>/local_cpulist`，并确认 CPU 属于进程允许集合，再用 `taskset -c <CPU列表>` 启动原有命令。CPU 编号取决于服务器拓扑。实测同一 NPU、同一程序，仅将 head 主机内存由远端改为本地，完整起草由约 1.740 降至 1.094 s，logits 相同；记录见 [K32 与 NUMA 对照](validation/pypto-qwen38/k32-integration-20261109/)。
 
@@ -83,9 +84,48 @@ Full Attention 的整个临时块双向可见；GDN 延续 head 契约的 `orthr
 | 参数驻留 | TP2/TP4 分片后，固定推理的主模型和 draft 参数驻留 NPU | 单卡服务的主模型驻留、head 逐层上传；另已验证真实 head 的 TP2 分片分别驻留两卡。主模型与 head 一起驻留的整网多卡路径尚未接入 |
 | Backbone/KV 共享 | 引用原生 backbone 权重，读取主模型历史快照 | 同一 worker 复用 backbone 设备参数和目标历史缓存；draft 使用临时工作区，不转正 draft KV。两边都有布局整理或临时复制，并非所有读取均为零拷贝 |
 | Attention 执行 | 使用 `npu_fusion_attention` 等镜像已有融合算子 | 默认复用 OneServing 的分阶段 Attention/GDN；可选 `fused`/`paged`；直接分页实现完成独立算子、真实 27B K32 和六个历史边界检查，默认仍为原生路径 |
-| 整块校正 | 使用 vLLM 原生 sampler，支持 greedy 与标准 rejection sampling | 批量读回 logits 后在 CPU 选择 token；接受前缀由 `greedy.correct` 的 Python 循环确定。目前仅支持 greedy，尚未实现设备端整块张量校正与随机采样 |
+| 整块校正 | 使用 vLLM 原生 sampler，支持 greedy 与标准 rejection sampling | PyPTO 设备端检查 logits 并选择 token，仅回传 256 字节；接受前缀由 `greedy.correct` 的 Python 循环确定。目前仅支持 greedy，未实现随机采样 |
 
-当前实测最大增量成本仍是 head 逐层上传。128-token 请求中的 CPU 接受前缀匹配累计约 3–4 ms，远小于上传和 draft 前向；CPU 上扫描完整词表、选择 token 是另一项开销，不能将两者混为一谈。
+当前单卡最大的增量成本仍是 head 流式上传。接受前缀匹配、停止条件和页所有权只处理几十个整数，继续由主机组织；正常路径不再把完整词表搬回 CPU 扫描。审计脚本需要完整 logits 时，显式调用 `draft.read_logits(rows)`，读回和哈希不计入起草时间。
+
+## 参数加载与设备端收尾
+
+服务默认使用 `--serving-backend device`；`host` 保留迁移前的输入准备、输出选择和事务路径，便于同一 worker 对照。两种方式调用相同的主模型与 draft 前向，不改变 head、mask 可见关系或接受规则。
+
+| 工作 | 执行位置 |
+| --- | --- |
+| 读取 safetensors、校验 head、合并训练分片 | 启动时在 CPU 完成，复用 Torch/safetensors |
+| 分配 NPU 内存、上传及保留参数 | PyPTO 运行时，通过 CANN 完成设备分配与数据传输 |
+| 主模型和 draft 的完整前向 | PyPTO kernel，继续共享 backbone 与目标历史 |
+| draft MASK 输入、目标因果 mask、RoPE 查表 | PyPTO kernel；RoPE 表常驻 NPU，页号来自 CPU 分配器 |
+| logits 有限值检查、greedy 选择 | PyPTO kernel；并列时选最小 token ID，单次仅回传 256 字节 |
+| GDN 快照、恢复和单请求换槽 | PyPTO 设备内复制；两个快照槽额外占用约 310 MB NPU 内存 |
+| 页分配/回收、接受前缀、停止条件、HTTP 调度 | CPU 控制逻辑，不扫描词表，也不执行模型前向 |
+
+设备池的每个槽在对应快照释放前保持独占。超过两个同时存活的快照时，事务保留主机副本回退；正常单请求事务不需要回传 GDN 状态。独立检查入口为 `validate_qwen38_pypto_serving.py` 和 `validate_qwen38_pypto_device_state.py`；完整同 worker 对照使用：
+
+```bash
+python scripts/compare_qwen38_pypto_serving.py \
+  --source /opt/OneServing --model /models/Qwen3.8-27B \
+  --head-dir /models/orthrus-head --device 0 \
+  --output-dir /results/device-serving
+```
+
+该对照交错运行主机/设备两条收尾路径，比较完整 logits、候选、目标验证结果与历史，随后检查全部接受、各位置拒绝、停止/截断及槽位和物理页复用。独立检查还覆盖非有限值、并列最大值、有效行数、512 边界和含任意原始字节的真实大小 GDN 状态复制。
+
+计时中 `compute_dispatches` 仅统计模型前向；设备输入准备、输出选择各另有一次提交。设备路径的 `select_seconds` 包含选择 kernel 和 256 字节回传，`readback_seconds` 只单列主机路径的完整 logits 回传，不能据其为零推断没有设备传输。
+
+2026-11-09 的 A2 对照使用同一真实 27B、同一测试 head、分页 Attention、Vector GDN 和四层编排。主机/设备路径交错预热和计时，缓存哈希、完整 logits 读取及落盘均在计时外：
+
+| 范围 | 主机收尾 | 设备收尾 |
+| --- | --- | --- |
+| draft 输入准备 | 4.48 ms | 1.40 ms |
+| draft 输出回传与选择 | 11.45 ms | 1.26 ms |
+| 整轮起草，包含流式上传 | 1.165 s | 1.167 s |
+| 全接受验证事务，包含状态快照 | 0.319 s | 0.284 s |
+| 首位拒绝事务，包含快照、恢复和前缀重放 | 0.446 s | 0.409 s |
+
+起草辅助阶段显著缩短，整轮仍由约 1 秒的 head 上传主导，当前样本没有体现稳定的整轮提速。事务计时使用主模型生成的候选构造接受/拒绝控制组，不代表测试 head 的实际接受率。两边完整 logits、候选和 verifier 历史相同；八组事务、七个历史边界（含 476 位置）、物理页/槽位复用通过；HTTP completion、chat、SSE 和正常退出通过，另通过 400 项 CPU 回归。原始数据、独立核检查和源码哈希见 [设备端收尾验证](validation/pypto-qwen38/device-serving-20261109/)。
 
 ## 完整 TP 的接入准备
 

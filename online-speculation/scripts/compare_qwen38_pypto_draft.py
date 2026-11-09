@@ -129,7 +129,7 @@ def main():
                 start = time.perf_counter()
                 candidate = propose(backend)
                 elapsed = time.perf_counter() - start
-                signature = dict(candidates=candidate, logits_sha256=tensor_digest(draft.host_logits[:31]))
+                signature = dict(candidates=candidate, logits_sha256=tensor_digest(draft.read_logits(31)))
                 if backend in signatures and signature != signatures[backend]:
                     raise AssertionError(f"{backend}: repeated draft changed candidates/logits")
                 signatures[backend] = signature
@@ -145,7 +145,7 @@ def main():
             for backend in programs:
                 with capture_layers(draft, args.output_dir / "capture" / backend):
                     propose(backend)
-                if tensor_digest(draft.host_logits[:31]) != signatures[backend]["logits_sha256"]:
+                if tensor_digest(draft.read_logits(31)) != signatures[backend]["logits_sha256"]:
                     raise AssertionError("capturing changed draft logits")
         report["target_cache_unchanged"] = before == resident_checksum(native)
         if not report["target_cache_unchanged"]:

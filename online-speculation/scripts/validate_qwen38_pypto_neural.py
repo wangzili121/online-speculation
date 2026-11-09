@@ -176,7 +176,7 @@ def audit_slot_reuse(engine, source):
         result = dict(slot=native.requests[request.request_id].slot,
                       pages=list(native.requests[request.request_id].pages.pages),
                       candidates=draft.propose(request, anchor, 32),
-                      logits_sha256=tensor_digest(draft.host_logits[:31]))
+                      logits_sha256=tensor_digest(draft.read_logits(31)))
         if before != resident_checksum(native):
             raise AssertionError("draft modified target cache during slot check")
         return result

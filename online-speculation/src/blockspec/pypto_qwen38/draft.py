@@ -139,21 +139,25 @@ class NeuralDraft:
             raise RuntimeError("draft history boundary does not match the request anchor")
         start = time.monotonic()
         self.last_timings = dict(device_seconds=0.0, weights_seconds=0.0, compute_dispatches=0)
-        ids = torch.full((32,), self.head.mask_token_id, dtype=torch.int32)
-        ids[0] = anchor
-        self._upload(ids, self.ids)
-        # Positions outside the active width are masked; clamping only pads RoPE.
-        positions = torch.arange(past, past + 32).clamp_max(self.context - 1)
-        self._upload(native.rope["cos"][positions], self.cos)
-        self._upload(native.rope["sin"][positions], self.sin)
-        table = torch.zeros(32, dtype=torch.int32)
-        table[:len(resident.pages.pages)] = torch.tensor(resident.pages.pages, dtype=torch.int32)
-        self._upload(table, self.table)
-        mask = torch.full((16, 512), -10000.0)
-        mask[:, :past + width] = 0
-        self._upload(mask, self.mask)
+        serving = getattr(native, "device_serving", None)
+        if serving is not None:
+            serving.prepare(self, resident.pages.pages, anchor, past, width)
+        else:
+            ids = torch.full((32,), self.head.mask_token_id, dtype=torch.int32)
+            ids[0] = anchor
+            self._upload(ids, self.ids)
+            # Positions outside the active width are masked; clamping only pads RoPE.
+            positions = torch.arange(past, past + 32).clamp_max(self.context - 1)
+            self._upload(native.rope["cos"][positions], self.cos)
+            self._upload(native.rope["sin"][positions], self.sin)
+            table = torch.zeros(32, dtype=torch.int32)
+            table[:len(resident.pages.pages)] = torch.tensor(resident.pages.pages, dtype=torch.int32)
+            self._upload(table, self.table)
+            mask = torch.full((16, 512), -10000.0)
+            mask[:, :past + width] = 0
+            self._upload(mask, self.mask)
         self.last_timings["inputs_seconds"] = time.monotonic() - start
-        worker, banks = native.worker, native.banks
+        banks = native.banks
         self._run("embedding", [self.ids, banks[0], self.hidden[0]])
         for layer in range(0, 64, self.group_size):
             weight_start = time.monotonic()
@@ -180,27 +184,41 @@ class NeuralDraft:
                                    self.value, self.gate, *native.resident[2:], self.table,
                                    self.mask, output, layer, past, width])
         self._run("finish", [self.hidden[0], banks[1], banks[2], self.logits])
-        copy_start = time.monotonic()
-        logits = self.host_logits[:width - 1]
-        worker.copy_from(logits.data_ptr(), self.logits.data_ptr, logits.numel() * logits.element_size())
-        self.last_timings["readback_seconds"] = time.monotonic() - copy_start
         select_start = time.monotonic()
-        tokens = host_greedy_tokens(logits)
+        if serving is not None:
+            tokens = serving.select(self.logits, 0, width - 1)
+            self.last_timings["readback_seconds"] = 0.0
+        else:
+            copy_start = time.monotonic()
+            logits = self.read_logits(width - 1)
+            self.last_timings["readback_seconds"] = time.monotonic() - copy_start
+            select_start = time.monotonic()
+            tokens = host_greedy_tokens(logits)
         self.last_timings["select_seconds"] = time.monotonic() - select_start
         self.rounds += 1
         self.last_seconds = time.monotonic() - start
         self.last_timings["total_seconds"] = self.last_seconds
         return tokens
 
+    def read_logits(self, rows):
+        """诊断时显式读取完整 logits；正常推理仅回传 token 和有限值标志。"""
+        if type(rows) is not int or not 1 <= rows <= 32 or self.native is None:
+            raise ValueError("a started draft and 1..32 logits rows required")
+        logits = self.host_logits[:rows]
+        self.native.worker.copy_from(logits.data_ptr(), self.logits.data_ptr, logits.numel() * logits.element_size())
+        return logits
+
 
 def make_runner(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
-                attention_backend="native", group_size=1, gdn_backend="native", **callbacks):
+                attention_backend="native", group_size=1, gdn_backend="native", device_serving=True, **callbacks):
     """Create a native runner with additional graphs; leave native source intact."""
     runtime = native_module(source, "runtime")
     draft = NeuralDraft(source, head, head_storage=head_storage, head_transfer=head_transfer,
                         attention_backend=attention_backend, group_size=group_size, gdn_backend=gdn_backend)
 
     class PreparedRunner(runtime.ModelRunner):
+        device_serving = None
+
         def start(self):
             if self.worker is not None:
                 raise RuntimeError("model runner is already started")
@@ -215,10 +233,15 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
             self._buffers()
             self.verification_logits = torch.empty((16, 248320), dtype=torch.bfloat16).share_memory_()
             self.verification_states = SnapshotPool(self.zero_conv.shape, self.zero_recurrent.shape)
+            if device_serving:
+                from .serving import DeviceServing
+                self.device_serving = DeviceServing(head.mask_token_id)
+                programs += self.device_serving.compile(self.config, self.zero_conv.shape, self.zero_recurrent.shape)
             from pypto.runtime import ReadOnlyHostTensor
             self.worker = runtime.DistributedWorker([self.prefill, self.decode, *programs], config=self.config,
                 inherited_host_tensors=[ReadOnlyHostTensor(head.shared_weights), draft.host_logits,
-                                        self.verification_logits, self.verification_states.storage])
+                                        self.verification_logits, self.verification_states.storage,
+                                        *(self.device_serving.host_tensors if self.device_serving else [])])
             try:
                 for _, host in runtime.TextWeights(self.model_root).banks():
                     self.banks.append(self.worker.alloc_tensor(tuple(host.shape), host.dtype, init=host))
@@ -229,17 +252,39 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
                     self.resident.append(self.worker.alloc_tensor(shape, dtype, init=torch.zeros(shape, dtype=dtype)))
                 self.traces = self.worker.alloc_tensor((8, 66, 16, 5120), torch.bfloat16)
                 self.logits = self.worker.alloc_tensor((8, 16, 248320), torch.bfloat16)
+                if self.device_serving is not None:
+                    self.device_serving.start(self)
                 self._sample_memory()
             except BaseException:
                 self.close()
                 raise
+
+        def close(self):
+            try:
+                if self.device_serving is not None:
+                    self.device_serving.close()
+            finally:
+                super().close()
+
+        def run_batch(self, slots):
+            if self.device_serving is None:
+                return super().run_batch(slots)
+            return self.device_serving.run_batch(runtime, slots)
+
+        def run_verifier(self, slots):
+            return self.device_serving.run_batch(runtime, slots, select=False)
+
+        def _compact(self, slots):
+            if self.device_serving is None:
+                return super()._compact(slots)
+            return self.device_serving.compact(slots)
 
     native = PreparedRunner(model_root, device, **callbacks)
     return OrthrusRunner(native, draft, native_module(source, "schedule").BatchSlot)
 
 
 def make_engine(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
-                attention_backend="native", group_size=1, gdn_backend="native"):
+                attention_backend="native", group_size=1, gdn_backend="native", device_serving=True):
     class Engine(native_module(source, "engine").InferenceEngine):
         def snapshot(self):
             result = super().snapshot()
@@ -252,6 +297,7 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                                      head_transfer=runner.draft.weights.transfer,
                                      attention_backend=runner.draft.attention_backend,
                                      gdn_backend=runner.draft.gdn_backend,
+                                     serving_backend="device" if runner.native.device_serving is not None else "host",
                                      draft_group_size=runner.draft.group_size,
                                      head_preparation_seconds=head.preparation_seconds,
                                      last_draft_timings=dict(runner.draft.last_timings))
@@ -263,6 +309,7 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                                 attention_backend=attention_backend,
                                 group_size=group_size,
                                 gdn_backend=gdn_backend,
+                                device_serving=device_serving,
                                 on_cache_event=engine._on_cache)
     engine.scheduler.runner = engine.runner
     return engine
