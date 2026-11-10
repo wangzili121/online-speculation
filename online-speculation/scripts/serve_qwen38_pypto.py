@@ -30,11 +30,15 @@ def main():
     parser.add_argument("--learner-head-dir", type=Path, help="raw training head when --head-dir uses prepared banks")
     parser.add_argument("--checkpoint-dir", type=Path, help="save each committed update into a versioned directory")
     parser.add_argument("--resume-online", type=Path, help="resume a saved last-layer Adam checkpoint")
+    parser.add_argument("--reset-online-optimizer", action="store_true",
+                        help="load --resume-online weights but start fresh Adam moments and step counter")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
     if args.device < 0 or not 1 <= args.port <= 65535:
         parser.error("require an assigned nonnegative device and a valid port")
+    if args.reset_online_optimizer and (not args.online or args.resume_online is None):
+        parser.error("--reset-online-optimizer requires --online and --resume-online")
     if not args.online and any(value is not None for value in
                                (args.learner_head_dir, args.checkpoint_dir, args.resume_online, args.learner_device)):
         parser.error("learner/checkpoint options require --online")
@@ -55,7 +59,8 @@ def main():
         online_config = OnlineConfig(last_layers=args.last_layers, stride=args.update_stride,
             replay_blocks=args.replay_blocks, learning_rate=args.learning_rate, clip_norm=args.clip_norm,
             raw_head_dir=args.learner_head_dir,
-            checkpoint_dir=args.checkpoint_dir, resume_dir=args.resume_online, learner_device=args.learner_device)
+            checkpoint_dir=args.checkpoint_dir, resume_dir=args.resume_online, learner_device=args.learner_device,
+            reset_optimizer=args.reset_online_optimizer)
 
     @asynccontextmanager
     async def lifespan(application):

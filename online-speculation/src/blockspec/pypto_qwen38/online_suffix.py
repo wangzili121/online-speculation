@@ -87,7 +87,8 @@ class SuffixLearner(OnlineLearner):
                 self.publisher.publish_flat(self.optimizer.layout,self.optimizer.execution[0],expected_version=0)
                 draft.weights.version = 0
             else:
-                restore(self.optimizer,self.publisher,self.options.resume_dir,self.head_identity)
+                restore(self.optimizer,self.publisher,self.options.resume_dir,self.head_identity,
+                        reset_optimizer=self.options.reset_optimizer)
                 self.updates = self.optimizer.steps
                 self.rounds = self.updates*self.options.stride
             for _ in range(self.options.replay_blocks):

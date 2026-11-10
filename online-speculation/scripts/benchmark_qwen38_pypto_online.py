@@ -84,6 +84,71 @@ def summarize(rows, *, target=None):
     return result
 
 
+def warm_dataset(previous, candidate, *, train_count, confirm_count):
+    """预热用过的问题不再在线训练；开发集、测试集不变，另留一次性确认集。"""
+    if not previous.get("completed") or not previous.get("clean_shutdown"):
+        raise ValueError("warm start requires a completed, cleanly stopped prewarm run")
+    old = previous["dataset"]
+    if old["files_sha256"] != candidate["files_sha256"]:
+        raise ValueError("warm start data SHA256 changed")
+    for name in ("calibration", "dev"):
+        if old["splits"][name] != candidate["splits"][name]:
+            raise ValueError("warm start changed held-out prompts")
+    if old["splits"]["test"] != candidate["splits"]["test"][:len(old["splits"]["test"])]:
+        raise ValueError("warm start changed held-out test prompts")
+    excluded = {row["id"] for row in previous["records"]}
+    prompts = {row["id"]: row for row in old["splits"]["train"]}
+    if not excluded <= prompts.keys():
+        raise ValueError("warm records must belong to their declared training partition")
+    used_hashes = {prompts[key]["question_sha256"] for key in excluded}
+    train = [row for row in candidate["splits"]["train"]
+             if row["id"] not in excluded and row["question_sha256"] not in used_hashes][:train_count]
+    confirm = candidate["splits"]["test"][len(old["splits"]["test"]):][:confirm_count]
+    if len(train) != train_count or len(confirm) != confirm_count:
+        raise ValueError("not enough fresh questions for online training/confirmation")
+    splits = {name: old["splits"][name] for name in ("calibration", "dev", "test")}
+    splits.update(train=train, confirm=confirm)
+    all_rows = [row for rows in splits.values() for row in rows]
+    if len({row["question_sha256"] for row in all_rows}) != len(all_rows):
+        raise ValueError("online/held-out/confirmation partitions overlap")
+    return {**candidate, "splits": splits, "tokenized_sha256": digest(splits),
+            "excluded_prewarm_record_ids": sorted(excluded)}
+
+
+def audit_warm_initialization(learner, checkpoint):
+    """从设备读回 master 与 Adam 动量，确认加载权重而非延续旧优化器。"""
+    import torch
+    from safetensors.torch import load_file
+    from diagnose_qwen38_pypto_training import read_tensor
+    values = load_file(str(Path(checkpoint)/"optimizer.safetensors"), device="cpu")
+    optimizer = learner.optimizer
+    if learner.options.last_layers == 1:
+        states = {name+"."+label: handle for name, handles in optimizer.state.items()
+                  for label, handle in zip(("master", "first", "second"), handles, strict=True)}
+    else:
+        states = dict(zip(("master", "first", "second"), optimizer.state, strict=True))
+    rows = {}
+    for name, handle in states.items():
+        actual = read_tensor(learner.trainer, handle)
+        master = name.endswith("master")
+        if master and not torch.equal(actual, values[name]):
+            raise AssertionError("warm-start master differs from checkpoint")
+        if not master and torch.count_nonzero(actual).item():
+            raise AssertionError("warm-start Adam moment was not reset")
+        rows[name] = hashlib.sha256(memoryview(actual.view(torch.uint8).numpy())).hexdigest()
+    if (learner.updates, optimizer.steps, learner.draft.weights.version) != (0, 0, 0):
+        raise AssertionError("warm-start counters did not reset")
+    execution = (tuple(optimizer.execution[name][optimizer.index] for name in
+                       ("q_weight", "k_weight", "v_weight", "q_gamma", "k_gamma", "o_weight"))
+                 if learner.options.last_layers == 1 else optimizer.execution[optimizer.index])
+    served = learner.serving_banks[learner.publisher.active]
+    for source, target in zip(execution, served, strict=True):
+        if not torch.equal(read_tensor(learner.trainer, source), read_tensor(learner.native.worker, target)):
+            raise AssertionError("serving weights differ from restored learner execution weights")
+    return dict(master_equal=True, adam_moments_zero=True, serving_equal=True,
+                counters=[0, 0, 0], device_state_sha256=rows)
+
+
 def publish_initial_suffix(learner):
     """初始化参数也使用同一组驻留 bank，避免把更新后的少上传参数误算成学习收益。"""
     if learner.updates or learner.optimizer.steps or learner.publisher.version:
@@ -193,6 +258,8 @@ def main():
     p.add_argument("--skip-calibration", action="store_true")
     p.add_argument("--share-ar-prefix", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--continue-from", type=Path, help="完整实验 JSON；从其中的 Adam checkpoint 接着训练")
+    p.add_argument("--warm-from", type=Path, help="已完成预热的实验 JSON；加载 head，重置 Adam，用新问题在线更新")
+    p.add_argument("--confirm-count", type=int, default=0, help="预先留出的额外测试题，仅在最终 head 上评测一次")
     p.add_argument("--frozen-stream-control", action="store_true",
                    help="按相同训练请求额外测初始化冻结 head，直接对照在线净吞吐")
     a = p.parse_args()
@@ -201,6 +268,13 @@ def main():
             or min(a.train_count, a.dev_count, a.test_count) < 1 or a.device == a.learner_device):
         p.error("require new output, two devices, valid positive budgets and total context <=512")
     previous = json.loads(a.continue_from.read_text()) if a.continue_from else None
+    warm = json.loads(a.warm_from.read_text()) if a.warm_from else None
+    if (a.confirm_count < 0 or a.confirm_count and warm is None or
+            warm is not None and (previous is not None or a.frozen_stream_control)):
+        p.error("confirmation requires warm start; warm start excludes continuation/AR-initial frozen control")
+    if warm is not None and (not warm.get("completed") or not warm.get("clean_shutdown") or
+            any(warm["arguments"][key] != getattr(a, key) for key in ("last_layers", "width", "tokens", "test_count"))):
+        p.error("warm start must preserve suffix layers, block width, output budget and test set size")
     initial_step = previous["updates"][-1]["step"] if previous and previous.get("updates") else 0
     if previous is not None and (not previous.get("completed") or not 0 < initial_step < a.steps):
         p.error("continue from a completed run to a larger total step budget")
@@ -215,11 +289,20 @@ def main():
 
     options = OnlineConfig(last_layers=a.last_layers, stride=a.stride, replay_blocks=a.replay_blocks,
                            learning_rate=a.learning_rate, learner_device=a.learner_device,
-                           resume_dir=previous["checkpoint"]["path"] if previous else None)
+                           resume_dir=(previous or warm)["checkpoint"]["path"] if previous or warm else None,
+                           reset_optimizer=warm is not None)
     report = dict(completed=False, initialization="AR-copy; no pretrained diffusion head",
                   supervision="verifier reached-prefix full-vocabulary TV", physical_block_size=32,
                   max_model_len=512, arguments={k: str(v) if isinstance(v, Path) else v for k,v in vars(a).items()},
                   updates=[], train=[], evaluations=[], calibration=[])
+    if warm is not None:
+        manifest = json.loads((Path(options.resume_dir)/"manifest.json").read_text())
+        if manifest["step"] != warm["updates"][-1]["step"]:
+            p.error("prewarm checkpoint does not match its completed run")
+        report.update(initialization="prewarmed last-N head; fresh TV Adam; unseen online questions",
+                      warm_start=dict(report_sha256=hashlib.sha256(a.warm_from.read_bytes()).hexdigest(),
+                                      checkpoint=options.resume_dir, source_step=manifest["step"],
+                                      payload_sha256=manifest["payload_sha256"]))
     if previous is not None:
         manifest = json.loads((Path(options.resume_dir)/"manifest.json").read_text())
         if manifest["step"] != initial_step:
@@ -250,7 +333,11 @@ def main():
                              attention_backend="paged", group_size=4, gdn_backend="vector",
                              online_config=options)
         dataset = report["dataset"] = prepare_questions(a.data, engine.tokenizer, seed=a.seed,
-            max_prompt=a.max_prompt, train_count=a.train_count, dev_count=a.dev_count, test_count=a.test_count)
+            max_prompt=a.max_prompt, train_count=a.train_count + (len(warm["records"]) if warm else 0),
+            dev_count=a.dev_count, test_count=a.test_count+a.confirm_count)
+        if warm is not None:
+            dataset = report["dataset"] = warm_dataset(warm, dataset, train_count=a.train_count,
+                                                       confirm_count=a.confirm_count)
         if (a.data/"provenance.json").exists():
             dataset["source"] = json.loads((a.data/"provenance.json").read_text())
         train_offset = check_continuation(previous, dataset, report["arguments"]) if previous else 0
@@ -262,11 +349,18 @@ def main():
         runner, learner = engine.runner, engine.runner.draft.learner
         if learner.updates != initial_step:
             raise RuntimeError("learner restored a different update step")
-        if previous is None:
+        if warm is not None and learner.head_identity != warm["head_identity"]:
+            raise ValueError("prewarm base/head contract differs from the online model")
+        if previous is None and warm is None:
             publish_initial_suffix(learner)
+        if warm is not None:
+            report["warm_start"]["device_audit"] = audit_warm_initialization(learner, options.resume_dir)
         report["initial_resident_suffix"] = sorted(runner.draft.weights.overrides)
         report["head_identity"] = learner.head_identity
         report["initial_head_sha256"] = hashlib.sha256(memoryview(head.shared_weights.numpy())).hexdigest()
+        if warm is not None:
+            # 模板 head 的 SHA 不代表已经加载的预热参数；实际初态绑定 checkpoint 和设备读回。
+            report["template_head_sha256"] = report.pop("initial_head_sha256")
         meter = DraftMeter(runner.draft)
         runner.draft.propose = meter
         runner.draft.learner = None
@@ -427,6 +521,16 @@ def main():
         start = time.monotonic()
         save(learner.optimizer, checkpoint, learner.head_identity)
         report["checkpoint"] = dict(path=str(checkpoint), seconds=time.monotonic()-start)
+        if a.confirm_count:
+            refs, rows = [], []
+            for row in splits["confirm"]:
+                refs.append(measure(row, target=True))
+                rows.append(measure(row))
+            report["confirmation"] = dict(step=learner.updates, rows=rows, target_rows=refs,
+                summary=summarize(rows, target=refs), selection="predeclared final update; no test-driven selection")
+            if not report["confirmation"]["summary"]["greedy_equal_all"]:
+                raise AssertionError("confirmation output differs from paired target")
+            emit("confirmation", report["confirmation"]["summary"])
         report.update(completed=True, snapshot=engine.snapshot())
         emit("finished", dict(online_net=report["online_net"]["summary"], checkpoint=report["checkpoint"]))
     except BaseException as error:

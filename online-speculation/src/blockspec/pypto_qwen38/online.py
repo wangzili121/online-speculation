@@ -22,8 +22,11 @@ class OnlineConfig:
     resume_dir: str | None = None
     learner_device: int | None = None
     objective: str = "tv"
+    reset_optimizer: bool = False
 
     def __post_init__(self):
+        if type(self.reset_optimizer) is not bool or (self.reset_optimizer and self.resume_dir is None):
+            raise ValueError("reset_optimizer requires a checkpoint initialization")
         if self.objective not in {"tv", "kl"}:
             raise ValueError("objective must be tv or kl")
         if (type(self.last_layers) is not int or not 1 <= self.last_layers <= 64
@@ -152,7 +155,8 @@ class OnlineLearner:
                 self.optimizer.initialize(self.head, raw_norms,
                     device_banks=None if self.dedicated else draft.weights.for_group(60)[3])
             else:
-                restore(self.optimizer, self.publisher, self.options.resume_dir, self.head_identity)
+                restore(self.optimizer, self.publisher, self.options.resume_dir, self.head_identity,
+                        reset_optimizer=self.options.reset_optimizer)
                 self.updates = self.optimizer.steps
                 self.rounds = self.updates * self.options.stride
             print("online training free bytes after optimizer", self.trainer.device_memory_info()[0], flush=True)

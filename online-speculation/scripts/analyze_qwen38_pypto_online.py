@@ -120,6 +120,8 @@ def analyze(report, *, allow_incomplete=False):
     evaluations = sorted(report["evaluations"], key=lambda row: row["step"])
     for entry in evaluations:
         validate_evaluation(entry)
+    if report.get("confirmation"):
+        validate_evaluation(dict(test=report["confirmation"]))
     valid = Counter(n for row in updates for n in row["feedback_valid_rows"])
     result = dict(last_layers=arguments["last_layers"], completed=report.get("completed", False),
         updates=len(updates), training_questions=len(report["train"]),
@@ -147,6 +149,8 @@ def analyze(report, *, allow_incomplete=False):
         result["frozen_stream"] = report["frozen_stream"]["summary"]
         if not result["frozen_stream"]["greedy_equal_all"] or not result["online_net"]["summary"]["greedy_equal_all"]:
             raise ValueError("unpaired or non-lossless stream comparison")
+    if report.get("confirmation"):
+        result["confirmation"] = report["confirmation"]["summary"]
     return result
 
 

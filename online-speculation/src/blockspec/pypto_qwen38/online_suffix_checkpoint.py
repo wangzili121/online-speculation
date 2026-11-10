@@ -53,15 +53,19 @@ def read(directory, head_identity, layout):
     return manifest["step"],values
 
 
-def restore(optimizer, publisher, directory, head_identity):
+def restore(optimizer, publisher, directory, head_identity, *, reset_optimizer=False):
     if optimizer.steps or publisher.version:
         raise RuntimeError("restore is only allowed before serving starts")
     step,values = read(directory,head_identity,optimizer.layout)
     for name,handle in zip(STATES,optimizer.state,strict=True):
-        value = values[name]
-        optimizer.worker.copy_to(handle.data_ptr,value.data_ptr(),value.numel()*4)
+        if reset_optimizer and name != "master":
+            optimizer.run(optimizer.programs.zero,handle)
+        else:
+            value = values[name]
+            optimizer.worker.copy_to(handle.data_ptr,value.data_ptr(),value.numel()*4)
         optimizer.statistics(handle)
     optimizer.render(0,optimizer.state[0])
     publisher.publish_flat(optimizer.layout,optimizer.execution[0],expected_version=0)
-    optimizer.steps,optimizer.index,publisher.version = step,0,step
+    restored_step = 0 if reset_optimizer else step
+    optimizer.steps,optimizer.index,publisher.version = restored_step,0,restored_step
     optimizer.zero_grad()

@@ -67,20 +67,32 @@ def read(directory, head_identity, shapes):
     return manifest["step"], values
 
 
-def restore(optimizer, weights, directory, head_identity):
-    """仅在启动时恢复；所有状态检查通过后才发布末层，随后保留 Adam 计数。"""
+def restore(optimizer, weights, directory, head_identity, *, reset_optimizer=False):
+    """启动时恢复；权重初始化模式保留 master，并在设备清零 Adam 动量。"""
     if optimizer.steps or weights.version:
         raise RuntimeError("restore is only allowed before serving starts")
     step, values = read(directory, head_identity, optimizer.programs.shapes)
     for name, handles in optimizer.state.items():
         for label, handle in zip(STATES, handles, strict=True):
+            if reset_optimizer and label != "master":
+                continue
             value = values[name+"."+label]
             optimizer.worker.copy_to(handle.data_ptr, value.data_ptr(), value.numel()*4)
+    if reset_optimizer:
+        from .loading import DeviceLoader
+        loader = DeviceLoader(optimizer.programs.loader, optimizer.worker)
+        try:
+            for handles in optimizer.state.values():
+                for handle in handles[1:]:
+                    loader.zero(handle)
+        finally:
+            loader.close()
     for column in range(3):
         optimizer.statistics({name: handles[column] for name, handles in optimizer.state.items()})
     optimizer.render(0, optimizer.state)
     banks = tuple(optimizer.execution[name][0] for name in
                   ("q_weight", "k_weight", "v_weight", "q_gamma", "k_gamma", "o_weight"))
     weights.publish(63, banks, expected_version=0)
-    optimizer.steps, optimizer.index, weights.version = step, 0, step
+    restored_step = 0 if reset_optimizer else step
+    optimizer.steps, optimizer.index, weights.version = restored_step, 0, restored_step
     optimizer.zero_grad()

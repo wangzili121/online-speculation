@@ -70,4 +70,6 @@
 
 同一入口的 `--warm-from <已完成预热的 JSON> --confirm-count 24` 用于加载预热权重后，以新优化器进行 TV 在线更新。它排除预热用过的问题，保留原 dev/test，并检查设备上的 master 参数与 checkpoint 逐值相同、Adam 动量为零、更新计数从零开始。该选项与保留 Adam 状态的 `--continue-from` 含义不同，也不使用仅适用于 AR-copy 初态的 `--frozen-stream-control`。
 
+服务入口 `scripts/serve_qwen38_pypto.py` 对应使用 `--online --resume-online <checkpoint目录> --reset-online-optimizer`。省略最后一个选项则恢复原 Adam 状态继续训练。两种方式均严格检查基模、模板 head 和 last-N 参数布局，不接受不匹配的 checkpoint。
+
 结果原始记录、独立汇总与监督器退出状态位于 [实验记录目录](validation/pypto-qwen38/online-study-20261111/)。权重 checkpoint 保留在实验服务器，未将模型参数提交到仓库。
