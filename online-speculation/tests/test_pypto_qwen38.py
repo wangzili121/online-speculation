@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from blockspec.pypto_qwen38.greedy import correct, verify_transaction
+from blockspec.pypto_qwen38.greedy import correct, verify_tiled, verify_transaction
 from blockspec.pypto_qwen38.head import merge_parameter
 from blockspec.pypto_qwen38.target import NativeTarget, OrthrusRunner
 
@@ -143,7 +143,8 @@ def test_native_restore_rejects_replacement_of_committed_pages():
 
 
 @pytest.mark.parametrize("reject", (0, 1, 15, 16, 30, None))
-def test_native_transaction_across_pages_and_recurrent_replay(reject):
+@pytest.mark.parametrize("verifier", (verify_transaction, verify_tiled))
+def test_native_transaction_across_pages_and_recurrent_replay(reject, verifier):
     class Runner:
         def __init__(self):
             self.pages = SimpleNamespace(length=3, pages=[1])
@@ -187,7 +188,7 @@ def test_native_transaction_across_pages_and_recurrent_replay(reject):
     if reject is not None:
         candidates[reject] = 300
     target = NativeTarget(runner, SimpleNamespace(request_id="r"), slot_type)
-    result = verify_transaction(target, 0, candidates, budget=32)
+    result = verifier(target, 0, candidates, budget=32)
     expected = list(range(1, 33 if reject is None else reject + 2))
     assert list(result.tokens) == expected
     assert runner.pages.length == 3 + len(expected)

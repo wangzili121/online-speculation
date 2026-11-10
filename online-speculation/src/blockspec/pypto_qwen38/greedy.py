@@ -55,3 +55,45 @@ def verify_transaction(target, anchor, candidates, *, budget, stop_tokens=()):
     except BaseException:
         target.restore(snapshot)
         raise
+
+
+def verify_tiled(target, anchor, candidates, *, budget, stop_tokens=(), rows=16):
+    """按原生 verifier tile 验证，遇到拒绝便不计算后续 tile；仍提交同一 AR 前缀。
+
+    在线教师采集当前要求完整 K 行，因此采集时保留原事务路径。
+    此入口仅改变验证调用的编排，复用原生 forward、快照与回放。
+    """
+    if getattr(target, "collector", None) is not None:
+        return verify_transaction(target, anchor, candidates, budget=budget, stop_tokens=stop_tokens)
+    candidates = tuple(candidates)
+    if (not candidates or type(rows) is not int or rows < 1 or type(budget) is not int or budget < 1 or
+            any(type(token) is not int or token < 0 for token in (anchor, *candidates))):
+        raise ValueError("valid token IDs, candidates, output budget and tile size required")
+    inputs = (anchor, *candidates)
+    snapshot = target.snapshot()
+    predictions, accepted, result = [], 0, None
+    try:
+        for offset in range(0, len(inputs), rows):
+            chunk = inputs[offset:offset+rows]
+            outputs = tuple(target.forward(chunk))
+            if len(outputs) != len(chunk) or any(type(token) is not int or token < 0 for token in outputs):
+                raise ValueError("one valid target prediction per input required")
+            predictions.extend(outputs)
+            for index in range(offset, min(len(predictions), len(candidates))):
+                token = predictions[index]
+                equal = candidates[index] == token
+                accepted += int(equal)
+                if not equal or token in stop_tokens or index+1 == budget:
+                    result = Correction(tuple(predictions[:index+1]), index+1, accepted)
+                    break
+            if result is not None:
+                break
+        if result is None:
+            result = correct(candidates, predictions, budget=budget, stop_tokens=stop_tokens)
+        if result.committed_inputs < len(predictions):
+            target.restore(snapshot)
+            target.forward(inputs[:result.committed_inputs])
+        return result
+    except BaseException:
+        target.restore(snapshot)
+        raise
