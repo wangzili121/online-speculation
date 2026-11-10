@@ -23,6 +23,8 @@
 
 原始记录、逐步 CSV 和校验说明见[实验归档](validation/pypto-qwen38/cold-kl-20261110/README.md)。
 
+后续使用[真实反馈数值对照与固定批次训练](QWEN38_PYPTO_TRAINING_DIAGNOSIS.md)区分计算适配与训练设置问题；当前短训练结果本身不能排除实现问题。
+
 ## 训练方式
 
 每次更新随机抽取两条完整回答，每条选择四个不同的 anchor。教师始终沿真实文本前进；draft 只能看到 anchor 前的历史和 `anchor + MASK` 块。
