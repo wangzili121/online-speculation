@@ -74,3 +74,12 @@ def test_replay_uses_one_global_position_normalizer():
     gradients = torch.autograd.grad(loss, tuple(masters.values()))
     for (name, _), expected in zip(masters.items(), gradients, strict=True):
         torch.testing.assert_close(values[graph.gradients[name].name], expected, atol=2e-8, rtol=2e-4)
+
+
+def test_full_attention_returns_input_gradient_for_preceding_draft_layer():
+    graph = LastLayerGraph(small_graph().shape, backprop_input=True)
+    inputs, _ = sample_inputs(graph, fp32=True)
+    inputs["hidden"].requires_grad_()
+    values = evaluate(graph, inputs, past=7, width=17, valid=4, fp32=True)
+    expected, = torch.autograd.grad(values[graph.losses.name][:, 0].sum(), inputs["hidden"])
+    torch.testing.assert_close(values[graph.input_gradient.name], expected, atol=2e-8, rtol=2e-4)

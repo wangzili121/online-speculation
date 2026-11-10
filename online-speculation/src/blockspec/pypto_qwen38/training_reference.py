@@ -18,6 +18,8 @@ def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False):
 
     def execute(node, args):
         op, cfg = node.kind, node.options
+        if op.startswith("gdn_"):
+            return gdn_execute(op,args,graph.gdn_shape,width,cast)
         if op == "linear":
             a, b = args
             batches, repeats = cfg["batches"], cfg["b_repeats"]
@@ -122,3 +124,53 @@ def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False):
         for value, tensor in zip(node.outputs, result, strict=True):
             values[value.name] = tensor
     return values
+
+
+def gdn_execute(op,args,s,width,cast):
+    import torch
+    from . import training_gdn_reference as ref
+    if op == "gdn_conv":
+        return ref.convolution_forward(*args,width)
+    if op == "gdn_conv_dx":
+        return ref.convolution_backward(*args,width)
+    if op == "gdn_gates":
+        a,b,al,bias = args
+        g,beta = ref.gates_forward(a[:width],b[:width],al,bias,s.heads)
+        pad = lambda x: torch.nn.functional.pad(x,(0,64-s.heads,0,s.rows-width))
+        return pad(g),pad(beta)
+    if op == "gdn_gates_dx":
+        a,b,al,bias,dg,db = args
+        z = a[:width,:s.heads].float()+bias[:,:s.heads].float()
+        factor = -al[:,:s.heads].float().exp()*dg[:width,:s.heads]
+        pa = factor*torch.nn.functional.softplus(z)
+        pb = factor*z.sigmoid()
+        sig = b[:width,:s.heads].float().sigmoid()
+        delta = db[:width,:s.heads].to(b.dtype).float()*sig*(1-sig)
+        pad = lambda x,cols: torch.nn.functional.pad(x,(0,cols-s.heads,0,s.rows-width))
+        return cast(pad(pb,128)),cast(pad(delta,128)),pad(pa,64),pad(pb,64)
+    if op == "gdn_gates_dw":
+        return args[0].sum(0,keepdim=True),cast(args[1].sum(0,keepdim=True)).float()
+    if op == "gdn_recurrence":
+        packed,g,b,initial = args
+        y,saved,_ = ref.recurrence_forward(packed,g[:,:s.heads],b[:,:s.heads],initial.reshape(s.heads,s.dimension,s.dimension),width,s)
+        return y.reshape(s.rows,-1),saved.reshape(-1,s.dimension)
+    if op == "gdn_recurrence_dx":
+        x,g,b,saved,dy = args
+        return ref.recurrence_partials(x,g[:,:s.heads],b[:,:s.heads],saved.reshape(s.rows+1,s.heads,s.dimension,s.dimension),
+                                       dy.reshape(s.rows,s.heads,s.dimension),width,s)
+    if op == "gdn_recurrence_reduce":
+        return ref.reduce_partials(*args,width,s)
+    if op == "gdn_tail":
+        x,z,w = args
+        return ref.tail_forward(x.reshape(s.rows,s.heads,s.dimension),z,w)
+    if op == "gdn_tail_dx":
+        x,z,w,weighted,inv,dy = args
+        # d(weight) 在单独的归约节点计算；这里保留逐元素 BF16 舍入。
+        cr = x.reshape(s.rows,s.heads,s.dimension)
+        normalized = (cr.reshape(-1,s.dimension).float()*inv[:,:1]).to(x.dtype)
+        dx,dz,_ = ref.tail_backward(cr,z,w,normalized,weighted,inv,dy)
+        dw = (dy.reshape(-1,s.dimension).float()*torch.nn.functional.silu(z.reshape(-1,s.dimension).float())).to(x.dtype)
+        return dx.reshape_as(x),dz,dw
+    if op == "gdn_tail_dw":
+        return (cast((args[0].float()*args[1].float()).sum(0,keepdim=True)).float(),)
+    raise ValueError(op)

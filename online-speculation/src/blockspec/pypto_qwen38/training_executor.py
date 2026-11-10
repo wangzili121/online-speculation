@@ -8,17 +8,32 @@ from .training_programs import make_element, make_linear, make_rms, make_tv
 
 
 class TrainingPrograms:
-    def __init__(self, graph, config, *, combined=False, accumulate_gradients=False):
+    def __init__(self, graph, config, *, combined=False, accumulate_gradients=False,
+                 chunk_size=None, external_gradients=False):
         import torch
         self.graph, self.config, self.programs, self.sequence = graph, config, {}, []
         self.combined = combined
         self.accumulate_gradients = accumulate_gradients
+        self.external_gradients = external_gradients or accumulate_gradients
+        self.chunks = []
+        if chunk_size is not None and (not combined or type(chunk_size) is not int or not 1 <= chunk_size <= 32):
+            raise ValueError("combined chunks require 1 to 32 graph nodes")
         if accumulate_gradients and not combined:
             raise ValueError("direct gradient accumulation requires the combined suffix")
         def meta(value):
             return torch.empty(value.shape, dtype=getattr(torch, "bfloat16" if value.dtype == "bf16" else "float32"), device="meta")
         if combined:
             from .training_pipeline import make_pipeline
+            if chunk_size is not None:
+                for index in range(0, len(graph.nodes), chunk_size):
+                    entry, arguments = make_pipeline(graph, nodes=graph.nodes[index:index+chunk_size],
+                                                     accumulate=accumulate_gradients)
+                    if len(arguments)+4 > 256:
+                        raise ValueError("suffix chunk exceeds the runtime argument limit")
+                    compiled = entry.compile(*map(meta, arguments), 0, 32, 31, 31, config=config)
+                    self.programs[str(index)] = compiled
+                    self.chunks.append((compiled, arguments))
+                return
             entry, self.arguments = make_pipeline(graph, accumulate=accumulate_gradients)
             self.programs["suffix"] = entry.compile(*map(meta, self.arguments), 0, 32, 31, 31, config=config)
             return
@@ -59,7 +74,7 @@ class TrainingWorkspace:
         self.programs, self.worker, self.values = programs, worker, {}
         self.handles = []
         try:
-            external = {value.name for value in programs.graph.gradients.values()} if programs.accumulate_gradients else set()
+            external = {value.name for value in programs.graph.gradients.values()} if programs.external_gradients else set()
             for node in programs.graph.nodes:
                 for value in node.outputs:
                     if value.name in external:
@@ -80,10 +95,10 @@ class TrainingWorkspace:
             raise ValueError("normalizer must include all reached positions")
         if not 0 <= past <= s.context - width or not 2 <= width <= s.block or not 1 <= valid < width:
             raise ValueError("history, block and reached-row boundary required")
-        if self.programs.accumulate_gradients:
+        if self.programs.external_gradients:
             if gradients is None or set(gradients) != set(self.programs.graph.gradients):
-                raise ValueError("six external gradient destinations required")
-            if any(tuple(gradients[name].shape) != value.shape or gradients[name].dtype != torch.float32
+                raise ValueError("all external gradient destinations required")
+            if any(tensor_layout(gradients[name]) != (value.shape, torch.float32)
                    for name, value in self.programs.graph.gradients.items()):
                 raise ValueError("external gradients must match the FP32 parameter schema")
             self.values.update({value.name: gradients[name] for name, value in self.programs.graph.gradients.items()})
@@ -93,6 +108,11 @@ class TrainingWorkspace:
             if tensor_layout(tensor) != (value.shape, dtype):
                 raise ValueError(f"suffix input shape changed: {name}")
         values = {**inputs, **self.values}
+        if self.programs.chunks:
+            for program, arguments in self.programs.chunks:
+                self.worker.run(program, *(values[v.name] for v in arguments),
+                                past, width, valid, normalizer, config=self.programs.config)
+            return {name: values[value.name] for name, value in self.programs.graph.gradients.items()}
         if self.programs.combined:
             self.worker.run(self.programs.programs["suffix"], *(values[v.name] for v in self.programs.arguments),
                             past, width, valid, normalizer, config=self.programs.config)

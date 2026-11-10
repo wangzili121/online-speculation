@@ -37,10 +37,56 @@ class Node:
     options: dict
 
 
-class LastLayerGraph:
+class GraphBuilder:
+    """显式前向/反向图共用的节点构造器。"""
+
+    def op(self, operation, inputs, outputs, **options):
+        values = tuple(Value(f"t{len(self.nodes)}_{i}", shape, dtype) for i, (shape, dtype) in enumerate(outputs))
+        self.nodes.append(Node(operation, tuple(inputs), values, options))
+        return values
+
+    def mm(self, a, b, *, transpose_a=False, transpose_b=True, gradient_weight=False, batches=1, b_repeats=1):
+        ar = a.shape[0] // batches
+        br = b.shape[0] // (batches // b_repeats)
+        m, k = (a.shape[1], ar) if transpose_a else (ar, a.shape[1])
+        kb, n = (b.shape[1], br) if transpose_b else (br, b.shape[1])
+        if k != kb:
+            raise ValueError((a, b, transpose_a, transpose_b))
+        return self.op("linear", (a, b), ((((batches * m, n)), "fp32" if gradient_weight else "bf16"),),
+                       a_shape=(ar, a.shape[1]), b_shape=(br, b.shape[1]), transpose_a=transpose_a,
+                       transpose_b=transpose_b, gradient_weight=gradient_weight, batches=batches, b_repeats=b_repeats)[0]
+
+    def element(self, a, b, kind, **options):
+        return self.op("element", (a, b), ((a.shape, "bf16"),), kind=kind, **options)[0]
+
+    def norm(self, x, gamma):
+        return self.op("norm", (x, gamma), ((x.shape, "bf16"), ((x.shape[0], 8), "fp32")))
+
+    def norm_dx(self, x, gamma, inv, dy):
+        return self.op("norm_dx", (x, gamma, inv, dy), ((x.shape, "bf16"),))[0]
+
+    def norm_dw(self, x, inv, dy):
+        return self.op("norm_dw", (x, inv, dy), (((1, x.shape[1]), "fp32"),))[0]
+
+    def layout(self, x, heads, *, mode, interleaved=False, gate=False):
+        s = self.shape
+        out = (heads * s.block, s.dimension) if mode == "pack" else (s.block, heads * s.dimension)
+        return self.op("layout", (x,), ((out, "bf16"),), heads=heads, mode=mode, interleaved=interleaved, gate=gate)[0]
+
+    def rope(self, x, cos, sin, *, backward=False):
+        return self.op("rope", (x, cos, sin), ((x.shape, "bf16"),), backward=backward)[0]
+
+    def join(self, block, history):
+        return self.op("join", (block, history), ((history.shape, "bf16"),))[0]
+
+    def reduce_block(self, x):
+        return self.op("reduce_block", (x,), (((self.shape.kv_heads * self.shape.block, self.shape.dimension), "bf16"),))[0]
+
+
+class LastLayerGraph(GraphBuilder):
     """只计算最后一层。冻结前缀在 hidden 处截断，历史 K/V 是常量。"""
 
-    def __init__(self, shape=SuffixShape()):
+    def __init__(self, shape=SuffixShape(), *, backprop_input=False):
         s = self.shape = shape
         self.inputs, self.nodes = {}, []
         K, H, D, Q, V = s.block, s.hidden, s.dimension, s.q_heads, s.kv_heads
@@ -61,7 +107,7 @@ class LastLayerGraph:
         hk, hv = input("history_key", V * s.context, D), input("history_value", V * s.context, D)
         cos, sin = input("cos", K, s.rotary), input("sin", K, s.rotary)
         teacher = input("teacher", K, s.vocabulary)
-        x, _ = self.norm(hidden, ng)
+        x, xi = self.norm(hidden, ng)
         qp, kp, vp = self.mm(x, qw), self.mm(x, kw), self.mm(x, vw)
         qraw = self.layout(qp, Q, mode="pack", interleaved=True)
         gate = self.layout(qp, Q, mode="pack", interleaved=True, gate=True)
@@ -120,45 +166,8 @@ class LastLayerGraph:
         dkp, dvp = self.layout(dkraw, V, mode="unpack"), self.layout(dv, V, mode="unpack")
         for name, grad in (("q_weight", dqp), ("k_weight", dkp), ("v_weight", dvp)):
             self.gradients[name] = self.mm(grad, x, transpose_a=True, transpose_b=False, gradient_weight=True)
-
-    def op(self, operation, inputs, outputs, **options):
-        values = tuple(Value(f"t{len(self.nodes)}_{i}", shape, dtype) for i, (shape, dtype) in enumerate(outputs))
-        self.nodes.append(Node(operation, tuple(inputs), values, options))
-        return values
-
-    def mm(self, a, b, *, transpose_a=False, transpose_b=True, gradient_weight=False, batches=1, b_repeats=1):
-        ar = a.shape[0] // batches
-        br = b.shape[0] // (batches // b_repeats)
-        m, k = (a.shape[1], ar) if transpose_a else (ar, a.shape[1])
-        kb, n = (b.shape[1], br) if transpose_b else (br, b.shape[1])
-        if k != kb:
-            raise ValueError((a, b, transpose_a, transpose_b))
-        return self.op("linear", (a, b), ((((batches * m, n)), "fp32" if gradient_weight else "bf16"),),
-                       a_shape=(ar, a.shape[1]), b_shape=(br, b.shape[1]), transpose_a=transpose_a,
-                       transpose_b=transpose_b, gradient_weight=gradient_weight, batches=batches, b_repeats=b_repeats)[0]
-
-    def element(self, a, b, kind, **options):
-        return self.op("element", (a, b), ((a.shape, "bf16"),), kind=kind, **options)[0]
-
-    def norm(self, x, gamma):
-        return self.op("norm", (x, gamma), ((x.shape, "bf16"), ((x.shape[0], 8), "fp32")))
-
-    def norm_dx(self, x, gamma, inv, dy):
-        return self.op("norm_dx", (x, gamma, inv, dy), ((x.shape, "bf16"),))[0]
-
-    def norm_dw(self, x, inv, dy):
-        return self.op("norm_dw", (x, inv, dy), (((1, x.shape[1]), "fp32"),))[0]
-
-    def layout(self, x, heads, *, mode, interleaved=False, gate=False):
-        s = self.shape
-        out = (heads * s.block, s.dimension) if mode == "pack" else (s.block, heads * s.dimension)
-        return self.op("layout", (x,), ((out, "bf16"),), heads=heads, mode=mode, interleaved=interleaved, gate=gate)[0]
-
-    def rope(self, x, cos, sin, *, backward=False):
-        return self.op("rope", (x, cos, sin), ((x.shape, "bf16"),), backward=backward)[0]
-
-    def join(self, block, history):
-        return self.op("join", (block, history), ((history.shape, "bf16"),))[0]
-
-    def reduce_block(self, x):
-        return self.op("reduce_block", (x,), (((self.shape.kv_heads * self.shape.block, self.shape.dimension), "bf16"),))[0]
+        self.input_gradient = None
+        if backprop_input:
+            dx = self.element(self.mm(dqp, qw, transpose_b=False), self.mm(dkp, kw, transpose_b=False), "add")
+            dx = self.element(dx, self.mm(dvp, vw, transpose_b=False), "add")
+            self.input_gradient = self.element(dskip, self.norm_dx(hidden, ng, xi, dx), "add")
