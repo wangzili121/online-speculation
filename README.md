@@ -12,6 +12,8 @@ PyPTO 另提供 `--online --last-layers N`：根据验证反馈，在 NPU 上重
 
 [在线效果实验](online-speculation/docs/QWEN38_PYPTO_ONLINE_EFFECT.md)提供 GSM8K 请求流上的初始化、last-1、last-4 及同题 AR 对照入口，分别统计固定 head 推理和计入更新成本的吞吐。
 
+[初始化 head 的 KL 预热](online-speculation/docs/QWEN38_PYPTO_COLD_KL.md)提供完整 AR 回答回放、随机 anchor 和整块监督入口，用于比较 last-1、last-4 冷启动训练；原有 TV 在线续训保留。
+
 Qwen3.8-27B 的 Orthrus 投机推理与 draft 更新实现。draft 复用冻结的主模型 backbone，推理读取主模型历史缓存，候选由原生 vLLM-Ascend 验证。支持在线 last-N 更新和独立离线全层更新，均只更新 draft mixer，不训练主模型。
 
 Full Attention 在块内采用双向注意力，GDN 使用 `orthrus_qwen35_reference` 的因果递推策略。

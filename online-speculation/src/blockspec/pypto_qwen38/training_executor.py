@@ -4,7 +4,7 @@ import json
 
 from .loading import tensor_layout
 from .training_layout_programs import make_layout, make_rope, make_softmax
-from .training_programs import make_element, make_linear, make_rms, make_tv
+from .training_programs import make_element, make_linear, make_rms, make_tv, make_kl
 
 
 class TrainingPrograms:
@@ -55,13 +55,13 @@ class TrainingPrograms:
                     entry = make_rope(graph.shape, shape[0], **node.options)
                 elif node.kind in {"softmax", "softmax_grad"}:
                     entry = make_softmax(*shape, backward=node.kind == "softmax_grad")
-                elif node.kind == "tv":
-                    entry = make_tv(*shape)
+                elif node.kind in {"tv", "kl"}:
+                    entry = (make_tv if node.kind == "tv" else make_kl)(*shape)
                 else:
                     raise ValueError(node.kind)
                 if node.kind in {"join", "reduce_block", "softmax"}:
                     extra = (0, 32)
-                elif node.kind == "tv":
+                elif node.kind in {"tv", "kl"}:
                     extra = (31, 31)
                 print("compiling suffix", node.kind, shape, node.options, flush=True)
                 self.programs[key] = entry.compile(*map(meta, (*node.inputs, *node.outputs)), *extra, config=config)
@@ -119,7 +119,7 @@ class TrainingWorkspace:
             return {name: values[value.name] for name, value in self.programs.graph.gradients.items()}
         for node, program in zip(self.programs.graph.nodes, self.programs.sequence, strict=True):
             extra = ((past, width) if node.kind in {"join", "reduce_block", "softmax"}
-                     else (valid, normalizer) if node.kind == "tv" else ())
+                     else (valid, normalizer) if node.kind in {"tv", "kl"} else ())
             self.worker.run(program, *(values[v.name] for v in (*node.inputs, *node.outputs)),
                             *extra, config=self.programs.config)
         return {name: values[value.name] for name, value in self.programs.graph.gradients.items()}

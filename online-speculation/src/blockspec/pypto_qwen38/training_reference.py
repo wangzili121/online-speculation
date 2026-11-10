@@ -118,6 +118,14 @@ def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False, 
             mask = (torch.arange(s.block) < valid)[:, None]
             losses = .5 * (p-q).abs().sum(-1, keepdim=True) * mask / normalizer
             return cast(gradient * mask), losses.expand(-1, 8)
+        if op == "kl":
+            x, teacher = args
+            log_q, log_p = x.float().log_softmax(-1), teacher.float().log_softmax(-1)
+            q, p = log_q.exp(), log_p.exp()
+            mask = (torch.arange(s.block) < valid)[:, None]
+            gradient = (q-p) * mask / normalizer
+            losses = (p*(log_p-log_q)).sum(-1, keepdim=True) * mask / normalizer
+            return cast(gradient), losses.expand(-1, 8)
         raise ValueError(op)
 
     for node in graph.nodes:

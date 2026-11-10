@@ -86,7 +86,10 @@ class GraphBuilder:
 class LastLayerGraph(GraphBuilder):
     """只计算最后一层。冻结前缀在 hidden 处截断，历史 K/V 是常量。"""
 
-    def __init__(self, shape=SuffixShape(), *, backprop_input=False):
+    def __init__(self, shape=SuffixShape(), *, backprop_input=False, objective="tv"):
+        if objective not in {"tv", "kl"}:
+            raise ValueError("objective must be tv or kl")
+        self.objective = objective
         s = self.shape = shape
         self.inputs, self.nodes = {}, []
         K, H, D, Q, V = s.block, s.hidden, s.dimension, s.q_heads, s.kv_heads
@@ -136,7 +139,7 @@ class LastLayerGraph(GraphBuilder):
         self.output, self.forward_nodes = final, tuple(self.nodes)
         normalized, fi = self.norm(final, fg)
         self.logits = logits = self.mm(normalized, lm)
-        delta, self.losses = self.op("tv", (logits, teacher),
+        delta, self.losses = self.op(objective, (logits, teacher),
             (((K, s.vocabulary), "bf16"), ((K, 8), "fp32")))
 
         # 手工链式求导。共享 MLP/LM head 只算 dX，不产生 dW。

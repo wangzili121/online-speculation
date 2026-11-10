@@ -13,7 +13,7 @@ from .training_suffix_graph import SuffixGraph
 class SuffixLearner(OnlineLearner):
     def __init__(self, head, options):
         super().__init__(head,options)
-        self.graph = SuffixGraph(options.last_layers)
+        self.graph = SuffixGraph(options.last_layers, objective=options.objective)
 
     def compile(self, samples, config):
         import torch

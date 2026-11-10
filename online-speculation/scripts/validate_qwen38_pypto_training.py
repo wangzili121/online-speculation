@@ -10,6 +10,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--device", type=int, required=True)
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--objective", choices=("tv","kl"), default="tv")
     p.add_argument("--vocabulary", type=int, default=1024)
     p.add_argument("--suffix", action="store_true", help="validate the complete last-layer forward/backward")
     p.add_argument("--optimizer", action="store_true", help="validate clipping, Adam states and atomic publication")
@@ -30,7 +31,7 @@ def main():
     from pypto.ir import DistributedConfig
     from pypto.runtime import DistributedWorker, ExecutionMode, RunConfig
     from blockspec.pypto_qwen38.baseline import runtime_identity
-    from blockspec.pypto_qwen38.training_programs import make_tv, make_adam, make_linear
+    from blockspec.pypto_qwen38.training_programs import make_tv, make_kl, make_adam, make_linear
     torch.set_num_threads(4)
     torch.manual_seed(41)
     config = RunConfig(backend_type=BackendType.Ascend910B, execution_mode=ExecutionMode.ONBOARD,
@@ -47,7 +48,7 @@ def main():
     if a.suffix:
         return suffix(a, config)
     V = a.vocabulary
-    tv = make_tv(32, V).compile(empty((32, V)), empty((32, V)), empty((32, V)),
+    tv = (make_tv if a.objective=="tv" else make_kl)(32, V).compile(empty((32, V)), empty((32, V)), empty((32, V)),
                                  empty((32, 8), torch.float32), 31, 31, config=config)
     adam = make_adam((64, 128)).compile(*[empty((64, 128), torch.float32) for _ in range(7)],
                                       .0001, .1, .001, 1., config=config)
@@ -70,16 +71,18 @@ def main():
         teacher = torch.randn_like(student)
         ds, dt = alloc(student.detach()), alloc(teacher)
         dg, losses = alloc(torch.zeros_like(student)), alloc(torch.zeros(32, 8))
-        for valid in (1, 17, 31):
+        for valid in ((1,7,17,31) if a.objective=="kl" else (1,17,31)):
             worker.run(tv, ds, dt, dg, losses, valid, valid, config=config)
-            expected = .5 * (student[:valid].float().softmax(-1) - teacher[:valid].float().softmax(-1)).abs().sum(-1).mean()
+            expected = (.5 * (student[:valid].float().softmax(-1) - teacher[:valid].float().softmax(-1)).abs().sum(-1).mean()
+                        if a.objective=="tv" else torch.nn.functional.kl_div(student[:valid].float().log_softmax(-1),
+                            teacher[:valid].float().softmax(-1),reduction="sum")/valid)
             grad, = torch.autograd.grad(expected, student)
             actual, loss = read(dg), read(losses)[:, 0].sum()
             torch.testing.assert_close(actual, grad, atol=2e-5, rtol=.03)
             assert float((actual.float()-grad.float()).norm()/grad.float().norm()) < .02
             torch.testing.assert_close(loss, expected.detach(), atol=2e-5, rtol=.002)
             assert torch.count_nonzero(actual[valid:]) == 0
-            report["cases"].append(dict(name="tv", valid=valid, loss=float(loss), passed=True))
+            report["cases"].append(dict(name=a.objective, valid=valid, loss=float(loss), passed=True))
         x, w = torch.randn(32, 128).bfloat16(), torch.randn(64, 128).bfloat16()
         dx, dw, out = alloc(x), alloc(w), alloc(torch.zeros(32, 64).bfloat16())
         worker.run(linear, dx, dw, out, config=config)
@@ -121,8 +124,8 @@ def suffix(args, config):
     from blockspec.pypto_qwen38.training_graph import LastLayerGraph, SuffixShape
     from blockspec.pypto_qwen38.training_executor import TrainingPrograms, TrainingWorkspace
     from blockspec.pypto_qwen38.training_reference import evaluate
-    graph = LastLayerGraph() if args.real_shape else LastLayerGraph(SuffixShape(hidden=128, intermediate=256, vocabulary=128,
-        q_heads=4, kv_heads=2, dimension=64, context=64, rotary=32))
+    graph = LastLayerGraph(objective=args.objective) if args.real_shape else LastLayerGraph(SuffixShape(hidden=128, intermediate=256, vocabulary=128,
+        q_heads=4, kv_heads=2, dimension=64, context=64, rotary=32), objective=args.objective)
     programs = TrainingPrograms(graph, config, combined=args.combined, accumulate_gradients=args.accumulate_gradients)
     worker = workspace = None
     handles, report = [], dict(passed=False, cases=[])
@@ -305,8 +308,8 @@ def validate_optimizer(args, config):
     from blockspec.pypto_qwen38.training_graph import LastLayerGraph, SuffixShape
     from blockspec.pypto_qwen38.online_optimizer import DeviceOptimizer, OptimizerPrograms
     from blockspec.pypto_qwen38.weights import DraftWeights
-    graph = LastLayerGraph() if args.real_shape else LastLayerGraph(SuffixShape(hidden=128, intermediate=256, vocabulary=128,
-        q_heads=4, kv_heads=2, dimension=64, context=64, rotary=32))
+    graph = LastLayerGraph(objective=args.objective) if args.real_shape else LastLayerGraph(SuffixShape(hidden=128, intermediate=256, vocabulary=128,
+        q_heads=4, kv_heads=2, dimension=64, context=64, rotary=32), objective=args.objective)
     programs = OptimizerPrograms(graph, config, clip_norm=.1, combined=args.combined)
     order = ("q_weight", "k_weight", "v_weight", "q_gamma", "k_gamma", "o_weight")
     raw, banks = {}, {}

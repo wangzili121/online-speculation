@@ -21,8 +21,11 @@ class OnlineConfig:
     checkpoint_dir: str | None = None
     resume_dir: str | None = None
     learner_device: int | None = None
+    objective: str = "tv"
 
     def __post_init__(self):
+        if self.objective not in {"tv", "kl"}:
+            raise ValueError("objective must be tv or kl")
         if (type(self.last_layers) is not int or not 1 <= self.last_layers <= 64
                 or type(self.stride) is not int or self.stride < 1
                 or type(self.replay_blocks) is not int or not 1 <= self.replay_blocks <= self.stride
@@ -54,7 +57,7 @@ class FeedbackBlock:
 class OnlineLearner:
     def __init__(self, head, options):
         self.head, self.options = head, options
-        self.graph = LastLayerGraph()
+        self.graph = LastLayerGraph(objective=options.objective)
         self.rounds = self.updates = 0
         self.last_result = None
         self.current = None
@@ -238,6 +241,18 @@ class OnlineLearner:
             save(self.optimizer, directory, self.head_identity)
             self.last_result["checkpoint"] = str(directory)
         return self.last_result
+
+    def observe_clean_block(self):
+        """仅供干净序列重放：教师已用真实输入计算整块，与投机接受长度无关。"""
+        block, self.current = self.current, None
+        if block is None or block.rows != block.width:
+            raise RuntimeError("complete clean teacher block required")
+        block.valid = block.width - 1
+        self.replay.append(block)
+        self.rounds += 1
+        if self.rounds % self.options.stride == 0:
+            return self.update()
+        return None
 
     def abort(self):
         self.current = None

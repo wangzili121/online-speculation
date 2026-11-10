@@ -21,7 +21,8 @@ class Parameter:
 
 
 class SuffixGraph(GraphBuilder):
-    def __init__(self, last_layers, shape=SuffixShape(), gdn_shape=GDNShape()):
+    def __init__(self, last_layers, shape=SuffixShape(), gdn_shape=GDNShape(), *, objective="tv"):
+        self.objective = objective
         if type(last_layers) is not int or not 2 <= last_layers <= 64 or shape.block != gdn_shape.rows:
             raise ValueError("last-2..64 and a common K32 block required")
         self.last_layers, self.capture_layer = last_layers, 64-last_layers
@@ -34,7 +35,7 @@ class SuffixGraph(GraphBuilder):
             block = FullAttentionLayer(self, layer, hidden) if layer%4 == 3 else GDNLayer(self, layer, hidden)
             layers.append(block)
             hidden = block.output
-        full = LastLayerGraph(shape, backprop_input=True)
+        full = LastLayerGraph(shape, backprop_input=True, objective=objective)
         values = {}
         shared = {"teacher", "cos", "sin", "final_gamma", "lm_head"}
         for name, value in full.inputs.items():

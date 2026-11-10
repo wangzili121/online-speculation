@@ -4,7 +4,7 @@ import hashlib
 import linecache
 
 from .training_layout_programs import make_layout, make_rope, make_softmax
-from .training_programs import make_element, make_linear, make_rms, make_tv
+from .training_programs import make_element, make_linear, make_rms, make_tv, make_kl
 
 
 def stage(graph, node, *, accumulate=False):
@@ -35,15 +35,15 @@ def stage(graph, node, *, accumulate=False):
         return make_rope(graph.shape, shape[0], **options)
     if node.kind in {"softmax", "softmax_grad"}:
         return make_softmax(*shape, backward=node.kind == "softmax_grad", **options)
-    if node.kind == "tv":
-        return make_tv(*shape, **options)
+    if node.kind in {"tv", "kl"}:
+        return (make_tv if node.kind == "tv" else make_kl)(*shape, **options)
     raise ValueError(node.kind)
 
 
 def scalar_names(node):
     if node.kind in {"join", "reduce_block", "softmax"}:
         return "past", "width"
-    if node.kind == "tv":
+    if node.kind in {"tv", "kl"}:
         return "valid", "normalizer"
     if node.kind in {"gdn_conv", "gdn_conv_dx", "gdn_gates", "gdn_gates_dx",
                      "gdn_recurrence", "gdn_recurrence_dx", "gdn_recurrence_reduce"}:
