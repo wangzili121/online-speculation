@@ -5,6 +5,7 @@ PyPTO Serving 支持真实 27B 的 K32 draft、共享 backbone/history、缓存�
 PyPTO 提供 `native`、`fused` 和 `paged` 三种 Attention 后端。直接分页路径已通过真实 27B 的 K32 起草、六个历史边界、cache 只读及拒绝恢复检查；默认保留原生后端。[接入计划](online-speculation/docs/QWEN38_PYPTO_PLAN.md)、[kernel 任务](online-speculation/docs/QWEN38_PYPTO_KERNEL_TASK.md)和[分页实现验证](online-speculation/docs/QWEN38_PYPTO_PAGED_VALIDATION.md)说明接口与实测结果。
 
 PyPTO 的优化配置为 `--attention-backend paged --gdn-backend vector --draft-group-size 4 --head-transfer packed`：直接读取分页历史，整块执行 GDN、投影和共享 MLP，K32 的 HOST 计算提交由 66 次降为 18 次。[GDN 与 K32 调优](online-speculation/docs/QWEN38_PYPTO_GDN_KERNEL_TASK.md)包含独立算子、整层、整轮起草及 NUMA 对照。
+服务另可使用 `--verification-backend tiled`，在拒绝后跳过剩余验证 tile；在线采集教师分布时保留完整验证。[实机对照](online-speculation/docs/QWEN38_PYPTO_ONLINE_STUDY.md#验证器编排对照)使用相同 head 和原生 kernel。
 
 PyPTO 路径默认在 NPU 上整理 head 权重，主模型矩阵直接加载到最终设备布局。可用 `scripts/prepare_qwen38_pypto_head.py` 保存转换后的 head，之后通过 `--head-dir` 直接加载；文件读取与哈希校验仍由主机完成。[权重准备与复用](online-speculation/docs/QWEN38_PYPTO_PORT.md#权重准备与复用)说明命令和格式。
 

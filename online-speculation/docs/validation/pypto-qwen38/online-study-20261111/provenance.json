@@ -29,5 +29,51 @@
       "test": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14"
     }
   },
-  "resource_note": "TV processes exited cleanly; their former 0/4 pair is now used by KL prewarm; 5/6 have been released. Other users' processes are untouched."
+  "resource_note": "TV, KL prewarm and verifier comparison exited cleanly. Warm-head online followup currently uses 0/2; HTTP validation uses 4/5. Other users tasks are untouched. Final release proof will be recorded after both finish.",
+  "additional_source_sha256": {
+    "source-online-prewarm-r1": {
+      "src/blockspec/pypto_qwen38/greedy.py": "3ef63dd45a5f43efa0a47bcccd98babc78bd7edc559f8814af8adb4e2e2dcfdf",
+      "src/blockspec/pypto_qwen38/target.py": "5043968b190bb0a0ee0ea6f6216d0fd742a298632ea652af99ef8ea4b5ec0419",
+      "src/blockspec/pypto_qwen38/draft.py": "33d69a38d695c723e2bce776bc1b9102b93a429d1963d1bb38eafa5532360f6c",
+      "src/blockspec/pypto_qwen38/online.py": "8ba01e18a556e914efef0183e0a2b50d75937bb9c2de3c738bed5386be12b6f5",
+      "src/blockspec/pypto_qwen38/online_suffix.py": "a7a8377260dfc59ec69c64106f9736a419d95da61c7056c92e86cff83d926491",
+      "src/blockspec/pypto_qwen38/online_suffix_checkpoint.py": "414acb70f7673ca3ef1e34c4c1d5427ca0fb828d42405efadee3b7d4cc139623",
+      "scripts/benchmark_qwen38_pypto_online.py": "01f6db91d55629b2ad5511b23e1ef11c53321fcdd4f6b7443f79c956d9d74150",
+      "scripts/benchmark_qwen38_pypto_cold.py": "da2a80a4f596c0a3104d23a720e4f9078eab274e32bb7aee2e1b20694ae754ae",
+      "scripts/serve_qwen38_pypto.py": "2885f02def4f3f18761a6465bb9a8f6fd6dff04a42b336d076de1cf43ff1e2c4"
+    },
+    "source-verifier-r1": {
+      "src/blockspec/pypto_qwen38/greedy.py": "a3429f60d45bb25f104154681e4a9731dba5490e44be80b2b4efa266d58d820c",
+      "src/blockspec/pypto_qwen38/target.py": "5043968b190bb0a0ee0ea6f6216d0fd742a298632ea652af99ef8ea4b5ec0419",
+      "src/blockspec/pypto_qwen38/draft.py": "33d69a38d695c723e2bce776bc1b9102b93a429d1963d1bb38eafa5532360f6c",
+      "src/blockspec/pypto_qwen38/online.py": "da9fd2bb967d3d6e3427de124adb0d939be80e436064383cf4ff39c9cad01d90",
+      "src/blockspec/pypto_qwen38/online_suffix.py": "28fd56c9bcaf822bafb8441f984ca43ec7f9dc0f1091ef5c7ca42db7bc04b82b",
+      "src/blockspec/pypto_qwen38/online_suffix_checkpoint.py": "65f9545631b45fd5244e4541abafee25cf0867cd417648277345890ba4ec737b",
+      "scripts/benchmark_qwen38_pypto_online.py": "f71a6515f18461cd5c9673284081f72f0b197142da87365f5356dc2a1be65ecd",
+      "scripts/benchmark_qwen38_pypto_cold.py": "da2a80a4f596c0a3104d23a720e4f9078eab274e32bb7aee2e1b20694ae754ae",
+      "scripts/serve_qwen38_pypto.py": "6c328c21f6b5ee0fbe26fdafccb9097cdb7b8f5f925d5b8cce4abeb60c74bf44"
+    },
+    "source-online-warmstart-r5": {
+      "src/blockspec/pypto_qwen38/greedy.py": "a3429f60d45bb25f104154681e4a9731dba5490e44be80b2b4efa266d58d820c",
+      "src/blockspec/pypto_qwen38/target.py": "ad0a206ff6dea3f674bbc6683b91164ff6a337ac347800bf8dab32019315e94c",
+      "src/blockspec/pypto_qwen38/draft.py": "ad4836af058173a47db3606b71cb27eacaab21414a1c0bdaebd6b3a16de1d1b3",
+      "src/blockspec/pypto_qwen38/online.py": "da9fd2bb967d3d6e3427de124adb0d939be80e436064383cf4ff39c9cad01d90",
+      "src/blockspec/pypto_qwen38/online_suffix.py": "28fd56c9bcaf822bafb8441f984ca43ec7f9dc0f1091ef5c7ca42db7bc04b82b",
+      "src/blockspec/pypto_qwen38/online_suffix_checkpoint.py": "65f9545631b45fd5244e4541abafee25cf0867cd417648277345890ba4ec737b",
+      "scripts/benchmark_qwen38_pypto_online.py": "a24a2c6abeff062c8186cbf613cc868a44e0214a483c8e6cb9ac2e744f08b3aa",
+      "scripts/benchmark_qwen38_pypto_cold.py": "da2a80a4f596c0a3104d23a720e4f9078eab274e32bb7aee2e1b20694ae754ae",
+      "scripts/serve_qwen38_pypto.py": "25afe6694b586f1a292cc07b2846b56fb47ab16947e3d6dc262f5ce61dcb9f54"
+    },
+    "source-warm-service-r1": {
+      "src/blockspec/pypto_qwen38/greedy.py": "a3429f60d45bb25f104154681e4a9731dba5490e44be80b2b4efa266d58d820c",
+      "src/blockspec/pypto_qwen38/target.py": "ad0a206ff6dea3f674bbc6683b91164ff6a337ac347800bf8dab32019315e94c",
+      "src/blockspec/pypto_qwen38/draft.py": "ad4836af058173a47db3606b71cb27eacaab21414a1c0bdaebd6b3a16de1d1b3",
+      "src/blockspec/pypto_qwen38/online.py": "da9fd2bb967d3d6e3427de124adb0d939be80e436064383cf4ff39c9cad01d90",
+      "src/blockspec/pypto_qwen38/online_suffix.py": "28fd56c9bcaf822bafb8441f984ca43ec7f9dc0f1091ef5c7ca42db7bc04b82b",
+      "src/blockspec/pypto_qwen38/online_suffix_checkpoint.py": "65f9545631b45fd5244e4541abafee25cf0867cd417648277345890ba4ec737b",
+      "scripts/benchmark_qwen38_pypto_online.py": "a24a2c6abeff062c8186cbf613cc868a44e0214a483c8e6cb9ac2e744f08b3aa",
+      "scripts/benchmark_qwen38_pypto_cold.py": "da2a80a4f596c0a3104d23a720e4f9078eab274e32bb7aee2e1b20694ae754ae",
+      "scripts/serve_qwen38_pypto.py": "75ed41fc917c916a130e4076b8b687d4c35b669b1326f331b91389f24cb2af7f"
+    }
+  }
 }

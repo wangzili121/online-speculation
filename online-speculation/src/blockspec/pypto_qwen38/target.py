@@ -8,7 +8,7 @@ import shutil
 import threading
 import weakref
 
-from .greedy import host_greedy_tokens, verify_transaction
+from .greedy import host_greedy_tokens, verify_tiled, verify_transaction
 
 
 @dataclass(frozen=True)
@@ -140,10 +140,13 @@ class OrthrusRunner:
     token at a time; buffered tokens require no extra model invocation.
     """
 
-    def __init__(self, native, draft, slot_type):
+    def __init__(self, native, draft, slot_type, *, verification_backend="full"):
         if getattr(native, "device_ids", None):
             raise ValueError("Orthrus transaction adapter currently requires the native TP1 runner")
+        if verification_backend not in {"full", "tiled"}:
+            raise ValueError("verification backend must be full or tiled")
         self.native, self.draft, self.slot_type = native, draft, slot_type
+        self.verification_backend = verification_backend
         self.pending = {}
         self.rounds = self.accepted = self.restores = 0
         self.allow_prefix_hits = False
@@ -217,8 +220,9 @@ class OrthrusRunner:
                 raise RuntimeError("draft must propose exactly K-1 tokens")
             target = NativeTarget(self.native, request, self.slot_type,
                                   **({"collector": learner.current} if learner is not None else {}))
-            result = verify_transaction(target, slot.token_ids[0], candidates,
-                                        budget=remaining, stop_tokens=request.stop_token_ids)
+            verifier = verify_tiled if self.verification_backend == "tiled" else verify_transaction
+            result = verifier(target, slot.token_ids[0], candidates,
+                              budget=remaining, stop_tokens=request.stop_token_ids)
             if learner is not None:
                 learner.observe(result)
         except BaseException:

@@ -181,6 +181,8 @@ def check_continuation(previous, dataset, arguments):
         raise ValueError("continuation must preserve learning, inference and data settings")
     if bool(previous["arguments"].get("frozen_stream_control")) != bool(arguments.get("frozen_stream_control")):
         raise ValueError("continuation must preserve frozen stream control")
+    if previous["arguments"].get("verification_backend", "full") != arguments.get("verification_backend", "full"):
+        raise ValueError("continuation must preserve verifier settings")
     before = previous["dataset"]
     if before["files_sha256"] != dataset["files_sha256"] or any(
             before["splits"][split] != dataset["splits"][split] for split in ("calibration", "dev", "test")):
@@ -269,6 +271,7 @@ def main():
     p.add_argument("--warm-from", type=Path, help="已完成预热的实验 JSON；加载 head，重置 Adam，用新问题在线更新")
     p.add_argument("--confirm-count", type=int, default=0, help="预先留出的额外测试题，仅在最终 head 上评测一次")
     p.add_argument("--sweep-widths", default="", help="最终 head 在 dev 上比较的活跃宽度，如 4,8,16,32；物理缓冲仍为 K32")
+    p.add_argument("--verification-backend", choices=("full", "tiled"), default="full")
     p.add_argument("--frozen-stream-control", action="store_true",
                    help="按相同训练请求额外测初始化冻结 head，直接对照在线净吞吐")
     a = p.parse_args()
@@ -343,7 +346,7 @@ def main():
         head = HeadSource(a.model)  # 无 head_dir：每层从同一主模型 AR 参数复制，非随机权重。
         engine = make_engine(a.source, a.model, a.device, head, head_transfer="packed",
                              attention_backend="paged", group_size=4, gdn_backend="vector",
-                             online_config=options)
+                             online_config=options, verification_backend=a.verification_backend)
         dataset = report["dataset"] = prepare_questions(a.data, engine.tokenizer, seed=a.seed,
             max_prompt=a.max_prompt, train_count=a.train_count + (len(warm["records"]) if warm else 0),
             dev_count=a.dev_count, test_count=a.test_count+a.confirm_count)

@@ -10,7 +10,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--head-dir", type=Path, required=True)
+    parser.add_argument("--head-dir", type=Path, help="head directory; omit for AR-copy initialization/template")
     parser.add_argument("--device", type=int, required=True)
     parser.add_argument("--head-storage", choices=("auto", "resident", "stream"), default="auto")
     parser.add_argument("--head-transfer", choices=("individual", "packed"), default="individual")
@@ -20,6 +20,10 @@ def main():
     parser.add_argument("--serving-backend", choices=("device", "host"), default="device",
                         help="input preparation, greedy selection and GDN transaction snapshots")
     parser.add_argument("--weight-backend", choices=("pypto", "host"), default="pypto")
+    parser.add_argument("--verification-backend", choices=("full", "tiled"), default="full")
+    parser.add_argument("--runtime-log-level", choices=("debug", "info", "timing", "warn", "error"), default="warn")
+    parser.add_argument("--share-ar-prefix", action="store_true",
+                        help="share unchanged AR-copy draft layers; requires omission of --head-dir")
     parser.add_argument("--online", action="store_true")
     parser.add_argument("--last-layers", type=int, choices=range(1,65), default=1)
     parser.add_argument("--update-stride", type=int, default=16)
@@ -37,6 +41,8 @@ def main():
     args = parser.parse_args()
     if args.device < 0 or not 1 <= args.port <= 65535:
         parser.error("require an assigned nonnegative device and a valid port")
+    if args.share_ar_prefix and args.head_dir is not None:
+        parser.error("--share-ar-prefix requires AR-copy initialization without --head-dir")
     if args.reset_online_optimizer and (not args.online or args.resume_online is None):
         parser.error("--reset-online-optimizer requires --online and --resume-online")
     if not args.online and any(value is not None for value in
@@ -45,11 +51,14 @@ def main():
     import asyncio
     import pypto
     import uvicorn
+    from pypto.runtime import configure_log
     from blockspec.pypto_qwen38.baseline import native_module, runtime_identity
     from blockspec.pypto_qwen38.draft import make_engine
     from blockspec.pypto_qwen38.head import HeadSource
 
     runtime_identity(pypto)
+    # 普通服务不逐次输出 kernel timing；需要 profiling 时显式打开。
+    configure_log(args.runtime_log_level)
     head = HeadSource(args.model, args.head_dir)
     native_module(args.source, "weight").verify_model_identity(args.model)
     app = native_module(args.source, "api").app
@@ -68,10 +77,22 @@ def main():
                              head_storage=args.head_storage, head_transfer=args.head_transfer,
                              attention_backend=args.attention_backend, group_size=args.draft_group_size,
                              gdn_backend=args.gdn_backend, device_serving=args.serving_backend == "device",
-                             weight_backend=args.weight_backend, online_config=online_config)
+                             weight_backend=args.weight_backend, online_config=online_config,
+                             verification_backend=args.verification_backend)
         application.state.engine = engine
         try:
             await asyncio.to_thread(engine.start)
+            if args.share_ar_prefix:
+                from blockspec.pypto_qwen38.ar_prefix import borrow_prefix
+                stop = 64-args.last_layers if args.online else 64
+                if stop:
+                    draft = engine.runner.draft
+                    layers, owned = borrow_prefix(engine.runner.native, head, stop)
+                    draft.handles.extend(owned)
+                    version = draft.weights.version
+                    draft.weights.publish_many(layers, expected_version=version)
+                    draft.weights.version = version
+                    print("shared unchanged AR-copy draft layers", sorted(layers), flush=True)
             yield
         finally:
             await asyncio.to_thread(engine.stop)

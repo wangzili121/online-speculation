@@ -1,0 +1,83 @@
+{
+  "completed": true,
+  "clean_shutdown": true,
+  "summaries": {
+    "ar": {
+      "requests": 8,
+      "output_tokens": 512,
+      "seconds": 68.97582350391895,
+      "tokens_per_second": 7.422890717222247,
+      "rounds": 0,
+      "accepted": 0,
+      "proposed": 0,
+      "accepted_per_round": null,
+      "candidate_acceptance": null,
+      "greedy_equal_requests": 8,
+      "greedy_equal_all": true,
+      "target_tokens_per_second": 7.422890717222247,
+      "measured_tps_ratio": 1.0,
+      "lossless_speedup": 1.0
+    },
+    "full": {
+      "requests": 8,
+      "output_tokens": 512,
+      "seconds": 119.15838169306517,
+      "tokens_per_second": 4.296802228473011,
+      "rounds": 222,
+      "accepted": 278,
+      "proposed": 5234,
+      "accepted_per_round": 1.2522522522522523,
+      "candidate_acceptance": 0.05311425296140619,
+      "greedy_equal_requests": 8,
+      "greedy_equal_all": true,
+      "target_tokens_per_second": 7.422890717222247,
+      "measured_tps_ratio": 0.578858344028125,
+      "lossless_speedup": 0.578858344028125
+    },
+    "tiled": {
+      "requests": 8,
+      "output_tokens": 512,
+      "seconds": 94.94602038431913,
+      "tokens_per_second": 5.39253775911349,
+      "rounds": 222,
+      "accepted": 278,
+      "proposed": 5234,
+      "accepted_per_round": 1.2522522522522523,
+      "candidate_acceptance": 0.05311425296140619,
+      "greedy_equal_requests": 8,
+      "greedy_equal_all": true,
+      "target_tokens_per_second": 7.422890717222247,
+      "measured_tps_ratio": 0.7264740873258412,
+      "lossless_speedup": 0.7264740873258412
+    }
+  },
+  "verification_totals": {
+    "ar": {},
+    "full": {
+      "forward_input_rows": 5948,
+      "native_tile_calls": 610,
+      "target_forward_seconds": 81.56695564370602
+    },
+    "tiled": {
+      "forward_input_rows": 3680,
+      "native_tile_calls": 440,
+      "target_forward_seconds": 57.981115964241326
+    }
+  },
+  "tiled_over_full_tps": 1.255011860536546,
+  "initialization": {
+    "master_equal": true,
+    "adam_moments_zero": true,
+    "serving_equal": true,
+    "counters": [
+      0,
+      0,
+      0
+    ],
+    "device_state_sha256": {
+      "master": "1f9c046e76a6b2fdb8fa4b8355a09e51aba0563f00e651ba5165d7ee3003e02f",
+      "first": "c1ee3705f9a457a0df84dbd590bb9539528b8969dc7a00e286c7c89ce30c7bdc",
+      "second": "c1ee3705f9a457a0df84dbd590bb9539528b8969dc7a00e286c7c89ce30c7bdc"
+    }
+  }
+}

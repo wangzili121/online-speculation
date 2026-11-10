@@ -172,6 +172,8 @@ def main():
     first = reports[0]
     for report in reports[1:]:
         if (any(report["arguments"][k] != first["arguments"][k] for k in common)
+                or report["arguments"].get("verification_backend", "full") !=
+                first["arguments"].get("verification_backend", "full")
                 or report["dataset"]["tokenized_sha256"] != first["dataset"]["tokenized_sha256"]):
             raise ValueError("controlled runs changed the data or hyperparameters")
         if (report.get("initial_head_sha256") and first.get("initial_head_sha256")

@@ -1,6 +1,8 @@
 """分块早停与完整 verifier 的输出和提交状态等价。"""
 
 from itertools import product
+from collections import deque
+from types import SimpleNamespace as NS
 
 import pytest
 
@@ -61,3 +63,34 @@ def test_failure_in_replay_restores_original_history():
     with pytest.raises(RuntimeError, match="device replay failed"):
         verify_tiled(target, 0, candidates, budget=32)
     assert target.inputs == [100]
+
+
+@pytest.mark.parametrize("backend,collecting,lengths", (("full", False, [32, 2]),
+    ("tiled", False, [16, 2]), ("tiled", True, [32, 2])))
+def test_runner_routes_backend_and_keeps_teacher_capture_complete(monkeypatch, backend, collecting, lengths):
+    import blockspec.pypto_qwen38.target as module
+    target, observed = Target(), []
+    candidates = list(range(1, 32)); candidates[1] = 300
+    learner = NS(current=object(), observe=observed.append) if collecting else None
+    draft = NS(block_size=32, context=512, propose=lambda *args: candidates, learner=learner)
+    runner = module.OrthrusRunner(NS(requests={}), draft, None, verification_backend=backend)
+    runner.pending["request"] = deque()
+    request = NS(request_id="request", generated=[0], max_tokens=64, stop_token_ids=())
+    slot = NS(phase="decode", request=request, position=1, token_ids=(0,))
+
+    def native_target(*args, **kwargs):
+        target.collector = kwargs.get("collector")
+        return target
+
+    monkeypatch.setattr(module, "NativeTarget", native_target)
+    assert runner.run_batch([slot]) == [1]
+    assert [len(call) for call in target.calls] == lengths
+    assert target.inputs == [100, 0, 1]
+    assert (runner.rounds, runner.accepted) == (1, 1)
+    assert len(observed) == int(collecting)
+
+
+def test_invalid_verifier_backend_is_rejected():
+    from blockspec.pypto_qwen38.target import OrthrusRunner
+    with pytest.raises(ValueError, match="verification backend"):
+        OrthrusRunner(NS(requests={}), object(), None, verification_backend="unknown")

@@ -38,6 +38,8 @@
 
 训练流使用相同顺序，但接受长度会影响每个请求产生的轮数。因此固定 128 次更新，同时记录实际题数、监督位置数及每块有效行数，不将它们当作相等的训练量。
 
+本轮只更新末 1 / 4 层，前 63 / 60 层 draft 参数仍与 AR 相同，因此直接引用对应 AR 参数，末段参数驻留在独立 bank。这里复用的是尚未改变的 draft 参数；若未来的离线 head 已改变前面各层，就不能套用这条参数共享路径，需要按实际 head 的驻留或分片配置重新测量。
+
 ## 评测方法
 
 主指标为每轮平均接受的连续候选数（不含主模型补充 token），同时保留候选接受比例、生成吞吐及逐请求明细。每道留出题均配对运行 AR-only，要求输出 token 完全一致。冻结评测还检查 head 版本和优化器步数保持不变。
@@ -66,6 +68,31 @@
 
 预热效果与在线对照分别记录，不能把密集监督带来的收益归因于某一个 loss 的替换。
 
+### 整块 KL 预热结果
+
+last-4 在 36 道训练问题的完整 AR 回答上完成 128 次更新，共 1,024 个预测块、31,744 个直接监督位置。dev 平均接受数从 1.100 到 1.230，test 从 1.095 到 1.323；test 配对差值的 95% 区间为 +0.169～+0.290。40 个冻结评测请求均与 AR 逐 token 一致。
+
+第 1、64、128 步分别重算了同一批次更新前后的 KL，依次为 `9.307→9.303`、`4.553→4.504`、`4.022→3.962`。完整重放耗时 975.6 s，其中更新占 176.7 s；历史 AR 回答收集耗时为 312.4 s，本轮直接复用这些回答，没有再次收集。
+
+最终固定 head 的 test 吞吐为 4.42 token/s，同题 AR 为 7.39 token/s。整块监督也带来了泛化改善，但本轮小预算实验未观察到比原 TV 在线训练更高的接受长度，仍需把 head 质量与验证器开销分别评估。原始记录与独立核对结果见 `raw/kl-answer-last4-k32-128-r1.json`、`prewarm-summary.json`。
+
+## 验证器编排对照
+
+原生 verifier 以 16 行为一个 tile。完整 K32 路径会计算两个 tile，再按第一次拒绝的位置回滚；分块路径在第一个 tile 已拒绝、遇到 EOS 或用完输出预算时，不计算后续 tile。两者提交同一段 AR 输入，仍使用原生前向、快照和回放，没有修改数值 kernel。
+
+在同一份 last-4 TV checkpoint 上，4 道 dev 各重复两次、交替测试顺序：
+
+| 指标 | 完整验证 | 分块早停 |
+| --- | ---: | ---: |
+| 固定 head 吞吐 | 4.30 token/s | 5.39 token/s |
+| 平均接受数 / 轮 | 1.252 | 1.252 |
+| 主模型验证与回放的 tile 调用数 | 610 | 440 |
+| 验证与回放耗时 | 81.57 s | 57.98 s |
+
+整体吞吐提高 25.5%，两组的候选数、接受数及交付的 512 个输出 token 均完全一致；同题 AR 为 7.42 token/s，因此此处的 25.5% 是相对完整验证路径的改善，尚未追平 AR。在线采集教师分布时仍走完整验证，以保持现有训练数据契约。新 head 接续实验据此选择分块后端，再在独立确认集检查组合配置。
+
+CPU 验证覆盖全部 5,376 种拒绝/EOS/预算/tile 组合，并检查分页回收与循环状态回放。后端接入后的整套 CPU 回归为 577 项；新增入口检查另为 41 项。独立 NPU 结果见 `raw/tiled-verifier-last4-dev-r1.json`。
+
 ## 复现与权重接续
 
 在线对照入口为 `scripts/benchmark_qwen38_pypto_online.py`。主参数为 `--last-layers 1` 或 `4`、`--steps 128 --eval-steps 0,16,64,128 --width 32 --tokens 64 --stride 8 --replay-blocks 8 --learning-rate 1e-5 --warmup-steps 8 --frozen-stream-control --skip-calibration`。
@@ -75,5 +102,19 @@
 增加 `--sweep-widths 4,8,16,32` 后，以 dev 的总 token / 总耗时选择最终活跃宽度，再对确认集运行一次。接受长度与候选接受比例一并记录，但不将较高接受比例直接当作较高吞吐。
 
 服务入口 `scripts/serve_qwen38_pypto.py` 对应使用 `--online --resume-online <checkpoint目录> --reset-online-optimizer`。省略最后一个选项则恢复原 Adam 状态继续训练。两种方式均严格检查基模、模板 head 和 last-N 参数布局，不接受不匹配的 checkpoint。
+
+对本轮从 AR-copy 初始化的末段 checkpoint，可省略 `--head-dir`，以 `--share-ar-prefix` 引用未训练的前段参数；指定外部 head 目录时禁止使用该选项。示例：
+
+```bash
+python scripts/serve_qwen38_pypto.py \
+  --source /data/OneServing --model /data/models/Qwen3.8-27B \
+  --device 0 --learner-device 1 --online --last-layers 4 \
+  --resume-online /data/heads/warm.checkpoint --reset-online-optimizer \
+  --share-ar-prefix --verification-backend tiled \
+  --attention-backend paged --gdn-backend vector \
+  --draft-group-size 4 --head-transfer packed
+```
+
+服务默认使用 `warn` 级别运行时日志；需要逐次 kernel 计时记录时，显式增加 `--runtime-log-level timing`。
 
 结果原始记录、独立汇总与监督器退出状态位于 [实验记录目录](validation/pypto-qwen38/online-study-20261111/)。权重 checkpoint 保留在实验服务器，未将模型参数提交到仓库。
