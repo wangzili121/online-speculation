@@ -9,12 +9,12 @@ def plan(k):
 
 
 def make_long_linear(m, k, n, *, inline=False):
+    if m != 32:
+        raise ValueError("long-vocabulary VJP requires the pinned K32 row buffer")
     import pypto.language as pl
     from .training_programs import make_linear
 
     C, P = plan(k)
-    if m not in (32, 64):
-        raise ValueError("a K32/K64 feedback row block required")
     # (M,K) @ (K,N) = transpose((K,M)) @ (K,N)，不改变归约顺序。
     product = make_linear(
         (k, m), (k, n), transpose_a=True, transpose_b=False, inline=True

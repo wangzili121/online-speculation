@@ -215,7 +215,7 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
         raise ValueError("whole GQA groups required")
     # 真实词表的 dLogits 行步长很大；先重排，避免长行二维读取错误。
     if (not gradient_weight and not transpose_a and not transpose_b and batches==1
-            and M in (32,64) and K>=65536 and K%512==0):
+            and K>=65536 and K%512==0):
         from .training_long_linear import make_long_linear
         return make_long_linear(M,K,N,inline=inline)
     MT = 64 if M % 64 == 0 else 32

@@ -67,6 +67,8 @@ python scripts/prepare_qwen38_pypto_head.py \
 
 ## 验证
 
+真实尺寸的独立 autograd 对照曾发现并修复 LM-head 输入梯度的长行读取错误。修复后 last-1 / last-4 的全部参数梯度、八块累积、Adam 和执行参数转换通过，固定反馈 loss 正常下降；见[数值诊断与修复](QWEN38_PYPTO_TRAINING_DIAGNOSIS.md)。以下早期功能记录不替代这项数值验收，也不用于判断训练效果。
+
 组件验证覆盖真实 GDN 头数、部分块、非零历史、解析反向、完整 last-2/3/4/5/8 后段梯度、两次 Adam 更新和 checkpoint 精确恢复。488 项 CPU 回归通过，包含 last-2/3/4/5/8 的独立 autograd 对照，以及 64 层图结构、跨组输入采集和显存拒绝检查。
 
 真实 27B 的 last-2、last-3、last-4、last-5 均通过两块反馈联合更新、下一轮生效、目标 cache 不变、greedy 对齐、scheduler 及恢复后的 HTTP 更新。四种配置分别在新进程中恢复各自的 checkpoint，再执行相同更新；所得参数和两组 Adam 状态与连续运行逐字节一致。last-3/4/5 导出后的 24/33/39 组执行参数与 checkpoint 精确一致，未更新区域保持原字节；新 head 独立启动服务后，completion、chat、SSE 均通过。

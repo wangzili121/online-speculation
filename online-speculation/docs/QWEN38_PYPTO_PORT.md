@@ -6,6 +6,8 @@ Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标
 
 ## PyPTO last-1 在线更新
 
+真实尺寸反向、梯度累积和 Adam 的最新数值检查见[诊断与修复](QWEN38_PYPTO_TRAINING_DIAGNOSIS.md)。其中修复了长词表 LM-head 输入梯度的读取错误；本页的早期流程验证不替代完整数值对照。
+
 `--online` 使用显式前向和手写反向更新最后一层 Full Attention 的 Q/K/V/O 投影及 Q/K norm，主模型参数始终冻结。反向仍经过该层共享 MLP、norm 和 LM head，以计算 draft 参数所需梯度；在第 63 层输入处停止，不回传前面 63 层或目标模型历史。
 
 采集轮次保留末层输入、anchor 之前的私有历史副本及 verifier 教师 logits，只用真正验证到的行计算 TV loss。多个 replay 块统一按有效位置总数归一化。FP32 master、梯度、Adam 状态、裁剪和执行参数转换均在 NPU 上完成；Torch autograd 只用于独立验证。更新先写候选缓冲，有限值检查通过后，才在两轮起草之间发布新版本。主模型 cache 不参与参数发布。
