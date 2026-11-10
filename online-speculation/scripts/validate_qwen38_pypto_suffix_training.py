@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""last-2/4 完整 PyPTO 后段梯度对照 Torch autograd；不加载真实主模型。"""
+"""last-2/3/4 完整 PyPTO 后段梯度对照 Torch autograd；不加载真实主模型。"""
 
 import argparse
 import json

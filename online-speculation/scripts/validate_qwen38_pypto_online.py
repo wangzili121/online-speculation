@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""真实 27B：K32 反馈、末层更新、下一轮生效，以及调度器自动在线更新。"""
+"""真实 27B：K32 反馈、末尾指定层更新、下一轮生效及调度器在线更新。"""
 
 import argparse
 import json

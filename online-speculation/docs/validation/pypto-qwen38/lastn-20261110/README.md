@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | GDN 递推 | 前向、保存状态及解析反向；48 个 value heads、16 个 Q/K heads、维度 128，以及小尺寸对照 | `gdn-lastn-core-small-r8.json`、`gdn-lastn-core-real-r9.json` |
 | GDN 前后处理 | 四 tap 因果卷积/SiLU、decay/beta、gated RMSNorm 的前向和反向，与独立 Torch autograd 对照 | `gdn-lastn-aux-small-r11.json`、`gdn-lastn-aux-real-r11.json` |
-| 完整后段 | last-2/4 的 15/33 组参数梯度、冻结模块上的输入梯度、两次 Adam 更新及 checkpoint 精确恢复 | `suffix-last2-r11.json`、`suffix-last2-adam-r15.json`、`suffix-last4-adam-r16.json` |
+| 完整后段 | last-2/3/4 的 15/24/33 组参数梯度、冻结模块上的输入梯度、两次 Adam 更新及 checkpoint 精确恢复 | `suffix-last2-r11.json`、`suffix-last2-adam-r15.json`、`suffix-last3-adam-r24.json`、`suffix-last4-adam-r16.json` |
 | CPU 回归 | 472 项通过，包含 last-2/3/4 的解析梯度与独立 autograd 对照 | `source-lastn-r22-cpu-output.json`、`source-lastn-r22-cpu-output.txt` |
 
 GDN 组件覆盖有效块宽 1/17/32、零及非零历史；未使用行填入 NaN，输入和历史逐字节保持不变。合成 last-4 的一个 TV 比较位置因 BF16 前向微差改变正负号；以相同输入逐节点检查，最大局部相对误差约 `1.84e-4`，TV 导数一致；以设备实际 TV 梯度驱动独立 autograd，全部 33 组梯度通过，最大相对误差约 2.3%。没有更换目标或放宽原有梯度阈值。
