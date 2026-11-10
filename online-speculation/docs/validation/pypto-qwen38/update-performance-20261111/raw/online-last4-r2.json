@@ -1,0 +1,109 @@
+{
+  "passed": true,
+  "cases": [
+    {
+      "name": "k32_online_round",
+      "iteration": 0,
+      "accepted": 1,
+      "target_history_unchanged": true,
+      "greedy_matches": true,
+      "version": 0,
+      "passed": true
+    },
+    {
+      "name": "k32_online_round",
+      "iteration": 1,
+      "accepted": 1,
+      "target_history_unchanged": true,
+      "greedy_matches": true,
+      "version": 1,
+      "passed": true,
+      "replay_logits_relative_l2": 2.49383992922958e-05,
+      "update_seconds": 26.00467432849109,
+      "loss": 0.666512668132782,
+      "reached_positions": 4,
+      "gradient_norm": 1.8870649337768555,
+      "clip_scale": 0.5299232006072998,
+      "checkpoint": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/training-perf-20261111/online-last4-r2.updates/step-00000001"
+    },
+    {
+      "name": "k32_online_round",
+      "iteration": 2,
+      "accepted": 1,
+      "target_history_unchanged": true,
+      "greedy_matches": true,
+      "version": 1,
+      "passed": true
+    },
+    {
+      "name": "k32_online_round",
+      "iteration": 3,
+      "accepted": 1,
+      "target_history_unchanged": true,
+      "greedy_matches": true,
+      "version": 2,
+      "passed": true,
+      "replay_logits_relative_l2": 0.0,
+      "update_seconds": 21.249282667413354,
+      "loss": 0.645479142665863,
+      "reached_positions": 4,
+      "gradient_norm": 2.080009698867798,
+      "clip_scale": 0.48076677322387695,
+      "checkpoint": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/training-perf-20261111/online-last4-r2.updates/step-00000002"
+    },
+    {
+      "name": "scheduler_online",
+      "greedy_matches": true,
+      "before_version": 2,
+      "after_version": 3,
+      "passed": true
+    },
+    {
+      "name": "checkpoint_restore_http_update",
+      "restored_version": 3,
+      "final_version": 4,
+      "completion_tokens": 3,
+      "text": ", I'm",
+      "token_ids": [
+        11,
+        353,
+        2688
+      ],
+      "health_ready": true,
+      "passed": true
+    }
+  ],
+  "gradient_zero_checks": [
+    {
+      "step": 0,
+      "passed": true
+    },
+    {
+      "step": 1,
+      "passed": true
+    },
+    {
+      "step": 2,
+      "passed": true
+    },
+    {
+      "step": 3,
+      "passed": true
+    },
+    {
+      "step": 3,
+      "passed": true
+    }
+  ],
+  "memory_after_requests": {
+    "serving": [
+      787562496,
+      65452113920
+    ],
+    "learner": [
+      39671738368,
+      65452113920
+    ],
+    "learner_device": 1
+  }
+}
