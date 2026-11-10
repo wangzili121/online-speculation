@@ -10,6 +10,8 @@ PyPTO 路径默认在 NPU 上整理 head 权重，主模型矩阵直接加载到
 
 PyPTO 另提供 `--online --last-layers N`：根据验证反馈，在 NPU 上重放后段、执行显式反向和 FP32 Adam，再在两轮起草之间切换整组 head 参数。支持 checkpoint 续训及导出为固定推理 head；64 GB A2 使用独立学习卡，推理仍为 TP1。[在线更新配置](online-speculation/docs/QWEN38_PYPTO_ONLINE_LASTN.md)说明启动、恢复和导出方式。
 
+[在线效果实验](online-speculation/docs/QWEN38_PYPTO_ONLINE_EFFECT.md)提供 GSM8K 请求流上的初始化、last-1、last-4 及同题 AR 对照入口，分别统计固定 head 推理和计入更新成本的吞吐。
+
 Qwen3.8-27B 的 Orthrus 投机推理与 draft 更新实现。draft 复用冻结的主模型 backbone，推理读取主模型历史缓存，候选由原生 vLLM-Ascend 验证。支持在线 last-N 更新和独立离线全层更新，均只更新 draft mixer，不训练主模型。
 
 Full Attention 在块内采用双向注意力，GDN 使用 `orthrus_qwen35_reference` 的因果递推策略。
