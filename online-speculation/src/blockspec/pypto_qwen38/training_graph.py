@@ -132,6 +132,8 @@ class LastLayerGraph(GraphBuilder):
         middle = self.element(silu, up, "mul")
         mlp = self.mm(middle, wd)
         final = self.element(skip, mlp, "add")
+        # 中间 Full Attention 层复用同一块，只在整段末尾计算 LM head 和损失。
+        self.output, self.forward_nodes = final, tuple(self.nodes)
         normalized, fi = self.norm(final, fg)
         self.logits = logits = self.mm(normalized, lm)
         delta, self.losses = self.op("tv", (logits, teacher),
@@ -139,6 +141,7 @@ class LastLayerGraph(GraphBuilder):
 
         # 手工链式求导。共享 MLP/LM head 只算 dX，不产生 dW。
         dfinal = self.norm_dx(final, fg, fi, self.mm(delta, lm, transpose_b=False))
+        self.gradient_seed, backward_start = dfinal, len(self.nodes)
         dmiddle = self.mm(dfinal, wd, transpose_b=False)
         dup = self.element(dmiddle, silu, "mul")
         dsilu = self.element(dmiddle, up, "mul")
@@ -171,3 +174,4 @@ class LastLayerGraph(GraphBuilder):
             dx = self.element(self.mm(dqp, qw, transpose_b=False), self.mm(dkp, kw, transpose_b=False), "add")
             dx = self.element(dx, self.mm(dvp, vw, transpose_b=False), "add")
             self.input_gradient = self.element(dskip, self.norm_dx(hidden, ng, xi, dx), "add")
+        self.backward_nodes = tuple(self.nodes[backward_start:])

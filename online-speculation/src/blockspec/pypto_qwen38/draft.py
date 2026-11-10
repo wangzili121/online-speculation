@@ -178,7 +178,8 @@ class NeuralDraft:
             index = layer // self.group_size % 2
             current, output = self.hidden[index], self.hidden[1 - index]
             if self.group_size == 4:
-                if layer == 60 and feedback is not None:
+                capture = self.learner.graph.capture_layer if self.learner is not None and self.learner.options.last_layers > 1 else 63
+                if layer <= capture < layer+4 and feedback is not None:
                     if self.learner.options.last_layers > 1:
                         for offset in range(3):
                             if layer+offset == self.learner.graph.capture_layer:
@@ -188,9 +189,12 @@ class NeuralDraft:
                             self._run("gdn",[current,*banks[3:8],*weights[offset],*native.resident[:2],
                                              following,layer+offset,resident.slot])
                             current = following
+                        if capture == layer+3:
+                            self._run("hidden_capture",[current,feedback.inputs["hidden"]])
+                            current = feedback.inputs["hidden"]
                         self._run("full_layer",[current,*banks[3:8],*weights[3],self.cos,self.sin,
                             self.query,self.key,self.value,self.gate,*native.resident[2:],self.table,
-                            self.mask,output,63,past,width])
+                            self.mask,output,layer+3,past,width])
                         continue
                     self._run("group_prefix", [current, *banks[3:8],
                         *(handle for group in weights[:3] for handle in group), *native.resident[:2],

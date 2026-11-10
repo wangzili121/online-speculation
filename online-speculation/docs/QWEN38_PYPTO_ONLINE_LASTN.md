@@ -4,7 +4,7 @@ PyPTO Serving 在请求验证后采集教师分布，只更新末尾指定层的
 
 ## 更新范围
 
-`--last-layers` 支持 1、2、3、4，默认 1：
+`--last-layers N` 可选择该模型末尾 1–64 层，默认 1。可运行的 N 还受显存和固定运行时容量限制；表中层号从 0 开始：
 
 | 配置 | 更新的层 | 参数组 |
 | --- | --- | --- |
@@ -12,8 +12,10 @@ PyPTO Serving 在请求验证后采集教师分布，只更新末尾指定层的
 | 2 | 第 62 层 GDN + 第 63 层 | 15 组 |
 | 3 | 第 61–63 层 | 24 组 |
 | 4 | 第 60–63 层 | 33 组 |
+| 5 | 第 59 层 Full Attention + 第 60–62 层 GDN + 第 63 层 Full Attention | 39 组 |
+| 8 | 第 56–63 层，包含两组 GDN/GDN/GDN/Full Attention | 66 组 |
 
-每层 GDN 更新 QKV、Z、A/B 投影、四 tap 卷积、A_log、dt_bias、gated RMSNorm 权重和输出投影。GDN norm 使用原权重，Full Attention Q/K norm 使用 `1 + weight`；A_log 保持 FP32。共享模块的参数冻结，但仍计算其输入梯度，以把梯度传回前面的 draft 层。最前一个更新层的输入和全部 AR 历史作为常量。
+每层 GDN 更新 QKV、Z、A/B 投影、四 tap 卷积、A_log、dt_bias、gated RMSNorm 权重和输出投影。GDN norm 使用原权重，Full Attention Q/K norm 使用 `1 + weight`；A_log 保持 FP32。共享模块的参数冻结，但仍计算其输入梯度，以把梯度传回前面的 draft 层。最前一个更新层的输入和全部 AR 历史作为常量。跨过四层组边界时，每个 Full Attention 层读取自己对应的历史 KV；只在整个末段最后计算一次 LM head 和 TV loss。中间层复用相同的前向、输入梯度和参数梯度算子。
 
 ## 运行流程
 
@@ -28,9 +30,11 @@ SuffixLearner.observe / update
   → SuffixPublisher 搬运备用执行参数，DraftWeights.publish_many 整组切换版本
 ```
 
-last-1 保留原 `OnlineLearner` 路径；last-2/3/4 使用 `SuffixLearner`。后段计算分成若干 CHIP 入口，避免超过固定运行时的参数数量限制。FP32 master、moment 和梯度采用同一个扁平布局，执行时仍按每层原有 bank 形状读取。
+last-1 保留原 `OnlineLearner` 路径；N≥2 使用 `SuffixLearner`。后段计算分成若干 CHIP 入口，避免超过固定运行时的参数数量限制。FP32 master、moment 和梯度采用同一个扁平布局，执行时仍按每层原有 bank 形状读取。
 
-64 GB A2 使用独立学习卡：推理卡运行主模型和 draft；学习卡保存后段所需的冻结权重及学习状态。两张卡通过有界主机缓冲传递字节，数值计算在 NPU 上完成。这是两个独立 worker，主模型仍为 TP1。last-2/3/4 要求指定学习卡。
+64 GB A2 使用独立学习卡：推理卡运行主模型和 draft；学习卡保存后段所需的冻结权重及学习状态。两张卡通过有界主机缓冲传递字节，数值计算在 NPU 上完成。这是两个独立 worker，主模型仍为 TP1。N≥2 要求指定学习卡。
+
+推理卡需要两份末段执行参数，学习卡另需 FP32 参数、Adam 状态、梯度、冻结共享权重和反向中间值。以当前真实尺寸、两个 replay 块估算，last-5 在推理卡额外占约 2.14 GiB，last-8 约 3.46 GiB，均不含预留余量。程序在分配大缓冲前检查两侧剩余显存；固定运行时每个 worker 的 CHIP 入口上限为 64，也会提前检查。配置范围不代表所有 N 都能在当前两张 64 GB A2 上运行。
 
 ## 启动、恢复与导出
 
@@ -63,10 +67,12 @@ python scripts/prepare_qwen38_pypto_head.py \
 
 ## 验证
 
-组件验证覆盖真实 GDN 头数、部分块、非零历史、解析反向、完整 last-2/3/4 后段梯度、两次 Adam 更新和 checkpoint 精确恢复。472 项 CPU 回归通过，包含 last-2/3/4 的独立 autograd 对照。
+组件验证覆盖真实 GDN 头数、部分块、非零历史、解析反向、完整 last-2/3/4 后段梯度、两次 Adam 更新和 checkpoint 精确恢复。486 项 CPU 回归通过，包含 last-2/3/4/5/8 的独立 autograd 对照，以及 64 层图结构、跨组输入采集和显存拒绝检查。
 
 真实 27B 的 last-2、last-3、last-4 均通过两块反馈联合更新、下一轮生效、目标 cache 不变、greedy 对齐、scheduler 及恢复后的 HTTP 更新。三种配置分别在新进程中恢复各自的 checkpoint，再执行相同更新；所得参数和两组 Adam 状态与连续运行逐字节一致。last-3/4 导出后的 24/33 组执行参数与 checkpoint 精确一致，未更新区域保持原字节；新 head 独立启动服务后，completion、chat、SSE 均通过。
 
 合成 last-4 用例中，BF16 前向微差使一个位置的 TV 正负号变化。逐节点使用相同输入对照后，最大局部相对误差约 `1.84e-4`；使用同一 TV 梯度做独立 autograd 对照，全部 33 组参数通过，最大相对误差约 2.3%。验证没有修改 TV 目标或放宽梯度阈值。
+
+last-5/8 的独立 NPU 后段、Adam 和 checkpoint 对照已通过，真实 last-5 服务闭环仍在验证。跨组结果见[扩展验证记录](validation/pypto-qwen38/lastn-general-20261110/README.md)。
 
 具体范围和结果见[验证记录](validation/pypto-qwen38/lastn-20261110/README.md)。当前服务配置为 BF16、TP1、K32、512 个总位置、greedy 和一个活动请求；学习卡独立运行，不构成 TP2。短请求功能验证不用于评价收敛或加速收益。

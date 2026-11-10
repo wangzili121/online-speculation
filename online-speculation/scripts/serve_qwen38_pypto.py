@@ -21,7 +21,7 @@ def main():
                         help="input preparation, greedy selection and GDN transaction snapshots")
     parser.add_argument("--weight-backend", choices=("pypto", "host"), default="pypto")
     parser.add_argument("--online", action="store_true")
-    parser.add_argument("--last-layers", type=int, choices=(1,2,3,4), default=1)
+    parser.add_argument("--last-layers", type=int, choices=range(1,65), default=1)
     parser.add_argument("--update-stride", type=int, default=16)
     parser.add_argument("--replay-blocks", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=1e-5)

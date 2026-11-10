@@ -33,7 +33,7 @@ def sample(graph,fp32):
     return inputs,masters
 
 
-@pytest.mark.parametrize("n", (2,3,4))
+@pytest.mark.parametrize("n", (2,3,4,5,8))
 @pytest.mark.parametrize("fp32", (True,False))
 def test_suffix_vjp_matches_independent_autograd(n,fp32):
     torch.set_num_threads(4)
@@ -50,13 +50,23 @@ def test_suffix_vjp_matches_independent_autograd(n,fp32):
             assert error < .04,(name,error)
             assert float((actual-gradient).abs().max().detach()) < .001,name
         assert torch.count_nonzero(actual),name
-    assert len(graph.gradients) == 9*(n-1)+6
+    full = sum(layer%4 == 3 for layer in range(64-n,64))
+    assert len(graph.gradients) == 9*(n-full)+6*full
     assert len(graph.frozen) == n*5+2
     assert graph.capture_layer == 64-n
     assert all(not value.requires_grad for name,value in inputs.items() if name not in masters)
 
 
-def test_suffix_rejects_layers_outside_validated_group():
-    for n in (0,1,5,64):
+def test_suffix_rejects_layers_outside_model():
+    for n in (0,1,65):
         with pytest.raises(ValueError):
             small_suffix(n)
+
+
+def test_suffix_can_describe_all_model_layers():
+    graph = small_suffix(64)
+    assert set(graph.histories) == set(range(64))
+    assert len(graph.parameters) == 48*9+16*6
+    assert sum(node.kind == "tv" for node in graph.nodes) == 1
+    assert set(graph.gradients) == {p.name for p in graph.parameters}
+    assert len(graph.frozen) == 64*5+2

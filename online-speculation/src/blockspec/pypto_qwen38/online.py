@@ -23,16 +23,16 @@ class OnlineConfig:
     learner_device: int | None = None
 
     def __post_init__(self):
-        if (type(self.last_layers) is not int or not 1 <= self.last_layers <= 4
+        if (type(self.last_layers) is not int or not 1 <= self.last_layers <= 64
                 or type(self.stride) is not int or self.stride < 1
                 or type(self.replay_blocks) is not int or not 1 <= self.replay_blocks <= self.stride
                 or not math.isfinite(self.learning_rate) or self.learning_rate <= 0
                 or not math.isfinite(self.clip_norm) or self.clip_norm <= 0):
-            raise ValueError("last-1..4, bounded replay and positive finite optimizer scales required")
+            raise ValueError("last-1..64, bounded replay and positive finite optimizer scales required")
         if self.learner_device is not None and (type(self.learner_device) is not int or self.learner_device < 0):
             raise ValueError("learner device must be a nonnegative visible device")
         if self.last_layers > 1 and self.learner_device is None:
-            raise ValueError("last-2/3/4 requires a separate learner device")
+            raise ValueError("multi-layer updates require a separate learner device")
 
 
 class FeedbackBlock:

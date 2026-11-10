@@ -1,9 +1,12 @@
 """采集在线蒸馏所需的私有历史/教师分布，不持有可回收的目标页引用。"""
 
 
-def make_history(pages):
+def make_history(pages, layer=63):
+    if type(layer) is not int or not 0 <= layer < 64 or layer%4 != 3:
+        raise ValueError("a Full Attention layer in 0..63 required")
     import pypto.language as pl
     ROWS = 16 * 4 * pages * 16
+    INDEX = layer//4
 
     @pl.jit
     def history(key: pl.Tensor, value: pl.Tensor, table: pl.Tensor,
@@ -16,7 +19,7 @@ def make_history(pages):
             row = task % 512
             if row < past:
                 physical = pl.read(table, [row // 16])
-                source = ((15 * 4 + head) * pages + physical) * 16 + row % 16
+                source = ((INDEX * 4 + head) * pages + physical) * 16 + row % 16
                 out_key[task:task + 1, 0:256] = pl.slice(k, [1, 256], [source, 0])
                 out_value[task:task + 1, 0:256] = pl.slice(v, [1, 256], [source, 0])
             else:

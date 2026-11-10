@@ -1,4 +1,4 @@
-"""最后 2/3/4 层的显式梯度图，沿用 last-1 的 Full Attention 子图。"""
+"""按真实 GDN/Full Attention 层序列构造后段，复用已验证的层级计算。"""
 
 from dataclasses import dataclass
 
@@ -22,8 +22,8 @@ class Parameter:
 
 class SuffixGraph(GraphBuilder):
     def __init__(self, last_layers, shape=SuffixShape(), gdn_shape=GDNShape()):
-        if type(last_layers) is not int or not 2 <= last_layers <= 4 or shape.block != gdn_shape.rows:
-            raise ValueError("last-2/3/4 and a common K32 block required")
+        if type(last_layers) is not int or not 2 <= last_layers <= 64 or shape.block != gdn_shape.rows:
+            raise ValueError("last-2..64 and a common K32 block required")
         self.last_layers, self.capture_layer = last_layers, 64-last_layers
         self.shape, self.gdn_shape = shape, gdn_shape
         self.inputs, self.nodes, self.gradients = {}, [], {}
@@ -31,7 +31,7 @@ class SuffixGraph(GraphBuilder):
         hidden = self.input("hidden", (shape.block, shape.hidden))
         layers = []
         for layer in range(self.capture_layer, 63):
-            block = GDNLayer(self, layer, hidden)
+            block = FullAttentionLayer(self, layer, hidden) if layer%4 == 3 else GDNLayer(self, layer, hidden)
             layers.append(block)
             hidden = block.output
         full = LastLayerGraph(shape, backprop_input=True)
@@ -78,6 +78,41 @@ class SuffixGraph(GraphBuilder):
                         "mlp_gate":(5,H*I*2),"mlp_up":(6,H*I*2),"mlp_down":(7,H*I*2),
                         "final_gamma":(1,0),"lm_head":(2,0)}[kind]
         self.frozen[key] = bank,0 if layer is None else layer*stride
+
+
+class FullAttentionLayer:
+    """复用末层图的 Attention/共享 MLP 前反向，梯度由后续层传入。"""
+    def __init__(self, graph, layer, hidden):
+        self.graph, self.layer = graph, layer
+        self.prefix = f"l{layer}_"
+        full = self.template = LastLayerGraph(graph.shape,backprop_input=layer != graph.capture_layer)
+        values = self.values = {"hidden":hidden}
+        for name,value in full.inputs.items():
+            if name in {"hidden","teacher","final_gamma","lm_head"}:
+                continue
+            key = name if name in {"cos","sin"} else self.prefix+name
+            values[name] = graph.input(key,value.shape,value.dtype)
+        for bank,name in enumerate(("q_weight","k_weight","v_weight","q_gamma","k_gamma","o_weight")):
+            value = full.inputs[name]
+            graph.parameters.append(Parameter(self.prefix+name,layer,bank,value.shape,offset_norm="gamma" in name))
+        for name in ("input_gamma","post_gamma","mlp_gate","mlp_up","mlp_down"):
+            graph.bind_frozen(self.prefix+name,name,layer)
+        graph.histories[layer] = {name:values[name] for name in ("history_key","history_value")}
+        self.append(full.forward_nodes)
+        self.output = values[full.output.name]
+
+    def append(self, nodes):
+        for node in nodes:
+            mapped = tuple(Value(self.prefix+v.name,v.shape,v.dtype) for v in node.outputs)
+            self.graph.nodes.append(Node(node.kind,tuple(self.values[v.name] for v in node.inputs),mapped,node.options))
+            self.values.update({v.name:clone for v,clone in zip(node.outputs,mapped,strict=True)})
+
+    def backward(self, dy, *, propagate):
+        full = self.template
+        self.values[full.gradient_seed.name] = dy
+        self.append(full.backward_nodes)
+        self.graph.gradients.update({self.prefix+name:self.values[v.name] for name,v in full.gradients.items()})
+        return self.values[full.input_gradient.name] if propagate else None
 
 
 class GDNLayer:

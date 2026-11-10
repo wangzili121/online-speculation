@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""last-2/3/4 完整 PyPTO 后段梯度对照 Torch autograd；不加载真实主模型。"""
+"""跨 GDN/Full Attention 后段梯度对照 Torch autograd；不加载真实主模型。"""
 
 import argparse
 import json
@@ -10,7 +10,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device",type=int,required=True)
     parser.add_argument("--output",type=Path,required=True)
-    parser.add_argument("--last-layers",type=int,choices=(2,3,4),default=2)
+    parser.add_argument("--last-layers",type=int,choices=range(2,65),default=2)
     parser.add_argument("--compile-only",action="store_true")
     parser.add_argument("--optimizer",action="store_true")
     args = parser.parse_args()
@@ -180,17 +180,19 @@ def validate_optimizer(programs,worker,graph,inputs,masters,gradients,output):
             reference.grad = flat_gradient.clone()*min(1.,.00001/(flat_gradient.norm().item()+1e-6))
             adam.step(); adam.zero_grad()
             torch.testing.assert_close(read(optimizer.state[0]),reference.detach(),rtol=2e-5,atol=1e-7)
+        # Adam 对照允许 FP32 算术微差；执行格式必须精确对应设备实际 master。
+        device_master = read(optimizer.state[0])
         for e in programs.layout.entries:
             p = e.parameter
             ordinary,special = optimizer.execution[optimizer.index]
             if e.special is None:
                 actual = read(ordinary)[0,e.offset:e.offset+torch.tensor(p.shape).prod()].reshape(p.shape)
-                expected = reference.detach()[0,e.offset:e.offset+actual.numel()].reshape(p.shape).bfloat16()
+                expected = device_master[0,e.offset:e.offset+actual.numel()].reshape(p.shape).bfloat16()
             else:
                 actual = read(special)[0,e.special:e.special+torch.tensor(p.shape).prod()].reshape(p.shape)
-                raw = reference.detach()[0,e.offset:e.offset+actual.numel()].reshape(p.shape)
+                raw = device_master[0,e.offset:e.offset+actual.numel()].reshape(p.shape)
                 expected = raw.bfloat16().float()+1 if p.offset_norm else raw
-            torch.testing.assert_close(actual,expected,atol=1e-6,rtol=1e-6)
+            torch.testing.assert_close(actual,expected,atol=0,rtol=0,msg=lambda message,name=p.name:name+": "+message)
         directory = output.with_suffix(".checkpoint")
         save(optimizer,directory,{"reference":"small-suffix"})
         restored = SuffixOptimizer(programs,worker)

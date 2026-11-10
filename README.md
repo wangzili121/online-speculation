@@ -8,7 +8,7 @@ PyPTO 的优化配置为 `--attention-backend paged --gdn-backend vector --draft
 
 PyPTO 路径默认在 NPU 上整理 head 权重，主模型矩阵直接加载到最终设备布局。可用 `scripts/prepare_qwen38_pypto_head.py` 保存转换后的 head，之后通过 `--head-dir` 直接加载；文件读取与哈希校验仍由主机完成。[权重准备与复用](online-speculation/docs/QWEN38_PYPTO_PORT.md#权重准备与复用)说明命令和格式。
 
-PyPTO 另提供 `--online --last-layers N`（N 为 1–4）：根据验证反馈，在 NPU 上重放后段、执行显式反向和 FP32 Adam，再在两轮起草之间切换整组 head 参数。支持 checkpoint 续训及导出为固定推理 head；64 GB A2 使用独立学习卡，推理仍为 TP1。[在线更新配置](online-speculation/docs/QWEN38_PYPTO_ONLINE_LASTN.md)说明启动、恢复和导出方式。
+PyPTO 另提供 `--online --last-layers N`：根据验证反馈，在 NPU 上重放后段、执行显式反向和 FP32 Adam，再在两轮起草之间切换整组 head 参数。支持 checkpoint 续训及导出为固定推理 head；64 GB A2 使用独立学习卡，推理仍为 TP1。[在线更新配置](online-speculation/docs/QWEN38_PYPTO_ONLINE_LASTN.md)说明启动、恢复和导出方式。
 
 Qwen3.8-27B 的 Orthrus 投机推理与 draft 更新实现。draft 复用冻结的主模型 backbone，推理读取主模型历史缓存，候选由原生 vLLM-Ascend 验证。支持在线 last-N 更新和独立离线全层更新，均只更新 draft mixer，不训练主模型。
 

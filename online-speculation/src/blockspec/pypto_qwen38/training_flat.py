@@ -153,11 +153,11 @@ def make_summary(max_norm):
 
 def make_flat_zero(elements, dtype="fp32"):
     """大 flat 使用有界任务网格；不能按 256 元素直接展开成上百万个任务。"""
-    if (type(elements) is not int or elements < 64 or elements%64
-            or elements > 4096 and elements%4096 or dtype not in {"bf16","fp32"}):
-        raise ValueError("4096-aligned large or 64-aligned small flat buffer required")
+    if type(elements) is not int or elements < 64 or elements%64 or dtype not in {"bf16","fp32"}:
+        raise ValueError("64-aligned flat buffer required")
+    from math import gcd
     import pypto.language as pl
-    N,T = elements,min(4096,elements)
+    N,T = elements,min(4096,elements) if elements <= 4096 else gcd(4096,elements)
     D = pl.BF16 if dtype == "bf16" else pl.FP32
 
     @pl.jit

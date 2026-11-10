@@ -1,6 +1,6 @@
 # Orthrus-Qwen3.8 PyPTO Serving 迁移
 
-本分支基于 OneServing 的 Qwen3.8 独立交付包接入 Orthrus。原生模型保持不变，推理读取原有训练路径导出的 draft head。PyPTO 在线更新支持末尾 1–4 层，配置与多层实现见 [last-N 说明](QWEN38_PYPTO_ONLINE_LASTN.md)；完整离线训练继续使用现有 PyTorch 路径。
+本分支基于 OneServing 的 Qwen3.8 独立交付包接入 Orthrus。原生模型保持不变，推理读取原有训练路径导出的 draft head。PyPTO 在线更新可配置末尾 N 层，配置与多层实现见 [last-N 说明](QWEN38_PYPTO_ONLINE_LASTN.md)；完整离线训练继续使用现有 PyTorch 路径。
 
 Orthrus-Qwen3.8-27B 已在单卡 A2 上完成真实 head 的 K32 前向、目标缓存只读、拒绝恢复、greedy 对照及 HTTP 检查。测试覆盖完整 64 层，主模型与 draft 在同一 worker 中共享 backbone。参数转换在启动阶段完成，推理复用已分配的缓冲。**目前为 TP1、一个活动请求、512 个总位置；起草阶段计时与服务吞吐分别验收。**
 
@@ -412,4 +412,4 @@ Orthrus HTTP 检查在 61 的单张 A2 上通过，加载的是 TP2 在线 last-
 
 早期容器中的设备枚举错误记录保留在 `port-20261105/`。本次通过用户目录下的原生环境完成验证，没有修改 OneServing 模型源码；原容器启动失败的具体原因仍未确认。
 
-后续扩展请求边界，并随原生模型演进接入完整 TP、head 驻留、上下文和采样。完整训练继续使用现有 PyTorch 路径；PyPTO 在线入口支持末尾 1–4 层，重启加载完整 head 与进程内在线更新是不同操作。
+后续扩展请求边界，并随原生模型演进接入完整 TP、head 驻留、上下文和采样。完整训练继续使用现有 PyTorch 路径；PyPTO 在线入口可配置末尾 N 层，重启加载完整 head 与进程内在线更新是不同操作。

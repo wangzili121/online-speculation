@@ -13,7 +13,7 @@ def main():
         p.add_argument("--" + name, type=Path, required=True)
     p.add_argument("--device", type=int, required=True)
     p.add_argument("--learner-device", type=int)
-    p.add_argument("--last-layers", type=int,choices=(1,2,3,4),default=1)
+    p.add_argument("--last-layers", type=int,choices=range(1,65),default=1)
     p.add_argument("--resume-online", type=Path, help="repeat the closed loop from a saved optimizer state")
     p.add_argument("--replay-blocks", type=int, choices=(1, 2), default=1)
     args = p.parse_args()

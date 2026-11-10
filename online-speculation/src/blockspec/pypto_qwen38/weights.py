@@ -30,8 +30,8 @@ class DraftWeights:
         from .loading import tensor_layout
         if self.worker is None or expected_version != self.version:
             raise RuntimeError("a started head and its current version required")
-        if not layers or any(type(layer) is not int or not 60 <= layer <= 63 for layer in layers):
-            raise ValueError("a nonempty suffix in layers 60..63 required")
+        if not layers or any(type(layer) is not int or not 0 <= layer < 64 for layer in layers):
+            raise ValueError("nonempty model layers in 0..63 required")
         prepared = {layer:tuple(values) for layer,values in layers.items()}
         for layer,values in prepared.items():
             expected = self.head.banks(layer)
