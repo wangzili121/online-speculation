@@ -21,6 +21,8 @@ def main():
         p.add_argument("--"+name, type=Path, required=True)
     p.add_argument("--device", type=int, required=True)
     p.add_argument("--learner-device", type=int, required=True)
+    p.add_argument("--partial-teacher-capture", action="store_true")
+    p.add_argument("--require-released-storage", action="store_true")
     a = p.parse_args()
     if a.output.exists() or a.device == a.learner_device:
         p.error("new report and two different devices required")
@@ -61,6 +63,12 @@ def main():
                 report["before"] = get("/metrics")
                 if report["before"]["orthrus"]["verification_backend"] != "tiled":
                     raise AssertionError("service did not select the requested verifier")
+                if a.require_released_storage:
+                    released = report["before"]["orthrus"]["head_storage_release"]
+                    if not released or released["released_bytes"] <= 0 or released["free_bytes_after"] <= released["free_bytes_before"]:
+                        raise AssertionError("unused head storage was not released on the NPU")
+                if report["before"]["orthrus"].get("partial_teacher_capture", False) != a.partial_teacher_capture:
+                    raise AssertionError("service did not select the requested teacher capture mode")
                 refs = source["evaluations"][-1]["dev"]["target_rows"][:2]
                 prompts = {row["id"]: row for row in source["dataset"]["splits"]["dev"]}
                 for index, reference in enumerate(refs):
@@ -124,6 +132,8 @@ def main():
                     "--resume-online", source["checkpoint"]["path"], "--reset-online-optimizer",
                     "--share-ar-prefix", "--verification-backend", "tiled", "--attention-backend", "paged",
                     "--gdn-backend", "vector", "--draft-group-size", "4", "--head-transfer", "packed"]
+        if a.partial_teacher_capture:
+            sys.argv.append("--partial-teacher-capture")
         serve_qwen38_pypto.main()
         report.update(completed=True, clean_shutdown=True)
     except BaseException as error:

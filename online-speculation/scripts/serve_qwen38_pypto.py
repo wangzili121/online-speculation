@@ -21,7 +21,11 @@ def main():
                         help="input preparation, greedy selection and GDN transaction snapshots")
     parser.add_argument("--weight-backend", choices=("pypto", "host"), default="pypto")
     parser.add_argument("--verification-backend", choices=("full", "tiled"), default="full")
+    parser.add_argument("--partial-teacher-capture", action="store_true",
+                        help="tiled verification captures only tiles covering supervised teacher rows")
     parser.add_argument("--runtime-log-level", choices=("debug", "info", "timing", "warn", "error"), default="warn")
+    parser.add_argument("--draft-width", type=int, choices=range(2,33), default=32,
+                        help="active block width; compiled capacity and head contract remain K32")
     parser.add_argument("--share-ar-prefix", action="store_true",
                         help="share unchanged AR-copy draft layers; requires omission of --head-dir")
     parser.add_argument("--online", action="store_true")
@@ -43,6 +47,8 @@ def main():
         parser.error("require an assigned nonnegative device and a valid port")
     if args.share_ar_prefix and args.head_dir is not None:
         parser.error("--share-ar-prefix requires AR-copy initialization without --head-dir")
+    if args.partial_teacher_capture and args.verification_backend != "tiled":
+        parser.error("--partial-teacher-capture requires --verification-backend tiled")
     if args.reset_online_optimizer and (not args.online or args.resume_online is None):
         parser.error("--reset-online-optimizer requires --online and --resume-online")
     if not args.online and any(value is not None for value in
@@ -78,21 +84,28 @@ def main():
                              attention_backend=args.attention_backend, group_size=args.draft_group_size,
                              gdn_backend=args.gdn_backend, device_serving=args.serving_backend == "device",
                              weight_backend=args.weight_backend, online_config=online_config,
-                             verification_backend=args.verification_backend)
+                             verification_backend=args.verification_backend,
+                             partial_teacher_capture=args.partial_teacher_capture)
         application.state.engine = engine
         try:
             await asyncio.to_thread(engine.start)
+            draft = engine.runner.draft
+            draft.block_size = args.draft_width
             if args.share_ar_prefix:
                 from blockspec.pypto_qwen38.ar_prefix import borrow_prefix
                 stop = 64-args.last_layers if args.online else 64
                 if stop:
-                    draft = engine.runner.draft
                     layers, owned = borrow_prefix(engine.runner.native, head, stop)
                     draft.handles.extend(owned)
                     version = draft.weights.version
                     draft.weights.publish_many(layers, expected_version=version)
                     draft.weights.version = version
                     print("shared unchanged AR-copy draft layers", sorted(layers), flush=True)
+            if len(draft.weights.overrides) == 64:
+                free_before = engine.runner.native.worker.device_memory_info()[0]
+                count = draft.weights.release_replaced_weights()
+                draft.head_storage_release = dict(released_bytes=count, free_bytes_before=free_before,
+                    free_bytes_after=engine.runner.native.worker.device_memory_info()[0])
             yield
         finally:
             await asyncio.to_thread(engine.stop)

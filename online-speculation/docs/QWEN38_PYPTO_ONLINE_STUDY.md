@@ -93,7 +93,7 @@ last-4 在 36 道训练问题的完整 AR 回答上完成 128 次更新，共 1,
 | 主模型验证与回放的 tile 调用数 | 610 | 440 |
 | 验证与回放耗时 | 81.57 s | 57.98 s |
 
-整体吞吐提高 25.5%，两组的候选数、接受数及交付的 512 个输出 token 均完全一致；同题 AR 为 7.42 token/s，因此此处的 25.5% 是相对完整验证路径的改善，尚未追平 AR。在线采集教师分布时仍走完整验证，以保持现有训练数据契约。新 head 接续实验据此选择分块后端，再在独立确认集检查组合配置。
+整体吞吐提高 25.5%，两组的候选数、接受数及交付的 512 个输出 token 均完全一致；同题 AR 为 7.42 token/s，因此此处的 25.5% 是相对完整验证路径的改善，尚未追平 AR。默认的在线教师采集仍保留完整验证；下节另测显式启用前缀采集的实现。
 
 CPU 验证覆盖全部 5,376 种拒绝/EOS/预算/tile 组合，并检查分页回收与循环状态回放。后端接入后的整套 CPU 回归为 577 项；新增入口检查另为 41 项。独立 NPU 结果见 `raw/tiled-verifier-last4-dev-r1.json`。
 
@@ -133,13 +133,17 @@ python scripts/serve_qwen38_pypto.py \
   --source /data/OneServing --model /data/models/Qwen3.8-27B \
   --device 0 --learner-device 1 --online --last-layers 4 \
   --resume-online /data/heads/warm.checkpoint --reset-online-optimizer \
-  --share-ar-prefix --verification-backend tiled \
+  --share-ar-prefix --verification-backend tiled --partial-teacher-capture \
   --attention-backend paged --gdn-backend vector \
   --draft-group-size 4 --head-transfer packed
 ```
 
 服务默认使用 `warn` 级别运行时日志；需要逐次 kernel 计时记录时，显式增加 `--runtime-log-level timing`。
 
-该服务入口已用真实 27B 和预热 checkpoint 完成 HTTP 验证：加载后的 master 与文件一致、Adam 动量清零、推理卡参数与学习器一致。普通输出与 SSE 各生成 64 个 token，均与 AR 参照逐 token 相同；服务期间完成 7 次在线更新，head 版本从 0 增至 7，最后一次 loss 和梯度均有限，请求队列清空后服务正常关闭。原始结果为 `raw/warm-service-last4-r1.json`。
+`--draft-width N` 可将活跃块宽度设为 2～32，默认 32；它改变每轮候选数，不改变已编译缓冲或 head 格式。宽度应按实际请求吞吐选择，不能只看候选接受比例。
+
+该服务入口已用真实 27B 和预热 checkpoint 完成 HTTP 验证：加载后的 master 与文件一致、Adam 动量清零、推理卡参数与学习器一致。普通输出与 SSE 各生成 64 个 token，均与 AR 参照逐 token 相同；服务期间完成 7 次在线更新，head 版本从 0 增至 7，请求队列清空后服务正常关闭。
+
+启用前缀采集、关闭逐 kernel 日志后重复上述服务验证，输出及最终 loss、梯度范数、裁剪比例与原服务逐值一致。所有 64 层均已有独立参数引用时，启动阶段释放不再使用的初始上传缓冲：释放 909,889,408 字节，实测 NPU 可用内存增加 910,163,968 字节（约 868 MiB）。只释放本服务拥有且不被替代参数引用的存储，外部 head 的有效参数不受影响。该版本通过 600 项 CPU 回归；服务结果与对照摘要为 `raw/warm-service-last4-prefix-r3.json`、`service-prefix-summary.json`。
 
 结果原始记录、独立汇总与监督器退出状态位于 [实验记录目录](validation/pypto-qwen38/online-study-20261111/)。权重 checkpoint 保留在实验服务器，未将模型参数提交到仓库。

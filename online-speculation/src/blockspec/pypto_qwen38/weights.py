@@ -20,6 +20,35 @@ class DraftWeights:
         self.storage = None
         self.overrides = {}
         self.version = 0
+        self.released_bytes = 0
+
+    def release_replaced_weights(self):
+        """全部层已有独立替代 bank 时，释放不再读取的初始参数或上传缓冲。"""
+        from math import prod
+        if self.worker is None or self.storage not in {"stream", "resident"} or set(self.overrides) != set(range(64)):
+            raise RuntimeError("all 64 head layers must be replaced before releasing initial storage")
+        def identity(value):
+            buffer = getattr(value,"buffer",None)
+            result = getattr(buffer,"identity",None)
+            if result is None:
+                raise ValueError("head storage release requires retained Buffer ownership")
+            return result
+        owners = [identity(value) for value in self.handles]
+        for values in self.overrides.values():
+            for value in values:
+                if any(identity(value) == owner for owner in owners):
+                    raise ValueError("replacement bank still aliases initial head storage")
+        self.resident.clear()
+        self.buffers.clear()
+        self.packed.clear()
+        before = self.released_bytes
+        while self.handles:
+            value = self.handles[-1]
+            count = prod(value.shape)*value.dtype.itemsize
+            self.worker.free_tensor(value, worker_id=self.worker_id)
+            self.handles.pop()
+            self.released_bytes += count
+        return self.released_bytes-before
 
     def publish(self, layer, values, *, expected_version):
         """在同步起草轮次之间替换整层引用；不原地改正在被读取的 bank。"""
@@ -152,10 +181,12 @@ class DraftWeights:
     def for_group(self, base):
         if self.group_size != 4 or type(base) is not int or base not in range(0, 64, 4):
             raise ValueError("a four-layer head and an aligned group base are required")
+        if self.storage not in {"stream", "resident"}:
+            raise RuntimeError("head device weights are not started")
+        if all(layer in self.overrides for layer in range(base,base+4)):
+            return tuple(self.overrides[layer] for layer in range(base,base+4))
         if self.storage == "resident":
             return tuple(self.overrides.get(layer, self.resident[layer]) for layer in range(base, base + 4))
-        if self.storage != "stream":
-            raise RuntimeError("head device weights are not started")
         span, parent, views = self.packed[base]
         length = span.numel()
         for layer in reversed(range(base,base+4)):
