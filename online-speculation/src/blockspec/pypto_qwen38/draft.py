@@ -308,6 +308,7 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
             self.worker = runtime.DistributedWorker([self.prefill, self.decode, *programs], config=self.config,
                 inherited_host_tensors=[ReadOnlyHostTensor(head.shared_weights), draft.host_logits,
                                         self.verification_logits, self.verification_states.storage,
+                                        *([learner.bridge.scratch] if learner is not None and learner.dedicated else []),
                                         *(self.device_serving.host_tensors if self.device_serving else [])])
             try:
                 if learner is not None:

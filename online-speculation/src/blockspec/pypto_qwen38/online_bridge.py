@@ -6,13 +6,18 @@ from math import prod
 class TensorBridge:
     def __init__(self):
         import torch
-        self.scratch = torch.empty(16 << 20, dtype=torch.uint8)
+        # 在两个 worker 启动前登记同一共享缓冲，避免每次复制临时分配 shm 和主机 memcpy。
+        self.scratch = torch.empty(16 << 20, dtype=torch.uint8).share_memory_()
         self.bytes = 0
 
-    def copy(self, source_worker, source, target_worker, target, *, source_offset=0):
-        size = prod(target.shape)*target.dtype.itemsize
+    def copy(self, source_worker, source, target_worker, target, *, source_offset=0, nbytes=None):
+        target_capacity = prod(target.shape)*target.dtype.itemsize
+        size = target_capacity if nbytes is None else nbytes
         capacity = prod(source.shape)*source.dtype.itemsize
-        if source.dtype != target.dtype or source_offset < 0 or source_offset+size > capacity:
+        if (type(size) is not int or type(source_offset) is not int
+                or source.dtype != target.dtype or size < 0 or size > target_capacity
+                or source_offset < 0 or source_offset+size > capacity
+                or size % source.dtype.itemsize or source_offset % source.dtype.itemsize):
             raise ValueError("incompatible byte transfer bounds or dtype")
         for offset in range(0, size, self.scratch.numel()):
             count = min(self.scratch.numel(), size-offset)

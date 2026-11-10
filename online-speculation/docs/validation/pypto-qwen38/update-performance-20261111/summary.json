@@ -1,0 +1,28 @@
+{
+  "scope": "Two independent NPU workers, real frozen feedback, production learner/optimizer/transport; 1 warmup+3 measured updates, no full target in the timer.",
+  "rows": [
+    {
+      "last_layers": 1,
+      "baseline_seconds": 1.63081444054842,
+      "prefix_only_seconds": 1.3557970207184553,
+      "optimized_seconds": 0.5202961005270481,
+      "speedup": 3.134396815383475,
+      "latency_reduction": 0.6809593491506736,
+      "identical_state": true,
+      "identical_losses": true,
+      "source_snapshot_sha256": "dcc141cc779de244a46beb92bac45877f0695a358f3d62b183c817f065a05560"
+    },
+    {
+      "last_layers": 4,
+      "baseline_seconds": 5.252252382226288,
+      "prefix_only_seconds": 4.931042780866846,
+      "optimized_seconds": 1.5040669690351933,
+      "speedup": 3.4920335931553805,
+      "latency_reduction": 0.7136339117813566,
+      "identical_state": true,
+      "identical_losses": true,
+      "source_snapshot_sha256": "8f7a0e1393ba9f9f174c2fd04cef59797d2259242d1cfa71daac9e5819794f1e"
+    }
+  ],
+  "cpu": "531 passed in 119.19s"
+}

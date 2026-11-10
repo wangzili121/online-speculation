@@ -1,0 +1,189 @@
+{
+  "completed": true,
+  "last_layers": 4,
+  "updates": 3,
+  "warmup": 1,
+  "source_snapshot_sha256": "8f7a0e1393ba9f9f174c2fd04cef59797d2259242d1cfa71daac9e5819794f1e",
+  "scope": "real frozen feedback; production two-device update and publication; no full serving model",
+  "runs": {
+    "valid_teacher": {
+      "rows": [
+        {
+          "total": 4.90921502513811,
+          "phases": {
+            "zero_grad": 0.0035174500662833452,
+            "feedback_transfer": 0.5923777425196022,
+            "forward_backward": 0.8252754472196102,
+            "accumulate": 0.052784165600314736,
+            "gradient_and_candidate_checks": 0.024882639991119504,
+            "adam_render": 0.019565880997106433,
+            "parameter_transfer": 3.3702680501155555
+          },
+          "transferred_bytes": 1034636032,
+          "loss": 7.168974786996841,
+          "gradient_norm": 41.82285690307617,
+          "version": 1,
+          "unattributed": 0.020543648628517985
+        },
+        {
+          "total": 4.894327687099576,
+          "phases": {
+            "zero_grad": 0.003741153050214052,
+            "feedback_transfer": 0.6105847219005227,
+            "forward_backward": 0.8177690410520881,
+            "accumulate": 0.05387554946355522,
+            "gradient_and_candidate_checks": 0.024814829928800464,
+            "adam_render": 0.019531880039721727,
+            "parameter_transfer": 3.342429635114968
+          },
+          "transferred_bytes": 1034636032,
+          "loss": 6.866919934749603,
+          "gradient_norm": 39.868404388427734,
+          "version": 2,
+          "unattributed": 0.021580876549705863
+        },
+        {
+          "total": 4.931042780866846,
+          "phases": {
+            "zero_grad": 0.0036600111052393913,
+            "feedback_transfer": 0.6261884402483702,
+            "forward_backward": 0.8218064692337066,
+            "accumulate": 0.053168790182098746,
+            "gradient_and_candidate_checks": 0.02457464812323451,
+            "adam_render": 0.019470921251922846,
+            "parameter_transfer": 3.359941423870623
+          },
+          "transferred_bytes": 1034636032,
+          "loss": 6.146308332681656,
+          "gradient_norm": 34.49821853637695,
+          "version": 3,
+          "unattributed": 0.022232076851651073
+        },
+        {
+          "total": 4.951879387022927,
+          "phases": {
+            "zero_grad": 0.00383017398416996,
+            "feedback_transfer": 0.6152251742314547,
+            "forward_backward": 0.8247416310478002,
+            "accumulate": 0.05435881391167641,
+            "gradient_and_candidate_checks": 0.025072394171729684,
+            "adam_render": 0.0195770098362118,
+            "parameter_transfer": 3.386587734799832
+          },
+          "transferred_bytes": 1034636032,
+          "loss": 5.901996433734894,
+          "gradient_norm": 32.64425277709961,
+          "version": 4,
+          "unattributed": 0.022486455040052533
+        }
+      ],
+      "state_sha256": {
+        "master": "95b38ee7588cba1e9907c72b3e703d64869b33732c313fd971015a93f4c57a1c",
+        "first": "5bb012f650b10fed6ca71dbe43a6acc4aa980be956d6ab54b14cc0c629ff49ea",
+        "second": "c88509d100458557aa389333ac5c022dd27b3d269588d347038c77f89ba988ab",
+        "execution": "374815bc4216a4ff500e617592ef97abec2a9c63aa61d51d139d77e45cbf5422"
+      },
+      "median_seconds": 4.931042780866846,
+      "median_phases": {
+        "zero_grad": 0.003741153050214052,
+        "feedback_transfer": 0.6152251742314547,
+        "forward_backward": 0.8218064692337066,
+        "accumulate": 0.05387554946355522,
+        "gradient_and_candidate_checks": 0.024814829928800464,
+        "adam_render": 0.019531880039721727,
+        "parameter_transfer": 3.359941423870623
+      }
+    },
+    "full_teacher": {
+      "rows": [
+        {
+          "total": 5.293051562970504,
+          "phases": {
+            "zero_grad": 0.003872764063999057,
+            "feedback_transfer": 0.9738933702465147,
+            "forward_backward": 0.8228140987921506,
+            "accumulate": 0.05308055900968611,
+            "gradient_and_candidate_checks": 0.02453040680848062,
+            "adam_render": 0.019450580002740026,
+            "parameter_transfer": 3.3730088621377945
+          },
+          "transferred_bytes": 1133964032,
+          "loss": 7.168974786996841,
+          "gradient_norm": 41.82285690307617,
+          "version": 1,
+          "unattributed": 0.02240092190913856
+        },
+        {
+          "total": 5.301300995983183,
+          "phases": {
+            "zero_grad": 0.003521100152283907,
+            "feedback_transfer": 0.9141417886130512,
+            "forward_backward": 0.8184075003955513,
+            "accumulate": 0.053996979957446456,
+            "gradient_and_candidate_checks": 0.024510306073352695,
+            "adam_render": 0.019468230195343494,
+            "parameter_transfer": 3.4455264322459698
+          },
+          "transferred_bytes": 1133964032,
+          "loss": 6.866919934749603,
+          "gradient_norm": 39.868404388427734,
+          "version": 2,
+          "unattributed": 0.02172865835018456
+        },
+        {
+          "total": 5.193140743998811,
+          "phases": {
+            "zero_grad": 0.003729561809450388,
+            "feedback_transfer": 0.9320893448311836,
+            "forward_backward": 0.8158274497836828,
+            "accumulate": 0.05272717634215951,
+            "gradient_and_candidate_checks": 0.024275003001093864,
+            "adam_render": 0.019357397919520736,
+            "parameter_transfer": 3.3244738841895014
+          },
+          "transferred_bytes": 1133964032,
+          "loss": 6.146308332681656,
+          "gradient_norm": 34.49821853637695,
+          "version": 3,
+          "unattributed": 0.02066092612221837
+        },
+        {
+          "total": 5.252252382226288,
+          "phases": {
+            "zero_grad": 0.0036236310843378305,
+            "feedback_transfer": 0.8466054673772305,
+            "forward_backward": 0.8165331969503313,
+            "accumulate": 0.053838036954402924,
+            "gradient_and_candidate_checks": 0.024244504747912288,
+            "adam_render": 0.019352068891748786,
+            "parameter_transfer": 3.4670421548653394
+          },
+          "transferred_bytes": 1133964032,
+          "loss": 5.901996433734894,
+          "gradient_norm": 32.64425277709961,
+          "version": 4,
+          "unattributed": 0.021013321354985237
+        }
+      ],
+      "state_sha256": {
+        "master": "95b38ee7588cba1e9907c72b3e703d64869b33732c313fd971015a93f4c57a1c",
+        "first": "5bb012f650b10fed6ca71dbe43a6acc4aa980be956d6ab54b14cc0c629ff49ea",
+        "second": "c88509d100458557aa389333ac5c022dd27b3d269588d347038c77f89ba988ab",
+        "execution": "374815bc4216a4ff500e617592ef97abec2a9c63aa61d51d139d77e45cbf5422"
+      },
+      "median_seconds": 5.252252382226288,
+      "median_phases": {
+        "zero_grad": 0.0036236310843378305,
+        "feedback_transfer": 0.9141417886130512,
+        "forward_backward": 0.8165331969503313,
+        "accumulate": 0.053838036954402924,
+        "gradient_and_candidate_checks": 0.024275003001093864,
+        "adam_render": 0.019357397919520736,
+        "parameter_transfer": 3.4455264322459698
+      }
+    }
+  },
+  "identical_optimizer_and_execution": true,
+  "identical_losses": true,
+  "clean_shutdown": true
+}

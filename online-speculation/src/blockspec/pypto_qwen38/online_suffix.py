@@ -39,6 +39,8 @@ class SuffixLearner(OnlineLearner):
                       for program in self.training_programs)
         if entries > 64:
             raise RuntimeError(f"suffix learner exceeds pinned runtime capacity: {entries} > 64; reduce last-layers")
+        from .online_bridge import TensorBridge
+        self.bridge = TensorBridge()
         return [*self.history_programs.values(),*self.gdn_history.values(),self.teacher_program,self.rope_program]
 
     def start(self, native, draft):
@@ -47,10 +49,10 @@ class SuffixLearner(OnlineLearner):
         from safetensors import safe_open
         from .head import HeadSource
         from .head_loading import raw_location
-        from .online_bridge import TensorBridge,SuffixPublisher
+        from .online_bridge import SuffixPublisher
         from .online_checkpoint import identity
         from .online_suffix_checkpoint import restore
-        self.native,self.draft,self.bridge = native,draft,TensorBridge()
+        self.native,self.draft = native,draft
         self.head_identity = identity(self.head)
         raw_norms = {}
         if self.options.resume_dir is None:
@@ -67,7 +69,8 @@ class SuffixLearner(OnlineLearner):
                 with safe_open(path,framework="pt",device="cpu") as file:
                     raw_norms[name] = file.get_tensor(key).reshape(self.graph.inputs[name].shape)
         try:
-            self.trainer = DistributedWorker(self.training_programs,config=self.training_config)
+            self.trainer = DistributedWorker(self.training_programs,config=self.training_config,
+                inherited_host_tensors=[self.bridge.scratch])
             from .training_memory import require_suffix_memory
             self.memory_plan = require_suffix_memory(self.graph,self.optimization.layout,self.options.replay_blocks,
                 native.worker.device_memory_info()[0],self.trainer.device_memory_info()[0])
@@ -134,8 +137,7 @@ class SuffixLearner(OnlineLearner):
         positions = sum(item.valid for item in self.replay)
         loss = 0.
         for item in self.replay:
-            for name,value in item.inputs.items():
-                self.bridge.copy(self.native.worker,value,self.trainer,item.training_inputs[name])
+            item.transfer()
             inputs = {**self.shared,**item.training_inputs,**self.optimizer.tensors()}
             self.workspace.run(inputs,past=item.past,width=item.width,valid=item.valid,normalizer=positions,
                                gradients=self.optimizer.gradients)

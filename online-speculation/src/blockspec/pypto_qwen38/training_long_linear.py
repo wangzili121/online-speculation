@@ -8,16 +8,17 @@ def plan(k):
     return chunk, k // chunk
 
 
-def make_long_linear(m, k, n, *, inline=False):
+def make_long_linear(m, k, n, *, inline=False, reduction_limit=512):
     if m != 32:
         raise ValueError("long-vocabulary VJP requires the pinned K32 row buffer")
     import pypto.language as pl
     from .training_programs import make_linear
 
     C, P = plan(k)
-    # (M,K) @ (K,N) = transpose((K,M)) @ (K,N)，不改变归约顺序。
+    # (M,K) @ (K,N) = transpose((K,M)) @ (K,N)，保留完整词表的同一矩阵乘。
     product = make_linear(
-        (k, m), (k, n), transpose_a=True, transpose_b=False, inline=True
+        (k, m), (k, n), transpose_a=True, transpose_b=False, inline=True,
+        reduction_limit=reduction_limit,
     )
     kernel = pl.jit.inline if inline else pl.jit
 

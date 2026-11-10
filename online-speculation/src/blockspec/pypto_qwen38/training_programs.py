@@ -202,8 +202,15 @@ def make_adam(shape, *, beta1=.9, beta2=.999, epsilon=1e-8, inline=False):
     return adam if inline else entry
 
 
+def reduction_tile(k, limit):
+    """归约 tile 必须整除 K；形状不齐整时退到较小的硬件对齐 tile。"""
+    if type(limit) is not int or limit not in (32, 64, 128, 256, 512):
+        raise ValueError("reduction tile must be 32, 64, 128, 256 or 512")
+    return max(t for t in (32, 64, 128, 256, 512) if t <= limit and k % t == 0)
+
+
 def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradient_weight=False,
-                batches=1, b_repeats=1, inline=False, accumulate=False):
+                batches=1, b_repeats=1, inline=False, accumulate=False, reduction_limit=None):
     """前向与显式线性 VJP 共用矩阵乘；激活/参数梯度按 BF16 执行语义舍入。"""
     import pypto.language as pl
     kernel = pl.jit.inline if inline else pl.jit
@@ -217,10 +224,11 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
     if (not gradient_weight and not transpose_a and not transpose_b and batches==1
             and K>=65536 and K%512==0):
         from .training_long_linear import make_long_linear
-        return make_long_linear(M,K,N,inline=inline)
+        return make_long_linear(M,K,N,inline=inline,
+                                reduction_limit=512 if reduction_limit is None else reduction_limit)
     MT = 64 if M % 64 == 0 else 32
     NT = 64
-    KT = min(64, K)
+    KT = reduction_tile(K, 64 if reduction_limit is None else reduction_limit)
     AR, AC = (KT, MT) if transpose_a else (MT, KT)
     BR, BC = (NT, KT) if transpose_b else (KT, NT)
     TA = int(transpose_a)

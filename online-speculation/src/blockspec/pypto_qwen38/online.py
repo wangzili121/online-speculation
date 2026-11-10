@@ -44,6 +44,15 @@ class FeedbackBlock:
         self.training_inputs = inputs
         self.rows = self.valid = self.past = self.width = 0
 
+    def transfer(self):
+        """只传受监督行的教师分布；其余激活保持完整，避免尾部影响反向。"""
+        owner = self.owner
+        for name, value in self.inputs.items():
+            kwargs = ({"nbytes": self.valid * value.shape[1] * value.dtype.itemsize}
+                      if name == "teacher" else {})
+            owner.bridge.copy(owner.native.worker, value, owner.trainer,
+                              self.training_inputs[name], **kwargs)
+
     def teacher(self, native, slot, count):
         if self.rows >= self.width:
             return  # verifier 的回滚重放不再次作为教师数据。
@@ -83,6 +92,9 @@ class OnlineLearner:
         self.rope_program = make_copy(32, 64).compile(meta((32, 64)), meta((32, 64)), config=config)
         self.loss_program = make_loss_sum().compile(meta((32, 8), torch.float32), meta((1, 8), torch.float32), config=self.training_config)
         self.training_programs = [*self.training.programs.values(), *self.optimization.programs(), self.loss_program]
+        if self.dedicated:
+            from .online_bridge import TensorBridge
+            self.bridge = TensorBridge()
         return [*(() if self.dedicated else self.training_programs),
                 self.history_program, self.teacher_program, self.rope_program]
 
@@ -120,9 +132,9 @@ class OnlineLearner:
         try:
             if self.dedicated:
                 from pypto.runtime import DistributedWorker
-                from .online_bridge import TensorBridge, HeadPublisher
-                self.trainer = DistributedWorker(self.training_programs, config=self.training_config)
-                self.bridge = TensorBridge()
+                from .online_bridge import HeadPublisher
+                self.trainer = DistributedWorker(self.training_programs, config=self.training_config,
+                    inherited_host_tensors=[self.bridge.scratch])
             else:
                 self.trainer = native.worker
             print("online training free bytes before workspace", self.trainer.device_memory_info()[0], flush=True)
@@ -220,8 +232,7 @@ class OnlineLearner:
         loss = 0.
         for item in self.replay:
             if self.dedicated:
-                for name, value in item.inputs.items():
-                    self.bridge.copy(self.native.worker, value, self.trainer, item.training_inputs[name])
+                item.transfer()
             inputs = {**self.shared, **item.training_inputs, **self.optimizer.tensors()}
             self.workspace.run(inputs, past=item.past, width=item.width,
                                valid=item.valid, normalizer=positions, gradients=self.optimizer.accum)
