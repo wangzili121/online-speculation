@@ -16,7 +16,7 @@ def _view(bank, shape, dtype, offset):
 
 def borrow_prefix(native, head, stop):
     """返回 [0, stop) 的只读视图和少量独立常量；不发布、不修改版本号。"""
-    if (head.directory is not None or head.layout.size != 1 or type(stop) is not int or not 1 <= stop <= 63
+    if (head.directory is not None or head.layout.size != 1 or type(stop) is not int or not 1 <= stop <= 64
             or Path(native.model_root).resolve() != head.model_root.resolve()):
         raise ValueError("parameter sharing requires an AR-copy head from the same TP1 target and a frozen prefix")
     plans = base_plans()

@@ -9,7 +9,7 @@ from blockspec.pypto_qwen38 import ar_prefix
 from blockspec.pypto_qwen38.head_loading import bank_specs
 
 
-@pytest.mark.parametrize("stop", (60, 63))
+@pytest.mark.parametrize("stop", (60, 63, 64))
 def test_every_borrowed_bank_stays_in_its_native_layer_and_preserves_fp32_decay(tmp_path, monkeypatch, stop):
     plans = ar_prefix.base_plans()
     banks = [torch.empty(p.shape, dtype=p.dtype, device="meta") for p in plans]

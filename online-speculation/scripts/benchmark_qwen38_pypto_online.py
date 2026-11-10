@@ -2,6 +2,7 @@
 """用真实问题比较 AR 复制初始化、last-N 在线学习和固定 head 推理。"""
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import replace
 import hashlib
 import json
@@ -105,6 +106,8 @@ def check_continuation(previous, dataset, arguments):
               "tokens", "seed", "max_prompt", "dev_count", "test_count", "share_ar_prefix")
     if any(previous["arguments"][key] != arguments[key] for key in fields):
         raise ValueError("continuation must preserve learning, inference and data settings")
+    if bool(previous["arguments"].get("frozen_stream_control")) != bool(arguments.get("frozen_stream_control")):
+        raise ValueError("continuation must preserve frozen stream control")
     before = previous["dataset"]
     if before["files_sha256"] != dataset["files_sha256"] or any(
             before["splits"][split] != dataset["splits"][split] for split in ("calibration", "dev", "test")):
@@ -115,6 +118,30 @@ def check_continuation(previous, dataset, arguments):
             [row["id"] for row in previous["train"]] != [row["id"] for row in dataset["splits"]["train"][:offset]]):
         raise ValueError("continuation must retain the used training prefix and have new questions")
     return offset
+
+
+@contextmanager
+def initial_head_control(engine, learner, head):
+    """临时读取冻结 AR 参数来重现初始化 head；不写参数，不改变学习状态。"""
+    from blockspec.pypto_qwen38.ar_prefix import borrow_prefix
+    idle(engine)
+    draft = engine.runner.draft
+    if draft.learner is not None:
+        raise RuntimeError("initial head control requires paused learning")
+    weights = draft.weights
+    state = learner.updates, learner.optimizer.steps, weights.version
+    saved = weights.overrides
+    layers, owned = borrow_prefix(engine.runner.native, head, 64)
+    # 小常量随 engine 释放，异常请求退出时也不会留下悬空的参数视图。
+    draft.handles.extend(owned)
+    try:
+        weights.overrides = layers
+        yield
+    finally:
+        idle(engine)
+        weights.overrides = saved
+        if state != (learner.updates, learner.optimizer.steps, weights.version):
+            raise RuntimeError("frozen initial-head control changed learning state")
 
 
 def generate(engine, row, budget, timeout):
@@ -166,6 +193,8 @@ def main():
     p.add_argument("--skip-calibration", action="store_true")
     p.add_argument("--share-ar-prefix", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--continue-from", type=Path, help="完整实验 JSON；从其中的 Adam checkpoint 接着训练")
+    p.add_argument("--frozen-stream-control", action="store_true",
+                   help="按相同训练请求额外测初始化冻结 head，直接对照在线净吞吐")
     a = p.parse_args()
     if (a.output.exists() or not 2 <= a.width <= 32 or not 1 <= a.tokens <= 384
             or not 1 <= a.max_prompt <= 512-a.tokens or a.steps < 1 or a.warmup_steps < 1
@@ -247,8 +276,10 @@ def main():
             rate = a.learning_rate * min(1., (learner.updates+1)/a.warmup_steps)
             learner.options = replace(learner.options, learning_rate=rate)
             start = time.monotonic()
+            valid = [item.valid for item in learner.replay]
             result = update_original()
-            record = dict(step=learner.updates, learning_rate=rate, seconds=time.monotonic()-start, **result)
+            record = dict(step=learner.updates, learning_rate=rate, seconds=time.monotonic()-start,
+                          feedback_valid_rows=valid, **result)
             report["updates"].append(record)
             emit("update", record)
             # 在准确的更新步数暂停；该请求剩下的 token 用固定版本完成，不额外学习。
@@ -266,6 +297,7 @@ def main():
             meter.reference = oracle
             meter.reset()
             before = (runner.rounds, runner.accepted, learner.updates)
+            version_before = runner.draft.weights.version
             original, captured = meter.original, []
 
             def capture(*args):
@@ -288,13 +320,17 @@ def main():
                 result["first_draft_logits_sha256"] = captured[0]
             result.update(rounds=runner.rounds-before[0], accepted=runner.accepted-before[1],
                           proposed=meter.candidates, updates=learner.updates-before[2],
+                          head_version_before=version_before, head_version_after=runner.draft.weights.version,
                           draft_phases=dict(meter.phases))
+            if not learning and (result["updates"] or learner.optimizer.steps != learner.updates
+                                 or runner.draft.weights.version != version_before):
+                raise AssertionError("evaluation changed the head or optimizer state")
             return result
 
         # 模型预热不学习；正式测量从同一个初始化版本开始。
         runner.draft.block_size = a.width
         measure(splits["calibration"][0], target=True)
-        unshared = measure(splits["calibration"][0], capture_logits=a.share_ar_prefix)
+        unshared = measure(splits["calibration"][0], capture_logits=a.share_ar_prefix or a.frozen_stream_control)
         if a.share_ar_prefix:
             from blockspec.pypto_qwen38.ar_prefix import borrow_prefix
             layers, owned = borrow_prefix(runner.native, head, 64-a.last_layers)
@@ -307,6 +343,16 @@ def main():
                 raise AssertionError("AR-copy prefix sharing changed the initial head logits/output")
             report["prefix_sharing_control"] = dict(layers=sorted(layers), unshared=unshared, shared=shared)
             emit("ar_prefix_sharing", dict(unshared_seconds=unshared["seconds"], shared_seconds=shared["seconds"]))
+        if a.frozen_stream_control:
+            runner.draft.learner = None
+            with initial_head_control(engine, learner, head):
+                frozen = measure(splits["calibration"][0], capture_logits=True)
+            expected = (previous["frozen_initial_control"] if previous else
+                        shared if a.share_ar_prefix else unshared)
+            if (frozen["tokens"] != expected["tokens"] or frozen.get("first_draft_logits_sha256") !=
+                    expected.get("first_draft_logits_sha256")):
+                raise AssertionError("frozen AR bank control changed initial head logits/output")
+            report["frozen_initial_control"] = frozen
         if not a.skip_calibration:
             # 仅成本标定忽略 EOS；仍执行完整的真实 draft，再替换为 AR 答案测理想接受上限。
             eos = engine.scheduler.stop_token_ids
@@ -331,6 +377,8 @@ def main():
                     refs.append(measure(row, target=True))
                     rows.append(measure(row))
                 entry[name] = dict(rows=rows, target_rows=refs, summary=summarize(rows, target=refs))
+                if not entry[name]["summary"]["greedy_equal_all"]:
+                    raise AssertionError(f"{name} speculative output differs from the paired target")
             report["evaluations"] = [old for old in report["evaluations"] if old["step"] != step] + [entry]
             emit("heldout", dict(step=step, **{k:v["summary"] for k,v in entry.items() if k != "step" and v}))
 
@@ -356,6 +404,21 @@ def main():
         refs += [measure(row, target=True) for row in splits["train"] if row["id"] in train_ids]
         report["online_net"] = dict(summary=summarize(report["train"], target=refs), target_rows=refs,
                                     update_seconds=sum(row["seconds"] for row in report["updates"]))
+        if not report["online_net"]["summary"]["greedy_equal_all"]:
+            raise AssertionError("online training requests differ from the paired target")
+        if a.frozen_stream_control:
+            runner.draft.learner = None
+            selected = {row["id"]: row for row in splits["train"]}
+            frozen_rows = []
+            with initial_head_control(engine, learner, head):
+                for trained in report["train"]:
+                    frozen_rows.append(measure(selected[trained["id"]]))
+            report["frozen_stream"] = dict(rows=frozen_rows, summary=summarize(frozen_rows, target=refs))
+            if not report["frozen_stream"]["summary"]["greedy_equal_all"]:
+                raise AssertionError("frozen head differs from the paired target")
+            report["online_net"]["versus_frozen_head_ratio"] = (
+                report["online_net"]["summary"]["tokens_per_second"] /
+                report["frozen_stream"]["summary"]["tokens_per_second"])
         checkpoint = a.output.with_suffix(".checkpoint")
         if a.last_layers == 1:
             from blockspec.pypto_qwen38.online_checkpoint import save

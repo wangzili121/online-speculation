@@ -108,3 +108,32 @@ def test_continuation_keeps_heldout_and_hypers_and_moves_to_new_questions():
     changed["splits"]["train"].reverse()
     with pytest.raises(ValueError, match="used training prefix"):
         module.check_continuation(previous, changed, arguments)
+
+
+@pytest.mark.parametrize("fail", (False, True))
+def test_frozen_stream_control_restores_trained_head_and_keeps_version(monkeypatch, fail):
+    from blockspec.pypto_qwen38 import ar_prefix
+    trained, frozen, owned = {63: ("trained",)}, {63: ("initial",)}, [object()]
+    weights = SimpleNamespace(overrides=trained, version=7)
+    draft = SimpleNamespace(learner=None, weights=weights, handles=[])
+    learner = SimpleNamespace(updates=7, optimizer=SimpleNamespace(steps=7))
+    engine = SimpleNamespace(runner=SimpleNamespace(draft=draft, native=object()))
+    monkeypatch.setattr(module, "idle", lambda engine: None)
+    monkeypatch.setattr(ar_prefix, "borrow_prefix", lambda native, head, stop: (frozen, owned) if stop == 64 else None)
+    try:
+        with module.initial_head_control(engine, learner, object()):
+            assert weights.overrides is frozen and weights.version == learner.updates == 7
+            if fail:
+                raise ValueError("request failure")
+    except ValueError:
+        assert fail
+    assert weights.overrides is trained and weights.version == learner.updates == 7
+    assert draft.handles == owned
+
+
+def test_frozen_stream_control_refuses_active_learning(monkeypatch):
+    engine = SimpleNamespace(runner=SimpleNamespace(draft=SimpleNamespace(learner=object())))
+    monkeypatch.setattr(module, "idle", lambda engine: None)
+    with pytest.raises(RuntimeError, match="paused learning"):
+        with module.initial_head_control(engine, object(), object()):
+            pytest.fail("active learner must not enter the control")
