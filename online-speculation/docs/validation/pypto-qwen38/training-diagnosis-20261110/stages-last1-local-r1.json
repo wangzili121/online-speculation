@@ -1,0 +1,1568 @@
+{
+  "completed": true,
+  "replay": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/learning-diag-20261110/stages-last1-r1.json",
+  "local_same_input": true,
+  "entries": [
+    {
+      "index": 0,
+      "kind": "norm",
+      "output": "t0_0",
+      "inputs": [
+        "hidden",
+        "input_gamma"
+      ],
+      "options": {},
+      "relative_l2": 0.0016761524391749015,
+      "cosine": 0.9999985958162333,
+      "absolute_max": 0.110626220703125,
+      "actual_norm": 461.59893117299515,
+      "reference_norm": 461.6150382424564
+    },
+    {
+      "index": 0,
+      "kind": "norm",
+      "output": "t0_1",
+      "inputs": [
+        "hidden",
+        "input_gamma"
+      ],
+      "options": {},
+      "relative_l2": 4.864643628156908e-08,
+      "cosine": 0.9999999999999993,
+      "absolute_max": 2.9802322387695312e-08,
+      "actual_norm": 3.5722227967535924,
+      "reference_norm": 3.5722227871224734
+    },
+    {
+      "index": 1,
+      "kind": "linear",
+      "output": "t1_0",
+      "inputs": [
+        "t0_0",
+        "q_weight"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          12288,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.001654734463857781,
+      "cosine": 0.9999986309567247,
+      "absolute_max": 0.06227874755859375,
+      "actual_norm": 1475.9196452311876,
+      "reference_norm": 1475.9332457257046
+    },
+    {
+      "index": 2,
+      "kind": "linear",
+      "output": "t2_0",
+      "inputs": [
+        "t0_0",
+        "k_weight"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          1024,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.0016624098503486694,
+      "cosine": 0.9999986181958477,
+      "absolute_max": 0.03106403350830078,
+      "actual_norm": 315.57775111851066,
+      "reference_norm": 315.5783038558303
+    },
+    {
+      "index": 3,
+      "kind": "linear",
+      "output": "t3_0",
+      "inputs": [
+        "t0_0",
+        "v_weight"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          1024,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.001643180506410089,
+      "cosine": 0.9999986500332592,
+      "absolute_max": 0.0623626708984375,
+      "actual_norm": 958.2723375667631,
+      "reference_norm": 958.2837062246969
+    },
+    {
+      "index": 4,
+      "kind": "layout",
+      "output": "t4_0",
+      "inputs": [
+        "t1_0"
+      ],
+      "options": {
+        "heads": 24,
+        "mode": "pack",
+        "interleaved": true,
+        "gate": false
+      },
+      "relative_l2": 0.0,
+      "cosine": 1.0,
+      "absolute_max": 0.0,
+      "actual_norm": 945.01766794964,
+      "reference_norm": 945.01766794964
+    },
+    {
+      "index": 5,
+      "kind": "layout",
+      "output": "t5_0",
+      "inputs": [
+        "t1_0"
+      ],
+      "options": {
+        "heads": 24,
+        "mode": "pack",
+        "interleaved": true,
+        "gate": true
+      },
+      "relative_l2": 0.0,
+      "cosine": 0.9999999999999998,
+      "absolute_max": 0.0,
+      "actual_norm": 1133.702080108518,
+      "reference_norm": 1133.702080108518
+    },
+    {
+      "index": 6,
+      "kind": "layout",
+      "output": "t6_0",
+      "inputs": [
+        "t2_0"
+      ],
+      "options": {
+        "heads": 4,
+        "mode": "pack",
+        "interleaved": false,
+        "gate": false
+      },
+      "relative_l2": 0.0,
+      "cosine": 1.0000000000000002,
+      "absolute_max": 0.0,
+      "actual_norm": 315.57775111851066,
+      "reference_norm": 315.57775111851066
+    },
+    {
+      "index": 7,
+      "kind": "layout",
+      "output": "t7_0",
+      "inputs": [
+        "t3_0"
+      ],
+      "options": {
+        "heads": 4,
+        "mode": "pack",
+        "interleaved": false,
+        "gate": false
+      },
+      "relative_l2": 0.0,
+      "cosine": 1.0,
+      "absolute_max": 0.0,
+      "actual_norm": 958.2723375667631,
+      "reference_norm": 958.2723375667631
+    },
+    {
+      "index": 8,
+      "kind": "norm",
+      "output": "t8_0",
+      "inputs": [
+        "t4_0",
+        "q_gamma"
+      ],
+      "options": {},
+      "relative_l2": 0.0016407249097277461,
+      "cosine": 0.9999986540121863,
+      "absolute_max": 0.03062915802001953,
+      "actual_norm": 571.6598934319089,
+      "reference_norm": 571.659453820883
+    },
+    {
+      "index": 8,
+      "kind": "norm",
+      "output": "t8_1",
+      "inputs": [
+        "t4_0",
+        "q_gamma"
+      ],
+      "options": {},
+      "relative_l2": 5.403569976078171e-08,
+      "cosine": 0.999999999999998,
+      "absolute_max": 1.1920928955078125e-07,
+      "actual_norm": 41.09547967833508,
+      "reference_norm": 41.09547997719671
+    },
+    {
+      "index": 9,
+      "kind": "norm",
+      "output": "t9_0",
+      "inputs": [
+        "t6_0",
+        "k_gamma"
+      ],
+      "options": {},
+      "relative_l2": 0.0016616864136189775,
+      "cosine": 0.9999986194317798,
+      "absolute_max": 0.024303436279296875,
+      "actual_norm": 273.9539643088251,
+      "reference_norm": 273.95209642513225
+    },
+    {
+      "index": 9,
+      "kind": "norm",
+      "output": "t9_1",
+      "inputs": [
+        "t6_0",
+        "k_gamma"
+      ],
+      "options": {},
+      "relative_l2": 5.100578771671464e-08,
+      "cosine": 0.9999999999999999,
+      "absolute_max": 1.1920928955078125e-07,
+      "actual_norm": 19.484220858940233,
+      "reference_norm": 19.484220822811736
+    },
+    {
+      "index": 10,
+      "kind": "rope",
+      "output": "t10_0",
+      "inputs": [
+        "t8_0",
+        "cos",
+        "sin"
+      ],
+      "options": {
+        "backward": false
+      },
+      "relative_l2": 0.0008025442927060192,
+      "cosine": 0.9999996824726511,
+      "absolute_max": 0.015625,
+      "actual_norm": 571.6124887199229,
+      "reference_norm": 571.6669717888522
+    },
+    {
+      "index": 11,
+      "kind": "rope",
+      "output": "t11_0",
+      "inputs": [
+        "t9_0",
+        "cos",
+        "sin"
+      ],
+      "options": {
+        "backward": false
+      },
+      "relative_l2": 0.00038708756912570066,
+      "cosine": 0.999999925104057,
+      "absolute_max": 0.01171875,
+      "actual_norm": 273.9570190966253,
+      "reference_norm": 273.95520381201993
+    },
+    {
+      "index": 12,
+      "kind": "join",
+      "output": "t12_0",
+      "inputs": [
+        "t11_0",
+        "history_key"
+      ],
+      "options": {},
+      "relative_l2": 0.0,
+      "cosine": 1.0,
+      "absolute_max": 0.0,
+      "actual_norm": 287.54333257311265,
+      "reference_norm": 287.54333257311265
+    },
+    {
+      "index": 13,
+      "kind": "join",
+      "output": "t13_0",
+      "inputs": [
+        "t7_0",
+        "history_value"
+      ],
+      "options": {},
+      "relative_l2": 0.0,
+      "cosine": 1.0,
+      "absolute_max": 0.0,
+      "actual_norm": 1085.460357444707,
+      "reference_norm": 1085.460357444707
+    },
+    {
+      "index": 14,
+      "kind": "linear",
+      "output": "t14_0",
+      "inputs": [
+        "t10_0",
+        "t12_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          256
+        ],
+        "b_shape": [
+          512,
+          256
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 24,
+        "b_repeats": 6
+      },
+      "relative_l2": 0.0016535644352141307,
+      "cosine": 0.9999986330411036,
+      "absolute_max": 0.965545654296875,
+      "actual_norm": 19876.586734076493,
+      "reference_norm": 19876.990748921413
+    },
+    {
+      "index": 15,
+      "kind": "element",
+      "output": "t15_0",
+      "inputs": [
+        "t14_0",
+        "t14_0"
+      ],
+      "options": {
+        "kind": "scale",
+        "scale": 0.0625
+      },
+      "relative_l2": 0.0,
+      "cosine": 1.0,
+      "absolute_max": 0.0,
+      "actual_norm": 1242.2866708797808,
+      "reference_norm": 1242.2866708797808
+    },
+    {
+      "index": 16,
+      "kind": "softmax",
+      "output": "t16_0",
+      "inputs": [
+        "t15_0"
+      ],
+      "options": {},
+      "relative_l2": 8.668868655739905e-08,
+      "cosine": 0.9999999999999918,
+      "absolute_max": 2.384185791015625e-07,
+      "actual_norm": 12.60260869388346,
+      "reference_norm": 12.602608644235838
+    },
+    {
+      "index": 16,
+      "kind": "softmax",
+      "output": "t16_1",
+      "inputs": [
+        "t15_0"
+      ],
+      "options": {},
+      "relative_l2": 0.0016143944401781746,
+      "cosine": 0.9999986972823428,
+      "absolute_max": 0.0019192695617675781,
+      "actual_norm": 12.602227882029554,
+      "reference_norm": 12.602608644235838
+    },
+    {
+      "index": 17,
+      "kind": "linear",
+      "output": "t17_0",
+      "inputs": [
+        "t16_1",
+        "t13_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          512
+        ],
+        "b_shape": [
+          512,
+          256
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 24,
+        "b_repeats": 6
+      },
+      "relative_l2": 0.0016647839134482922,
+      "cosine": 0.9999986142569478,
+      "absolute_max": 0.1229705810546875,
+      "actual_norm": 2417.0017585841574,
+      "reference_norm": 2416.993938520921
+    },
+    {
+      "index": 18,
+      "kind": "element",
+      "output": "t18_0",
+      "inputs": [
+        "t5_0",
+        "t5_0"
+      ],
+      "options": {
+        "kind": "sigmoid"
+      },
+      "relative_l2": 0.0014735256239563383,
+      "cosine": 0.9999989146866537,
+      "absolute_max": 0.0019530653953552246,
+      "actual_norm": 220.81056834405538,
+      "reference_norm": 220.80516847887026
+    },
+    {
+      "index": 19,
+      "kind": "element",
+      "output": "t19_0",
+      "inputs": [
+        "t17_0",
+        "t18_0"
+      ],
+      "options": {
+        "kind": "mul"
+      },
+      "relative_l2": 0.0016572897998510703,
+      "cosine": 0.9999986297228068,
+      "absolute_max": 0.0615234375,
+      "actual_norm": 436.6160463720146,
+      "reference_norm": 436.6506275688104
+    },
+    {
+      "index": 20,
+      "kind": "layout",
+      "output": "t20_0",
+      "inputs": [
+        "t19_0"
+      ],
+      "options": {
+        "heads": 24,
+        "mode": "unpack",
+        "interleaved": false,
+        "gate": false
+      },
+      "relative_l2": 0.0,
+      "cosine": 1.0,
+      "absolute_max": 0.0,
+      "actual_norm": 436.6160463720145,
+      "reference_norm": 436.6160463720145
+    },
+    {
+      "index": 21,
+      "kind": "linear",
+      "output": "t21_0",
+      "inputs": [
+        "t20_0",
+        "o_weight"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          6144
+        ],
+        "b_shape": [
+          5120,
+          6144
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.0016551271245732633,
+      "cosine": 0.9999986306494023,
+      "absolute_max": 0.12409210205078125,
+      "actual_norm": 627.7436604911044,
+      "reference_norm": 627.7616722166084
+    },
+    {
+      "index": 22,
+      "kind": "element",
+      "output": "t22_0",
+      "inputs": [
+        "hidden",
+        "t21_0"
+      ],
+      "options": {
+        "kind": "add"
+      },
+      "relative_l2": 0.0016491603520647207,
+      "cosine": 0.9999986402284233,
+      "absolute_max": 0.5,
+      "actual_norm": 2014.9230990803235,
+      "reference_norm": 2014.953507837306
+    },
+    {
+      "index": 23,
+      "kind": "norm",
+      "output": "t23_0",
+      "inputs": [
+        "t22_0",
+        "post_gamma"
+      ],
+      "options": {},
+      "relative_l2": 0.0016718771053266834,
+      "cosine": 0.9999986024208445,
+      "absolute_max": 0.12185287475585938,
+      "actual_norm": 465.93727809763493,
+      "reference_norm": 465.9360220673635
+    },
+    {
+      "index": 23,
+      "kind": "norm",
+      "output": "t23_1",
+      "inputs": [
+        "t22_0",
+        "post_gamma"
+      ],
+      "options": {},
+      "relative_l2": 5.3806406026895145e-08,
+      "cosine": 0.9999999999999993,
+      "absolute_max": 2.9802322387695312e-08,
+      "actual_norm": 3.22965085761077,
+      "reference_norm": 3.229650910162269
+    },
+    {
+      "index": 24,
+      "kind": "linear",
+      "output": "t24_0",
+      "inputs": [
+        "t23_0",
+        "mlp_gate"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          17408,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.0016642732874486527,
+      "cosine": 0.999998615096848,
+      "absolute_max": 0.062259674072265625,
+      "actual_norm": 1980.3128395932038,
+      "reference_norm": 1980.3132947169177
+    },
+    {
+      "index": 25,
+      "kind": "linear",
+      "output": "t25_0",
+      "inputs": [
+        "t23_0",
+        "mlp_up"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          17408,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.0016579703882713323,
+      "cosine": 0.9999986255781994,
+      "absolute_max": 0.061923980712890625,
+      "actual_norm": 1887.665204474944,
+      "reference_norm": 1887.6585093932833
+    },
+    {
+      "index": 26,
+      "kind": "element",
+      "output": "t26_0",
+      "inputs": [
+        "t24_0",
+        "t24_0"
+      ],
+      "options": {
+        "kind": "silu"
+      },
+      "relative_l2": 0.0010157841328406806,
+      "cosine": 0.9999994841804416,
+      "absolute_max": 0.015624523162841797,
+      "actual_norm": 841.7818087926001,
+      "reference_norm": 841.7709895456078
+    },
+    {
+      "index": 27,
+      "kind": "element",
+      "output": "t27_0",
+      "inputs": [
+        "t26_0",
+        "t25_0"
+      ],
+      "options": {
+        "kind": "mul"
+      },
+      "relative_l2": 0.0016506591196067206,
+      "cosine": 0.999998642047105,
+      "absolute_max": 0.220703125,
+      "actual_norm": 1151.9950701194894,
+      "reference_norm": 1152.104534068922
+    },
+    {
+      "index": 28,
+      "kind": "linear",
+      "output": "t28_0",
+      "inputs": [
+        "t27_0",
+        "mlp_down"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          17408
+        ],
+        "b_shape": [
+          5120,
+          17408
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.0016578254268762363,
+      "cosine": 0.9999986258089819,
+      "absolute_max": 0.19802093505859375,
+      "actual_norm": 1143.469955936274,
+      "reference_norm": 1143.4689568456088
+    },
+    {
+      "index": 29,
+      "kind": "element",
+      "output": "t29_0",
+      "inputs": [
+        "t22_0",
+        "t28_0"
+      ],
+      "options": {
+        "kind": "add"
+      },
+      "relative_l2": 0.001755795795799485,
+      "cosine": 0.9999984586254757,
+      "absolute_max": 0.5,
+      "actual_norm": 2278.5877030982756,
+      "reference_norm": 2278.6105772660558
+    },
+    {
+      "index": 30,
+      "kind": "norm",
+      "output": "t30_0",
+      "inputs": [
+        "t29_0",
+        "final_gamma"
+      ],
+      "options": {},
+      "relative_l2": 0.0016536527806687406,
+      "cosine": 0.9999986328605291,
+      "absolute_max": 0.062408447265625,
+      "actual_norm": 734.2151158832929,
+      "reference_norm": 734.2036060680002
+    },
+    {
+      "index": 30,
+      "kind": "norm",
+      "output": "t30_1",
+      "inputs": [
+        "t29_0",
+        "final_gamma"
+      ],
+      "options": {},
+      "relative_l2": 4.8768085373134915e-08,
+      "cosine": 0.9999999999999993,
+      "absolute_max": 1.4901161193847656e-08,
+      "actual_norm": 2.866327051506139,
+      "reference_norm": 2.8663270566612984
+    },
+    {
+      "index": 31,
+      "kind": "linear",
+      "output": "t31_0",
+      "inputs": [
+        "t30_0",
+        "lm_head"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          248320,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.0016613456516533587,
+      "cosine": 0.9999986199641309,
+      "absolute_max": 0.06141471862792969,
+      "actual_norm": 9922.648741750432,
+      "reference_norm": 9922.665484829009
+    },
+    {
+      "index": 32,
+      "kind": "kl",
+      "output": "t32_0",
+      "inputs": [
+        "t31_0",
+        "teacher"
+      ],
+      "options": {},
+      "relative_l2": 0.002191842308445476,
+      "cosine": 0.9999977123266757,
+      "absolute_max": 1.4958437532186508e-05,
+      "actual_norm": 0.012066138983819402,
+      "reference_norm": 0.012060397324513873
+    },
+    {
+      "index": 32,
+      "kind": "kl",
+      "output": "t32_1",
+      "inputs": [
+        "t31_0",
+        "teacher"
+      ],
+      "options": {},
+      "relative_l2": 9.142708723259719e-06,
+      "cosine": 0.9999999999852642,
+      "absolute_max": 9.313225746154785e-07,
+      "actual_norm": 0.4480939553344054,
+      "reference_norm": 0.44809725172992726
+    },
+    {
+      "index": 33,
+      "kind": "linear",
+      "output": "t33_0",
+      "inputs": [
+        "t32_0",
+        "lm_head"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          248320
+        ],
+        "b_shape": [
+          248320,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 2.6776409966862196,
+      "cosine": 0.01577157950030575,
+      "absolute_max": 0.000518798828125,
+      "actual_norm": 0.025106109472767573,
+      "reference_norm": 0.010043560343224704
+    },
+    {
+      "index": 34,
+      "kind": "norm_dx",
+      "output": "t34_0",
+      "inputs": [
+        "t29_0",
+        "final_gamma",
+        "t30_1",
+        "t33_0"
+      ],
+      "options": {},
+      "relative_l2": 0.0016634351296068084,
+      "cosine": 0.9999986165006426,
+      "absolute_max": 4.6206696424633265e-07,
+      "actual_norm": 0.008634190946436837,
+      "reference_norm": 0.008634164606942189
+    },
+    {
+      "index": 35,
+      "kind": "linear",
+      "output": "t35_0",
+      "inputs": [
+        "t34_0",
+        "mlp_down"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          5120,
+          17408
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.0016561330247447197,
+      "cosine": 0.999998628612512,
+      "absolute_max": 1.7407583072781563e-06,
+      "actual_norm": 0.013550698075348633,
+      "reference_norm": 0.013550742357301984
+    },
+    {
+      "index": 36,
+      "kind": "element",
+      "output": "t36_0",
+      "inputs": [
+        "t35_0",
+        "t26_0"
+      ],
+      "options": {
+        "kind": "mul"
+      },
+      "relative_l2": 0.0016914841918541554,
+      "cosine": 0.9999985694685909,
+      "absolute_max": 3.7550926208496094e-06,
+      "actual_norm": 0.01373443649440642,
+      "reference_norm": 0.013734560502055574
+    },
+    {
+      "index": 37,
+      "kind": "element",
+      "output": "t37_0",
+      "inputs": [
+        "t35_0",
+        "t25_0"
+      ],
+      "options": {
+        "kind": "mul"
+      },
+      "relative_l2": 0.0016529418332087108,
+      "cosine": 0.9999986408388152,
+      "absolute_max": 1.2874603271484375e-05,
+      "actual_norm": 0.029424496570112306,
+      "reference_norm": 0.02942800558462789
+    },
+    {
+      "index": 38,
+      "kind": "element",
+      "output": "t38_0",
+      "inputs": [
+        "t24_0",
+        "t37_0"
+      ],
+      "options": {
+        "kind": "silu_grad"
+      },
+      "relative_l2": 0.0016531787201493101,
+      "cosine": 0.9999986378154248,
+      "absolute_max": 3.384193405508995e-06,
+      "actual_norm": 0.010124163368126658,
+      "reference_norm": 0.010123236594136702
+    },
+    {
+      "index": 39,
+      "kind": "linear",
+      "output": "t39_0",
+      "inputs": [
+        "t36_0",
+        "mlp_up"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          17408
+        ],
+        "b_shape": [
+          17408,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.0016583894249293531,
+      "cosine": 0.9999986250530022,
+      "absolute_max": 7.273629307746887e-07,
+      "actual_norm": 0.012861089508964767,
+      "reference_norm": 0.012860862010694333
+    },
+    {
+      "index": 40,
+      "kind": "linear",
+      "output": "t40_0",
+      "inputs": [
+        "t38_0",
+        "mlp_gate"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          17408
+        ],
+        "b_shape": [
+          17408,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.001664134174140329,
+      "cosine": 0.9999986153303175,
+      "absolute_max": 9.494833648204803e-07,
+      "actual_norm": 0.010864889617878749,
+      "reference_norm": 0.010864880028403794
+    },
+    {
+      "index": 41,
+      "kind": "element",
+      "output": "t41_0",
+      "inputs": [
+        "t39_0",
+        "t40_0"
+      ],
+      "options": {
+        "kind": "add"
+      },
+      "relative_l2": 0.0018037869139784354,
+      "cosine": 0.9999983731975606,
+      "absolute_max": 1.9073486328125e-06,
+      "actual_norm": 0.01743165567080976,
+      "reference_norm": 0.01743156711871303
+    },
+    {
+      "index": 42,
+      "kind": "norm_dx",
+      "output": "t42_0",
+      "inputs": [
+        "t22_0",
+        "post_gamma",
+        "t23_1",
+        "t41_0"
+      ],
+      "options": {},
+      "relative_l2": 0.0016569732820692477,
+      "cosine": 0.9999986272191788,
+      "absolute_max": 3.6183337215334177e-07,
+      "actual_norm": 0.004251091641404429,
+      "reference_norm": 0.0042511011555823736
+    },
+    {
+      "index": 43,
+      "kind": "element",
+      "output": "t43_0",
+      "inputs": [
+        "t34_0",
+        "t42_0"
+      ],
+      "options": {
+        "kind": "add"
+      },
+      "relative_l2": 0.0017766859332790609,
+      "cosine": 0.9999984217046847,
+      "absolute_max": 4.76837158203125e-07,
+      "actual_norm": 0.009913835648678275,
+      "reference_norm": 0.009913801968711044
+    },
+    {
+      "index": 44,
+      "kind": "linear",
+      "output": "t44_0",
+      "inputs": [
+        "t43_0",
+        "t20_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          32,
+          6144
+        ],
+        "transpose_a": true,
+        "transpose_b": false,
+        "gradient_weight": true,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.001658227700856978,
+      "cosine": 0.9999986251433339,
+      "absolute_max": 2.5142915546894073e-05,
+      "actual_norm": 0.7612376294131007,
+      "reference_norm": 0.7612404509285022
+    },
+    {
+      "index": 45,
+      "kind": "linear",
+      "output": "t45_0",
+      "inputs": [
+        "t43_0",
+        "o_weight"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          5120,
+          6144
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.0016645810857585143,
+      "cosine": 0.9999986146326856,
+      "absolute_max": 1.693901140242815e-06,
+      "actual_norm": 0.01768856291733889,
+      "reference_norm": 0.01768841273326995
+    },
+    {
+      "index": 46,
+      "kind": "layout",
+      "output": "t46_0",
+      "inputs": [
+        "t45_0"
+      ],
+      "options": {
+        "heads": 24,
+        "mode": "pack",
+        "interleaved": false,
+        "gate": false
+      },
+      "relative_l2": 0.0,
+      "cosine": 1.0000000000000002,
+      "absolute_max": 0.0,
+      "actual_norm": 0.017688562917338946,
+      "reference_norm": 0.017688562917338946
+    },
+    {
+      "index": 47,
+      "kind": "element",
+      "output": "t47_0",
+      "inputs": [
+        "t46_0",
+        "t18_0"
+      ],
+      "options": {
+        "kind": "mul"
+      },
+      "relative_l2": 0.0016769932922299133,
+      "cosine": 0.9999985954795454,
+      "absolute_max": 1.7583370208740234e-06,
+      "actual_norm": 0.009877765742031048,
+      "reference_norm": 0.009878344281575625
+    },
+    {
+      "index": 48,
+      "kind": "element",
+      "output": "t48_0",
+      "inputs": [
+        "t46_0",
+        "t17_0"
+      ],
+      "options": {
+        "kind": "mul"
+      },
+      "relative_l2": 0.0016558848357626937,
+      "cosine": 0.9999986290934876,
+      "absolute_max": 1.52587890625e-05,
+      "actual_norm": 0.07169970830455026,
+      "reference_norm": 0.07169894821141896
+    },
+    {
+      "index": 49,
+      "kind": "element",
+      "output": "t49_0",
+      "inputs": [
+        "t5_0",
+        "t48_0"
+      ],
+      "options": {
+        "kind": "sigmoid_grad"
+      },
+      "relative_l2": 0.001661093894735982,
+      "cosine": 0.9999986205336048,
+      "absolute_max": 1.8940772861242294e-06,
+      "actual_norm": 0.006327118151343314,
+      "reference_norm": 0.006327236844129678
+    },
+    {
+      "index": 50,
+      "kind": "linear",
+      "output": "t50_0",
+      "inputs": [
+        "t16_1",
+        "t47_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          512
+        ],
+        "b_shape": [
+          32,
+          256
+        ],
+        "transpose_a": true,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 24,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.001662173563608243,
+      "cosine": 0.9999986186979088,
+      "absolute_max": 8.94651748239994e-07,
+      "actual_norm": 0.004262937952364573,
+      "reference_norm": 0.004263006879972764
+    },
+    {
+      "index": 51,
+      "kind": "linear",
+      "output": "t51_0",
+      "inputs": [
+        "t47_0",
+        "t13_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          256
+        ],
+        "b_shape": [
+          512,
+          256
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 24,
+        "b_repeats": 6
+      },
+      "relative_l2": 0.0016441203888607667,
+      "cosine": 0.9999986489571255,
+      "absolute_max": 3.02288681268692e-05,
+      "actual_norm": 0.1730483670974276,
+      "reference_norm": 0.17305420299085636
+    },
+    {
+      "index": 52,
+      "kind": "softmax_grad",
+      "output": "t52_0",
+      "inputs": [
+        "t16_0",
+        "t51_0"
+      ],
+      "options": {},
+      "relative_l2": 0.0016954538014161457,
+      "cosine": 0.9999985644163155,
+      "absolute_max": 1.7478596419095993e-06,
+      "actual_norm": 0.0052654055937789625,
+      "reference_norm": 0.005265720117410358
+    },
+    {
+      "index": 53,
+      "kind": "element",
+      "output": "t53_0",
+      "inputs": [
+        "t52_0",
+        "t52_0"
+      ],
+      "options": {
+        "kind": "scale",
+        "scale": 0.0625
+      },
+      "relative_l2": 0.0,
+      "cosine": 0.9999999999999999,
+      "absolute_max": 0.0,
+      "actual_norm": 0.00032908784961118516,
+      "reference_norm": 0.00032908784961118516
+    },
+    {
+      "index": 54,
+      "kind": "linear",
+      "output": "t54_0",
+      "inputs": [
+        "t53_0",
+        "t12_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          512
+        ],
+        "b_shape": [
+          512,
+          256
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 24,
+        "b_repeats": 6
+      },
+      "relative_l2": 0.001655095208340435,
+      "cosine": 0.9999986303523598,
+      "absolute_max": 6.330665200948715e-07,
+      "actual_norm": 0.006440805827630822,
+      "reference_norm": 0.006440770587349658
+    },
+    {
+      "index": 55,
+      "kind": "linear",
+      "output": "t55_0",
+      "inputs": [
+        "t53_0",
+        "t10_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          512
+        ],
+        "b_shape": [
+          32,
+          256
+        ],
+        "transpose_a": true,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 24,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.0016376302516428714,
+      "cosine": 0.9999986592514548,
+      "absolute_max": 1.0181684046983719e-06,
+      "actual_norm": 0.006478923166966874,
+      "reference_norm": 0.006479050895806082
+    },
+    {
+      "index": 56,
+      "kind": "reduce_block",
+      "output": "t56_0",
+      "inputs": [
+        "t55_0"
+      ],
+      "options": {},
+      "relative_l2": 0.0016709142202163954,
+      "cosine": 0.9999986045560857,
+      "absolute_max": 9.5367431640625e-07,
+      "actual_norm": 0.0034337148201705994,
+      "reference_norm": 0.003433831854072947
+    },
+    {
+      "index": 57,
+      "kind": "reduce_block",
+      "output": "t57_0",
+      "inputs": [
+        "t50_0"
+      ],
+      "options": {},
+      "relative_l2": 0.0017232444110305517,
+      "cosine": 0.9999985160847085,
+      "absolute_max": 1.1920928955078125e-06,
+      "actual_norm": 0.0027213306363329474,
+      "reference_norm": 0.002721448290507852
+    },
+    {
+      "index": 58,
+      "kind": "rope",
+      "output": "t58_0",
+      "inputs": [
+        "t54_0",
+        "cos",
+        "sin"
+      ],
+      "options": {
+        "backward": true
+      },
+      "relative_l2": 0.00042530447325970675,
+      "cosine": 0.9999999095669975,
+      "absolute_max": 3.762543201446533e-07,
+      "actual_norm": 0.006440830430586478,
+      "reference_norm": 0.006440858252370123
+    },
+    {
+      "index": 59,
+      "kind": "rope",
+      "output": "t59_0",
+      "inputs": [
+        "t56_0",
+        "cos",
+        "sin"
+      ],
+      "options": {
+        "backward": true
+      },
+      "relative_l2": 0.0008069164457847148,
+      "cosine": 0.9999996748181923,
+      "absolute_max": 4.76837158203125e-07,
+      "actual_norm": 0.0034339598185694517,
+      "reference_norm": 0.003433866854741785
+    },
+    {
+      "index": 60,
+      "kind": "norm_dw",
+      "output": "t60_0",
+      "inputs": [
+        "t4_0",
+        "t8_1",
+        "t58_0"
+      ],
+      "options": {},
+      "relative_l2": 0.0016726875435274795,
+      "cosine": 0.9999987488636716,
+      "absolute_max": 3.5783741623163223e-06,
+      "actual_norm": 0.004543217409183962,
+      "reference_norm": 0.004545694602478453
+    },
+    {
+      "index": 61,
+      "kind": "norm_dw",
+      "output": "t61_0",
+      "inputs": [
+        "t6_0",
+        "t9_1",
+        "t59_0"
+      ],
+      "options": {},
+      "relative_l2": 0.0019210599883228753,
+      "cosine": 0.9999981878693195,
+      "absolute_max": 3.5584671422839165e-06,
+      "actual_norm": 0.003857243032848484,
+      "reference_norm": 0.0038562577300127183
+    },
+    {
+      "index": 62,
+      "kind": "norm_dx",
+      "output": "t62_0",
+      "inputs": [
+        "t4_0",
+        "q_gamma",
+        "t8_1",
+        "t58_0"
+      ],
+      "options": {},
+      "relative_l2": 0.0016685259405672724,
+      "cosine": 0.9999986080222829,
+      "absolute_max": 6.406044121831656e-07,
+      "actual_norm": 0.005106942996764472,
+      "reference_norm": 0.005106924393236142
+    },
+    {
+      "index": 63,
+      "kind": "norm_dx",
+      "output": "t63_0",
+      "inputs": [
+        "t6_0",
+        "k_gamma",
+        "t9_1",
+        "t59_0"
+      ],
+      "options": {},
+      "relative_l2": 0.0016251560014240603,
+      "cosine": 0.9999986810091147,
+      "absolute_max": 4.7663343138992786e-07,
+      "actual_norm": 0.0026533618507053377,
+      "reference_norm": 0.002653216391652361
+    },
+    {
+      "index": 64,
+      "kind": "q_join",
+      "output": "t64_0",
+      "inputs": [
+        "t62_0",
+        "t49_0"
+      ],
+      "options": {},
+      "relative_l2": 0.0,
+      "cosine": 1.0000000000000002,
+      "absolute_max": 0.0,
+      "actual_norm": 0.008131007986298821,
+      "reference_norm": 0.008131007986298821
+    },
+    {
+      "index": 65,
+      "kind": "layout",
+      "output": "t65_0",
+      "inputs": [
+        "t63_0"
+      ],
+      "options": {
+        "heads": 4,
+        "mode": "unpack",
+        "interleaved": false,
+        "gate": false
+      },
+      "relative_l2": 0.0,
+      "cosine": 1.0000000000000002,
+      "absolute_max": 0.0,
+      "actual_norm": 0.0026533618507053377,
+      "reference_norm": 0.0026533618507053377
+    },
+    {
+      "index": 66,
+      "kind": "layout",
+      "output": "t66_0",
+      "inputs": [
+        "t57_0"
+      ],
+      "options": {
+        "heads": 4,
+        "mode": "unpack",
+        "interleaved": false,
+        "gate": false
+      },
+      "relative_l2": 0.0,
+      "cosine": 0.9999999999999999,
+      "absolute_max": 0.0,
+      "actual_norm": 0.0027213306363329474,
+      "reference_norm": 0.0027213306363329474
+    },
+    {
+      "index": 67,
+      "kind": "linear",
+      "output": "t67_0",
+      "inputs": [
+        "t64_0",
+        "t0_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          12288
+        ],
+        "b_shape": [
+          32,
+          5120
+        ],
+        "transpose_a": true,
+        "transpose_b": false,
+        "gradient_weight": true,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.0016671501481831323,
+      "cosine": 0.9999986103079099,
+      "absolute_max": 7.472559809684753e-05,
+      "actual_norm": 0.6042651137892847,
+      "reference_norm": 0.6042660410391218
+    },
+    {
+      "index": 68,
+      "kind": "linear",
+      "output": "t68_0",
+      "inputs": [
+        "t65_0",
+        "t0_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          1024
+        ],
+        "b_shape": [
+          32,
+          5120
+        ],
+        "transpose_a": true,
+        "transpose_b": false,
+        "gradient_weight": true,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.0016446424550578935,
+      "cosine": 0.9999986477391074,
+      "absolute_max": 2.676248550415039e-05,
+      "actual_norm": 0.21043902328976744,
+      "reference_norm": 0.21044313377125295
+    },
+    {
+      "index": 69,
+      "kind": "linear",
+      "output": "t69_0",
+      "inputs": [
+        "t66_0",
+        "t0_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          1024
+        ],
+        "b_shape": [
+          32,
+          5120
+        ],
+        "transpose_a": true,
+        "transpose_b": false,
+        "gradient_weight": true,
+        "batches": 1,
+        "b_repeats": 1
+      },
+      "relative_l2": 0.0016629272148922572,
+      "cosine": 0.999998618276829,
+      "absolute_max": 7.11679458618164e-05,
+      "actual_norm": 0.3650156457391253,
+      "reference_norm": 0.36503199021027327
+    }
+  ]
+}

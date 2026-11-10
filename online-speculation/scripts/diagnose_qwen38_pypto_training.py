@@ -51,6 +51,64 @@ def execution_views(optimizer, last_layers):
         for e in optimizer.layout.entries}
 
 
+def replay_stages(a):
+    """单卡重放已采集数据，逐节点读回，区分算子本身与融合编排问题。"""
+    import torch
+    import pypto
+    from safetensors.torch import load_file,save_file
+    from pypto.backend import BackendType
+    from pypto.ir import DistributedConfig
+    from pypto.runtime import DistributedWorker,ExecutionMode,RunConfig
+    from blockspec.pypto_qwen38.baseline import runtime_identity
+    from blockspec.pypto_qwen38.training_graph import LastLayerGraph,SuffixShape
+    from blockspec.pypto_qwen38.training_suffix_graph import SuffixGraph
+    from blockspec.pypto_qwen38.training_gdn_reference import GDNShape
+    from blockspec.pypto_qwen38.training_executor import TrainingPrograms,TrainingWorkspace
+    torch.set_num_threads(4);runtime_identity(pypto)
+    captured=json.loads(a.capture_report.read_text());directory=Path(captured["directory"])
+    n=captured["last_layers"];shape=SuffixShape(**captured["shape"])
+    graph=(LastLayerGraph(shape,objective="kl") if n==1 else
+           SuffixGraph(n,shape,GDNShape(**captured["gdn_shape"]),objective="kl"))
+    config=RunConfig(backend_type=BackendType.Ascend910B,execution_mode=ExecutionMode.ONBOARD,
+                    distributed_config=DistributedConfig(device_ids=[a.device],num_sub_workers=0))
+    programs=TrainingPrograms(graph,config,combined=False)
+    worker=workspace=None;handles=[];report=dict(completed=False,phase="unfused_replay",last_layers=n)
+    try:
+        worker=DistributedWorker(list(programs.programs.values()),config=config)
+        workspace=TrainingWorkspace(programs,worker)
+        inputs=load_file(str(directory/"shared.safetensors"))
+        inputs.update(load_file(str(directory/"block-00.safetensors")))
+        master=load_file(str(directory/"initial.master.safetensors"))
+        parameters={p.name:p for p in graph.parameters} if n>1 else {}
+        for name,tensor in master.items():
+            offset=parameters[name].offset_norm if n>1 else "gamma" in name
+            raw=parameters[name].raw_dtype if n>1 else "bf16"
+            value=tensor if raw=="fp32" else tensor.bfloat16()
+            inputs[name]=value.float()+1 if offset else value
+        device={}
+        for name in graph.inputs:
+            value=inputs[name].contiguous();handle=worker.alloc_tensor(tuple(value.shape),value.dtype,init=value)
+            handles.append(handle);device[name]=handle
+        workspace.run(device,**captured["blocks"][0])
+        values={name:read_tensor(worker,value) for name,value in workspace.values.items()}
+        output=a.output.with_suffix(".intermediates.safetensors")
+        save_file(values,str(output))
+        report.update(completed=True,intermediates=str(output),capture=str(a.capture_report),
+                      nodes=[dict(kind=node.kind,inputs=[v.name for v in node.inputs],outputs=[v.name for v in node.outputs],options=node.options) for node in graph.nodes])
+    except BaseException as error:
+        report["error"]=repr(error);raise
+    finally:
+        try:
+            if workspace is not None:workspace.close()
+            if worker is not None:
+                for handle in reversed(handles):worker.free_tensor(handle)
+                worker.close()
+            report["clean_shutdown"]=True
+        finally:
+            a.output.parent.mkdir(parents=True,exist_ok=True)
+            a.output.write_text(json.dumps(report,indent=2)+"\n")
+
+
 def capture(a):
     import torch
     from safetensors.torch import save_file
@@ -192,7 +250,7 @@ def capture(a):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--phase",choices=("capture","reference"),default="capture")
+    p.add_argument("--phase",choices=("capture","reference","replay","fit"),default="capture")
     p.add_argument("--source",type=Path)
     p.add_argument("--model",type=Path)
     p.add_argument("--data",type=Path)
@@ -211,6 +269,13 @@ def main():
     if a.phase=="reference":
         if a.capture_report is None:p.error("reference requires --capture-report")
         from diagnose_qwen38_pypto_reference import run
+        return run(a)
+    if a.phase=="replay":
+        if a.capture_report is None or a.device is None:p.error("replay requires snapshot and device")
+        return replay_stages(a)
+    if a.phase=="fit":
+        if a.capture_report is None or a.device is None:p.error("fit requires snapshot and device")
+        from diagnose_qwen38_pypto_fit import run
         return run(a)
     if any(getattr(a,k) is None for k in ("source","model","data","records_report","device","learner_device")):
         p.error("capture requires model, source, data, records and two devices")

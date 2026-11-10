@@ -1,0 +1,1194 @@
+{
+  "completed": true,
+  "phase": "unfused_replay",
+  "last_layers": 1,
+  "intermediates": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/learning-diag-20261110/stages-last1-r1.intermediates.safetensors",
+  "capture": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/learning-diag-20261110/real-last1-r2.tensors/manifest.json",
+  "nodes": [
+    {
+      "kind": "norm",
+      "inputs": [
+        "hidden",
+        "input_gamma"
+      ],
+      "outputs": [
+        "t0_0",
+        "t0_1"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t0_0",
+        "q_weight"
+      ],
+      "outputs": [
+        "t1_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          12288,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t0_0",
+        "k_weight"
+      ],
+      "outputs": [
+        "t2_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          1024,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t0_0",
+        "v_weight"
+      ],
+      "outputs": [
+        "t3_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          1024,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "layout",
+      "inputs": [
+        "t1_0"
+      ],
+      "outputs": [
+        "t4_0"
+      ],
+      "options": {
+        "heads": 24,
+        "mode": "pack",
+        "interleaved": true,
+        "gate": false
+      }
+    },
+    {
+      "kind": "layout",
+      "inputs": [
+        "t1_0"
+      ],
+      "outputs": [
+        "t5_0"
+      ],
+      "options": {
+        "heads": 24,
+        "mode": "pack",
+        "interleaved": true,
+        "gate": true
+      }
+    },
+    {
+      "kind": "layout",
+      "inputs": [
+        "t2_0"
+      ],
+      "outputs": [
+        "t6_0"
+      ],
+      "options": {
+        "heads": 4,
+        "mode": "pack",
+        "interleaved": false,
+        "gate": false
+      }
+    },
+    {
+      "kind": "layout",
+      "inputs": [
+        "t3_0"
+      ],
+      "outputs": [
+        "t7_0"
+      ],
+      "options": {
+        "heads": 4,
+        "mode": "pack",
+        "interleaved": false,
+        "gate": false
+      }
+    },
+    {
+      "kind": "norm",
+      "inputs": [
+        "t4_0",
+        "q_gamma"
+      ],
+      "outputs": [
+        "t8_0",
+        "t8_1"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "norm",
+      "inputs": [
+        "t6_0",
+        "k_gamma"
+      ],
+      "outputs": [
+        "t9_0",
+        "t9_1"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "rope",
+      "inputs": [
+        "t8_0",
+        "cos",
+        "sin"
+      ],
+      "outputs": [
+        "t10_0"
+      ],
+      "options": {
+        "backward": false
+      }
+    },
+    {
+      "kind": "rope",
+      "inputs": [
+        "t9_0",
+        "cos",
+        "sin"
+      ],
+      "outputs": [
+        "t11_0"
+      ],
+      "options": {
+        "backward": false
+      }
+    },
+    {
+      "kind": "join",
+      "inputs": [
+        "t11_0",
+        "history_key"
+      ],
+      "outputs": [
+        "t12_0"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "join",
+      "inputs": [
+        "t7_0",
+        "history_value"
+      ],
+      "outputs": [
+        "t13_0"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t10_0",
+        "t12_0"
+      ],
+      "outputs": [
+        "t14_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          256
+        ],
+        "b_shape": [
+          512,
+          256
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 24,
+        "b_repeats": 6
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t14_0",
+        "t14_0"
+      ],
+      "outputs": [
+        "t15_0"
+      ],
+      "options": {
+        "kind": "scale",
+        "scale": 0.0625
+      }
+    },
+    {
+      "kind": "softmax",
+      "inputs": [
+        "t15_0"
+      ],
+      "outputs": [
+        "t16_0",
+        "t16_1"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t16_1",
+        "t13_0"
+      ],
+      "outputs": [
+        "t17_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          512
+        ],
+        "b_shape": [
+          512,
+          256
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 24,
+        "b_repeats": 6
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t5_0",
+        "t5_0"
+      ],
+      "outputs": [
+        "t18_0"
+      ],
+      "options": {
+        "kind": "sigmoid"
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t17_0",
+        "t18_0"
+      ],
+      "outputs": [
+        "t19_0"
+      ],
+      "options": {
+        "kind": "mul"
+      }
+    },
+    {
+      "kind": "layout",
+      "inputs": [
+        "t19_0"
+      ],
+      "outputs": [
+        "t20_0"
+      ],
+      "options": {
+        "heads": 24,
+        "mode": "unpack",
+        "interleaved": false,
+        "gate": false
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t20_0",
+        "o_weight"
+      ],
+      "outputs": [
+        "t21_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          6144
+        ],
+        "b_shape": [
+          5120,
+          6144
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "hidden",
+        "t21_0"
+      ],
+      "outputs": [
+        "t22_0"
+      ],
+      "options": {
+        "kind": "add"
+      }
+    },
+    {
+      "kind": "norm",
+      "inputs": [
+        "t22_0",
+        "post_gamma"
+      ],
+      "outputs": [
+        "t23_0",
+        "t23_1"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t23_0",
+        "mlp_gate"
+      ],
+      "outputs": [
+        "t24_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          17408,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t23_0",
+        "mlp_up"
+      ],
+      "outputs": [
+        "t25_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          17408,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t24_0",
+        "t24_0"
+      ],
+      "outputs": [
+        "t26_0"
+      ],
+      "options": {
+        "kind": "silu"
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t26_0",
+        "t25_0"
+      ],
+      "outputs": [
+        "t27_0"
+      ],
+      "options": {
+        "kind": "mul"
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t27_0",
+        "mlp_down"
+      ],
+      "outputs": [
+        "t28_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          17408
+        ],
+        "b_shape": [
+          5120,
+          17408
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t22_0",
+        "t28_0"
+      ],
+      "outputs": [
+        "t29_0"
+      ],
+      "options": {
+        "kind": "add"
+      }
+    },
+    {
+      "kind": "norm",
+      "inputs": [
+        "t29_0",
+        "final_gamma"
+      ],
+      "outputs": [
+        "t30_0",
+        "t30_1"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t30_0",
+        "lm_head"
+      ],
+      "outputs": [
+        "t31_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          248320,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "kl",
+      "inputs": [
+        "t31_0",
+        "teacher"
+      ],
+      "outputs": [
+        "t32_0",
+        "t32_1"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t32_0",
+        "lm_head"
+      ],
+      "outputs": [
+        "t33_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          248320
+        ],
+        "b_shape": [
+          248320,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "norm_dx",
+      "inputs": [
+        "t29_0",
+        "final_gamma",
+        "t30_1",
+        "t33_0"
+      ],
+      "outputs": [
+        "t34_0"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t34_0",
+        "mlp_down"
+      ],
+      "outputs": [
+        "t35_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          5120,
+          17408
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t35_0",
+        "t26_0"
+      ],
+      "outputs": [
+        "t36_0"
+      ],
+      "options": {
+        "kind": "mul"
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t35_0",
+        "t25_0"
+      ],
+      "outputs": [
+        "t37_0"
+      ],
+      "options": {
+        "kind": "mul"
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t24_0",
+        "t37_0"
+      ],
+      "outputs": [
+        "t38_0"
+      ],
+      "options": {
+        "kind": "silu_grad"
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t36_0",
+        "mlp_up"
+      ],
+      "outputs": [
+        "t39_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          17408
+        ],
+        "b_shape": [
+          17408,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t38_0",
+        "mlp_gate"
+      ],
+      "outputs": [
+        "t40_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          17408
+        ],
+        "b_shape": [
+          17408,
+          5120
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t39_0",
+        "t40_0"
+      ],
+      "outputs": [
+        "t41_0"
+      ],
+      "options": {
+        "kind": "add"
+      }
+    },
+    {
+      "kind": "norm_dx",
+      "inputs": [
+        "t22_0",
+        "post_gamma",
+        "t23_1",
+        "t41_0"
+      ],
+      "outputs": [
+        "t42_0"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t34_0",
+        "t42_0"
+      ],
+      "outputs": [
+        "t43_0"
+      ],
+      "options": {
+        "kind": "add"
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t43_0",
+        "t20_0"
+      ],
+      "outputs": [
+        "t44_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          32,
+          6144
+        ],
+        "transpose_a": true,
+        "transpose_b": false,
+        "gradient_weight": true,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t43_0",
+        "o_weight"
+      ],
+      "outputs": [
+        "t45_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          5120
+        ],
+        "b_shape": [
+          5120,
+          6144
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "layout",
+      "inputs": [
+        "t45_0"
+      ],
+      "outputs": [
+        "t46_0"
+      ],
+      "options": {
+        "heads": 24,
+        "mode": "pack",
+        "interleaved": false,
+        "gate": false
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t46_0",
+        "t18_0"
+      ],
+      "outputs": [
+        "t47_0"
+      ],
+      "options": {
+        "kind": "mul"
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t46_0",
+        "t17_0"
+      ],
+      "outputs": [
+        "t48_0"
+      ],
+      "options": {
+        "kind": "mul"
+      }
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t5_0",
+        "t48_0"
+      ],
+      "outputs": [
+        "t49_0"
+      ],
+      "options": {
+        "kind": "sigmoid_grad"
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t16_1",
+        "t47_0"
+      ],
+      "outputs": [
+        "t50_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          512
+        ],
+        "b_shape": [
+          32,
+          256
+        ],
+        "transpose_a": true,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 24,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t47_0",
+        "t13_0"
+      ],
+      "outputs": [
+        "t51_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          256
+        ],
+        "b_shape": [
+          512,
+          256
+        ],
+        "transpose_a": false,
+        "transpose_b": true,
+        "gradient_weight": false,
+        "batches": 24,
+        "b_repeats": 6
+      }
+    },
+    {
+      "kind": "softmax_grad",
+      "inputs": [
+        "t16_0",
+        "t51_0"
+      ],
+      "outputs": [
+        "t52_0"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "element",
+      "inputs": [
+        "t52_0",
+        "t52_0"
+      ],
+      "outputs": [
+        "t53_0"
+      ],
+      "options": {
+        "kind": "scale",
+        "scale": 0.0625
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t53_0",
+        "t12_0"
+      ],
+      "outputs": [
+        "t54_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          512
+        ],
+        "b_shape": [
+          512,
+          256
+        ],
+        "transpose_a": false,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 24,
+        "b_repeats": 6
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t53_0",
+        "t10_0"
+      ],
+      "outputs": [
+        "t55_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          512
+        ],
+        "b_shape": [
+          32,
+          256
+        ],
+        "transpose_a": true,
+        "transpose_b": false,
+        "gradient_weight": false,
+        "batches": 24,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "reduce_block",
+      "inputs": [
+        "t55_0"
+      ],
+      "outputs": [
+        "t56_0"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "reduce_block",
+      "inputs": [
+        "t50_0"
+      ],
+      "outputs": [
+        "t57_0"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "rope",
+      "inputs": [
+        "t54_0",
+        "cos",
+        "sin"
+      ],
+      "outputs": [
+        "t58_0"
+      ],
+      "options": {
+        "backward": true
+      }
+    },
+    {
+      "kind": "rope",
+      "inputs": [
+        "t56_0",
+        "cos",
+        "sin"
+      ],
+      "outputs": [
+        "t59_0"
+      ],
+      "options": {
+        "backward": true
+      }
+    },
+    {
+      "kind": "norm_dw",
+      "inputs": [
+        "t4_0",
+        "t8_1",
+        "t58_0"
+      ],
+      "outputs": [
+        "t60_0"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "norm_dw",
+      "inputs": [
+        "t6_0",
+        "t9_1",
+        "t59_0"
+      ],
+      "outputs": [
+        "t61_0"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "norm_dx",
+      "inputs": [
+        "t4_0",
+        "q_gamma",
+        "t8_1",
+        "t58_0"
+      ],
+      "outputs": [
+        "t62_0"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "norm_dx",
+      "inputs": [
+        "t6_0",
+        "k_gamma",
+        "t9_1",
+        "t59_0"
+      ],
+      "outputs": [
+        "t63_0"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "q_join",
+      "inputs": [
+        "t62_0",
+        "t49_0"
+      ],
+      "outputs": [
+        "t64_0"
+      ],
+      "options": {}
+    },
+    {
+      "kind": "layout",
+      "inputs": [
+        "t63_0"
+      ],
+      "outputs": [
+        "t65_0"
+      ],
+      "options": {
+        "heads": 4,
+        "mode": "unpack",
+        "interleaved": false,
+        "gate": false
+      }
+    },
+    {
+      "kind": "layout",
+      "inputs": [
+        "t57_0"
+      ],
+      "outputs": [
+        "t66_0"
+      ],
+      "options": {
+        "heads": 4,
+        "mode": "unpack",
+        "interleaved": false,
+        "gate": false
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t64_0",
+        "t0_0"
+      ],
+      "outputs": [
+        "t67_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          12288
+        ],
+        "b_shape": [
+          32,
+          5120
+        ],
+        "transpose_a": true,
+        "transpose_b": false,
+        "gradient_weight": true,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t65_0",
+        "t0_0"
+      ],
+      "outputs": [
+        "t68_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          1024
+        ],
+        "b_shape": [
+          32,
+          5120
+        ],
+        "transpose_a": true,
+        "transpose_b": false,
+        "gradient_weight": true,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    },
+    {
+      "kind": "linear",
+      "inputs": [
+        "t66_0",
+        "t0_0"
+      ],
+      "outputs": [
+        "t69_0"
+      ],
+      "options": {
+        "a_shape": [
+          32,
+          1024
+        ],
+        "b_shape": [
+          32,
+          5120
+        ],
+        "transpose_a": true,
+        "transpose_b": false,
+        "gradient_weight": true,
+        "batches": 1,
+        "b_repeats": 1
+      }
+    }
+  ],
+  "clean_shutdown": true
+}

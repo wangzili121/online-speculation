@@ -1,0 +1,1544 @@
+{
+  "completed": true,
+  "passed": true,
+  "phase": "torch_reference",
+  "last_layers": 4,
+  "updates": [
+    {
+      "step": 1,
+      "loss": 7.1736941039562225,
+      "gradient_norm": 41.75955982198976,
+      "clip_scale": 0.023946611992945573
+    }
+  ],
+  "capture_manifest_sha256": "8f7a0e1393ba9f9f174c2fd04cef59797d2259242d1cfa71daac9e5819794f1e",
+  "capture": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/learning-diag-20261110/fit-fixed-last4-r1.tensors/manifest.json",
+  "gradient_relative_tolerance": 0.06,
+  "gradient_minimum_cosine": 0.99,
+  "computation": "CPU Torch autograd; forward-only operators; FP32 masters with BF16 execution rounding",
+  "gradient_first": {
+    "l60_a_log": {
+      "relative_l2": 0.005738019346709532,
+      "cosine": 0.9999835496658178,
+      "absolute_max": 6.311856850516051e-07,
+      "actual_norm": 0.00021669118436755419,
+      "reference_norm": 0.0002167286510535582,
+      "passed": true
+    },
+    "l60_a_weight": {
+      "relative_l2": 0.00833625503153202,
+      "cosine": 0.9999660175521451,
+      "absolute_max": 1.151341712102294e-05,
+      "actual_norm": 0.006704285922714416,
+      "reference_norm": 0.00669623230020758,
+      "passed": true
+    },
+    "l60_b_weight": {
+      "relative_l2": 0.007175363591533401,
+      "cosine": 0.9999747924188498,
+      "absolute_max": 0.0002832338213920593,
+      "actual_norm": 0.17756459876349415,
+      "reference_norm": 0.17775306170993493,
+      "passed": true
+    },
+    "l60_conv_weight": {
+      "relative_l2": 0.005244357523562836,
+      "cosine": 0.9999957286950559,
+      "absolute_max": 0.005886077880859375,
+      "actual_norm": 2.0953002065973094,
+      "reference_norm": 2.0862248850565277,
+      "passed": true
+    },
+    "l60_dt_bias": {
+      "relative_l2": 0.009366460897013163,
+      "cosine": 0.999957275798873,
+      "absolute_max": 3.7042082112748176e-07,
+      "actual_norm": 8.550368039617352e-05,
+      "reference_norm": 8.537829631596257e-05,
+      "passed": true
+    },
+    "l60_norm_weight": {
+      "relative_l2": 0.005768277953575618,
+      "cosine": 0.9999851097825243,
+      "absolute_max": 3.6182813346385956e-05,
+      "actual_norm": 0.012259410721767361,
+      "reference_norm": 0.012236723617911541,
+      "passed": true
+    },
+    "l60_out_weight": {
+      "relative_l2": 0.00870445050752401,
+      "cosine": 0.9999622730390814,
+      "absolute_max": 0.0002689845860004425,
+      "actual_norm": 0.42322139478880205,
+      "reference_norm": 0.42299996289457886,
+      "passed": true
+    },
+    "l60_qkv_weight": {
+      "relative_l2": 0.008789233256147142,
+      "cosine": 0.9999616349822152,
+      "absolute_max": 0.0001307763159275055,
+      "actual_norm": 0.23365528562691143,
+      "reference_norm": 0.23349553692758215,
+      "passed": true
+    },
+    "l60_z_weight": {
+      "relative_l2": 0.007851522865654144,
+      "cosine": 0.9999695937045587,
+      "absolute_max": 0.0003783106803894043,
+      "actual_norm": 0.22484174822706296,
+      "reference_norm": 0.224643336228351,
+      "passed": true
+    },
+    "l61_a_log": {
+      "relative_l2": 0.007555514011292463,
+      "cosine": 0.9999719406890437,
+      "absolute_max": 1.029675331665203e-06,
+      "actual_norm": 0.0002119844687599654,
+      "reference_norm": 0.00021178204981840443,
+      "passed": true
+    },
+    "l61_a_weight": {
+      "relative_l2": 0.0077514837422494,
+      "cosine": 0.9999758031269635,
+      "absolute_max": 1.214872463606298e-05,
+      "actual_norm": 0.006282559340629639,
+      "reference_norm": 0.006261300912592791,
+      "passed": true
+    },
+    "l61_b_weight": {
+      "relative_l2": 0.007403773748105683,
+      "cosine": 0.9999725929143332,
+      "absolute_max": 0.0002024564892053604,
+      "actual_norm": 0.08533688031278168,
+      "reference_norm": 0.08534343979344335,
+      "passed": true
+    },
+    "l61_conv_weight": {
+      "relative_l2": 0.00637133719257742,
+      "cosine": 0.9999804497472587,
+      "absolute_max": 0.0003904998302459717,
+      "actual_norm": 0.2510548142399845,
+      "reference_norm": 0.2507532416587797,
+      "passed": true
+    },
+    "l61_dt_bias": {
+      "relative_l2": 0.007124546525348062,
+      "cosine": 0.9999747096246114,
+      "absolute_max": 3.955199190386338e-07,
+      "actual_norm": 0.00010187625750496127,
+      "reference_norm": 0.00010183574164487559,
+      "passed": true
+    },
+    "l61_norm_weight": {
+      "relative_l2": 0.0029736272359632346,
+      "cosine": 0.999996606589305,
+      "absolute_max": 1.6373582184314728e-05,
+      "actual_norm": 0.012120588480774906,
+      "reference_norm": 0.012103276437357128,
+      "passed": true
+    },
+    "l61_out_weight": {
+      "relative_l2": 0.00823237161136786,
+      "cosine": 0.9999663889292809,
+      "absolute_max": 0.0002434253692626953,
+      "actual_norm": 0.2829308302843085,
+      "reference_norm": 0.2827304789344286,
+      "passed": true
+    },
+    "l61_qkv_weight": {
+      "relative_l2": 0.008340539946588016,
+      "cosine": 0.9999669593081824,
+      "absolute_max": 0.00021739676594734192,
+      "actual_norm": 0.20896848729566547,
+      "reference_norm": 0.20858602676172486,
+      "passed": true
+    },
+    "l61_z_weight": {
+      "relative_l2": 0.006184084044181513,
+      "cosine": 0.9999824615490144,
+      "absolute_max": 0.0001768171787261963,
+      "actual_norm": 0.26137036066800273,
+      "reference_norm": 0.2609106713637981,
+      "passed": true
+    },
+    "l62_a_log": {
+      "relative_l2": 0.02958578411871319,
+      "cosine": 0.9995650182021704,
+      "absolute_max": 8.110637281788513e-06,
+      "actual_norm": 0.0003030621756499632,
+      "reference_norm": 0.0003024815205624809,
+      "passed": true
+    },
+    "l62_a_weight": {
+      "relative_l2": 0.026995182365616734,
+      "cosine": 0.9996508995087845,
+      "absolute_max": 0.00019606202840805054,
+      "actual_norm": 0.012947941674011245,
+      "reference_norm": 0.01302460864104111,
+      "passed": true
+    },
+    "l62_b_weight": {
+      "relative_l2": 0.011616464473439163,
+      "cosine": 0.9999439972118763,
+      "absolute_max": 0.00027086958289146423,
+      "actual_norm": 0.09482977679970161,
+      "reference_norm": 0.09529151705234021,
+      "passed": true
+    },
+    "l62_conv_weight": {
+      "relative_l2": 0.013242901835595514,
+      "cosine": 0.9999763612975665,
+      "absolute_max": 0.009052276611328125,
+      "actual_norm": 1.4046098417707522,
+      "reference_norm": 1.3889228162814342,
+      "passed": true
+    },
+    "l62_dt_bias": {
+      "relative_l2": 0.027205546835768087,
+      "cosine": 0.9996489407086258,
+      "absolute_max": 4.300498403608799e-06,
+      "actual_norm": 0.00016789162476145758,
+      "reference_norm": 0.00016899471062915868,
+      "passed": true
+    },
+    "l62_norm_weight": {
+      "relative_l2": 0.008011204617507853,
+      "cosine": 0.9999814800931887,
+      "absolute_max": 0.00011653546243906021,
+      "actual_norm": 0.01789081514774042,
+      "reference_norm": 0.017984842052676333,
+      "passed": true
+    },
+    "l62_out_weight": {
+      "relative_l2": 0.009292005070006966,
+      "cosine": 0.9999568568585869,
+      "absolute_max": 0.00021980330348014832,
+      "actual_norm": 0.40269293266556666,
+      "reference_norm": 0.40280642214376405,
+      "passed": true
+    },
+    "l62_qkv_weight": {
+      "relative_l2": 0.009109532689126296,
+      "cosine": 0.9999585544993876,
+      "absolute_max": 0.0004990845918655396,
+      "actual_norm": 0.36160703636449504,
+      "reference_norm": 0.3617331034455045,
+      "passed": true
+    },
+    "l62_z_weight": {
+      "relative_l2": 0.008122932548466851,
+      "cosine": 0.9999713376502961,
+      "absolute_max": 0.0010661482810974121,
+      "actual_norm": 0.5300602435395863,
+      "reference_norm": 0.531639815848152,
+      "passed": true
+    },
+    "l63_k_gamma": {
+      "relative_l2": 0.008077512940352376,
+      "cosine": 0.9999741680410108,
+      "absolute_max": 2.3202970623970032e-05,
+      "actual_norm": 0.00538617284701668,
+      "reference_norm": 0.005406237227891225,
+      "passed": true
+    },
+    "l63_k_weight": {
+      "relative_l2": 0.012372050572852894,
+      "cosine": 0.9999242834246991,
+      "absolute_max": 0.0002792775630950928,
+      "actual_norm": 0.2369638942251252,
+      "reference_norm": 0.2372857550680311,
+      "passed": true
+    },
+    "l63_o_weight": {
+      "relative_l2": 0.0076554547439137794,
+      "cosine": 0.9999710364307666,
+      "absolute_max": 3.721308894455433e-05,
+      "actual_norm": 0.4550280231170799,
+      "reference_norm": 0.4554166732085609,
+      "passed": true
+    },
+    "l63_q_gamma": {
+      "relative_l2": 0.013903678476321941,
+      "cosine": 0.9999230555611706,
+      "absolute_max": 4.67752106487751e-05,
+      "actual_norm": 0.006166360107799972,
+      "reference_norm": 0.006128350043599328,
+      "passed": true
+    },
+    "l63_q_weight": {
+      "relative_l2": 0.009545585834290351,
+      "cosine": 0.9999544825061358,
+      "absolute_max": 0.0014401823282241821,
+      "actual_norm": 0.8411869380900707,
+      "reference_norm": 0.8414709701918357,
+      "passed": true
+    },
+    "l63_v_weight": {
+      "relative_l2": 0.006154881207166737,
+      "cosine": 0.999981102547005,
+      "absolute_max": 0.0002448558807373047,
+      "actual_norm": 0.43693570559243383,
+      "reference_norm": 0.43707363267870997,
+      "passed": true
+    }
+  },
+  "forward": [
+    {
+      "block": 0,
+      "loss": 0.28757157921791077,
+      "replay_logits": {
+        "relative_l2": 0.004355123133944426,
+        "cosine": 0.9999907253937012,
+        "absolute_max": 0.1484375,
+        "actual_norm": 4588.413636778485,
+        "reference_norm": 4591.424607255712
+      },
+      "serving_logits": {
+        "relative_l2": 0.004355123133944426,
+        "cosine": 0.9999907253937012,
+        "absolute_max": 0.1484375,
+        "actual_norm": 4588.413636778485,
+        "reference_norm": 4591.424607255712
+      }
+    },
+    {
+      "block": 1,
+      "loss": 1.1308175325393677,
+      "replay_logits": {
+        "relative_l2": 0.0037894037367296437,
+        "cosine": 0.9999930415841333,
+        "absolute_max": 0.0625,
+        "actual_norm": 4369.706947216392,
+        "reference_norm": 4366.831511846174
+      },
+      "serving_logits": {
+        "relative_l2": 0.004104389541380847,
+        "cosine": 0.9999915954824172,
+        "absolute_max": 0.06298828125,
+        "actual_norm": 4367.6353432751275,
+        "reference_norm": 4366.831511846174
+      }
+    },
+    {
+      "block": 2,
+      "loss": 0.706192135810852,
+      "replay_logits": {
+        "relative_l2": 0.004918789818472576,
+        "cosine": 0.9999879592445452,
+        "absolute_max": 0.0751953125,
+        "actual_norm": 3202.721926267072,
+        "reference_norm": 3203.8380948672366
+      },
+      "serving_logits": {
+        "relative_l2": 0.004918789818472576,
+        "cosine": 0.9999879592445452,
+        "absolute_max": 0.0751953125,
+        "actual_norm": 3202.721926267072,
+        "reference_norm": 3203.8380948672366
+      }
+    },
+    {
+      "block": 3,
+      "loss": 1.1820666790008545,
+      "replay_logits": {
+        "relative_l2": 0.004627299599280431,
+        "cosine": 0.9999892949055291,
+        "absolute_max": 0.125,
+        "actual_norm": 3519.0765232383173,
+        "reference_norm": 3519.264632383142
+      },
+      "serving_logits": {
+        "relative_l2": 0.004641981838284834,
+        "cosine": 0.9999892286171448,
+        "absolute_max": 0.125,
+        "actual_norm": 3518.9694165953597,
+        "reference_norm": 3519.264632383142
+      }
+    },
+    {
+      "block": 4,
+      "loss": 0.5938649773597717,
+      "replay_logits": {
+        "relative_l2": 0.003936003797590794,
+        "cosine": 0.9999923042662466,
+        "absolute_max": 0.0625,
+        "actual_norm": 4164.350078397063,
+        "reference_norm": 4165.7041659817005
+      },
+      "serving_logits": {
+        "relative_l2": 0.0038374275479443427,
+        "cosine": 0.9999926528216332,
+        "absolute_max": 0.125,
+        "actual_norm": 4164.933664268748,
+        "reference_norm": 4165.7041659817005
+      }
+    },
+    {
+      "block": 5,
+      "loss": 1.1776801347732544,
+      "replay_logits": {
+        "relative_l2": 0.0039473933016952205,
+        "cosine": 0.999992260323127,
+        "absolute_max": 0.125,
+        "actual_norm": 3861.5630246325013,
+        "reference_norm": 3860.356262079915
+      },
+      "serving_logits": {
+        "relative_l2": 0.0039473933016952205,
+        "cosine": 0.999992260323127,
+        "absolute_max": 0.125,
+        "actual_norm": 3861.5630246325013,
+        "reference_norm": 3860.356262079915
+      }
+    },
+    {
+      "block": 6,
+      "loss": 1.1032979488372803,
+      "replay_logits": {
+        "relative_l2": 0.005621857440505751,
+        "cosine": 0.9999842342973901,
+        "absolute_max": 0.125,
+        "actual_norm": 3221.7697600071674,
+        "reference_norm": 3222.697973356539
+      },
+      "serving_logits": {
+        "relative_l2": 0.005621857440505751,
+        "cosine": 0.9999842342973901,
+        "absolute_max": 0.125,
+        "actual_norm": 3221.7697600071674,
+        "reference_norm": 3222.697973356539
+      }
+    },
+    {
+      "block": 7,
+      "loss": 0.9922031164169312,
+      "replay_logits": {
+        "relative_l2": 0.004722242098888343,
+        "cosine": 0.999988909859112,
+        "absolute_max": 0.125,
+        "actual_norm": 3515.537007510533,
+        "reference_norm": 3516.7912712864163
+      },
+      "serving_logits": {
+        "relative_l2": 0.004722242098888343,
+        "cosine": 0.999988909859112,
+        "absolute_max": 0.125,
+        "actual_norm": 3515.537007510533,
+        "reference_norm": 3516.7912712864163
+      }
+    }
+  ],
+  "initial_loss": 7.1736941039562225,
+  "initial_reference_seconds": 112.10280914604664,
+  "gradient_accumulated": {
+    "l60_a_log": {
+      "relative_l2": 0.0036446186755661717,
+      "cosine": 0.9999988888360777,
+      "absolute_max": 8.552893996238708e-05,
+      "actual_norm": 0.025866046289976696,
+      "reference_norm": 0.025952387472399214,
+      "passed": true
+    },
+    "l60_a_weight": {
+      "relative_l2": 0.004125208219330078,
+      "cosine": 0.9999970305009754,
+      "absolute_max": 0.000921785831451416,
+      "actual_norm": 0.7564647467517234,
+      "reference_norm": 0.7589932459002486,
+      "passed": true
+    },
+    "l60_b_weight": {
+      "relative_l2": 0.005679174073099473,
+      "cosine": 0.9999878990423992,
+      "absolute_max": 0.0022589564323425293,
+      "actual_norm": 2.1399025828101172,
+      "reference_norm": 2.1338735973937832,
+      "passed": true
+    },
+    "l60_conv_weight": {
+      "relative_l2": 0.0024390151337814713,
+      "cosine": 0.999998011795067,
+      "absolute_max": 0.04681205749511719,
+      "actual_norm": 34.41029222718916,
+      "reference_norm": 34.36210180420324,
+      "passed": true
+    },
+    "l60_dt_bias": {
+      "relative_l2": 0.0036405226173533735,
+      "cosine": 0.9999982934440066,
+      "absolute_max": 3.474391996860504e-05,
+      "actual_norm": 0.011306007261212203,
+      "reference_norm": 0.011341604373891142,
+      "passed": true
+    },
+    "l60_norm_weight": {
+      "relative_l2": 0.004425384232194484,
+      "cosine": 0.999990209555876,
+      "absolute_max": 0.00043247640132904053,
+      "actual_norm": 0.1713503668922802,
+      "reference_norm": 0.17134230166250186,
+      "passed": true
+    },
+    "l60_out_weight": {
+      "relative_l2": 0.006952612742732348,
+      "cosine": 0.9999761641601693,
+      "absolute_max": 0.0010165572166442871,
+      "actual_norm": 5.252213381531199,
+      "reference_norm": 5.256634032684775,
+      "passed": true
+    },
+    "l60_qkv_weight": {
+      "relative_l2": 0.00531085787892206,
+      "cosine": 0.99998590961828,
+      "absolute_max": 0.0028881430625915527,
+      "actual_norm": 5.193175253912038,
+      "reference_norm": 5.192433408374806,
+      "passed": true
+    },
+    "l60_z_weight": {
+      "relative_l2": 0.007103104361555163,
+      "cosine": 0.9999747728444829,
+      "absolute_max": 0.0021685734391212463,
+      "actual_norm": 2.2328506566597275,
+      "reference_norm": 2.2328619121232203,
+      "passed": true
+    },
+    "l61_a_log": {
+      "relative_l2": 0.006726459143950623,
+      "cosine": 0.9999779206652801,
+      "absolute_max": 1.426046947017312e-05,
+      "actual_norm": 0.0036598056399233946,
+      "reference_norm": 0.00366370641066417,
+      "passed": true
+    },
+    "l61_a_weight": {
+      "relative_l2": 0.006629969786608699,
+      "cosine": 0.9999803477518531,
+      "absolute_max": 0.00014489423483610153,
+      "actual_norm": 0.11969380842488883,
+      "reference_norm": 0.11995490130747168,
+      "passed": true
+    },
+    "l61_b_weight": {
+      "relative_l2": 0.007281428161969771,
+      "cosine": 0.999975299227414,
+      "absolute_max": 0.0004717782139778137,
+      "actual_norm": 0.5689742896762616,
+      "reference_norm": 0.5700727477305586,
+      "passed": true
+    },
+    "l61_conv_weight": {
+      "relative_l2": 0.006671022929888936,
+      "cosine": 0.9999790151352818,
+      "absolute_max": 0.006089240312576294,
+      "actual_norm": 2.988469243944882,
+      "reference_norm": 2.993296251434234,
+      "passed": true
+    },
+    "l61_dt_bias": {
+      "relative_l2": 0.005700100657601566,
+      "cosine": 0.9999844406905379,
+      "absolute_max": 5.343899829313159e-06,
+      "actual_norm": 0.0018394675256246577,
+      "reference_norm": 0.0018416539598145425,
+      "passed": true
+    },
+    "l61_norm_weight": {
+      "relative_l2": 0.004488058183837386,
+      "cosine": 0.9999903280899937,
+      "absolute_max": 0.00016806647181510925,
+      "actual_norm": 0.0788652270846478,
+      "reference_norm": 0.07879555901313975,
+      "passed": true
+    },
+    "l61_out_weight": {
+      "relative_l2": 0.007638568757376528,
+      "cosine": 0.9999717830094776,
+      "absolute_max": 0.0015060603618621826,
+      "actual_norm": 3.3318020077709085,
+      "reference_norm": 3.3365127824387386,
+      "passed": true
+    },
+    "l61_qkv_weight": {
+      "relative_l2": 0.007282445486341952,
+      "cosine": 0.9999739129841091,
+      "absolute_max": 0.0017782077193260193,
+      "actual_norm": 2.281070338821627,
+      "reference_norm": 2.2832480975801723,
+      "passed": true
+    },
+    "l61_z_weight": {
+      "relative_l2": 0.005251949938656943,
+      "cosine": 0.9999863464572228,
+      "absolute_max": 0.001250535249710083,
+      "actual_norm": 2.8753745579684815,
+      "reference_norm": 2.8769254636945445,
+      "passed": true
+    },
+    "l62_a_log": {
+      "relative_l2": 0.0020485285221399003,
+      "cosine": 0.9999981568120088,
+      "absolute_max": 2.7849571779370308e-05,
+      "actual_norm": 0.0260519122400494,
+      "reference_norm": 0.026033366922563705,
+      "passed": true
+    },
+    "l62_a_weight": {
+      "relative_l2": 0.0033834750046783653,
+      "cosine": 0.9999959483142726,
+      "absolute_max": 0.0007119476795196533,
+      "actual_norm": 0.9357935884942119,
+      "reference_norm": 0.9340891011411258,
+      "passed": true
+    },
+    "l62_b_weight": {
+      "relative_l2": 0.005370082290469757,
+      "cosine": 0.9999857867127155,
+      "absolute_max": 0.0018718242645263672,
+      "actual_norm": 1.8169854765311828,
+      "reference_norm": 1.8181775223720589,
+      "passed": true
+    },
+    "l62_conv_weight": {
+      "relative_l2": 0.01445978579848996,
+      "cosine": 0.999921614683942,
+      "absolute_max": 0.10187864303588867,
+      "actual_norm": 13.91825582747278,
+      "reference_norm": 13.819379073554293,
+      "passed": true
+    },
+    "l62_dt_bias": {
+      "relative_l2": 0.0019199613761282585,
+      "cosine": 0.9999986106670262,
+      "absolute_max": 1.2645497918128967e-05,
+      "actual_norm": 0.01437543229964721,
+      "reference_norm": 0.014361770168514944,
+      "passed": true
+    },
+    "l62_norm_weight": {
+      "relative_l2": 0.0025845639827231357,
+      "cosine": 0.9999966691194234,
+      "absolute_max": 0.00018437393009662628,
+      "actual_norm": 0.24013997668904477,
+      "reference_norm": 0.24017319643152724,
+      "passed": true
+    },
+    "l62_out_weight": {
+      "relative_l2": 0.0064425771773203595,
+      "cosine": 0.9999796459958675,
+      "absolute_max": 0.0007599592208862305,
+      "actual_norm": 5.812620704674713,
+      "reference_norm": 5.817940227473724,
+      "passed": true
+    },
+    "l62_qkv_weight": {
+      "relative_l2": 0.005672018175799645,
+      "cosine": 0.9999840772400895,
+      "absolute_max": 0.003376290202140808,
+      "actual_norm": 5.80352569150302,
+      "reference_norm": 5.806936308931012,
+      "passed": true
+    },
+    "l62_z_weight": {
+      "relative_l2": 0.004505899971424564,
+      "cosine": 0.999990938264127,
+      "absolute_max": 0.0036864280700683594,
+      "actual_norm": 6.053509734501454,
+      "reference_norm": 6.062515348593828,
+      "passed": true
+    },
+    "l63_k_gamma": {
+      "relative_l2": 0.00425675232347964,
+      "cosine": 0.9999932704986836,
+      "absolute_max": 0.0002247840166091919,
+      "actual_norm": 0.12096464972488227,
+      "reference_norm": 0.12122718665282826,
+      "passed": true
+    },
+    "l63_k_weight": {
+      "relative_l2": 0.006590189391156943,
+      "cosine": 0.9999791439711503,
+      "absolute_max": 0.0013856887817382812,
+      "actual_norm": 4.1603734549693066,
+      "reference_norm": 4.165922259758459,
+      "passed": true
+    },
+    "l63_o_weight": {
+      "relative_l2": 0.005667798614606881,
+      "cosine": 0.9999851810403295,
+      "absolute_max": 0.0005129873752593994,
+      "actual_norm": 6.3206268061054605,
+      "reference_norm": 6.330702718486887,
+      "passed": true
+    },
+    "l63_q_gamma": {
+      "relative_l2": 0.004737088004271737,
+      "cosine": 0.9999889341116838,
+      "absolute_max": 0.0001264503225684166,
+      "actual_norm": 0.10164633539487847,
+      "reference_norm": 0.10170393616429958,
+      "passed": true
+    },
+    "l63_q_weight": {
+      "relative_l2": 0.005948379040870592,
+      "cosine": 0.9999834095711386,
+      "absolute_max": 0.00381508469581604,
+      "actual_norm": 8.757163467369761,
+      "reference_norm": 8.770325177735858,
+      "passed": true
+    },
+    "l63_v_weight": {
+      "relative_l2": 0.004825145685118448,
+      "cosine": 0.9999887167026037,
+      "absolute_max": 0.0029279887676239014,
+      "actual_norm": 5.520548798787635,
+      "reference_norm": 5.525285025015103,
+      "passed": true
+    }
+  },
+  "adam_same_gradient": {
+    "norm": 41.822862120639144,
+    "clip": 0.023910366851630265,
+    "states": {
+      "master": {
+        "l60_a_log": {
+          "relative_l2": 0.0,
+          "cosine": 1.0000000000000002,
+          "absolute_max": 0.0,
+          "actual_norm": 15.737768620075164,
+          "reference_norm": 15.737768620075164,
+          "passed": true
+        },
+        "l60_a_weight": {
+          "relative_l2": 1.8023957970484703e-09,
+          "cosine": 1.0000000000000002,
+          "absolute_max": 3.725290298461914e-09,
+          "actual_norm": 7.836714659208399,
+          "reference_norm": 7.836714659141824,
+          "passed": true
+        },
+        "l60_b_weight": {
+          "relative_l2": 1.991600093468378e-09,
+          "cosine": 1.0000000000000013,
+          "absolute_max": 1.862645149230957e-09,
+          "actual_norm": 4.568792032527136,
+          "reference_norm": 4.56879203257386,
+          "passed": true
+        },
+        "l60_conv_weight": {
+          "relative_l2": 5.150141668080921e-10,
+          "cosine": 1.0,
+          "absolute_max": 7.450580596923828e-09,
+          "actual_norm": 16.74399722011063,
+          "reference_norm": 16.743997220167902,
+          "passed": true
+        },
+        "l60_dt_bias": {
+          "relative_l2": 0.0,
+          "cosine": 1.0000000000000002,
+          "absolute_max": 0.0,
+          "actual_norm": 17.013648842565615,
+          "reference_norm": 17.013648842565615,
+          "passed": true
+        },
+        "l60_norm_weight": {
+          "relative_l2": 0.0,
+          "cosine": 1.0000000000000002,
+          "absolute_max": 0.0,
+          "actual_norm": 11.687100259027222,
+          "reference_norm": 11.687100259027222,
+          "passed": true
+        },
+        "l60_out_weight": {
+          "relative_l2": 1.7954393623767079e-09,
+          "cosine": 0.9999999999999852,
+          "absolute_max": 7.450580596923828e-09,
+          "actual_norm": 88.84019712147234,
+          "reference_norm": 88.84019712152724,
+          "passed": true
+        },
+        "l60_qkv_weight": {
+          "relative_l2": 1.7194655721017722e-09,
+          "cosine": 0.9999999999999987,
+          "absolute_max": 7.450580596923828e-09,
+          "actual_norm": 126.33149334360884,
+          "reference_norm": 126.33149334354961,
+          "passed": true
+        },
+        "l60_z_weight": {
+          "relative_l2": 1.7910395433931355e-09,
+          "cosine": 0.9999999999999927,
+          "absolute_max": 7.450580596923828e-09,
+          "actual_norm": 88.3909015747026,
+          "reference_norm": 88.39090157468334,
+          "passed": true
+        },
+        "l61_a_log": {
+          "relative_l2": 0.0,
+          "cosine": 1.0,
+          "absolute_max": 0.0,
+          "actual_norm": 15.399054657975338,
+          "reference_norm": 15.399054657975338,
+          "passed": true
+        },
+        "l61_a_weight": {
+          "relative_l2": 1.6227313822612936e-09,
+          "cosine": 1.0000000000000004,
+          "absolute_max": 3.725290298461914e-09,
+          "actual_norm": 8.808426996426531,
+          "reference_norm": 8.808426996449708,
+          "passed": true
+        },
+        "l61_b_weight": {
+          "relative_l2": 1.962331510618004e-09,
+          "cosine": 0.9999999999999992,
+          "absolute_max": 3.725290298461914e-09,
+          "actual_norm": 5.267369378120863,
+          "reference_norm": 5.267369378058583,
+          "passed": true
+        },
+        "l61_conv_weight": {
+          "relative_l2": 8.425590322709129e-10,
+          "cosine": 1.0,
+          "absolute_max": 7.450580596923828e-09,
+          "actual_norm": 13.005192418863793,
+          "reference_norm": 13.005192418822586,
+          "passed": true
+        },
+        "l61_dt_bias": {
+          "relative_l2": 0.0,
+          "cosine": 0.9999999999999999,
+          "absolute_max": 0.0,
+          "actual_norm": 15.51333995762657,
+          "reference_norm": 15.51333995762657,
+          "passed": true
+        },
+        "l61_norm_weight": {
+          "relative_l2": 0.0,
+          "cosine": 1.0,
+          "absolute_max": 0.0,
+          "actual_norm": 13.568904666380964,
+          "reference_norm": 13.568904666380964,
+          "passed": true
+        },
+        "l61_out_weight": {
+          "relative_l2": 1.7840221926380267e-09,
+          "cosine": 0.9999999999999916,
+          "absolute_max": 3.725290298461914e-09,
+          "actual_norm": 90.36130782131801,
+          "reference_norm": 90.36130782132794,
+          "passed": true
+        },
+        "l61_qkv_weight": {
+          "relative_l2": 1.7585547031186266e-09,
+          "cosine": 0.9999999999999989,
+          "absolute_max": 7.450580596923828e-09,
+          "actual_norm": 119.25811117276136,
+          "reference_norm": 119.25811117280101,
+          "passed": true
+        },
+        "l61_z_weight": {
+          "relative_l2": 1.761972643538063e-09,
+          "cosine": 0.9999999999999953,
+          "absolute_max": 7.450580596923828e-09,
+          "actual_norm": 90.91530953344716,
+          "reference_norm": 90.91530953345767,
+          "passed": true
+        },
+        "l62_a_log": {
+          "relative_l2": 0.0,
+          "cosine": 1.0,
+          "absolute_max": 0.0,
+          "actual_norm": 15.370956001817406,
+          "reference_norm": 15.370956001817406,
+          "passed": true
+        },
+        "l62_a_weight": {
+          "relative_l2": 1.7966418468271447e-09,
+          "cosine": 1.0000000000000009,
+          "absolute_max": 7.450580596923828e-09,
+          "actual_norm": 8.632994619784407,
+          "reference_norm": 8.632994619737689,
+          "passed": true
+        },
+        "l62_b_weight": {
+          "relative_l2": 2.0218579971039713e-09,
+          "cosine": 1.0000000000000002,
+          "absolute_max": 1.862645149230957e-09,
+          "actual_norm": 4.698997869081315,
+          "reference_norm": 4.698997869056686,
+          "passed": true
+        },
+        "l62_conv_weight": {
+          "relative_l2": 2.026358276718737e-09,
+          "cosine": 0.9999999999999999,
+          "absolute_max": 2.9802322387695312e-08,
+          "actual_norm": 14.788494308908225,
+          "reference_norm": 14.78849430813914,
+          "passed": true
+        },
+        "l62_dt_bias": {
+          "relative_l2": 0.0,
+          "cosine": 1.0,
+          "absolute_max": 0.0,
+          "actual_norm": 25.137255960597415,
+          "reference_norm": 25.137255960597415,
+          "passed": true
+        },
+        "l62_norm_weight": {
+          "relative_l2": 0.0,
+          "cosine": 1.0,
+          "absolute_max": 0.0,
+          "actual_norm": 13.878107498262128,
+          "reference_norm": 13.878107498262128,
+          "passed": true
+        },
+        "l62_out_weight": {
+          "relative_l2": 1.7415084514628113e-09,
+          "cosine": 0.9999999999999863,
+          "absolute_max": 7.450580596923828e-09,
+          "actual_norm": 91.74868471679261,
+          "reference_norm": 91.74868471676012,
+          "passed": true
+        },
+        "l62_qkv_weight": {
+          "relative_l2": 1.703086026212615e-09,
+          "cosine": 0.9999999999999883,
+          "absolute_max": 1.4901161193847656e-08,
+          "actual_norm": 121.30794782267256,
+          "reference_norm": 121.30794782268114,
+          "passed": true
+        },
+        "l62_z_weight": {
+          "relative_l2": 1.7686847107703333e-09,
+          "cosine": 0.9999999999999825,
+          "absolute_max": 7.450580596923828e-09,
+          "actual_norm": 88.83758454389154,
+          "reference_norm": 88.83758454394868,
+          "passed": true
+        },
+        "l63_k_gamma": {
+          "relative_l2": 0.0,
+          "cosine": 1.0,
+          "absolute_max": 0.0,
+          "actual_norm": 8.675646283202346,
+          "reference_norm": 8.675646283202346,
+          "passed": true
+        },
+        "l63_k_weight": {
+          "relative_l2": 1.7934678365762565e-09,
+          "cosine": 1.000000000000001,
+          "absolute_max": 3.725290298461914e-09,
+          "actual_norm": 31.36407947628306,
+          "reference_norm": 31.364079476296858,
+          "passed": true
+        },
+        "l63_o_weight": {
+          "relative_l2": 1.5838755094829542e-09,
+          "cosine": 0.999999999999981,
+          "absolute_max": 7.450580596923828e-09,
+          "actual_norm": 100.38831124735059,
+          "reference_norm": 100.38831124733227,
+          "passed": true
+        },
+        "l63_q_gamma": {
+          "relative_l2": 0.0,
+          "cosine": 1.0,
+          "absolute_max": 0.0,
+          "actual_norm": 8.460470757958584,
+          "reference_norm": 8.460470757958584,
+          "passed": true
+        },
+        "l63_q_weight": {
+          "relative_l2": 1.8221758892365273e-09,
+          "cosine": 0.9999999999999851,
+          "absolute_max": 7.450580596923828e-09,
+          "actual_norm": 113.14684184172829,
+          "reference_norm": 113.14684184174405,
+          "passed": true
+        },
+        "l63_v_weight": {
+          "relative_l2": 1.3087830372576874e-09,
+          "cosine": 0.9999999999999993,
+          "absolute_max": 1.4901161193847656e-08,
+          "actual_norm": 60.48906856343942,
+          "reference_norm": 60.48906856339742,
+          "passed": true
+        }
+      },
+      "first": {
+        "l60_a_log": {
+          "relative_l2": 2.3650253361206414e-07,
+          "cosine": 1.0,
+          "absolute_max": 1.4551915228366852e-11,
+          "actual_norm": 6.184667914643274e-05,
+          "reference_norm": 6.184666452688779e-05,
+          "passed": true
+        },
+        "l60_a_weight": {
+          "relative_l2": 1.651914805070529e-07,
+          "cosine": 0.9999999999999742,
+          "absolute_max": 1.1641532182693481e-10,
+          "actual_norm": 0.0018087352151827285,
+          "reference_norm": 0.0018087349306633571,
+          "passed": true
+        },
+        "l60_b_weight": {
+          "relative_l2": 1.6456060331390832e-07,
+          "cosine": 0.9999999999999841,
+          "absolute_max": 1.7462298274040222e-10,
+          "actual_norm": 0.005116586277584704,
+          "reference_norm": 0.005116585489946656,
+          "passed": true
+        },
+        "l60_conv_weight": {
+          "relative_l2": 1.43927590441694e-07,
+          "cosine": 0.999999999999998,
+          "absolute_max": 5.587935447692871e-09,
+          "actual_norm": 0.08227628086536547,
+          "reference_norm": 0.08227626973634954,
+          "passed": true
+        },
+        "l60_dt_bias": {
+          "relative_l2": 7.213039088898158e-08,
+          "cosine": 0.9999999999999999,
+          "absolute_max": 1.8189894035458565e-12,
+          "actual_norm": 2.703308057861982e-05,
+          "reference_norm": 2.703307867908312e-05,
+          "passed": true
+        },
+        "l60_norm_weight": {
+          "relative_l2": 1.8161169426421433e-07,
+          "cosine": 0.9999999999999982,
+          "absolute_max": 5.820766091346741e-11,
+          "actual_norm": 0.00040970508536153686,
+          "reference_norm": 0.00040970501447631496,
+          "passed": true
+        },
+        "l60_out_weight": {
+          "relative_l2": 1.6601937207101087e-07,
+          "cosine": 0.9999999999992948,
+          "absolute_max": 2.3283064365386963e-10,
+          "actual_norm": 0.012558236595210884,
+          "reference_norm": 0.012558234638464711,
+          "passed": true
+        },
+        "l60_qkv_weight": {
+          "relative_l2": 1.7054223322568342e-07,
+          "cosine": 0.9999999999992965,
+          "absolute_max": 6.984919309616089e-10,
+          "actual_norm": 0.012417074258769242,
+          "reference_norm": 0.012417072270520245,
+          "passed": true
+        },
+        "l60_z_weight": {
+          "relative_l2": 1.664315905286753e-07,
+          "cosine": 1.000000000000024,
+          "absolute_max": 1.1641532182693481e-10,
+          "actual_norm": 0.005338828569198528,
+          "reference_norm": 0.005338827734852715,
+          "passed": true
+        },
+        "l61_a_log": {
+          "relative_l2": 2.453595548071494e-07,
+          "cosine": 0.9999999999999984,
+          "absolute_max": 1.8189894035458565e-12,
+          "actual_norm": 8.750731029433122e-06,
+          "reference_norm": 8.750728938087433e-06,
+          "passed": true
+        },
+        "l61_a_weight": {
+          "relative_l2": 1.574636656803198e-07,
+          "cosine": 0.9999999999999845,
+          "absolute_max": 7.275957614183426e-12,
+          "actual_norm": 0.00028619232435764724,
+          "reference_norm": 0.0002861922829465988,
+          "passed": true
+        },
+        "l61_b_weight": {
+          "relative_l2": 1.6435504079312245e-07,
+          "cosine": 0.9999999999999705,
+          "absolute_max": 4.3655745685100555e-11,
+          "actual_norm": 0.001360438585784026,
+          "reference_norm": 0.00136043837593105,
+          "passed": true
+        },
+        "l61_conv_weight": {
+          "relative_l2": 1.714835023545981e-07,
+          "cosine": 0.9999999999999978,
+          "absolute_max": 3.4924596548080444e-10,
+          "actual_norm": 0.007145540589954467,
+          "reference_norm": 0.007145539417827309,
+          "passed": true
+        },
+        "l61_dt_bias": {
+          "relative_l2": 1.2986813590857502e-07,
+          "cosine": 0.9999999999999994,
+          "absolute_max": 4.547473508864641e-13,
+          "actual_norm": 4.398234860644884e-06,
+          "reference_norm": 4.398234298013801e-06,
+          "passed": true
+        },
+        "l61_norm_weight": {
+          "relative_l2": 1.9645069318903027e-07,
+          "cosine": 0.9999999999999994,
+          "absolute_max": 2.9103830456733704e-11,
+          "actual_norm": 0.0001885696842572478,
+          "reference_norm": 0.00018856964787765306,
+          "passed": true
+        },
+        "l61_out_weight": {
+          "relative_l2": 1.645738441562386e-07,
+          "cosine": 0.9999999999991872,
+          "absolute_max": 1.1641532182693481e-10,
+          "actual_norm": 0.007966461912507033,
+          "reference_norm": 0.007966460684917478,
+          "passed": true
+        },
+        "l61_qkv_weight": {
+          "relative_l2": 1.6394518561648732e-07,
+          "cosine": 1.0000000000000806,
+          "absolute_max": 1.1641532182693481e-10,
+          "actual_norm": 0.005454123607850697,
+          "reference_norm": 0.0054541227697457225,
+          "passed": true
+        },
+        "l61_z_weight": {
+          "relative_l2": 1.669867307311873e-07,
+          "cosine": 0.9999999999997651,
+          "absolute_max": 2.3283064365386963e-10,
+          "actual_norm": 0.006875126998966626,
+          "reference_norm": 0.006875125919401166,
+          "passed": true
+        },
+        "l62_a_log": {
+          "relative_l2": 2.4008626610667203e-07,
+          "cosine": 0.9999999999999996,
+          "absolute_max": 1.4551915228366852e-11,
+          "actual_norm": 6.229108817693544e-05,
+          "reference_norm": 6.229107330134681e-05,
+          "passed": true
+        },
+        "l62_a_weight": {
+          "relative_l2": 1.5586213729276515e-07,
+          "cosine": 0.9999999999999948,
+          "absolute_max": 1.1641532182693481e-10,
+          "actual_norm": 0.0022375170969810964,
+          "reference_norm": 0.0022375167716698653,
+          "passed": true
+        },
+        "l62_b_weight": {
+          "relative_l2": 1.7163869048421436e-07,
+          "cosine": 0.9999999999999922,
+          "absolute_max": 3.4924596548080444e-10,
+          "actual_norm": 0.004344479535398619,
+          "reference_norm": 0.004344478840131277,
+          "passed": true
+        },
+        "l62_conv_weight": {
+          "relative_l2": 1.5311889003948537e-07,
+          "cosine": 0.9999999999999964,
+          "absolute_max": 1.862645149230957e-09,
+          "actual_norm": 0.03327906485746906,
+          "reference_norm": 0.03327906008532431,
+          "passed": true
+        },
+        "l62_dt_bias": {
+          "relative_l2": 1.1229696104205129e-07,
+          "cosine": 1.0,
+          "absolute_max": 3.637978807091713e-12,
+          "actual_norm": 3.43721902485535e-05,
+          "reference_norm": 3.4372186413634694e-05,
+          "passed": true
+        },
+        "l62_norm_weight": {
+          "relative_l2": 1.6295096360564218e-07,
+          "cosine": 0.9999999999999993,
+          "absolute_max": 5.820766091346741e-11,
+          "actual_norm": 0.0005741835862314544,
+          "reference_norm": 0.0005741834946895617,
+          "passed": true
+        },
+        "l62_out_weight": {
+          "relative_l2": 1.6588084106524105e-07,
+          "cosine": 0.999999999998624,
+          "absolute_max": 3.4924596548080444e-10,
+          "actual_norm": 0.013898191249160021,
+          "reference_norm": 0.013898189084622706,
+          "passed": true
+        },
+        "l62_qkv_weight": {
+          "relative_l2": 1.680606878546311e-07,
+          "cosine": 0.9999999999992241,
+          "absolute_max": 4.656612873077393e-10,
+          "actual_norm": 0.01387644474874464,
+          "reference_norm": 0.013876442552837253,
+          "passed": true
+        },
+        "l62_z_weight": {
+          "relative_l2": 1.6179629693338162e-07,
+          "cosine": 0.9999999999992869,
+          "absolute_max": 4.656612873077393e-10,
+          "actual_norm": 0.014474165864506,
+          "reference_norm": 0.014474163663614738,
+          "passed": true
+        },
+        "l63_k_gamma": {
+          "relative_l2": 1.558774814767979e-07,
+          "cosine": 0.9999999999999992,
+          "absolute_max": 1.4551915228366852e-11,
+          "actual_norm": 0.0002892309534732692,
+          "reference_norm": 0.0002892309102200816,
+          "passed": true
+        },
+        "l63_k_weight": {
+          "relative_l2": 1.6986803037963829e-07,
+          "cosine": 0.999999999999892,
+          "absolute_max": 4.656612873077393e-10,
+          "actual_norm": 0.009947606937795889,
+          "reference_norm": 0.009947605348567765,
+          "passed": true
+        },
+        "l63_o_weight": {
+          "relative_l2": 1.658965226170916e-07,
+          "cosine": 0.9999999999986623,
+          "absolute_max": 5.820766091346741e-11,
+          "actual_norm": 0.015112852641632032,
+          "reference_norm": 0.01511285028689816,
+          "passed": true
+        },
+        "l63_q_gamma": {
+          "relative_l2": 1.5197436904474364e-07,
+          "cosine": 0.9999999999999994,
+          "absolute_max": 1.4551915228366852e-11,
+          "actual_norm": 0.0002430401512439797,
+          "reference_norm": 0.0002430401157068713,
+          "passed": true
+        },
+        "l63_q_weight": {
+          "relative_l2": 1.6425511932422377e-07,
+          "cosine": 1.000000000000065,
+          "absolute_max": 3.4924596548080444e-10,
+          "actual_norm": 0.02093870198352068,
+          "reference_norm": 0.020938698751610287,
+          "passed": true
+        },
+        "l63_v_weight": {
+          "relative_l2": 1.6477530101073813e-07,
+          "cosine": 0.9999999999997952,
+          "absolute_max": 3.4924596548080444e-10,
+          "actual_norm": 0.013199836507925588,
+          "reference_norm": 0.013199834466641346,
+          "passed": true
+        }
+      },
+      "second": {
+        "l60_a_log": {
+          "relative_l2": 3.683755553798747e-07,
+          "cosine": 1.0,
+          "absolute_max": 1.3877787807814457e-16,
+          "actual_norm": 3.7673394240962104e-10,
+          "reference_norm": 3.767338036302126e-10,
+          "passed": true
+        },
+        "l60_a_weight": {
+          "relative_l2": 3.6050760106137153e-07,
+          "cosine": 1.0000000000000027,
+          "absolute_max": 1.7763568394002505e-14,
+          "actual_norm": 5.1228636770362905e-08,
+          "reference_norm": 5.1228618398651007e-08,
+          "passed": true
+        },
+        "l60_b_weight": {
+          "relative_l2": 2.829344610754091e-07,
+          "cosine": 0.9999999999999934,
+          "absolute_max": 2.842170943040401e-14,
+          "actual_norm": 1.5080988496384106e-07,
+          "reference_norm": 1.5080984600101478e-07,
+          "passed": true
+        },
+        "l60_conv_weight": {
+          "relative_l2": 3.087141431879563e-07,
+          "cosine": 0.9999999999999934,
+          "absolute_max": 3.637978807091713e-11,
+          "actual_norm": 0.00022267343707797988,
+          "reference_norm": 0.00022267337294262486,
+          "passed": true
+        },
+        "l60_dt_bias": {
+          "relative_l2": 9.708363209578856e-08,
+          "cosine": 1.0000000000000002,
+          "absolute_max": 6.938893903907228e-18,
+          "actual_norm": 7.150044066250147e-11,
+          "reference_norm": 7.150043372244869e-11,
+          "passed": true
+        },
+        "l60_norm_weight": {
+          "relative_l2": 3.152631918104881e-07,
+          "cosine": 0.9999999999999993,
+          "absolute_max": 2.6645352591003757e-15,
+          "actual_norm": 8.889668206309695e-09,
+          "reference_norm": 8.889665407546562e-09,
+          "passed": true
+        },
+        "l60_out_weight": {
+          "relative_l2": 3.303386964198513e-07,
+          "cosine": 0.9999999999999667,
+          "absolute_max": 5.684341886080802e-14,
+          "actual_norm": 2.4701556934435687e-07,
+          "reference_norm": 2.470154891127562e-07,
+          "passed": true
+        },
+        "l60_qkv_weight": {
+          "relative_l2": 4.27950433344925e-07,
+          "cosine": 1.0000000000000175,
+          "absolute_max": 3.979039320256561e-13,
+          "actual_norm": 9.870042748072943e-07,
+          "reference_norm": 9.870038564993774e-07,
+          "passed": true
+        },
+        "l60_z_weight": {
+          "relative_l2": 3.287640431842198e-07,
+          "cosine": 0.9999999999999996,
+          "absolute_max": 1.0658141036401503e-14,
+          "actual_norm": 6.360381467986755e-08,
+          "reference_norm": 6.360379410025642e-08,
+          "passed": true
+        },
+        "l61_a_log": {
+          "relative_l2": 4.0312787958513906e-07,
+          "cosine": 0.9999999999999993,
+          "absolute_max": 1.734723475976807e-18,
+          "actual_norm": 4.5226826833871164e-12,
+          "reference_norm": 4.522680869145101e-12,
+          "passed": true
+        },
+        "l61_a_weight": {
+          "relative_l2": 1.9657907870006531e-07,
+          "cosine": 1.0000000000000022,
+          "absolute_max": 1.6653345369377348e-16,
+          "actual_norm": 9.501141998529025e-10,
+          "reference_norm": 9.501140180024792e-10,
+          "passed": true
+        },
+        "l61_b_weight": {
+          "relative_l2": 3.316833990989963e-07,
+          "cosine": 1.0000000000000047,
+          "absolute_max": 1.7763568394002505e-15,
+          "actual_norm": 7.473180422047893e-09,
+          "reference_norm": 7.473178033865526e-09,
+          "passed": true
+        },
+        "l61_conv_weight": {
+          "relative_l2": 3.4345402337493204e-07,
+          "cosine": 1.0,
+          "absolute_max": 1.1368683772161603e-13,
+          "actual_norm": 6.782378598636202e-07,
+          "reference_norm": 6.782376335756949e-07,
+          "passed": true
+        },
+        "l61_dt_bias": {
+          "relative_l2": 1.7161483251280065e-07,
+          "cosine": 1.0,
+          "absolute_max": 2.168404344971009e-19,
+          "actual_norm": 1.3027626340277762e-12,
+          "reference_norm": 1.3027624115566294e-12,
+          "passed": true
+        },
+        "l61_norm_weight": {
+          "relative_l2": 3.3764417296328027e-07,
+          "cosine": 0.9999999999999994,
+          "absolute_max": 6.661338147750939e-16,
+          "actual_norm": 2.0160386068853654e-09,
+          "reference_norm": 2.0160379266046077e-09,
+          "passed": true
+        },
+        "l61_out_weight": {
+          "relative_l2": 2.788072880765738e-07,
+          "cosine": 1.0000000000000275,
+          "absolute_max": 1.4210854715202004e-14,
+          "actual_norm": 9.99952219506277e-08,
+          "reference_norm": 9.999519560677892e-08,
+          "passed": true
+        },
+        "l61_qkv_weight": {
+          "relative_l2": 2.7093912976407325e-07,
+          "cosine": 0.9999999999999909,
+          "absolute_max": 1.4210854715202004e-14,
+          "actual_norm": 9.112311843790255e-08,
+          "reference_norm": 9.112309419016681e-08,
+          "passed": true
+        },
+        "l61_z_weight": {
+          "relative_l2": 4.369863466145286e-07,
+          "cosine": 1.0000000000000002,
+          "absolute_max": 8.526512829121202e-14,
+          "actual_norm": 2.1377705241990134e-07,
+          "reference_norm": 2.1377696058652062e-07,
+          "passed": true
+        },
+        "l62_a_log": {
+          "relative_l2": 4.7208227692413637e-07,
+          "cosine": 0.9999999999999992,
+          "absolute_max": 1.6653345369377348e-16,
+          "actual_norm": 3.531185121340796e-10,
+          "reference_norm": 3.5311834544028527e-10,
+          "passed": true
+        },
+        "l62_a_weight": {
+          "relative_l2": 1.3516044337754667e-07,
+          "cosine": 0.999999999999994,
+          "absolute_max": 1.4210854715202004e-14,
+          "actual_norm": 1.156737817114983e-07,
+          "reference_norm": 1.1567376665553937e-07,
+          "passed": true
+        },
+        "l62_b_weight": {
+          "relative_l2": 4.079403896981133e-07,
+          "cosine": 0.99999999999999,
+          "absolute_max": 8.526512829121202e-14,
+          "actual_norm": 2.2366334969555694e-07,
+          "reference_norm": 2.2366326264982513e-07,
+          "passed": true
+        },
+        "l62_conv_weight": {
+          "relative_l2": 3.082899842254558e-07,
+          "cosine": 0.999999999999998,
+          "absolute_max": 2.7284841053187847e-12,
+          "actual_norm": 1.9241272866334587e-05,
+          "reference_norm": 1.9241267002956716e-05,
+          "passed": true
+        },
+        "l62_dt_bias": {
+          "relative_l2": 3.1751919633255683e-07,
+          "cosine": 1.0000000000000004,
+          "absolute_max": 3.469446951953614e-17,
+          "actual_norm": 1.0932562043316108e-10,
+          "reference_norm": 1.0932558572093035e-10,
+          "passed": true
+        },
+        "l62_norm_weight": {
+          "relative_l2": 2.374284350364601e-07,
+          "cosine": 0.9999999999999988,
+          "absolute_max": 3.552713678800501e-15,
+          "actual_norm": 1.8855612509260374e-08,
+          "reference_norm": 1.8855608102266848e-08,
+          "passed": true
+        },
+        "l62_out_weight": {
+          "relative_l2": 3.972898327864676e-07,
+          "cosine": 1.0000000000000147,
+          "absolute_max": 1.4210854715202004e-13,
+          "actual_norm": 3.944811338546193e-07,
+          "reference_norm": 3.944809810696659e-07,
+          "passed": true
+        },
+        "l62_qkv_weight": {
+          "relative_l2": 3.9312636278575547e-07,
+          "cosine": 1.00000000000001,
+          "absolute_max": 2.2737367544323206e-13,
+          "actual_norm": 8.454515841330813e-07,
+          "reference_norm": 8.454512586991794e-07,
+          "passed": true
+        },
+        "l62_z_weight": {
+          "relative_l2": 3.685792316605205e-07,
+          "cosine": 1.0000000000000053,
+          "absolute_max": 6.821210263296962e-13,
+          "actual_norm": 1.9222844179126576e-06,
+          "reference_norm": 1.9222837117965016e-06,
+          "passed": true
+        },
+        "l63_k_gamma": {
+          "relative_l2": 2.891335396591587e-07,
+          "cosine": 0.9999999999999928,
+          "absolute_max": 3.885780586188048e-16,
+          "actual_norm": 2.1492264140150697e-09,
+          "reference_norm": 2.1492258430945676e-09,
+          "passed": true
+        },
+        "l63_k_weight": {
+          "relative_l2": 4.0017471751207623e-07,
+          "cosine": 0.9999999999999887,
+          "absolute_max": 1.4210854715202004e-13,
+          "actual_norm": 3.840200948566288e-07,
+          "reference_norm": 3.840199425660185e-07,
+          "passed": true
+        },
+        "l63_o_weight": {
+          "relative_l2": 3.2257760725493137e-07,
+          "cosine": 0.9999999999997173,
+          "absolute_max": 3.552713678800501e-15,
+          "actual_norm": 4.747556180109771e-08,
+          "reference_norm": 4.747554713355816e-08,
+          "passed": true
+        },
+        "l63_q_gamma": {
+          "relative_l2": 2.3341016568303767e-07,
+          "cosine": 0.9999999999999959,
+          "absolute_max": 2.220446049250313e-16,
+          "actual_norm": 1.7419153521393998e-09,
+          "reference_norm": 1.7419149832243915e-09,
+          "passed": true
+        },
+        "l63_q_weight": {
+          "relative_l2": 3.218904501356659e-07,
+          "cosine": 1.000000000000073,
+          "absolute_max": 1.7053025658242404e-13,
+          "actual_norm": 9.89396344187066e-07,
+          "reference_norm": 9.893960313772987e-07,
+          "passed": true
+        },
+        "l63_v_weight": {
+          "relative_l2": 2.986728187920043e-07,
+          "cosine": 0.9999999999999787,
+          "absolute_max": 1.7053025658242404e-13,
+          "actual_norm": 8.5080211990357e-07,
+          "reference_norm": 8.50801870365874e-07,
+          "passed": true
+        }
+      }
+    }
+  },
+  "publication_checked": true,
+  "publication_exact": {
+    "l60_a_log": true,
+    "l61_a_log": true,
+    "l62_a_log": true,
+    "l63_k_gamma": true,
+    "l63_q_gamma": true,
+    "l60_a_weight": true,
+    "l60_b_weight": true,
+    "l60_conv_weight": true,
+    "l60_dt_bias": true,
+    "l60_norm_weight": true,
+    "l60_out_weight": true,
+    "l60_qkv_weight": true,
+    "l60_z_weight": true,
+    "l61_a_weight": true,
+    "l61_b_weight": true,
+    "l61_conv_weight": true,
+    "l61_dt_bias": true,
+    "l61_norm_weight": true,
+    "l61_out_weight": true,
+    "l61_qkv_weight": true,
+    "l61_z_weight": true,
+    "l62_a_weight": true,
+    "l62_b_weight": true,
+    "l62_conv_weight": true,
+    "l62_dt_bias": true,
+    "l62_norm_weight": true,
+    "l62_out_weight": true,
+    "l62_qkv_weight": true,
+    "l62_z_weight": true,
+    "l63_k_weight": true,
+    "l63_o_weight": true,
+    "l63_q_weight": true,
+    "l63_v_weight": true
+  },
+  "final_loss": 6.866640418767929,
+  "npu_final_master_forward_checked": true,
+  "npu_final_master_reference_loss": 0.002941139340691734,
+  "npu_final_loss": 0.0029072603429085575,
+  "npu_final_forward_relative_error": 0.011519004664093375
+}

@@ -117,6 +117,17 @@ def run(a):
                 print(json.dumps(dict(event="torch_fixed_batch",**report["updates"][-1])),flush=True);persist()
         with torch.no_grad():
             report["final_loss"]=sum(float(reference.loss(block,**meta)[0]) for block,meta in zip(blocks,captured["blocks"],strict=True))
+        npu_path=Path(captured["arguments"]["output"])
+        npu=json.loads(npu_path.read_text())
+        report["npu_final_master_forward_checked"]=False
+        if npu.get("completed"):
+            # 另用 NPU 的最终 master 重算，检查更新后的训练前向是否仍使用正确参数。
+            reference.masters=load_file(str(directory/"final.master.safetensors"))
+            with torch.no_grad():
+                value=sum(float(reference.loss(block,**meta)[0]) for block,meta in zip(blocks,captured["blocks"],strict=True))
+            report.update(npu_final_master_forward_checked=True,npu_final_master_reference_loss=value,
+                          npu_final_loss=npu["final_loss"],
+                          npu_final_forward_relative_error=abs(value-npu["final_loss"])/max(abs(value),1e-30))
         report["passed"]=(all(item["replay_logits"]["relative_l2"]<.02 for item in forward)
             and all(v["passed"] for key in ("gradient_first","gradient_accumulated") for v in report[key].values())
             and all(v["passed"] for entries in checks.values() for v in entries.values())
