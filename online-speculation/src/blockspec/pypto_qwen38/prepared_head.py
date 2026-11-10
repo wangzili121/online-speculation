@@ -131,5 +131,6 @@ def save(head, directory, *, last_layer=None, layer_banks=None, worker=None):
     manifest = dict(format=FORMAT, contract=contract(head), runtime_tp=head.layout.size,
                     runtime_rank=head.layout.rank, producer_pypto=PYPTO_COMMIT,
                     payload_bytes=len(data), payload_sha256=digest.hexdigest())
-    (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (directory / "manifest.json.part").write_text(json.dumps(manifest, indent=2) + "\n")
+    (directory / "manifest.json.part").rename(directory / "manifest.json")
     return manifest

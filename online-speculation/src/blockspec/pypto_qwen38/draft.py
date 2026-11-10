@@ -269,6 +269,8 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
             if self.worker is not None:
                 raise RuntimeError("model runner is already started")
             if weight_backend == "pypto":
+                # 原生交付包的文件身份校验先执行，避免路径有误时仍准备 head 和编译训练图。
+                runtime.TextWeights(self.model_root)
                 head.prepare_on_device(self.config)
             samples = runtime.single_meta_samples()
             self.prefill = runtime.prefill_fwd.compile(*samples, 1, config=self.config)
