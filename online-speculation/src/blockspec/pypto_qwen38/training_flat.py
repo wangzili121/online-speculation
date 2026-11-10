@@ -149,3 +149,29 @@ def make_summary(max_norm):
     def entry(sums: pl.Tensor, flags: pl.Tensor, output: pl.Out[pl.Tensor]):
         calculate(sums,flags,output,device=0)
     return entry
+
+
+def make_flat_zero(elements, dtype="fp32"):
+    """大 flat 使用有界任务网格；不能按 256 元素直接展开成上百万个任务。"""
+    if (type(elements) is not int or elements < 64 or elements%64
+            or elements > 4096 and elements%4096 or dtype not in {"bf16","fp32"}):
+        raise ValueError("4096-aligned large or 64-aligned small flat buffer required")
+    import pypto.language as pl
+    N,T = elements,min(4096,elements)
+    D = pl.BF16 if dtype == "bf16" else pl.FP32
+
+    @pl.jit
+    def zero(result: pl.Out[pl.Tensor]):
+        out = pl.reshape(result,[N//T,T])
+        with pl.spmd((N//T+15)//16,name_hint="orthrus_suffix_flat_zero"):
+            first = pl.tile.get_block_idx()*16
+            for part in pl.range(16):
+                row = first+part
+                if row < N//T:
+                    out[row:row+1,0:T] = pl.full([1,T],dtype=D,value=0.)
+        return result
+
+    @pl.jit.host
+    def entry(result: pl.Out[pl.Tensor]):
+        zero(result,device=0)
+    return entry

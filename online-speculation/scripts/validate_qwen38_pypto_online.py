@@ -42,6 +42,17 @@ def main():
         engine.start()
         native, draft = engine.runner.native, engine.runner.draft
         learner = draft.learner
+        def audit_zero(optimizer):
+            if args.last_layers == 1:
+                return
+            original = optimizer.zero_grad
+            def zero():
+                original()
+                norm,_ = optimizer.statistics(optimizer.candidate[0])
+                assert norm == 0., ("gradient buffer not fully cleared",norm)
+                report.setdefault("gradient_zero_checks",[]).append(dict(step=optimizer.steps,passed=True))
+            optimizer.zero_grad = zero
+        audit_zero(learner.optimizer)
         initial_version = draft.weights.version
         if args.resume_online is not None:
             assert initial_version == learner.optimizer.steps > 0
@@ -133,6 +144,7 @@ def main():
         draft.weights.version = 0
         learner.optimizer.close()
         learner.optimizer = DeviceOptimizer(learner.optimization, learner.trainer)
+        audit_zero(learner.optimizer)
         restore(learner.optimizer, learner.publisher, checkpoint, learner.head_identity)
         assert learner.optimizer.steps == draft.weights.version == version
         for _ in range(args.replay_blocks):

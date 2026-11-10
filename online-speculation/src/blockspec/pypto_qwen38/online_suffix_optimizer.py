@@ -3,8 +3,7 @@
 import math
 from math import prod
 
-from .loading_programs import make_zero
-from .training_flat import FlatLayout, make_initialize, make_render, make_summary
+from .training_flat import FlatLayout, make_initialize, make_render, make_summary, make_flat_zero
 from .training_optimizer_programs import make_accumulate, make_reduce, make_stats, make_norm_equal
 from .training_programs import make_adam
 
@@ -22,9 +21,9 @@ class SuffixOptimizerPrograms:
         self.render = make_render(self.layout).compile(f,table,b,s,config=config)
         self.adam = make_adam(shape).compile(*[f]*7,1e-5,.1,.001,1.,config=config)
         self.accumulate = make_accumulate(shape).compile(f,f,f,config=config)
-        self.zero = make_zero(shape,"fp32").compile(f,config=config)
-        self.zero_raw = make_zero(shape,"bf16").compile(b,config=config)
-        self.zero_special = make_zero(self.layout.special_shape,"fp32").compile(s,config=config)
+        self.zero = make_flat_zero(self.layout.elements,"fp32").compile(f,config=config)
+        self.zero_raw = make_flat_zero(self.layout.elements,"bf16").compile(b,config=config)
+        self.zero_special = make_flat_zero(self.layout.special_elements,"fp32").compile(s,config=config)
         entry,rows = make_stats(shape)
         self.stat = entry.compile(f,meta((rows,8)),meta((rows,8)),config=config)
         self.reductions,self.counts = [],[rows]
