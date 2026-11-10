@@ -149,6 +149,14 @@ def audit_warm_initialization(learner, checkpoint):
                 counters=[0, 0, 0], device_state_sha256=rows)
 
 
+def choose_width(sweep):
+    """只按开发集总吞吐选宽度，拒绝不满足输出一致性的候选。"""
+    if not sweep or any(entry["split"] != "dev" or not entry["summary"]["greedy_equal_all"]
+                        for entry in sweep):
+        raise ValueError("width selection requires lossless development measurements")
+    return max(sweep, key=lambda entry: entry["summary"]["tokens_per_second"])["width"]
+
+
 def publish_initial_suffix(learner):
     """初始化参数也使用同一组驻留 bank，避免把更新后的少上传参数误算成学习收益。"""
     if learner.updates or learner.optimizer.steps or learner.publisher.version:
@@ -260,6 +268,7 @@ def main():
     p.add_argument("--continue-from", type=Path, help="完整实验 JSON；从其中的 Adam checkpoint 接着训练")
     p.add_argument("--warm-from", type=Path, help="已完成预热的实验 JSON；加载 head，重置 Adam，用新问题在线更新")
     p.add_argument("--confirm-count", type=int, default=0, help="预先留出的额外测试题，仅在最终 head 上评测一次")
+    p.add_argument("--sweep-widths", default="", help="最终 head 在 dev 上比较的活跃宽度，如 4,8,16,32；物理缓冲仍为 K32")
     p.add_argument("--frozen-stream-control", action="store_true",
                    help="按相同训练请求额外测初始化冻结 head，直接对照在线净吞吐")
     a = p.parse_args()
@@ -269,6 +278,9 @@ def main():
         p.error("require new output, two devices, valid positive budgets and total context <=512")
     previous = json.loads(a.continue_from.read_text()) if a.continue_from else None
     warm = json.loads(a.warm_from.read_text()) if a.warm_from else None
+    sweep_widths = sorted(set(map(int, filter(None, a.sweep_widths.split(",")))))
+    if sweep_widths and (min(sweep_widths) < 2 or max(sweep_widths) > 32 or not a.confirm_count):
+        p.error("width sweep requires widths in 2..32 and an independent confirmation set")
     if (a.confirm_count < 0 or a.confirm_count and warm is None or
             warm is not None and (previous is not None or a.frozen_stream_control)):
         p.error("confirmation requires warm start; warm start excludes continuation/AR-initial frozen control")
@@ -521,13 +533,29 @@ def main():
         start = time.monotonic()
         save(learner.optimizer, checkpoint, learner.head_identity)
         report["checkpoint"] = dict(path=str(checkpoint), seconds=time.monotonic()-start)
+        if sweep_widths:
+            report["width_sweep"] = []
+            for width in sweep_widths:
+                runner.draft.block_size = width
+                refs, rows = [], []
+                for row in splits["dev"]:
+                    refs.append(measure(row, target=True))
+                    rows.append(measure(row))
+                entry = dict(width=width, split="dev", step=learner.updates, rows=rows,
+                             target_rows=refs, summary=summarize(rows, target=refs))
+                report["width_sweep"].append(entry)
+                emit("width_sweep", dict(width=width, **entry["summary"]))
+            runner.draft.block_size = choose_width(report["width_sweep"])
+            report["selected_width"] = runner.draft.block_size
         if a.confirm_count:
             refs, rows = [], []
             for row in splits["confirm"]:
                 refs.append(measure(row, target=True))
                 rows.append(measure(row))
             report["confirmation"] = dict(step=learner.updates, rows=rows, target_rows=refs,
-                summary=summarize(rows, target=refs), selection="predeclared final update; no test-driven selection")
+                width=runner.draft.block_size, summary=summarize(rows, target=refs),
+                selection="predeclared final update; width chosen on dev" if sweep_widths else
+                          "predeclared final update and width; no test-driven selection")
             if not report["confirmation"]["summary"]["greedy_equal_all"]:
                 raise AssertionError("confirmation output differs from paired target")
             emit("confirmation", report["confirmation"]["summary"])

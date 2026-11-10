@@ -13,6 +13,7 @@ PyPTO 另提供 `--online --last-layers N`：根据验证反馈，在 NPU 上重
 真实尺寸反向已完成独立 autograd 对照并修复长词表梯度读取问题；last-1 / last-4 的固定反馈训练、梯度累积、Adam 与执行参数转换通过检查。[诊断与修复](online-speculation/docs/QWEN38_PYPTO_TRAINING_DIAGNOSIS.md)包含实际 loss 曲线；原故障版本的效果测量保留作追溯，不作为训练效果结论。
 
 [在线效果实验](online-speculation/docs/QWEN38_PYPTO_ONLINE_EFFECT.md)提供 GSM8K 请求流上的初始化、last-1、last-4 及同题 AR 对照入口，分别统计固定 head 推理和计入更新成本的吞吐。
+真实 27B 的 last-1 / last-4 对照、接受长度、反馈覆盖及预热后接续配置见[在线学习对照](online-speculation/docs/QWEN38_PYPTO_ONLINE_STUDY.md)。
 
 [初始化 head 的 KL 预热](online-speculation/docs/QWEN38_PYPTO_COLD_KL.md)提供完整 AR 回答回放、随机 anchor 和整块监督入口，用于比较 last-1、last-4 冷启动训练；原有 TV 在线续训保留。
 

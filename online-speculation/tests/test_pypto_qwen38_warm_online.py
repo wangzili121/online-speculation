@@ -75,3 +75,16 @@ def test_initialization_audit_reads_actual_device_states(tmp_path, monkeypatch, 
         result = module.audit_warm_initialization(learner, tmp_path)
         assert result["master_equal"] and result["adam_moments_zero"] and result["serving_equal"]
         assert result["counters"] == [0, 0, 0]
+
+
+def test_width_selection_uses_dev_throughput_not_acceptance_count():
+    rows = [dict(width=32, split="dev", summary=dict(greedy_equal_all=True, tokens_per_second=4,
+                                                   accepted_per_round=2)),
+            dict(width=4, split="dev", summary=dict(greedy_equal_all=True, tokens_per_second=6,
+                                                  accepted_per_round=1))]
+    assert module.choose_width(rows) == 4
+    rows[1]["summary"]["greedy_equal_all"] = False
+    with pytest.raises(ValueError, match="lossless"): module.choose_width(rows)
+    rows[1]["summary"]["greedy_equal_all"] = True
+    rows[1]["split"] = "test"
+    with pytest.raises(ValueError, match="development"): module.choose_width(rows)

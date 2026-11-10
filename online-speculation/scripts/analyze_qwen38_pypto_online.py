@@ -122,6 +122,8 @@ def analyze(report, *, allow_incomplete=False):
         validate_evaluation(entry)
     if report.get("confirmation"):
         validate_evaluation(dict(test=report["confirmation"]))
+    for group in report.get("width_sweep", []):
+        validate_evaluation(dict(dev=group))
     valid = Counter(n for row in updates for n in row["feedback_valid_rows"])
     result = dict(last_layers=arguments["last_layers"], completed=report.get("completed", False),
         updates=len(updates), training_questions=len(report["train"]),
@@ -151,6 +153,10 @@ def analyze(report, *, allow_incomplete=False):
             raise ValueError("unpaired or non-lossless stream comparison")
     if report.get("confirmation"):
         result["confirmation"] = report["confirmation"]["summary"]
+        result["selected_width"] = report["confirmation"]["width"]
+    if report.get("width_sweep"):
+        result["width_sweep"] = [dict(width=group["width"], **group["summary"])
+                                 for group in report["width_sweep"]]
     return result
 
 

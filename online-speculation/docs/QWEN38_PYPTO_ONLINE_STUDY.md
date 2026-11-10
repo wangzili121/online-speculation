@@ -54,6 +54,8 @@
 
 后续方案使用 dev 作选择，这组 12 题 test 作为探索性对照；接续实验另预留 24 个未使用测试题，只评估预先指定的最终 head。预热与接续结果单独记录。
 
+当前 last-4 最终固定 head 的每轮耗时约 0.545 s；按同题 AR 吞吐估算，每轮约需交付 4.0 个 token 才能追平 AR。这只是当前工作负载下的成本估算。接续实验保持 K32 做训练与首尾对照，再在最终固定 head 上用 dev 比较 K=4、8、16、32 的真实吞吐，选出的活跃宽度仅在额外 24 题上确认。物理缓冲与编译规格仍为 K32，不重新训练 head，不强制接受候选。
+
 ## 补充验证与预热入口
 
 统计入口同时记录各候选偏移获得直接教师监督的次数。这与梯度覆盖不同：较远位置仍能经共享参数和双向 Attention 获得间接梯度。
@@ -69,6 +71,8 @@
 在线对照入口为 `scripts/benchmark_qwen38_pypto_online.py`。主参数为 `--last-layers 1` 或 `4`、`--steps 128 --eval-steps 0,16,64,128 --width 32 --tokens 64 --stride 8 --replay-blocks 8 --learning-rate 1e-5 --warmup-steps 8 --frozen-stream-control --skip-calibration`。
 
 同一入口的 `--warm-from <已完成预热的 JSON> --confirm-count 24` 用于加载预热权重后，以新优化器进行 TV 在线更新。它排除预热用过的问题，保留原 dev/test，并检查设备上的 master 参数与 checkpoint 逐值相同、Adam 动量为零、更新计数从零开始。该选项与保留 Adam 状态的 `--continue-from` 含义不同，也不使用仅适用于 AR-copy 初态的 `--frozen-stream-control`。
+
+增加 `--sweep-widths 4,8,16,32` 后，以 dev 的总 token / 总耗时选择最终活跃宽度，再对确认集运行一次。接受长度与候选接受比例一并记录，但不将较高接受比例直接当作较高吞吐。
 
 服务入口 `scripts/serve_qwen38_pypto.py` 对应使用 `--online --resume-online <checkpoint目录> --reset-online-optimizer`。省略最后一个选项则恢复原 Adam 状态继续训练。两种方式均严格检查基模、模板 head 和 last-N 参数布局，不接受不匹配的 checkpoint。
 
