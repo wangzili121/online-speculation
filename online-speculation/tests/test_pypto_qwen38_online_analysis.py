@@ -37,3 +37,25 @@ def test_duplicate_or_changed_question_sets_are_rejected():
 def test_unfinished_runs_are_not_presented_as_final_results():
     with pytest.raises(ValueError, match="complete run"):
         module.analyze(dict(completed=False))
+
+
+def test_stream_audit_checks_raw_outputs_and_all_update_ownership():
+    report = dict(arguments={}, dataset=dict(splits=dict(train=[dict(id="train")])),
+        train=[dict(id="train", tokens=[1], updates=1)], updates=[{}],
+        online_net=dict(target_rows=[dict(id="train", tokens=[1])]))
+    module.validate_stream(report)
+    report["train"][0]["updates"] = 0
+    with pytest.raises(ValueError, match="outside"):
+        module.validate_stream(report)
+    report["train"][0]["updates"] = 1
+    report["train"][0]["tokens"] = [2]
+    with pytest.raises(ValueError, match="paired target"):
+        module.validate_stream(report)
+    report["train"][0]["id"] = "dev"
+    with pytest.raises(ValueError, match="partition"):
+        module.validate_stream(report)
+
+
+def test_feedback_coverage_distinguishes_token_count_from_prediction_horizon():
+    # 100 块各监督前两位，只有 1 块看到了第三位；不是每个位置都监督了 201 次。
+    assert module.supervision_coverage({2: 100, 3: 1}, 5) == [101, 101, 1, 0]

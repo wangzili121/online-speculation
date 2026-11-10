@@ -21,12 +21,22 @@ class ReplayJob:
             raise ValueError("sorted distinct anchors and complete clean blocks with nonempty history required")
 
 
-def sample_jobs(records, rng: random.Random, *, width, records_per_update=2, anchors_per_record=4):
-    if records_per_update > len(records):
+def anchor_candidates(record, width, *, answer_only=False):
+    start = record.get("answer_start") if answer_only else 1
+    if type(start) is not int or not 1 <= start <= len(record["tokens"]):
+        raise ValueError("valid answer_start required for answer-only replay")
+    return range(start, len(record["tokens"])-width+1)
+
+
+def sample_jobs(records, rng: random.Random, *, width, records_per_update=2, anchors_per_record=4,
+                answer_only=False):
+    pool = ([row for row in records if len(anchor_candidates(row, width, answer_only=True)) >= anchors_per_record]
+            if answer_only else list(records))
+    if records_per_update > len(pool):
         raise ValueError("not enough distinct response records")
     jobs = []
-    for record in rng.sample(list(records), records_per_update):
-        candidates = range(1, len(record["tokens"])-width+1)
+    for record in rng.sample(pool, records_per_update):
+        candidates = anchor_candidates(record, width, answer_only=answer_only)
         if len(candidates) < anchors_per_record:
             raise ValueError("record too short for distinct anchors")
         anchors = tuple(sorted(rng.sample(candidates, anchors_per_record)))

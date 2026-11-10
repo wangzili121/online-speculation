@@ -64,3 +64,17 @@ def test_sampling_uses_distinct_records_and_reproducible_complete_anchors():
     assert len({job.record_id for job in a})==2
     assert all(len(job.anchors)==4 and min(job.anchors)>=1 and max(job.anchors)+8<=40 for job in a)
     with pytest.raises(ValueError):ReplayJob("q",tuple(range(10)),(5,),8)
+
+
+def test_answer_only_sampling_excludes_long_prompts_with_short_answers():
+    records = [dict(id=str(i), tokens=list(range(160)), answer_start=100) for i in range(3)]
+    records.append(dict(id="short", tokens=list(range(130)), answer_start=125))
+    jobs = sample_jobs(records, random.Random(42), width=32, answer_only=True)
+    assert all(job.record_id != "short" and min(job.anchors) >= 100 for job in jobs)
+    assert all(max(job.anchors)+32 <= len(job.tokens) for job in jobs)
+    assert jobs == sample_jobs(records, random.Random(42), width=32, answer_only=True)
+    with pytest.raises(ValueError, match="not enough"):
+        sample_jobs(records, random.Random(42), width=32, answer_only=True, records_per_update=4)
+    with pytest.raises(ValueError, match="answer_start"):
+        sample_jobs([dict(id="missing", tokens=list(range(160)))], random.Random(42),
+                    width=32, answer_only=True, records_per_update=1)

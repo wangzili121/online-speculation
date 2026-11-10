@@ -13,6 +13,7 @@ def main():
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--source", type=Path)
     p.add_argument("--replay-report", type=Path, required=True)
+    p.add_argument("--dense-rows", type=int, choices=(31, 32), help="补测满块稠密梯度和最后一行")
     a = p.parse_args()
     import torch
     import pypto
@@ -60,11 +61,18 @@ def main():
         single[0] = delta[0]
         tail = torch.zeros_like(delta)
         tail[0, -1] = 1
-        for name, value, rows in (
+        cases = [
             ("real_delta", delta, valid),
             ("single_row", single, 1),
             ("vocab_last_column", tail, 1),
-        ):
+        ]
+        if a.dense_rows is not None:
+            dense = (torch.randn(delta.shape, generator=torch.Generator().manual_seed(7421)) * 1e-4).bfloat16()
+            dense[a.dense_rows:] = 0
+            last = torch.zeros_like(delta)
+            last[-1, -1] = 1
+            cases += [("dense_rows", dense, a.dense_rows), ("last_row_vocab_tail", last, delta.shape[0])]
+        for name, value, rows in cases:
             worker.copy_to(da.data_ptr, value.data_ptr(), value.numel() * 2)
             start = time.monotonic()
             worker.run(program, da, db, dc, config=config)

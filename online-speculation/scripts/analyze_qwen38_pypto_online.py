@@ -20,6 +20,12 @@ def prefix_length(rows):
     return values["accepted"] / values["rounds"] if values["rounds"] else None
 
 
+def supervision_coverage(histogram, width):
+    """第 i 个候选只有在 valid > i 时获得本块的教师监督。"""
+    return [sum(count for valid, count in histogram.items() if valid > position)
+            for position in range(width-1)]
+
+
 def paired_rows(before, after):
     left = {row["id"]: row for row in before}
     right = {row["id"]: row for row in after}
@@ -65,6 +71,28 @@ def validate_evaluation(entry):
                 raise ValueError("evaluation changed the head")
 
 
+def validate_stream(report):
+    """独立核对原始请求，而不只信任报告里已经算好的汇总标记。"""
+    training = report["train"]
+    permitted = {row["id"] for row in report["dataset"]["splits"]["train"]}
+    if any(row["id"] not in permitted for row in training):
+        raise ValueError("online requests escaped the training partition")
+    if sum(row["updates"] for row in training) != len(report["updates"]):
+        raise ValueError("updates occurred outside the accounted training requests")
+    targets = report["online_net"]["target_rows"]
+    for rows in (training, report.get("frozen_stream", {}).get("rows", training)):
+        actual, refs = paired_rows(rows, targets)
+        if any(row["tokens"] != ref["tokens"] for row, ref in zip(actual, refs)):
+            raise ValueError("stream output differs from its paired target")
+    if report["arguments"].get("frozen_stream_control"):
+        if not report.get("frozen_stream") or not report.get("frozen_initial_control"):
+            raise ValueError("missing frozen initial-head control")
+        if report.get("prefix_sharing_control") and not report.get("continuation") and (
+                report["frozen_initial_control"]["first_draft_logits_sha256"] !=
+                report["prefix_sharing_control"]["shared"]["first_draft_logits_sha256"]):
+            raise ValueError("frozen head did not reproduce the initial logits")
+
+
 def analyze(report, *, allow_incomplete=False):
     if not report.get("completed") and not allow_incomplete:
         raise ValueError("complete run required")
@@ -83,6 +111,8 @@ def analyze(report, *, allow_incomplete=False):
             raise ValueError("incomplete feedback batch")
     if report.get("completed") and (len(updates) != arguments["steps"] or not report.get("clean_shutdown")):
         raise ValueError("unfinished update budget or worker cleanup")
+    if report.get("completed"):
+        validate_stream(report)
     splits = report["dataset"]["splits"]
     hashes = [row["question_sha256"] for values in splits.values() for row in values]
     if len(set(hashes)) != len(hashes):
@@ -95,6 +125,7 @@ def analyze(report, *, allow_incomplete=False):
         updates=len(updates), training_questions=len(report["train"]),
         training=totals(report["train"]), supervised_positions=sum(row["reached_positions"] for row in updates),
         feedback_valid_row_histogram=dict(sorted(valid.items())),
+        supervised_blocks_by_candidate_offset=supervision_coverage(valid, arguments["width"]),
         feedback_mean_valid_rows=statistics.mean(list(valid.elements())) if valid else None,
         update_seconds=sum(row["seconds"] for row in updates),
         median_update_seconds=statistics.median(row["seconds"] for row in updates) if updates else None,

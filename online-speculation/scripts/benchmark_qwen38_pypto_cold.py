@@ -36,7 +36,7 @@ def response_records(source, dataset):
         tokens=[*prompts[row["id"]]["prompt_ids"],*row["tokens"]]
         if any(type(t) is not int or not 0<=t<248320 for t in tokens):
             raise ValueError("invalid clean token ID")
-        records.append(dict(id=row["id"], tokens=tokens))
+        records.append(dict(id=row["id"], tokens=tokens, answer_start=len(prompts[row["id"]]["prompt_ids"])))
     return records, sum(row["seconds"] for row in rows)
 
 
@@ -50,8 +50,7 @@ def replay_loss(learner):
     optimizer.zero_grad()
     try:
         for item in learner.replay:
-            for name,value in item.inputs.items():
-                learner.bridge.copy(learner.native.worker,value,learner.trainer,item.training_inputs[name])
+            item.transfer()
             inputs = {**learner.shared,**item.training_inputs,**optimizer.tensors()}
             learner.workspace.run(inputs,past=item.past,width=item.width,valid=item.valid,
                                   normalizer=positions,gradients=gradients)
@@ -81,6 +80,7 @@ def main():
     p.add_argument("--warmup-steps",type=int,default=8)
     p.add_argument("--records-per-update",type=int,default=2)
     p.add_argument("--anchors-per-record",type=int,default=4)
+    p.add_argument("--answer-only",action="store_true",help="只从已交付回答中选择 anchor，完整预测块不跨出回答")
     p.add_argument("--seed",type=int,default=857)
     p.add_argument("--tokens",type=int,default=48)
     p.add_argument("--test-count",type=int,default=8)
@@ -100,7 +100,7 @@ def main():
     from blockspec.pypto_qwen38.head import HeadSource
     from blockspec.pypto_qwen38.online import OnlineConfig
     from blockspec.pypto_qwen38.ar_prefix import borrow_prefix
-    from blockspec.pypto_qwen38.cold_replay import ReplayRunner, sample_jobs
+    from blockspec.pypto_qwen38.cold_replay import ReplayRunner, sample_jobs, anchor_candidates
     source = json.loads(a.records_report.read_text())
     batch = a.records_per_update*a.anchors_per_record
     options = OnlineConfig(objective=a.objective,last_layers=a.last_layers,stride=batch,replay_blocks=batch,
@@ -140,6 +140,10 @@ def main():
         records,collection_seconds = response_records(source,dataset)
         report["records"] = records
         report["collection_seconds"] = collection_seconds
+        sample_jobs(records,random.Random(a.seed),width=a.width,records_per_update=a.records_per_update,
+                    anchors_per_record=a.anchors_per_record,answer_only=a.answer_only)
+        report["eligible_training_record_ids"] = [row["id"] for row in records
+            if len(anchor_candidates(row,a.width,answer_only=a.answer_only))>=a.anchors_per_record]
         if any(len(row["tokens"])>512 for row in records):
             raise ValueError("clean response exceeds pinned total context")
         persist()
@@ -167,8 +171,10 @@ def main():
             rate = a.learning_rate*min(1.,(learner.updates+1)/a.warmup_steps)
             learner.options = replace(learner.options,learning_rate=rate)
             start = time.monotonic()
+            valid = [item.valid for item in learner.replay]
             result = original_update()
-            entry = dict(step=learner.updates,seconds=time.monotonic()-start,learning_rate=rate,**result)
+            entry = dict(step=learner.updates,seconds=time.monotonic()-start,learning_rate=rate,
+                         feedback_valid_rows=valid,**result)
             report["updates"].append(entry)
             emit("update",**entry)
             if learner.updates in audit_steps:
@@ -187,11 +193,13 @@ def main():
             meter.mode="real_head"
             meter.reset()
             before = (runner.rounds,runner.accepted,learner.updates)
+            version = runner.draft.weights.version
             result=generate(engine,row,a.tokens,a.request_timeout)
-            if learner.updates!=before[2]:
+            if learner.updates!=before[2] or runner.draft.weights.version!=version:
                 raise AssertionError("held-out inference updated the head")
             result.update(rounds=runner.rounds-before[0],accepted=runner.accepted-before[1],
-                          proposed=meter.candidates,draft_phases=dict(meter.phases))
+                          proposed=meter.candidates,head_version_before=version,
+                          head_version_after=runner.draft.weights.version,draft_phases=dict(meter.phases))
             return result
 
         def evaluate(step,final=False):
@@ -201,6 +209,8 @@ def main():
                 for row in dataset["splits"][name]:
                     refs.append(measure(row,True));rows.append(measure(row))
                 entry[name]=dict(rows=rows,target_rows=refs,summary=summarize(rows,target=refs))
+                if not entry[name]["summary"]["greedy_equal_all"]:
+                    raise AssertionError("held-out speculative output differs from target")
             report["evaluations"].append(entry)
             emit("heldout",step=step,**{k:v["summary"] for k,v in entry.items() if k!="step" and v})
 
@@ -213,7 +223,7 @@ def main():
             while learner.updates<goal:
                 expected=learner.updates+1
                 jobs=sample_jobs(records,rng,width=a.width,records_per_update=a.records_per_update,
-                                 anchors_per_record=a.anchors_per_record)
+                                 anchors_per_record=a.anchors_per_record,answer_only=a.answer_only)
                 for job in jobs:
                     idle(engine)
                     replay.job=job
