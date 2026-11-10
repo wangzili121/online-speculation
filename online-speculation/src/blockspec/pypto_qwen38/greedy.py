@@ -57,14 +57,19 @@ def verify_transaction(target, anchor, candidates, *, budget, stop_tokens=()):
         raise
 
 
-def verify_tiled(target, anchor, candidates, *, budget, stop_tokens=(), rows=16):
+def verify_tiled(target, anchor, candidates, *, budget, stop_tokens=(), rows=16, partial_teacher=False):
     """按原生 verifier tile 验证，遇到拒绝便不计算后续 tile；仍提交同一 AR 前缀。
 
-    在线教师采集当前要求完整 K 行，因此采集时保留原事务路径。
+    默认保留完整教师采集；partial_teacher 仅采集已执行 tile，并要求覆盖全部受监督行。
     此入口仅改变验证调用的编排，复用原生 forward、快照与回放。
     """
-    if getattr(target, "collector", None) is not None:
+    collector = getattr(target, "collector", None)
+    if collector is not None and not partial_teacher:
         return verify_transaction(target, anchor, candidates, budget=budget, stop_tokens=stop_tokens)
+    if collector is not None:
+        if not hasattr(collector, "prefix_only"):
+            raise ValueError("partial teacher capture requires a prefix-aware feedback collector")
+        collector.prefix_only = True
     candidates = tuple(candidates)
     if (not candidates or type(rows) is not int or rows < 1 or type(budget) is not int or budget < 1 or
             any(type(token) is not int or token < 0 for token in (anchor, *candidates))):
@@ -91,8 +96,15 @@ def verify_tiled(target, anchor, candidates, *, budget, stop_tokens=(), rows=16)
         if result is None:
             result = correct(candidates, predictions, budget=budget, stop_tokens=stop_tokens)
         if result.committed_inputs < len(predictions):
-            target.restore(snapshot)
-            target.forward(inputs[:result.committed_inputs])
+            # 回放只修复 AR 状态，不应把同一批教师行再次追加到反馈块。
+            if collector is not None:
+                target.collector = None
+            try:
+                target.restore(snapshot)
+                target.forward(inputs[:result.committed_inputs])
+            finally:
+                if collector is not None:
+                    target.collector = collector
         return result
     except BaseException:
         target.restore(snapshot)

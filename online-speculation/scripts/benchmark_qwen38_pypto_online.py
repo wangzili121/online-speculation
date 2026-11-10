@@ -115,6 +115,33 @@ def warm_dataset(previous, candidate, *, train_count, confirm_count):
             "excluded_prewarm_record_ids": sorted(excluded)}
 
 
+def continued_dataset(previous, candidate, *, train_count):
+    """恢复预热后续训的数据划分，保留已排除的问题和原留出集。"""
+    old = previous["dataset"]
+    if candidate["files_sha256"] != old["files_sha256"]:
+        raise ValueError("continuation raw data changed")
+    for name in ("calibration", "dev"):
+        if candidate["splits"][name] != old["splits"][name]:
+            raise ValueError("continuation changed held-out prompts")
+    if candidate["splits"]["test"][:len(old["splits"]["test"])] != old["splits"]["test"]:
+        raise ValueError("continuation changed held-out test prompts")
+    excluded = set(old.get("excluded_prewarm_record_ids", []))
+    available = {row["id"]: row for row in candidate["splits"]["train"]}
+    if not excluded <= available.keys():
+        raise ValueError("continuation lost the prewarm exclusion records")
+    used_hashes = {available[key]["question_sha256"] for key in excluded}
+    train = [row for row in candidate["splits"]["train"] if row["id"] not in excluded
+             and row["question_sha256"] not in used_hashes][:train_count]
+    if len(train) != train_count:
+        raise ValueError("continuation does not have enough fresh training questions")
+    splits = {**old["splits"], "train": train}
+    all_hashes = [row["question_sha256"] for rows in splits.values() for row in rows]
+    if len(set(all_hashes)) != len(all_hashes):
+        raise ValueError("continuation training and held-out questions overlap")
+    return {**candidate, "splits": splits, "tokenized_sha256": digest(splits),
+            **({"excluded_prewarm_record_ids": sorted(excluded)} if excluded else {})}
+
+
 def audit_warm_initialization(learner, checkpoint):
     """从设备读回 master 与 Adam 动量，确认加载权重而非延续旧优化器。"""
     import torch
@@ -183,6 +210,8 @@ def check_continuation(previous, dataset, arguments):
         raise ValueError("continuation must preserve frozen stream control")
     if previous["arguments"].get("verification_backend", "full") != arguments.get("verification_backend", "full"):
         raise ValueError("continuation must preserve verifier settings")
+    if previous["arguments"].get("partial_teacher_capture", False) != arguments.get("partial_teacher_capture", False):
+        raise ValueError("continuation must preserve teacher capture settings")
     before = previous["dataset"]
     if before["files_sha256"] != dataset["files_sha256"] or any(
             before["splits"][split] != dataset["splits"][split] for split in ("calibration", "dev", "test")):
@@ -272,6 +301,8 @@ def main():
     p.add_argument("--confirm-count", type=int, default=0, help="预先留出的额外测试题，仅在最终 head 上评测一次")
     p.add_argument("--sweep-widths", default="", help="最终 head 在 dev 上比较的活跃宽度，如 4,8,16,32；物理缓冲仍为 K32")
     p.add_argument("--verification-backend", choices=("full", "tiled"), default="full")
+    p.add_argument("--partial-teacher-capture", action="store_true",
+                   help="tiled 验证只采集覆盖受监督前缀的教师行")
     p.add_argument("--frozen-stream-control", action="store_true",
                    help="按相同训练请求额外测初始化冻结 head，直接对照在线净吞吐")
     a = p.parse_args()
@@ -324,6 +355,8 @@ def main():
             p.error("checkpoint does not match the completed run's final step")
         for key in ("updates", "train", "evaluations", "calibration"):
             report[key] = list(previous[key])
+        if "warm_start" in previous:
+            report.update(initialization=previous["initialization"], warm_start=previous["warm_start"])
         if "calibration_target" in previous:
             report["calibration_target"] = previous["calibration_target"]
         report["continuation"] = dict(previous_report=str(a.continue_from),
@@ -346,13 +379,19 @@ def main():
         head = HeadSource(a.model)  # 无 head_dir：每层从同一主模型 AR 参数复制，非随机权重。
         engine = make_engine(a.source, a.model, a.device, head, head_transfer="packed",
                              attention_backend="paged", group_size=4, gdn_backend="vector",
-                             online_config=options, verification_backend=a.verification_backend)
+                             online_config=options, verification_backend=a.verification_backend,
+                             partial_teacher_capture=a.partial_teacher_capture)
+        extra_train = len(warm["records"]) if warm else (
+            len(previous["dataset"].get("excluded_prewarm_record_ids", [])) if previous else 0)
+        prior_confirm = len(previous["dataset"]["splits"].get("confirm", [])) if previous else 0
         dataset = report["dataset"] = prepare_questions(a.data, engine.tokenizer, seed=a.seed,
-            max_prompt=a.max_prompt, train_count=a.train_count + (len(warm["records"]) if warm else 0),
-            dev_count=a.dev_count, test_count=a.test_count+a.confirm_count)
+            max_prompt=a.max_prompt, train_count=a.train_count+extra_train,
+            dev_count=a.dev_count, test_count=a.test_count+a.confirm_count+prior_confirm)
         if warm is not None:
             dataset = report["dataset"] = warm_dataset(warm, dataset, train_count=a.train_count,
                                                        confirm_count=a.confirm_count)
+        elif previous is not None:
+            dataset = report["dataset"] = continued_dataset(previous, dataset, train_count=a.train_count)
         if (a.data/"provenance.json").exists():
             dataset["source"] = json.loads((a.data/"provenance.json").read_text())
         train_offset = check_continuation(previous, dataset, report["arguments"]) if previous else 0
@@ -373,7 +412,7 @@ def main():
         report["initial_resident_suffix"] = sorted(runner.draft.weights.overrides)
         report["head_identity"] = learner.head_identity
         report["initial_head_sha256"] = hashlib.sha256(memoryview(head.shared_weights.numpy())).hexdigest()
-        if warm is not None:
+        if warm is not None or previous is not None and "warm_start" in previous:
             # 模板 head 的 SHA 不代表已经加载的预热参数；实际初态绑定 checkpoint 和设备读回。
             report["template_head_sha256"] = report.pop("initial_head_sha256")
         meter = DraftMeter(runner.draft)
@@ -386,9 +425,10 @@ def main():
             learner.options = replace(learner.options, learning_rate=rate)
             start = time.monotonic()
             valid = [item.valid for item in learner.replay]
+            captured = [item.rows for item in learner.replay]
             result = update_original()
             record = dict(step=learner.updates, learning_rate=rate, seconds=time.monotonic()-start,
-                          feedback_valid_rows=valid, **result)
+                          feedback_valid_rows=valid, feedback_captured_rows=captured, **result)
             report["updates"].append(record)
             emit("update", record)
             # 在准确的更新步数暂停；该请求剩下的 token 用固定版本完成，不额外学习。

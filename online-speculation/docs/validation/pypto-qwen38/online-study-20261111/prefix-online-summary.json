@@ -1,0 +1,233 @@
+{
+  "runs": [
+    {
+      "last_layers": 4,
+      "completed": true,
+      "updates": 64,
+      "training_questions": 22,
+      "training": {
+        "rounds": 549,
+        "accepted": 830,
+        "proposed": 12961,
+        "output_tokens": 1408,
+        "seconds": 333.40176006779075
+      },
+      "supervised_positions": 1272,
+      "feedback_valid_row_histogram": {
+        "1": 13,
+        "2": 266,
+        "3": 206,
+        "4": 26,
+        "5": 1
+      },
+      "supervised_blocks_by_candidate_offset": [
+        512,
+        499,
+        233,
+        27,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "feedback_mean_valid_rows": 2.484375,
+      "update_seconds": 88.92154242377728,
+      "median_update_seconds": 1.38502288563177,
+      "first8_mean_tv": 0.4622759181074798,
+      "last8_mean_tv": 0.39321091903093475,
+      "dev_curve": [
+        {
+          "step": 0,
+          "requests": 4,
+          "output_tokens": 256,
+          "seconds": 47.92991668730974,
+          "tokens_per_second": 5.341131754309524,
+          "rounds": 113,
+          "accepted": 139,
+          "proposed": 2604,
+          "accepted_per_round": 1.2300884955752212,
+          "candidate_acceptance": 0.05337941628264209,
+          "greedy_equal_requests": 4,
+          "greedy_equal_all": true,
+          "target_tokens_per_second": 7.40614693750195,
+          "measured_tps_ratio": 0.7211755045344882,
+          "lossless_speedup": 0.7211755045344882
+        },
+        {
+          "step": 16,
+          "requests": 4,
+          "output_tokens": 256,
+          "seconds": 45.95200466364622,
+          "tokens_per_second": 5.57103007526738,
+          "rounds": 106,
+          "accepted": 144,
+          "proposed": 2479,
+          "accepted_per_round": 1.3584905660377358,
+          "candidate_acceptance": 0.05808793868495361,
+          "greedy_equal_requests": 4,
+          "greedy_equal_all": true,
+          "target_tokens_per_second": 7.418239589479492,
+          "measured_tps_ratio": 0.7509908527581376,
+          "lossless_speedup": 0.7509908527581376
+        },
+        {
+          "step": 64,
+          "requests": 4,
+          "output_tokens": 256,
+          "seconds": 41.67923591658473,
+          "tokens_per_second": 6.142147147619233,
+          "rounds": 95,
+          "accepted": 154,
+          "proposed": 2238,
+          "accepted_per_round": 1.6210526315789473,
+          "candidate_acceptance": 0.06881143878462913,
+          "greedy_equal_requests": 4,
+          "greedy_equal_all": true,
+          "target_tokens_per_second": 7.416954122561449,
+          "measured_tps_ratio": 0.8281225751330439,
+          "lossless_speedup": 0.8281225751330439
+        }
+      ],
+      "dev": {
+        "questions": 4,
+        "before": 1.2300884955752212,
+        "after": 1.6210526315789473,
+        "delta": 0.39096413600372615,
+        "ci95": [
+          0.28535353535353525,
+          0.5642512077294686
+        ],
+        "improved_questions": 4,
+        "bootstrap_samples": 10000,
+        "bootstrap_seed": 20261111,
+        "steps": [
+          0,
+          64
+        ],
+        "initial_summary": {
+          "requests": 4,
+          "output_tokens": 256,
+          "seconds": 47.92991668730974,
+          "tokens_per_second": 5.341131754309524,
+          "rounds": 113,
+          "accepted": 139,
+          "proposed": 2604,
+          "accepted_per_round": 1.2300884955752212,
+          "candidate_acceptance": 0.05337941628264209,
+          "greedy_equal_requests": 4,
+          "greedy_equal_all": true,
+          "target_tokens_per_second": 7.40614693750195,
+          "measured_tps_ratio": 0.7211755045344882,
+          "lossless_speedup": 0.7211755045344882
+        },
+        "final_summary": {
+          "requests": 4,
+          "output_tokens": 256,
+          "seconds": 41.67923591658473,
+          "tokens_per_second": 6.142147147619233,
+          "rounds": 95,
+          "accepted": 154,
+          "proposed": 2238,
+          "accepted_per_round": 1.6210526315789473,
+          "candidate_acceptance": 0.06881143878462913,
+          "greedy_equal_requests": 4,
+          "greedy_equal_all": true,
+          "target_tokens_per_second": 7.416954122561449,
+          "measured_tps_ratio": 0.8281225751330439,
+          "lossless_speedup": 0.8281225751330439
+        }
+      },
+      "test": {
+        "questions": 12,
+        "before": 1.3229813664596273,
+        "after": 1.7655677655677655,
+        "delta": 0.44258639910813824,
+        "ci95": [
+          0.3864506426032266,
+          0.5114351057747284
+        ],
+        "improved_questions": 12,
+        "bootstrap_samples": 10000,
+        "bootstrap_seed": 20261111,
+        "steps": [
+          0,
+          64
+        ],
+        "initial_summary": {
+          "requests": 12,
+          "output_tokens": 768,
+          "seconds": 139.69063574727625,
+          "tokens_per_second": 5.497863159485083,
+          "rounds": 322,
+          "accepted": 426,
+          "proposed": 7577,
+          "accepted_per_round": 1.3229813664596273,
+          "candidate_acceptance": 0.05622277946416788,
+          "greedy_equal_requests": 12,
+          "greedy_equal_all": true,
+          "target_tokens_per_second": 7.390875612801807,
+          "measured_tps_ratio": 0.7438716936275022,
+          "lossless_speedup": 0.7438716936275022
+        },
+        "final_summary": {
+          "requests": 12,
+          "output_tokens": 768,
+          "seconds": 117.92541291937232,
+          "tokens_per_second": 6.512591145431012,
+          "rounds": 273,
+          "accepted": 482,
+          "proposed": 6428,
+          "accepted_per_round": 1.7655677655677655,
+          "candidate_acceptance": 0.07498444306160548,
+          "greedy_equal_requests": 12,
+          "greedy_equal_all": true,
+          "target_tokens_per_second": 7.403330856353741,
+          "measured_tps_ratio": 0.8796839249513924,
+          "lossless_speedup": 0.8796839249513922
+        }
+      },
+      "online_net": {
+        "summary": {
+          "requests": 22,
+          "output_tokens": 1408,
+          "seconds": 333.40176006779075,
+          "tokens_per_second": 4.223133074383623,
+          "rounds": 549,
+          "accepted": 830,
+          "proposed": 12961,
+          "accepted_per_round": 1.51183970856102,
+          "candidate_acceptance": 0.06403826865211018,
+          "greedy_equal_requests": 22,
+          "greedy_equal_all": true,
+          "target_tokens_per_second": 7.353212081304574,
+          "measured_tps_ratio": 0.5743249382294946,
+          "lossless_speedup": 0.5743249382294946
+        },
+        "update_seconds": 88.92154242377728
+      }
+    }
+  ]
+}

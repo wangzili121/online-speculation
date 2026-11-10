@@ -88,3 +88,26 @@ def test_width_selection_uses_dev_throughput_not_acceptance_count():
     rows[1]["summary"]["greedy_equal_all"] = True
     rows[1]["split"] = "test"
     with pytest.raises(ValueError, match="development"): module.choose_width(rows)
+
+
+def test_continuation_keeps_warm_exclusions_and_grows_the_fresh_stream():
+    old, candidate = inputs()
+    dataset = module.warm_dataset(old, candidate, train_count=2, confirm_count=2)
+    candidate["splits"]["train"].append(dict(id="h", question_sha256="h", prompt_ids=[1]))
+    result = module.continued_dataset(dict(dataset=dataset), candidate, train_count=3)
+    assert [row["id"] for row in result["splits"]["train"]] == ["b", "e", "h"]
+    assert result["splits"]["train"][:2] == dataset["splits"]["train"]
+    assert result["excluded_prewarm_record_ids"] == ["a"]
+    assert result["splits"]["confirm"] == dataset["splits"]["confirm"]
+
+
+@pytest.mark.parametrize("problem", ("data", "exclusion", "prompt", "overlap"))
+def test_continuation_refuses_changed_data_or_reintroduced_prewarm_questions(problem):
+    old, candidate = inputs()
+    dataset = deepcopy(module.warm_dataset(old, candidate, train_count=2, confirm_count=2))
+    if problem == "data": candidate["files_sha256"]["test"] = "changed"
+    if problem == "exclusion": candidate["splits"]["train"].pop(0)
+    if problem == "prompt": candidate["splits"]["calibration"][0]["prompt_ids"] = [99]
+    if problem == "overlap": candidate["splits"]["train"][1]["question_sha256"] = "f"
+    with pytest.raises(ValueError):
+        module.continued_dataset(dict(dataset=dataset), candidate, train_count=2)

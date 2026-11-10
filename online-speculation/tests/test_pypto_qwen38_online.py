@@ -52,6 +52,23 @@ def test_feedback_supervises_only_reached_rows():
         OnlineConfig(last_layers=4)
 
 
+@pytest.mark.parametrize("prefix,rows,accepted,count,allowed", (
+    (False, 16, 1, 2, False), (True, 16, 1, 2, True), (True, 1, 1, 2, False),
+    (True, 16, 15, 16, True), (True, 16, 16, 17, False), (True, 33, 1, 2, False)))
+def test_partial_capture_requires_every_supervised_teacher_row(prefix, rows, accepted, count, allowed):
+    learner = OnlineLearner(None, OnlineConfig(stride=16, replay_blocks=2))
+    block = FeedbackBlock(learner, {})
+    block.width, block.rows, block.prefix_only = 32, rows, prefix
+    learner.current = block
+    result = SimpleNamespace(accepted=accepted, tokens=tuple(range(count)))
+    if not allowed:
+        with pytest.raises(RuntimeError, match="incomplete teacher"): learner.observe(result)
+    else:
+        learner.observe(result)
+        assert block.valid == min(accepted+1, 31, count)
+        assert list(learner.replay) == [block]
+
+
 def test_checkpoint_binds_head_and_tensor_schema(tmp_path):
     import json
     from safetensors.torch import save_file

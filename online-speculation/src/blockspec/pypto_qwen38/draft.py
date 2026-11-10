@@ -248,7 +248,8 @@ class NeuralDraft:
 
 def make_runner(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
                 attention_backend="native", group_size=1, gdn_backend="native", device_serving=True,
-                weight_backend="pypto", online_config=None, verification_backend="full", **callbacks):
+                weight_backend="pypto", online_config=None, verification_backend="full",
+                partial_teacher_capture=False, **callbacks):
     """Create a native runner with additional graphs; leave native source intact."""
     runtime = native_module(source, "runtime")
     if weight_backend not in {"pypto", "host"}:
@@ -361,12 +362,12 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
     native.weight_backend = weight_backend
     native.learner = learner
     return OrthrusRunner(native, draft, native_module(source, "schedule").BatchSlot,
-                         verification_backend=verification_backend)
+                         verification_backend=verification_backend, partial_teacher_capture=partial_teacher_capture)
 
 
 def make_engine(source, model_root, device, head, *, head_storage="auto", head_transfer="individual",
                 attention_backend="native", group_size=1, gdn_backend="native", device_serving=True, weight_backend="pypto",
-                online_config=None, verification_backend="full"):
+                online_config=None, verification_backend="full", partial_teacher_capture=False):
     class Engine(native_module(source, "engine").InferenceEngine):
         def start(self):
             if online_config is None:
@@ -394,6 +395,8 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                                      head_preparation_backend=head.preparation_backend,
                                      draft_group_size=runner.draft.group_size,
                                      verification_backend=runner.verification_backend,
+                                     partial_teacher_capture=runner.partial_teacher_capture,
+                                     head_storage_release=getattr(runner.draft,"head_storage_release",None),
                                      head_preparation_seconds=head.preparation_seconds,
                                      last_draft_timings=dict(runner.draft.last_timings))
             if runner.native.learner is not None:
@@ -413,6 +416,7 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                                 weight_backend=weight_backend,
                                 online_config=online_config,
                                 verification_backend=verification_backend,
+                                partial_teacher_capture=partial_teacher_capture,
                                 on_cache_event=engine._on_cache)
     engine.scheduler.runner = engine.runner
     return engine

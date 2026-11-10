@@ -46,6 +46,7 @@ class FeedbackBlock:
         self.owner, self.inputs = owner, inputs
         self.training_inputs = inputs
         self.rows = self.valid = self.past = self.width = 0
+        self.prefix_only = False
 
     def transfer(self):
         """只传受监督行的教师分布；其余激活保持完整，避免尾部影响反向。"""
@@ -204,6 +205,7 @@ class OnlineLearner:
         if block is None:
             block = self.replay.popleft()
         block.past, block.width, block.rows, block.valid = past, width, 0, 0
+        block.prefix_only = False
         self.current = block
         self.run(self.history_program, *self.native.resident[2:], draft.table,
                  block.inputs["history_key"], block.inputs["history_value"], past)
@@ -215,9 +217,10 @@ class OnlineLearner:
         block, self.current = self.current, None
         self.rounds += 1
         if block is not None:
-            if block.rows != block.width:
-                raise RuntimeError("incomplete teacher distribution capture")
             block.valid = min(result.accepted + 1, block.width - 1, len(result.tokens))
+            if (not 1 <= block.valid <= block.rows <= block.width or
+                    not block.prefix_only and block.rows != block.width):
+                raise RuntimeError("incomplete teacher distribution capture")
             self.replay.append(block)
         if self.rounds % self.options.stride == 0 and self.replay:
             try:

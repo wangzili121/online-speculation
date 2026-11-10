@@ -109,6 +109,10 @@ def analyze(report, *, allow_incomplete=False):
             raise ValueError("supervised row accounting mismatch")
         if len(row["feedback_valid_rows"]) != arguments["replay_blocks"]:
             raise ValueError("incomplete feedback batch")
+        if "feedback_captured_rows" in row and (len(row["feedback_captured_rows"]) != arguments["replay_blocks"] or
+                any(captured < valid or captured > 32 for captured, valid in
+                    zip(row["feedback_captured_rows"], row["feedback_valid_rows"], strict=True))):
+            raise ValueError("teacher capture does not cover the supervised prefix")
     if report.get("completed") and (len(updates) != arguments["steps"] or not report.get("clean_shutdown")):
         raise ValueError("unfinished update budget or worker cleanup")
     if report.get("completed"):
@@ -174,6 +178,8 @@ def main():
         if (any(report["arguments"][k] != first["arguments"][k] for k in common)
                 or report["arguments"].get("verification_backend", "full") !=
                 first["arguments"].get("verification_backend", "full")
+                or report["arguments"].get("partial_teacher_capture", False) !=
+                first["arguments"].get("partial_teacher_capture", False)
                 or report["dataset"]["tokenized_sha256"] != first["dataset"]["tokenized_sha256"]):
             raise ValueError("controlled runs changed the data or hyperparameters")
         if (report.get("initial_head_sha256") and first.get("initial_head_sha256")

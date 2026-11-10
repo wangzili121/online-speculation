@@ -1,4 +1,8 @@
-# Qwen3.8 Orthrus 在线学习对照
+# Qwen3.8 Orthrus 在线更新与推理验证
+
+真实 27B、Ascend A2 上已打通预热 checkpoint 加载、在线更新和 HTTP/SSE 服务。分块验证将固定 head 吞吐从 4.30 提高到 5.39 token/s；减少无用教师采集后，含更新的请求吞吐从 3.52 提高到 4.22 token/s，64 步后的完整 Adam checkpoint 与对照逐字节一致。以下分别记录学习效果、实现优化和验收范围。
+
+## 初始化在线学习对照
 
 本实验从主模型复制参数初始化 draft，检查原有 TV 在线更新能否提高独立请求的连续接受长度，以及收益能否覆盖更新成本。last-1 与 last-4 使用相同数据顺序、初始化和超参；各自的第 0 步作为冻结 head 对照。
 
@@ -93,6 +97,23 @@ last-4 在 36 道训练问题的完整 AR 回答上完成 128 次更新，共 1,
 
 CPU 验证覆盖全部 5,376 种拒绝/EOS/预算/tile 组合，并检查分页回收与循环状态回放。后端接入后的整套 CPU 回归为 577 项；新增入口检查另为 41 项。独立 NPU 结果见 `raw/tiled-verifier-last4-dev-r1.json`。
 
+## 预热后的在线更新与教师采集对照
+
+从 KL 预热 checkpoint 恢复权重、清零 Adam 后，在未用于预热的 22 道问题上完成 64 次 last-4 TV 更新。12 题 test 的平均接受数从 1.323 到 1.766，配对差值的 95% 区间为 +0.386～+0.511；K32 固定 head 吞吐从 5.48 到 6.41 token/s，同题 AR 为 7.36 token/s。
+
+为减少在线采集的无用计算，增加显式的前缀采集选项：在已执行的原生 tile 内覆盖全部受监督行后，跳过拒绝之后的 tile；回滚重放期间不重复追加教师数据。干净回答的离线整块监督保持不变。
+
+| 同一请求流、同一 64 步更新 | 完整教师采集 | 前缀教师采集 |
+| --- | ---: | ---: |
+| 在线净吞吐，含更新 | 3.52 token/s | 4.22 token/s |
+| 直接监督位置数 | 1,272 | 1,272 |
+| 逐步 loss / 梯度范数 / 裁剪比例 | 与右侧逐值相同 | 与左侧逐值相同 |
+| 最终 FP32 master 和两组 Adam 动量 | 完整 payload SHA256 相同 | 完整 payload SHA256 相同 |
+
+两组分别使用同一节点的 0/2 和 3/4 卡。请求、接受结果和更新计划完全一致，吞吐改善约 20.0%；按各自同题 AR 吞吐归一后为 19.5%。结果与状态比对见 `teacher-capture-comparison.json`，不是通过更少训练标签获得的收益。
+
+在最终固定 head 上，dev 的 K=4/8/16/32 吞吐分别为 6.56/6.34/6.20/6.13 token/s，因此选择 K=4。额外 24 道独立确认题为 6.60 token/s，同题 AR 为 7.34 token/s，全部输出逐 token 一致。这组小预算 head 在已测配置上仍未超过 AR；后续的小窗口实验另用新的确认题。
+
 ## 复现与权重接续
 
 在线对照入口为 `scripts/benchmark_qwen38_pypto_online.py`。主参数为 `--last-layers 1` 或 `4`、`--steps 128 --eval-steps 0,16,64,128 --width 32 --tokens 64 --stride 8 --replay-blocks 8 --learning-rate 1e-5 --warmup-steps 8 --frozen-stream-control --skip-calibration`。
@@ -100,6 +121,8 @@ CPU 验证覆盖全部 5,376 种拒绝/EOS/预算/tile 组合，并检查分页�
 同一入口的 `--warm-from <已完成预热的 JSON> --confirm-count 24` 用于加载预热权重后，以新优化器进行 TV 在线更新。它排除预热用过的问题，保留原 dev/test，并检查设备上的 master 参数与 checkpoint 逐值相同、Adam 动量为零、更新计数从零开始。该选项与保留 Adam 状态的 `--continue-from` 含义不同，也不使用仅适用于 AR-copy 初态的 `--frozen-stream-control`。
 
 增加 `--sweep-widths 4,8,16,32` 后，以 dev 的总 token / 总耗时选择最终活跃宽度，再对确认集运行一次。接受长度与候选接受比例一并记录，但不将较高接受比例直接当作较高吞吐。
+
+`--continue-from` 恢复在线实验的完整 Adam 状态，也保留预热题排除名单和留出集，从尚未使用的训练问题继续。旧确认集不会作为新的独立确认再次运行；恢复数据划分的真实 tokenizer 检查及新增 CPU 用例单独记录。
 
 服务入口 `scripts/serve_qwen38_pypto.py` 对应使用 `--online --resume-online <checkpoint目录> --reset-online-optimizer`。省略最后一个选项则恢复原 Adam 状态继续训练。两种方式均严格检查基模、模板 head 和 last-N 参数布局，不接受不匹配的 checkpoint。
 
@@ -116,5 +139,7 @@ python scripts/serve_qwen38_pypto.py \
 ```
 
 服务默认使用 `warn` 级别运行时日志；需要逐次 kernel 计时记录时，显式增加 `--runtime-log-level timing`。
+
+该服务入口已用真实 27B 和预热 checkpoint 完成 HTTP 验证：加载后的 master 与文件一致、Adam 动量清零、推理卡参数与学习器一致。普通输出与 SSE 各生成 64 个 token，均与 AR 参照逐 token 相同；服务期间完成 7 次在线更新，head 版本从 0 增至 7，最后一次 loss 和梯度均有限，请求队列清空后服务正常关闭。原始结果为 `raw/warm-service-last4-r1.json`。
 
 结果原始记录、独立汇总与监督器退出状态位于 [实验记录目录](validation/pypto-qwen38/online-study-20261111/)。权重 checkpoint 保留在实验服务器，未将模型参数提交到仓库。

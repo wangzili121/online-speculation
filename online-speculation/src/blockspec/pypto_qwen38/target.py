@@ -140,13 +140,16 @@ class OrthrusRunner:
     token at a time; buffered tokens require no extra model invocation.
     """
 
-    def __init__(self, native, draft, slot_type, *, verification_backend="full"):
+    def __init__(self, native, draft, slot_type, *, verification_backend="full", partial_teacher_capture=False):
         if getattr(native, "device_ids", None):
             raise ValueError("Orthrus transaction adapter currently requires the native TP1 runner")
         if verification_backend not in {"full", "tiled"}:
             raise ValueError("verification backend must be full or tiled")
+        if type(partial_teacher_capture) is not bool or partial_teacher_capture and verification_backend != "tiled":
+            raise ValueError("partial teacher capture requires the tiled verifier")
         self.native, self.draft, self.slot_type = native, draft, slot_type
         self.verification_backend = verification_backend
+        self.partial_teacher_capture = partial_teacher_capture
         self.pending = {}
         self.rounds = self.accepted = self.restores = 0
         self.allow_prefix_hits = False
@@ -222,7 +225,8 @@ class OrthrusRunner:
                                   **({"collector": learner.current} if learner is not None else {}))
             verifier = verify_tiled if self.verification_backend == "tiled" else verify_transaction
             result = verifier(target, slot.token_ids[0], candidates,
-                              budget=remaining, stop_tokens=request.stop_token_ids)
+                              budget=remaining, stop_tokens=request.stop_token_ids,
+                              **({"partial_teacher": True} if self.partial_teacher_capture else {}))
             if learner is not None:
                 learner.observe(result)
         except BaseException:

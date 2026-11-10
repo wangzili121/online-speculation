@@ -122,6 +122,7 @@ class SuffixLearner(OnlineLearner):
         if block is None:
             block = self.replay.popleft()
         block.past,block.width,block.rows,block.valid = past,width,0,0
+        block.prefix_only = False
         self.current = block
         for layer,program in self.history_programs.items():
             self.run(program,*self.native.resident[2:],draft.table,

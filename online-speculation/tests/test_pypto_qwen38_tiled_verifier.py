@@ -94,3 +94,29 @@ def test_invalid_verifier_backend_is_rejected():
     from blockspec.pypto_qwen38.target import OrthrusRunner
     with pytest.raises(ValueError, match="verification backend"):
         OrthrusRunner(NS(requests={}), object(), None, verification_backend="unknown")
+
+
+@pytest.mark.parametrize("reject", (0, 1, 15, 16, 30, None))
+def test_partial_teacher_matches_the_full_supervised_prefix_and_excludes_replay(reject):
+    class CapturingTarget(Target):
+        def __init__(self):
+            super().__init__()
+            self.collector = NS(prefix_only=False, values=[])
+
+        def forward(self, tokens):
+            result = super().forward(tokens)
+            if self.collector is not None:
+                remaining = 32-len(self.collector.values)
+                self.collector.values.extend(result[:remaining])
+            return result
+
+    candidates = list(range(1, 32))
+    if reject is not None: candidates[reject] = 300
+    full, partial = CapturingTarget(), CapturingTarget()
+    expected = verify_transaction(full, 0, candidates, budget=32)
+    actual = verify_tiled(partial, 0, candidates, budget=32, partial_teacher=True)
+    valid = min(expected.accepted+1, 31, len(expected.tokens))
+    assert actual == expected and partial.inputs == full.inputs
+    assert partial.collector.values[:valid] == full.collector.values[:valid]
+    assert partial.collector.prefix_only
+    assert len(partial.collector.values) == (16 if reject is not None and reject < 16 else 32)
