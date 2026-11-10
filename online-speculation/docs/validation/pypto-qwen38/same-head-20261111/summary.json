@@ -1,0 +1,130 @@
+{
+  "model": "Qwen3.8-27B",
+  "scope": "same last-1 head, fixed feedback 128 updates, K8, BF16 TP1; frozen serving evaluation",
+  "evaluation_tokens_per_question": 32,
+  "teacher_and_prefix_parity_exact": true,
+  "states": {
+    "initial": {
+      "trained_answer_anchor_acceptance": {
+        "blocks": 6,
+        "accepted": 7,
+        "proposed": 42,
+        "accepted_per_round": 1.1666666666666667
+      },
+      "prompt_anchor_accepted": [
+        1,
+        1
+      ],
+      "train": {
+        "requests": 2,
+        "output_tokens": 64,
+        "seconds": 14.007929440587759,
+        "tokens_per_second": 4.568840832004835,
+        "rounds": 29,
+        "accepted": 32,
+        "proposed": 185,
+        "accepted_per_round": 1.103448275862069,
+        "candidate_acceptance": 0.17297297297297298,
+        "greedy_equal_requests": 2,
+        "greedy_equal_all": true,
+        "target_tokens_per_second": 6.645381253280951,
+        "measured_tps_ratio": 0.6875212509062758,
+        "lossless_speedup": 0.6875212509062759
+      },
+      "dev": {
+        "requests": 2,
+        "output_tokens": 64,
+        "seconds": 13.315325604751706,
+        "tokens_per_second": 4.806491549644191,
+        "rounds": 28,
+        "accepted": 32,
+        "proposed": 177,
+        "accepted_per_round": 1.1428571428571428,
+        "candidate_acceptance": 0.1807909604519774,
+        "greedy_equal_requests": 2,
+        "greedy_equal_all": true,
+        "target_tokens_per_second": 6.97407129615122,
+        "measured_tps_ratio": 0.6891944956594792,
+        "lossless_speedup": 0.6891944956594792
+      },
+      "test": {
+        "requests": 8,
+        "output_tokens": 256,
+        "seconds": 55.505373067222536,
+        "tokens_per_second": 4.612166099486594,
+        "rounds": 119,
+        "accepted": 125,
+        "proposed": 749,
+        "accepted_per_round": 1.050420168067227,
+        "candidate_acceptance": 0.16688918558077437,
+        "greedy_equal_requests": 8,
+        "greedy_equal_all": true,
+        "target_tokens_per_second": 6.778244159778503,
+        "measured_tps_ratio": 0.680436701713222,
+        "lossless_speedup": 0.6804367017132219
+      }
+    },
+    "final": {
+      "trained_answer_anchor_acceptance": {
+        "blocks": 6,
+        "accepted": 42,
+        "proposed": 42,
+        "accepted_per_round": 7.0
+      },
+      "prompt_anchor_accepted": [
+        1,
+        1
+      ],
+      "train": {
+        "requests": 2,
+        "output_tokens": 64,
+        "seconds": 13.332599917426705,
+        "tokens_per_second": 4.800264044250455,
+        "rounds": 28,
+        "accepted": 33,
+        "proposed": 181,
+        "accepted_per_round": 1.1785714285714286,
+        "candidate_acceptance": 0.18232044198895028,
+        "greedy_equal_requests": 2,
+        "greedy_equal_all": true,
+        "target_tokens_per_second": 6.645381253280951,
+        "measured_tps_ratio": 0.7223459213691424,
+        "lossless_speedup": 0.7223459213691424
+      },
+      "dev": {
+        "requests": 2,
+        "output_tokens": 64,
+        "seconds": 13.227348314598203,
+        "tokens_per_second": 4.838460323099466,
+        "rounds": 29,
+        "accepted": 32,
+        "proposed": 179,
+        "accepted_per_round": 1.103448275862069,
+        "candidate_acceptance": 0.1787709497206704,
+        "greedy_equal_requests": 2,
+        "greedy_equal_all": true,
+        "target_tokens_per_second": 6.97407129615122,
+        "measured_tps_ratio": 0.693778442696688,
+        "lossless_speedup": 0.6937784426966881
+      },
+      "test": {
+        "requests": 8,
+        "output_tokens": 256,
+        "seconds": 52.5521061103791,
+        "tokens_per_second": 4.871355668644452,
+        "rounds": 112,
+        "accepted": 131,
+        "proposed": 709,
+        "accepted_per_round": 1.1696428571428572,
+        "candidate_acceptance": 0.1847672778561354,
+        "greedy_equal_requests": 8,
+        "greedy_equal_all": true,
+        "target_tokens_per_second": 6.778244159778503,
+        "measured_tps_ratio": 0.7186751544818409,
+        "lossless_speedup": 0.718675154481841
+      }
+    }
+  },
+  "final_cache_blocks": 0,
+  "master_snapshot_hashes_unchanged": true
+}
