@@ -1,0 +1,452 @@
+{
+  "format": "orthrus-qwen38-pypto-lastn-adam-v2",
+  "head": {
+    "contract": {
+      "format": "orthrus-qwen38-native-tp-v1",
+      "base_config_sha256": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+      "base_index_sha256": "77042094076611b69791a610065f28b7013b8c621795fa86ddccc8bac7d1b9df",
+      "tp_size": 1,
+      "block_size": 32,
+      "mask_token_id": 1,
+      "hybrid_policy": "orthrus_qwen35_reference"
+    },
+    "payload_sha256": "159646bde490fd63636557838b05440e676be6ab60420f4e3a753382a8c00def"
+  },
+  "step": 7,
+  "layout": [
+    {
+      "name": "l60_qkv_weight",
+      "layer": 60,
+      "bank": 0,
+      "shape": [
+        10240,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 0,
+      "special": null
+    },
+    {
+      "name": "l60_z_weight",
+      "layer": 60,
+      "bank": 1,
+      "shape": [
+        6144,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 52428800,
+      "special": null
+    },
+    {
+      "name": "l60_a_weight",
+      "layer": 60,
+      "bank": 2,
+      "shape": [
+        128,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 83886080,
+      "special": null
+    },
+    {
+      "name": "l60_b_weight",
+      "layer": 60,
+      "bank": 3,
+      "shape": [
+        128,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 84541440,
+      "special": null
+    },
+    {
+      "name": "l60_conv_weight",
+      "layer": 60,
+      "bank": 4,
+      "shape": [
+        4,
+        10240
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 85196800,
+      "special": null
+    },
+    {
+      "name": "l60_a_log",
+      "layer": 60,
+      "bank": 5,
+      "shape": [
+        1,
+        64
+      ],
+      "raw_dtype": "fp32",
+      "offset_norm": false,
+      "offset": 85237760,
+      "special": 0
+    },
+    {
+      "name": "l60_dt_bias",
+      "layer": 60,
+      "bank": 6,
+      "shape": [
+        1,
+        64
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 85237824,
+      "special": null
+    },
+    {
+      "name": "l60_norm_weight",
+      "layer": 60,
+      "bank": 7,
+      "shape": [
+        1,
+        128
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 85237888,
+      "special": null
+    },
+    {
+      "name": "l60_out_weight",
+      "layer": 60,
+      "bank": 8,
+      "shape": [
+        5120,
+        6144
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 85238016,
+      "special": null
+    },
+    {
+      "name": "l61_qkv_weight",
+      "layer": 61,
+      "bank": 0,
+      "shape": [
+        10240,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 116695296,
+      "special": null
+    },
+    {
+      "name": "l61_z_weight",
+      "layer": 61,
+      "bank": 1,
+      "shape": [
+        6144,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 169124096,
+      "special": null
+    },
+    {
+      "name": "l61_a_weight",
+      "layer": 61,
+      "bank": 2,
+      "shape": [
+        128,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 200581376,
+      "special": null
+    },
+    {
+      "name": "l61_b_weight",
+      "layer": 61,
+      "bank": 3,
+      "shape": [
+        128,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 201236736,
+      "special": null
+    },
+    {
+      "name": "l61_conv_weight",
+      "layer": 61,
+      "bank": 4,
+      "shape": [
+        4,
+        10240
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 201892096,
+      "special": null
+    },
+    {
+      "name": "l61_a_log",
+      "layer": 61,
+      "bank": 5,
+      "shape": [
+        1,
+        64
+      ],
+      "raw_dtype": "fp32",
+      "offset_norm": false,
+      "offset": 201933056,
+      "special": 64
+    },
+    {
+      "name": "l61_dt_bias",
+      "layer": 61,
+      "bank": 6,
+      "shape": [
+        1,
+        64
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 201933120,
+      "special": null
+    },
+    {
+      "name": "l61_norm_weight",
+      "layer": 61,
+      "bank": 7,
+      "shape": [
+        1,
+        128
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 201933184,
+      "special": null
+    },
+    {
+      "name": "l61_out_weight",
+      "layer": 61,
+      "bank": 8,
+      "shape": [
+        5120,
+        6144
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 201933312,
+      "special": null
+    },
+    {
+      "name": "l62_qkv_weight",
+      "layer": 62,
+      "bank": 0,
+      "shape": [
+        10240,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 233390592,
+      "special": null
+    },
+    {
+      "name": "l62_z_weight",
+      "layer": 62,
+      "bank": 1,
+      "shape": [
+        6144,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 285819392,
+      "special": null
+    },
+    {
+      "name": "l62_a_weight",
+      "layer": 62,
+      "bank": 2,
+      "shape": [
+        128,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 317276672,
+      "special": null
+    },
+    {
+      "name": "l62_b_weight",
+      "layer": 62,
+      "bank": 3,
+      "shape": [
+        128,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 317932032,
+      "special": null
+    },
+    {
+      "name": "l62_conv_weight",
+      "layer": 62,
+      "bank": 4,
+      "shape": [
+        4,
+        10240
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 318587392,
+      "special": null
+    },
+    {
+      "name": "l62_a_log",
+      "layer": 62,
+      "bank": 5,
+      "shape": [
+        1,
+        64
+      ],
+      "raw_dtype": "fp32",
+      "offset_norm": false,
+      "offset": 318628352,
+      "special": 128
+    },
+    {
+      "name": "l62_dt_bias",
+      "layer": 62,
+      "bank": 6,
+      "shape": [
+        1,
+        64
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 318628416,
+      "special": null
+    },
+    {
+      "name": "l62_norm_weight",
+      "layer": 62,
+      "bank": 7,
+      "shape": [
+        1,
+        128
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 318628480,
+      "special": null
+    },
+    {
+      "name": "l62_out_weight",
+      "layer": 62,
+      "bank": 8,
+      "shape": [
+        5120,
+        6144
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 318628608,
+      "special": null
+    },
+    {
+      "name": "l63_q_weight",
+      "layer": 63,
+      "bank": 0,
+      "shape": [
+        12288,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 350085888,
+      "special": null
+    },
+    {
+      "name": "l63_k_weight",
+      "layer": 63,
+      "bank": 1,
+      "shape": [
+        1024,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 413000448,
+      "special": null
+    },
+    {
+      "name": "l63_v_weight",
+      "layer": 63,
+      "bank": 2,
+      "shape": [
+        1024,
+        5120
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 418243328,
+      "special": null
+    },
+    {
+      "name": "l63_q_gamma",
+      "layer": 63,
+      "bank": 3,
+      "shape": [
+        1,
+        256
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": true,
+      "offset": 423486208,
+      "special": 192
+    },
+    {
+      "name": "l63_k_gamma",
+      "layer": 63,
+      "bank": 4,
+      "shape": [
+        1,
+        256
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": true,
+      "offset": 423486464,
+      "special": 448
+    },
+    {
+      "name": "l63_o_weight",
+      "layer": 63,
+      "bank": 5,
+      "shape": [
+        5120,
+        6144
+      ],
+      "raw_dtype": "bf16",
+      "offset_norm": false,
+      "offset": 423486720,
+      "special": null
+    }
+  ],
+  "beta1": 0.9,
+  "beta2": 0.999,
+  "epsilon": 1e-08,
+  "weight_decay": 0.0,
+  "payload_sha256": "e14332e97badb5bc7eee3cc14caa2ca0a302514ba3d6dc58a8f588125766d2f2"
+}

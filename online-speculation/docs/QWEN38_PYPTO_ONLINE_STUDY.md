@@ -130,6 +130,14 @@ CPU 验证覆盖全部 5,376 种拒绝/EOS/预算/tile 组合，并检查分页�
 
 这是当前 head 和请求分布上的小幅加速，并不代表其他业务或部署规格也会提高 4%。测量为同节点逐题配对，节点同期有其他卡上的任务；区间反映题目差异，没有覆盖重复训练与独占节点性能的变动。物理执行仍按 K32 组织，起草耗时没有随候选数同比降低。原始请求、分阶段耗时与独立核对结果为 `raw/width-refinement-last4-k234-r1.json`、`width-refinement-summary.json`。
 
+## 在线前向的整组执行
+
+在线更新需要保存训练起点的隐藏状态。last-4、last-8 等起点恰好在四层组之前时，先将该输入保存到反馈私有缓冲，再继续调用现有四层 HOST 编排；无需将这一组拆成三个 GDN 调用和一个 Full Attention 调用。起点在组内的 last-N 仍保留逐层截取路径。底层数值 kernel 和反向计算保持相同。
+
+真实 last-4 HTTP 对照从同一份 KL checkpoint 开始，普通请求和 SSE 各生成 64 个 token，期间完成 7 次更新。改动前后输出、轮数、接受数和每步 loss/梯度范数/裁剪比例均相同；最终 FP32 参数与两组 Adam 动量的完整文件 SHA256 相同。每轮起草的主机计算提交从 **22 次减少到 19 次**。这两条请求用于正确性和状态核对，不据此报告稳定吞吐收益。
+
+该版本通过 600 项 CPU 回归，包含跨四层边界的输入截取检查。实际对照、checkpoint manifest 和比较摘要为 `raw/aligned-service-control-r1.json`、`raw/aligned-service-candidate-r1.json`、`aligned-service-comparison.json`；参数文件保留在实验服务器。
+
 ## 复现与权重接续
 
 在线对照入口为 `scripts/benchmark_qwen38_pypto_online.py`。主参数为 `--last-layers 1` 或 `4`、`--steps 128 --eval-steps 0,16,64,128 --width 32 --tokens 64 --stride 8 --replay-blocks 8 --learning-rate 1e-5 --warmup-steps 8 --frozen-stream-control --skip-calibration`。
@@ -164,4 +172,4 @@ python scripts/serve_qwen38_pypto.py \
 
 启用前缀采集、关闭逐 kernel 日志后重复上述服务验证，输出及最终 loss、梯度范数、裁剪比例与原服务逐值一致。所有 64 层均已有独立参数引用时，启动阶段释放不再使用的初始上传缓冲：释放 909,889,408 字节，实测 NPU 可用内存增加 910,163,968 字节（约 868 MiB）。只释放本服务拥有且不被替代参数引用的存储，外部 head 的有效参数不受影响。该版本通过 600 项 CPU 回归；服务结果与对照摘要为 `raw/warm-service-last4-prefix-r3.json`、`service-prefix-summary.json`。
 
-结果原始记录、独立汇总与监督器退出状态位于 [实验记录目录](validation/pypto-qwen38/online-study-20261111/)。权重 checkpoint 保留在实验服务器，未将模型参数提交到仓库。
+结果原始记录、独立汇总与监督器退出状态位于 [实验记录目录](validation/pypto-qwen38/online-study-20261111/)。权重 checkpoint 保留在实验服务器，未将模型参数提交到仓库。本轮 11 个完成实验均正常退出，另有一次主动撤回的接口联调；最终检查没有残留实验进程组，记录见 `final-resource-release.json`。

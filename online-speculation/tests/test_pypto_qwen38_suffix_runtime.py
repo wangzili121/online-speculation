@@ -115,7 +115,7 @@ def test_feedback_capture_follows_the_selected_layer_across_groups(n):
     assert len(captures) == 1
     name,args = calls[captures[0]+1]
     assert args[0] == "private_input"
-    assert (args[-3] if name == "full_layer" else args[-2]) == 64-n
+    assert (args[-4] if name == "group" else args[-3] if name == "full_layer" else args[-2]) == 64-n
     # 截断点之后仍走整组快路径，无需把整个末段拆成逐层执行。
     grouped = [args[-4] for name,args in calls if name == "group"]
-    assert grouped == [base for base in range(0,64,4) if base != (64-n)//4*4]
+    assert grouped == [base for base in range(0,64,4) if (64-n)%4 == 0 or base != (64-n)//4*4]

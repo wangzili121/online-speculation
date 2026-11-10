@@ -23,6 +23,7 @@ def main():
     p.add_argument("--learner-device", type=int, required=True)
     p.add_argument("--partial-teacher-capture", action="store_true")
     p.add_argument("--require-released-storage", action="store_true")
+    p.add_argument("--save-final-checkpoint", action="store_true")
     a = p.parse_args()
     if a.output.exists() or a.device == a.learner_device:
         p.error("new report and two different devices required")
@@ -48,6 +49,7 @@ def main():
         stopped = threading.Event()
 
         def exercise():
+            learner = original_update = None
             try:
                 deadline = time.monotonic()+1800
                 while True:
@@ -60,6 +62,13 @@ def main():
                 engine = app.state.engine
                 learner = engine.runner.native.learner
                 report["initialization"] = audit_warm_initialization(learner, source["checkpoint"]["path"])
+                original_update = learner.update
+                report["updates"] = []
+                def update():
+                    result = original_update()
+                    report["updates"].append(dict(step=learner.updates, **result))
+                    return result
+                learner.update = update
                 report["before"] = get("/metrics")
                 if report["before"]["orthrus"]["verification_backend"] != "tiled":
                     raise AssertionError("service did not select the requested verifier")
@@ -77,6 +86,7 @@ def main():
                     request = Request(base+"/v1/completions", json.dumps(payload).encode(),
                                       {"Content-Type": "application/json"})
                     tokens, done = [], False
+                    started = time.monotonic()
                     with urlopen(request, timeout=900) as response:
                         if not index:
                             reply = json.load(response)
@@ -92,7 +102,8 @@ def main():
                                 for choice in value.get("choices", []): tokens.extend(choice.get("token_ids", []))
                     if not done or tokens != reference["tokens"][:64]:
                         raise AssertionError("HTTP/SSE tokens differ from the verified AR reference")
-                    row = dict(id=reference["id"], stream=bool(index), tokens=tokens, greedy_equal=True)
+                    row = dict(id=reference["id"], stream=bool(index), tokens=tokens, greedy_equal=True,
+                               seconds=time.monotonic()-started)
                     report["requests"].append(row)
                 deadline = time.monotonic()+30
                 while get("/health")["active"] or get("/health")["queued"]:
@@ -104,10 +115,22 @@ def main():
                     raise AssertionError("online updates were not committed")
                 if not all(math.isfinite(online["last_result"][key]) for key in ("loss", "gradient_norm")):
                     raise AssertionError("online update returned nonfinite statistics")
+                if len(report["updates"]) != online["updates"]:
+                    raise AssertionError("unaccounted service update")
+                if a.save_final_checkpoint:
+                    if source["arguments"]["last_layers"] == 1:
+                        from blockspec.pypto_qwen38.online_checkpoint import save
+                    else:
+                        from blockspec.pypto_qwen38.online_suffix_checkpoint import save
+                    directory = a.output.with_suffix(".checkpoint")
+                    save(learner.optimizer, directory, learner.head_identity)
+                    report["final_checkpoint"] = str(directory)
                 report["verified"] = True
             except BaseException as error:
                 report["error"] = repr(error)
             finally:
+                if original_update is not None:
+                    learner.update = original_update
                 server.should_exit = True
 
         thread = threading.Thread(target=exercise, daemon=True)

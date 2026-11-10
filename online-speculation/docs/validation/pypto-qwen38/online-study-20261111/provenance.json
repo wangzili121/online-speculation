@@ -29,7 +29,7 @@
       "test": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14"
     }
   },
-  "resource_note": "Width refinement completed and released its pair. The aligned-group service control/candidate validations are running on separate idle pairs; final release proof follows their completion. Other users tasks are untouched.",
+  "resource_note": "All 11 completed study experiments exited successfully. The withdrawn Tensor-ABI experiment also has no remaining process group. Final resource audit passed; other users tasks were untouched.",
   "additional_source_sha256": {
     "source-online-prewarm-r1": {
       "src/blockspec/pypto_qwen38/greedy.py": "3ef63dd45a5f43efa0a47bcccd98babc78bd7edc559f8814af8adb4e2e2dcfdf",
@@ -107,13 +107,38 @@
       "scripts/benchmark_qwen38_pypto_verifier.py": "1e2ff09794c62d51f8c7ff80cac348658a774527df54b2480cfcce344d9b879c",
       "scripts/serve_qwen38_pypto.py": "aa3ec813e91b5a7dbbeea70299b89e217c3a25439ddf640e0ded45e50e9d9607",
       "scripts/validate_qwen38_pypto_warm_service.py": "646c40ae930297257ffe463a246301d5462c2e17e1da95ad0d86c96c941c4886"
+    },
+    "source-aligned-service-control-r1": {
+      "src/blockspec/pypto_qwen38/draft.py": "4065b6b001d0b209325f5d74d2eb0022fd2c72267cd7fa457efa9eb76f91147f",
+      "src/blockspec/pypto_qwen38/weights.py": "d8e2e187b952dec81be153e22b3dd94eaba75dc3b3646ab0f9b3a796cf44e642",
+      "src/blockspec/pypto_qwen38/target.py": "a18a65d6ec619acdaef18d3c51670378beb1b7e9138df442108f279f33b75c34",
+      "src/blockspec/pypto_qwen38/online_suffix.py": "544d5266096830179a5f47f464e86e390d9929d802f3093877a7c4c82d3f50e0",
+      "scripts/serve_qwen38_pypto.py": "aa3ec813e91b5a7dbbeea70299b89e217c3a25439ddf640e0ded45e50e9d9607",
+      "scripts/validate_qwen38_pypto_warm_service.py": "3c3f546d17ab3ad67829d4e64d13626dd63ec0361f5c1fcc9cdf6fb005f07882",
+      "tests/test_pypto_qwen38_suffix_runtime.py": "20ecf96f3e92142de350c155a1c592a6169dc47d8a5f0ab30d32b58c0db29e3b"
+    },
+    "source-aligned-service-candidate-r1": {
+      "src/blockspec/pypto_qwen38/draft.py": "8ca58a03f89bca7c38c8fa13e1c8392f87bc200dcd6c554e722f1c37d04a6749",
+      "src/blockspec/pypto_qwen38/weights.py": "d8e2e187b952dec81be153e22b3dd94eaba75dc3b3646ab0f9b3a796cf44e642",
+      "src/blockspec/pypto_qwen38/target.py": "a18a65d6ec619acdaef18d3c51670378beb1b7e9138df442108f279f33b75c34",
+      "src/blockspec/pypto_qwen38/online_suffix.py": "544d5266096830179a5f47f464e86e390d9929d802f3093877a7c4c82d3f50e0",
+      "scripts/serve_qwen38_pypto.py": "012d180cc4fcf185bd70a1052372a27908c6519a61e2d3eaf5fe9e96748b1a9c",
+      "scripts/validate_qwen38_pypto_warm_service.py": "3c3f546d17ab3ad67829d4e64d13626dd63ec0361f5c1fcc9cdf6fb005f07882",
+      "tests/test_pypto_qwen38_suffix_runtime.py": "b0dc56a9bcca6c0f26014292f7cdb94307741fa4d3f2a00e2bfd01bb90d80423"
     }
   },
   "additional_result_sha256": {
-    "final-resource-release.json": "ef8a972d46d3ac95f933a41cbc3339d226b8b08c26f751dce7802cb799b1f8a1",
+    "aligned-service-comparison.json": "5a1d9d081c5eb8bf4d20e63f04b7ab239e8578e71927a94c54b0f3f73d5456fa",
+    "final-resource-release.json": "8155844ee82a80c96d265a19468459cef95ce5dc155cdf389825d3812a03ef65",
     "online-study.png": "f45a299cab37ac051fd809fe887c68b9eac354922dafc8666693a64e8cf8639e",
     "prefix-online-summary.json": "1d57f5b485e4ab3c425d21c0b6663d26bc6414b014ee0f77099de279b1c46272",
     "prewarm-summary.json": "714a14df1330bffb1978ed581d72dd33f682bf7b4c48c1bb1cb7a412f1c892d4",
+    "raw/aligned-service-candidate-r1.final-manifest.json": "f76df338169f482e9b45b976ff5aeb80ea2f87556f745611d02de311c126fdc6",
+    "raw/aligned-service-candidate-r1.json": "9739f9f46c165c0ac21d610e99cc6fcb870ceb65b31348e909f3bbd4e9e1f52a",
+    "raw/aligned-service-candidate-r1.supervisor.json": "7349992f182b81768eb942370888837f965173dcdb827bbf6d74bfcf9fa383c6",
+    "raw/aligned-service-control-r1.final-manifest.json": "f76df338169f482e9b45b976ff5aeb80ea2f87556f745611d02de311c126fdc6",
+    "raw/aligned-service-control-r1.json": "27fdcd62689cd689ad700b88099406c8d491ce7df460a6a3ada6c25019767db2",
+    "raw/aligned-service-control-r1.supervisor.json": "ec2a7d04f2dfffb5d7d6d9d59b6c2e1ec30d819b32f568eece67ee6d4c79a38d",
     "raw/cold-analysis-audit.txt": "dc99a400e3188af9af35e930a8235a856990c6cd3fd9c88a327091dfcf58d43e",
     "raw/cpu-data-continuation-r1.txt": "6d8462dfa8b3122512d44be07cde4d465eed94a2d5915370fdd97395a6a44160",
     "raw/cpu-prefix-teacher-r1.txt": "9bfa3a018302758a6f4fe51ebb9b43d368c98ffce7e34566b7f81f67e59fe8d8",
@@ -131,6 +156,8 @@
     "raw/kl-answer-last4-k32-128-r1.json": "5e6add64b0681d8872815102a1182849887198db520fc10d05b53a8a5c8fe04a",
     "raw/kl-answer-last4-k32-128-r1.supervisor.json": "b48b8406e92c0700957d9e5bb1dafdf8744777adf4d1edec08a8784a4d853aa4",
     "raw/runtime-log-preflight.txt": "bfb78ecb6656409fe2cdcaeec4db6f43dda5c32296f7c6eb722894e1671f9a48",
+    "raw/source-aligned-service-candidate-r1-full-cpu-output.json": "65747f3d42df622c639566f9cf107a0fcccb6eca79aa459221c79e5945ea8a1d",
+    "raw/source-aligned-service-candidate-r1-full-cpu-output.txt": "9026b6bb29a24672e5c8e044ba2d28e9fd98633469a2d8824f13b304aa10ea97",
     "raw/source-warm-service-r3-full-cpu-output.json": "ab44dddd4ec70501e69e21880e6b1db9b1b46a9a372bfde033aac28817386a72",
     "raw/source-warm-service-r3-full-cpu-output.txt": "c2fe2ddf074d15e26359873620bf0962ff49790342e88581b7f071371576cc5f",
     "raw/source-width-refinement-r1-cpu-output.json": "06b96c25125dfc4e08994e61c74b0817d393ec616d21e33b1874fe2afba9281a",

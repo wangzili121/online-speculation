@@ -179,7 +179,11 @@ class NeuralDraft:
             current, output = self.hidden[index], self.hidden[1 - index]
             if self.group_size == 4:
                 capture = self.learner.graph.capture_layer if self.learner is not None and self.learner.options.last_layers > 1 else 63
-                if layer <= capture < layer+4 and feedback is not None:
+                if feedback is not None and self.learner.options.last_layers > 1 and capture == layer:
+                    # 截断点在组首时先保存训练输入，整组仍用同一融合入口执行。
+                    self._run("hidden_capture", [current, feedback.inputs["hidden"]])
+                    current = feedback.inputs["hidden"]
+                elif layer <= capture < layer+4 and feedback is not None:
                     if self.learner.options.last_layers > 1:
                         for offset in range(3):
                             if layer+offset == self.learner.graph.capture_layer:
