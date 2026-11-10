@@ -11,9 +11,12 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("reports", type=Path, nargs="+")
     p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--vary-learning-rate",action="store_true",help="冷启动实验允许对比不同学习率，并在图例中注明")
     a = p.parse_args()
     reports = [json.loads(path.read_text()) for path in a.reports]
     cold = "records_source_sha256" in reports[0]
+    if a.vary_learning_rate and not cold:
+        p.error("learning-rate comparison is only enabled for cold replay reports")
     if any(("records_source_sha256" in item) != cold for item in reports):
         p.error("compare clean-replay and online-stream budgets separately")
     if not all(item.get("completed") for item in reports):
@@ -28,15 +31,20 @@ def main():
     if cold and any(item["records_source_sha256"] != reports[0]["records_source_sha256"] for item in reports):
         p.error("different clean response records")
     for field in fields:
+        if field == "learning_rate" and a.vary_learning_rate:
+            continue
         if any(item["arguments"][field] != reports[0]["arguments"][field] for item in reports[1:]):
             p.error(f"different experiment setting: {field}")
-    variants = [(item["arguments"]["last_layers"], item["arguments"]["width"]) for item in reports]
+    variants = [(item["arguments"]["last_layers"], item["arguments"]["width"],
+                 item["arguments"]["learning_rate"] if a.vary_learning_rate else None) for item in reports]
     if len(set(variants)) != len(variants):
         p.error("duplicate last-N/width variant")
     a.output_dir.mkdir(parents=True, exist_ok=False)
     updates, evaluations, comparison = [], [], []
     for report in sorted(reports, key=lambda item: (item["arguments"]["width"], item["arguments"]["last_layers"])):
         arm = f"last-{report['arguments']['last_layers']}/K{report['arguments']['width']}"
+        if a.vary_learning_rate:
+            arm += f"/LR{report['arguments']['learning_rate']:g}"
         for row in report["updates"]:
             updates.append(dict(arm=arm, **row))
         for point in report["evaluations"]:
@@ -53,6 +61,7 @@ def main():
             entry.update(training_seconds=report["cost"]["update_seconds"],
                          replay_seconds=report["cost"]["replay_seconds"],
                          collection_seconds=report["cost"]["collection_seconds"],
+                         loss_audit_seconds=report["cost"].get("loss_audit_seconds",0.),
                          amortize_tokens=report["cost"]["estimated_future_tokens_to_amortize_replay"])
         else:
             entry.update(online_net_speedup=report["online_net"]["summary"]["lossless_speedup"],

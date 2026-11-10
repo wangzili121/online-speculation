@@ -34,13 +34,15 @@ optimizer.step(loss)  # 只更新指定的 draft 后 N 层，随后发布完整�
 | --- | --- |
 | 基模与初始化 | 真实 Qwen3.8-27B；AR-copy，无离线训练 head |
 | 更新范围 | last-1、last-4 分别运行，其他参数冻结 |
-| 数据 | GSM8K 训练问题的 45 条 AR-only 回答；沿用已记录的 token 与文件哈希 |
+| 数据 | GSM8K 训练问题的 45 条 AR-only 已交付回答，每条上限 48 token；沿用已记录的 token 与文件哈希 |
 | 块长与批量 | K=8；每次更新 8 块，共 56 个监督位置 |
 | 预算 | 128 次更新；学习率 1e-4，前 8 步线性预热 |
 | 评估 | 更新前及第 16、32、64、128 步测独立 dev；首尾另测 8 条 test |
 | 设备 | TP1 推理卡 + 独立学习卡；参数和 Adam 状态驻留设备 |
 
 这是**部分层更新的冷启动实验**，不是全层离线预训练。数据回放与正常服务请求分开；历史 AR 回答采集耗时和本次回放耗时分别记录。GDN 保持当前因果递推定义，Full Attention 块内双向。
+
+本实验未更新的 draft 前缀与 AR 参数相同，因此只读借用对应设备 bank；待更新后段使用两组独立的驻留参数。更新前后采用相同布局。一般预训练 head 的 Attention 权重可能不同，不能仅因结构相同就借用 AR 参数。
 
 ## 运行
 
@@ -56,10 +58,14 @@ PYTHONPATH=src python scripts/benchmark_qwen38_pypto_cold.py \
 
 `--records-report` 为 `benchmark_qwen38_pypto_online.py` 完成后的结果文件。本入口只读取其中 AR-only 对照回答，并检查训练分区、原始数据哈希和 token 完整性。改 `--last-layers 1` 运行另一组；`--objective tv` 可用于相同干净监督下的损失对照。
 
+学习率对照使用 `--learning-rate 1e-5 --audit-steps 1,16,32`。诊断步骤在发布新参数后，重算同一批缓存输入的 loss，不再执行 Adam；耗时单独记录，同时仍计入回放墙钟时间。这能区分不同批次的 loss 波动与单次更新是否降低当前目标。
+
 ## 验证与指标
 
 启动前可独立核对完整词表 KL 及末层反向；CPU 测试另核对跨三层 GDN 的 last-4 梯度、重叠 anchor 的状态恢复和教师输入边界。
 
 效果评估关闭学习，使用正常 draft、验证及拒绝恢复，逐 token 比较同题 AR 输出。报告同时记录 loss、平均接受候选数、固定 head 吞吐和全部回放耗时；教师强制输入时的逐位置匹配率单独命名，不当作实际接受率。只有真实推理快于 AR，才估算摊销预热成本所需的后续 token 数。
+
+启动与最终 checkpoint 保存耗时另列。摊销估算沿用当前请求长度和分布，不代替业务压测。
 
 主要入口：`scripts/benchmark_qwen38_pypto_cold.py`；干净回放：`src/blockspec/pypto_qwen38/cold_replay.py`；损失 kernel：`src/blockspec/pypto_qwen38/training_programs.py::make_kl`。

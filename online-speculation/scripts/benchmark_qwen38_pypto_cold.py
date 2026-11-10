@@ -40,6 +40,32 @@ def response_records(source, dataset):
     return records, sum(row["seconds"] for row in rows)
 
 
+def replay_loss(learner):
+    """用新参数重算同一批 loss；不调用 Adam、不发布参数，仅用于诊断步幅。"""
+    positions = sum(item.valid for item in learner.replay)
+    optimizer = learner.optimizer
+    gradients = optimizer.accum if learner.options.last_layers == 1 else optimizer.gradients
+    before = (optimizer.steps, learner.updates, learner.draft.weights.version)
+    loss = 0.
+    optimizer.zero_grad()
+    try:
+        for item in learner.replay:
+            for name,value in item.inputs.items():
+                learner.bridge.copy(learner.native.worker,value,learner.trainer,item.training_inputs[name])
+            inputs = {**learner.shared,**item.training_inputs,**optimizer.tensors()}
+            learner.workspace.run(inputs,past=item.past,width=item.width,valid=item.valid,
+                                  normalizer=positions,gradients=gradients)
+            handle = learner.workspace.values[learner.graph.losses.name]
+            learner.trainer.run(learner.loss_program,handle,learner.loss_device,config=learner.training_config)
+            learner.trainer.copy_from(learner.loss_host.data_ptr(),learner.loss_device.data_ptr,32)
+            loss += learner.loss_host[0,0].item()
+    finally:
+        optimizer.zero_grad()
+    if before != (optimizer.steps,learner.updates,learner.draft.weights.version):
+        raise AssertionError("loss audit changed the published optimizer state")
+    return loss
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("source","model","data","records-report","output"):
@@ -59,12 +85,15 @@ def main():
     p.add_argument("--tokens",type=int,default=48)
     p.add_argument("--test-count",type=int,default=8)
     p.add_argument("--check-kernel",action="store_true",help="加载模型前核对 KL 及完整末层反向的 NPU 数值")
+    p.add_argument("--audit-steps",default="",help="指定步骤在更新后重算同一批 loss，仅诊断，不额外更新")
     p.add_argument("--request-timeout",type=float,default=1200)
     a = p.parse_args()
     marks = sorted({0,a.steps,*map(int,a.eval_steps.split(","))})
+    audit_steps = set(map(int,filter(None,a.audit_steps.split(","))))
     if (a.output.exists() or a.device==a.learner_device or not 2<=a.width<=32 or a.steps<1
             or marks[0]<0 or marks[-1]>a.steps or not 1<=a.tokens<=384
-            or a.records_per_update<2 or a.anchors_per_record<1 or a.warmup_steps<1):
+            or a.records_per_update<2 or a.anchors_per_record<1 or a.warmup_steps<1 or a.test_count<1
+            or any(not 1<=step<=a.steps for step in audit_steps)):
         p.error("new output, two devices, positive training budgets and valid evaluation steps required")
     logging.getLogger("simpler").setLevel(logging.WARNING)
     from blockspec.pypto_qwen38.draft import make_engine
@@ -79,7 +108,7 @@ def main():
     report = dict(completed=False, objective=f"full-block {a.objective.upper()}(teacher||draft)",
         initialization="AR-copy; no pretrained diffusion head",
         arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()},
-        updates=[], replay_jobs=[], samples=[], evaluations=[], physical_block_size=32,
+        updates=[], replay_jobs=[], samples=[], evaluations=[], audits=[], physical_block_size=32,
         records_source_sha256=hashlib.sha256(a.records_report.read_bytes()).hexdigest())
     a.output.parent.mkdir(parents=True,exist_ok=True)
     engine = runner = learner = replay = meter = None
@@ -142,6 +171,12 @@ def main():
             entry = dict(step=learner.updates,seconds=time.monotonic()-start,learning_rate=rate,**result)
             report["updates"].append(entry)
             emit("update",**entry)
+            if learner.updates in audit_steps:
+                start = time.monotonic()
+                after = replay_loss(learner)
+                audit = dict(step=learner.updates,before=result["loss"],after=after,seconds=time.monotonic()-start)
+                report["audits"].append(audit)
+                emit("same_batch_loss",**audit)
             return result
         learner.update = update
 
@@ -208,6 +243,7 @@ def main():
             total_prewarm_seconds=collection_seconds+replay_seconds,
             update_seconds=sum(row["seconds"] for row in report["updates"]),
             supervised_positions=sum(row["reached_positions"] for row in report["updates"]),
+            loss_audit_seconds=sum(row["seconds"] for row in report["audits"]),
             note="replay prefill/draft/clean teacher/Adam/publication included; no forced-acceptance speedup reported")
         final=report["evaluations"][-1]["test"]["summary"]
         margin=(1/final["target_tokens_per_second"]-1/final["tokens_per_second"]
