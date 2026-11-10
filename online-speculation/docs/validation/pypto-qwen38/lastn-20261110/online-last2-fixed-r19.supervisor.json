@@ -1,0 +1,31 @@
+{
+  "passed": true,
+  "physical_device": 0,
+  "command": [
+    "/usr/bin/taskset",
+    "-c",
+    "144-167",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/source-lastn-r19/scripts/validate_qwen38_pypto_online.py",
+    "--device",
+    "0",
+    "--output",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261110/online-last2-fixed-r19.json",
+    "--source",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/OneServing",
+    "--model",
+    "/data/disk/wangzili/models/Qwen3.8-27B",
+    "--head-dir",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/heads/trained-v4-pypto-banks-20261109-release",
+    "--learner-head-dir",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/heads/trained-v4",
+    "--last-layers",
+    "2",
+    "--replay-blocks",
+    "2",
+    "--learner-device",
+    "1"
+  ],
+  "pid": 1687849,
+  "returncode": 0
+}

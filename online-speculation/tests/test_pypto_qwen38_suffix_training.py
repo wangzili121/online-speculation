@@ -33,7 +33,7 @@ def sample(graph,fp32):
     return inputs,masters
 
 
-@pytest.mark.parametrize("n", (2,4))
+@pytest.mark.parametrize("n", (2,3,4))
 @pytest.mark.parametrize("fp32", (True,False))
 def test_suffix_vjp_matches_independent_autograd(n,fp32):
     torch.set_num_threads(4)

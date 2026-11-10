@@ -1,0 +1,26 @@
+{
+  "passed": true,
+  "physical_device": 4,
+  "command": [
+    "/usr/bin/taskset",
+    "-c",
+    "0-23",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/guarded_entry.py",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/source-lastn-r19/scripts/prepare_qwen38_pypto_head.py",
+    "--device",
+    "0",
+    "--output-dir",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261110/last4-final-export-r21",
+    "--model",
+    "/data/disk/wangzili/models/Qwen3.8-27B",
+    "--model",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/model-verified",
+    "--head-dir",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261110/last4-initial-head-r16",
+    "--online-checkpoint",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261110/online-last4-fixed-r20.checkpoint"
+  ],
+  "pid": 565841,
+  "returncode": 0
+}

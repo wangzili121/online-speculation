@@ -63,8 +63,10 @@ python scripts/prepare_qwen38_pypto_head.py \
 
 ## 验证
 
-组件验证覆盖真实 GDN 头数、部分块、非零历史、解析反向、完整 last-2/4 后段梯度、两次 Adam 更新和 checkpoint 精确恢复。真实 27B 的 last-2 已通过两块反馈联合更新、下一轮生效、目标 cache 不变、greedy 对齐、scheduler 及恢复后的 HTTP 更新。
+组件验证覆盖真实 GDN 头数、部分块、非零历史、解析反向、完整 last-2/4 后段梯度、两次 Adam 更新和 checkpoint 精确恢复。472 项 CPU 回归通过，包含 last-2/3/4 的独立 autograd 对照。
+
+真实 27B 的 last-2 和 last-4 均通过两块反馈联合更新、下一轮生效、目标 cache 不变、greedy 对齐、scheduler 及恢复后的 HTTP 更新。两种配置分别在新进程中恢复同一个 checkpoint，再执行相同更新；所得参数和两组 Adam 状态与连续运行逐字节一致。last-4 导出后的 33 组执行参数与 checkpoint 精确一致，未更新区域保持原字节；新 head 独立启动服务后，completion、chat、SSE 均通过。last-3 的整模型服务尚未单独实测。
 
 合成 last-4 用例中，BF16 前向微差使一个位置的 TV 正负号变化。逐节点使用相同输入对照后，最大局部相对误差约 `1.84e-4`；使用同一 TV 梯度做独立 autograd 对照，全部 33 组参数通过，最大相对误差约 2.3%。验证没有修改 TV 目标或放宽梯度阈值。
 
-真实 last-4、冷启动及导出后的独立服务检查继续补充。具体范围和结果见[验证记录](validation/pypto-qwen38/lastn-20261110/README.md)。当前服务配置为 K32、512 个总位置、greedy 和一个活动请求；短请求功能验证不用于评价收敛或加速收益。
+具体范围和结果见[验证记录](validation/pypto-qwen38/lastn-20261110/README.md)。当前服务配置为 BF16、TP1、K32、512 个总位置、greedy 和一个活动请求；学习卡独立运行，不构成 TP2。短请求功能验证不用于评价收敛或加速收益。

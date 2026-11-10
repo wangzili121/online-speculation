@@ -10,11 +10,11 @@
 | 执行调度 | Full 层准备与计算合并，提交由 82 次降为 66 次；可选四层合并进一步降为 18 次，按组上传参数；输出与逐层执行逐字节相同 | 参数全部驻留后的整网性能需要单独验收 |
 | 设备端收尾 | PyPTO 准备 MASK/RoPE/Attention mask，设备端检查并选择 token，设备内保存和恢复 GDN；保留主机对照路径 | 完整 TP 时按本地状态布局、候选同步与全词表选择扩展 |
 | 权重加载 | PyPTO 整理 head 分片、卷积转置、补零、norm 和类型转换；主模型按层 DMA 到最终 bank；支持保存并重载转换后的 head | 文件读取、JSON 和文件哈希继续使用主机接口；完整 TP 服务按各 rank 布局加载 |
-| last-1 在线更新 | 两卡真实 27B：显式末层反向、双块 TV 更新、FP32 Adam/裁剪、轮间发布、checkpoint 冷/热恢复及 HTTP；导出 head 后独立推理通过 | 更大 last-N 涉及 GDN 反向；完整 TP 根据模型实际布局扩展 |
+| last-1–4 在线更新 | 显式 Full Attention/GDN 反向、双块 TV 更新、FP32 Adam/裁剪、多层原子发布及 checkpoint；真实 27B last-2/4 的冷/热恢复与 HTTP 通过，冷恢复下一步参数和 Adam 状态逐字节一致；last-4 导出 head 后独立推理通过 | last-3 已做 CPU 梯度对照，整模型服务待单独实测；完整 TP 根据模型实际布局扩展 |
 | head 换入和事务 | TP2/4 文件布局、同参数重分片及重启换入；cache 只读、六个历史边界、八组接受/拒绝/截断、scheduler 续写通过 | 多 rank 同步候选、接受长度、页表与 GDN 恢复 |
 | 多卡准备 | 两卡真实 head 分片驻留、原生行并行投影及重复归约组件已验证 | 将组件接入完整多卡模型及 HTTP 服务，不能将组件验证当作 TP 服务通过 |
 
-当前完整服务仍为 **TP1、一个活动请求、512 个总位置、greedy**。Attention/GDN 默认保留 `native` 对照；优化配置为 `--attention-backend paged --gdn-backend vector --draft-group-size 4 --head-transfer packed`。收尾默认 `--serving-backend device`，权重加载默认 `--weight-backend pypto`，均保留 `host` 对照。CPU 回归共 445 项通过。
+当前完整服务仍为 **TP1、一个活动请求、512 个总位置、greedy**。Attention/GDN 默认保留 `native` 对照；优化配置为 `--attention-backend paged --gdn-backend vector --draft-group-size 4 --head-transfer packed`。收尾默认 `--serving-backend device`，权重加载默认 `--weight-backend pypto`，均保留 `host` 对照。CPU 回归共 472 项通过；多层更新配置及实测范围见 [last-N 更新](QWEN38_PYPTO_ONLINE_LASTN.md)。
 
 独立核、完整层和整轮起草分别计时。同 worker、相同 head 的四层编排中，K32 共享计算将同步计算调用由约 0.199 降至 0.136 s；完整起草由 1.501 降至 1.434 s。另在同一 NPU 上，仅将 head 主机内存从远端 NUMA 改为本地，完整起草由 1.740 降至 1.094 s，logits 逐字节相同。两组实验不合并计算加速比；实际服务收益仍取决于上传和候选接受率。
 
