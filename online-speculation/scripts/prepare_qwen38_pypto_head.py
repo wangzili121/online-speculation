@@ -16,7 +16,7 @@ def main():
     p.add_argument("--block-size", type=int, default=32)
     p.add_argument("--mask-token-id", type=int, default=1)
     p.add_argument("--output-dir", type=Path, required=True)
-    p.add_argument("--online-checkpoint", type=Path, help="export committed last-1 state for fixed-head inference")
+    p.add_argument("--online-checkpoint", type=Path, help="export committed last-N state for fixed-head inference")
     a = p.parse_args()
     if a.output_dir.exists() or a.device < 0:
         p.error("new output directory and assigned device required")
@@ -48,6 +48,10 @@ def export_online(head, checkpoint, output, config):
     from blockspec.pypto_qwen38.optimizer_pipeline import make_pipeline
     from blockspec.pypto_qwen38.prepared_head import save
     from blockspec.pypto_qwen38.training_graph import LastLayerGraph
+    manifest = json.loads((Path(checkpoint)/"manifest.json").read_text())
+    from blockspec.pypto_qwen38.online_suffix_checkpoint import FORMAT as SUFFIX_FORMAT
+    if manifest.get("format") == SUFFIX_FORMAT:
+        return export_suffix(head,checkpoint,output,config,manifest)
     shapes = {name: value.shape for name, value in LastLayerGraph().gradients.items()}
     step, values = read(checkpoint, identity(head), shapes)
     meta, types = [], {}
@@ -73,6 +77,36 @@ def export_online(head, checkpoint, output, config):
         if worker is not None:
             for handle in reversed(handles):
                 worker.free_tensor(handle)
+            worker.close()
+
+
+def export_suffix(head, checkpoint, output, config, manifest):
+    import torch
+    from pypto.runtime import DistributedWorker
+    from blockspec.pypto_qwen38.online_checkpoint import identity
+    from blockspec.pypto_qwen38.online_suffix_checkpoint import read
+    from blockspec.pypto_qwen38.prepared_head import save
+    from blockspec.pypto_qwen38.training_flat import FlatLayout,make_render
+    from blockspec.pypto_qwen38.training_suffix_graph import SuffixGraph
+    n = len({value["layer"] for value in manifest["layout"]})
+    layout = FlatLayout(SuffixGraph(n).parameters)
+    step,values = read(checkpoint,identity(head),layout)
+    meta = lambda shape,dtype:torch.empty(shape,dtype=dtype,device="meta")
+    program = make_render(layout).compile(meta(layout.shape,torch.float32),
+        meta((len(layout.table),8),torch.int32),meta(layout.shape,torch.bfloat16),
+        meta(layout.special_shape,torch.float32),config=config)
+    worker = None
+    try:
+        worker = DistributedWorker([program],config=config)
+        master = worker.alloc_tensor(layout.shape,torch.float32,init=values["master"])
+        table = torch.tensor(layout.table,dtype=torch.int32)
+        table = worker.alloc_tensor(tuple(table.shape),table.dtype,init=table)
+        ordinary = worker.alloc_tensor(layout.shape,torch.bfloat16)
+        special = worker.alloc_tensor(layout.special_shape,torch.float32)
+        worker.run(program,master,table,ordinary,special,config=config)
+        return step,save(head,output,layer_banks=layout.export_banks(ordinary,special),worker=worker)
+    finally:
+        if worker is not None:
             worker.close()
 
 

@@ -121,6 +121,35 @@ def test_updated_head_export_preserves_frozen_layers_and_source(tmp_path, small_
     assert not (tmp_path/"invalid").exists()
 
 
+def test_suffix_export_uses_owner_offsets_and_preserves_other_layers(tmp_path, small_weights):
+    import ctypes
+    from blockspec.pypto_qwen38.prepared_head import DeviceBank
+    model,source,_ = fixture_head(tmp_path,small_weights)
+    before = source.shared_weights.clone()
+    expected,patches,owners = {},{},[]
+    for layer in (62,63):
+        expected[layer],patches[layer] = [],[]
+        for bank in source.banks(layer):
+            value = (bank+.125).contiguous()
+            storage = torch.empty(value.numel()*value.element_size()+64,dtype=torch.uint8)
+            ctypes.memmove(storage.data_ptr()+64,value.data_ptr(),value.numel()*value.element_size())
+            owners.append(storage)
+            handle = SimpleNamespace(data_ptr=storage.data_ptr())
+            patches[layer].append(DeviceBank(handle,tuple(value.shape),value.dtype,64))
+            expected[layer].append(value)
+    class CopyWorker:
+        @staticmethod
+        def copy_from(target,pointer,size,*,src_offset=0):
+            ctypes.memmove(target,pointer+src_offset,size)
+    save(source,tmp_path/"suffix",layer_banks=patches,worker=CopyWorker())
+    restored = HeadSource(model,tmp_path/"suffix")
+    restored.prepare()
+    assert torch.equal(source.shared_weights,before)
+    for layer in range(64):
+        for actual,wanted in zip(restored.banks(layer),expected.get(layer,source.banks(layer)),strict=True):
+            torch.testing.assert_close(actual,wanted,atol=0,rtol=0)
+
+
 @pytest.mark.parametrize("offset", ((-1, 0), (0, 128), (True, 0)))
 def test_device_copy_bounds_rejected_before_dispatch(offset):
     loader = object.__new__(DeviceLoader)

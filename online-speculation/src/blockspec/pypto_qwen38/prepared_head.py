@@ -4,11 +4,25 @@ import hashlib
 import json
 from pathlib import Path
 import re
+from dataclasses import dataclass
 
 from .baseline import PYPTO_COMMIT
 
 
 FORMAT = "orthrus-qwen38-pypto-banks-v1"
+
+
+@dataclass(frozen=True)
+class DeviceBank:
+    """导出时保留分配 owner 和字节偏移，避免向 DMA 传入内部地址。"""
+    owner: object
+    shape: tuple
+    dtype: object
+    byte_offset: int
+
+    @property
+    def data_ptr(self):
+        return self.owner.data_ptr
 
 
 def contract(head):
@@ -64,23 +78,30 @@ def load(head):
     head.shared_weights, head._prepared = storage, banks
 
 
-def save(head, directory, *, last_layer=None, worker=None):
+def save(head, directory, *, last_layer=None, layer_banks=None, worker=None):
     if head._prepared is None or getattr(head, "preparation_backend", None) != "pypto":
         raise ValueError("only a PyPTO-prepared head may be exported")
     patches = []
     if last_layer is not None:
+        if layer_banks is not None:
+            raise ValueError("choose last_layer or layer_banks")
+        layer_banks = {63:last_layer}
+    if layer_banks is not None:
         from math import prod
-        expected = head.banks(63)
-        if worker is None or len(last_layer) != len(expected):
-            raise ValueError("all six device banks and their worker required")
-        for original, updated in zip(expected, last_layer, strict=True):
-            if tuple(original.shape) != tuple(updated.shape) or original.dtype != updated.dtype:
-                raise ValueError("exported last-layer schema changed")
-            offset = original.data_ptr()-head.shared_weights.data_ptr()
-            size = prod(original.shape)*original.element_size()
-            if offset < 0 or offset+size > head.shared_weights.numel():
-                raise ValueError("last-layer bank is outside the canonical payload")
-            patches.append((offset, size, updated))
+        if worker is None or not layer_banks or any(type(layer) is not int or not 60 <= layer <= 63 for layer in layer_banks):
+            raise ValueError("suffix device banks and their worker required")
+        for layer,banks in layer_banks.items():
+            expected = head.banks(layer)
+            if len(banks) != len(expected):
+                raise ValueError("all six Full Attention or nine GDN device banks required")
+            for original, updated in zip(expected, banks, strict=True):
+                if tuple(original.shape) != tuple(updated.shape) or original.dtype != updated.dtype:
+                    raise ValueError("exported suffix schema changed")
+                offset = original.data_ptr()-head.shared_weights.data_ptr()
+                size = prod(original.shape)*original.element_size()
+                if offset < 0 or offset+size > head.shared_weights.numel():
+                    raise ValueError("suffix bank is outside the canonical payload")
+                patches.append((offset, size, updated))
     directory = Path(directory)
     directory.mkdir(parents=False, exist_ok=False)
     data = memoryview(head.shared_weights.numpy())
@@ -99,7 +120,8 @@ def save(head, directory, *, last_layer=None, worker=None):
                 file.seek(target)
                 for offset in range(0, size, scratch.numel()):
                     count = min(scratch.numel(), size-offset)
-                    worker.copy_from(scratch.data_ptr(), updated.data_ptr, count, src_offset=offset)
+                    worker.copy_from(scratch.data_ptr(), updated.data_ptr, count,
+                                     src_offset=getattr(updated,"byte_offset",0)+offset)
                     file.write(memoryview(scratch.numpy())[:count])
         digest = hashlib.sha256()
         with (directory/"weights.bin.part").open("rb") as file:

@@ -42,3 +42,15 @@ class HeadPublisher:
             self.learner.bridge.copy(self.learner.trainer, source, self.learner.native.worker, target)
         self.target.publish(layer, banks, expected_version=expected_version)
         self.active = index
+
+
+class SuffixPublisher(HeadPublisher):
+    def publish_flat(self, layout, values, *, expected_version):
+        if self.version != expected_version:
+            raise RuntimeError("stale cross-device suffix publication")
+        index = 1-self.active
+        buffers = self.learner.serving_banks[index]
+        for source,target in zip(values,buffers,strict=True):
+            self.learner.bridge.copy(self.learner.trainer,source,self.learner.native.worker,target)
+        self.target.publish_many(layout.banks(*buffers),expected_version=expected_version)
+        self.active = index

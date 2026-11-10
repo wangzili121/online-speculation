@@ -13,6 +13,7 @@ def main():
         p.add_argument("--" + name, type=Path, required=True)
     p.add_argument("--device", type=int, required=True)
     p.add_argument("--learner-device", type=int)
+    p.add_argument("--last-layers", type=int,choices=(1,2,3,4),default=1)
     p.add_argument("--resume-online", type=Path, help="repeat the closed loop from a saved optimizer state")
     p.add_argument("--replay-blocks", type=int, choices=(1, 2), default=1)
     args = p.parse_args()
@@ -34,7 +35,7 @@ def main():
         head = HeadSource(args.model, args.head_dir)
         engine = make_engine(args.source, args.model, args.device, head, head_transfer="packed",
             attention_backend="paged", group_size=4, gdn_backend="vector",
-            online_config=OnlineConfig(stride=args.replay_blocks, replay_blocks=args.replay_blocks,
+            online_config=OnlineConfig(last_layers=args.last_layers,stride=args.replay_blocks, replay_blocks=args.replay_blocks,
                 raw_head_dir=str(args.learner_head_dir),
                 learner_device=args.learner_device, resume_dir=None if args.resume_online is None else str(args.resume_online),
                 checkpoint_dir=str(args.output.with_suffix(".updates"))))
@@ -118,8 +119,12 @@ def main():
             if time.monotonic() > deadline:
                 raise TimeoutError("online request not released")
             time.sleep(.01)
-        from blockspec.pypto_qwen38.online_checkpoint import save, restore
-        from blockspec.pypto_qwen38.online_optimizer import DeviceOptimizer
+        if args.last_layers == 1:
+            from blockspec.pypto_qwen38.online_checkpoint import save, restore
+            from blockspec.pypto_qwen38.online_optimizer import DeviceOptimizer
+        else:
+            from blockspec.pypto_qwen38.online_suffix_checkpoint import save, restore
+            from blockspec.pypto_qwen38.online_suffix_optimizer import SuffixOptimizer as DeviceOptimizer
         checkpoint = args.output.with_suffix(".checkpoint")
         version = learner.optimizer.steps
         save(learner.optimizer, checkpoint, learner.head_identity)

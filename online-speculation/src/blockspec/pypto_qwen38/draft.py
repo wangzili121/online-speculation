@@ -37,6 +37,7 @@ def metadata(head, native_samples):
                        empty((32, 5120)), empty((32, 5120)), result, 0, 0, 0, 32]
     inputs["group_prefix"] = [hidden, *native_samples[4:9], *group_weights, *native_samples[29:31],
                                empty((32, 5120)), empty((32, 5120)), result, 60, 0]
+    inputs["hidden_capture"] = [hidden,result]
     return inputs
 
 
@@ -69,7 +70,8 @@ class NeuralDraft:
     def compile(self, samples, config):
         inputs = metadata(self.head, samples)
         for name, program in make_programs(self.source, attention_backend=self.attention_backend, group_size=self.group_size,
-                                         gdn_backend=self.gdn_backend, online=self.learner is not None).items():
+                                         gdn_backend=self.gdn_backend, online=self.learner is not None,
+                                         online_layers=self.learner.options.last_layers if self.learner is not None else 1).items():
             print(f"compiling Orthrus {name}", flush=True)
             self.programs[name] = program.compile(*inputs[name], config=config)
         return list(self.programs.values())
@@ -89,7 +91,11 @@ class NeuralDraft:
         if self.group_size == 4:
             expected = {"embedding", "group", "finish"}
             if self.learner is not None:
-                expected |= {"group_prefix", "full_layer"}
+                expected |= {"full_layer"}
+                if self.learner.options.last_layers > 1:
+                    expected |= {"gdn", "hidden_capture"}
+                else:
+                    expected |= {"group_prefix"}
         if self.native is not None or set(self.programs) != expected:
             raise RuntimeError("draft programs must be registered before starting the native worker")
         self.native = native
@@ -162,7 +168,7 @@ class NeuralDraft:
             mask[:, :past + width] = 0
             self._upload(mask, self.mask)
         self.last_timings["inputs_seconds"] = time.monotonic() - start
-        feedback = self.learner.begin(self, past, width) if self.learner is not None else None
+        feedback = self.learner.begin(self, past, width, slot=resident.slot) if self.learner is not None else None
         banks = native.banks
         self._run("embedding", [self.ids, banks[0], self.hidden[0]])
         for layer in range(0, 64, self.group_size):
@@ -173,6 +179,19 @@ class NeuralDraft:
             current, output = self.hidden[index], self.hidden[1 - index]
             if self.group_size == 4:
                 if layer == 60 and feedback is not None:
+                    if self.learner.options.last_layers > 1:
+                        for offset in range(3):
+                            if layer+offset == self.learner.graph.capture_layer:
+                                self._run("hidden_capture",[current,feedback.inputs["hidden"]])
+                                current = feedback.inputs["hidden"]
+                            following = self.group_scratch[offset%2]
+                            self._run("gdn",[current,*banks[3:8],*weights[offset],*native.resident[:2],
+                                             following,layer+offset,resident.slot])
+                            current = following
+                        self._run("full_layer",[current,*banks[3:8],*weights[3],self.cos,self.sin,
+                            self.query,self.key,self.value,self.gate,*native.resident[2:],self.table,
+                            self.mask,output,63,past,width])
+                        continue
                     self._run("group_prefix", [current, *banks[3:8],
                         *(handle for group in weights[:3] for handle in group), *native.resident[:2],
                         *self.group_scratch, feedback.inputs["hidden"], layer, resident.slot])
@@ -237,7 +256,11 @@ def make_runner(source, model_root, device, head, *, head_storage="auto", head_t
         if (attention_backend, group_size, gdn_backend, device_serving) != ("paged", 4, "vector", True):
             raise ValueError("online updates require paged attention, vector GDN, groups of four and device serving")
         from .online import OnlineLearner
-        learner = draft.learner = OnlineLearner(head, online_config)
+        if online_config.last_layers > 1:
+            from .online_suffix import SuffixLearner
+            learner = draft.learner = SuffixLearner(head,online_config)
+        else:
+            learner = draft.learner = OnlineLearner(head, online_config)
 
     class PreparedRunner(runtime.ModelRunner):
         device_serving = None
@@ -366,7 +389,7 @@ def make_engine(source, model_root, device, head, *, head_storage="auto", head_t
                                      last_draft_timings=dict(runner.draft.last_timings))
             if runner.native.learner is not None:
                 learner = runner.native.learner
-                result["orthrus"]["online"] = dict(last_layers=1, rounds=learner.rounds, updates=learner.updates,
+                result["orthrus"]["online"] = dict(last_layers=online_config.last_layers, rounds=learner.rounds, updates=learner.updates,
                     version=runner.draft.weights.version, last_result=learner.last_result,
                     learner_device=online_config.learner_device)
             return result

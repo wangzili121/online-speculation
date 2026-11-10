@@ -68,6 +68,35 @@ def make_copy(rows, columns):
     return entry
 
 
+def make_gdn_history(layer):
+    """复制该层在 anchor 前的 AR 卷积和递推状态，反馈不持有可回收状态的引用。"""
+    import pypto.language as pl
+    index = layer-layer//4
+
+    @pl.jit
+    def capture(conv: pl.Tensor, recurrent: pl.Tensor, private_conv: pl.Out[pl.Tensor],
+                private_recurrent: pl.Out[pl.Tensor], slot: pl.Scalar[pl.INT32]):
+        c = pl.reshape(conv,[8*48*4,10240])
+        r = pl.reshape(recurrent,[8*48*6144,128])
+        with pl.spmd(4*80,name_hint="orthrus_online_private_gdn_conv"):
+            task = pl.tile.get_block_idx()
+            row = task//80
+            col = task%80*128
+            block = pl.slice(c,[1,128],[(slot*48+index)*4+row,col])
+            private_conv[row:row+1,col:col+128] = block
+        with pl.spmd(6144//16,name_hint="orthrus_online_private_gdn_state"):
+            row = pl.tile.get_block_idx()*16
+            block = pl.slice(r,[16,128],[(slot*48+index)*6144+row,0])
+            private_recurrent[row:row+16,0:128] = block
+        return private_conv,private_recurrent
+
+    @pl.jit.host
+    def entry(conv: pl.Tensor, recurrent: pl.Tensor, private_conv: pl.Out[pl.Tensor],
+              private_recurrent: pl.Out[pl.Tensor], slot: pl.Scalar[pl.INT32]):
+        capture(conv,recurrent,private_conv,private_recurrent,slot,device=0)
+    return entry
+
+
 def make_loss_sum():
     import pypto.language as pl
 

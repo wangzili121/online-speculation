@@ -1,7 +1,7 @@
 """独立 CPU Torch golden：解释训练图，autograd 只由验证代码调用。"""
 
 
-def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False):
+def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False, observed=None):
     import torch
     from torch.nn import functional as F
     s = graph.shape
@@ -11,6 +11,7 @@ def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False):
     if not 0 <= past <= s.context - width or not 2 <= width <= s.block or not 1 <= valid < width:
         raise ValueError("aligned history/block and reached teacher rows required")
     values = dict(inputs)
+    observed = {} if observed is None else observed
     cast = (lambda x: x) if fp32 else (lambda x: x.bfloat16())
     for name, spec in graph.inputs.items():
         if tuple(values[name].shape) != spec.shape:
@@ -120,7 +121,8 @@ def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False):
         raise ValueError(op)
 
     for node in graph.nodes:
-        result = execute(node, [values[v.name] for v in node.inputs])
+        # 独立核对阶段可传入设备中间值：每个节点用相同输入重新计算，区分局部误差与层间累积。
+        result = execute(node, [observed.get(v.name,values[v.name]) for v in node.inputs])
         for value, tensor in zip(node.outputs, result, strict=True):
             values[value.name] = tensor
     return values

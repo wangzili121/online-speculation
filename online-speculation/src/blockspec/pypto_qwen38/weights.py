@@ -23,15 +23,23 @@ class DraftWeights:
 
     def publish(self, layer, values, *, expected_version):
         """在同步起草轮次之间替换整层引用；不原地改正在被读取的 bank。"""
-        if self.worker is None or expected_version != self.version or layer != 63:
-            raise RuntimeError("a started last-layer head and its current version required")
-        values = tuple(values)
-        expected = self.head.banks(layer)
-        if len(values) != len(expected) or any(tuple(a.shape) != tuple(b.shape) or a.dtype != b.dtype
-                                              for a, b in zip(values, expected, strict=True)):
-            raise ValueError("published head layout changed")
+        self.publish_many({layer: values}, expected_version=expected_version)
+
+    def publish_many(self, layers, *, expected_version):
+        """先校验所有层，再整体切换引用；调用方持有两组独立的执行参数。"""
+        from .loading import tensor_layout
+        if self.worker is None or expected_version != self.version:
+            raise RuntimeError("a started head and its current version required")
+        if not layers or any(type(layer) is not int or not 60 <= layer <= 63 for layer in layers):
+            raise ValueError("a nonempty suffix in layers 60..63 required")
+        prepared = {layer:tuple(values) for layer,values in layers.items()}
+        for layer,values in prepared.items():
+            expected = self.head.banks(layer)
+            if len(values) != len(expected) or any(tensor_layout(a) != (tuple(b.shape),b.dtype)
+                                                  for a,b in zip(values,expected,strict=True)):
+                raise ValueError("published head layout changed")
         # 所有检查均在提交前完成；bank 的 owner 由 learner 保留至下一轮安全边界。
-        self.overrides = {**self.overrides, layer: values}
+        self.overrides = {**self.overrides, **prepared}
         self.version += 1
 
     def _allocate(self, value, *, initialize):
@@ -150,9 +158,12 @@ class DraftWeights:
             raise RuntimeError("head device weights are not started")
         span, parent, views = self.packed[base]
         length = span.numel()
-        if base + 3 in self.overrides:
-            length = self.head.banks(base + 3)[0].data_ptr() - span.data_ptr()
-        self.worker.copy_to(parent.data_ptr, span.data_ptr(), length, worker_id=self.worker_id)
+        for layer in reversed(range(base,base+4)):
+            if layer not in self.overrides:
+                break
+            length = self.head.banks(layer)[0].data_ptr() - span.data_ptr()
+        if length:
+            self.worker.copy_to(parent.data_ptr, span.data_ptr(), length, worker_id=self.worker_id)
         return tuple(self.overrides.get(base + i, values) for i, values in enumerate(views))
 
     def for_layer(self, layer):
