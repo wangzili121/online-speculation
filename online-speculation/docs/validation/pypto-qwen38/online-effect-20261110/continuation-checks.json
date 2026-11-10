@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "scope": "128-step continuation: metadata, optimizer versions, behavior and cleanup",
+  "source_commit": "4fceb50",
+  "global_steps": 128,
+  "supervised_positions": 2010,
+  "training_questions": 45,
+  "checks": [
+    "initial head SHA256 unchanged",
+    "prior report byte SHA256 matches",
+    "first 32 updates and training requests unchanged",
+    "new question IDs unique and retain original order",
+    "all update steps and publication versions 1..128",
+    "step32 restored tokens and acceptance counts identical",
+    "all training and held-out greedy outputs equal paired AR",
+    "cache used_blocks=0, scheduler active=queued=0",
+    "clean_shutdown=true, supervisor returncode=0",
+    "no experiment workers or reservation processes remain on 61/167"
+  ]
+}
