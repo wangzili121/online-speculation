@@ -154,13 +154,17 @@ def main():
                                      for width in widths]
             selected = report["selected_width"] = choose_width(report["width_sweep"])
             rows, refs = [], []
+            report["confirmation"] = dict(width=selected, rows=rows, target_rows=refs)
+            persist()
             for row in report["new_confirmation_questions"]:
                 refs.append(measure(row, "ar"))
                 rows.append(measure(row, f"width{selected}"))
                 if rows[-1]["tokens"] != refs[-1]["tokens"]:
                     raise AssertionError("fresh confirmation output differs from AR")
-            report["confirmation"] = dict(width=selected, rows=rows, target_rows=refs,
-                                           summary=summarize(rows, target=refs))
+                persist()
+                print(json.dumps(dict(event="confirmation", width=selected, completed=len(rows),
+                                      total=len(report["new_confirmation_questions"]))), flush=True)
+            report["confirmation"]["summary"] = summarize(rows, target=refs)
         else:
             report["tiled_over_full_tps"] = (report["summaries"]["tiled"]["tokens_per_second"] /
                                                report["summaries"]["full"]["tokens_per_second"])
