@@ -18,13 +18,14 @@ GDN 组件覆盖有效块宽 1/17/32、零及非零历史；未使用行填入 N
 | 检查 | 结果 | 记录 |
 | --- | --- | --- |
 | last-2 更新 | 两块 K32 反馈联合更新，版本 0→4；新 head 下一轮生效，目标历史不变，greedy、scheduler、热恢复和 HTTP 更新通过 | `online-last2-fixed-r19.json` |
+| last-3 更新 | 末三层联合更新，版本 0→4；新 head 下一轮生效，目标历史不变，greedy、scheduler、热恢复和 HTTP 更新通过 | `online-last3-real-r24.json` |
 | last-4 更新 | 末四层联合更新，版本 0→4；上述流程全部通过 | `online-last4-fixed-r20.json` |
-| 冷启动恢复 | last-2、last-4 分别由新进程恢复版本 1，再更新到版本 5，包含后续调度及 HTTP 更新 | `online-last2-fixed-resume-r20.json`、`online-last4-fixed-resume-r21.json` |
-| 恢复连续性 | 从同一步出发，连续运行与冷恢复所得下一步的 FP32 参数、两组 Adam moment 及 manifest 逐字节相同；完整 payload 另行读取并核验 SHA256 | `last2-continuity-r23.json`、`last4-continuity-r23.json` |
-| head 导出 | last-4 的 33 组执行参数与 checkpoint 精确一致，其他区域和源 head 保持原字节，文件 SHA256 通过 | `last4-final-export-check-r21.json` |
-| 独立服务 | 导出 head 在不加载学习器的情况下启动；completion、chat、SSE 均成功，3 个请求无错误、cache 已回收，服务正常关闭 | `last4-final-http-result.json` |
+| 冷启动恢复 | last-2、last-3、last-4 分别由新进程恢复版本 1，再更新到版本 5，包含后续调度及 HTTP 更新 | `online-last2-fixed-resume-r20.json`、`online-last3-resume-r24.json`、`online-last4-fixed-resume-r21.json` |
+| 恢复连续性 | 从同一步出发，连续运行与冷恢复所得下一步的 FP32 参数、两组 Adam moment 及 manifest 逐字节相同；完整 payload 另行读取并核验 SHA256 | `last2-continuity-r23.json`、`last3-continuity-r24.json`、`last4-continuity-r23.json` |
+| head 导出 | last-3/4 的 24/33 组执行参数与 checkpoint 精确一致，其他区域和源 head 保持原字节，文件 SHA256 通过 | `last3-export-check-r24.json`、`last4-final-export-check-r21.json` |
+| 独立服务 | last-3/4 导出 head 分别在不加载学习器的情况下启动；completion、chat、SSE 均成功，各 3 个请求无错误、cache 已回收，服务正常关闭 | `last3-export-http-result.json`、`last4-final-http-result.json` |
 
-last-2 重放与服务 logits 的最大相对 L2 约 `7.85e-5`，last-4 约 `0.00229`。表中测试使用真实模型和已有 head，但请求较短，不用于评价训练收敛、接受率或加速收益。当前范围为 BF16、主模型 TP1、独立学习卡、K32、512 个总位置、greedy、一个活动请求；last-3 已通过 CPU 梯度测试，整模型服务未单独实测。原 last-1 的验收记录保持不变。
+last-2/3/4 重放与服务 logits 的最大相对 L2 分别约 `7.85e-5`、`0.00161`、`0.00229`。表中测试使用真实模型和已有 head，但请求较短，不用于评价训练收敛、接受率或加速收益。当前范围为 BF16、主模型 TP1、独立学习卡、K32、512 个总位置、greedy、一个活动请求。原 last-1 的验收记录保持不变。
 
 大参数缓冲也单独检查：`flat-zero-real-r19.json` 覆盖约 1.8 GB FP32、0.91 GB BF16 缓冲各两次完整清零；`flat-zero-special-r19.json` 覆盖 704 元素的小缓冲。初值来自独立主机字节填充，检查会读取所有字节。`flat-zero-legacy-r19.json` 是不适用于大扁平缓冲的旧入口的负向复现；正式更新使用新的有界任务网格，并在每次清梯度后检查整个缓冲的范数为零。
 

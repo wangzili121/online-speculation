@@ -1,0 +1,503 @@
+{
+  "scope": "orthrus_qwen38_http",
+  "orthrus_enabled": true,
+  "passed": true,
+  "command": [
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/source-lastn-r24/scripts/serve_qwen38_pypto.py",
+    "--source",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/OneServing",
+    "--model",
+    "/data/disk/wangzili/models/Qwen3.8-27B",
+    "--port",
+    "35123",
+    "--device",
+    "0",
+    "--head-dir",
+    "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/kernels-20261110/last3-export-r24",
+    "--attention-backend",
+    "paged",
+    "--gdn-backend",
+    "vector",
+    "--draft-group-size",
+    "4",
+    "--head-transfer",
+    "packed"
+  ],
+  "health": {
+    "status": "ready",
+    "model": "Qwen3.8-27B-PyPTO",
+    "device": 0,
+    "active": 0,
+    "queued": 0,
+    "batches": 0,
+    "pid": 223836,
+    "host_peak_rss_kib": 20310988
+  },
+  "startup_seconds": 265.12847576104105,
+  "completion": {
+    "id": "cmpl-761fd777fc684ed38de32c49dd480246",
+    "object": "text_completion",
+    "created": 1794287981,
+    "model": "Qwen3.8-27B-PyPTO",
+    "choices": [
+      {
+        "index": 0,
+        "text": ", I'm",
+        "token_ids": [
+          11,
+          353,
+          2688
+        ],
+        "finish_reason": "length"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 1,
+      "completion_tokens": 3,
+      "total_tokens": 4
+    },
+    "metrics": {
+      "ttft_ms": 383.851235,
+      "tpot_ms": 872.689268,
+      "output_tokens": 3,
+      "prompt_tokens": 1
+    }
+  },
+  "chat": {
+    "id": "chatcmpl-c7fc858007444ba7ba1004c9dab09033",
+    "object": "chat.completion",
+    "created": 1794287984,
+    "model": "Qwen3.8-27B-PyPTO",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "2"
+        },
+        "token_ids": [
+          17,
+          248046
+        ],
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 23,
+      "completion_tokens": 2,
+      "total_tokens": 25
+    },
+    "metrics": {
+      "ttft_ms": 509.452576,
+      "tpot_ms": 1622.032665,
+      "output_tokens": 2,
+      "prompt_tokens": 23
+    }
+  },
+  "sse": {
+    "done": true,
+    "token_ids": [
+      9419,
+      0,
+      248046
+    ],
+    "events": [
+      {
+        "id": "chatcmpl-5bbcb1a909da40a5bdee1caca776a510",
+        "object": "chat.completion.chunk",
+        "created": 1794287986,
+        "model": "Qwen3.8-27B-PyPTO",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "role": "assistant"
+            },
+            "finish_reason": null
+          }
+        ]
+      },
+      {
+        "id": "chatcmpl-5bbcb1a909da40a5bdee1caca776a510",
+        "object": "chat.completion.chunk",
+        "created": 1794287986,
+        "model": "Qwen3.8-27B-PyPTO",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "content": "Hello"
+            },
+            "token_ids": [
+              9419
+            ],
+            "finish_reason": null
+          }
+        ]
+      },
+      {
+        "id": "chatcmpl-5bbcb1a909da40a5bdee1caca776a510",
+        "object": "chat.completion.chunk",
+        "created": 1794287986,
+        "model": "Qwen3.8-27B-PyPTO",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "content": "!"
+            },
+            "token_ids": [
+              0
+            ],
+            "finish_reason": null
+          }
+        ]
+      },
+      {
+        "id": "chatcmpl-5bbcb1a909da40a5bdee1caca776a510",
+        "object": "chat.completion.chunk",
+        "created": 1794287986,
+        "model": "Qwen3.8-27B-PyPTO",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "content": ""
+            },
+            "token_ids": [
+              248046
+            ],
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      {
+        "id": "chatcmpl-5bbcb1a909da40a5bdee1caca776a510",
+        "object": "chat.completion.chunk",
+        "created": 1794287986,
+        "model": "Qwen3.8-27B-PyPTO",
+        "choices": [],
+        "usage": {
+          "prompt_tokens": 16,
+          "completion_tokens": 3,
+          "total_tokens": 19
+        },
+        "metrics": {
+          "ttft_ms": 380.897052,
+          "tpot_ms": 753.903503,
+          "output_tokens": 3,
+          "prompt_tokens": 16
+        }
+      }
+    ]
+  },
+  "metrics": {
+    "device": 0,
+    "scheduler": {
+      "active": 0,
+      "queued": 0,
+      "batches": 9
+    },
+    "prefix_cache_enabled": false,
+    "requests": {
+      "completed": 3,
+      "cancelled": 0,
+      "errors": 0
+    },
+    "timing_ms": {
+      "ttft_ms": {
+        "p50": 383.851235,
+        "p95": 496.8924419,
+        "p99": 506.94054918
+      },
+      "tpot_ms": {
+        "p50": 872.689268,
+        "p95": 1547.0983253,
+        "p99": 1607.04579706
+      }
+    },
+    "cache": {
+      "free_blocks": 255,
+      "used_blocks": 0,
+      "cached_prefixes": 0,
+      "hits": 0,
+      "misses": 0,
+      "evictions": 0
+    },
+    "memory": {
+      "committed_bytes": 62233099724,
+      "hbm_used_bytes": 62827851776,
+      "peak_committed_bytes": 62233099724,
+      "peak_hbm_used_bytes": 62831366144
+    },
+    "provenance": {
+      "source_tree_sha256": "05e87f7990a183b743345c0904af3a5909e8df9d57c7c35d95722ba949c19ed1",
+      "pypto_path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/__init__.py",
+      "pypto_init_sha256": "bf20697b19d097f9b241342d857cb69677bb9969d5e94cfaef00edf4a4e884bc",
+      "simpler_path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/runtime/python/simpler/__init__.py",
+      "simpler_init_sha256": "1a73a8b2ee212cc61ed17234604090dc58fd0ac3ca05bd625c3ada38c9b36979",
+      "package_manifest_sha256": "development-source"
+    },
+    "recent_requests": [
+      {
+        "request_id": "2961868eb6324858b6ff0208936a607f",
+        "ttft_ms": 383.851235,
+        "tpot_ms": 872.689268,
+        "output_tokens": 3,
+        "prompt_tokens": 1
+      },
+      {
+        "request_id": "5a36d694c5c4427fa676bc3ab69ecec3",
+        "ttft_ms": 509.452576,
+        "tpot_ms": 1622.032665,
+        "output_tokens": 2,
+        "prompt_tokens": 23
+      },
+      {
+        "request_id": "772399f3695c4b7da525bad61eed80be",
+        "ttft_ms": 380.897052,
+        "tpot_ms": 753.903503,
+        "output_tokens": 3,
+        "prompt_tokens": 16
+      }
+    ],
+    "recent_events": [
+      {
+        "event": "device_complete",
+        "time_ns": 4157549629210526,
+        "batch": 6
+      },
+      {
+        "event": "batch_complete",
+        "time_ns": 4157549629220276,
+        "batch": 6
+      },
+      {
+        "event": "cache_release",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 2,
+        "refs": 0
+      },
+      {
+        "event": "cache_reclaim",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 2
+      },
+      {
+        "event": "cache_release",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 3,
+        "refs": 0
+      },
+      {
+        "event": "cache_reclaim",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 3
+      },
+      {
+        "event": "cache_request_release",
+        "namespace": "qwen3.8-27b-v2"
+      },
+      {
+        "event": "finished",
+        "time_ns": 4157549629302056,
+        "request_id": "5a36d694c5c4427fa676bc3ab69ecec3",
+        "reason": "done",
+        "metrics": {
+          "ttft_ms": 509.452576,
+          "tpot_ms": 1622.032665,
+          "output_tokens": 2,
+          "prompt_tokens": 23
+        }
+      },
+      {
+        "event": "queued",
+        "time_ns": 4157549633619786,
+        "request_id": "772399f3695c4b7da525bad61eed80be"
+      },
+      {
+        "event": "admitted",
+        "time_ns": 4157549871487397,
+        "request_id": "772399f3695c4b7da525bad61eed80be",
+        "prefix_tokens": 0
+      },
+      {
+        "event": "batch_submit",
+        "time_ns": 4157549871533617,
+        "batch": 7,
+        "slots": [
+          {
+            "request_id": "772399f3695c4b7da525bad61eed80be",
+            "phase": "prefill",
+            "position": 0,
+            "tokens": 16
+          }
+        ]
+      },
+      {
+        "event": "device_submit",
+        "time_ns": 4157549871588747,
+        "batch": 7
+      },
+      {
+        "event": "cache_allocate",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 4
+      },
+      {
+        "event": "cache_reserve",
+        "namespace": "qwen3.8-27b-v2",
+        "pages": 1,
+        "end": 16
+      },
+      {
+        "event": "device_complete",
+        "time_ns": 4157550014475207,
+        "batch": 7
+      },
+      {
+        "event": "batch_complete",
+        "time_ns": 4157550014481947,
+        "batch": 7
+      },
+      {
+        "event": "batch_submit",
+        "time_ns": 4157550014540857,
+        "batch": 8,
+        "slots": [
+          {
+            "request_id": "772399f3695c4b7da525bad61eed80be",
+            "phase": "decode",
+            "position": 16,
+            "tokens": 1
+          }
+        ]
+      },
+      {
+        "event": "device_submit",
+        "time_ns": 4157550014570268,
+        "batch": 8
+      },
+      {
+        "event": "cache_allocate",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 5
+      },
+      {
+        "event": "cache_reserve",
+        "namespace": "qwen3.8-27b-v2",
+        "pages": 2,
+        "end": 18
+      },
+      {
+        "event": "device_complete",
+        "time_ns": 4157551521998821,
+        "batch": 8
+      },
+      {
+        "event": "batch_complete",
+        "time_ns": 4157551522008301,
+        "batch": 8
+      },
+      {
+        "event": "batch_submit",
+        "time_ns": 4157551522070272,
+        "batch": 9,
+        "slots": [
+          {
+            "request_id": "772399f3695c4b7da525bad61eed80be",
+            "phase": "decode",
+            "position": 17,
+            "tokens": 1
+          }
+        ]
+      },
+      {
+        "event": "device_submit",
+        "time_ns": 4157551522108752,
+        "batch": 9
+      },
+      {
+        "event": "device_complete",
+        "time_ns": 4157551522291123,
+        "batch": 9
+      },
+      {
+        "event": "batch_complete",
+        "time_ns": 4157551522294613,
+        "batch": 9
+      },
+      {
+        "event": "cache_release",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 4,
+        "refs": 0
+      },
+      {
+        "event": "cache_reclaim",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 4
+      },
+      {
+        "event": "cache_release",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 5,
+        "refs": 0
+      },
+      {
+        "event": "cache_reclaim",
+        "namespace": "qwen3.8-27b-v2",
+        "page": 5
+      },
+      {
+        "event": "cache_request_release",
+        "namespace": "qwen3.8-27b-v2"
+      },
+      {
+        "event": "finished",
+        "time_ns": 4157551522353943,
+        "request_id": "772399f3695c4b7da525bad61eed80be",
+        "reason": "done",
+        "metrics": {
+          "ttft_ms": 380.897052,
+          "tpot_ms": 753.903503,
+          "output_tokens": 3,
+          "prompt_tokens": 16
+        }
+      }
+    ],
+    "orthrus": {
+      "block_size": 32,
+      "rounds": 3,
+      "accepted": 3,
+      "restores": 1,
+      "neural_draft_rounds": 3,
+      "last_draft_seconds": 1.3792463107965887,
+      "head_storage": "stream",
+      "head_transfer": "packed",
+      "attention_backend": "paged",
+      "gdn_backend": "vector",
+      "serving_backend": "device",
+      "weight_backend": "pypto",
+      "head_preparation_backend": "pypto",
+      "draft_group_size": 4,
+      "head_preparation_seconds": 36.21925168810412,
+      "last_draft_timings": {
+        "device_seconds": 0.1489616958424449,
+        "weights_seconds": 1.2267533293925226,
+        "compute_dispatches": 18,
+        "inputs_seconds": 0.0015522371977567673,
+        "embedding_seconds": 0.0012291762977838516,
+        "group_seconds": 0.1429203376173973,
+        "finish_seconds": 0.004812181927263737,
+        "readback_seconds": 0.0,
+        "select_seconds": 0.0014558369293808937,
+        "total_seconds": 1.3792463107965887
+      }
+    }
+  },
+  "server_returncode": -15,
+  "clean_shutdown": true,
+  "seconds": 277.33245212817565
+}
