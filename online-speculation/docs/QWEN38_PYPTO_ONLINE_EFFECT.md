@@ -52,6 +52,23 @@ python scripts/benchmark_qwen38_pypto_online.py \
 
 延长已完成的 K8 实验时，保持模型、数据和学习超参相同，追加 `--continue-from /data/disk/results/last1-k8.json --steps 128 --eval-steps 32,64,96,128 --train-count 256 --skip-calibration`，并指定新的输出文件。入口恢复 Adam 状态、跳过已使用的问题，保留相同留出集；累计曲线与净吞吐包含前一段训练，不重置学习率预热。
 
+## 32 次更新结果
+
+四组均完成真实 27B 的训练、参数发布、固定 head 评估及 checkpoint 保存。训练请求和留出请求的 greedy 输出均与同题 AR 逐 token 一致；请求结束后 KV block 全部释放。
+
+| 配置 | 测试题接受候选 / 轮：更新前 → 后 | 更新后固定 head / AR | 含更新成本 / AR |
+| --- | --- | --- | --- |
+| last-1 / K8 | 1.06 → 0.99 | 0.67× | 0.48× |
+| last-4 / K8 | 1.06 → 0.94 | 0.66× | 0.29× |
+| last-1 / K32 | 1.09 → 0.99 | 0.54× | 0.39× |
+| last-4 / K32 | 1.09 → 0.93 | 0.53× | 0.27× |
+
+1× 是同题 AR 基线。K8 减少了验证开销，但这一轮接受长度没有增长，四组均未实现加速。每组只监督了约 500 个位置，TV loss 在 0.5 附近波动；这还不足以判断更长训练的效果。
+
+![32 次更新的 loss、调参题接受长度和固定 head 速度](validation/pypto-qwen38/online-effect-20261110/summary-32/online-effect.png)
+
+[完整测量与 CSV](validation/pypto-qwen38/online-effect-20261110/)保留各请求 token、接受数、更新耗时、数据及初始 head 哈希。
+
 ## 如何解释结果
 
 这是冷启动探索，不等同于已有离线 head 的在线续训。[源仓库](https://github.com/xchang1121/inference_scaling/blob/8d82be93e9874537fc8055a06574f8e25fdc9d39/online-speculation/docs/RUNNING.md) 将两者分开：主线 last-N TV 续训使用预训练 head；AR 复制冷启动实验则使用全量 draft attention、完整回答重放及短块 KL 训练。因此，这里的 last-1/4 若未明显加速，不能直接推断离线 head 的在线续训无效。
