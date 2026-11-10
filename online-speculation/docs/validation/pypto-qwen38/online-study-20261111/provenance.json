@@ -1,0 +1,33 @@
+{
+  "experiment": "TV online last-1 / last-4",
+  "source_snapshot": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/source-online-study-r1",
+  "source_sha256": {
+    "scripts/benchmark_qwen38_pypto_online.py": "01f6db91d55629b2ad5511b23e1ef11c53321fcdd4f6b7443f79c956d9d74150",
+    "src/blockspec/pypto_qwen38/ar_prefix.py": "33607615531810951fc85660207e9cf11318457492b7b9fe9695e49c16761bfa",
+    "src/blockspec/pypto_qwen38/online.py": "8ba01e18a556e914efef0183e0a2b50d75937bb9c2de3c738bed5386be12b6f5",
+    "src/blockspec/pypto_qwen38/online_suffix.py": "a7a8377260dfc59ec69c64106f9736a419d95da61c7056c92e86cff83d926491",
+    "src/blockspec/pypto_qwen38/online_bridge.py": "2f421879d748b020f3e2ccda96f3c1646a45a4aa85e65b857840df962289c740"
+  },
+  "runtime": {
+    "OneServing": "7aa40ba5238e3a83bb5f25e18817497c181e3e9b",
+    "PyPTO": "98752784548b777b2377a9084411c3716eb341d6",
+    "Simpler": "c1f89ea431f5306f78c0e4ab9573c829756d7f1e",
+    "PTOISA": "418de18dde8fa33773dc5c384fdfe5506463b628",
+    "PTOAS": "0.65",
+    "CANN": "9.1.1",
+    "driver": "26.1.1"
+  },
+  "result_sha256": {
+    "tv-last4-k32-128-r1.json": "a77198add5c460daa0e411566b96b394550afee6f9e5b3dd6fe584ce951c8648",
+    "tv-last1-k32-128-r1.json": "88c28f3424377e4fbf628cc981e82a4dada856ed36f74c0af690d91baa045234"
+  },
+  "data": {
+    "repository": "https://github.com/openai/grade-school-math",
+    "commit": "3101c7d5072418e28b9008a6636bde82a006892c",
+    "files_sha256": {
+      "train": "17f347dc51477c50d4efb83959dbb7c56297aba886e5544ee2aaed3024813465",
+      "test": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14"
+    }
+  },
+  "resource_note": "TV processes exited cleanly; their former 0/4 pair is now used by KL prewarm; 5/6 have been released. Other users' processes are untouched."
+}
