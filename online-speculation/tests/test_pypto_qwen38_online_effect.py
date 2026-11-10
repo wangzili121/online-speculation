@@ -86,3 +86,25 @@ def test_initial_and_trained_evaluation_use_the_same_resident_suffix_without_an_
     learner.updates = 1
     with pytest.raises(ValueError, match="fresh learner"):
         module.publish_initial_suffix(learner)
+
+
+def test_continuation_keeps_heldout_and_hypers_and_moves_to_new_questions():
+    import copy
+    arguments = dict.fromkeys(("last_layers", "width", "stride", "replay_blocks", "learning_rate", "warmup_steps",
+                              "tokens", "seed", "max_prompt", "dev_count", "test_count", "share_ar_prefix"), 1)
+    dataset = dict(files_sha256={"train": "a", "test": "b"}, splits=dict(
+        calibration=[{"id": "c"}], dev=[{"id": "d"}], test=[{"id": "t"}],
+        train=[{"id": "0"}, {"id": "1"}, {"id": "2"}]))
+    previous = dict(completed=True, updates=[{"step": 32}], arguments=arguments,
+                    dataset=copy.deepcopy(dataset), train=[{"id": "0"}, {"id": "1"}])
+    assert module.check_continuation(previous, dataset, arguments) == 2
+    with pytest.raises(ValueError, match="preserve learning"):
+        module.check_continuation(previous, dataset, {**arguments, "learning_rate": 2})
+    changed = copy.deepcopy(dataset)
+    changed["splits"]["dev"] = [{"id": "other"}]
+    with pytest.raises(ValueError, match="held-out"):
+        module.check_continuation(previous, changed, arguments)
+    changed = copy.deepcopy(dataset)
+    changed["splits"]["train"].reverse()
+    with pytest.raises(ValueError, match="used training prefix"):
+        module.check_continuation(previous, changed, arguments)
