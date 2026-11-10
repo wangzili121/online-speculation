@@ -144,6 +144,7 @@ def main():
     p.add_argument("--max-prompt", type=int, default=128)
     p.add_argument("--request-timeout", type=float, default=900)
     p.add_argument("--skip-calibration", action="store_true")
+    p.add_argument("--share-ar-prefix", action=argparse.BooleanOptionalAction, default=True)
     a = p.parse_args()
     if (a.output.exists() or not 2 <= a.width <= 32 or not 1 <= a.tokens <= 384
             or not 1 <= a.max_prompt <= 512-a.tokens or a.steps < 1 or a.warmup_steps < 1
@@ -216,7 +217,7 @@ def main():
 
         learner.update = update
 
-        def measure(row, *, target=False, learning=False, oracle=None):
+        def measure(row, *, target=False, learning=False, oracle=None, capture_logits=False):
             idle(engine)
             engine.scheduler.runner = runner.native if target else runner
             runner.draft.learner = learner if learning else None
@@ -224,7 +225,26 @@ def main():
             meter.reference = oracle
             meter.reset()
             before = (runner.rounds, runner.accepted, learner.updates)
-            result = generate(engine, row, a.tokens, a.request_timeout)
+            original, captured = meter.original, []
+
+            def capture(*args):
+                result = original(*args)
+                if not captured:
+                    import torch
+                    logits = runner.draft.logits
+                    host = torch.empty(logits.shape, dtype=logits.dtype)
+                    runner.native.worker.copy_from(host.data_ptr(), logits.data_ptr, host.numel()*host.element_size())
+                    captured.append(hashlib.sha256(memoryview(host.view(torch.uint8).numpy())).hexdigest())
+                return result
+
+            if capture_logits:
+                meter.original = capture
+            try:
+                result = generate(engine, row, a.tokens, a.request_timeout)
+            finally:
+                meter.original = original
+            if captured:
+                result["first_draft_logits_sha256"] = captured[0]
             result.update(rounds=runner.rounds-before[0], accepted=runner.accepted-before[1],
                           proposed=meter.candidates, updates=learner.updates-before[2],
                           draft_phases=dict(meter.phases))
@@ -233,7 +253,19 @@ def main():
         # 模型预热不学习；正式测量从同一个初始化版本开始。
         runner.draft.block_size = a.width
         measure(splits["calibration"][0], target=True)
-        measure(splits["calibration"][0])
+        unshared = measure(splits["calibration"][0], capture_logits=a.share_ar_prefix)
+        if a.share_ar_prefix:
+            from blockspec.pypto_qwen38.ar_prefix import borrow_prefix
+            layers, owned = borrow_prefix(runner.native, head, 64-a.last_layers)
+            runner.draft.handles.extend(owned)
+            runner.draft.weights.publish_many(layers, expected_version=0)
+            runner.draft.weights.version = 0
+            shared = measure(splits["calibration"][0], capture_logits=True)
+            if (shared["tokens"] != unshared["tokens"] or
+                    shared.get("first_draft_logits_sha256") != unshared.get("first_draft_logits_sha256")):
+                raise AssertionError("AR-copy prefix sharing changed the initial head logits/output")
+            report["prefix_sharing_control"] = dict(layers=sorted(layers), unshared=unshared, shared=shared)
+            emit("ar_prefix_sharing", dict(unshared_seconds=unshared["seconds"], shared_seconds=shared["seconds"]))
         if not a.skip_calibration:
             # 仅成本标定忽略 EOS；仍执行完整的真实 draft，再替换为 AR 答案测理想接受上限。
             eos = engine.scheduler.stop_token_ids
