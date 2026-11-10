@@ -88,7 +88,7 @@ def save(head, directory, *, last_layer=None, layer_banks=None, worker=None):
         layer_banks = {63:last_layer}
     if layer_banks is not None:
         from math import prod
-        if worker is None or not layer_banks or any(type(layer) is not int or not 60 <= layer <= 63 for layer in layer_banks):
+        if worker is None or not layer_banks or any(type(layer) is not int or not 0 <= layer < 64 for layer in layer_banks):
             raise ValueError("suffix device banks and their worker required")
         for layer,banks in layer_banks.items():
             expected = head.banks(layer)

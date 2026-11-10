@@ -121,13 +121,14 @@ def test_updated_head_export_preserves_frozen_layers_and_source(tmp_path, small_
     assert not (tmp_path/"invalid").exists()
 
 
-def test_suffix_export_uses_owner_offsets_and_preserves_other_layers(tmp_path, small_weights):
+@pytest.mark.parametrize("layers", ((62,63),(59,60,61,62,63),(0,1,2,3)))
+def test_suffix_export_uses_owner_offsets_and_preserves_other_layers(tmp_path, small_weights, layers):
     import ctypes
     from blockspec.pypto_qwen38.prepared_head import DeviceBank
     model,source,_ = fixture_head(tmp_path,small_weights)
     before = source.shared_weights.clone()
     expected,patches,owners = {},{},[]
-    for layer in (62,63):
+    for layer in layers:
         expected[layer],patches[layer] = [],[]
         for bank in source.banks(layer):
             value = (bank+.125).contiguous()
