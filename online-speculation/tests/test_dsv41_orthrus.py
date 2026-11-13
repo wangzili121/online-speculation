@@ -1,4 +1,6 @@
 from dataclasses import replace
+from types import SimpleNamespace
+import sys
 
 import pytest
 import torch
@@ -19,6 +21,7 @@ from blockspec.vllm_ascend.dsv41_contract import (
 )
 from blockspec.vllm_ascend.head_contract import ContractError, write_json
 from blockspec.vllm_ascend.dsv41_precise_attention import precise_draft_attention
+from blockspec.vllm_ascend import dsv41_native_attention as native_attention
 
 
 @pytest.fixture
@@ -132,6 +135,78 @@ def _direct_attention(query, local, lengths, window, temp, sink, sparse=None, se
         outputs.append(torch.stack(batch_output))
         lses.append(torch.stack(batch_lse))
     return torch.stack(outputs), torch.stack(lses)
+
+
+def test_native_attention_segments_preserve_joint_softmax(monkeypatch):
+    generator = torch.Generator().manual_seed(41)
+    batch, block, heads, dim = 2, 3, 2, 4
+    query = torch.randn(batch, block, heads, dim, generator=generator)
+    temporary = torch.randn(batch, block, dim, generator=generator)
+    local_rows = torch.randn(batch, 6, dim, generator=generator)
+    global_rows = torch.randn(batch, 4, dim, generator=generator)
+    local = _pages(local_rows, torch.arange(6))
+    global_kv = _pages(global_rows, torch.arange(4))
+    anchors = torch.tensor([0, 5])
+    sink = torch.tensor([-1.0, 0.5])
+    selected = torch.tensor(
+        [[[-1, -1], [-1, -1], [-1, -1]], [[0, 2], [1, 2], [2, -1]]]
+    )
+    global_lengths = torch.tensor([0, 3])
+    calls = []
+
+    def fake_plane(query, pages, indices, lengths, plane_sink, **kwargs):
+        calls.append((indices.clone(), lengths.clone(), kwargs["maximum_length"]))
+        if indices.ndim == 2:
+            indices = indices[:, None].expand(-1, block, -1)
+        kv = pages.gather(indices).float()
+        valid = indices >= 0
+        logits = torch.einsum("bqhd,bqrd->bqhr", query.float(), kv) * dim**-0.5
+        logits = logits.masked_fill(~valid[:, :, None], -torch.inf)
+        sink_logits = plane_sink.view(1, 1, heads, 1).expand(batch, block, -1, -1)
+        lse = torch.cat((logits, sink_logits), -1).logsumexp(-1, keepdim=True)
+        output = torch.einsum("bqhr,bqrd->bqhd", (logits - lse).exp(), kv)
+        has_rows = valid.any(-1)[:, :, None, None]
+        return torch.where(has_rows, output, torch.zeros_like(output)), lse
+
+    def fake_block(query, temporary):
+        logits = torch.einsum("bqhd,brd->bqhr", query, temporary) * dim**-0.5
+        lse = logits.logsumexp(-1, keepdim=True)
+        return torch.einsum("bqhr,brd->bqhd", (logits - lse).exp(), temporary), lse
+
+    monkeypatch.setattr(native_attention, "_native_sparse_plane", fake_plane)
+    monkeypatch.setattr(native_attention, "_temporary_block", fake_block)
+    actual = native_attention.native_draft_attention(
+        query,
+        temporary,
+        local,
+        anchors,
+        sink,
+        window=4,
+        global_kv=global_kv,
+        global_indices=selected,
+        global_lengths=global_lengths,
+        max_swa_history=5,
+        max_global_history=3,
+    )
+    expected = draft_attention(
+        query,
+        temporary,
+        local,
+        anchors,
+        sink,
+        window=4,
+        global_kv=global_kv,
+        global_indices=selected,
+    )
+    torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
+    assert [call[2] for call in calls] == [5, 3]
+
+
+def test_native_attention_rejects_pre_post7_sparse_abi(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch_npu", SimpleNamespace(__version__="2.10.0.post4"))
+    assert not native_attention._runtime_topk_length_supported()
+    monkeypatch.setitem(sys.modules, "torch_npu", SimpleNamespace(__version__="2.10.0.post7"))
+    assert native_attention._runtime_topk_length_supported()
 
 
 @pytest.mark.parametrize("width", [1, 32])

@@ -1,0 +1,33 @@
+{
+  "case": "dsv41_orthrus_native_draft_attention",
+  "device": "Ascend910B3",
+  "image": "quay.io/ascend/vllm-ascend:nightly-releases-v0.32.0rc",
+  "torch_npu": "2.10.0.post7",
+  "shape": {
+    "batch": 3,
+    "block": 32,
+    "heads_per_tp_rank": 8,
+    "head_dim": 512,
+    "swa_window": 128,
+    "global_topk": 512,
+    "anchors": [0, 1023, 2047]
+  },
+  "native": {
+    "max_output_abs_error": 0.004423260688781738,
+    "max_lse_abs_error": 9.5367431640625e-7,
+    "history_ms": 2.299842901993543,
+    "temporary_block_ms": 0.2991794957779348,
+    "full_attention_ms": 2.9797420953400433
+  },
+  "fp32_golden_path": {
+    "max_output_abs_error": 1.5497207641601562e-6,
+    "max_lse_abs_error": 9.5367431640625e-7,
+    "full_attention_ms": 5.704166705254465
+  },
+  "checks": {
+    "empty_history": true,
+    "per_query_global_indices": true,
+    "joint_sink_normalization": true,
+    "target_cache_unchanged": true
+  }
+}

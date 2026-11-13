@@ -32,9 +32,19 @@ CPU 覆盖 1017 拓扑、BF16/F32 张量校验、C2A 奇偶和跨页读取、C1A
 
 以上用例均通过精度检查。原 C2A 用例 Top-K 与 CPU 完全一致，各用例目标 KV、索引页及页表逐元素保持一致。
 
+高效路径使用现有 Ascend 融合核。SWA 历史和选中的压缩历史分别调用 `npu_sparse_flash_mla`，临时 K×K 双向块调用 fused infer attention，再以 FP32 LSE 精确合并三段。这样每个 draft query 共享同一 anchor 历史边界，压缩 Top-K 仍可逐 query 不同，sink 只计一次，目标缓存始终只读。目标模型将 SWA 和压缩历史合在一次因果调用里的接口无法表达这组 Orthrus 语义，因此这里需要分段。 [原生实现](../src/blockspec/vllm_ascend/dsv41_native_attention.py)
+
+在 `nightly-releases-v0.32.0rc`、`torch_npu 2.10.0.post7` 和 Ascend 910B3 上，K32、TP8 单 rank 维度、SWA 128、Top-K 512、anchor 为 0/1023/2047 的用例如下。融合路径按 BF16 误差门限通过，LSE 与 FP32 参考保持在 `1e-6` 内，目标页和页表逐元素不变。计时为同一张卡上的算子窗口，不含投影、调度和 verifier。 [验证记录](validation/dsv41/native-draft-attention-910b3.json)
+
+| Attention 路径 | 输出最大绝对误差 | LSE 最大绝对误差 | 耗时 |
+|---|---:|---:|---:|
+| 原生融合分段 | 4.42e-3 | 9.54e-7 | 2.98 ms |
+| FP32 golden 路径 | 1.55e-6 | 9.54e-7 | 5.70 ms |
+
 ```bash
 PYTHONPATH=src python scripts/smoke_dsv41_orthrus_npu.py \
   --config "$MODEL/config.json" --compare-fia
+PYTHONPATH=src python scripts/probe_dsv41_sparse_mla.py
 ```
 
 添加 `--layer2-weights /path/to/layer2-a2-w8a8.pt` 可复测第 2 层样本。该用例使用原版 Flash 的 A2 W8A8 权重转换样本和合成隐藏状态，CPU 反量化并生成 Q/KV；其余用例使用合成的分页 KV。复验使用 `torch 2.10.0+cpu` 和 `torch_npu 2.10.0.post4`。实际 prompt 激活、完整 1017 量化服务和吞吐尚待验收。
@@ -51,4 +61,6 @@ PYTHONPATH=src python scripts/smoke_dsv41_native_index.py
 
 ## 原生缓存与引擎接入
 
-下一步把检索绑定到 MRV2 提供的目标源页，并验证原生 SparseFlashMla 能否组合真实 SWA 页、选中的压缩页和临时块。目标侧原生检索仍使用因果元数据及 C2A 压缩余数。接入后对照 target-only 验收接受前缀、拒绝回滚和目标状态。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
+原生检索和 Attention 的独立算子路径已经打通。下一步把 `PagedRows`、anchor、压缩长度和 draft 私有 Top-K 绑定到 MRV2 提供的真实 cache plane，再将 FP32 Attention 输出接入 diffusion O 投影和共享 backbone。随后接 proposer/verifier，验收接受前缀、拒绝回滚、请求换序和目标状态。
+
+原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)

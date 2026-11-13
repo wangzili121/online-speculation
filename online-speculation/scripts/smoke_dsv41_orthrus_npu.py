@@ -19,6 +19,7 @@ from blockspec.vllm_ascend.dsv41_attention import (
 )
 from blockspec.vllm_ascend.dsv41_contract import BLOCK_SIZE, V41Topology, text_config
 from blockspec.vllm_ascend.dsv41_precise_attention import precise_draft_attention
+from blockspec.vllm_ascend.dsv41_native_attention import native_draft_attention
 from blockspec.vllm_ascend.dsv4_hybrid import (
     merge_attention_segments,
     tail_logical_indices,
@@ -72,6 +73,17 @@ def check_precision(actual, expected):
     }
 
 
+def check_bf16_precision(actual, expected):
+    output, lse = (part.cpu() for part in actual)
+    torch.testing.assert_close(output, expected[0], atol=1e-2, rtol=2.01 / 128)
+    torch.testing.assert_close(lse, expected[1], atol=1e-2, rtol=2.01 / 128)
+    return {
+        "elements": output.numel(),
+        "max_output_abs_error": (output - expected[0]).abs().max().item(),
+        "max_lse_abs_error": (lse - expected[1]).abs().max().item(),
+    }
+
+
 def check_long_history(topology, heads, dim, sample, device):
     """Exercise full SWA and Top-K 512 against several pages and partial batches."""
     cases = []
@@ -109,7 +121,9 @@ def check_long_history(topology, heads, dim, sample, device):
     return cases
 
 
-def check_projected_history(topology, heads, text, sample, device, layer_weights):
+def check_projected_history(
+    topology, heads, text, sample, device, layer_weights, compare_native
+):
     """Use real layer-2 projections and synthetic hidden states for the FP32 check."""
     weights = torch.load(layer_weights, map_location="cpu", weights_only=True)
     eps = text["rms_norm_eps"]
@@ -154,14 +168,30 @@ def check_projected_history(topology, heads, text, sample, device, layer_weights
         topology, 2, q, temp, swa, anchors, sink, global_pages={2: compressed}, selection=selected,
     )
     device_swa, device_compressed = to_device(swa), to_device(compressed)
-    actual = precise_draft_attention(
+    precise = precise_draft_attention(
         q.to(device), temp.to(device), device_swa, anchors.to(device), sink.to(device),
         window=topology.window, global_kv=device_compressed, global_indices=selected.to(device),
     )
     for host, resident in ((swa, device_swa), (compressed, device_compressed)):
         torch.testing.assert_close(resident.values.cpu(), host.values, atol=0, rtol=0)
         torch.testing.assert_close(resident.table.cpu(), host.table, atol=0, rtol=0)
-    return check_precision(actual, expected)
+    result = {"precise": check_precision(precise, expected)}
+    if compare_native:
+        native = native_draft_attention(
+            q.to(device),
+            temp.to(device),
+            device_swa,
+            anchors.to(device),
+            sink.to(device),
+            window=topology.window,
+            global_kv=device_compressed,
+            global_indices=selected.to(device),
+            global_lengths=(anchors // 2).to(device),
+            max_swa_history=int(anchors.max()),
+            max_global_history=int((anchors // 2).max()),
+        )
+        result["native"] = check_bf16_precision(native, expected)
+    return result
 
 
 def main():
@@ -170,11 +200,16 @@ def main():
     parser.add_argument("--device", default="npu:0")
     parser.add_argument("--tp", type=int, default=8, help="Use the head count of one rank. No collectives run.")
     parser.add_argument("--compare-fia", action="store_true", help="Compare against the prior segmented BF16 path.")
+    parser.add_argument("--compare-native", action="store_true", help="Run native sparse planes plus block FIA.")
     parser.add_argument("--layer2-weights", type=Path, help="Optional A2 W8A8 layer-2 projection sample.")
     args = parser.parse_args()
     device = torch.device(args.device)
     torch.npu.set_device(device)
     torch.npu.matmul.allow_hf32 = False
+    if args.compare_native:
+        from vllm_ascend.utils import enable_custom_op
+
+        enable_custom_op()
     config = read_json(args.config)
     text = text_config(config)
     topology = V41Topology.from_config(config)
@@ -267,7 +302,7 @@ def main():
         result["segmented_bf16_fia"] = {"max_output_abs_error": fia_max_output, "excess_elements": fia_excess}
     if args.layer2_weights is not None:
         result["layer2_projection_sample"] = check_projected_history(
-            topology, heads, text, sample, device, args.layer2_weights,
+            topology, heads, text, sample, device, args.layer2_weights, args.compare_native,
         )
     print(json.dumps(result, indent=2))
 

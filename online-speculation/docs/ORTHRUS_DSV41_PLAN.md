@@ -35,7 +35,7 @@ V4.1-1017 的 40 层文本主干分为 20 层因果 encoder 和 20 层 decoder�
 
 阶段 2 要验证的第一个算子接口是 **C2A Full 加一个 Reuse 层**。用同一组目标源页跑两种逻辑相同的物理布局，先验证 Top-K 逻辑索引、C2A 奇偶边界和 sink，再接临时双向块。旧 V4 已有 proposer、概率传递、分页与回滚测试可沿用。旧 V4 的 C4 曾独立复现物理页顺序引起的精度差异，这项测试给 V4.1 提供回归场景。 [旧版实现和验证记录](DSV4_PAUSE_HANDOFF.md)
 
-接下来核对原生 `select_projected` 能否独立处理 draft 的 K 行查询和候选池，以及 `npu_sparse_flash_mla` 能否同时接收 anchor 处的固定历史边界和临时块。当前原生路径读取分组历史，并关闭 LSE 返回。若需要分段计算，先确认设备是否支持返回合并所需的归一化统计量，再决定使用原生算子组合或补充融合入口。A2/A3 和 A5 分别核对实际缓存格式。 [Ascend 检索与 Attention 入口](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py#L528-L641) · [Ascend 缓存 ABI](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/cache_config.py)
+原生 K 行检索和 Attention 已在 A2/A3 上独立验证。由于目标模型的一次因果调用无法表达“所有 draft query 固定读取同一 anchor 历史，同时读取临时双向块”，高效实现将 SWA、选中的压缩历史和临时块分别交给现有融合核，再按 FP32 LSE 合并。下一步把这些入口绑定到 MRV2 的真实 cache plane 和 diffusion 投影，随后接 proposer/verifier。A5 仍需按实际 packed-cache ABI 单独验证。 [Ascend 检索与 Attention 入口](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py#L528-L641) · [Ascend 缓存 ABI](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/cache_config.py)
 
 ## 资源与待核实项
 
