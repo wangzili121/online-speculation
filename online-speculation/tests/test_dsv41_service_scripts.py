@@ -71,3 +71,56 @@ def test_orthrus_service_adds_k32_eager_draft():
     }
     assert _argument(command, "--compilation-config") == '{"cudagraph_mode":"NONE"}'
 
+
+def test_experimental_single_a2_smoke_is_bounded():
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "DRY_RUN": "1",
+            "MODE": "target",
+            "MODEL": "/models/dsv41",
+        }
+    )
+    result = subprocess.run(
+        [ROOT / "scripts" / "serve_dsv41_single_a2.sh"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    command = shlex.split(result.stdout.removeprefix("command: "))
+    assert command[:3] == ["vllm", "serve", "/models/dsv41"]
+    assert "--data-parallel-size" not in command
+    assert _argument(command, "--tensor-parallel-size") == "8"
+    assert _argument(command, "--max-model-len") == "16384"
+    assert _argument(command, "--max-num-batched-tokens") == "512"
+    assert _argument(command, "--max-num-seqs") == "1"
+    assert json.loads(_argument(command, "--engram-config")) == {
+        "cpu_offload": True,
+        "dp_shared_memory": False,
+    }
+
+
+def test_experimental_single_a2_can_add_orthrus():
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "DRY_RUN": "1",
+            "MODE": "orthrus",
+            "MODEL": "/models/dsv41",
+            "HEAD": "/models/head",
+        }
+    )
+    result = subprocess.run(
+        [ROOT / "scripts" / "serve_dsv41_single_a2.sh"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    command = shlex.split(result.stdout.removeprefix("command: "))
+    speculative = json.loads(_argument(command, "--speculative-config"))
+    assert speculative["model"] == "/models/head"
+    assert speculative["num_speculative_tokens"] == 31
+    assert speculative["method"] == "dflash"
+

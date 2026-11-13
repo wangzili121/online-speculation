@@ -97,6 +97,25 @@ PROFILE=smoke-16k scripts/deploy_dsv41_node.sh
 
 固定镜像内已实际安装并发现 `blockspec_orthrus` entry point；两节点启动脚本使用的 headless DP、TP8、Engram、speculative config、lazy safetensors 和 SWA 参数均存在于该镜像的 `vllm serve --help=all`，不是只按文档推测。 [验证记录](validation/dsv41/deployment-cli-v032.json)
 
+### 实验性单机 A2 smoke
+
+W4A8 仓库约 529GB，其中 Engram 由 CPU offload 承担，因此可尝试用一台 8×64GB A2 做受限启动；但这不是官方验收拓扑，也不能替代上述两节点测试。单机入口固定 TP8/EP8、16K、batch 1、512 batched tokens、eager 和 0.88 显存利用率。先运行 target-only，确认权重、Engram 与 HBM 预算后，才以初始化 head 检查 Orthrus 链路。
+
+```bash
+export LOCAL_IP=<this-node-hccl-ip>
+export NIC_NAME=<hccl-interface>
+export ACK_EXCLUSIVE_NODE=1
+
+# 第一步：仅启动目标模型。
+MODE=target scripts/deploy_dsv41_single_a2.sh
+
+# 第二步：target-only 退出并清理容器后，显式指定 head。
+MODE=orthrus HEAD_HOST=/data/disk/wangzili/models/orthrus-dsv41-head-v1 \
+  scripts/deploy_dsv41_single_a2.sh
+```
+
+该入口明确标为 smoke：若单机因 HBM、EP8 或运行时 workspace 失败，应回到官方两节点 DP2/TP8/EP16，不通过 CPU offload 主干或逐层换入来伪造可部署结论。
+
 完整服务验收仍需实际 V4.1 checkpoint，验证 target-only 启动、40 层 draft 前向、greedy 一致性、拒绝回滚、并发换序与显存预算。TP8 head 构造和通信已通过，不再是剩余项。
 
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
