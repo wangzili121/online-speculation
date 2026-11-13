@@ -10,3 +10,7 @@ def register():
         "OrthrusDSV4DraftModel",
         "blockspec.vllm_ascend.dsv4:OrthrusDSV4DraftModel",
     )
+    ModelRegistry.register_model(
+        "OrthrusDSV41DraftModel",
+        "blockspec.vllm_ascend.dsv41_model:OrthrusDSV41DraftModel",
+    )

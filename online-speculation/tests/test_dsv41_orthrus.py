@@ -22,6 +22,7 @@ from blockspec.vllm_ascend.dsv41_contract import (
 from blockspec.vllm_ascend.head_contract import ContractError, write_json
 from blockspec.vllm_ascend.dsv41_precise_attention import precise_draft_attention
 from blockspec.vllm_ascend import dsv41_native_attention as native_attention
+from blockspec.vllm_ascend import dsv41_runtime as runtime
 
 
 @pytest.fixture
@@ -110,6 +111,164 @@ def test_head_rejects_incompatible_artifacts(tmp_path, config):
     save_file(tensors, head / filename)
     with pytest.raises(ContractError, match="wrong shape or dtype"):
         validate_head(model, head, mask_token_id=99)
+
+
+def test_runtime_cache_plan_uses_shared_v41_sources(config):
+    topology = V41Topology.from_config(config)
+    layer2 = runtime.cache_names(topology, 2)
+    layer7 = runtime.cache_names(topology, 7)
+    layer8 = runtime.cache_names(topology, 8)
+    assert layer2.long_kv == "model.layers.2.self_attn.long_kv_cache"
+    assert layer7.long_kv == layer2.long_kv
+    assert layer7.index_k == layer2.index_k
+    assert layer8.long_kv == "model.layers.8.self_attn.long_kv_cache"
+    names = runtime.target_cache_names(topology)
+    assert len(names) == 40 + 4 + 4
+    assert len(names) == len(set(names))
+
+
+def test_runtime_metadata_is_noncausal_and_write_protected():
+    calls = []
+
+    class Builder:
+        def build(self, prefix, common, **kwargs):
+            calls.append((prefix, common, kwargs))
+            return SimpleNamespace(causal=True)
+
+    groups = [
+        SimpleNamespace(
+            kv_cache_group_id=3,
+            layer_names=["model.layers.0.self_attn.swa_cache"],
+            get_metadata_builder=lambda: Builder(),
+        ),
+        SimpleNamespace(
+            kv_cache_group_id=7,
+            layer_names=["model.layers.2.self_attn.long_kv_cache"],
+            get_metadata_builder=lambda: Builder(),
+        ),
+    ]
+    common = SimpleNamespace(
+        num_reqs=2,
+        slot_mapping=torch.tensor([9, 10, 11, 12], dtype=torch.int32),
+        causal=True,
+    )
+    tables = {
+        3: torch.tensor([[4, 5], [6, 7]], dtype=torch.int32),
+        7: torch.tensor([[8, 9], [10, 11]], dtype=torch.int32),
+    }
+    result = runtime.build_readonly_metadata(
+        groups, common, tables, num_query_heads=8
+    )
+    assert set(result) == {
+        "model.layers.0.self_attn.swa_cache",
+        "model.layers.2.self_attn.long_kv_cache",
+    }
+    assert all(not metadata.causal for metadata in result.values())
+    assert common.causal and torch.equal(common.slot_mapping, torch.tensor([9, 10, 11, 12]))
+    for (_, built, kwargs), expected in zip(calls, tables.values(), strict=True):
+        assert not built.causal
+        assert built.slot_mapping.eq(-1).all()
+        assert torch.equal(built.block_table_tensor, expected)
+        assert kwargs["update_cache"] is False
+        assert kwargs["skip_ring_state_update"] is True
+        assert kwargs["build_compressor_metadata"] is False
+        assert kwargs["num_query_heads"] == 8
+
+
+def test_runtime_binds_readonly_target_pages(config):
+    topology = V41Topology.from_config(config)
+    anchors = torch.tensor([3, 4], dtype=torch.int32)
+    table = torch.tensor([[0, 1], [2, 3]], dtype=torch.int32)
+    swa_value = torch.randn(4, 2, 1, 8)
+    long_value = torch.randn(4, 2, 1, 8)
+    index_key = torch.randint(-8, 8, (4, 2, 1, 4), dtype=torch.int8)
+    index_scale = torch.rand(4, 2, 1, dtype=torch.float16)
+
+    swa_meta = SimpleNamespace(block_table=table, cache_seq_lens=anchors)
+    compressed = anchors // 2
+    long_meta = SimpleNamespace(block_table=table, cache_seq_lens=compressed)
+    index_meta = SimpleNamespace(block_table=table, cache_seq_lens=compressed)
+    layer_meta = SimpleNamespace(
+        swa=swa_meta,
+        attention=long_meta,
+        indexer=SimpleNamespace(cache=index_meta),
+    )
+
+    layers = []
+    for _ in topology.layers:
+        layers.append(SimpleNamespace(self_attn=SimpleNamespace()))
+    source = layers[2].self_attn
+    source.long_kv_cache = SimpleNamespace(kv_cache=[long_value])
+    source.indexer = SimpleNamespace(
+        k_cache=SimpleNamespace(kv_cache=[(index_key, index_scale)])
+    )
+    consumer = layers[3].self_attn
+    consumer.dsa_attn = SimpleNamespace(
+        swa_cache_layer=SimpleNamespace(kv_cache=[swa_value])
+    )
+    consumer.v41_impl = SimpleNamespace(
+        _get_layer_metadata=lambda _: layer_meta
+    )
+    target = SimpleNamespace(model=SimpleNamespace(layers=layers))
+
+    bound = runtime.bind_target_history(target, {}, topology, 3, anchors)
+    assert bound.swa.values.data_ptr() == swa_value.data_ptr()
+    assert bound.long_kv.values.data_ptr() == long_value.data_ptr()
+    assert bound.index_k.key is index_key
+    assert bound.index_k.scale is index_scale
+    assert bound.swa.table is table and bound.long_kv.table is table
+    assert torch.equal(bound.global_lengths, compressed)
+    assert torch.equal(swa_value, consumer.dsa_attn.swa_cache_layer.kv_cache[0])
+    assert torch.equal(long_value, source.long_kv_cache.kv_cache[0])
+
+    bad = SimpleNamespace(**vars(layer_meta))
+    bad.attention = SimpleNamespace(block_table=table, cache_seq_lens=compressed + 1)
+    consumer.v41_impl = SimpleNamespace(_get_layer_metadata=lambda _: bad)
+    with pytest.raises(ValueError, match="incomplete or future"):
+        runtime.bind_target_history(target, {}, topology, 3, anchors)
+
+
+def test_runtime_drives_index_sources_and_reuses_private_topk(monkeypatch, config):
+    topology = V41Topology.from_config(config)
+    anchors = torch.tensor([8], dtype=torch.int32)
+    pages = PagedRows(torch.zeros(1, 8, 8), torch.zeros(1, 1, dtype=torch.int32))
+    index = runtime.IndexPages(
+        torch.zeros(1, 8, 1, 4, dtype=torch.int8),
+        torch.ones(1, 8, 1, dtype=torch.float16),
+        torch.zeros(1, 1, dtype=torch.int32),
+    )
+    history = runtime.V41TargetHistory(pages, anchors, pages, index, anchors // 2)
+    selected = torch.arange(3, dtype=torch.int32).view(1, 1, 3).expand(1, 2, -1)
+    calls = []
+
+    def fake_select(query, weights, runtime_anchors, runtime_pages, **kwargs):
+        calls.append(kwargs["candidate_mode"])
+        assert runtime_anchors is anchors and runtime_pages is index
+        return selected, kwargs.get("candidates")
+
+    seen = []
+
+    def fake_attention(query, temporary, swa, runtime_anchors, sink, **kwargs):
+        seen.append(kwargs["global_indices"])
+        return query.float(), query.new_zeros((*query.shape[:-1], 1), dtype=torch.float32)
+
+    monkeypatch.setattr(runtime, "select_projected_history", fake_select)
+    monkeypatch.setattr(runtime, "native_draft_attention", fake_attention)
+    query = torch.zeros(1, 2, 2, 8)
+    temporary = torch.zeros(1, 2, 8)
+    index_query = torch.zeros(1, 2, 2, 4)
+    index_weights = torch.zeros(1, 2, 2)
+    state = runtime.V41NativeDraftState()
+
+    _, _, state = runtime.run_native_layer(
+        topology, 2, query, temporary, torch.zeros(2), history, state,
+        index_query=index_query, index_weights=index_weights,
+    )
+    assert calls == ["plain"] and state.topk[2] is selected and seen[-1] is selected
+    _, _, reused = runtime.run_native_layer(
+        topology, 3, query, temporary, torch.zeros(2), history, state
+    )
+    assert calls == ["plain"] and reused is not state and seen[-1] is selected
 
 
 def _pages(rows, order):
