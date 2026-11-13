@@ -133,11 +133,27 @@ def main() -> int:
     # Stream one source tensor at a time so TP sharding is tested without
     # materializing the roughly 10 GiB exchange artifact in host memory.
     loaded = None
+    loader_content_checks = None
     if tp == 1 or args.exercise_loader:
+        signatures = {
+            "layers.0.attn.attn_sink": 0,
+            "layers.0.attn.wq_b.weight": 0,
+            "layers.0.attn.wo_a.weight": 0,
+            "layers.0.attn.wo_b.weight": 1,
+        }
+
         def checkpoint_values():
             for name, shape in expected.items():
                 dtype = torch.float32 if name.endswith(".attn_sink") else torch.bfloat16
-                yield name, torch.zeros(shape, dtype=dtype)
+                axis = signatures.get(name)
+                if axis is None:
+                    value = torch.zeros(shape, dtype=dtype)
+                else:
+                    coordinate = torch.arange(shape[axis]).remainder(127).to(dtype)
+                    view = [1] * len(shape)
+                    view[axis] = shape[axis]
+                    value = coordinate.view(view).expand(shape)
+                yield name, value
 
         loaded = model.load_weights(checkpoint_values())
     if loaded is not None and len(loaded) != len(expected):
@@ -153,6 +169,43 @@ def main() -> int:
         raise RuntimeError(
             f"wo_a post-load layout is {tuple(first.wo_a.weight.shape)}, expected {expected_wo_shape}"
         )
+    if loaded is not None:
+        local_heads = first.attn_sink.numel()
+        local_q_rows = first.wq_b.weight.shape[0]
+        local_groups = first.wo_a.weight.shape[0]
+        local_o_columns = first.wo_b.weight.shape[1]
+        probes = {
+            "attn_sink": (
+                first.attn_sink,
+                torch.arange(rank * local_heads, (rank + 1) * local_heads).remainder(127),
+            ),
+            "wq_b": (
+                first.wq_b.weight[:, 0],
+                torch.arange(rank * local_q_rows, (rank + 1) * local_q_rows).remainder(127),
+            ),
+            "wo_a": (
+                first.wo_a.weight[:, 0, :].reshape(-1),
+                torch.arange(
+                    rank * local_groups * first.o_lora_rank,
+                    (rank + 1) * local_groups * first.o_lora_rank,
+                ).remainder(127),
+            ),
+            "wo_b": (
+                first.wo_b.weight[0],
+                torch.arange(
+                    rank * local_o_columns,
+                    (rank + 1) * local_o_columns,
+                ).remainder(127),
+            ),
+        }
+        failed = [
+            name
+            for name, (actual, expected_values) in probes.items()
+            if not torch.equal(actual.float().cpu(), expected_values.float())
+        ]
+        if failed:
+            raise RuntimeError(f"TP loader content mismatch on rank {rank}: {failed}")
+        loader_content_checks = len(probes)
 
     parameter_bytes = sum(parameter.numel() * parameter.element_size() for parameter in model.parameters())
     total_parameter_bytes = torch.tensor(parameter_bytes, dtype=torch.int64, device=f"npu:{local_rank}")
@@ -171,6 +224,7 @@ def main() -> int:
                     "tensor_parallel_size": tp,
                     "contract_tensors": len(expected),
                     "loader_roundtrip_tensors": len(loaded) if loaded is not None else None,
+                    "loader_content_checks_per_rank": loader_content_checks,
                     "wo_a_layout": list(first.wo_a.weight.shape),
                     "device": str(next(model.parameters()).device),
                 },
