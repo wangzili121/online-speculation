@@ -27,6 +27,7 @@ def select_projected_history(
     candidates: torch.Tensor | None = None,
     candidate_topk_blocks: int = 0,
     candidate_block_size: int = 0,
+    maximum_length: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Select from target index pages on A2/A3, using one anchor per request.
 
@@ -53,7 +54,9 @@ def select_projected_history(
     # compressed the keys. Using a prefix length in rows makes the exact same
     # set visible for all queries, including the first row of an odd C2A prefix.
     lengths = (anchors // ratio).int()
-    max_rows = int(lengths.max().item())
+    max_rows = int(lengths.max().item()) if maximum_length is None else maximum_length
+    if max_rows < 0:
+        raise ValueError("maximum index history length must be non-negative")
     if max_rows == 0:
         if mode == 1:
             candidates = torch.full(candidate_shape, -1, dtype=torch.int32, device=query.device)

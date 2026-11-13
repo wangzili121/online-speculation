@@ -39,6 +39,8 @@ class V41TargetHistory:
     long_kv: PagedRows | None = None
     index_k: IndexPages | None = None
     global_lengths: torch.Tensor | None = None
+    max_swa_history: int | None = None
+    max_global_history: int | None = None
 
 
 @dataclass(frozen=True)
@@ -204,6 +206,18 @@ def _lengths(metadata: Any, label: str) -> torch.Tensor:
     return lengths
 
 
+def _host_max_length(metadata: Any) -> int | None:
+    """Read the scheduler's CPU scalar without synchronizing an NPU tensor."""
+
+    value = getattr(metadata, "max_seq_len", None)
+    if value is None:
+        return None
+    value = int(value)
+    if value < 0:
+        raise ValueError("metadata maximum sequence length must be non-negative")
+    return value
+
+
 def bind_target_history(
     target_model: Any,
     metadata_by_prefix: Mapping[str, Any],
@@ -237,9 +251,14 @@ def bind_target_history(
         raise ValueError("SWA metadata does not describe the committed anchor history")
     swa_owner = attention.dsa_attn.swa_cache_layer
     swa = PagedRows(_rows(_cache_value(swa_owner, "SWA"), "SWA"), _table(swa_meta, "SWA"))
+    max_swa_history = _host_max_length(swa_meta)
 
     if role.kv_source is None:
-        return V41TargetHistory(swa=swa, anchors=anchors)
+        return V41TargetHistory(
+            swa=swa,
+            anchors=anchors,
+            max_swa_history=max_swa_history,
+        )
 
     source_attention = layers[role.kv_source].self_attn
     long_owner = getattr(source_attention, "long_kv_cache", None)
@@ -273,7 +292,18 @@ def bind_target_history(
     if scale.ndim != 3 or scale.shape[-1] != 1:
         raise ValueError("index K scale must have one scalar per cache row")
     index_k = IndexPages(key, scale, _table(metadata.indexer.cache, "index K"))
-    return V41TargetHistory(swa, anchors, long_kv, index_k, expected)
+    max_global_history = (
+        max_swa_history // role.ratio if max_swa_history is not None else None
+    )
+    return V41TargetHistory(
+        swa,
+        anchors,
+        long_kv,
+        index_k,
+        expected,
+        max_swa_history,
+        max_global_history,
+    )
 
 
 def run_native_layer(
@@ -319,6 +349,7 @@ def run_native_layer(
                 candidates=candidates,
                 candidate_topk_blocks=topology.candidate_blocks,
                 candidate_block_size=topology.candidate_block_size,
+                maximum_length=history.max_global_history,
             )
             topk[layer] = selection
     next_state = V41NativeDraftState(topk, candidates)
@@ -333,12 +364,8 @@ def run_native_layer(
         global_kv=history.long_kv,
         global_indices=selection,
         global_lengths=history.global_lengths,
-        max_swa_history=int(history.anchors.max().item()) if history.anchors.numel() else 0,
-        max_global_history=(
-            int(history.global_lengths.max().item())
-            if history.global_lengths is not None and history.global_lengths.numel()
-            else 0
-        ),
+        max_swa_history=history.max_swa_history,
+        max_global_history=history.max_global_history,
         runtime_cmp_ratio=runtime_cmp_ratio,
     )
     return output, lse, next_state

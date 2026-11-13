@@ -232,7 +232,11 @@ def test_runtime_binds_readonly_target_pages(config):
     index_key = torch.randint(-8, 8, (4, 2, 1, 4), dtype=torch.int8)
     index_scale = torch.rand(4, 2, 1, dtype=torch.float16)
 
-    swa_meta = SimpleNamespace(block_table=table, cache_seq_lens=anchors)
+    swa_meta = SimpleNamespace(
+        block_table=table,
+        cache_seq_lens=anchors,
+        max_seq_len=4,
+    )
     compressed = anchors // 2
     long_meta = SimpleNamespace(block_table=table, cache_seq_lens=compressed)
     index_meta = SimpleNamespace(block_table=table, cache_seq_lens=compressed)
@@ -266,6 +270,8 @@ def test_runtime_binds_readonly_target_pages(config):
     assert bound.index_k.scale is index_scale
     assert bound.swa.table is table and bound.long_kv.table is table
     assert torch.equal(bound.global_lengths, compressed)
+    assert bound.max_swa_history == 4
+    assert bound.max_global_history == 2
     assert torch.equal(swa_value, consumer.dsa_attn.swa_cache_layer.kv_cache[0])
     assert torch.equal(long_value, source.long_kv_cache.kv_cache[0])
 
@@ -285,19 +291,30 @@ def test_runtime_drives_index_sources_and_reuses_private_topk(monkeypatch, confi
         torch.ones(1, 8, 1, dtype=torch.float16),
         torch.zeros(1, 1, dtype=torch.int32),
     )
-    history = runtime.V41TargetHistory(pages, anchors, pages, index, anchors // 2)
+    history = runtime.V41TargetHistory(
+        pages,
+        anchors,
+        pages,
+        index,
+        anchors // 2,
+        max_swa_history=8,
+        max_global_history=4,
+    )
     selected = torch.arange(3, dtype=torch.int32).view(1, 1, 3).expand(1, 2, -1)
     calls = []
 
     def fake_select(query, weights, runtime_anchors, runtime_pages, **kwargs):
         calls.append(kwargs["candidate_mode"])
         assert runtime_anchors is anchors and runtime_pages is index
+        assert kwargs["maximum_length"] == 4
         return selected, kwargs.get("candidates")
 
     seen = []
 
     def fake_attention(query, temporary, swa, runtime_anchors, sink, **kwargs):
         seen.append(kwargs["global_indices"])
+        assert kwargs["max_swa_history"] == 8
+        assert kwargs["max_global_history"] == 4
         return query.float(), query.new_zeros((*query.shape[:-1], 1), dtype=torch.float32)
 
     monkeypatch.setattr(runtime, "select_projected_history", fake_select)

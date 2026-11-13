@@ -68,6 +68,8 @@ MRV2 接入以插件形式注册 `OrthrusDSV41DraftModel`，并为该架构选�
 
 当前 CPU 契约、head 导出/重载、分页与回滚状态、Attention/indexer/O-projection 独立 NPU 路径和 v0.32 插件导入均已覆盖。MRV2 元数据复验确认，parallel input prep 中包含临时 K32 的长度会在构造目标历史时扣除，所有 draft slot 使用 PAD，且禁用 ring 状态更新。 [验证记录](validation/dsv41/mrv2-readonly-metadata.json)
 
+执行路径直接复用 MRV2 已在 CPU 侧计算好的 `max_seq_len`，并按压缩比例得到全局历史上界。这样 Attention 和 QLI 不再逐层对 NPU 长度张量调用 `.item()`；一次 40 层起草最多避免 40 次 Attention 和 8 次 indexer 的设备到主机同步。显式长度路径已在 910B3 上复验 C2A、C1A Full/Reindex 和目标页只读性。
+
 使用官方 1017 维度和 dummy BF16 权重，完整 40 层 head 已在 910B3 上完成 TP1 与 TP4 构造。TP1 包含 5,107,950,080 个参数，336 个 checkpoint 张量全部通过 loader round-trip；TP4 完成 HCCL 初始化和逐 rank 名称/本地形状检查，`wo_a` 从 TP1 的 `[8,4096,1024]` 分为每 rank `[2,4096,1024]`。热路径使用加载后常驻的三维原生布局，不在每轮转置权重。 [验证记录](validation/dsv41/head-construction-910b3.json)
 
 ## A2 两节点部署

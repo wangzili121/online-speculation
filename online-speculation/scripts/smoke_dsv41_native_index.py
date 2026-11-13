@@ -37,7 +37,15 @@ def main():
     table = page_order.argsort().int().reshape(batch, page_count)
     pages = IndexPages(key[page_order].to(device), key_scale[page_order].to(device), table.to(device))
     c2_anchors = torch.tensor([0, 33, 36], device=device)
-    selected, _ = select_projected_history(query, weights, c2_anchors, pages, ratio=2, topk=16)
+    selected, _ = select_projected_history(
+        query,
+        weights,
+        c2_anchors,
+        pages,
+        ratio=2,
+        topk=16,
+        maximum_length=18,
+    )
     expected = torch.full((batch, block, 16), -1, dtype=torch.int32)
     for b, length in enumerate([0, 16, 18]):
         used = min(16, length)
@@ -46,7 +54,13 @@ def main():
     torch.testing.assert_close(selected.cpu(), expected, rtol=0, atol=0)
 
     anchors = torch.tensor([0, 535, 541], device=device)
-    kwargs = dict(ratio=1, topk=512, candidate_topk_blocks=64, candidate_block_size=8)
+    kwargs = dict(
+        ratio=1,
+        topk=512,
+        candidate_topk_blocks=64,
+        candidate_block_size=8,
+        maximum_length=541,
+    )
     full, candidates = select_projected_history(query, weights, anchors, pages, candidate_mode="produce", **kwargs)
     reverse = -weights
     reindex, _ = select_projected_history(
