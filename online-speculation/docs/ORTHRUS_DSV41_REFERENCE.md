@@ -72,7 +72,7 @@ MRV2 接入以插件形式注册 `OrthrusDSV41DraftModel`，并为该架构选�
 
 ## A2 两节点部署
 
-正式 A2 路径采用官方的两节点 colocated 拓扑：全局 DP2，每个 DP rank 在一台 8 卡服务器上运行 TP8，并启用 expert parallel。两台服务器必须使用同一镜像、同一绝对模型/head 路径和可互通的 HCCL 网卡。当前固定镜像为 `quay.io/ascend/vllm-ascend:nightly-releases-v0.32.0rc`，已记录的镜像 ID 是 `sha256:5a70e7cdbe81b2b2addad33cf31db6f8e8163fa4b510ff307a8864d9db36b3a2`。先启动 Node 0，再启动 Node 1；只有 Node 0 暴露 API。
+正式 A2 路径采用官方的两节点 colocated 拓扑：全局 DP2，每个 DP rank 在一台 8 卡服务器上运行 TP8，并启用 expert parallel。两台服务器必须使用同一镜像、同一绝对模型/head 路径和可互通的 HCCL 网卡。当前固定镜像为 `quay.io/ascend/vllm-ascend:nightly-releases-v0.32.0rc`，仓库 digest 是 `sha256:f040ca190fe5c5864a5491b2cbe19e687966ae8609b8a68fccc2c1ad1d260cbe`，本地镜像 ID 是 `sha256:5a70e7cdbe81b2b2addad33cf31db6f8e8163fa4b510ff307a8864d9db36b3a2`。先启动 Node 0，再启动 Node 1；只有 Node 0 暴露 API。
 
 ```bash
 # 两台服务器都在仓库根目录执行；按本机填写 NODE_RANK/LOCAL_IP。
@@ -80,14 +80,11 @@ export NODE0_IP=<node-0-ip>
 export LOCAL_IP=<this-node-hccl-ip>
 export NIC_NAME=<hccl-interface>
 export NODE_RANK=0                    # 另一台设为 1
-export MODEL=/data/disk/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w4a8
-export HEAD=/data/disk/models/orthrus-dsv41-head-v1
-
-# 先用短上下文完成正确性验收。
-PROFILE=smoke-16k scripts/serve_dsv41_orthrus.sh
+export ACK_EXCLUSIVE_NODE=1           # 确认本节点八卡已预留
+PROFILE=smoke-16k scripts/deploy_dsv41_node.sh
 ```
 
-`PROFILE` 可改为 `prod-128k` 或 `prod-1m`。Orthrus 脚本会安装本仓插件、校验 trained head 和基模哈希，然后以 eager 模式运行 K32；target-only 回滚路径是 `scripts/serve_dsv41_target.sh`。部署前可设置 `DRY_RUN=1` 查看完整命令而不加载模型。 [官方 A2 拓扑](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4.1-Flash.html)
+宿主机脚本校验不可变镜像 digest，挂载代码、模型和八张 NPU，再在容器内调用服务脚本。模型和 head 默认取 `/data/disk/models` 下的约定目录，也可用 `MODEL_HOST`、`HEAD_HOST` 覆盖。`PROFILE` 可改为 `prod-128k` 或 `prod-1m`。Orthrus 脚本会安装本仓插件、校验 trained head 和基模哈希，然后以 eager 模式运行 K32；设置 `MODE=target` 是 target-only 回滚路径。部署前可设置 `DRY_RUN=1` 查看完整命令而不创建容器。 [官方 A2 拓扑](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4.1-Flash.html)
 
 完整服务验收仍需实际 V4.1 checkpoint，验证 target-only 启动、40 层 draft 前向、greedy 一致性、拒绝回滚、并发换序与显存预算；TP8 dummy 构造也需在八卡同时空闲时补测。
 
