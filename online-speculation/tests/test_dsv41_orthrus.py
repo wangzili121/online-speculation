@@ -18,6 +18,7 @@ from blockspec.vllm_ascend.dsv41_contract import (
     validate_head,
 )
 from blockspec.vllm_ascend.head_contract import ContractError, write_json
+from blockspec.vllm_ascend.dsv41_precise_attention import precise_draft_attention
 
 
 @pytest.fixture
@@ -174,6 +175,11 @@ def test_c2a_full_reuse_odd_even_and_paging(config, width):
             )
             expected = _direct_attention(query, swa_rows, anchors, 4, temp, sink, global_rows, selection)
             torch.testing.assert_close(actual, expected)
+            precise = precise_draft_attention(
+                query, temp, swa, anchors, sink, window=4, global_kv=global_pages,
+                global_indices=selection,
+            )
+            torch.testing.assert_close(precise, expected)
         bad = selection.clone()
         bad[1, 0, 0] = 2
         with pytest.raises(ValueError, match="outside"):
@@ -240,5 +246,8 @@ def test_swa_future_draft_rows_and_sink_participate(config):
     output, lse = draft_attention(q, temp, swa, anchors, sink, window=topology.window)
     torch.testing.assert_close(output, torch.full_like(output, 3.5))
     torch.testing.assert_close(lse, torch.full_like(lse, 4.).log())
+    torch.testing.assert_close(
+        precise_draft_attention(q, temp, swa, anchors, sink, window=topology.window), (output, lse)
+    )
     output[0, 0].sum().backward()
     torch.testing.assert_close(temp.grad, torch.full_like(temp, 0.25))

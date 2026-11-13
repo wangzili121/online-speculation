@@ -20,13 +20,24 @@ Torch 参考接收已做 RoPE 的查询和逻辑分页视图。C2A 只检索已�
 
 CPU 覆盖 1017 拓扑、BF16/F32 张量校验、C2A 奇偶和跨页读取、C1A 候选池及后续层 Reindex/Reuse、空历史、块内双向与 sink。页表换序后，逻辑 Top-K 和输出保持一致。非法 head、超出已提交历史的选中行均被拒绝。 [测试](../tests/test_dsv41_orthrus.py)
 
-在 Ascend 910B3 上用真实配置的头数和维度构造测试张量，覆盖 C2A 层 2/3、K32、每 rank 8×512 的 Attention 形状、anchor 0/33/34，以及连续和打乱的物理页。Torch-NPU 组合完成逻辑取页和检索，两个 fused Attention 段分别返回 LSE，再与 sink 合并。Top-K 与 CPU 精确一致，Attention 输出最大绝对误差为 `0.0078213`，LSE 为 `1.43e-6`。输入页及页表逐元素一致。
+在 Ascend 910B3 上，分段 BF16 FIA 对 CPU FP32 参考的最大输出绝对误差为 `0.0078213`。按 `atol=0.001, rtol=2.01/128` 的逐元素误差检查，约 157 万个值中有 118 个超限。同输入对照中，将可见 KV 合入一次 BF16 FIA 后仍有 48 个值超限。BF16 FIA 返回的输出本身已经舍入。
+
+精度验证默认使用 FP32 路径。SWA 与临时块的 KV 在 K 个 query 之间共享，稀疏全局 KV 按 query 取页。两路分别计算 FP32 分数，和 sink 一起归一化，再用 FP32 累加输出。测试关闭 Ascend HF32 matmul，并对输出和 LSE 分别使用 `atol=1e-5, rtol=1.3e-6`。 [FP32 实现](../src/blockspec/vllm_ascend/dsv41_precise_attention.py)
+
+| 910B3 复验 | 输出最大绝对误差 | LSE 最大绝对误差 |
+|---|---:|---:|
+| 原 C2A Full/Reuse、K32、连续和乱序页 | 2.63e-6 | 1.91e-6 |
+| SWA、C1A、C2A，滑窗 128、Top-K 512、历史最长 8194 | 1.67e-6 | 9.54e-7 |
+| 第 2 层真实权重投影样本、K32、Top-K 512 | 1.42e-7 | 9.54e-7 |
+
+以上用例均通过精度检查。原 C2A 用例 Top-K 与 CPU 完全一致，各用例目标 KV、索引页及页表逐元素保持一致。
 
 ```bash
-PYTHONPATH=src python scripts/smoke_dsv41_orthrus_npu.py --config "$MODEL/config.json"
+PYTHONPATH=src python scripts/smoke_dsv41_orthrus_npu.py \
+  --config "$MODEL/config.json" --compare-fia
 ```
 
-设备验证使用 `torch 2.10.0+cpu` 和 `torch_npu 2.10.0.post4`。此次使用合成历史页，融合 Attention 前会展开选中的历史行。167 上另有原版 Flash 的第 2 层权重样本，已核对 Attention 与 indexer Q/打分张量形状。1017 的量化权重转换和端到端推理仍待验收。
+添加 `--layer2-weights /path/to/layer2-a2-w8a8.pt` 可复测第 2 层样本。该用例使用原版 Flash 的 A2 W8A8 权重转换样本和合成隐藏状态，CPU 反量化并生成 Q/KV；其余用例使用合成的分页 KV。复验使用 `torch 2.10.0+cpu` 和 `torch_npu 2.10.0.post4`。实际 prompt 激活、完整 1017 量化服务和吞吐尚待验收。
 
 ## 原生 INT8 检索
 
