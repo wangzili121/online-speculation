@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from blockspec.vllm_ascend.dsv41_contract import (
+    BLOCK_SIZE,
     V41Topology,
     head_shapes,
     validate_head,
@@ -39,6 +40,8 @@ def main():
             head_config = read_json(args.head / "config.json")
             if head_config.get("architectures") != ["OrthrusDSV41DraftModel"]:
                 raise ContractError("head config must declare OrthrusDSV41DraftModel")
+            if head_config.get("num_nextn_predict_layers") != BLOCK_SIZE - 1:
+                raise ContractError("head config has an incompatible parallel draft width")
             dflash = head_config.get("dflash_config")
             if (
                 not isinstance(dflash, dict)

@@ -145,6 +145,8 @@ def test_exported_initialized_head_is_loadable(tmp_path, config):
         "causal": False,
         "sample_from_anchor": False,
     }
+    assert head_config["num_nextn_predict_layers"] == 31
+    assert head_config["text_config"]["num_nextn_predict_layers"] == 3
     assert head_config["torch_dtype"] == "bfloat16"
 
 

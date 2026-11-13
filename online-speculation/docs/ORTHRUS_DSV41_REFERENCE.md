@@ -66,6 +66,10 @@ PYTHONPATH=src python scripts/smoke_dsv41_native_index.py
 
 MRV2 接入以插件形式注册 `OrthrusDSV41DraftModel`，并为该架构选择 Orthrus speculator。调度沿用并行 draft 的 anchor/MASK 布局和标准 verifier，模型语义由 Orthrus draft 实现：每轮绑定目标模型的 SWA、压缩 KV 与 indexer key 页，使用 PAD slot 和 `skip_ring_state_update` 保持目标 cache 只读；Top-K 与临时块状态只存在于本轮 draft。draft 只持有 diffusion Attention/indexer 参数，共享目标 embedding、mHC、Engram、norm、MoE/MLP 和 LM head。初始化 head 可按正式张量契约导出并严格 preflight，用于验证装载和执行链路；它不用于评估接受率。
 
-当前 CPU 契约、head 导出/重载、分页与回滚状态、Attention/indexer/O-projection 独立 NPU 路径和 v0.32 插件导入均已覆盖。完整服务验收仍需实际 V4.1 checkpoint，验证 target-only 启动、40 层 draft 前向、greedy 一致性、拒绝回滚、并发换序与显存预算。
+当前 CPU 契约、head 导出/重载、分页与回滚状态、Attention/indexer/O-projection 独立 NPU 路径和 v0.32 插件导入均已覆盖。MRV2 元数据复验确认，parallel input prep 中包含临时 K32 的长度会在构造目标历史时扣除，所有 draft slot 使用 PAD，且禁用 ring 状态更新。 [验证记录](validation/dsv41/mrv2-readonly-metadata.json)
+
+使用官方 1017 维度和 dummy BF16 权重，完整 40 层 head 已在 910B3 上完成 TP1 与 TP4 构造。TP1 包含 5,107,950,080 个参数，336 个 checkpoint 张量全部通过 loader round-trip；TP4 完成 HCCL 初始化和逐 rank 名称/本地形状检查，`wo_a` 从 TP1 的 `[8,4096,1024]` 分为每 rank `[2,4096,1024]`。热路径使用加载后常驻的三维原生布局，不在每轮转置权重。 [验证记录](validation/dsv41/head-construction-910b3.json)
+
+完整服务验收仍需实际 V4.1 checkpoint，验证 target-only 启动、40 层 draft 前向、greedy 一致性、拒绝回滚、并发换序与显存预算；TP8 dummy 构造也需在八卡同时空闲时补测。
 
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)

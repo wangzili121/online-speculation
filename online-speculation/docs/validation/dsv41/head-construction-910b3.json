@@ -1,0 +1,24 @@
+{
+  "case": "dsv41_orthrus_full_head_construction",
+  "device": "Ascend910B3",
+  "image": "quay.io/ascend/vllm-ascend:nightly-releases-v0.32.0rc",
+  "weights": "dummy BF16 with official DeepSeek-V4.1-Flash-1017 dimensions",
+  "layers": 40,
+  "contract_tensors_per_rank": 336,
+  "tp1": {
+    "parameters": 5107950080,
+    "parameter_bytes": 10215905280,
+    "loader_roundtrip_tensors": 336,
+    "wo_a_layout": [8, 4096, 1024],
+    "status": "passed"
+  },
+  "tp4": {
+    "parameters_per_rank": 1584732800,
+    "parameter_bytes_per_rank": 3169466880,
+    "sum_parameter_bytes_across_ranks": 12677867520,
+    "wo_a_layout_per_rank": [2, 4096, 1024],
+    "hccl_initialization": true,
+    "all_rank_names_and_local_shapes_match": true,
+    "status": "passed"
+  }
+}

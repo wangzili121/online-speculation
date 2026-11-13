@@ -53,6 +53,39 @@ def _config_dict(config: Any) -> dict[str, Any]:
     raise TypeError("DeepSeek-V4.1 config must provide to_dict()")
 
 
+def _topology_config(config: Any) -> dict[str, Any]:
+    """Restore the on-disk wrapper when vLLM exposes only its text config."""
+    raw = _config_dict(config)
+    flattened_markers = {
+        "compress_ratios",
+        "kv_source_layer_ids",
+        "index_source_layer_ids",
+        "candidate_source_layer_id",
+    }
+    if raw.get("model_type") == "deepseek_v41_text" or flattened_markers <= raw.keys():
+        text = dict(raw)
+        # SpeculativeConfig's generic DeepSeek compatibility pass may rename
+        # the flattened draft view to deepseek_mtp.  These structural markers
+        # identify the V4.1 text topology more reliably than that runtime tag.
+        text["model_type"] = "deepseek_v41_text"
+        return {"model_type": "deepseek_v41", "text_config": text}
+    return raw
+
+
+def _grouped_o_weight(
+    weight: torch.Tensor,
+    groups: int,
+    group_width: int,
+    o_lora_rank: int,
+) -> torch.Tensor:
+    expected = (groups, group_width, o_lora_rank)
+    if tuple(weight.shape) == expected:
+        return weight
+    if tuple(weight.shape) != (groups * o_lora_rank, group_width):
+        raise ValueError(f"unexpected wo_a layout {tuple(weight.shape)}, expected {expected}")
+    return weight.view(groups, o_lora_rank, group_width).transpose(2, 1).contiguous()
+
+
 class OrthrusV41Attention(nn.Module):
     """One diffusion attention view, without compressor or cache ownership."""
 
@@ -86,18 +119,12 @@ class OrthrusV41Attention(nn.Module):
         tokens = value.shape[0]
         group_width = self.n_local_heads * self.head_dim // self.n_local_groups
         grouped = value.view(tokens, self.n_local_groups, group_width)
-        weight = self.wo_a.weight
-        if weight.ndim == 2:
-            # Ascend's unquantized linear post-load hook performs this same
-            # conversion.  Keep the fallback for standalone/eager construction.
-            weight = (
-                weight.view(self.n_local_groups, self.o_lora_rank, group_width)
-                .transpose(2, 1)
-                .contiguous()
-            )
-        expected = (self.n_local_groups, group_width, self.o_lora_rank)
-        if tuple(weight.shape) != expected:
-            raise ValueError(f"unexpected wo_a layout {tuple(weight.shape)}, expected {expected}")
+        weight = _grouped_o_weight(
+            self.wo_a.weight,
+            self.n_local_groups,
+            group_width,
+            self.o_lora_rank,
+        )
         projected = torch_npu.npu_transpose_batchmatmul(
             grouped,
             weight,
@@ -109,6 +136,16 @@ class OrthrusV41Attention(nn.Module):
             batch_split_factor=1,
         )
         return _value(self.wo_b, projected.reshape(tokens, -1))
+
+    def process_weights_after_loading(self) -> None:
+        """Keep the grouped O weight in its native hot-path layout."""
+        group_width = self.n_local_heads * self.head_dim // self.n_local_groups
+        self.wo_a.weight.data = _grouped_o_weight(
+            self.wo_a.weight.data,
+            self.n_local_groups,
+            group_width,
+            self.o_lora_rank,
+        )
 
     def forward(
         self,
@@ -193,6 +230,17 @@ class OrthrusV41Attention(nn.Module):
         return self._project_output(output), state
 
 
+class OrthrusV41DraftLayer(nn.Module):
+    """Keep the runtime module tree identical to the head tensor contract."""
+
+    def __init__(self, vllm_config: Any, config: Any, topology: V41Topology, layer_idx: int) -> None:
+        super().__init__()
+        self.attn = OrthrusV41Attention(vllm_config, config, topology, layer_idx)
+
+    def forward(self, *args: Any, **kwargs: Any) -> tuple[torch.Tensor, V41NativeDraftState]:
+        return self.attn(*args, **kwargs)
+
+
 class OrthrusV41Model(nn.Module):
     """Full Orthrus draft pass with a target-owned V4.1 backbone."""
 
@@ -203,7 +251,7 @@ class OrthrusV41Model(nn.Module):
         self.hc_mult = int(config.hc_mult)
         self.embed_tokens = PPMissingLayer()
         self.layers = nn.ModuleList(
-            OrthrusV41Attention(vllm_config, config, topology, layer)
+            OrthrusV41DraftLayer(vllm_config, config, topology, layer)
             for layer in range(config.num_hidden_layers)
         )
         self._target_ref: weakref.ReferenceType[nn.Module] | None = None
@@ -219,6 +267,10 @@ class OrthrusV41Model(nn.Module):
 
     def set_lookback_token_ids(self, value: torch.Tensor | None) -> None:
         self._lookback_token_ids = value
+
+    def process_weights_after_loading(self) -> None:
+        for layer in self.layers:
+            layer.attn.process_weights_after_loading()
 
     def _target(self) -> nn.Module:
         target = self._target_ref() if self._target_ref is not None else None
@@ -339,7 +391,7 @@ class OrthrusDSV41DraftModel(nn.Module):
             raise ValueError("Orthrus V4.1 requires exactly 31 speculative tokens")
         draft_config = speculative.draft_model_config
         config = normalize_deepseek_v41_config(draft_config.hf_text_config)
-        raw = _config_dict(vllm_config.model_config.hf_config)
+        raw = _topology_config(vllm_config.model_config.hf_config)
         topology = V41Topology.from_config(raw)
         if len(topology.layers) != config.num_hidden_layers:
             raise ValueError("Orthrus head and target V4.1 topologies differ")
@@ -358,6 +410,9 @@ class OrthrusDSV41DraftModel(nn.Module):
 
     def set_lookback_token_ids(self, value: torch.Tensor | None) -> None:
         self.model.set_lookback_token_ids(value)
+
+    def process_weights_after_loading(self) -> None:
+        self.model.process_weights_after_loading()
 
     def forward(
         self,
@@ -403,6 +458,14 @@ class OrthrusDSV41DraftModel(nn.Module):
             if runtime_name.endswith(".attn.attn_sink"):
                 value = value.narrow(0, tp_rank * local_heads, local_heads)
                 default_weight_loader(param, value)
+            elif runtime_name.endswith(".attn.wo_a.weight") and param.ndim == 3:
+                local_groups, group_width, o_lora_rank = param.shape
+                start = tp_rank * local_groups * o_lora_rank
+                local = value.narrow(0, start, local_groups * o_lora_rank)
+                default_weight_loader(
+                    param,
+                    _grouped_o_weight(local, local_groups, group_width, o_lora_rank),
+                )
             else:
                 loader = getattr(param, "weight_loader", default_weight_loader)
                 loader(param, value)

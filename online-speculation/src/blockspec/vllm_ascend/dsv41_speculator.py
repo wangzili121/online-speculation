@@ -36,7 +36,10 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         if speculative is None or speculative.method not in {"orthrus", "dflash"}:
             raise ValueError("AscendOrthrusV41Speculator requires the Orthrus/DFlash parallel scheduler")
         architectures = set(speculative.draft_model_config.architectures)
-        if "OrthrusDSV41DraftModel" not in architectures:
+        if not architectures & {
+            "OrthrusDSV41DraftModel",
+            "DFlashOrthrusDSV41DraftModel",
+        }:
             raise ValueError("the draft artifact is not an OrthrusDSV41DraftModel")
         if not speculative.enforce_eager:
             raise ValueError("Orthrus V4.1 requires eager mode until graph correctness is qualified")

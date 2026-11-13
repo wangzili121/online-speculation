@@ -16,6 +16,7 @@ import torch
 from safetensors.torch import save_file
 
 from blockspec.vllm_ascend.dsv41_contract import (
+    BLOCK_SIZE,
     HEAD_FORMAT,
     V41Topology,
     head_manifest,
@@ -33,6 +34,11 @@ def _head_config(base: dict, mask_token_id: int) -> dict:
     config["mask_token_id"] = mask_token_id
     config["has_own_embed_tokens"] = False
     config["has_own_lm_head"] = False
+    # vLLM 0.32 applies its generic DeepSeek-MTP compatibility override to
+    # method=dflash and reads this top-level field as ``n_predict``.  Orthrus
+    # emits all 31 candidates in one parallel model call.  The nested text
+    # config keeps the target checkpoint's three DSpark stages unchanged.
+    config["num_nextn_predict_layers"] = BLOCK_SIZE - 1
     dflash = dict(config.get("dflash_config") or {})
     dflash.update(mask_token_id=mask_token_id, causal=False, sample_from_anchor=False)
     config["dflash_config"] = dflash

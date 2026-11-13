@@ -23,7 +23,10 @@ def _install_dsv41_speculator_dispatch():
             if speculative is not None and speculative.draft_model_config is not None
             else set()
         )
-        if "OrthrusDSV41DraftModel" in architectures:
+        if architectures & {
+            "OrthrusDSV41DraftModel",
+            "DFlashOrthrusDSV41DraftModel",
+        }:
             from .dsv41_speculator import AscendOrthrusV41Speculator
 
             return AscendOrthrusV41Speculator(vllm_config, device)
@@ -45,6 +48,13 @@ def register():
     )
     ModelRegistry.register_model(
         "OrthrusDSV41DraftModel",
+        "blockspec.vllm_ascend.dsv41_model:OrthrusDSV41DraftModel",
+    )
+    # vLLM 0.32 prefixes the draft architecture when method=dflash.  The alias
+    # only grants access to that parallel scheduling lifecycle; both names
+    # resolve to the same Orthrus model implementation.
+    ModelRegistry.register_model(
+        "DFlashOrthrusDSV41DraftModel",
         "blockspec.vllm_ascend.dsv41_model:OrthrusDSV41DraftModel",
     )
     _install_dsv41_speculator_dispatch()
