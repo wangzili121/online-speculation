@@ -1,0 +1,23 @@
+{
+  "case": "dsv41_orthrus_40_layer_native_runtime_chain",
+  "device": "Ascend910B3",
+  "image": "quay.io/ascend/vllm-ascend:nightly-releases-v0.32.0rc",
+  "layers": 40,
+  "layer_modes": {
+    "swa": 2,
+    "full": 4,
+    "reuse": 30,
+    "reindex": 4
+  },
+  "index_sources": [2, 8, 14, 20, 24, 28, 32, 36],
+  "candidate_pool_shape": [64, 1, 2048],
+  "block_size": 32,
+  "batch": 2,
+  "anchors": [0, 544],
+  "target_pages_unchanged": true,
+  "cold_elapsed_ms": 11404.527438455261,
+  "steady_elapsed_ms": 618.3128495467827,
+  "steady_maximum_layer_ms": 21.82925003580749,
+  "scope": "synthetic native Attention/indexer state chain; excludes projections, shared target backbone, scheduler and verifier",
+  "status": "passed"
+}
