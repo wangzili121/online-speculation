@@ -15,6 +15,11 @@ def main() -> int:
     parser.add_argument("--head", required=True, help="Orthrus head config directory")
     parser.add_argument("--master-port", type=int, default=29881)
     parser.add_argument("--tensor-parallel-size", type=int)
+    parser.add_argument(
+        "--exercise-loader",
+        action="store_true",
+        help="stream all checkpoint-format tensors through the TP loader",
+    )
     args = parser.parse_args()
 
     rank = int(os.environ.get("RANK", "0"))
@@ -125,18 +130,16 @@ def main() -> int:
         ]
         raise RuntimeError(f"head/runtime shape mismatch: {details}")
 
-    # Round-trip through the custom loader with checkpoint-format names.  TP1
-    # keeps source and destination shapes identical and isolates name mapping.
+    # Stream one source tensor at a time so TP sharding is tested without
+    # materializing the roughly 10 GiB exchange artifact in host memory.
     loaded = None
-    if tp == 1:
-        checkpoint_values = {}
-        for name, parameter in parameters.items():
-            value = parameter.detach()
-            if name.endswith(".attn.wo_a.weight"):
-                local_groups, width, rank_width = value.shape
-                value = value.transpose(2, 1).reshape(local_groups * rank_width, width)
-            checkpoint_values[name] = value
-        loaded = model.load_weights(checkpoint_values.items())
+    if tp == 1 or args.exercise_loader:
+        def checkpoint_values():
+            for name, shape in expected.items():
+                dtype = torch.float32 if name.endswith(".attn_sink") else torch.bfloat16
+                yield name, torch.zeros(shape, dtype=dtype)
+
+        loaded = model.load_weights(checkpoint_values())
     if loaded is not None and len(loaded) != len(expected):
         raise RuntimeError(f"loader accepted {len(loaded)} of {len(expected)} tensors")
 
