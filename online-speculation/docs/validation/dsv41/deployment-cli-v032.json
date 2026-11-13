@@ -1,0 +1,20 @@
+{
+  "case": "dsv41_v032_deployment_cli_and_plugin",
+  "image": "quay.io/ascend/vllm-ascend:nightly-releases-v0.32.0rc",
+  "image_digest": "sha256:f040ca190fe5c5864a5491b2cbe19e687966ae8609b8a68fccc2c1ad1d260cbe",
+  "plugin_entrypoint": "blockspec_orthrus",
+  "plugin_discovered": true,
+  "cli_flags_present": [
+    "--headless",
+    "--data-parallel-start-rank",
+    "--data-parallel-address",
+    "--data-parallel-rpc-port",
+    "--data-parallel-size-local",
+    "--no-swa-bounded-replay",
+    "--engram-config",
+    "--speculative-config",
+    "--safetensors-load-strategy"
+  ],
+  "missing_cli_flags": [],
+  "status": "passed"
+}

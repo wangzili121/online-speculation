@@ -95,6 +95,8 @@ PROFILE=smoke-16k scripts/deploy_dsv41_node.sh
 
 宿主机脚本校验不可变镜像 digest，挂载代码、模型和八张 NPU，再在容器内调用服务脚本。模型和 head 默认取 `/data/disk/models` 下的约定目录，也可用 `MODEL_HOST`、`HEAD_HOST` 覆盖。`PROFILE` 可改为 `prod-128k` 或 `prod-1m`。Orthrus 脚本会安装本仓插件、校验 trained head 和基模哈希，然后以 eager 模式运行 K32；设置 `MODE=target` 是 target-only 回滚路径。部署前可设置 `DRY_RUN=1` 查看完整命令而不创建容器。 [官方 A2 拓扑](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4.1-Flash.html)
 
+固定镜像内已实际安装并发现 `blockspec_orthrus` entry point；两节点启动脚本使用的 headless DP、TP8、Engram、speculative config、lazy safetensors 和 SWA 参数均存在于该镜像的 `vllm serve --help=all`，不是只按文档推测。 [验证记录](validation/dsv41/deployment-cli-v032.json)
+
 完整服务验收仍需实际 V4.1 checkpoint，验证 target-only 启动、40 层 draft 前向、greedy 一致性、拒绝回滚、并发换序与显存预算。TP8 head 构造和通信已通过，不再是剩余项。
 
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
