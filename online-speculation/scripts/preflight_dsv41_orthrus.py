@@ -36,6 +36,17 @@ def main():
                 args.model, args.head, mask_token_id=args.mask_token_id,
                 require_trained=args.require_trained,
             )
+            head_config = read_json(args.head / "config.json")
+            if head_config.get("architectures") != ["OrthrusDSV41DraftModel"]:
+                raise ContractError("head config must declare OrthrusDSV41DraftModel")
+            dflash = head_config.get("dflash_config")
+            if (
+                not isinstance(dflash, dict)
+                or dflash.get("mask_token_id") != args.mask_token_id
+                or dflash.get("causal") is not False
+                or dflash.get("sample_from_anchor") is not False
+            ):
+                raise ContractError("head config has an incompatible parallel-drafting policy")
             result["head_artifact_role"] = manifest["artifact_role"]
     except (ContractError, OSError) as exc:
         parser.exit(1, f"{exc}\n")

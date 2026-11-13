@@ -1,0 +1,44 @@
+{
+  "case": "dsv41_orthrus_grouped_output_projection",
+  "device": "Ascend910B3",
+  "image": "quay.io/ascend/vllm-ascend:nightly-releases-v0.32.0rc",
+  "torch_npu": "2.10.0.post7",
+  "reference": "CPU FP32 einsum(tgw,gwr->tgr)",
+  "cases": [
+    {
+      "tokens": 64,
+      "local_heads": 8,
+      "head_dim": 512,
+      "groups": 1,
+      "o_lora_rank": 1024,
+      "max_abs_error": 0.003885507583618164,
+      "mean_abs_error": 0.0005640132585540414,
+      "p99_abs_error": 0.0019343600142747164
+    },
+    {
+      "tokens": 32,
+      "local_heads": 16,
+      "head_dim": 512,
+      "groups": 2,
+      "o_lora_rank": 1024,
+      "max_abs_error": 0.003862321376800537,
+      "mean_abs_error": 0.0005633934633806348,
+      "p99_abs_error": 0.001945708179846406
+    },
+    {
+      "tokens": 96,
+      "local_heads": 64,
+      "head_dim": 512,
+      "groups": 8,
+      "o_lora_rank": 1024,
+      "max_abs_error": 0.004056215286254883,
+      "mean_abs_error": 0.0005671590333804488,
+      "p99_abs_error": 0.0019526686519384384
+    }
+  ],
+  "checks": {
+    "ascend_native_weight_layout": "[groups, group_width, o_lora_rank]",
+    "all_finite": true,
+    "bf16_tolerance_passed": true
+  }
+}

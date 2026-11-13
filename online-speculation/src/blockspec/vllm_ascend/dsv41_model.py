@@ -23,9 +23,10 @@ from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.models.utils import PPMissingLayer
-from vllm_ascend.device.device_op import DeviceOperator
-from vllm_ascend.models.deepseek_v41.indexer import DeepseekV41Indexer
-from vllm_ascend.models.deepseek_v41.model import init_attention_projections
+from vllm_ascend.models.deepseek_v41.model import (
+    DeepseekV41Indexer,
+    init_attention_projections,
+)
 from vllm_ascend.utils import normalize_deepseek_v41_config
 
 from .dsv41_contract import BLOCK_SIZE, HEAD_FORMAT, V41Topology
@@ -85,7 +86,18 @@ class OrthrusV41Attention(nn.Module):
         tokens = value.shape[0]
         group_width = self.n_local_heads * self.head_dim // self.n_local_groups
         grouped = value.view(tokens, self.n_local_groups, group_width)
-        weight = self.wo_a.weight.view(self.n_local_groups, self.o_lora_rank, group_width)
+        weight = self.wo_a.weight
+        if weight.ndim == 2:
+            # Ascend's unquantized linear post-load hook performs this same
+            # conversion.  Keep the fallback for standalone/eager construction.
+            weight = (
+                weight.view(self.n_local_groups, self.o_lora_rank, group_width)
+                .transpose(2, 1)
+                .contiguous()
+            )
+        expected = (self.n_local_groups, group_width, self.o_lora_rank)
+        if tuple(weight.shape) != expected:
+            raise ValueError(f"unexpected wo_a layout {tuple(weight.shape)}, expected {expected}")
         projected = torch_npu.npu_transpose_batchmatmul(
             grouped,
             weight,
@@ -107,6 +119,8 @@ class OrthrusV41Attention(nn.Module):
         metadata_by_prefix: Mapping[str, Any],
         state: V41NativeDraftState,
     ) -> tuple[torch.Tensor, V41NativeDraftState]:
+        from vllm_ascend.device.device_op import DeviceOperator
+
         tokens = hidden_states.shape[0]
         batch = anchors.numel()
         if tokens != batch * BLOCK_SIZE or positions.shape != (tokens,):
@@ -202,7 +216,6 @@ class OrthrusV41Model(nn.Module):
         if getattr(inner, "use_sequence_parallel", False):
             raise NotImplementedError("Orthrus V4.1 currently requires sequence parallel to be disabled")
         self._target_ref = weakref.ref(target_model)
-        self.embed_tokens = inner.embed_tokens
 
     def set_lookback_token_ids(self, value: torch.Tensor | None) -> None:
         self._lookback_token_ids = value
@@ -342,7 +355,6 @@ class OrthrusDSV41DraftModel(nn.Module):
     def bind_shared_backbone(self, target_model: nn.Module) -> None:
         self._target_ref = weakref.ref(target_model)
         self.model.bind_shared_backbone(target_model)
-        self.lm_head = target_model.lm_head
 
     def set_lookback_token_ids(self, value: torch.Tensor | None) -> None:
         self.model.set_lookback_token_ids(value)

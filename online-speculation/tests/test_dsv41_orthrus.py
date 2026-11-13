@@ -1,4 +1,8 @@
 from dataclasses import replace
+import json
+import os
+from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 import sys
 
@@ -113,6 +117,37 @@ def test_head_rejects_incompatible_artifacts(tmp_path, config):
         validate_head(model, head, mask_token_id=99)
 
 
+def test_exported_initialized_head_is_loadable(tmp_path, config):
+    model, head = tmp_path / "base", tmp_path / "head"
+    model.mkdir()
+    write_json(model / "config.json", config)
+    write_json(model / "tokenizer.json", {"fixture": 1})
+    write_json(
+        model / "model.safetensors.index.json",
+        {"weight_map": {"embedding": "base.safetensors"}},
+    )
+    script = Path(__file__).parents[1] / "scripts" / "export_dsv41_orthrus_head.py"
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(Path(__file__).parents[1] / "src")
+    subprocess.run(
+        [sys.executable, script, "--model", model, "--output", head, "--mask-token-id", "99"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    manifest = validate_head(model, head, mask_token_id=99)
+    assert manifest["artifact_role"] == "initialized-plumbing"
+    head_config = json.loads((head / "config.json").read_text())
+    assert head_config["architectures"] == ["OrthrusDSV41DraftModel"]
+    assert head_config["dflash_config"] == {
+        "mask_token_id": 99,
+        "causal": False,
+        "sample_from_anchor": False,
+    }
+    assert head_config["torch_dtype"] == "bfloat16"
+
+
 def test_runtime_cache_plan_uses_shared_v41_sources(config):
     topology = V41Topology.from_config(config)
     layer2 = runtime.cache_names(topology, 2)
@@ -125,6 +160,17 @@ def test_runtime_cache_plan_uses_shared_v41_sources(config):
     names = runtime.target_cache_names(topology)
     assert len(names) == 40 + 4 + 4
     assert len(names) == len(set(names))
+
+
+def test_runtime_advances_engram_lookback_to_draft_anchor():
+    target_ids = torch.tensor([10, 11, 12, 20, 21, 22, 23], dtype=torch.int32)
+    starts = torch.tensor([0, 3, 7], dtype=torch.int32)
+    previous = torch.tensor([[9, 8, 7, 6], [19, 18, 17, 16]], dtype=torch.int32)
+    rejected = torch.tensor([1, 2], dtype=torch.int32)
+    actual = runtime.compose_draft_lookback(target_ids, starts, previous, rejected)
+    # Request zero keeps 10,11; request one keeps 20,21.  Both rows are
+    # newest-first because that is the V4.1 Engram hash-state contract.
+    assert actual.tolist() == [[11, 10, 9, 8], [21, 20, 19, 18]]
 
 
 def test_runtime_metadata_is_noncausal_and_write_protected():

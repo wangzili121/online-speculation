@@ -49,6 +49,41 @@ class V41NativeDraftState:
     candidates: torch.Tensor | None = None
 
 
+def compose_draft_lookback(
+    target_input_ids: torch.Tensor,
+    target_query_start_loc: torch.Tensor,
+    previous_lookback: torch.Tensor,
+    num_rejected: torch.Tensor,
+) -> torch.Tensor:
+    """Advance Engram history from the target step to the Orthrus anchor.
+
+    ``previous_lookback`` is newest-first history immediately before the
+    target's scheduled rows.  Rejected suffix rows are discarded, surviving
+    target rows are prepended newest-first, and the fixed Engram depth is
+    preserved.  The operation is entirely on device and introduces no host
+    synchronization.
+    """
+
+    if target_input_ids.ndim != 1 or target_query_start_loc.ndim != 1:
+        raise ValueError("target tokens and query boundaries must be one-dimensional")
+    batch, depth = previous_lookback.shape
+    if target_query_start_loc.shape != (batch + 1,) or num_rejected.shape != (batch,):
+        raise ValueError("Engram lookback batch metadata is inconsistent")
+    starts = target_query_start_loc[:-1].long()
+    ends = target_query_start_loc[1:].long() - num_rejected.long()
+    lengths = (ends - starts).clamp_min(0)
+    offsets = torch.arange(depth, device=target_input_ids.device).view(1, -1)
+    current_positions = ends[:, None] - 1 - offsets
+    safe_current = current_positions.clamp(0, max(target_input_ids.numel() - 1, 0))
+    if target_input_ids.numel():
+        current = target_input_ids[safe_current]
+    else:
+        current = previous_lookback.new_full((batch, depth), -1)
+    old_offsets = (offsets - lengths[:, None]).clamp(0, max(depth - 1, 0))
+    old = previous_lookback.gather(1, old_offsets)
+    return torch.where(offsets < lengths[:, None], current, old)
+
+
 def cache_names(topology: V41Topology, layer: int, *, root: str = "model") -> V41CacheNames:
     """Return the live target resource names for a diffusion layer."""
 

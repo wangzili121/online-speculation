@@ -41,10 +41,13 @@ CPU 覆盖 1017 拓扑、BF16/F32 张量校验、C2A 奇偶和跨页读取、C1A
 | 原生融合分段 | 4.42e-3 | 9.54e-7 | 2.98 ms |
 | FP32 golden 路径 | 1.55e-6 | 9.54e-7 | 5.70 ms |
 
+Attention 后的 grouped low-rank O projection 也在同一设备栈上单独复验。算子使用主模型相同的 `npu_transpose_batchmatmul` 和 `[group, group_width, o_lora_rank]` 权重布局。覆盖 1、2、8 个本地 group 以及 32、64、96 个 token；相对 CPU FP32 公式的最大绝对误差不超过 `0.00406`，P99 不超过 `0.00196`，均通过 BF16 门限。 [验证记录](validation/dsv41/grouped-output-projection-910b3.json)
+
 ```bash
 PYTHONPATH=src python scripts/smoke_dsv41_orthrus_npu.py \
   --config "$MODEL/config.json" --compare-fia
 PYTHONPATH=src python scripts/probe_dsv41_sparse_mla.py
+PYTHONPATH=src python scripts/smoke_dsv41_oproj_npu.py --device npu:0
 ```
 
 添加 `--layer2-weights /path/to/layer2-a2-w8a8.pt` 可复测第 2 层样本。该用例使用原版 Flash 的 A2 W8A8 权重转换样本和合成隐藏状态，CPU 反量化并生成 Q/KV；其余用例使用合成的分页 KV。复验使用 `torch 2.10.0+cpu` 和 `torch_npu 2.10.0.post4`。实际 prompt 激活、完整 1017 量化服务和吞吐尚待验收。
@@ -61,6 +64,8 @@ PYTHONPATH=src python scripts/smoke_dsv41_native_index.py
 
 ## 原生缓存与引擎接入
 
-原生检索和 Attention 的独立算子路径已经打通。下一步把 `PagedRows`、anchor、压缩长度和 draft 私有 Top-K 绑定到 MRV2 提供的真实 cache plane，再将 FP32 Attention 输出接入 diffusion O 投影和共享 backbone。随后接 proposer/verifier，验收接受前缀、拒绝回滚、请求换序和目标状态。
+MRV2 接入以插件形式注册 `OrthrusDSV41DraftModel`，并为该架构选择 Orthrus speculator。调度沿用并行 draft 的 anchor/MASK 布局和标准 verifier，模型语义由 Orthrus draft 实现：每轮绑定目标模型的 SWA、压缩 KV 与 indexer key 页，使用 PAD slot 和 `skip_ring_state_update` 保持目标 cache 只读；Top-K 与临时块状态只存在于本轮 draft。draft 只持有 diffusion Attention/indexer 参数，共享目标 embedding、mHC、Engram、norm、MoE/MLP 和 LM head。初始化 head 可按正式张量契约导出并严格 preflight，用于验证装载和执行链路；它不用于评估接受率。
+
+当前 CPU 契约、head 导出/重载、分页与回滚状态、Attention/indexer/O-projection 独立 NPU 路径和 v0.32 插件导入均已覆盖。完整服务验收仍需实际 V4.1 checkpoint，验证 target-only 启动、40 层 draft 前向、greedy 一致性、拒绝回滚、并发换序与显存预算。
 
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
