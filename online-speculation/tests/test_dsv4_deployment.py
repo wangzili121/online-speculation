@@ -274,6 +274,8 @@ def test_dsv4_plugin_registers_dedicated_architecture(monkeypatch):
     assert [architecture for architecture, _ in calls] == [
         "OrthrusLM",
         "OrthrusDSV4DraftModel",
+        "OrthrusDSV41DraftModel",
+        "DFlashOrthrusDSV41DraftModel",
     ]
 
 

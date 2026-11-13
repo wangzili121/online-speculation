@@ -9,8 +9,15 @@ def _install_dsv41_speculator_dispatch():
     Patching both module bindings keeps this a plugin-scoped compatibility
     hook; no vLLM or vLLM-Ascend source tree is edited.
     """
-    import vllm_ascend.worker.v2.model_runner as model_runner
-    import vllm_ascend.worker.v2.spec_decode as spec_decode
+    try:
+        import vllm_ascend.worker.v2.model_runner as model_runner
+        import vllm_ascend.worker.v2.spec_decode as spec_decode
+    except ModuleNotFoundError as exc:
+        # Model registration is also useful to tools that only install vLLM.
+        # The runtime dispatch is required only when the Ascend worker exists.
+        if exc.name == "vllm_ascend" or (exc.name or "").startswith("vllm_ascend."):
+            return
+        raise
 
     current = spec_decode.init_speculator
     if getattr(current, "_orthrus_dsv41_dispatch", False):

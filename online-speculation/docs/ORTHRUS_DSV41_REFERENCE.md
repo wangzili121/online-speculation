@@ -70,6 +70,25 @@ MRV2 接入以插件形式注册 `OrthrusDSV41DraftModel`，并为该架构选�
 
 使用官方 1017 维度和 dummy BF16 权重，完整 40 层 head 已在 910B3 上完成 TP1 与 TP4 构造。TP1 包含 5,107,950,080 个参数，336 个 checkpoint 张量全部通过 loader round-trip；TP4 完成 HCCL 初始化和逐 rank 名称/本地形状检查，`wo_a` 从 TP1 的 `[8,4096,1024]` 分为每 rank `[2,4096,1024]`。热路径使用加载后常驻的三维原生布局，不在每轮转置权重。 [验证记录](validation/dsv41/head-construction-910b3.json)
 
+## A2 两节点部署
+
+正式 A2 路径采用官方的两节点 colocated 拓扑：全局 DP2，每个 DP rank 在一台 8 卡服务器上运行 TP8，并启用 expert parallel。两台服务器必须使用同一镜像、同一绝对模型/head 路径和可互通的 HCCL 网卡。当前固定镜像为 `quay.io/ascend/vllm-ascend:nightly-releases-v0.32.0rc`，已记录的镜像 ID 是 `sha256:5a70e7cdbe81b2b2addad33cf31db6f8e8163fa4b510ff307a8864d9db36b3a2`。先启动 Node 0，再启动 Node 1；只有 Node 0 暴露 API。
+
+```bash
+# 两台服务器都在仓库根目录执行；按本机填写 NODE_RANK/LOCAL_IP。
+export NODE0_IP=<node-0-ip>
+export LOCAL_IP=<this-node-hccl-ip>
+export NIC_NAME=<hccl-interface>
+export NODE_RANK=0                    # 另一台设为 1
+export MODEL=/data/disk/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w4a8
+export HEAD=/data/disk/models/orthrus-dsv41-head-v1
+
+# 先用短上下文完成正确性验收。
+PROFILE=smoke-16k scripts/serve_dsv41_orthrus.sh
+```
+
+`PROFILE` 可改为 `prod-128k` 或 `prod-1m`。Orthrus 脚本会安装本仓插件、校验 trained head 和基模哈希，然后以 eager 模式运行 K32；target-only 回滚路径是 `scripts/serve_dsv41_target.sh`。部署前可设置 `DRY_RUN=1` 查看完整命令而不加载模型。 [官方 A2 拓扑](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4.1-Flash.html)
+
 完整服务验收仍需实际 V4.1 checkpoint，验证 target-only 启动、40 层 draft 前向、greedy 一致性、拒绝回滚、并发换序与显存预算；TP8 dummy 构造也需在八卡同时空闲时补测。
 
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)

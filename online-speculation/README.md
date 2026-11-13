@@ -32,6 +32,7 @@
 - [当前设计入门说明](docs/CURRENT_DESIGN.md)：从投机解码原理讲到 DSV4 混合 KV、框架缺口、当前实现和剩余验收，适合无相关背景读者。
 - [DSV4 head v2 契约](docs/DSV4_HEAD_CONTRACT.md)：BF16 训练交换格式、独立 W8A8 校准、严格哈希与 tensor schema。
 - [DSV4 head 训练与续训](docs/DSV4_TRAINING.md)：冻结 BF16 基模、混合注意力 head 训练、精确恢复、异步线上续训及资源边界。
+- [Orthrus-DSV4.1 参考实现](docs/ORTHRUS_DSV41_REFERENCE.md)：C2A/C1A/SWA draft、原生 NPU 验证、head 契约和 A2 两节点启动方式。
 
 ~~~bash
 python -m pip install -e '.[dev,hf]'

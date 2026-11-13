@@ -383,9 +383,9 @@ class OrthrusDSV41DraftModel(nn.Module):
         parallel = vllm_config.parallel_config
         if any(
             int(getattr(parallel, name, 1)) != 1
-            for name in ("data_parallel_size", "decode_context_parallel_size", "prefill_context_parallel_size")
+            for name in ("decode_context_parallel_size", "prefill_context_parallel_size")
         ):
-            raise NotImplementedError("Orthrus V4.1 currently supports TP only")
+            raise NotImplementedError("Orthrus V4.1 does not yet support DCP or PCP")
         speculative = vllm_config.speculative_config
         if speculative is None or speculative.num_speculative_tokens != BLOCK_SIZE - 1:
             raise ValueError("Orthrus V4.1 requires exactly 31 speculative tokens")
