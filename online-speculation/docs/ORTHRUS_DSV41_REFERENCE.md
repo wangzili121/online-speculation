@@ -28,6 +28,16 @@ PYTHONPATH=src python scripts/smoke_dsv41_orthrus_npu.py --config "$MODEL/config
 
 设备验证使用 `torch 2.10.0+cpu` 和 `torch_npu 2.10.0.post4`。此次使用合成历史页，融合 Attention 前会展开选中的历史行。167 上另有原版 Flash 的第 2 层权重样本，已核对 Attention 与 indexer Q/打分张量形状。1017 的量化权重转换和端到端推理仍待验收。
 
+## 原生 INT8 检索
+
+目标 index cache 已按 C2A 或 C1A 的粒度写好。Draft 调用 QLI 时直接传入可读行数 `floor(anchor / ratio)`，在这段截断后的前缀内让全部 K 行检索。调用中的 `cmp_ratio=1` 表示坐标已经是压缩行号。C1A 候选池由 Full 层返回并传给 Reindex，输出会校验候选成员资格并去重。实测当候选行少于 Top-K 时，原生算子可能返回额外的行 0。
+
+在 `nightly-releases-v0.32.0rc` 的 Ascend 910B3 上，K32 的 C2A 和 C1A 各验证 96 个查询，另核对 64 组 C1A 候选池。覆盖空历史、奇偶压缩边界、乱序物理页、候选截断与不满 Top-K 的末块。目标 INT8 key、scale 和页表逐元素一致。C1A 样例用 Top-K 512 和 64 个候选块，部署配置的 2048 个候选块及长历史还需验收。 [检索实现](../src/blockspec/vllm_ascend/dsv41_native_index.py)
+
+```bash
+PYTHONPATH=src python scripts/smoke_dsv41_native_index.py
+```
+
 ## 原生缓存与引擎接入
 
-vLLM-Ascend 的 `select_projected` 可接收投影后的 query、只读源页和候选池。原生调用使用因果元数据，C2A 额外传递压缩长度和余数。下一步验证如何为整块 draft 表达同一个 anchor 历史边界，并给每轮分配独立的候选池与 Top-K。Attention 侧要验证原生 SparseFlashMla 能否组合真实 SWA 页、选中的压缩页和临时块。通过后再绑定 MRV2 的模型生命周期和 verifier，验收接受前缀、拒绝回滚及目标状态。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
+下一步把检索绑定到 MRV2 提供的目标源页，并验证原生 SparseFlashMla 能否组合真实 SWA 页、选中的压缩页和临时块。目标侧原生检索仍使用因果元数据及 C2A 压缩余数。接入后对照 target-only 验收接受前缀、拒绝回滚和目标状态。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
