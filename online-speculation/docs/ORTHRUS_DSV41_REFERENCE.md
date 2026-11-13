@@ -70,7 +70,7 @@ MRV2 接入以插件形式注册 `OrthrusDSV41DraftModel`，并为该架构选�
 
 执行路径直接复用 MRV2 已在 CPU 侧计算好的 `max_seq_len`，并按压缩比例得到全局历史上界。这样 Attention 和 QLI 不再逐层对 NPU 长度张量调用 `.item()`；一次 40 层起草最多避免 40 次 Attention 和 8 次 indexer 的设备到主机同步。显式长度路径已在 910B3 上复验 C2A、C1A Full/Reindex 和目标页只读性。
 
-使用官方 1017 维度和 dummy BF16 权重，完整 40 层 head 已在 910B3 上完成 TP1 与 TP4 构造。TP1 包含 5,107,950,080 个参数，336 个 checkpoint 张量全部通过 loader round-trip；TP4 完成 HCCL 初始化和逐 rank 名称/本地形状检查，`wo_a` 从 TP1 的 `[8,4096,1024]` 分为每 rank `[2,4096,1024]`。热路径使用加载后常驻的三维原生布局，不在每轮转置权重。 [验证记录](validation/dsv41/head-construction-910b3.json)
+使用官方 1017 维度和 dummy BF16 权重，完整 40 层 head 已在 910B3 上完成 TP1、TP4 与 TP8 构造。TP1 包含 5,107,950,080 个参数，336 个 checkpoint 张量全部通过 loader round-trip；TP4 和 TP8 均完成 HCCL collective 及逐 rank 名称/本地形状检查。TP8 每 rank 为 997,529,920 个参数、1,995,060,480 bytes，`wo_a` 从 TP1 的 `[8,4096,1024]` 分为每 rank `[1,4096,1024]`。热路径使用加载后常驻的三维原生布局，不在每轮转置权重。 [验证记录](validation/dsv41/head-construction-910b3.json)
 
 ## A2 两节点部署
 
@@ -88,6 +88,6 @@ PROFILE=smoke-16k scripts/deploy_dsv41_node.sh
 
 宿主机脚本校验不可变镜像 digest，挂载代码、模型和八张 NPU，再在容器内调用服务脚本。模型和 head 默认取 `/data/disk/models` 下的约定目录，也可用 `MODEL_HOST`、`HEAD_HOST` 覆盖。`PROFILE` 可改为 `prod-128k` 或 `prod-1m`。Orthrus 脚本会安装本仓插件、校验 trained head 和基模哈希，然后以 eager 模式运行 K32；设置 `MODE=target` 是 target-only 回滚路径。部署前可设置 `DRY_RUN=1` 查看完整命令而不创建容器。 [官方 A2 拓扑](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4.1-Flash.html)
 
-完整服务验收仍需实际 V4.1 checkpoint，验证 target-only 启动、40 层 draft 前向、greedy 一致性、拒绝回滚、并发换序与显存预算；TP8 dummy 构造也需在八卡同时空闲时补测。
+完整服务验收仍需实际 V4.1 checkpoint，验证 target-only 启动、40 层 draft 前向、greedy 一致性、拒绝回滚、并发换序与显存预算。TP8 head 构造和通信已通过，不再是剩余项。
 
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
