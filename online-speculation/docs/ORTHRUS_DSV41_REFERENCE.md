@@ -126,6 +126,6 @@ MODE=orthrus HEAD_HOST=/data/disk/wangzili/models/orthrus-dsv41-head-v1 \
 
 当前使用 rank 0 的 CPU 参考反传。最后一层冻结的 W4A8/INT8 MoE 逐专家反量化成 FP32，训练完成后将 BF16 head 和 FP32 sink 发布到各 TP rank。运行中的主模型仍使用原生 W4A8 前向。CPU 参考与 NPU 量化前向存在计算精度差异，单机真实服务的反馈对齐、权重发布及更新后请求仍需八卡验收。此入口用于验证功能，更新与请求同步。
 
-CPU 单测验证了可微重放、目标历史不变及更新后 loss 下降。使用真实 1017 第 39 层、真实 LM head、合成边界和教师 logits，也已完成两步更新，观测到有限非零梯度及 Q 投影参数变化。真实权重探针只验证梯度和更新链路。
+CPU 单测验证了可微重放、目标历史不变及更新后 loss 下降。使用真实 1017 第 39 层和 LM head，配合合成边界与教师 logits，连续两步更新的 TV 为 0.84515、0.78542，Q 投影参数发生变化。这个用例验证梯度和权重更新，线上续训效果需用真实请求确认。61 上的固定镜像已通过 MRV2 Orthrus 配置检查及单卡 K32 Attention 复验，融合输出对 FP32 的最大绝对误差为 0.00442，目标缓存逐元素一致。
 
 `scripts/watch_dsv41_single_a2.py --online` 会在下载完整、固定镜像可用且本机八卡空闲后，依次执行 target-only、Orthrus greedy 对照和在线更新 smoke。Orthrus 验收检查 verifier 实际收到候选，并抽样检查 draft 前后目标缓存和页表一致。每一步结束后停止本次测试创建的容器。
