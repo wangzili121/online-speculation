@@ -176,6 +176,7 @@ def head_manifest(model: Path, *, mask_token_id: int, artifact_role: str):
         "base_tokenizer_sha256": sha256_file(tokenizer),
         "mask_token_id": mask_token_id,
         "block_size": BLOCK_SIZE,
+        "logit_alignment": "next-token",
         "engram_policy": "committed-prefix-anchor-mask",
         "layers": [asdict(role) for role in topology.layers],
     }

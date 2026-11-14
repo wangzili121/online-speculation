@@ -30,6 +30,7 @@ from vllm_ascend.models.deepseek_v41.model import (
 from vllm_ascend.utils import normalize_deepseek_v41_config
 
 from .dsv41_contract import BLOCK_SIZE, HEAD_FORMAT, V41Topology
+from .dsv41_native_attention import temporary_block
 from .dsv41_runtime import (
     V41NativeDraftState,
     bind_target_history,
@@ -153,8 +154,9 @@ class OrthrusV41Attention(nn.Module):
         positions: torch.Tensor,
         anchors: torch.Tensor,
         target_model: nn.Module,
-        metadata_by_prefix: Mapping[str, Any],
+        metadata_by_prefix: Mapping[str, Any] | None,
         state: V41NativeDraftState,
+        capture: Any = None,
     ) -> tuple[torch.Tensor, V41NativeDraftState]:
         from vllm_ascend.device.device_op import DeviceOperator
 
@@ -165,8 +167,15 @@ class OrthrusV41Attention(nn.Module):
 
         target_inner = getattr(target_model, "model", target_model)
         target_attention = target_inner.layers[self.layer_idx].self_attn
-        metadata = target_attention.v41_impl._get_layer_metadata(metadata_by_prefix)
-        cos, sin = metadata.swa.rope(target_attention.rotary_emb.layername, tokens)
+        layer_name = target_attention.rotary_emb.layername
+        if metadata_by_prefix is None:
+            from vllm_ascend.ops.rope_dsv4 import get_cos_and_sin_dsa
+
+            cos, sin = get_cos_and_sin_dsa(positions, layer_names=layer_name)
+            cos, sin = cos[layer_name], sin[layer_name]
+        else:
+            metadata = target_attention.v41_impl._get_layer_metadata(metadata_by_prefix)
+            cos, sin = metadata.rope(layer_name, tokens)
 
         qr = self.q_norm(_value(self.wq_a, hidden_states))
         query = _value(self.wq_b, qr).view(tokens, self.n_local_heads, self.head_dim)
@@ -186,38 +195,36 @@ class OrthrusV41Attention(nn.Module):
             end=self.head_dim,
         )
 
-        index_query = index_weights = None
-        if self.indexer is not None:
-            index_query = self.indexer.project_query(qr)
-            self.indexer.apply_query_rope(index_query, cos, sin)
-            index_weights = self.indexer.project_weights(hidden_states)
+        query = query.view(batch, BLOCK_SIZE, self.n_local_heads, self.head_dim)
+        temporary = temporary.view(batch, BLOCK_SIZE, self.head_dim)
+        if metadata_by_prefix is None:
+            # Startup profiling precedes allocation of physical target pages.
+            output, lse = temporary_block(query, temporary)
+            sink = self.attn_sink.view(1, 1, -1, 1)
+            output = output.float() * torch.sigmoid(lse.float() - sink)
+        else:
+            index_query = index_weights = None
+            if self.indexer is not None:
+                index_query = self.indexer.project_query(qr)
+                self.indexer.apply_query_rope(index_query, cos, sin)
+                index_weights = self.indexer.project_weights(hidden_states)
 
-        history = bind_target_history(
-            target_model,
-            metadata_by_prefix,
-            self.topology,
-            self.layer_idx,
-            anchors,
-        )
-        output, _, state = run_native_layer(
-            self.topology,
-            self.layer_idx,
-            query.view(batch, BLOCK_SIZE, self.n_local_heads, self.head_dim),
-            temporary.view(batch, BLOCK_SIZE, self.head_dim),
-            self.attn_sink,
-            history,
-            state,
-            index_query=(
-                None
-                if index_query is None
-                else index_query.view(batch, BLOCK_SIZE, self.indexer.n_heads, self.indexer.width)
-            ),
-            index_weights=(
-                None
-                if index_weights is None
-                else index_weights.view(batch, BLOCK_SIZE, self.indexer.n_heads)
-            ),
-        )
+            history = bind_target_history(target_model, metadata_by_prefix, self.topology, self.layer_idx, anchors)
+            if capture is not None:
+                capture(cos, sin, history, state.topk[self.role.index_source])
+            output, _, state = run_native_layer(
+                self.topology, self.layer_idx, query, temporary, self.attn_sink, history, state,
+                index_query=(
+                    None
+                    if index_query is None
+                    else index_query.view(batch, BLOCK_SIZE, self.indexer.n_heads, self.indexer.width)
+                ),
+                index_weights=(
+                    None
+                    if index_weights is None
+                    else index_weights.view(batch, BLOCK_SIZE, self.indexer.n_heads)
+                ),
+            )
         output = output.reshape(tokens, self.n_local_heads, self.head_dim).to(hidden_states.dtype)
         DeviceOperator.apply_partial_rotary_inplace(
             output,
@@ -256,6 +263,8 @@ class OrthrusV41Model(nn.Module):
         )
         self._target_ref: weakref.ReferenceType[nn.Module] | None = None
         self._lookback_token_ids: torch.Tensor | None = None
+        self.capture_last_layer = False
+        self.last_layer_snapshot = None
 
     def bind_shared_backbone(self, target_model: nn.Module) -> None:
         inner = getattr(target_model, "model", None)
@@ -283,11 +292,9 @@ class OrthrusV41Model(nn.Module):
         if positions.numel() % BLOCK_SIZE:
             raise ValueError("Orthrus V4.1 positions are not a dense Bx32 block")
         rows = positions.view(-1, BLOCK_SIZE)
-        expected = rows[:, :1] + torch.arange(BLOCK_SIZE, device=positions.device)
-        if not torch.equal(rows, expected):
-            raise ValueError("Orthrus V4.1 positions must start at the committed anchor and be consecutive")
         # DFlash offset zero is the known bonus/anchor token at position equal
-        # to the number of already committed target tokens.
+        # to the committed token count. The scheduler can clamp the trailing
+        # positions to the context limit; those rows are never verified.
         return rows[:, 0].to(torch.int32)
 
     def _prepare_engram(
@@ -295,14 +302,16 @@ class OrthrusV41Model(nn.Module):
         target_inner: nn.Module,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
+        *,
+        profiling: bool = False,
     ) -> tuple[Mapping[int, torch.Tensor], torch.Tensor]:
         if not getattr(target_inner, "has_engram", False):
             return {}, torch.empty(0, dtype=torch.bool, device=input_ids.device)
         lookback = self._lookback_token_ids
-        if lookback is None:
+        if lookback is None and not profiling:
             raise RuntimeError("V4.1 Engram requires request lookback tokens for the Orthrus block")
         batch = input_ids.numel() // BLOCK_SIZE
-        if lookback.shape[0] != batch:
+        if lookback is not None and lookback.shape[0] != batch:
             raise ValueError("Engram lookback rows do not match the Orthrus request batch")
         query_start = torch.arange(batch + 1, dtype=torch.int32, device=input_ids.device) * BLOCK_SIZE
         return target_inner.prepare_engram(
@@ -310,18 +319,25 @@ class OrthrusV41Model(nn.Module):
             positions,
             lookback_token_ids=lookback,
             query_start_loc=query_start,
+            force_dummy=profiling,
         )
 
     def forward(self, input_ids: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
         target = self._target()
         target_inner = target.model
-        anchors = self._anchors(positions)
         context = get_forward_context()
         metadata = context.attn_metadata
-        if not isinstance(metadata, Mapping):
+        if metadata is None:
+            self._anchors(positions)
+            positions = torch.arange(BLOCK_SIZE, device=positions.device, dtype=positions.dtype).repeat(
+                positions.numel() // BLOCK_SIZE
+            )
+            input_ids = torch.full_like(input_ids, int(self.config.engram_pad_token_id))
+        elif not isinstance(metadata, Mapping):
             raise RuntimeError("Orthrus V4.1 requires target cache metadata")
+        anchors = self._anchors(positions)
 
-        lookups, token_mask = self._prepare_engram(target_inner, input_ids, positions)
+        lookups, token_mask = self._prepare_engram(target_inner, input_ids, positions, profiling=metadata is None)
         hidden_states = target_inner.embed_input_ids(input_ids)
         hidden_states = hidden_states.unsqueeze(1).repeat(1, self.hc_mult, 1)
         pre_mix = hidden_states.new_zeros(hidden_states.shape[0], self.hc_mult, dtype=torch.float32)
@@ -329,7 +345,7 @@ class OrthrusV41Model(nn.Module):
         draft_state = V41NativeDraftState()
         last_target_layer = None
 
-        for draft_attention, target_layer in zip(self.layers, target_inner.layers, strict=True):
+        for i, (draft_attention, target_layer) in enumerate(zip(self.layers, target_inner.layers, strict=True)):
             last_target_layer = target_layer
             if target_layer.engram is not None and token_mask.numel():
                 hidden_states = target_layer.engram(
@@ -348,7 +364,17 @@ class OrthrusV41Model(nn.Module):
                 pre_mix,
             )
             x = target_layer.input_layernorm(x)
-            x, draft_state = draft_attention(x, positions, anchors, target, metadata, draft_state)
+            capture = None
+            if self.capture_last_layer and i == len(self.layers) - 1 and metadata is not None:
+                from .dsv41_last_layer import LastLayerReplay
+
+                def capture(cos, sin, history, selection, x=x, residual=residual,
+                            pre=attn_pre, post=post, comb=comb):
+                    self.last_layer_snapshot = LastLayerReplay.snapshot(
+                        x, residual, pre, post, comb, cos, sin, history, selection, self.topology.window,
+                    )
+
+            x, draft_state = draft_attention(x, positions, anchors, target, metadata, draft_state, capture)
             hidden_states = target_layer.hc_post(x, residual, post, comb)
 
             residual = hidden_states
@@ -442,7 +468,23 @@ class OrthrusDSV41DraftModel(nn.Module):
         return []
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+        return self._load_head_weights(weights, expected_layer=None)
+
+    @torch.no_grad()
+    def publish_last_layer(self, weights: Mapping[str, torch.Tensor]) -> None:
+        last = len(self.model.layers) - 1
+        self._load_head_weights(
+            ((f"layers.{last}.attn.{name}", value) for name, value in weights.items()),
+            expected_layer=last,
+        )
+
+    def live_last_layer_parameters(self):
+        return dict(self.model.layers[-1].attn.named_parameters())
+
+    def _load_head_weights(self, weights, *, expected_layer):
         params = dict(self.named_parameters())
+        prefix = "model.layers." if expected_layer is None else f"model.layers.{expected_layer}."
+        expected = {name for name in params if name.startswith(prefix)}
         loaded: set[str] = set()
         tp_rank = get_tensor_model_parallel_rank()
         tp_size = get_tensor_model_parallel_world_size()
@@ -452,9 +494,9 @@ class OrthrusDSV41DraftModel(nn.Module):
             if not name.startswith("layers."):
                 continue
             runtime_name = "model." + name
-            param = params.get(runtime_name)
-            if param is None:
+            if runtime_name not in expected:
                 continue
+            param = params[runtime_name]
             if runtime_name.endswith(".attn.attn_sink"):
                 value = value.narrow(0, tp_rank * local_heads, local_heads)
                 default_weight_loader(param, value)
@@ -470,7 +512,6 @@ class OrthrusDSV41DraftModel(nn.Module):
                 loader = getattr(param, "weight_loader", default_weight_loader)
                 loader(param, value)
             loaded.add(runtime_name)
-        expected = {name for name in params if name.startswith("model.layers.")}
         missing = sorted(expected - loaded)
         if missing:
             raise RuntimeError(

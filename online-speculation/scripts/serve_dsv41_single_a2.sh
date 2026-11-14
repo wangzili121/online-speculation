@@ -15,7 +15,7 @@ MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-512}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-1}"
 MEMORY="${MEMORY:-0.88}"
 DRAFT_SAMPLE_METHOD="${ORTHRUS_DRAFT_SAMPLE_METHOD:-greedy}"
-default_additional_config='{"ascend_compilation_config":{"enable_npugraph_ex":true,"enable_static_kernel":false},"enable_cpu_binding":true,"enable_flashcomm1":true,"enable_shared_expert_dp":true}'
+default_additional_config='{"ascend_compilation_config":{"enable_npugraph_ex":true,"enable_static_kernel":false},"enable_cpu_binding":true,"enable_flashcomm1":false,"enable_shared_expert_dp":false}'
 ADDITIONAL_CONFIG="${ADDITIONAL_CONFIG:-$default_additional_config}"
 
 case "$MODE" in
@@ -39,7 +39,7 @@ fi
 
 command=(
   vllm serve "$MODEL"
-  --host 0.0.0.0
+  --host "${HOST:-0.0.0.0}"
   --port "$PORT"
   --tensor-parallel-size 8
   --enable-expert-parallel
@@ -51,6 +51,7 @@ command=(
   --block-size 128
   --no-enable-prefix-caching
   --trust-remote-code
+  --language-model-only
   --tokenizer-mode deepseek_v41
   --reasoning-parser deepseek_v41
   --tool-call-parser deepseek_v41
@@ -67,9 +68,9 @@ command=(
 
 if [[ "$MODE" == "orthrus" ]]; then
   if [[ "${DRY_RUN:-0}" != "1" && "${AUTO_INSTALL_PLUGIN:-1}" == "1" ]]; then
-    "$python_bin" -m pip install --no-deps --disable-pip-version-check -e "$repo_root"
+    "$python_bin" -m pip install --no-deps --no-build-isolation --disable-pip-version-check -e "$repo_root"
   fi
-  export VLLM_PLUGINS="${VLLM_PLUGINS:-blockspec_orthrus}"
+  export VLLM_PLUGINS="${VLLM_PLUGINS:-ascend,ascend_model,ascend_model_loader,blockspec_orthrus}"
   export PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}"
   preflight=(
     "$python_bin" "$repo_root/scripts/preflight_dsv41_orthrus.py"

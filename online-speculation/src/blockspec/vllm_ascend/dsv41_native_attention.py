@@ -130,7 +130,7 @@ def _native_sparse_plane(
     return output.masked_fill(~torch.isfinite(lse), 0), lse
 
 
-def _temporary_block(
+def temporary_block(
     query: torch.Tensor, temporary: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run the fully visible K-by-K draft block with native fused attention."""
@@ -228,7 +228,7 @@ def native_draft_attention(
         )
         outputs.append(sparse[0])
         lses.append(sparse[1])
-    local_block = _temporary_block(query, temporary)
+    local_block = temporary_block(query, temporary)
     outputs.append(local_block[0])
     lses.append(local_block[1])
     return _merge_fp32(tuple(outputs), tuple(lses))

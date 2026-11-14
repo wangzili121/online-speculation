@@ -119,3 +119,13 @@ MODE=orthrus HEAD_HOST=/data/disk/wangzili/models/orthrus-dsv41-head-v1 \
 完整服务验收仍需实际 V4.1 checkpoint，验证 target-only 启动、40 层 draft 前向、greedy 一致性、拒绝回滚、并发换序与显存预算。TP8 head 构造和通信已通过，不再是剩余项。
 
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
+
+### 单层在线更新
+
+单机 eager 可以显式设置 `ORTHRUS_DSV41_ONLINE_STRIDE`。实验入口限定 DP1、单请求，更新零起始第 39 层的 diffusion attention。它沿用第 36 层的 Top-K，并在起草时复制本轮重放所需的 KV 行。verifier 返回后核对请求、anchor 和候选 token，只用实际验证到的位置做全词表 TV 蒸馏。第 0–30 行的 draft logits 预测位置 1–31，与研究实现的 next-token 对齐方式一致。
+
+当前使用 rank 0 的 CPU 参考反传。最后一层冻结的 W4A8/INT8 MoE 逐专家反量化成 FP32，训练完成后将 BF16 head 和 FP32 sink 发布到各 TP rank。运行中的主模型仍使用原生 W4A8 前向。CPU 参考与 NPU 量化前向存在计算精度差异，单机真实服务的反馈对齐、权重发布及更新后请求仍需八卡验收。此入口用于验证功能，更新与请求同步。
+
+CPU 单测验证了可微重放、目标历史不变及更新后 loss 下降。使用真实 1017 第 39 层、真实 LM head、合成边界和教师 logits，也已完成两步更新，观测到有限非零梯度及 Q 投影参数变化。真实权重探针只验证梯度和更新链路。
+
+`scripts/watch_dsv41_single_a2.py --online` 会在下载完整、固定镜像可用且本机八卡空闲后，依次执行 target-only、Orthrus greedy 对照和在线更新 smoke。每一步结束后停止本次测试创建的容器。

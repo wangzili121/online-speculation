@@ -55,6 +55,7 @@ def main() -> None:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mask-token-id", type=int, required=True)
+    parser.add_argument("--from-target", action="store_true", help="initialize from the W4A8 target attention")
     args = parser.parse_args()
     if args.output.exists():
         parser.error(f"output already exists: {args.output}")
@@ -67,6 +68,11 @@ def main() -> None:
         mask_token_id=args.mask_token_id,
         artifact_role="initialized-plumbing",
     )
+    source = None
+    if args.from_target:
+        from blockspec.vllm_ascend.dsv41_last_layer import W4A8LastLayerWeights
+
+        source = W4A8LastLayerWeights(args.model)
     temporary = args.output.with_name(args.output.name + ".partial")
     if temporary.exists():
         shutil.rmtree(temporary)
@@ -82,9 +88,16 @@ def main() -> None:
         tensors = {}
         for name, shape in layer_shapes.items():
             dtype = torch.float32 if name.endswith("attn_sink") else torch.bfloat16
-            value = torch.zeros(shape, dtype=dtype)
-            if name.endswith(("q_norm.weight", "kv_norm.weight")):
-                value.fill_(1)
+            if source is None:
+                value = torch.zeros(shape, dtype=dtype)
+                if name.endswith(("q_norm.weight", "kv_norm.weight")):
+                    value.fill_(1)
+            elif name.endswith(".attn_sink"):
+                value = source.load([name])[name].to(dtype)
+            else:
+                value = source.linear_weight(name, "cpu").to(dtype)
+            if tuple(value.shape) != shape or not value.isfinite().all():
+                raise ValueError(f"invalid initialization tensor {name}: {tuple(value.shape)}")
             tensors[name] = value
             total_size += value.numel() * value.element_size()
         shard = f"model-{layer + 1:05d}-of-{len(topology.layers):05d}.safetensors"

@@ -43,6 +43,17 @@ def _install_dsv41_speculator_dispatch():
     spec_decode.init_speculator = init_speculator
     model_runner.init_speculator = init_speculator
 
+    sample = model_runner.NPUModelRunner.sample
+
+    def sample_with_online_feedback(self, hidden_states, input_batch, grammar_output):
+        result = sample(self, hidden_states, input_batch, grammar_output)
+        consume = getattr(self.speculator, "consume_online_feedback", None)
+        if consume is not None:
+            consume(self.model, hidden_states, input_batch, result[1], structured=grammar_output is not None)
+        return result
+
+    model_runner.NPUModelRunner.sample = sample_with_online_feedback
+
 
 def register():
     from vllm import ModelRegistry

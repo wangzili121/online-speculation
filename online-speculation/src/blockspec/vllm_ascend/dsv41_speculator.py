@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
 
 import numpy as np
 import torch
-from vllm.config import VllmConfig, replace
+from vllm.config import CUDAGraphMode, VllmConfig, replace
 from vllm.compilation.backends import set_model_tag
+from vllm.distributed import get_tp_group
 from vllm.model_executor.model_loader import get_model
 from vllm.model_executor.model_loader.utils import get_draft_load_config
 from vllm.v1.attention.backends.utils import PAD_SLOT_ID
@@ -24,6 +27,8 @@ from vllm_ascend.worker.v2.spec_decode.pcp_utils import disable_profiling_chunk_
 
 from .dsv41_contract import BLOCK_SIZE
 from .dsv41_runtime import compose_draft_lookback
+
+logger = logging.getLogger(__name__)
 
 
 class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
@@ -47,8 +52,17 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         if self.num_query_per_req != BLOCK_SIZE or self.num_speculative_steps != BLOCK_SIZE - 1:
             raise ValueError("Orthrus V4.1 requires anchor plus 31 MASK positions")
         if self.sample_from_anchor:
-            raise ValueError("Orthrus V4.1 samples MASK rows, not the anchor row")
+            raise ValueError("Orthrus V4.1 requires DFlash's K-1 destination positions")
         self.requires_non_causal = True
+        self.online_stride = int(os.environ.get("ORTHRUS_DSV41_ONLINE_STRIDE", "0"))
+        self.online_pending = None
+        self.online_round = 0
+        self.online_learner = None
+        parallel = vllm_config.parallel_config
+        if self.online_stride < 0 or (self.online_stride and (
+            parallel.data_parallel_size != 1 or vllm_config.scheduler_config.max_num_seqs != 1
+        )):
+            raise ValueError("V4.1 online update requires a positive stride, DP1 and batch size 1")
 
     def load_draft_model(
         self,
@@ -72,6 +86,95 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         )
         model.bind_shared_backbone(language_model)
         return model
+
+    def consume_online_feedback(self, target, hidden, batch, sampled, *, structured):
+        pending, self.online_pending = self.online_pending, None
+        if pending is None or structured or batch.num_reqs != 1 or batch.num_draft_tokens == 0:
+            return
+        request, anchor, proposal, snapshot = pending
+        if request != batch.req_ids[0] or int(batch.positions[batch.logits_indices[0]]) != anchor:
+            return
+        count = batch.num_draft_tokens
+        inputs = batch.input_ids[batch.logits_indices[1:]]
+        if count > proposal.numel() or not torch.equal(inputs, proposal[:count].to(inputs)):
+            return
+        reached = int(sampled[0])
+        if reached == 0:
+            return
+        # Use raw target logits. The sampling path may apply penalties or
+        # mutate its own logits in place before returning a verifier verdict.
+        teacher = target.compute_logits(hidden[batch.logits_indices])
+        group = get_tp_group()
+        status = torch.zeros(1, dtype=torch.int32, device=self.device)
+        metrics = None
+        if group.rank_in_group == 0:
+            try:
+                from .dsv41_last_layer import LastLayerLearner
+
+                with torch.inference_mode(False):
+                    if self.online_learner is None:
+                        self.online_learner = LastLayerLearner(
+                            self.vllm_config.model_config.model,
+                            self.vllm_config.speculative_config.model,
+                        )
+                    metrics = self.online_learner.update(
+                        snapshot, teacher.detach().cpu(), count, reached,
+                    )
+                status.fill_(1)
+            except Exception:
+                # Every TP rank must reach this broadcast even when the
+                # host-only learner cannot finish an update.
+                status.fill_(-1)
+                logger.exception("V4.1 Orthrus last-layer update failed before publication")
+        group.broadcast(status, src=0)
+        outcome = int(status[0])
+        if outcome < 0:
+            self.online_stride = 0
+            self.online_learner = None
+        elif outcome == 1:
+            changed = self._publish_online_head(group)
+            if changed and metrics is not None:
+                loss, norm, version = metrics
+                logger.warning(
+                    "V4.1 Orthrus last-layer update %d published, TV %.6g, gradient norm %.6g",
+                    version, loss, norm,
+                )
+
+    def _publish_online_head(self, group):
+        from .dsv41_contract import head_shapes
+        from .dsv41_model import _topology_config
+
+        last = len(self.model.model.layers) - 1
+        prefix = f"layers.{last}.attn."
+        raw = _topology_config(self.vllm_config.model_config.hf_config)
+        weights = {}
+        for name, shape in head_shapes(raw, self.model.model.topology).items():
+            if not name.startswith(prefix):
+                continue
+            suffix = name.removeprefix(prefix)
+            dtype = torch.float32 if suffix == "attn_sink" else torch.bfloat16
+            value = torch.empty(shape, dtype=dtype, device=self.device)
+            if group.rank_in_group == 0:
+                value.copy_(self.online_learner.master[suffix].detach())
+            group.broadcast(value, src=0)
+            weights[suffix] = value
+        live = self.model.live_last_layer_parameters()
+        before = {name: value.detach().clone() for name, value in live.items()}
+        result = torch.zeros(2, dtype=torch.int32, device=self.device)
+        try:
+            self.model.publish_last_layer(weights)
+            result[1] = any(not torch.equal(value, before[name]) for name, value in live.items())
+        except Exception:
+            result[0] = 1
+            logger.exception("V4.1 Orthrus last-layer publication failed")
+        failed, changed = group.all_reduce(result).tolist()
+        if failed:
+            with torch.no_grad():
+                for name, value in live.items():
+                    value.copy_(before[name])
+            self.online_stride = 0
+            self.online_learner = None
+        return not failed and bool(changed)
 
     def set_attn(
         self,
@@ -127,6 +230,25 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         # no second context cache and must never append to the target here.
         del start, end, dummy_run
 
+    def _generate_draft(
+        self, num_reqs, num_tokens_padded, attn_metadata, slot_mappings, num_tokens_across_dp,
+        cudagraph_runtime_mode=CUDAGraphMode.NONE,
+    ):
+        hidden = self._run_model(
+            num_tokens_padded, attn_metadata, slot_mappings, num_tokens_across_dp, cudagraph_runtime_mode,
+        )
+        count = num_reqs * self.num_speculative_steps
+        # DFlash computes destination positions 1..31. The Orthrus head
+        # predicts the next token from source rows 0..30 of the same block.
+        source = self.sample_indices[:count] - 1
+        if attn_metadata is None:
+            source = source.clamp_min(0)
+        sampled = self.sample_draft(
+            hidden[source], self.sample_pos[:count] - 1, self.sample_idx_mapping[:count],
+            self.temperature, self.seeds, self.sample_col[:count], self.draft_logits,
+        )
+        self.draft_tokens[:num_reqs] = sampled.view(num_reqs, self.num_speculative_steps)
+
     def _build_attn_metadata(
         self,
         num_reqs: int,
@@ -148,10 +270,11 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         query_start_cpu[num_reqs:] = query_start_cpu[num_reqs]
         max_query_len = int((query_start_cpu[1:] - query_start_cpu[:-1]).max())
 
-        # prepare_dflash_inputs stores anchor+K as the draft cache length.  The
-        # target cache stops at the anchor, so subtract K before V4.1 metadata
-        # is built and provide only PAD slots as a second write barrier.
-        committed = (self.input_buffers.seq_lens[:num_reqs_padded] - BLOCK_SIZE).clamp_min(0)
+        # The first query position is the committed token count. DFlash caps
+        # its anchor+K length at the context limit, so subtracting K can drop
+        # valid history at the end of the context.
+        committed = torch.zeros_like(self.input_buffers.seq_lens[:num_reqs_padded])
+        committed[:num_reqs] = self.input_buffers.positions[:num_tokens:BLOCK_SIZE]
         padded_slots = torch.full_like(
             self.block_tables.slot_mappings[:, :num_tokens],
             PAD_SLOT_ID,
@@ -197,7 +320,7 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         is_profile: bool = False,
         num_speculative_tokens: int | None = None,
     ) -> torch.Tensor:
-        lookback = getattr(self.model_state, "lookback_token_ids", None)
+        lookback = getattr(getattr(self, "model_state", None), "lookback_token_ids", None)
         if lookback is not None:
             num_reqs = input_batch.num_reqs
             lookback = compose_draft_lookback(
@@ -207,22 +330,45 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
                 num_rejected[:num_reqs],
             )
         self.model.set_lookback_token_ids(lookback)
-        return super().propose(
-            input_batch,
-            attn_metadata,
-            slot_mappings,
-            last_hidden_states,
-            aux_hidden_states,
-            num_sampled,
-            num_rejected,
-            last_sampled,
-            next_prefill_tokens,
-            temperature,
-            seeds,
-            dp_sync_state,
-            dummy_run,
-            skip_attn_for_dummy_run,
-            mm_inputs,
-            is_profile=is_profile,
-            num_speculative_tokens=num_speculative_tokens,
-        )
+        # MRV2 can pass the target's widened mHC stream. Orthrus gets its
+        # prefix through the shared KV pages and never consumes this buffer.
+        last_hidden_states = last_hidden_states[..., :self.hidden_size]
+        if last_hidden_states.shape[-1] < self.hidden_size:
+            last_hidden_states = torch.nn.functional.pad(
+                last_hidden_states, (0, self.hidden_size - last_hidden_states.shape[-1]),
+            )
+        aux_hidden_states = None
+        capture = False
+        if self.online_stride and not dummy_run and input_batch.num_reqs == 1 and int(num_sampled[0]) > 0:
+            self.online_round += 1
+            capture = self.online_round % self.online_stride == 0
+        inner = self.model.model
+        inner.capture_last_layer = capture
+        inner.last_layer_snapshot = None
+        try:
+            result = super().propose(
+                input_batch,
+                attn_metadata,
+                slot_mappings,
+                last_hidden_states,
+                aux_hidden_states,
+                num_sampled,
+                num_rejected,
+                last_sampled,
+                next_prefill_tokens,
+                temperature,
+                seeds,
+                dp_sync_state,
+                dummy_run,
+                skip_attn_for_dummy_run,
+                mm_inputs,
+                is_profile=is_profile,
+                num_speculative_tokens=num_speculative_tokens,
+            )
+            if capture and inner.last_layer_snapshot is not None:
+                anchor = int(self.input_buffers.positions[0])
+                self.online_pending = (input_batch.req_ids[0], anchor, result[0].clone(), inner.last_layer_snapshot)
+            return result
+        finally:
+            inner.capture_last_layer = False
+            inner.last_layer_snapshot = None

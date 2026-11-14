@@ -11,7 +11,7 @@ PORT="${PORT:-8901}"
 DP_RPC_PORT="${DP_RPC_PORT:-13400}"
 MEMORY="${MEMORY:-0.90}"
 DRAFT_SAMPLE_METHOD="${ORTHRUS_DRAFT_SAMPLE_METHOD:-greedy}"
-default_additional_config='{"ascend_compilation_config":{"enable_npugraph_ex":true,"enable_static_kernel":false},"enable_cpu_binding":true,"enable_flashcomm1":true,"enable_shared_expert_dp":true}'
+default_additional_config='{"ascend_compilation_config":{"enable_npugraph_ex":true,"enable_static_kernel":false},"enable_cpu_binding":true,"enable_flashcomm1":false,"enable_shared_expert_dp":false}'
 ADDITIONAL_CONFIG="${ADDITIONAL_CONFIG:-$default_additional_config}"
 
 case "$DRAFT_SAMPLE_METHOD" in
@@ -27,9 +27,9 @@ configure_dsv41_runtime
 configure_dsv41_network
 
 if [[ "${DRY_RUN:-0}" != "1" && "${AUTO_INSTALL_PLUGIN:-1}" == "1" ]]; then
-  "$python_bin" -m pip install --no-deps --disable-pip-version-check -e "$repo_root"
+  "$python_bin" -m pip install --no-deps --no-build-isolation --disable-pip-version-check -e "$repo_root"
 fi
-export VLLM_PLUGINS="${VLLM_PLUGINS:-blockspec_orthrus}"
+export VLLM_PLUGINS="${VLLM_PLUGINS:-ascend,ascend_model,ascend_model_loader,blockspec_orthrus}"
 export PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}"
 
 preflight=(

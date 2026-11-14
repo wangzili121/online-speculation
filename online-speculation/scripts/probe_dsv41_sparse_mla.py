@@ -14,7 +14,7 @@ from blockspec.vllm_ascend.dsv41_attention import PagedRows
 from blockspec.vllm_ascend.dsv41_native_attention import (
     _merge_fp32,
     _native_sparse_plane,
-    _temporary_block,
+    temporary_block,
     native_draft_attention,
 )
 from blockspec.vllm_ascend.dsv41_precise_attention import precise_draft_attention
@@ -161,7 +161,7 @@ def main() -> None:
         )
 
     def block_call():
-        return _temporary_block(query_d, temporary.to(device))
+        return temporary_block(query_d, temporary.to(device))
 
     def full_call():
         return native_draft_attention(

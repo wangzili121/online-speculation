@@ -30,6 +30,13 @@ if [[ "${DRY_RUN:-0}" != "1" && "${ACK_EXCLUSIVE_NODE:-0}" != "1" ]]; then
 fi
 
 image="$IMAGE_REPOSITORY@$EXPECTED_IMAGE_DIGEST"
+if [[ -n "${PINNED_LOCAL_IMAGE_ID:-}" ]]; then
+  [[ "$PINNED_LOCAL_IMAGE_ID" == "sha256:5a70e7cdbe81b2b2addad33cf31db6f8e8163fa4b510ff307a8864d9db36b3a2" ]] || {
+    echo "PINNED_LOCAL_IMAGE_ID must match the tested v0.32.0rc image" >&2
+    exit 2
+  }
+  image="$PINNED_LOCAL_IMAGE_ID"
+fi
 if [[ "${DRY_RUN:-0}" != "1" ]]; then
   command -v docker >/dev/null 2>&1 || { echo "missing command: docker" >&2; exit 2; }
   [[ -f "$MODEL_HOST/config.json" ]] || { echo "missing model: $MODEL_HOST" >&2; exit 2; }
@@ -84,8 +91,10 @@ docker_exec=(
   -e MODEL="$model"
   -e HEAD="$head"
   -e PORT="$PORT"
+  -e HOST="${HOST:-0.0.0.0}"
   -e LOCAL_IP="$LOCAL_IP"
   -e NIC_NAME="$NIC_NAME"
+  -e ORTHRUS_DSV41_ONLINE_STRIDE="${ORTHRUS_DSV41_ONLINE_STRIDE:-0}"
   -e REQUIRE_TRAINED_HEAD="${REQUIRE_TRAINED_HEAD:-0}"
   "$CONTAINER" bash -lc "mkdir -p \"$(dirname "$service_log")\"; exec bash scripts/serve_dsv41_single_a2.sh >\"$service_log\" 2>&1"
 )
