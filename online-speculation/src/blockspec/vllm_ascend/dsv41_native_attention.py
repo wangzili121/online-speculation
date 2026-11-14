@@ -7,7 +7,8 @@ import re
 import torch
 
 from .dsv41_attention import PagedRows
-from .dsv4_hybrid import tail_logical_indices
+from .dsv41_precise_attention import precise_draft_attention
+from .dsv4_hybrid import gather_paged_cache
 
 
 def _paged_values(pages: PagedRows) -> torch.Tensor:
@@ -63,8 +64,6 @@ def _native_sparse_plane(
         raise ValueError("history lengths or attention sink have incompatible shape")
     if pages.table.shape[0] != batch:
         raise ValueError("page table and query batch differ")
-    sparse = sparse.reshape(batch * block, 1, -1).contiguous().int()
-    visible = (sparse >= 0).sum(-1, dtype=torch.int32)
     maximum_length = (
         int(lengths.max().item()) if maximum_length is None else maximum_length
     )
@@ -76,13 +75,34 @@ def _native_sparse_plane(
         )
     if runtime_cmp_ratio not in (0, 1):
         raise ValueError("SparseFlashMLA runtime cmp_ratio must be zero or one")
+    if maximum_length == 0:
+        lse = sink.float().view(1, 1, heads, 1).expand(batch, block, heads, 1)
+        return torch.zeros_like(query), lse
+    if min(maximum_length, pages.table.shape[-1] * pages.values.shape[1]) < block:
+        # SparseFlashMLA assumes Q fits in its advertised KV extent. For a
+        # short history the selected rows fit in a small FP32 matmul.
+        ids = sparse[..., :maximum_length]
+        rows = gather_paged_cache(_paged_values(pages).squeeze(2), pages.table, ids).float()
+        scores = torch.matmul(query.float(), rows.transpose(-1, -2)) * dim**-0.5
+        scores = scores.masked_fill(ids[:, :, None] < 0, -torch.inf)
+        sink_logits = sink.float().view(1, 1, heads, 1).expand(batch, block, -1, -1)
+        lse = torch.cat((scores, sink_logits), dim=-1).logsumexp(-1, keepdim=True)
+        weights = (scores - lse.masked_fill(~lse.isfinite(), 0)).exp()
+        return torch.matmul(weights, rows), lse
+
+    # In a mixed-length batch keep the real sparse indices and counts but
+    # avoid SparseFlashMLA's Q>KV invalid-row path for shorter requests.
+    # There are no additional readable positions in the explicit index list.
+    launch_lengths = torch.where(lengths > 0, lengths.clamp_min(block), lengths).int()
+    sparse = sparse.reshape(batch * block, 1, -1).contiguous().int()
+    visible = (sparse >= 0).sum(-1, dtype=torch.int32)
     cu = torch.arange(batch + 1, dtype=torch.int32, device=query.device) * block
     metadata = torch.ops._C_ascend.npu_sparse_flash_mla_metadata(
         heads,
         1,
         dim,
         cu_seqlens_q=cu,
-        seqused_ori_kv=lengths.int(),
+        seqused_ori_kv=launch_lengths,
         ori_topk_length=visible,
         batch_size=batch,
         max_seqlen_q=block,
@@ -105,7 +125,7 @@ def _native_sparse_plane(
         ori_sparse_indices=sparse,
         ori_block_table=pages.table.int(),
         cu_seqlens_q=cu,
-        seqused_ori_kv=lengths.int(),
+        seqused_ori_kv=launch_lengths,
         sinks=sink,
         metadata=metadata,
         softmax_scale=dim**-0.5,
@@ -167,11 +187,10 @@ def native_draft_attention(
     global_kv: PagedRows | None = None,
     global_indices: torch.Tensor | None = None,
     global_lengths: torch.Tensor | None = None,
-    max_swa_history: int | None = None,
     max_global_history: int | None = None,
     runtime_cmp_ratio: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Fuse each history plane, then normalize it with the temporary block.
+    """Compute local attention in FP32, then merge fused sparse history.
 
     Every draft query reads the same anchor-bounded SWA prefix. Compressed
     Top-K rows may differ by query. Target pages are inputs only; temporary KV
@@ -188,32 +207,17 @@ def native_draft_attention(
     if global_kv is not None and global_lengths is None:
         raise ValueError("global cache requires committed compressed lengths")
 
-    local_indices = tail_logical_indices(anchors, window)
-    local = _native_sparse_plane(
+    local = precise_draft_attention(query, temporary, swa, anchors, sink, window=window)
+    if global_kv is None or not global_indices.shape[-1]:
+        return local
+
+    sparse = _native_sparse_plane(
         query,
-        swa,
-        local_indices,
-        anchors,
-        sink,
-        maximum_length=max_swa_history,
+        global_kv,
+        global_indices,
+        global_lengths,
+        torch.full_like(sink, -torch.inf),
+        maximum_length=max_global_history,
         runtime_cmp_ratio=runtime_cmp_ratio,
     )
-    outputs = [local[0]]
-    lses = [local[1]]
-    if global_kv is not None and global_indices.shape[-1]:
-        disabled_sink = torch.full_like(sink, -torch.inf)
-        sparse = _native_sparse_plane(
-            query,
-            global_kv,
-            global_indices,
-            global_lengths,
-            disabled_sink,
-            maximum_length=max_global_history,
-            runtime_cmp_ratio=runtime_cmp_ratio,
-        )
-        outputs.append(sparse[0])
-        lses.append(sparse[1])
-    local_block = temporary_block(query, temporary)
-    outputs.append(local_block[0])
-    lses.append(local_block[1])
-    return _merge_fp32(tuple(outputs), tuple(lses))
+    return _merge_fp32((local[0], sparse[0]), (local[1], sparse[1]))

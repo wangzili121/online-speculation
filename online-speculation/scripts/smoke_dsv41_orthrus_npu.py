@@ -187,7 +187,6 @@ def check_projected_history(
             global_kv=device_compressed,
             global_indices=selected.to(device),
             global_lengths=(anchors // 2).to(device),
-            max_swa_history=int(anchors.max()),
             max_global_history=int((anchors // 2).max()),
         )
         result["native"] = check_bf16_precision(native, expected)
@@ -200,7 +199,7 @@ def main():
     parser.add_argument("--device", default="npu:0")
     parser.add_argument("--tp", type=int, default=8, help="Use the head count of one rank. No collectives run.")
     parser.add_argument("--compare-fia", action="store_true", help="Compare against the prior segmented BF16 path.")
-    parser.add_argument("--compare-native", action="store_true", help="Run native sparse planes plus block FIA.")
+    parser.add_argument("--compare-native", action="store_true", help="Combine FP32 local attention with native sparse history.")
     parser.add_argument("--layer2-weights", type=Path, help="Optional A2 W8A8 layer-2 projection sample.")
     args = parser.parse_args()
     device = torch.device(args.device)

@@ -75,10 +75,10 @@ def main() -> int:
     args = parser.parse_args()
 
     device = torch.device(args.device)
-    torch.npu.set_device(device)
-    torch.npu.matmul.allow_hf32 = False
     if not enable_custom_op():
         raise RuntimeError("vLLM-Ascend custom operators are unavailable")
+    torch.npu.set_device(device)
+    torch.npu.matmul.allow_hf32 = False
     init_device_properties_triton()
 
     config = read_json(args.config)

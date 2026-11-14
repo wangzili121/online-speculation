@@ -357,7 +357,6 @@ def test_runtime_drives_index_sources_and_reuses_private_topk(monkeypatch, confi
 
     def fake_attention(query, temporary, swa, runtime_anchors, sink, **kwargs):
         seen.append(kwargs["global_indices"])
-        assert kwargs["max_swa_history"] == 8
         assert kwargs["max_global_history"] == 4
         return query.float(), query.new_zeros((*query.shape[:-1], 1), dtype=torch.float32)
 
@@ -447,7 +446,6 @@ def test_native_attention_segments_preserve_joint_softmax(monkeypatch):
         global_kv=global_kv,
         global_indices=selected,
         global_lengths=global_lengths,
-        max_swa_history=5,
         max_global_history=3,
     )
     expected = draft_attention(
@@ -461,7 +459,30 @@ def test_native_attention_segments_preserve_joint_softmax(monkeypatch):
         global_indices=selected,
     )
     torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
-    assert [call[2] for call in calls] == [5, 3]
+    assert [call[2] for call in calls] == [3]
+
+
+def test_native_attention_short_history_uses_only_selected_rows(monkeypatch):
+    monkeypatch.setattr(native_attention, "_runtime_topk_length_supported", lambda: True)
+    generator = torch.Generator().manual_seed(41017)
+    query = torch.randn(2, 32, 2, 8, generator=generator)
+    temporary = torch.randn(2, 32, 8, generator=generator)
+    pages = PagedRows(torch.randn(2, 4, 8, generator=generator), torch.tensor([[1], [0]]))
+    anchors = torch.tensor([1, 3])
+    sink = torch.tensor([-1.0, 0.5])
+    selected = torch.full((2, 32, 4), -1)
+    selected[1, :, 0] = 0
+    actual = native_attention.native_draft_attention(
+        query, temporary, pages, anchors, sink, window=4, global_kv=pages,
+        global_indices=selected, global_lengths=anchors // 2,
+        max_global_history=16,
+    )
+    expected = draft_attention(
+        query, temporary, pages, anchors, sink, window=4,
+        global_kv=pages, global_indices=selected,
+    )
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(pages.table, torch.tensor([[1], [0]]))
 
 
 def test_native_attention_rejects_pre_post7_sparse_abi(monkeypatch):

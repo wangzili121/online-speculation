@@ -364,7 +364,6 @@ def run_native_layer(
         global_kv=history.long_kv,
         global_indices=selection,
         global_lengths=history.global_lengths,
-        max_swa_history=history.max_swa_history,
         max_global_history=history.max_global_history,
         runtime_cmp_ratio=runtime_cmp_ratio,
     )

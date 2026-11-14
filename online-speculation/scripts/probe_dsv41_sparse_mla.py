@@ -12,7 +12,6 @@ import torch_npu
 
 from blockspec.vllm_ascend.dsv41_attention import PagedRows
 from blockspec.vllm_ascend.dsv41_native_attention import (
-    _merge_fp32,
     _native_sparse_plane,
     temporary_block,
     native_draft_attention,
@@ -146,9 +145,9 @@ def main() -> None:
     )
     expected = _reference(query, ori, ori_indices, cmp, cmp_indices, temporary, sink)
     ori_pages, cmp_pages = _physical_pages(ori, page_size), _physical_pages(cmp, page_size)
-    query_d, ori_indices_d, anchors_d, sink_d, cmp_indices_d, cmp_lengths_d = [
+    query_d, anchors_d, sink_d, cmp_indices_d, cmp_lengths_d = [
         value.to(device)
-        for value in (query, ori_indices, anchors, sink, cmp_indices, cmp_lengths)
+        for value in (query, anchors, sink, cmp_indices, cmp_lengths)
     ]
     ori_pages_d = PagedRows(ori_pages.values.to(device), ori_pages.table.to(device))
     cmp_pages_d = PagedRows(cmp_pages.values.to(device), cmp_pages.table.to(device))
@@ -158,25 +157,13 @@ def main() -> None:
     disabled_sink = torch.full_like(sink_d, -torch.inf)
 
     def history_call():
-        swa = _native_sparse_plane(
-            query_d,
-            ori_pages_d,
-            ori_indices_d,
-            anchors_d,
-            sink_d,
-            maximum_length=int(anchors.max()),
-        )
-        compressed = _native_sparse_plane(
+        return _native_sparse_plane(
             query_d,
             cmp_pages_d,
             cmp_indices_d,
             cmp_lengths_d,
             disabled_sink,
             maximum_length=int(cmp_lengths.max()),
-        )
-        return _merge_fp32(
-            (swa[0].float(), compressed[0].float()),
-            (swa[1].float(), compressed[1].float()),
         )
 
     temporary_d = temporary.to(device)
@@ -188,14 +175,13 @@ def main() -> None:
         return native_draft_attention(
             query_d,
             temporary_d,
-            ori_pages_d,
+            precise_ori,
             anchors_d,
             sink_d,
             window=128,
             global_kv=cmp_pages_d,
             global_indices=cmp_indices_d,
             global_lengths=cmp_lengths_d,
-            max_swa_history=int(anchors.max()),
             max_global_history=int(cmp_lengths.max()),
         )
 
@@ -234,7 +220,7 @@ def main() -> None:
         "max_lse_abs_error": float((actual[1] - expected[1]).abs().max()),
         "precise_max_output_abs_error": float((precise[0] - expected[0]).abs().max()),
         "precise_max_lse_abs_error": float((precise[1] - expected[1]).abs().max()),
-        "history_ms": _elapsed(history_call, args.warmup, args.iterations),
+        "compressed_history_ms": _elapsed(history_call, args.warmup, args.iterations),
         "temporary_block_ms": _elapsed(block_call, args.warmup, args.iterations),
         "full_attention_ms": _elapsed(full_call, args.warmup, args.iterations),
         "precise_attention_ms": _elapsed(precise_call, args.warmup, args.iterations),

@@ -57,17 +57,17 @@ CPU 覆盖 1017 拓扑、BF16/F32 张量校验、C2A 奇偶和跨页读取、C1A
 
 以上用例均通过精度检查。原 C2A 用例 Top-K 与 CPU 完全一致，各用例目标 KV、索引页及页表逐元素保持一致。
 
-SWA 历史和选中的压缩历史分别调用 Ascend `npu_sparse_flash_mla`，临时 K×K 双向块用 FP32 批量矩阵乘法计算，再以 FP32 LSE 精确合并三段。这样每个 draft query 共享同一 anchor 历史边界，压缩 Top-K 仍可逐 query 不同，sink 只计一次，目标缓存始终只读。目标模型将 SWA 和压缩历史合在一次因果调用里的接口无法表达这组 Orthrus 语义，因此这里需要分段。 [原生实现](../src/blockspec/vllm_ascend/dsv41_native_attention.py)
+SWA 历史与临时 K×K 双向块一起用 FP32 批量矩阵乘法计算，选中的压缩历史调用 Ascend `npu_sparse_flash_mla`，两段以 FP32 LSE 合并。短于 draft 块的压缩历史走小规模 FP32 计算。混合长短请求时，融合算子的长度下限与实际可见行数分别传入，可见范围仍由显式索引和有效行数决定。这样每个 draft query 共享同一 anchor 历史边界，压缩 Top-K 仍可逐 query 不同，sink 只计一次，目标缓存始终只读。这组可见范围同时包括固定的真实前缀与双向临时块。 [原生实现](../src/blockspec/vllm_ascend/dsv41_native_attention.py)
 
 在 `nightly-releases-v0.32.0rc`、`torch_npu 2.10.0.post7` 和 Ascend 910B3 上，K32、TP8 单 rank 维度、SWA 128、Top-K 512、anchor 为 0/1023/2047 的用例如下。目标页和页表逐元素保持一致。表中计时仅覆盖算子。 [原始全融合记录](validation/dsv41/native-draft-attention-910b3.json)
 
 | Attention 路径 | 输出最大绝对误差 | LSE 最大绝对误差 | 耗时 |
 |---|---:|---:|---:|
-| 历史融合，块内 FP32（32 条有效检索历史） | 1.68e-3 | 9.54e-7 | 2.76 ms |
-| 历史融合，块内 FP32（512 条有效检索历史） | 9.57e-4 | 9.54e-7 | 2.83 ms |
-| 全 FP32 对照（512 条有效检索历史） | 1.55e-6 | 9.54e-7 | 5.23 ms |
+| SWA 与临时块 FP32，压缩历史融合（32 条有效检索历史） | 1.18e-3 | 9.54e-7 | 3.46 ms |
+| SWA 与临时块 FP32，压缩历史融合（512 条有效检索历史） | 9.10e-4 | 9.54e-7 | 3.68 ms |
+| 全 FP32 对照（512 条有效检索历史） | 1.55e-6 | 9.54e-7 | 4.99 ms |
 
-切换前，全 BF16 融合路径在 32 和 512 条有效历史的用例分别有 13 和 12 个值超出逐元素门限（`atol=0.001, rtol=2.01/128`）。只把块内计算改成 FP32 后，两组共 786,432 个输出元素全部通过，且 LSE 保持在 `1e-6` 内。512 条历史的同卡单独对照中，块内耗时由约 0.16 ms 增至 0.24 ms。真实请求上的 logits、greedy 及 cache 验收仍待八卡测试。
+切换前，全 BF16 融合路径在 32 和 512 条有效历史的用例分别有 13 和 12 个值超出逐元素门限（`atol=0.001, rtol=2.01/128`）。当前两组共 786,432 个输出元素全部通过，LSE 误差保持在 `1e-6` 内。独立短历史测试还发现，原生融合算子在 KV 长度小于 K32 时可能产生 NaN 或错误 LSE。调整后，在空、短和跨页历史用例中对照 FP32 结果，同时对目标缓存和页表做逐元素核对。混合批次包含 0、1、2、31、32、127、513-token 前缀和打乱的物理页，SWA、C1A、C2A 各有 917,504 个输出元素，三组均通过同一逐元素门限，最大绝对误差分别为 `1.67e-6`、`2.88e-3`、`2.79e-3`。真实请求上的 logits、greedy 及 cache 验收仍待八卡测试。
 
 Attention 后的 grouped low-rank O projection 也在同一设备栈上单独复验。算子使用主模型相同的 `npu_transpose_batchmatmul` 和 `[group, group_width, o_lora_rank]` 权重布局。覆盖 1、2、8 个本地 group 以及 32、64、96 个 token；相对 CPU FP32 公式的最大绝对误差不超过 `0.00406`，P99 不超过 `0.00196`，均通过 BF16 门限。 [验证记录](validation/dsv41/grouped-output-projection-910b3.json)
 
