@@ -82,6 +82,7 @@ def run_model(args, mode, head, deadline, *, online=False):
         "PORT": str(args.port),
         "LOCAL_IP": args.local_ip,
         "NIC_NAME": args.nic,
+        "ORTHRUS_DSV41_AUDIT_CACHE": "1" if mode == "orthrus" else "0",
         "ORTHRUS_DSV41_ONLINE_STRIDE": "1" if online else "0",
     }
     print(f"starting {name}", flush=True)

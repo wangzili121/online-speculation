@@ -95,6 +95,7 @@ docker_exec=(
   -e LOCAL_IP="$LOCAL_IP"
   -e NIC_NAME="$NIC_NAME"
   -e ORTHRUS_DSV41_ONLINE_STRIDE="${ORTHRUS_DSV41_ONLINE_STRIDE:-0}"
+  -e ORTHRUS_DSV41_AUDIT_CACHE="${ORTHRUS_DSV41_AUDIT_CACHE:-0}"
   -e REQUIRE_TRAINED_HEAD="${REQUIRE_TRAINED_HEAD:-0}"
   "$CONTAINER" bash -lc "mkdir -p \"$(dirname "$service_log")\"; exec bash scripts/serve_dsv41_single_a2.sh >\"$service_log\" 2>&1"
 )

@@ -128,4 +128,4 @@ MODE=orthrus HEAD_HOST=/data/disk/wangzili/models/orthrus-dsv41-head-v1 \
 
 CPU 单测验证了可微重放、目标历史不变及更新后 loss 下降。使用真实 1017 第 39 层、真实 LM head、合成边界和教师 logits，也已完成两步更新，观测到有限非零梯度及 Q 投影参数变化。真实权重探针只验证梯度和更新链路。
 
-`scripts/watch_dsv41_single_a2.py --online` 会在下载完整、固定镜像可用且本机八卡空闲后，依次执行 target-only、Orthrus greedy 对照和在线更新 smoke。每一步结束后停止本次测试创建的容器。
+`scripts/watch_dsv41_single_a2.py --online` 会在下载完整、固定镜像可用且本机八卡空闲后，依次执行 target-only、Orthrus greedy 对照和在线更新 smoke。Orthrus 验收检查 verifier 实际收到候选，并抽样检查 draft 前后目标缓存和页表一致。每一步结束后停止本次测试创建的容器。

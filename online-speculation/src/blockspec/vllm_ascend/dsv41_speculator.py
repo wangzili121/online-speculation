@@ -27,6 +27,7 @@ from vllm_ascend.worker.v2.spec_decode.pcp_utils import disable_profiling_chunk_
 
 from .dsv41_contract import BLOCK_SIZE
 from .dsv41_runtime import compose_draft_lookback
+from .dsv4_hybrid import assert_cache_unchanged, cache_checksum
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         if self.sample_from_anchor:
             raise ValueError("Orthrus V4.1 requires DFlash's K-1 destination positions")
         self.requires_non_causal = True
+        self.audit_cache = os.environ.get("ORTHRUS_DSV41_AUDIT_CACHE") == "1"
         self.online_stride = int(os.environ.get("ORTHRUS_DSV41_ONLINE_STRIDE", "0"))
         self.online_pending = None
         self.online_round = 0
@@ -249,6 +251,21 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         )
         self.draft_tokens[:num_reqs] = sampled.view(num_reqs, self.num_speculative_steps)
 
+    def _cache_snapshots(self):
+        seen = set()
+        pending = [
+            (name, getattr(module, "kv_cache", ()))
+            for name, module in self.model.model._target().named_modules()
+        ]
+        pending.append(("page_tables", self.block_tables.input_block_tables))
+        while pending:
+            name, value = pending.pop()
+            if isinstance(value, (list, tuple)):
+                pending.extend((f"{name}[{i}]", entry) for i, entry in enumerate(value))
+            elif torch.is_tensor(value) and value.numel() and value.data_ptr() not in seen:
+                seen.add(value.data_ptr())
+                yield name, value, cache_checksum(value)
+
     def _build_attn_metadata(
         self,
         num_reqs: int,
@@ -346,6 +363,9 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         inner.capture_last_layer = capture
         inner.last_layer_snapshot = None
         try:
+            snapshots = list(self._cache_snapshots()) if self.audit_cache and not dummy_run else []
+            if self.audit_cache and not dummy_run and not snapshots:
+                raise RuntimeError("cache audit found no target cache tensors")
             result = super().propose(
                 input_batch,
                 attn_metadata,
@@ -365,6 +385,8 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
                 is_profile=is_profile,
                 num_speculative_tokens=num_speculative_tokens,
             )
+            for name, cache, before in snapshots:
+                assert_cache_unchanged(before, cache, name)
             if capture and inner.last_layer_snapshot is not None:
                 anchor = int(self.input_buffers.positions[0])
                 self.online_pending = (input_batch.req_ids[0], anchor, result[0].clone(), inner.last_layer_snapshot)
