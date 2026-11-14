@@ -64,7 +64,8 @@ def draft_token_count(metrics):
     return sum(map(float, rows))
 
 
-def run_model(args, mode, head, deadline, *, online=False):
+def run_model(args, mode, head, deadline, *, online_baseline=None):
+    online = online_baseline is not None
     wait_for_idle(args.npu_smi, deadline)
     check_port_available(args.port)
     name = f"wangzili-dsv41-{mode}-{os.getpid()}" + ("-online" if online else "")
@@ -113,7 +114,7 @@ def run_model(args, mode, head, deadline, *, online=False):
             "List the first ten positive integers, separated by commas.",
             "Read this context and answer with one sentence. " + "The sky is blue. " * 80 + "What color is the sky?",
         )
-        for prompt in prompts[:1] if online else prompts:
+        for prompt in prompts:
             body = json.dumps({
                 "model": f"dsv41-{mode}-single-a2", "prompt": prompt, "max_tokens": 12 if online else 40,
                 "temperature": 0, "return_token_ids": True,
@@ -125,8 +126,12 @@ def run_model(args, mode, head, deadline, *, online=False):
             if not ids:
                 raise RuntimeError("completion returned no token IDs")
             outputs.append(ids)
-        if online and not any(MARKER in line and "published" in line for line in log.read_text().splitlines()):
-            raise RuntimeError(f"no completed online publication recorded in {log}")
+            if online and len(outputs) == 1 and not any(
+                MARKER in line and "published" in line for line in log.read_text().splitlines()
+            ):
+                raise RuntimeError(f"no completed online publication recorded in {log}")
+        if online and outputs != [ids[:12] for ids in online_baseline]:
+            raise RuntimeError(f"online greedy token IDs differ from the target: {outputs}")
         if mode == "orthrus":
             for _ in range(10):
                 with urlopen(api + "/metrics", timeout=10) as response:
@@ -189,8 +194,8 @@ def main():
             raise RuntimeError(f"greedy token IDs differ: target={baseline}, Orthrus={orth}")
         print(json.dumps({"greedy_exact": True, "token_ids": orth}), flush=True)
         if args.online:
-            run_model(args, "orthrus", head, deadline, online=True)
-            print("online update published and the request completed", flush=True)
+            run_model(args, "orthrus", head, deadline, online_baseline=baseline)
+            print("online update published and the following greedy request matched the target", flush=True)
 
 
 if __name__ == "__main__":
