@@ -83,10 +83,10 @@ PYTHONPATH=src python scripts/smoke_dsv41_oproj_npu.py --device npu:0
 
 目标 index cache 已按 C2A 或 C1A 的粒度写好。Draft 调用 QLI 时直接传入可读行数 `floor(anchor / ratio)`，在这段截断后的前缀内让全部 K 行检索。调用中的 `cmp_ratio=1` 表示坐标已经是压缩行号。C1A 候选池由 Full 层返回并传给 Reindex，输出会校验候选成员资格并去重。实测当候选行少于 Top-K 时，原生算子可能返回额外的行 0。
 
-在 `nightly-releases-v0.32.0rc` 的 Ascend 910B3 上，K32 的 C2A 和 C1A 各验证 96 个查询，另核对 64 组 C1A 候选池。覆盖空历史、奇偶压缩边界、乱序物理页、候选截断与不满 Top-K 的末块。目标 INT8 key、scale 和页表逐元素一致。C1A 样例用 Top-K 512 和 64 个候选块，部署配置的 2048 个候选块及长历史还需验收。 [检索实现](../src/blockspec/vllm_ascend/dsv41_native_index.py)
+在 `nightly-releases-v0.32.0rc` 的 Ascend 910B3 上，K32 的 C2A 和 C1A 各验证 96 个查询，另核对 64 组 C1A 候选池。覆盖空历史、奇偶压缩边界、乱序物理页、候选截断与不满 Top-K 的末块。目标 INT8 key、scale 和页表逐元素一致。C1A 用 Top-K 512 复验了 64 和 2048 块候选池。2048 块用例覆盖 16,407/16,413 token 历史的候选截断和 Reindex，所有逻辑索引与参考一致。 [检索实现](../src/blockspec/vllm_ascend/dsv41_native_index.py)
 
 ```bash
-PYTHONPATH=src python scripts/smoke_dsv41_native_index.py
+PYTHONPATH=src python scripts/smoke_dsv41_native_index.py --candidate-blocks 2048
 ```
 
 ## 原生缓存与引擎接入
