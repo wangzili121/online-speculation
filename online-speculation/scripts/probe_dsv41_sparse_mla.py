@@ -83,6 +83,48 @@ def _error_profile(actual: torch.Tensor, expected: torch.Tensor) -> dict:
     }
 
 
+def check_mixed_history(device: torch.device) -> dict:
+    """Exercise Q>KV, empty planes and shuffled pages in the same K32 batch."""
+    from blockspec.vllm_ascend.dsv41_attention import draft_attention
+
+    generator = torch.Generator().manual_seed(41017)
+    anchors = torch.tensor([0, 1, 2, 31, 32, 127, 513], dtype=torch.int32)
+    batch, block, heads, dim = anchors.numel(), 32, 8, 512
+    rows = torch.randn(batch * 5, 128, dim, generator=generator).bfloat16()
+    table = torch.randperm(batch * 5, generator=torch.Generator().manual_seed(8)).int().view(batch, 5)
+    cache = PagedRows(rows, table)
+    cache_d = PagedRows(rows.to(device), table.to(device))
+    query = torch.randn(batch, block, heads, dim, generator=generator).bfloat16()
+    temporary = torch.randn(batch, block, dim, generator=generator).bfloat16()
+    sink = torch.linspace(-4, 4, heads)
+    query_d, temporary_d, anchors_d, sink_d = [x.to(device) for x in (query, temporary, anchors, sink)]
+    results = {}
+    for ratio in (0, 1, 2):
+        indices = lengths = None
+        if ratio:
+            lengths = anchors // ratio
+            offsets = torch.arange(512).view(1, 1, -1).expand(batch, block, -1)
+            indices = offsets.masked_fill(offsets >= lengths[:, None, None], -1)
+        expected = draft_attention(
+            query, temporary, cache, anchors, sink, window=128,
+            global_kv=cache if ratio else None, global_indices=indices,
+        )
+        output, lse = native_draft_attention(
+            query_d, temporary_d, cache_d, anchors_d, sink_d, window=128,
+            global_kv=cache_d if ratio else None,
+            global_indices=indices.to(device) if ratio else None,
+            global_lengths=lengths.to(device) if ratio else None,
+            max_global_history=int(lengths.max()) if ratio else None,
+        )
+        output, lse = output.cpu(), lse.cpu()
+        torch.testing.assert_close(output, expected[0], atol=1e-3, rtol=2.01 / 128)
+        torch.testing.assert_close(lse, expected[1], atol=1e-5, rtol=1.3e-6)
+        results[ratio] = _error_profile(output, expected[0])
+    torch.testing.assert_close(cache_d.values.cpu(), rows, atol=0, rtol=0)
+    torch.testing.assert_close(cache_d.table.cpu(), table, atol=0, rtol=0)
+    return {"anchors": anchors.tolist(), "ratios": results, "target_cache_unchanged": True}
+
+
 def _elapsed(call, warmup: int, iterations: int) -> float:
     for _ in range(warmup):
         call()
@@ -102,6 +144,7 @@ def main() -> None:
     parser.add_argument("--head-dim", type=int, default=512)
     parser.add_argument("--topk", type=int, default=512)
     parser.add_argument("--valid-topk", type=int, help="maximum number of valid sparse rows per query")
+    parser.add_argument("--mixed-history", action="store_true", help="check empty, short and cross-page history")
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--iterations", type=int, default=10)
     args = parser.parse_args()
@@ -115,6 +158,9 @@ def main() -> None:
     device = torch.device(args.device)
     torch.npu.set_device(device)
     torch.npu.matmul.allow_hf32 = False
+    if args.mixed_history:
+        print(json.dumps(check_mixed_history(device), indent=2))
+        return
     generator = torch.Generator().manual_seed(41017)
     batch, block, heads, dim = 3, args.block, args.heads, args.head_dim
     page_size, cache_width = 64, 2048

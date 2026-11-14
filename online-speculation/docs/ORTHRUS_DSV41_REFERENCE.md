@@ -67,14 +67,15 @@ SWA 历史与临时 K×K 双向块一起用 FP32 批量矩阵乘法计算，选�
 | SWA 与临时块 FP32，压缩历史融合（512 条有效检索历史） | 9.10e-4 | 9.54e-7 | 3.68 ms |
 | 全 FP32 对照（512 条有效检索历史） | 1.55e-6 | 9.54e-7 | 4.99 ms |
 
-切换前，全 BF16 融合路径在 32 和 512 条有效历史的用例分别有 13 和 12 个值超出逐元素门限（`atol=0.001, rtol=2.01/128`）。当前两组共 786,432 个输出元素全部通过，LSE 误差保持在 `1e-6` 内。独立短历史测试还发现，原生融合算子在 KV 长度小于 K32 时可能产生 NaN 或错误 LSE。调整后，在空、短和跨页历史用例中对照 FP32 结果，同时对目标缓存和页表做逐元素核对。混合批次包含 0、1、2、31、32、127、513-token 前缀和打乱的物理页，SWA、C1A、C2A 各有 917,504 个输出元素，三组均通过同一逐元素门限，最大绝对误差分别为 `1.67e-6`、`2.88e-3`、`2.79e-3`。真实请求上的 logits、greedy 及 cache 验收仍待八卡测试。
+切换前，全 BF16 融合路径在 32 和 512 条有效历史的用例分别有 13 和 12 个值超出逐元素门限（`atol=0.001, rtol=2.01/128`）。当前两组共 786,432 个输出元素全部通过，LSE 误差保持在 `1e-6` 内。独立短历史测试还发现，原生融合算子在 KV 长度小于 K32 时可能产生 NaN 或错误 LSE。调整后，在空、短和跨页历史用例中对照 FP32 结果，同时对目标缓存和页表做逐元素核对。混合批次包含 0、1、2、31、32、127、513-token 前缀和打乱的物理页，SWA、C1A、C2A 各有 917,504 个输出元素，三组均通过同一逐元素门限，最大绝对误差分别为 `1.28e-6`、`1.98e-3`、`1.60e-3`。真实请求上的 logits、greedy 及 cache 验收仍待八卡测试。
 
 Attention 后的 grouped low-rank O projection 也在同一设备栈上单独复验。算子使用主模型相同的 `npu_transpose_batchmatmul` 和 `[group, group_width, o_lora_rank]` 权重布局。覆盖 1、2、8 个本地 group 以及 32、64、96 个 token；相对 CPU FP32 公式的最大绝对误差不超过 `0.00406`，P99 不超过 `0.00196`，均通过 BF16 门限。 [验证记录](validation/dsv41/grouped-output-projection-910b3.json)
 
 ```bash
 PYTHONPATH=src python scripts/smoke_dsv41_orthrus_npu.py \
   --config "$MODEL/config.json" --compare-fia
-PYTHONPATH=src python scripts/probe_dsv41_sparse_mla.py
+PYTHONPATH=src python scripts/probe_dsv41_sparse_mla.py --valid-topk 512
+PYTHONPATH=src python scripts/probe_dsv41_sparse_mla.py --mixed-history
 PYTHONPATH=src python scripts/smoke_dsv41_oproj_npu.py --device npu:0
 ```
 
@@ -98,7 +99,7 @@ MRV2 接入以插件形式注册 `OrthrusDSV41DraftModel`，并为该架构选�
 
 执行路径直接复用 MRV2 已在 CPU 侧计算好的 `max_seq_len`，并按压缩比例得到全局历史上界。这样 Attention 和 QLI 不再逐层对 NPU 长度张量调用 `.item()`；一次 40 层起草最多避免 40 次 Attention 和 8 次 indexer 的设备到主机同步。显式长度路径已在 910B3 上复验 C2A、C1A Full/Reindex 和目标页只读性。
 
-40 层原生 Attention/indexer 状态链也已在 910B3 上连续执行两轮。用例覆盖 2 个 SWA、4 个 Full、30 个 Reuse、4 个 Reindex 和全部 8 个 indexer source，并同时放入空历史与 544-token 历史请求。C1A 候选池在 Full/Reindex/Reuse 间完整传递，执行前后所有目标 SWA、压缩 KV、INT8 index key、scale 和页表逐元素不变。第二轮同进程稳态耗时为 618.31 ms；该数值只包含合成 Attention/indexer 链，不包含投影、共享主干、调度和 verifier，不能代替整机吞吐。 [验证记录](validation/dsv41/runtime-chain-910b3.json)
+40 层原生 Attention/indexer 状态链也已在 910B3 上连续执行两轮。用例覆盖 2 个 SWA、4 个 Full、30 个 Reuse、4 个 Reindex 和全部 8 个 indexer source，并同时放入空历史与 544-token 历史请求。C1A 候选池在 Full/Reindex/Reuse 间完整传递，执行前后所有目标 SWA、压缩 KV、INT8 index key、scale 和页表逐元素不变。当前实现的第二轮同进程稳态耗时为 673.19 ms；该数值只包含合成 Attention/indexer 链，不包含投影、共享主干、调度和 verifier，不能代替整机吞吐。 [验证记录](validation/dsv41/runtime-chain-910b3.json)
 
 ```bash
 PYTHONPATH=src python scripts/smoke_dsv41_runtime_chain.py \
@@ -154,6 +155,6 @@ MODE=orthrus HEAD_HOST=/data/disk/wangzili/models/orthrus-dsv41-head-v1 \
 
 当前使用 rank 0 的 CPU 参考反传。最后一层冻结的 W4A8/INT8 MoE 逐专家反量化成 FP32，训练完成后将 BF16 head 和 FP32 sink 发布到各 TP rank。运行中的主模型仍使用原生 W4A8 前向。CPU 参考与 NPU 量化前向存在计算精度差异，单机真实服务的反馈对齐、权重发布及更新后请求仍需八卡验收。此入口用于验证功能，更新与请求同步。
 
-CPU 单测验证了可微重放、目标历史不变及更新后 loss 下降。使用真实 1017 第 39 层和 LM head，配合合成边界与教师 logits，连续两步更新的 TV 为 0.84515、0.78542，Q 投影参数发生变化。这个用例验证梯度和权重更新，线上续训效果需用真实请求确认。61 上的固定镜像已通过 MRV2 Orthrus 配置检查及单卡 K32 Attention 复验，融合输出对 FP32 的最大绝对误差为 0.00442，目标缓存逐元素一致。
+CPU 单测验证了可微重放、目标历史不变及更新后 loss 下降。使用真实 1017 第 39 层和 LM head，配合合成边界与教师 logits，连续两步更新的 TV 为 0.84515、0.78542，Q 投影参数发生变化。这个用例验证梯度和权重更新，线上续训效果需用真实请求确认。61 上的固定镜像已通过 MRV2 Orthrus 配置检查。最新 K32 Attention 和目标缓存复验结果见上表。
 
-`scripts/watch_dsv41_single_a2.py --online` 会在下载完整、固定镜像可用且本机八卡空闲后，依次执行 target-only、Orthrus greedy 对照和在线更新 smoke。Orthrus 验收检查 verifier 实际收到候选，并抽样检查 draft 前后目标缓存和页表一致。每一步结束后停止本次测试创建的容器。
+`scripts/watch_dsv41_single_a2.py --online --offline-handoff` 会在下载完整、固定镜像可用且本机八卡空闲后，依次执行 target-only、Orthrus greedy 对照、离线 head 更新并重载，以及在线发布 smoke。Orthrus 验收检查 verifier 实际收到候选，并抽样检查 draft 前后目标缓存和页表一致。每一步结束后停止本次测试创建的容器。
