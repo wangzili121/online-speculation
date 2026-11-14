@@ -39,7 +39,7 @@ PYTHONPATH=src python scripts/train_dsv41_last_layer_smoke.py \
   --model "$MODEL" --head "$INITIAL_HEAD" --feedback "$FEEDBACK" --output "$UPDATED_HEAD"
 ```
 
-在 910B3 上使用实际 1017 W4A8 末层和 40 层初始化 head，配合合成历史和教师 logits，单步 KL 由 6.0493 降至 5.8103，导出的 8 个末层张量中 7 个发生变化。vLLM safetensors loader 在单卡和 TP2 均加载完整 40 个分片、336 个张量，各 rank 的末层 sink 与导出文件对应分片逐元素一致。此用例未加载主模型服务。真实请求的训练与推理 logits 对齐、greedy 及 cache 复验由八卡脚本完成。
+在 910B3 上使用实际 1017 W4A8 末层和 40 层初始化 head，配合合成历史和教师 logits，单步 KL 由 6.0493 降至 5.8103，导出的 8 个末层张量中 7 个发生变化。按部署精度重读权重后，KL 为 5.8396，前 39 层分片的 SHA256 全部一致。vLLM safetensors loader 在单卡和 TP2 均加载完整 40 个分片、336 个张量，各 rank 的末层 sink 与导出文件对应分片逐元素一致。此用例未加载主模型服务。真实请求的训练与推理 logits 对齐、greedy 及 cache 复验由八卡脚本完成。
 
 ## 验证结果
 
