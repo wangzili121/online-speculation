@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 
+import pytest
+from safetensors.torch import save_file
+
 import torch
 import torch.nn.functional as F
 
@@ -8,11 +11,14 @@ from blockspec.vllm_ascend.dsv41_last_layer import (
     LastLayerReplay,
     W4A8LastLayerWeights,
     last_layer_loss,
+    load_feedback,
+    save_feedback,
     replay_logits,
 )
+from blockspec.vllm_ascend.head_contract import sha256_file, write_json
 
 
-def test_last_layer_replays_reached_rows_and_leaves_shared_tensors_frozen():
+def test_last_layer_replays_reached_rows_and_leaves_shared_tensors_frozen(tmp_path):
     torch.manual_seed(17)
     width, hidden, dim = 32, 6, 4
     x = torch.randn(width, hidden)
@@ -59,15 +65,40 @@ def test_last_layer_replays_reached_rows_and_leaves_shared_tensors_frozen():
     got = replay_logits(snapshot, head, tail, lambda v: F.linear(v, experts), reached=2, **options)
     torch.testing.assert_close(got, all_rows[:2])
     teacher = torch.randn(4, 11, requires_grad=True)
+    base, artifact = tmp_path / "base", tmp_path / "head"
+    base.mkdir()
+    artifact.mkdir()
+    write_json(base / "config.json", {"model": "fixture"})
+    write_json(artifact / "manifest.json", {
+        "base_config_sha256": sha256_file(base / "config.json"),
+    })
+    index_file = artifact / "model.safetensors.index.json"
+    write_json(index_file, {"weight_map": {"layers.39.attn.wkv.weight": "layer39.safetensors"}})
+    shard = artifact / "layer39.safetensors"
+    save_file({"layers.39.attn.wkv.weight": head["wkv.weight"].detach()}, shard)
+    feedback_file = tmp_path / "feedback.pt"
+    save_feedback(
+        feedback_file, snapshot, teacher, all_rows, anchor=6, proposal=torch.arange(31),
+        scheduled=3, sampled=2, model=base, head=artifact,
+    )
+    restored, feedback = load_feedback(feedback_file, base, artifact)
+    torch.testing.assert_close(restored.attention_input, snapshot.attention_input)
+    torch.testing.assert_close(restored.global_kv.values, snapshot.global_kv.values)
+    torch.testing.assert_close(feedback["draft"], got)
+    torch.testing.assert_close(feedback["teacher"], teacher.detach())
+    assert not feedback["teacher"].requires_grad
+    save_file({"layers.39.attn.wkv.weight": torch.zeros_like(head["wkv.weight"])}, shard)
+    with pytest.raises(ValueError, match="does not match"):
+        load_feedback(feedback_file, base, artifact)
     parameters_before = {name: p.detach().clone() for name, p in head.items()}
     optimizer = torch.optim.SGD(head.values(), lr=0.05)
-    loss = last_layer_loss(got, teacher, 3, 2)
+    loss = last_layer_loss(got, teacher, 3, 2, kind="forward_kl")
     loss.backward()
     assert teacher.grad is None
     assert all(p.grad is not None and p.grad.isfinite().all() and p.grad.abs().sum() > 0 for p in head.values())
     optimizer.step()
     next_logits = replay_logits(snapshot, head, tail, lambda v: F.linear(v, experts), reached=2, **options)
-    assert last_layer_loss(next_logits, teacher, 3, 2) < loss
+    assert last_layer_loss(next_logits, teacher, 3, 2, kind="forward_kl") < loss
     assert all(not torch.equal(p, parameters_before[name]) for name, p in head.items())
     torch.testing.assert_close(swa.values, saved_swa)
     torch.testing.assert_close(long.values, saved_long)

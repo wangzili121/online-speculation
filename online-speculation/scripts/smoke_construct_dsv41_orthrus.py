@@ -20,7 +20,10 @@ def main() -> int:
         action="store_true",
         help="stream all checkpoint-format tensors through the TP loader",
     )
+    parser.add_argument("--load-head", action="store_true", help="load the actual safetensors instead of a dummy head")
     args = parser.parse_args()
+    if args.load_head and args.exercise_loader:
+        parser.error("--load-head and --exercise-loader are mutually exclusive")
 
     rank = int(os.environ.get("RANK", "0"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
@@ -35,7 +38,7 @@ def main() -> int:
     os.environ.setdefault("MASTER_PORT", str(args.master_port))
 
     import torch
-    from vllm.config import set_current_vllm_config
+    from vllm.config import LoadConfig, set_current_vllm_config
     from vllm.distributed import (
         ensure_model_parallel_initialized,
         init_distributed_environment,
@@ -87,7 +90,7 @@ def main() -> int:
         model = get_model(
             vllm_config=vllm_config,
             model_config=speculative.draft_model_config,
-            load_config=vllm_config.load_config,
+            load_config=LoadConfig(load_format="safetensors") if args.load_head else vllm_config.load_config,
         )
 
     target_config = read_json(Path(args.model) / "config.json")
@@ -134,7 +137,7 @@ def main() -> int:
     # materializing the roughly 10 GiB exchange artifact in host memory.
     loaded = None
     loader_content_checks = None
-    if tp == 1 or args.exercise_loader:
+    if not args.load_head and (tp == 1 or args.exercise_loader):
         signatures = {
             "layers.0.attn.attn_sink": 0,
             "layers.0.attn.wq_b.weight": 0,
@@ -207,6 +210,18 @@ def main() -> int:
             raise RuntimeError(f"TP loader content mismatch on rank {rank}: {failed}")
         loader_content_checks = len(probes)
 
+    if args.load_head:
+        from safetensors import safe_open
+        from blockspec.vllm_ascend.head_contract import find_weight_index
+
+        path = Path(args.head)
+        mapping = read_json(find_weight_index(path))["weight_map"]
+        name = f"layers.{len(model.model.layers) - 1}.attn.attn_sink"
+        value = parameters[name]
+        with safe_open(path / mapping[name], framework="pt", device="cpu") as shard:
+            expected_sink = shard.get_tensor(name).chunk(tp)[rank]
+        torch.testing.assert_close(value.detach().cpu(), expected_sink, atol=0, rtol=0)
+
     parameter_bytes = sum(parameter.numel() * parameter.element_size() for parameter in model.parameters())
     total_parameter_bytes = torch.tensor(parameter_bytes, dtype=torch.int64, device=f"npu:{local_rank}")
     if world_size > 1:
@@ -223,6 +238,7 @@ def main() -> int:
                     "sum_parameter_bytes_across_ranks": int(total_parameter_bytes.item()),
                     "tensor_parallel_size": tp,
                     "contract_tensors": len(expected),
+                    "loaded_head_from_safetensors": args.load_head,
                     "loader_roundtrip_tensors": len(loaded) if loaded is not None else None,
                     "loader_content_checks_per_rank": loader_content_checks,
                     "wo_a_layout": list(first.wo_a.weight.shape),

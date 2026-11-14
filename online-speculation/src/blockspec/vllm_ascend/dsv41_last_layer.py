@@ -1,9 +1,11 @@
 """Differentiable reference for one V4.1 C1A Reuse suffix."""
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
+import hashlib
 from functools import partial
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 import torch
 from torch.nn import functional as F
@@ -13,7 +15,7 @@ from .dsv41_attention import PagedRows
 from .dsv41_contract import BLOCK_SIZE, V41Topology, text_config
 from .dsv4_hybrid import tail_logical_indices
 from .dsv41_precise_attention import precise_draft_attention
-from .head_contract import find_weight_index, read_json
+from .head_contract import find_weight_index, read_json, sha256_file
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,65 @@ class LastLayerReplay:
             swa, PagedRows(values, torch.zeros((1, 1), dtype=torch.long)),
             on_host(selected_rows), torch.tensor([local_length]), window,
         )
+
+
+def head_fingerprint(head):
+    index = find_weight_index(Path(head))
+    shards = sorted(set(read_json(index)["weight_map"].values()))
+    return hashlib.sha256(
+        "".join(sha256_file(path) for path in [index, *(index.parent / shard for shard in shards)]).encode()
+    ).hexdigest()
+
+
+def save_feedback(path, replay, teacher, draft, *, anchor, proposal, scheduled, sampled, model, head):
+    """Store one aligned verifier round and the inputs to the final draft layer."""
+    reached = min(scheduled, sampled)
+    if (
+        not 1 <= reached <= scheduled < BLOCK_SIZE
+        or anchor < 0
+        or proposal.numel() != BLOCK_SIZE - 1
+        or teacher.ndim != 2 or teacher.shape[0] != scheduled + 1
+        or draft.shape != (BLOCK_SIZE - 1, teacher.shape[1])
+    ):
+        raise ValueError("invalid V4.1 training feedback alignment")
+    manifest = read_json(Path(head) / "manifest.json")
+    if manifest["base_config_sha256"] != sha256_file(Path(model) / "config.json"):
+        raise ValueError("feedback head does not match the target")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(dir=path.parent, delete=False) as temporary:
+        try:
+            torch.save({
+                "format": "orthrus-dsv41-last-layer-feedback-v1",
+                "model_manifest": manifest,
+                "head_fingerprint": head_fingerprint(head),
+                "anchor": anchor,
+                "proposal": proposal.detach().cpu(),
+                "scheduled": scheduled,
+                "sampled": sampled,
+                "teacher": teacher.detach().cpu(),
+                "draft": draft[:reached].detach().cpu(),
+                "replay": asdict(replay),
+            }, temporary)
+            temporary.flush()
+            Path(temporary.name).replace(path)
+        finally:
+            Path(temporary.name).unlink(missing_ok=True)
+
+
+def load_feedback(path, model, head):
+    data = torch.load(path, map_location="cpu", weights_only=True)
+    if (
+        data["format"] != "orthrus-dsv41-last-layer-feedback-v1"
+        or data["model_manifest"] != read_json(Path(head) / "manifest.json")
+        or data["model_manifest"]["base_config_sha256"] != sha256_file(Path(model) / "config.json")
+        or data["head_fingerprint"] != head_fingerprint(head)
+    ):
+        raise ValueError("feedback does not match the input model and head")
+    fields = data["replay"]
+    replay = LastLayerReplay(**(fields | {
+        key: PagedRows(**fields[key]) for key in ("swa", "global_kv")
+    }))
+    return replay, data
 
 
 def rms_norm(value, weight, eps):
@@ -146,12 +207,12 @@ def replay_logits(
     return lm_head(rms_norm(output, tail["final_norm"], eps))
 
 
-def last_layer_loss(student_logits, verifier_logits, scheduled_drafts, num_sampled):
+def last_layer_loss(student_logits, verifier_logits, scheduled_drafts, num_sampled, *, kind="tv"):
     """The last sampled row is the correction, or the bonus after full acceptance."""
     reached = min(scheduled_drafts, num_sampled)
     if reached < 1 or student_logits.shape[0] != reached or verifier_logits.shape[0] != scheduled_drafts + 1:
         raise ValueError("student and verifier must agree on the reached proposal rows")
-    return divergence(student_logits, verifier_logits[:reached], "tv").mean()
+    return divergence(student_logits, verifier_logits[:reached], kind).mean()
 
 
 class FrozenExpert(torch.autograd.Function):
@@ -285,7 +346,24 @@ class LastLayerLearner:
 
     @torch.inference_mode(False)
     @torch.enable_grad()
-    def update(self, replay, teacher, scheduled, sampled):
+    def update(self, replay, teacher, scheduled, sampled, *, kind="tv"):
+        loss = self.loss(replay, teacher, scheduled, sampled, kind=kind)
+        self.optimizer.zero_grad(set_to_none=True)
+        if not torch.isfinite(loss):
+            raise FloatingPointError("nonfinite V4.1 draft loss")
+        loss.backward()
+        norm = torch.nn.utils.clip_grad_norm_(self.master.values(), 1., error_if_nonfinite=True)
+        self.optimizer.step()
+        if any(not value.isfinite().all() or not value.bfloat16().isfinite().all() for value in self.master.values()):
+            raise FloatingPointError("nonfinite V4.1 draft parameters after update")
+        self.version += 1
+        return float(loss.detach()), float(norm), self.version
+
+    def loss(self, replay, teacher, scheduled, sampled, *, kind="tv"):
+        logits = self.logits(replay, reached=min(scheduled, sampled))
+        return last_layer_loss(logits, teacher.float(), scheduled, sampled, kind=kind)
+
+    def logits(self, replay, *, reached):
         if self.version == 0:
             # Bound host work during the synchronous reference update. This
             # worker runs inference on NPU and only rank 0 runs the learner.
@@ -295,21 +373,10 @@ class LastLayerLearner:
         weights["wo_a.weight"] = weights["wo_a.weight"].reshape(
             self.base.config["o_groups"], self.base.config["o_lora_rank"], -1,
         ).transpose(1, 2)
-        self.optimizer.zero_grad(set_to_none=True)
         config = self.base.config
-        logits = replay_logits(
+        return replay_logits(
             replay, weights, self.tail, self.base.moe,
             eps=config["rms_norm_eps"], hc_eps=config["hc_eps"], iterations=config["hc_sinkhorn_iters"],
             lm_head=partial(F.linear, weight=self.lm_head), row_reduce=lambda value: value,
-            reached=min(scheduled, sampled),
+            reached=reached,
         )
-        loss = last_layer_loss(logits, teacher.float().clone(), scheduled, sampled)
-        if not torch.isfinite(loss):
-            raise FloatingPointError("nonfinite V4.1 online loss")
-        loss.backward()
-        norm = torch.nn.utils.clip_grad_norm_(self.master.values(), 1., error_if_nonfinite=True)
-        self.optimizer.step()
-        if any(not value.isfinite().all() or not value.bfloat16().isfinite().all() for value in self.master.values()):
-            raise FloatingPointError("nonfinite V4.1 draft parameters after update")
-        self.version += 1
-        return float(loss.detach()), float(norm), self.version

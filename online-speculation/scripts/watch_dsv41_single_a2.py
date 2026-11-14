@@ -56,19 +56,21 @@ def wait_for_idle(npu_smi, deadline):
     raise TimeoutError("eight idle cards did not become available")
 
 
-def draft_token_count(metrics):
+def spec_token_count(metrics, kind):
     rows = re.findall(
-        r"^vllm:spec_decode_num_draft_tokens(?:_total)?(?:\{[^\n]*\})? ([0-9.eE+\-]+)$",
+        rf"^vllm:spec_decode_num_{kind}_tokens(?:_total)?(?:\{{[^\n]*\}})? ([0-9.eE+\-]+)$",
         metrics, re.MULTILINE,
     )
-    return sum(map(float, rows))
+    return sum(map(float, rows)) if rows else None
 
 
-def run_model(args, mode, head, deadline, *, online_baseline=None):
+def run_model(args, mode, head, deadline, *, online_baseline=None, feedback=False, trained=False):
     online = online_baseline is not None
     wait_for_idle(args.npu_smi, deadline)
     check_port_available(args.port)
-    name = f"wangzili-dsv41-{mode}-{os.getpid()}" + ("-online" if online else "")
+    phase = "-online" if online else "-offline-reload" if trained else ""
+    name = f"wangzili-dsv41-{mode}-{os.getpid()}{phase}"
+    capture_path = f"local/dsv41-deploy/{name}/feedback.pt" if feedback else ""
     image = subprocess.check_output(["docker", "image", "inspect", PINNED_IMAGE, "--format", "{{.Id}}"],
                                     text=True).strip()
     env = os.environ | {
@@ -84,6 +86,10 @@ def run_model(args, mode, head, deadline, *, online_baseline=None):
         "LOCAL_IP": args.local_ip,
         "NIC_NAME": args.nic,
         "ORTHRUS_DSV41_AUDIT_CACHE": "1" if mode == "orthrus" else "0",
+        "ORTHRUS_DSV41_FEEDBACK_PATH": (
+            f"/workspace/online-speculation/{capture_path}" if feedback else ""
+        ),
+        "REQUIRE_TRAINED_HEAD": "1" if trained else "0",
         "ORTHRUS_DSV41_ONLINE_STRIDE": "1" if online else "0",
     }
     print(f"starting {name}", flush=True)
@@ -136,11 +142,21 @@ def run_model(args, mode, head, deadline, *, online_baseline=None):
             for _ in range(10):
                 with urlopen(api + "/metrics", timeout=10) as response:
                     metrics = response.read().decode()
-                if draft_token_count(metrics) > 0:
+                drafted = spec_token_count(metrics, "draft")
+                accepted = spec_token_count(metrics, "accepted")
+                if drafted and accepted is not None:
+                    print(json.dumps({"phase": name, "drafted": drafted, "accepted": accepted}), flush=True)
+                    if accepted >= drafted:
+                        raise RuntimeError("smoke did not exercise rejected proposals")
                     break
                 time.sleep(1)
             else:
-                raise RuntimeError("requests completed without any verifier draft tokens")
+                raise RuntimeError("requests completed without verifier draft/acceptance metrics")
+        if feedback:
+            saved = REPO / capture_path
+            if not saved.is_file() or saved.stat().st_size == 0:
+                raise RuntimeError(f"no real-request feedback captured, see {log}")
+            return outputs, capture_path
         return outputs
     finally:
         subprocess.run(["docker", "stop", "-t", "20", name], timeout=90, stdout=subprocess.DEVNULL,
@@ -157,6 +173,7 @@ def main():
     parser.add_argument("--port", type=int, default=19891)
     parser.add_argument("--watch-hours", type=float, default=24)
     parser.add_argument("--online", action="store_true")
+    parser.add_argument("--offline-handoff", action="store_true", help="verify capture, one KL step and trained head reload")
     args = parser.parse_args()
     deadline = time.monotonic() + args.watch_hours * 3600
     local = REPO / "local"
@@ -189,10 +206,29 @@ def main():
                 "--from-target",
             ]
             subprocess.run(command, check=True, timeout=1800)
-        orth = run_model(args, "orthrus", head, deadline)
+        orth = run_model(args, "orthrus", head, deadline, feedback=args.offline_handoff)
+        if args.offline_handoff:
+            orth, capture = orth
         if baseline != orth:
             raise RuntimeError(f"greedy token IDs differ: target={baseline}, Orthrus={orth}")
         print(json.dumps({"greedy_exact": True, "token_ids": orth}), flush=True)
+        if args.offline_handoff:
+            trained = models / f"orthrus-dsv41-head-v1-handoff-{os.getpid()}"
+            command = [
+                "docker", "run", "--rm", "--network", "none", "--entrypoint", "python3",
+                "-e", "TORCH_DEVICE_BACKEND_AUTOLOAD=0",
+                "-e", "OMP_NUM_THREADS=6", "-e", "MKL_NUM_THREADS=6",
+                "-v", f"{models}:/models", "-v", f"{REPO}:/work:ro", "-e", "PYTHONPATH=/work/src",
+                PINNED_IMAGE, "/work/scripts/train_dsv41_last_layer_smoke.py",
+                "--model", "/models/" + str(args.model.relative_to(models)),
+                "--head", "/models/" + head.name,
+                "--feedback", "/work/" + capture,
+                "--output", "/models/" + trained.name,
+            ]
+            subprocess.run(command, check=True, timeout=2700)
+            if run_model(args, "orthrus", trained, deadline, trained=True) != baseline:
+                raise RuntimeError("greedy token IDs differ after loading the offline-updated head")
+            print("offline-updated head reloaded and greedy token IDs matched", flush=True)
         if args.online:
             run_model(args, "orthrus", head, deadline, online_baseline=baseline)
             print("online update published and the following greedy request matched the target", flush=True)

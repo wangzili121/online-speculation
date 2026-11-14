@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -57,14 +58,18 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         self.requires_non_causal = True
         self.audit_cache = os.environ.get("ORTHRUS_DSV41_AUDIT_CACHE") == "1"
         self.online_stride = int(os.environ.get("ORTHRUS_DSV41_ONLINE_STRIDE", "0"))
+        self.feedback_path = os.environ.get("ORTHRUS_DSV41_FEEDBACK_PATH")
+        self.draft_feedback_logits = None
         self.online_pending = None
         self.online_round = 0
         self.online_learner = None
         parallel = vllm_config.parallel_config
-        if self.online_stride < 0 or (self.online_stride and (
+        if self.online_stride < 0 or ((self.online_stride or self.feedback_path) and (
             parallel.data_parallel_size != 1 or vllm_config.scheduler_config.max_num_seqs != 1
         )):
-            raise ValueError("V4.1 online update requires a positive stride, DP1 and batch size 1")
+            raise ValueError("V4.1 feedback requires a nonnegative stride, DP1 and batch size 1")
+        if self.feedback_path and self.online_stride:
+            raise ValueError("run offline feedback capture separately from online updates")
 
     def load_draft_model(
         self,
@@ -93,7 +98,7 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         pending, self.online_pending = self.online_pending, None
         if pending is None or structured or batch.num_reqs != 1 or batch.num_draft_tokens == 0:
             return
-        request, anchor, proposal, snapshot = pending
+        request, anchor, proposal, snapshot, draft_logits = pending
         if request != batch.req_ids[0] or int(batch.positions[batch.logits_indices[0]]) != anchor:
             return
         count = batch.num_draft_tokens
@@ -108,6 +113,25 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         teacher = target.compute_logits(hidden[batch.logits_indices])
         group = get_tp_group()
         status = torch.zeros(1, dtype=torch.int32, device=self.device)
+        if self.feedback_path:
+            if group.rank_in_group == 0:
+                try:
+                    from .dsv41_last_layer import save_feedback
+
+                    save_feedback(
+                        Path(self.feedback_path), snapshot, teacher, draft_logits,
+                        anchor=anchor, proposal=proposal, scheduled=count, sampled=reached,
+                        model=self.vllm_config.model_config.model,
+                        head=self.vllm_config.speculative_config.model,
+                    )
+                except Exception:
+                    status.fill_(-1)
+                    logger.exception("V4.1 Orthrus offline feedback capture failed")
+            group.broadcast(status, src=0)
+            if int(status[0]) < 0:
+                raise RuntimeError("V4.1 Orthrus offline feedback capture failed on rank 0")
+            self.feedback_path = None
+            return
         metrics = None
         if group.rank_in_group == 0:
             try:
@@ -245,8 +269,11 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         source = self.sample_indices[:count] - 1
         if attn_metadata is None:
             source = source.clamp_min(0)
+        source_hidden = hidden[source]
+        if self.feedback_path and self.model.model.last_layer_snapshot is not None:
+            self.draft_feedback_logits = self.compute_draft_logits(source_hidden, 0)
         sampled = self.sample_draft(
-            hidden[source], self.sample_pos[:count] - 1, self.sample_idx_mapping[:count],
+            source_hidden, self.sample_pos[:count] - 1, self.sample_idx_mapping[:count],
             self.temperature, self.seeds, self.sample_col[:count], self.draft_logits,
         )
         self.draft_tokens[:num_reqs] = sampled.view(num_reqs, self.num_speculative_steps)
@@ -356,12 +383,18 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
             )
         aux_hidden_states = None
         capture = False
-        if self.online_stride and not dummy_run and input_batch.num_reqs == 1 and int(num_sampled[0]) > 0:
+        if (
+            (self.online_stride or self.feedback_path)
+            and not dummy_run
+            and input_batch.num_reqs == 1
+            and int(num_sampled[0]) > 0
+        ):
             self.online_round += 1
-            capture = self.online_round % self.online_stride == 0
+            capture = bool(self.feedback_path) or self.online_round % self.online_stride == 0
         inner = self.model.model
         inner.capture_last_layer = capture
         inner.last_layer_snapshot = None
+        self.draft_feedback_logits = None
         try:
             snapshots = list(self._cache_snapshots()) if self.audit_cache and not dummy_run else []
             if self.audit_cache and not dummy_run and not snapshots:
@@ -389,8 +422,12 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
                 assert_cache_unchanged(before, cache, name)
             if capture and inner.last_layer_snapshot is not None:
                 anchor = int(self.input_buffers.positions[0])
-                self.online_pending = (input_batch.req_ids[0], anchor, result[0].clone(), inner.last_layer_snapshot)
+                self.online_pending = (
+                    input_batch.req_ids[0], anchor, result[0].clone(),
+                    inner.last_layer_snapshot, self.draft_feedback_logits,
+                )
             return result
         finally:
             inner.capture_last_layer = False
             inner.last_layer_snapshot = None
+            self.draft_feedback_logits = None

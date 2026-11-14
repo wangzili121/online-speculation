@@ -32,6 +32,15 @@ PYTHONPATH=src python scripts/preflight_dsv41_orthrus.py \
 
 在启动长训前，用真实样本确认 teacher 与 draft 的 logits 逐位置对齐，对比训练端与服务端同一 head、同一历史输入下的 draft logits，并验证一步反向只更新约定的参数。再用这一步导出的 head 启动服务，检查候选确实进入 verifier、greedy token 与 target-only 一致，以及连续拒绝后的目标 cache 状态。当前导出和预检已通过 CPU 往返验证，真实训练样本到八卡服务的往返还待跑通。
 
+单机验收脚本增加了 `--offline-handoff`。它在运行请求时保存一轮对齐后的原生 teacher/draft logits、最后一层输入及只读历史。CPU 先对照服务输出与 FP32 replay 的 logits，再用 forward KL 更新最后一层，将保存的 head 分片交回镜像启动。输出记录 logits 最大误差、P99、TV、argmax 一致数量、梯度范数和 BF16/F32 导出后仍发生变化的张量。脚本只更新第 39 层，离线团队可沿用同一 head 契约，并单独验证所选训练层的反向。采集会记录推理时 verifier 实际到达的位置，适用于本次交接 smoke。完整离线训练的数据应来自 teacher-forced 序列并包含该样本所有有效 MASK 监督位置。
+
+```bash
+PYTHONPATH=src python scripts/train_dsv41_last_layer_smoke.py \
+  --model "$MODEL" --head "$INITIAL_HEAD" --feedback "$FEEDBACK" --output "$UPDATED_HEAD"
+```
+
+在 910B3 上使用实际 1017 W4A8 末层和 40 层初始化 head，配合合成历史和教师 logits，单步 KL 由 6.0493 降至 5.8103，导出的 8 个末层张量中 7 个发生变化。vLLM safetensors loader 单卡加载完整 40 个分片、336 个张量，末层 sink 与导出文件逐元素一致。此用例未加载主模型服务。真实请求的训练与推理 logits 对齐、greedy 及 cache 复验由八卡脚本完成。
+
 ## 验证结果
 
 CPU 覆盖 1017 拓扑、BF16/F32 张量校验、C2A 奇偶和跨页读取、C1A 候选池及后续层 Reindex/Reuse、空历史、块内双向与 sink。页表换序后，逻辑 Top-K 和输出保持一致。非法 head、超出已提交历史的选中行均被拒绝。 [测试](../tests/test_dsv41_orthrus.py)
