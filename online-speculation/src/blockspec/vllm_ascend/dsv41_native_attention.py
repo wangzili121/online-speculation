@@ -133,29 +133,14 @@ def _native_sparse_plane(
 def temporary_block(
     query: torch.Tensor, temporary: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run the fully visible K-by-K draft block with native fused attention."""
-    import torch_npu
-
+    """Compute the fully visible K-by-K block in FP32 before merging."""
     batch, block, heads, dim = query.shape
-    result = torch_npu.npu_fused_infer_attention_score(
-        query,
-        temporary.unsqueeze(2),
-        temporary.unsqueeze(2),
-        num_heads=heads,
-        num_key_value_heads=1,
-        input_layout="BSND",
-        sparse_mode=0,
-        scale=dim**-0.5,
-        actual_seq_lengths=[block] * batch,
-        actual_seq_lengths_kv=[block] * batch,
-        softmax_lse_flag=True,
-    )
-    output, lse = result[:2]
-    if lse.shape == (batch, heads, block, 1):
-        lse = lse.transpose(1, 2)
-    if lse.shape != (batch, block, heads, 1):
-        raise RuntimeError(f"unexpected FIA LSE shape: {tuple(lse.shape)}")
-    return output, lse
+    q = query.reshape(batch, block * heads, dim).float()
+    kv = temporary.float()
+    scores = torch.bmm(q, kv.transpose(1, 2)) * dim**-0.5
+    lse = scores.logsumexp(-1, keepdim=True)
+    output = torch.bmm((scores - lse).exp(), kv)
+    return output.reshape_as(query), lse.view(batch, block, heads, 1)
 
 
 def _merge_fp32(

@@ -111,7 +111,8 @@ def main() -> None:
         parser.error("--valid-topk must be between 1 and --topk")
     from vllm_ascend.utils import enable_custom_op
 
-    enable_custom_op()
+    if not enable_custom_op():
+        raise RuntimeError("vLLM-Ascend custom operators are unavailable")
     device = torch.device(args.device)
     torch.npu.set_device(device)
     torch.npu.matmul.allow_hf32 = False
@@ -214,7 +215,7 @@ def main() -> None:
     merged = full_call()
     actual = tuple(part.cpu() for part in merged)
     precise = tuple(part.cpu() for part in precise_call())
-    torch.testing.assert_close(actual[0], expected[0], atol=1e-2, rtol=2.01 / 128)
+    torch.testing.assert_close(actual[0], expected[0], atol=1e-3, rtol=2.01 / 128)
     torch.testing.assert_close(actual[1], expected[1], atol=1e-5, rtol=1.3e-6)
     torch.testing.assert_close(precise[0], expected[0], atol=1e-5, rtol=1.3e-6)
     torch.testing.assert_close(precise[1], expected[1], atol=1e-5, rtol=1.3e-6)

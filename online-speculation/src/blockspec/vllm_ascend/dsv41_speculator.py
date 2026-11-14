@@ -77,6 +77,8 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
         target_attn_layer_names: set[str],
     ) -> torch.nn.Module:
         del target_attn_layer_names
+        # FP32 bmm for the small bidirectional block needs full mantissa precision.
+        torch.npu.matmul.allow_hf32 = False
         speculative = self.vllm_config.speculative_config
         assert speculative is not None
         draft_config = speculative.draft_model_config

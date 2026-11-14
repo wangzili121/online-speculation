@@ -436,13 +436,7 @@ def test_native_attention_segments_preserve_joint_softmax(monkeypatch):
         has_rows = valid.any(-1)[:, :, None, None]
         return torch.where(has_rows, output, torch.zeros_like(output)), lse
 
-    def fake_block(query, temporary):
-        logits = torch.einsum("bqhd,brd->bqhr", query, temporary) * dim**-0.5
-        lse = logits.logsumexp(-1, keepdim=True)
-        return torch.einsum("bqhr,brd->bqhd", (logits - lse).exp(), temporary), lse
-
     monkeypatch.setattr(native_attention, "_native_sparse_plane", fake_plane)
-    monkeypatch.setattr(native_attention, "temporary_block", fake_block)
     actual = native_attention.native_draft_attention(
         query,
         temporary,

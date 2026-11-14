@@ -39,7 +39,7 @@ PYTHONPATH=src python scripts/train_dsv41_last_layer_smoke.py \
   --model "$MODEL" --head "$INITIAL_HEAD" --feedback "$FEEDBACK" --output "$UPDATED_HEAD"
 ```
 
-在 910B3 上使用实际 1017 W4A8 末层和 40 层初始化 head，配合合成历史和教师 logits，单步 KL 由 6.0493 降至 5.8103，导出的 8 个末层张量中 7 个发生变化。vLLM safetensors loader 单卡加载完整 40 个分片、336 个张量，末层 sink 与导出文件逐元素一致。此用例未加载主模型服务。真实请求的训练与推理 logits 对齐、greedy 及 cache 复验由八卡脚本完成。
+在 910B3 上使用实际 1017 W4A8 末层和 40 层初始化 head，配合合成历史和教师 logits，单步 KL 由 6.0493 降至 5.8103，导出的 8 个末层张量中 7 个发生变化。vLLM safetensors loader 在单卡和 TP2 均加载完整 40 个分片、336 个张量，各 rank 的末层 sink 与导出文件对应分片逐元素一致。此用例未加载主模型服务。真实请求的训练与推理 logits 对齐、greedy 及 cache 复验由八卡脚本完成。
 
 ## 验证结果
 
@@ -57,16 +57,17 @@ CPU 覆盖 1017 拓扑、BF16/F32 张量校验、C2A 奇偶和跨页读取、C1A
 
 以上用例均通过精度检查。原 C2A 用例 Top-K 与 CPU 完全一致，各用例目标 KV、索引页及页表逐元素保持一致。
 
-高效路径使用现有 Ascend 融合核。SWA 历史和选中的压缩历史分别调用 `npu_sparse_flash_mla`，临时 K×K 双向块调用 fused infer attention，再以 FP32 LSE 精确合并三段。这样每个 draft query 共享同一 anchor 历史边界，压缩 Top-K 仍可逐 query 不同，sink 只计一次，目标缓存始终只读。目标模型将 SWA 和压缩历史合在一次因果调用里的接口无法表达这组 Orthrus 语义，因此这里需要分段。 [原生实现](../src/blockspec/vllm_ascend/dsv41_native_attention.py)
+SWA 历史和选中的压缩历史分别调用 Ascend `npu_sparse_flash_mla`，临时 K×K 双向块用 FP32 批量矩阵乘法计算，再以 FP32 LSE 精确合并三段。这样每个 draft query 共享同一 anchor 历史边界，压缩 Top-K 仍可逐 query 不同，sink 只计一次，目标缓存始终只读。目标模型将 SWA 和压缩历史合在一次因果调用里的接口无法表达这组 Orthrus 语义，因此这里需要分段。 [原生实现](../src/blockspec/vllm_ascend/dsv41_native_attention.py)
 
-在 `nightly-releases-v0.32.0rc`、`torch_npu 2.10.0.post7` 和 Ascend 910B3 上，K32、TP8 单 rank 维度、SWA 128、Top-K 512、anchor 为 0/1023/2047 的用例如下。融合路径按 BF16 误差门限通过，LSE 与 FP32 参考保持在 `1e-6` 内，目标页和页表逐元素不变。计时为同一张卡上的算子窗口，不含投影、调度和 verifier。 [验证记录](validation/dsv41/native-draft-attention-910b3.json)
+在 `nightly-releases-v0.32.0rc`、`torch_npu 2.10.0.post7` 和 Ascend 910B3 上，K32、TP8 单 rank 维度、SWA 128、Top-K 512、anchor 为 0/1023/2047 的用例如下。目标页和页表逐元素保持一致。表中计时仅覆盖算子。 [原始全融合记录](validation/dsv41/native-draft-attention-910b3.json)
 
 | Attention 路径 | 输出最大绝对误差 | LSE 最大绝对误差 | 耗时 |
 |---|---:|---:|---:|
-| 原生融合分段 | 4.42e-3 | 9.54e-7 | 2.98 ms |
-| FP32 golden 路径 | 1.55e-6 | 9.54e-7 | 5.70 ms |
+| 历史融合，块内 FP32（32 条有效检索历史） | 1.68e-3 | 9.54e-7 | 2.76 ms |
+| 历史融合，块内 FP32（512 条有效检索历史） | 9.57e-4 | 9.54e-7 | 2.83 ms |
+| 全 FP32 对照（512 条有效检索历史） | 1.55e-6 | 9.54e-7 | 5.23 ms |
 
-同一 910B3 使用较严的逐元素检查（`atol=0.001, rtol=2.01/128`）复测了 32 和 512 条有效全局历史两组。共 393,216 个输出元素，分别有 13 和 12 个超界，P99 绝对误差约 0.00126；单独将 FP32 参考舍入到 BF16 的最大误差约 0.00389。融合前向通过原 smoke 门限，两组的 LSE 误差均小于 5e-7，目标页和页表逐元素不变。定位算子差异时使用 FP32 路径作为对照。交付仍需真实请求上的 logits、greedy 及 cache 验收。
+切换前，全 BF16 融合路径在 32 和 512 条有效历史的用例分别有 13 和 12 个值超出逐元素门限（`atol=0.001, rtol=2.01/128`）。只把块内计算改成 FP32 后，两组共 786,432 个输出元素全部通过，且 LSE 保持在 `1e-6` 内。512 条历史的同卡单独对照中，块内耗时由约 0.16 ms 增至 0.24 ms。真实请求上的 logits、greedy 及 cache 验收仍待八卡测试。
 
 Attention 后的 grouped low-rank O projection 也在同一设备栈上单独复验。算子使用主模型相同的 `npu_transpose_batchmatmul` 和 `[group, group_width, o_lora_rank]` 权重布局。覆盖 1、2、8 个本地 group 以及 32、64、96 个 token；相对 CPU FP32 公式的最大绝对误差不超过 `0.00406`，P99 不超过 `0.00196`，均通过 BF16 门限。 [验证记录](validation/dsv41/grouped-output-projection-910b3.json)
 
