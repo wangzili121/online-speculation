@@ -16,6 +16,22 @@ PYTHONPATH=src python scripts/preflight_dsv41_orthrus.py \
 
 Torch 参考接收已做 RoPE 的查询和逻辑分页视图。C2A 只检索已完成的压缩组。C1A 第 20 层以每个粗粒度块内的最高分构造候选池，保留最新可见块。第 20 层自己的 Top-K 从全部可见历史产生，后续 Reindex 层在候选池内重排。Reuse 层直接取最近的源层 Top-K。参考对同分项优先选择逻辑行号较小的一项。SWA、全局历史与临时块使用同一次 softmax，sink 只计一次。 [参考实现](../src/blockspec/vllm_ascend/dsv41_attention.py)
 
+### 离线训练交接
+
+训练端以 1017 的 W4A8 主模型为冻结教师，导出与部署相同的 tokenizer、mask token 和 K32 位置信息。学生使用真实 anchor 前的历史和块内双向可见的临时 KV。第 0–30 行 draft logits 对齐 anchor 后的第 1–31 个位置，训练数据应为超出答案范围的位置打上无效标记。可先用 forward KL 检查语言模型蒸馏。训练 indexer 时，需单独监督检索分数，离散 Top-K 无法把 KL 梯度传回 indexer。
+
+训练端将 336 个 head 张量以 `layers.N.attn.*` 命名，保存到单个 BF16/FP32 safetensors 中。按训练记录选择同一个基模目录和 mask token，通过以下命令生成服务可加载的分片、配置和 manifest。导出会检查缺失或多出的张量、形状、精度和非有限值，最终保存 BF16 权重和 FP32 sink。 `head_shapes` 返回逐张量形状。 [张量契约](../src/blockspec/vllm_ascend/dsv41_contract.py)
+
+```bash
+PYTHONPATH=src python scripts/export_dsv41_orthrus_head.py \
+  --model "$MODEL" --mask-token-id "$MASK_ID" \
+  --from-trained-head "$TRAINED_SAFETENSORS" --output "$HEAD"
+PYTHONPATH=src python scripts/preflight_dsv41_orthrus.py \
+  --model "$MODEL" --head "$HEAD" --require-trained
+```
+
+在启动长训前，用真实样本确认 teacher 与 draft 的 logits 逐位置对齐，对比训练端与服务端同一 head、同一历史输入下的 draft logits，并验证一步反向只更新约定的参数。再用这一步导出的 head 启动服务，检查候选确实进入 verifier、greedy token 与 target-only 一致，以及连续拒绝后的目标 cache 状态。当前导出和预检已通过 CPU 往返验证，真实训练样本到八卡服务的往返还待跑通。
+
 ## 验证结果
 
 CPU 覆盖 1017 拓扑、BF16/F32 张量校验、C2A 奇偶和跨页读取、C1A 候选池及后续层 Reindex/Reuse、空历史、块内双向与 sink。页表换序后，逻辑 Top-K 和输出保持一致。非法 head、超出已提交历史的选中行均被拒绝。 [测试](../tests/test_dsv41_orthrus.py)
@@ -40,6 +56,8 @@ CPU 覆盖 1017 拓扑、BF16/F32 张量校验、C2A 奇偶和跨页读取、C1A
 |---|---:|---:|---:|
 | 原生融合分段 | 4.42e-3 | 9.54e-7 | 2.98 ms |
 | FP32 golden 路径 | 1.55e-6 | 9.54e-7 | 5.70 ms |
+
+同一 910B3 使用较严的逐元素检查（`atol=0.001, rtol=2.01/128`）复测了 32 和 512 条有效全局历史两组。共 393,216 个输出元素，分别有 13 和 12 个超界，P99 绝对误差约 0.00126；单独将 FP32 参考舍入到 BF16 的最大误差约 0.00389。融合前向通过原 smoke 门限，两组的 LSE 误差均小于 5e-7，目标页和页表逐元素不变。定位算子差异时使用 FP32 路径作为对照。交付仍需真实请求上的 logits、greedy 及 cache 验收。
 
 Attention 后的 grouped low-rank O projection 也在同一设备栈上单独复验。算子使用主模型相同的 `npu_transpose_batchmatmul` 和 `[group, group_width, o_lora_rank]` 权重布局。覆盖 1、2、8 个本地 group 以及 32、64、96 个 token；相对 CPU FP32 公式的最大绝对误差不超过 `0.00406`，P99 不超过 `0.00196`，均通过 BF16 门限。 [验证记录](validation/dsv41/grouped-output-projection-910b3.json)
 

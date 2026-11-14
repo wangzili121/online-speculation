@@ -8,7 +8,7 @@ import sys
 
 import pytest
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 from blockspec.vllm_ascend.dsv41_attention import (
     DraftSelection,
@@ -148,6 +148,50 @@ def test_exported_initialized_head_is_loadable(tmp_path, config):
     assert head_config["num_nextn_predict_layers"] == 31
     assert head_config["text_config"]["num_nextn_predict_layers"] == 3
     assert head_config["torch_dtype"] == "bfloat16"
+
+
+def test_offline_trained_head_round_trip_and_rejects_nonfinite_weights(tmp_path, config):
+    model, head = tmp_path / "base", tmp_path / "head"
+    model.mkdir()
+    write_json(model / "config.json", config)
+    write_json(model / "tokenizer.json", {"fixture": 1})
+    index = "model.safetensors.index.json"
+    write_json(model / index, {"weight_map": {"embedding": "base.safetensors"}})
+    source = tmp_path / "trained.safetensors"
+    shapes = head_shapes(config, V41Topology.from_config(config))
+    tensors = {name: torch.full(shape, i / 1000) for i, (name, shape) in enumerate(shapes.items())}
+    save_file(tensors, source)
+    repo = Path(__file__).parents[1]
+    command = [
+        sys.executable, repo / "scripts/export_dsv41_orthrus_head.py",
+        "--model", model, "--mask-token-id", "99", "--from-trained-head", source,
+    ]
+    env = os.environ | {"PYTHONPATH": str(repo / "src")}
+    subprocess.run([*command, "--output", head], check=True, env=env, capture_output=True, text=True)
+    check = subprocess.run(
+        [sys.executable, repo / "scripts/preflight_dsv41_orthrus.py",
+         "--model", model, "--head", head, "--require-trained"],
+        check=True, env=env, capture_output=True, text=True,
+    )
+    assert json.loads(check.stdout)["head_artifact_role"] == "trained"
+    recovered = {
+        name: value
+        for shard in head.glob("*.safetensors")
+        for name, value in load_file(shard).items()
+    }
+    assert recovered.keys() == tensors.keys()
+    for name, expected in tensors.items():
+        dtype = torch.float32 if name.endswith(".attn_sink") else torch.bfloat16
+        torch.testing.assert_close(recovered[name], expected.to(dtype), atol=0, rtol=0)
+
+    tensors["layers.39.attn.wq_a.weight"].fill_(float("nan"))
+    save_file(tensors, source)
+    bad = tmp_path / "bad"
+    failed = subprocess.run(
+        [*command, "--output", bad], env=env, capture_output=True, text=True,
+    )
+    assert failed.returncode != 0 and "nonfinite" in failed.stderr
+    assert not bad.exists()
 
 
 def test_runtime_cache_plan_uses_shared_v41_sources(config):

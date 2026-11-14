@@ -70,6 +70,20 @@ def _reference(
     return outputs, lses
 
 
+def _error_profile(actual: torch.Tensor, expected: torch.Tensor) -> dict:
+    error = (actual - expected).abs()
+    rounded = (expected.bfloat16().float() - expected).abs()
+    tight_bound = 0.001 + (2.01 / 128) * expected.abs()
+    return {
+        "elements": error.numel(),
+        "max_abs": error.max().item(),
+        "p99_abs": error.flatten().quantile(0.99).item(),
+        "over_atol_0_001_rtol_2_01_over_128": (error > tight_bound).sum().item(),
+        "rounding_only_max_abs": rounded.max().item(),
+        "rounding_only_p99_abs": rounded.flatten().quantile(0.99).item(),
+    }
+
+
 def _elapsed(call, warmup: int, iterations: int) -> float:
     for _ in range(warmup):
         call()
@@ -88,9 +102,13 @@ def main() -> None:
     parser.add_argument("--heads", type=int, default=8)
     parser.add_argument("--head-dim", type=int, default=512)
     parser.add_argument("--topk", type=int, default=512)
+    parser.add_argument("--valid-topk", type=int, help="maximum number of valid sparse rows per query")
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--iterations", type=int, default=10)
     args = parser.parse_args()
+    valid_topk = min(32, args.topk) if args.valid_topk is None else args.valid_topk
+    if not 1 <= valid_topk <= args.topk:
+        parser.error("--valid-topk must be between 1 and --topk")
     from vllm_ascend.utils import enable_custom_op
 
     enable_custom_op()
@@ -115,7 +133,7 @@ def main() -> None:
     offsets = torch.arange(args.topk)
     cmp_indices = torch.stack(
         [
-            torch.where(offsets < length.clamp_max(32), (offsets * 3) % length.clamp_min(1), -1)
+            torch.where(offsets < length.clamp_max(valid_topk), offsets, -1)
             for length in cmp_lengths
         ]
     )[:, None].expand(-1, block, -1).contiguous()
@@ -160,13 +178,15 @@ def main() -> None:
             (swa[1].float(), compressed[1].float()),
         )
 
+    temporary_d = temporary.to(device)
+
     def block_call():
-        return temporary_block(query_d, temporary.to(device))
+        return temporary_block(query_d, temporary_d)
 
     def full_call():
         return native_draft_attention(
             query_d,
-            temporary.to(device),
+            temporary_d,
             ori_pages_d,
             anchors_d,
             sink_d,
@@ -181,7 +201,7 @@ def main() -> None:
     def precise_call():
         return precise_draft_attention(
             query_d,
-            temporary.to(device),
+            temporary_d,
             precise_ori,
             anchors_d,
             sink_d,
@@ -195,7 +215,7 @@ def main() -> None:
     actual = tuple(part.cpu() for part in merged)
     precise = tuple(part.cpu() for part in precise_call())
     torch.testing.assert_close(actual[0], expected[0], atol=1e-2, rtol=2.01 / 128)
-    torch.testing.assert_close(actual[1], expected[1], atol=1e-2, rtol=2.01 / 128)
+    torch.testing.assert_close(actual[1], expected[1], atol=1e-5, rtol=1.3e-6)
     torch.testing.assert_close(precise[0], expected[0], atol=1e-5, rtol=1.3e-6)
     torch.testing.assert_close(precise[1], expected[1], atol=1e-5, rtol=1.3e-6)
     for current, original in ((ori_pages_d, ori_pages), (cmp_pages_d, cmp_pages)):
@@ -206,6 +226,8 @@ def main() -> None:
         "device": torch.npu.get_device_name(device),
         "torch_npu": torch_npu.__version__,
         "shape": {"batch": batch, "block": block, "heads": heads, "head_dim": dim},
+        "valid_topk": valid_topk,
+        "output_error_profile": _error_profile(actual[0], expected[0]),
         "history_lse_shape": list(history[1].shape),
         "max_output_abs_error": float((actual[0] - expected[0]).abs().max()),
         "max_lse_abs_error": float((actual[1] - expected[1]).abs().max()),
