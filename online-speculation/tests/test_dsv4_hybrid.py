@@ -32,6 +32,25 @@ def test_cache_checksum_treats_unchanged_nan_as_equal():
     assert_cache_unchanged(before, cache, "test")
 
 
+def test_cache_checksum_samples_a_strided_cache_without_flattening():
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class RejectFullCacheClone(TorchDispatchMode):
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            if func == torch.ops.aten.clone.default:
+                assert args[0].numel() <= 65_536
+            return func(*args, **(kwargs or {}))
+
+    cache = torch.arange(257 * 512, dtype=torch.int32).view(257, 512)[1:].T
+    expected = cache.reshape(-1)[::2]
+    with RejectFullCacheClone():
+        before = cache_checksum(cache)
+    torch.testing.assert_close(before, expected)
+    cache[0, 0] = -1
+    with RejectFullCacheClone(), pytest.raises(RuntimeError, match="modified target cache"):
+        assert_cache_unchanged(before, cache, "strided cache")
+
+
 def test_full_cache_guard_detects_changes_between_sampled_positions():
     cache = torch.zeros(131_072, dtype=torch.bfloat16)
     before = cache_checksum(cache, full=True)

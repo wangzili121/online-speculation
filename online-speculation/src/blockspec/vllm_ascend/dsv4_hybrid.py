@@ -176,12 +176,20 @@ def gather_paged_cache(
 
 def cache_checksum(cache: torch.Tensor, *, full: bool = False) -> torch.Tensor:
     """Snapshot a bounded sample, or all elements for explicit debug checks."""
-    flat = cache.reshape(-1)
     if full:
-        return flat.clone()
+        return cache.reshape(-1).clone()
     max_samples = 65_536
-    stride = max((flat.numel() + max_samples - 1) // max_samples, 1)
-    return flat[::stride][:max_samples].clone()
+    size = cache.numel()
+    stride = max((size + max_samples - 1) // max_samples, 1)
+    if cache.is_contiguous():
+        return cache.view(-1)[::stride].clone()
+    # Convert the logical sample indices into offsets in the original storage.
+    # A reshape or advanced index on the strided cache can first copy it.
+    indices = torch.arange(0, size, stride, device=cache.device, dtype=torch.long)
+    strides = cache.stride()
+    offsets = sum(index * step for index, step in zip(torch.unravel_index(indices, cache.shape), strides))
+    span = 1 + sum((length - 1) * step for length, step in zip(cache.shape, strides))
+    return cache.as_strided((span,), (1,)).index_select(0, offsets)
 
 
 def assert_cache_unchanged(
