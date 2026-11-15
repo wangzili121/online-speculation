@@ -170,7 +170,7 @@ python3 scripts/repro_dsv41_native_verifier.py --model "$MODEL" \
   --local-ip "$LOCAL_IP" --nic "$NIC_NAME" --output-dir local/native-verifier-repro
 ```
 
-`--layer-trace` 会把每组控制重复一次，并捕获第 434 个零起始位置的逐层激活、首层 SWA 的 Q、可见 KV 和原始输出。目标模型连续两次逐步解码时，已观察到第 0 层 Attention 的输入行一致，Attention 输出最早出现差异，最大绝对差为 0.015625。
+`--layer-trace` 会把每组控制重复一次，并捕获逐层激活和前两个 SWA 层的 Q、可见 KV 与原始输出。默认抓取第 434 个零起始位置，`--trace-position` 可指定前缀中的其他位置。目标模型连续两次逐步解码时，已观察到第 0 层 Attention 的输入行一致，Attention 输出最早出现差异，最大绝对差为 0.015625。
 
 八卡窗口较短时可加 `--single-engine`。脚本复用一次模型加载，在同步调度器中把逐步组的候选清空，批量组仍走原生 `ngram_gpu`。输出会核对目标位置实际使用一行或 32 行，并记录每条响应中第一个不同的 token 位置。
 
@@ -185,6 +185,10 @@ python3 scripts/repro_dsv41_native_verifier.py --model "$MODEL" \
 进一步追踪时，两组的 Engram 输入、查表结果、mask 和 `wkv` 投影全部逐元素一致。用捕获的张量在单卡重跑，FP32 点积归约出现形状相关差异。用现有的 Ascend `npu_reduce_sum_batch_invariant` 替换这一步后，真实输入行在 1、32、65、256、419 和 512 行的门控输出逐元素一致，其他行填入独立输入。单独归约的设备时间约为 45–47 µs，原路径约 17–27 µs。 [局部归约补丁](../runtime/vllm_ascend_v0_32/dsv41_engram_batch_invariant.patch)
 
 八卡回放使用局部补丁后，第 1 层 Engram 输出和 Attention 输入均逐元素一致。第 1 层 Attention 输出仍相差最多 `0.01171875`，第 17 个 token 仍分叉。逐步解码与原生 K32 组各自可重复，改变 K32 的未来候选保持同样结果。这个补丁用于隔离 Engram 的数值差异，单机部署入口保持原配置。 [局部归约八卡实测](validation/dsv41/native-verifier-engram-invariant-910b3.json)
+
+在第 1 层的 SWA 算子入口，目标位置 434 的 Q 逐元素一致。128 个可见 KV 行中，位置 420、423、429、432 有 503 个元素不同，最大绝对差为 `0.015625`。单卡使用实模抓取的 Q、历史 KV 和该层实际 sink 重放，固定 KV 时单行和 K32 的输出逐元素一致。换用 K32 路径的历史 KV 后，923 个输出元素不同，最大绝对差为 `0.001953125`，两组输出与各自的八卡记录逐元素一致。
+
+追踪最早不同的历史位置 420 时，rank 0 的第 0 层 Q、可见 KV 和原始 SWA 输出在两种形状下逐元素一致。完整 Attention 输出有 90 个元素不同，最大绝对差为 `0.0078125`。该差异随后进入第 1 层并改变位置 420 写入的 KV。复现脚本的 `--trace-projection` 可继续抓取各 TP rank 的逆 RoPE、低秩投影、本地输出和归约结果。
 
 全局 `VLLM_BATCH_INVARIANT=1` 会强制切到 ND 权重格式。固定镜像的 W4A8 MoE 在 warmup 调用 `aclnnGroupedMatmulSwigluQuantWeightNzV2` 时要求五维 NZ 存储，实际收到一维形状，导致启动失败。局部补丁保留 W4A8 的既有权重布局，只替换 Engram 点积归约。 [vLLM-Ascend batch invariance 实现说明](https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/user_guide/feature_guide/batch_invariance.md)
 

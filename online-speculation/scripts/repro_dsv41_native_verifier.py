@@ -128,17 +128,18 @@ def install_layer_trace(state):
     forward = DeepseekV41Model.forward
     if getattr(forward, "_dsv41_trace", False):
         return
+    trace_position = int(os.environ.get("DSV41_REPRO_TRACE_POSITION", SCORING_ROW))
 
     @wraps(forward)
     def capture(model, input_ids, positions, *args, **kwargs):
         if get_tp_group().rank_in_group != 0 or positions.numel() > 32:
             return forward(model, input_ids, positions, *args, **kwargs)
         matches = positions.tolist()
-        if SCORING_ROW not in matches:
+        if trace_position not in matches:
             return forward(model, input_ids, positions, *args, **kwargs)
         if getattr(model, "use_sequence_parallel", False):
             raise RuntimeError("layer tracing requires unsharded token rows")
-        row = matches.index(SCORING_ROW)
+        row = matches.index(trace_position)
         saved = {}
         hooks = []
 
@@ -197,15 +198,15 @@ def install_layer_trace(state):
         if layer.layer_idx not in (0, 1) or q.shape[0] > 32 or get_tp_group().rank_in_group != 0:
             return output
         positions = metadata.positions[:q.shape[0]].tolist()
-        if SCORING_ROW not in positions:
+        if trace_position not in positions:
             return output
-        row = positions.index(SCORING_ROW)
+        row = positions.index(trace_position)
         swa = metadata.swa
         if (swa.num_reqs != 1 or swa.ori_sparse_indices is not None
                 or swa.replay_block_table is not None or getattr(layer, "packed_cache_ops", None) is not None):
             raise RuntimeError("the SWA probe requires the A2 eager causal cache layout")
-        begin = max(0, SCORING_ROW - swa.ori_win_left)
-        indices = torch.arange(begin, SCORING_ROW + 1, device=q.device)
+        begin = max(0, trace_position - swa.ori_win_left)
+        indices = torch.arange(begin, trace_position + 1, device=q.device)
         block = swa.storage_block_size
         pages = swa.block_table[0, indices // block].long()
         cache = layer.dsa_attn.swa_cache_layer.kv_cache[0]
@@ -213,12 +214,41 @@ def install_layer_trace(state):
         duplicate = attention(impl, layer, q, metadata, compressed_indices, **kwargs)[row]
         label = state.read_text().strip()
         prefix = "swa" if layer.layer_idx == 0 else "swa-layer-01"
-        torch.save({"query": q[row].cpu(), "visible_kv": cache[pages, indices % block].cpu(),
+        torch.save({"position": trace_position, "visible_begin": begin,
+                    "query": q[row].cpu(), "visible_kv": cache[pages, indices % block].cpu(),
                     "swa_output": first.cpu(), "identical_relaunch": torch.equal(first, duplicate)},
                    state.with_name(f"{prefix}-{label}.pt"))
         return output
 
     AscendDSAV41Impl._forward_attention = capture_swa
+
+    project = AscendDSAV41Impl._project_output
+
+    @wraps(project)
+    def capture_projection(impl, layer, output, hidden_states, metadata, *, projected):
+        if layer.layer_idx != 0 or not 0 < output.size(0) <= 32:
+            return project(impl, layer, output, hidden_states, metadata, projected=projected)
+        positions = metadata.positions[:output.size(0)].tolist()
+        if trace_position not in positions:
+            return project(impl, layer, output, hidden_states, metadata, projected=projected)
+        row = positions.index(trace_position)
+        projector = layer.dsa_attn.dsa_attn.impl
+        # Run the local projection separately so the final tensor can be
+        # compared against the reduction's actual rank inputs.
+        grouped = output.reshape(output.size(0), projector.n_local_groups, -1)
+        low_rank = projector._wo_a_bmm(grouped)
+        partial = projector.wo_b.quant_method.apply(projector.wo_b, low_rank.flatten(1), None)
+        result = project(impl, layer, output, hidden_states, metadata, projected=projected)
+        label = state.read_text().strip()
+        rank = get_tp_group().rank_in_group
+        torch.save({"position": trace_position, "after_rope": output[row].cpu(),
+                    "wo_a": low_rank[row].cpu(), "wo_b_local": partial[row].cpu(),
+                    "wo_b_reduced": result[row].cpu()},
+                   state.with_name(f"oproj-rank-{rank}-{label}.pt"))
+        return result
+
+    if os.environ.get("DSV41_REPRO_TRACE_PROJECTION") == "1":
+        AscendDSAV41Impl._project_output = capture_projection
 
 
 def prepare_plugin(path):
@@ -309,11 +339,19 @@ def main():
     parser.add_argument("--port", type=int, default=19891)
     parser.add_argument("--layer-trace", action="store_true",
                         help="capture layer activations and repeat each control once")
+    parser.add_argument("--trace-position", type=int, default=SCORING_ROW,
+                        help="zero-based input position for the layer and SWA trace")
+    parser.add_argument("--trace-projection", action="store_true",
+                        help="record layer 0 output projection partials on each TP rank")
     parser.add_argument("--single-engine", action="store_true",
                         help="reuse the native engine and suppress proposals for the serial controls")
     args = parser.parse_args()
     if not (args.model / "config.json").is_file() or not shutil.which("vllm"):
         parser.error("run inside the pinned Ascend image with the 1017 W4A8 checkpoint mounted")
+    if args.trace_position < 0:
+        parser.error("--trace-position must be nonnegative")
+    if args.trace_projection and not args.layer_trace:
+        parser.error("--trace-projection requires --layer-trace")
     args.output_dir.mkdir(parents=True, exist_ok=False)
     state = args.output_dir.resolve() / "control.txt"
     with tempfile.TemporaryDirectory(prefix="dsv41-verifier-") as folder:
@@ -325,6 +363,8 @@ def main():
             "DSV41_REPRO_VLLM": shutil.which("vllm"),
             "DSV41_REPRO_STATE": str(state),
             "DSV41_REPRO_LAYER_TRACE": str(int(args.layer_trace)),
+            "DSV41_REPRO_TRACE_POSITION": str(args.trace_position),
+            "DSV41_REPRO_TRACE_PROJECTION": str(int(args.trace_projection)),
             "DSV41_REPRO_SINGLE_ENGINE": str(int(args.single_engine)),
             "VLLM_PLUGINS": "ascend,ascend_model,ascend_model_loader,dsv41_verifier_repro",
             "PYTHONPATH": python_path,
