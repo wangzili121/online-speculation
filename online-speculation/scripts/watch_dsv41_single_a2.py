@@ -220,6 +220,7 @@ def main():
             trained = models / f"orthrus-dsv41-head-v1-handoff-{os.getpid()}"
             command = [
                 "docker", "run", "--rm", "--network", "none", "--entrypoint", "python3",
+                "--user", f"{os.getuid()}:{os.getgid()}",
                 "-e", "TORCH_DEVICE_BACKEND_AUTOLOAD=0",
                 "-e", "OMP_NUM_THREADS=6", "-e", "MKL_NUM_THREADS=6",
                 "-v", f"{models}:/models", "-v", f"{REPO}:/work:ro", "-e", "PYTHONPATH=/work/src",

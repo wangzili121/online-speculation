@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, replace
 import hashlib
 from functools import partial
+import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -96,6 +97,11 @@ def save_feedback(path, replay, teacher, draft, *, anchor, proposal, scheduled, 
                 "replay": asdict(replay),
             }, temporary)
             temporary.flush()
+            # The serving container writes into a host-owned request log
+            # directory. Let that user read the private feedback file.
+            if os.geteuid() == 0:
+                owner = path.parent.stat()
+                os.fchown(temporary.fileno(), owner.st_uid, owner.st_gid)
             Path(temporary.name).replace(path)
         finally:
             Path(temporary.name).unlink(missing_ok=True)
