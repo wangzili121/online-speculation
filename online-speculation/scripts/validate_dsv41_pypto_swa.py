@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the PyPTO V4.1 K32 SWA kernel with the Torch FP32 reference."""
+"""Compare PyPTO V4.1 K32 SWA and compressed history with the Torch FP32 reference."""
 
 import argparse
 from importlib.metadata import version
@@ -9,7 +9,9 @@ import statistics
 import time
 
 import torch
+import torch.nn.functional as F
 
+from blockspec.pypto_dsv41_sparse import HEAD_TILE, TILE, TOPK, make_sparse_program
 from blockspec.pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW, make_swa_program, swa_spans
 from blockspec.vllm_ascend.dsv41_attention import PagedRows, draft_attention
 
@@ -20,19 +22,13 @@ def fixture(anchor, heads, seed):
     temporary = torch.randn((1, BLOCK, HEAD_DIM), generator=generator).bfloat16()
     sink = torch.linspace(-8, 8, heads)
     pages = torch.full((5, WINDOW, HEAD_DIM), float("nan"), dtype=torch.bfloat16)
-    table = torch.full((1, anchor // WINDOW + 1), -1, dtype=torch.int32)
     # Use nonconsecutive physical page IDs, and poison every row outside the window.
-    cursor = max(0, anchor - WINDOW)
-    for physical in (3, 1):
-        if cursor == anchor:
-            break
-        logical, offset = divmod(cursor, WINDOW)
-        count = min(WINDOW - offset, anchor - cursor)
-        table[0, logical] = physical
-        pages[physical, offset:offset + count] = torch.randn((count, HEAD_DIM), generator=generator)
-        cursor += count
-    assert cursor == anchor
-    spans = torch.tensor(swa_spans(table[0].tolist(), anchor, pages.shape[0]), dtype=torch.int32)
+    table = swa_table(anchor)
+    metadata = swa_spans(table[0].tolist(), anchor, pages.shape[0])
+    flat = pages.flatten(0, 1)
+    for _, source, count in metadata:
+        flat[source:source + count] = torch.randn((count, HEAD_DIM), generator=generator)
+    spans = torch.tensor(metadata, dtype=torch.int32)
     history_bias = torch.full((1, WINDOW), -torch.inf)
     history_bias[:, :min(anchor, WINDOW)] = 0
     expected = draft_attention(query, temporary, PagedRows(pages, table), torch.tensor([anchor]), sink, window=WINDOW)
@@ -47,6 +43,58 @@ def fixture(anchor, heads, seed):
     return tensors, expected
 
 
+def compressed_fixture(anchor, ratio, seed, local):
+    heads = local[5].numel()
+    query = local[0].reshape(heads, BLOCK, HEAD_DIM).transpose(0, 1).unsqueeze(0)
+    swa = PagedRows(local[1].unflatten(0, (-1, WINDOW)), swa_table(anchor))
+    count = anchor // ratio
+    generator = torch.Generator().manual_seed(seed + 120)
+    pages = torch.full((12, WINDOW, HEAD_DIM), float("nan"), dtype=torch.bfloat16)
+    table = torch.randperm(pages.shape[0], generator=generator, dtype=torch.int32)[:9]
+    logical = torch.arange(count)
+    physical = table[logical // WINDOW] * WINDOW + logical % WINDOW
+    pages.flatten(0, 1)[physical.long()] = torch.randn((count, HEAD_DIM), generator=generator).bfloat16()
+    lengths = torch.tensor((0, 1, 31, 127, 128, 129, 333, TOPK) * 4, dtype=torch.int32).clamp_max(count)
+    bias = torch.full((BLOCK, TOPK), -torch.inf)
+    selected = torch.full((1, BLOCK, TOPK), -1, dtype=torch.long)
+    physical_rows = torch.full((BLOCK, TOPK), -1, dtype=torch.int32)
+    for token, take in enumerate(lengths.tolist()):
+        rows = torch.randperm(count, generator=generator)[:take].sort().values
+        selected[0, token, :take] = rows
+        physical_rows[token, :take] = physical[rows].int()
+        bias[token, :take] = 0
+    gold = draft_attention(
+        query, local[3][None], swa, torch.tensor([anchor]), local[5], window=WINDOW,
+        global_kv=PagedRows(pages, table[None]), global_indices=selected,
+    )
+    tensors = [
+        F.pad(query[0], (0, 0, 0, HEAD_TILE - heads)).reshape(-1, HEAD_DIM).contiguous(),
+        pages.flatten(0, 1), physical_rows, lengths, bias,
+        torch.zeros((TILE, HEAD_DIM), dtype=torch.bfloat16),
+        torch.empty((BLOCK * HEAD_TILE, HEAD_DIM)), torch.empty((BLOCK * HEAD_TILE, 1)),
+        torch.empty((BLOCK * HEAD_TILE, HEAD_DIM)), torch.empty((BLOCK * HEAD_TILE, 1)),
+    ]
+    return tensors, tuple(tensor[0] for tensor in gold)
+
+
+def swa_table(anchor):
+    table = torch.full((1, anchor // WINDOW + 1), -1, dtype=torch.int32)
+    start, end = max(0, anchor - WINDOW) // WINDOW, (anchor + WINDOW - 1) // WINDOW
+    table[0, start:end] = torch.tensor((3, 1)[:end - start])
+    return table
+
+
+def upload(worker, tensors, resident, handles):
+    for src, host, handle in zip(tensors, resident, handles, strict=True):
+        host.copy_(src)
+        worker.copy_to(handle.data_ptr, host.data_ptr(), host.nbytes)
+
+
+def download(worker, resident, handles):
+    for host, handle in zip(resident, handles, strict=True):
+        worker.copy_from(host.data_ptr(), handle.data_ptr, host.nbytes)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=int, default=0)
@@ -54,10 +102,13 @@ def main():
     parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--compile-only", action="store_true")
+    parser.add_argument("--compressed", action="store_true", help="verify selected C1A/C2A history and LSE merge")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.iterations < 1 or args.device < 0 or args.output.exists():
         parser.error("need positive iterations, a nonnegative device and a new output path")
+    if args.compressed and args.heads != 8:
+        parser.error("compressed history probe uses eight local heads")
 
     from pypto.backend import BackendType
     from pypto.ir import DistributedConfig
@@ -79,44 +130,76 @@ def main():
         "lse_tolerance": {"atol": 2e-5, "rtol": 2e-6},
         "cases": [],
     }
-    worker, handles = None, []
-    anchors = (0, 1, 31, 127, 128, 129, 255, 257, 8194)
+    worker, handles, swa_handles = None, [], []
+    local_tensors, _ = fixture(0, args.heads, 173)
+    swa_resident = [tensor.share_memory_() for tensor in local_tensors]
+    if args.compressed:
+        cases = ((0, 1), (31, 2), (129, 1), (257, 2), (1025, 1), (1025, 2))
+        program_entry = make_sparse_program()
+        report["shape"]["topk"] = TOPK
+        report["swa_input"] = "pypto_swa_output_with_host_layout_conversion"
+    else:
+        cases = tuple((anchor, None) for anchor in (0, 1, 31, 127, 128, 129, 255, 257, 8194))
     try:
-        sample, _ = fixture(anchors[0], args.heads, 173)
-        resident = [tensor.share_memory_() for tensor in sample]
-        program = make_swa_program(args.heads).compile(*resident, config=config)
+        swa_program = make_swa_program(args.heads).compile(*swa_resident, config=config)
+        programs = [swa_program]
+        program, resident = swa_program, swa_resident
+        if args.compressed:
+            sample, _ = compressed_fixture(*cases[0], 173, local_tensors)
+            resident = [tensor.share_memory_() for tensor in sample]
+            program = program_entry.compile(*resident, config=config)
+            programs.append(program)
         report["compiled"] = True
         if args.compile_only:
             report["passed"] = True
             return
-        worker = DistributedWorker([program], config=config, inherited_host_tensors=resident)
+        host_tensors = swa_resident + resident if args.compressed else resident
+        worker = DistributedWorker(programs, config=config, inherited_host_tensors=host_tensors)
         for tensor in resident:
             handles.append(worker.alloc_tensor(tuple(tensor.shape), tensor.dtype))
+        if args.compressed:
+            for tensor in swa_resident:
+                swa_handles.append(worker.alloc_tensor(tuple(tensor.shape), tensor.dtype))
         before = [torch.empty_like(tensor).share_memory_() for tensor in resident[:-2]]
-        for index, anchor in enumerate(anchors):
-            tensors, expected = fixture(anchor, args.heads, 173 + index)
-            for src, host, handle in zip(tensors[:-2], resident[:-2], handles[:-2], strict=True):
-                host.copy_(src)
-                worker.copy_to(handle.data_ptr, host.data_ptr(), host.nbytes)
+        for index, (anchor, ratio) in enumerate(cases):
+            local, expected = fixture(anchor, args.heads, 173 + index)
+            tensors = local
+            if args.compressed:
+                tensors, expected = compressed_fixture(anchor, ratio, 173 + index, local)
+                upload(worker, local[:-2], swa_resident[:-2], swa_handles[:-2])
+                worker.run(swa_program, *swa_handles, config=config)
+                download(worker, swa_resident[-2:], swa_handles[-2:])
+                download(worker, swa_resident[:-2], swa_handles[:-2])
+                for saved, original in zip(swa_resident[:-2], local[:-2], strict=True):
+                    if not torch.equal(saved.view(torch.uint8), original.view(torch.uint8)):
+                        raise AssertionError("SWA modified a read-only input")
+                for host, segment in zip(tensors[-4:-2], swa_resident[-2:], strict=True):
+                    active = segment.reshape(args.heads, BLOCK, -1).transpose(0, 1)
+                    host.copy_(F.pad(active, (0, 0, 0, HEAD_TILE - args.heads)).reshape_as(host))
+            upload(worker, tensors[:-2], resident[:-2], handles[:-2])
             worker.run(program, *handles, config=config)
             elapsed = []
             for _ in range(args.iterations):
                 start = time.perf_counter()
                 worker.run(program, *handles, config=config)
                 elapsed.append(time.perf_counter() - start)
-            for host, handle in zip(resident[-2:], handles[-2:], strict=True):
-                worker.copy_from(host.data_ptr(), handle.data_ptr, host.nbytes)
+            download(worker, resident[-2:], handles[-2:])
             for saved, tensor, handle in zip(before, resident[:-2], handles[:-2], strict=True):
                 worker.copy_from(saved.data_ptr(), handle.data_ptr, saved.nbytes)
                 if not torch.equal(saved.view(torch.uint8), tensor.view(torch.uint8)):
                     raise AssertionError("PyPTO modified a read-only input")
             output, lse = resident[-2:]
+            if args.compressed:
+                output = output.unflatten(0, (BLOCK, HEAD_TILE))[:, :args.heads]
+                lse = lse.unflatten(0, (BLOCK, HEAD_TILE))[:, :args.heads]
             case = {
                 "anchor": anchor, "history": min(anchor, WINDOW), "inputs_byte_exact": True,
                 "output_max_abs": float((output - expected[0]).abs().max()),
                 "lse_max_abs": float((lse - expected[1]).abs().max()),
                 "resident_call_median_us": None if args.simulate else statistics.median(elapsed) * 1e6,
             }
+            if args.compressed:
+                case.update(ratio=ratio, max_selected=min(anchor // ratio, TOPK))
             report["cases"].append(case)
             torch.testing.assert_close(output, expected[0], **report["output_tolerance"])
             torch.testing.assert_close(lse, expected[1], **report["lse_tolerance"])
@@ -129,7 +212,7 @@ def main():
         try:
             if worker is not None:
                 try:
-                    for handle in reversed(handles):
+                    for handle in reversed(handles + swa_handles):
                         worker.free_tensor(handle)
                 finally:
                     worker.close()

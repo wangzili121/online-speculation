@@ -17,8 +17,13 @@ PYTHONPATH=src python3 scripts/validate_dsv41_pypto_swa.py \
 
 模拟器与 Ascend 910B3 各通过九组用例，输出最大绝对误差分别为 `5.36e-6` 和 `5.84e-6`，LSE 最大误差均为 `9.54e-7`。PV 计算将 FP32 softmax 概率拆为 BF16 值和 BF16 残差，两次乘法均累加到 FP32，减小近零输出的误差。实机各组的独立进程调用中位数约 1.0 ms，含 PyPTO 调度和同步，整模接入后的耗时需单独测量。 [模拟器记录](validation/dsv41/pypto-swa-a2a3sim.json) · [910B3 记录](validation/dsv41/pypto-swa-910b3.json)
 
+## C1A/C2A 压缩历史 Attention
+
+压缩历史程序接收各 draft query 已选中的物理 KV 行。每 128 行计算一段输出和 LSE，再在设备端与 SWA 和临时块的结果合并。SWA 侧已经计入 sink，各压缩分段无需再计。当前 demo 通过宿主机转换两段间的张量布局，后续 Serving 增加设备侧直接绑定。
+
+原样在命令末加 `--compressed` 并指定新的输出路径。六组用例通过了模拟器和 910B3 验证，覆盖 C1A/C2A、部分压缩组、随机页序、不同 query 的有效长度以及最多 512 行。910B3 的联合输出和 LSE 最大误差分别为 `4.95e-6` 和 `9.54e-7`，SWA 与压缩缓存均逐字节一致。实测使用 PyPTO `9875278`、PTO-ISA `418de18` 和 CANN 9.1.1。 [压缩历史源码](../src/blockspec/pypto_dsv41_sparse.py) · [模拟器记录](validation/dsv41/pypto-compressed-a2a3sim.json) · [910B3 记录](validation/dsv41/pypto-compressed-910b3.json)
+
 ## 进入整模前的接口
 
-1. **C2A/C1A 检索。** 将同一个 anchor 的已提交长度、源层的索引页和 diffusion query 交给检索。Full 计算本轮 Top-K，C1A Reindex 在本轮候选池内重排，Reuse 复用源层结果。先与现有 Torch golden 对照整数行号，再查能否复用 A2/A3 上的已有打分和 Top-K 内核。
-2. **压缩历史 Attention。** 用选中行去只读源层 KV 页，对每个 query 计算压缩历史的输出和 LSE，再与 SWA 和临时块的结果合并。SWA 程序已经把 sink 计入其归一化，压缩历史一侧省去 sink。合并可用现有联合 softmax golden 验证。
-3. **Serving。** 基模单跑通过后，把权重绑定、只读页表、K32 中间缓冲和 proposer/verifier 接入 executor。原生 DSpark 的候选提交、取消和回收接口可作为参考。用同一候选序列回放，独立核对验收输出与缓存状态，再测启用投机前后的吞吐。 [V4.1 DSpark 入口](https://github.com/hw-native-sys/pypto-serving/pull/324) · [vLLM 回放脚本](../scripts/probe_dsv41_matched_candidates.py)
+1. **C2A/C1A 检索。** 将同一个 anchor 的已提交长度、源层的索引页和 diffusion query 交给检索。Full 计算本轮 Top-K，C1A Reindex 在本轮候选池内重排，Reuse 复用源层结果。先与现有 Torch golden 对照整数行号，再评估 A2/A3 上已有打分和 Top-K 内核的输入布局。
+2. **Serving。** 基模单跑通过后，把权重绑定、只读页表、K32 中间缓冲和 proposer/verifier 接入 executor。原生 DSpark 的候选提交、取消和回收接口可作为参考。用同一候选序列回放，独立核对验收输出与缓存状态，再测启用投机前后的吞吐。 [V4.1 DSpark 入口](https://github.com/hw-native-sys/pypto-serving/pull/324) · [vLLM 回放脚本](../scripts/probe_dsv41_matched_candidates.py)
