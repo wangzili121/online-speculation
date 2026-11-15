@@ -1,0 +1,19 @@
+diff --git a/vllm_ascend/models/deepseek_v41/engram/common.py b/vllm_ascend/models/deepseek_v41/engram/common.py
+--- a/vllm_ascend/models/deepseek_v41/engram/common.py
++++ b/vllm_ascend/models/deepseek_v41/engram/common.py
+@@ -66,7 +66,14 @@ def engram_gate(
+     key = key.float()
+     rstd = torch.rsqrt(original.square().mean(-1) + eps)
+     rstd *= torch.rsqrt(key.square().mean(-1) + eps)
+-    dot = (original * channel_weight.float() * key).sum(-1) * rstd * dim**-0.5
++    product = original * channel_weight.float() * key
++    if product.device.type == "npu":
++        import batch_invariant_ops  # noqa: F401
++
++        summed = torch.ops.batch_invariant_ops.npu_reduce_sum_batch_invariant(product, -1, False)
++    else:
++        summed = product.sum(-1)
++    dot = summed * rstd * dim**-0.5
+     magnitude = dot.abs().clamp_min(1e-6).sqrt()
+     gate = torch.sigmoid(torch.where(torch.signbit(dot), -magnitude, magnitude))
+     gate = gate.masked_fill(~token_mask.unsqueeze(-1), 0)

@@ -182,6 +182,10 @@ python3 scripts/repro_dsv41_native_verifier.py --model "$MODEL" \
 
 该行的首层滑窗 Q、原始 Attention 输出及第一层完整输出都逐元素一致。可见 KV 有一个元素相差 `1.19e-7`。第一处传播到层输入的差异出现在零起始第 1 层的 Engram 注入后，2 个元素有差异，最大绝对差为 `3.05e-5`。随后的 Attention 输出最大绝对差达到 `0.015625`。该测试使用原生 `ngram_gpu` 和固定候选，服务只加载实际 W4A8 主模型。 [八卡严格模式实测](validation/dsv41/native-verifier-hccl-strict-910b3.json)
 
+进一步追踪时，两组的 Engram 输入、查表结果、mask 和 `wkv` 投影全部逐元素一致。用捕获的张量在单卡重跑，FP32 点积归约出现形状相关差异。用现有的 Ascend `npu_reduce_sum_batch_invariant` 替换这一步后，真实输入行在 1、32、65、256、419 和 512 行的门控输出逐元素一致，其他行填入独立输入。单独归约的设备时间约为 45–47 µs，原路径约 17–27 µs。这个用例的八卡逐 token 回归仍待完成。 [局部归约补丁](../runtime/vllm_ascend_v0_32/dsv41_engram_batch_invariant.patch)
+
+全局 `VLLM_BATCH_INVARIANT=1` 会强制切到 ND 权重格式。固定镜像的 W4A8 MoE 在 warmup 调用 `aclnnGroupedMatmulSwigluQuantWeightNzV2` 时要求五维 NZ 存储，实际收到一维形状，导致启动失败。局部补丁保留 W4A8 的既有权重布局，只替换 Engram 点积归约。 [vLLM-Ascend batch invariance 实现说明](https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/user_guide/feature_guide/batch_invariance.md)
+
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
 
 ### 单层在线更新
