@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from math import prod
 
 import torch
 
@@ -126,6 +127,11 @@ def compressed_logical_indices(
     return torch.where(offsets[None, :] < lengths[:, None], indices, -1), lengths
 
 
+def _linear_storage_view(cache: torch.Tensor) -> torch.Tensor:
+    span = 1 + sum((length - 1) * step for length, step in zip(cache.shape, cache.stride()))
+    return cache.as_strided((span,), (1,))
+
+
 def gather_paged_cache(
     cache: torch.Tensor,
     block_table: torch.Tensor,
@@ -161,17 +167,24 @@ def gather_paged_cache(
         raise ValueError("logical index maps to an unallocated cache block")
     physical_blocks = physical_blocks.clamp_min(0).long()
     offsets = safe % block_size
-    if logical_indices.ndim == 3 and logical_indices.shape[0] > 1 and cache.is_contiguous():
-        # C4 has a different sparse list per query. A single row index avoids
-        # materializing the much larger two-index gather on the NPU.
+    row_shape = cache.shape[2:]
+    if cache.is_contiguous():
         rows = physical_blocks * block_size + offsets
-        gathered = cache.flatten(0, 1).index_select(0, rows.flatten()).view(
-            *logical_indices.shape, *cache.shape[2:])
-        mask = ~valid.view(valid.shape + (1,) * (gathered.ndim - valid.ndim))
-        return gathered.masked_fill(mask, 0)
-    gathered = cache[physical_blocks, offsets]
-    mask = valid.view(valid.shape + (1,) * (gathered.ndim - valid.ndim))
-    return torch.where(mask, gathered, torch.zeros_like(gathered))
+        gathered = cache.flatten(0, 1).index_select(0, rows.flatten())
+    else:
+        # NPU advanced indexing can copy the entire strided cache. Gather
+        # just the requested rows by addressing their original storage.
+        strides = cache.stride()
+        starts = physical_blocks * strides[0] + offsets * strides[1]
+        columns = torch.arange(prod(row_shape), device=cache.device, dtype=torch.long)
+        column_offsets = sum(index * step for index, step in zip(
+            torch.unravel_index(columns, row_shape), strides[2:],
+        ))
+        addresses = starts.unsqueeze(-1) + column_offsets
+        gathered = _linear_storage_view(cache).index_select(0, addresses.flatten())
+    gathered = gathered.view(*logical_indices.shape, *row_shape)
+    mask = ~valid.view(valid.shape + (1,) * len(row_shape))
+    return gathered.masked_fill(mask, 0)
 
 
 def cache_checksum(cache: torch.Tensor, *, full: bool = False) -> torch.Tensor:
@@ -188,8 +201,7 @@ def cache_checksum(cache: torch.Tensor, *, full: bool = False) -> torch.Tensor:
     indices = torch.arange(0, size, stride, device=cache.device, dtype=torch.long)
     strides = cache.stride()
     offsets = sum(index * step for index, step in zip(torch.unravel_index(indices, cache.shape), strides))
-    span = 1 + sum((length - 1) * step for length, step in zip(cache.shape, strides))
-    return cache.as_strided((span,), (1,)).index_select(0, offsets)
+    return _linear_storage_view(cache).index_select(0, offsets)
 
 
 def assert_cache_unchanged(
