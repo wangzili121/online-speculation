@@ -145,7 +145,9 @@ MODE=orthrus HEAD_HOST=/data/disk/wangzili/models/orthrus-dsv41-head-v1 \
 
 该入口明确标为 smoke：若单机因 HBM、EP8 或运行时 workspace 失败，应回到官方两节点 DP2/TP8/EP16，不通过 CPU offload 主干或逐层换入来伪造可部署结论。
 
-完整服务验收仍需实际 V4.1 checkpoint，验证 target-only 启动、40 层 draft 前向、greedy 一致性、拒绝回滚、并发换序与显存预算。TP8 head 构造和通信已通过，不再是剩余项。
+在单台 8×64 GB A2 上，实际 W4A8 checkpoint 已通过 target-only 启动和初始化 head 的 K32 投机推理。短提示词和数百 token 提示词各生成 40 个 token，greedy 输出逐 token 一致。verifier 共处理 1,116 个候选，接受 44 个，draft 前后抽样检查的目标 KV 和页表一致。用真实请求反馈微调最后一层后，导出 head 可以通过契约检查并在八卡重载。短请求仍逐 token 一致，较长请求在第 17 个输出 token 出现分叉。
+
+回放该用例的候选时跳过 draft 前向，主模型的批量 verifier 在同一位置仍选出 token 5136，top-2 logits 为 32.75 和 32.50。target-only 在该位置选出 token 14。回放覆盖了首次分叉，后续生成因候选耗尽结束。分叉出现在 verifier 的打分阶段，具体算子仍待定位。生产场景的严格 greedy 一致性、并发、长上下文和性能仍待验收。
 
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
 
@@ -153,8 +155,10 @@ MODE=orthrus HEAD_HOST=/data/disk/wangzili/models/orthrus-dsv41-head-v1 \
 
 单机 eager 可以显式设置 `ORTHRUS_DSV41_ONLINE_STRIDE`。实验入口限定 DP1、单请求，更新零起始第 39 层的 diffusion attention。它沿用第 36 层的 Top-K，并在起草时复制本轮重放所需的 KV 行。verifier 返回后核对请求、anchor 和候选 token，只用实际验证到的位置做全词表 TV 蒸馏。第 0–30 行的 draft logits 预测位置 1–31，与研究实现的 next-token 对齐方式一致。
 
-当前使用 rank 0 的 CPU 参考反传。最后一层冻结的 W4A8/INT8 MoE 逐专家反量化成 FP32，训练完成后将 BF16 head 和 FP32 sink 发布到各 TP rank。运行中的主模型仍使用原生 W4A8 前向。CPU 参考与 NPU 量化前向存在计算精度差异，单机真实服务的反馈对齐、权重发布及更新后请求仍需八卡验收。此入口用于验证功能，更新与请求同步。
+当前使用 rank 0 的 CPU 参考反传。最后一层冻结的 W4A8/INT8 MoE 逐专家反量化成 FP32，训练完成后将 BF16 head 和 FP32 sink 发布到各 TP rank。运行中的主模型使用原生 W4A8 前向。这条更新路径与请求同步，用于验证反馈、反传和发布。
 
 CPU 单测验证了可微重放、目标历史不变及更新后 loss 下降。使用真实 1017 第 39 层和 LM head，配合合成边界与教师 logits，连续两步更新的 TV 为 0.84515、0.78542，Q 投影参数发生变化。这个用例验证梯度和权重更新，线上续训效果需用真实请求确认。61 上的固定镜像已通过 MRV2 Orthrus 配置检查。最新 K32 Attention 和目标缓存复验结果见上表。
+
+单机八卡实测中，从真实 verifier 捕获的两行有效反馈完成了一步离线更新，KL 从 2.3541 降至 0.0378，部署精度下 7 个末层张量发生变化。CPU 重放与捕获的 NPU draft logits 平均 TV 为 0.00390，两行 argmax 一致。在线实验连续发布了 13 次单层更新，两条请求各生成 12 个 token，均与 target-only 基线对应前缀一致。这组实验只覆盖链路功能和短样例。
 
 `scripts/watch_dsv41_single_a2.py --online --offline-handoff` 会在下载完整、固定镜像可用且本机八卡空闲后，依次执行 target-only、Orthrus greedy 对照、离线 head 更新并重载，以及在线发布 smoke。Orthrus 验收检查 verifier 实际收到候选，并抽样检查 draft 前后目标缓存和页表一致。每一步结束后停止本次测试创建的容器。
