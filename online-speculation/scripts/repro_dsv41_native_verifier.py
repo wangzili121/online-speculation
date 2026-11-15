@@ -318,8 +318,14 @@ def main():
     if len({row["input_token"] for row in scores.values()}) != 1:
         raise RuntimeError("the recorded scoring rows have different input tokens")
     same_prefix = all(ids[:OUTPUT_INDEX] == tokens["serial"][:OUTPUT_INDEX] for ids in tokens.values())
+    first_differences = {
+        key: next((i for i, pair in enumerate(zip(tokens["serial"], ids), start=1)
+                   if pair[0] != pair[1]), None)
+        for key, ids in tokens.items() if key != "serial"
+    }
     report = {"same_prefix": same_prefix,
               "token_17": {key: ids[OUTPUT_INDEX] for key, ids in tokens.items()},
+              "first_different_output_token": first_differences,
               "target_logits": scores}
     report["reproduced"] = same_prefix and report["token_17"]["serial"] != report["token_17"]["original"]
     state.with_name("report.json").write_text(json.dumps(report, indent=2) + "\n")
