@@ -27,10 +27,32 @@ def all_reduce_repeats(value, rank):
     return reference, different
 
 
+def all_reduce_mean_ms(value, iterations):
+    output = value.clone()
+    for _ in range(10):
+        output.copy_(value)
+        dist.all_reduce(output)
+    torch.npu.synchronize()
+    dist.barrier()
+    start = torch.npu.Event(enable_timing=True)
+    finish = torch.npu.Event(enable_timing=True)
+    start.record()
+    for _ in range(iterations):
+        output.copy_(value)
+        dist.all_reduce(output)
+    finish.record()
+    finish.synchronize()
+    return start.elapsed_time(finish) / iterations
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--timing-iterations", type=int, default=0,
+                        help="also measure the mean input copy plus AllReduce device time")
     args = parser.parse_args()
+    if args.timing_iterations < 0:
+        parser.error("--timing-iterations must be nonnegative")
     index = json.loads((args.model / "quant_model_weights.safetensors.index.json").read_text())["weight_map"]
     config = json.loads((args.model / "config.json").read_text())["text_config"]
     rank = int(os.environ["LOCAL_RANK"])
@@ -77,6 +99,16 @@ def main():
                 "M1_vs_M32_changed_values": int(delta.count_nonzero()),
                 "M1_vs_M32_max_abs": float(delta.max()),
             }), flush=True)
+        if args.timing_iterations:
+            for value in (local_one, local_block):
+                timing = all_reduce_mean_ms(value, args.timing_iterations)
+                if rank == 0:
+                    print(json.dumps({
+                        "rows": value.size(0),
+                        "HCCL_DETERMINISTIC": os.environ.get("HCCL_DETERMINISTIC"),
+                        "iterations": args.timing_iterations,
+                        "mean_ms_including_copy": timing,
+                    }), flush=True)
     finally:
         dist.destroy_process_group()
 

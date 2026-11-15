@@ -176,6 +176,8 @@ python3 scripts/repro_dsv41_native_verifier.py --model "$MODEL" \
 
 在四张 A2 上，用实际第 0 层的 `wo_a` 和 `wo_b` 分片构造 BF16 输出投影，固定各 rank 的输入后，rank 0 的本地投影在单行和 32 行之间逐元素一致。差异出现在 HCCL AllReduce 之后。每种形状重复 32 次，默认模式下有 24 次单行结果和 32 次批量结果偏离各自的首次值，跨形状最大差为 0.015625。设置 `HCCL_DETERMINISTIC=strict` 后，重复值与跨形状结果均逐元素一致。 [独立输出投影探针](../scripts/probe_dsv41_oproj_hccl.py)
 
+同一探针加 `--timing-iterations 128`，测两轮输入复制与 AllReduce 的设备时间。单行在默认模式为 0.20–0.22 ms，严格模式为 0.28–0.29 ms。32 行分别为 0.26–0.29 ms 和 0.27–0.28 ms。这组结果只反映四卡通信微基准。
+
 单机部署入口会将宿主机显式设置的 `HCCL_DETERMINISTIC` 传给容器内的服务。同一开关对实际八卡模型的逐步解码、K32 验证和正式 head 的端到端效果仍待复验。 [vLLM-Ascend batch invariance 实现说明](https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/user_guide/feature_guide/batch_invariance.md)
 
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
