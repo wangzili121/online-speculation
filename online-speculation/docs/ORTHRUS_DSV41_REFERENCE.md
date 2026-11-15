@@ -194,9 +194,23 @@ python3 scripts/repro_dsv41_native_verifier.py --model "$MODEL" \
 
 八卡同时启用 Engram 归约补丁、上述 SWA 补丁和 HCCL 严格模式后，位置 420 的原始 SWA 与输出投影在八个 rank 上都逐元素一致。四组原生 K32 与逐步解码在原先第 17 个 token 的用例上通过，完整 40-token 输出的首次分叉出现在第 31 个 token。补丁当前用于单请求 eager 定位，尚未达到端到端逐 token 验收要求。 [SWA 补丁八卡实测](validation/dsv41/native-verifier-swa-row-invariant-910b3.json)
 
+第 31 个 token 对应的输入行在第 0 层 `Wq_a` 出现一个 BF16 舍入差异，经过动态量化后变成一个 INT8 输入值的变化，继续传播到数百个 Q 元素。单卡使用 ND 权重和 `npu_mm_batch_invariant` 消除了该行的投影和量化输入差异。应用到八卡目标模型的 Q 和 KV 投影后，原生 K32 的首次分叉出现在第 20 个 token。这个投影试验未启用到服务配置。
+
+#### Draft 缓存读取
+
+实模联调定位到三处可能复制 3.57 GiB KV 张量的操作，分别是缓存审计的展平、短历史读取的高级索引和压缩历史归一布局。审计和读取现在按实际 stride 访问原始存储，只读取采样值或选中行。SparseFlashMLA 支持页间 stride，可以直接使用每页内部连续的目标 KV。页内有 padding 时，读取选中行后使用 FP32 计算。
+
+带 padding 的 64 MiB 缓存单卡实测中，新旧读取结果逐元素一致，128 行读取的峰值临时显存约从 64 MiB 降到 16 MiB。缓存抽检固定 65,536 个值。页间 stride 的短历史和融合算子输出均与连续页对照逐元素一致，页内 padding 的 FP32 路径对参考值最大绝对误差为 `2.38e-7`。
+
 全局 `VLLM_BATCH_INVARIANT=1` 会强制切到 ND 权重格式。固定镜像的 W4A8 MoE 在 warmup 调用 `aclnnGroupedMatmulSwigluQuantWeightNzV2` 时要求五维 NZ 存储，实际收到一维形状，导致启动失败。局部补丁保留 W4A8 的既有权重布局，只替换 Engram 点积归约。 [vLLM-Ascend batch invariance 实现说明](https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/user_guide/feature_guide/batch_invariance.md)
 
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
+
+#### 已更新 head 的原生 verifier 对照
+
+在单机 8×64 GiB A2 上用 `Eco-Tech/DeepSeek-V4.1-Flash-1017-w4a8` 跑 TP8/EP8，使用 eager、同步调度、单请求、显存利用率 0.88 和 HCCL strict。测试使用原生目标模型路径，未启用上述诊断补丁。Draft head 从初始化权重出发，对最后一层做过一次离线更新，用于验证更新后权重的加载与运行。
+
+先用 Orthrus 生成两个各 40 token 的回答并记录实际提出的候选，再让原生 `ngram_gpu` verifier 按相同位置回放这些候选。两组的 40 轮候选、80 个输出 token 和提出／接受计数均一致。38 轮进入验证，共提出 1,178 个候选，接受 41 个。Orthrus 的目标缓存审计全程通过。原生逐步解码与 K32 验证之间仍有数值分叉，逐 token 生产验收仍待解决。 [复现脚本](../scripts/probe_dsv41_matched_candidates.py) · [八卡实测](validation/dsv41/orthrus-matched-verifier-910b3.json)
 
 ### 单层在线更新
 
