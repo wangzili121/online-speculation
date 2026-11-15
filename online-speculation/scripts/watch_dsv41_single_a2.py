@@ -222,6 +222,7 @@ def main():
                 "docker", "run", "--rm", "--network", "none", "--entrypoint", "python3",
                 "--user", f"{os.getuid()}:{os.getgid()}",
                 "-e", "TORCH_DEVICE_BACKEND_AUTOLOAD=0",
+                "-e", "TORCHINDUCTOR_CACHE_DIR=/tmp/dsv41-torchinductor",
                 "-e", "OMP_NUM_THREADS=6", "-e", "MKL_NUM_THREADS=6",
                 "-v", f"{models}:/models", "-v", f"{REPO}:/work:ro", "-e", "PYTHONPATH=/work/src",
                 PINNED_IMAGE, "/work/scripts/train_dsv41_last_layer_smoke.py",
