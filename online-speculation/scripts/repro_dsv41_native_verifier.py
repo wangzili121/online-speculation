@@ -194,7 +194,7 @@ def install_layer_trace(state):
     @wraps(attention)
     def capture_swa(impl, layer, q, metadata, compressed_indices, **kwargs):
         output = attention(impl, layer, q, metadata, compressed_indices, **kwargs)
-        if layer.layer_idx or q.shape[0] > 32 or get_tp_group().rank_in_group != 0:
+        if layer.layer_idx not in (0, 1) or q.shape[0] > 32 or get_tp_group().rank_in_group != 0:
             return output
         positions = metadata.positions[:q.shape[0]].tolist()
         if SCORING_ROW not in positions:
@@ -212,9 +212,10 @@ def install_layer_trace(state):
         first = output[row].detach().clone()
         duplicate = attention(impl, layer, q, metadata, compressed_indices, **kwargs)[row]
         label = state.read_text().strip()
+        prefix = "swa" if layer.layer_idx == 0 else "swa-layer-01"
         torch.save({"query": q[row].cpu(), "visible_kv": cache[pages, indices % block].cpu(),
                     "swa_output": first.cpu(), "identical_relaunch": torch.equal(first, duplicate)},
-                   state.with_name(f"swa-{label}.pt"))
+                   state.with_name(f"{prefix}-{label}.pt"))
         return output
 
     AscendDSAV41Impl._forward_attention = capture_swa
