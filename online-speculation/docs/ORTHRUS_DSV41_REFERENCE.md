@@ -18,9 +18,11 @@ Torch 参考接收已做 RoPE 的查询和逻辑分页视图。C2A 只检索已�
 
 ### 离线训练交接
 
-训练端以 1017 的 W4A8 主模型为冻结教师，导出与部署相同的 tokenizer、mask token 和 K32 位置信息。学生使用真实 anchor 前的历史和块内双向可见的临时 KV。第 0–30 行 draft logits 对齐 anchor 后的第 1–31 个位置，训练数据应为超出答案范围的位置打上无效标记。可先用 forward KL 检查语言模型蒸馏。训练 indexer 时，需单独监督检索分数，离散 Top-K 无法把 KL 梯度传回 indexer。
+1. **固定教师和初始化权重。** 使用部署对应的 1017 W4A8 checkpoint、tokenizer 和 K32，当前测试用的 mask token ID 为 `128799`。从目标 Attention 初始化 diffusion 分支，冻结主模型，包含共享的 embedding、Engram、mHC、norm、MoE、LM head，以及目标 compressor 和 indexer K 投影。优化器只收所选层的 diffusion Attention 参数，包含其内部的 Q/KV norm。若训练 diffusion indexer，给其打分另设监督，离散 Top-K 无法把语言模型 KL 的梯度传回检索分数。
+2. **对齐监督位置。** 在真实 token 序列中选择位置 `a` 作为 anchor。教师在完整真实序列上跑因果前向，学生输入分别为 anchor 和 31 个 MASK，并读取 anchor 之前的目标历史。对每个 `j = 0…30`，draft 块第 `j` 行与教师在绝对位置 `a+j` 的 logits 比较，两者都预测位置 `a+j+1`。用全词表 forward KL，屏蔽样本末尾和监督范围之外的位置。
+3. **先用真实样本做交接检查。** 固定同一个 head 和同一段历史，比较训练前向与服务执行的 draft logits，记录 TV 和 argmax 一致性。做一步反向，核对实际改动的张量是否都在约定训练范围，随后将部署精度下的更新权重交回服务，检查能否加载、起草和通过 verifier。
 
-训练端将 336 个 head 张量以 `layers.N.attn.*` 命名，保存到单个 BF16/FP32 safetensors 中。按训练记录选择同一个基模目录和 mask token，通过以下命令生成服务可加载的分片、配置和 manifest。导出会检查缺失或多出的张量、形状、精度和非有限值，最终保存 BF16 权重和 FP32 sink。 `head_shapes` 返回逐张量形状。 [张量契约](../src/blockspec/vllm_ascend/dsv41_contract.py)
+训练端保存一个 safetensors，包含 336 个 `layers.N.attn.*` 张量。冻结的 draft 层也随 head 打包。交付时同时记录教师 checkpoint、mask token ID 和更新的层号。导出会拒绝缺失或多出的张量、错误形状和非有限值，输出 BF16 权重、FP32 sink 及基模哈希。 `head_shapes` 返回逐张量形状。 [张量契约](../src/blockspec/vllm_ascend/dsv41_contract.py)
 
 ```bash
 PYTHONPATH=src python scripts/export_dsv41_orthrus_head.py \
@@ -29,8 +31,6 @@ PYTHONPATH=src python scripts/export_dsv41_orthrus_head.py \
 PYTHONPATH=src python scripts/preflight_dsv41_orthrus.py \
   --model "$MODEL" --head "$HEAD" --require-trained
 ```
-
-在启动长训前，用真实样本确认 teacher 与 draft 的 logits 逐位置对齐，对比训练端与服务端同一 head、同一历史输入下的 draft logits，并验证一步反向只更新约定的参数。再用这一步导出的 head 启动服务，检查候选确实进入 verifier、greedy token 与 target-only 一致，以及连续拒绝后的目标 cache 状态。当前导出和预检已通过 CPU 往返验证，真实训练样本到八卡服务的往返还待跑通。
 
 单机验收脚本增加了 `--offline-handoff`。它在运行请求时保存一轮对齐后的原生 teacher/draft logits、最后一层输入及只读历史。CPU 先对照服务输出与 FP32 replay 的 logits，再用 forward KL 更新最后一层，将保存的 head 分片交回镜像启动。输出记录 logits 最大误差、P99、TV、argmax 一致数量、梯度范数和 BF16/F32 导出后仍发生变化的张量。脚本只更新第 39 层，离线团队可沿用同一 head 契约，并单独验证所选训练层的反向。采集会记录推理时 verifier 实际到达的位置，适用于本次交接 smoke。完整离线训练的数据应来自 teacher-forced 序列并包含该样本所有有效 MASK 监督位置。
 
@@ -67,7 +67,7 @@ SWA 历史与临时 K×K 双向块一起用 FP32 批量矩阵乘法计算，选�
 | SWA 与临时块 FP32，压缩历史融合（512 条有效检索历史） | 9.10e-4 | 9.54e-7 | 3.68 ms |
 | 全 FP32 对照（512 条有效检索历史） | 1.55e-6 | 9.54e-7 | 4.99 ms |
 
-切换前，全 BF16 融合路径在 32 和 512 条有效历史的用例分别有 13 和 12 个值超出逐元素门限（`atol=0.001, rtol=2.01/128`）。当前两组共 786,432 个输出元素全部通过，LSE 误差保持在 `1e-6` 内。独立短历史测试还发现，原生融合算子在 KV 长度小于 K32 时可能产生 NaN 或错误 LSE。调整后，在空、短和跨页历史用例中对照 FP32 结果，同时对目标缓存和页表做逐元素核对。混合批次包含 0、1、2、31、32、127、513-token 前缀和打乱的物理页，SWA、C1A、C2A 各有 917,504 个输出元素，三组均通过同一逐元素门限，最大绝对误差分别为 `1.28e-6`、`1.98e-3`、`1.60e-3`。真实请求上的 logits、greedy 及 cache 验收仍待八卡测试。
+切换前，全 BF16 融合路径在 32 和 512 条有效历史的用例分别有 13 和 12 个值超出逐元素门限（`atol=0.001, rtol=2.01/128`）。当前两组共 786,432 个输出元素全部通过，LSE 误差保持在 `1e-6` 内。独立短历史测试还发现，原生融合算子在 KV 长度小于 K32 时可能产生 NaN 或错误 LSE。调整后，在空、短和跨页历史用例中对照 FP32 结果，同时对目标缓存和页表做逐元素核对。混合批次包含 0、1、2、31、32、127、513-token 前缀和打乱的物理页，SWA、C1A、C2A 各有 917,504 个输出元素，三组均通过同一逐元素门限，最大绝对误差分别为 `1.28e-6`、`1.98e-3`、`1.60e-3`。真实请求结果见[单机 A2 实测](#实验性单机-a2-smoke)。
 
 Attention 后的 grouped low-rank O projection 也在同一设备栈上单独复验。算子使用主模型相同的 `npu_transpose_batchmatmul` 和 `[group, group_width, o_lora_rank]` 权重布局。覆盖 1、2、8 个本地 group 以及 32、64、96 个 token；相对 CPU FP32 公式的最大绝对误差不超过 `0.00406`，P99 不超过 `0.00196`，均通过 BF16 门限。 [验证记录](validation/dsv41/grouped-output-projection-910b3.json)
 
@@ -79,7 +79,7 @@ PYTHONPATH=src python scripts/probe_dsv41_sparse_mla.py --mixed-history
 PYTHONPATH=src python scripts/smoke_dsv41_oproj_npu.py --device npu:0
 ```
 
-添加 `--layer2-weights /path/to/layer2-a2-w8a8.pt` 可复测第 2 层样本。该用例使用原版 Flash 的 A2 W8A8 权重转换样本和合成隐藏状态，CPU 反量化并生成 Q/KV；其余用例使用合成的分页 KV。复验使用 `torch 2.10.0+cpu` 和 `torch_npu 2.10.0.post4`。实际 prompt 激活、完整 1017 量化服务和吞吐尚待验收。
+添加 `--layer2-weights /path/to/layer2-a2-w8a8.pt` 可复测第 2 层样本。该用例使用原版 Flash 的 A2 W8A8 权重转换样本和合成隐藏状态，由 CPU 反量化并生成 Q/KV。其余用例使用合成的分页 KV。复验使用 `torch 2.10.0+cpu` 和 `torch_npu 2.10.0.post4`。
 
 ## 原生 INT8 检索
 
@@ -130,6 +130,8 @@ PROFILE=smoke-16k scripts/deploy_dsv41_node.sh
 
 W4A8 仓库约 529GB，其中 Engram 由 CPU offload 承担，因此可尝试用一台 8×64GB A2 做受限启动；但这不是官方验收拓扑，也不能替代上述两节点测试。单机入口固定 TP8/EP8、16K、batch 1、512 batched tokens、eager 和 0.88 显存利用率。先运行 target-only，确认权重、Engram 与 HBM 预算后，才以初始化 head 检查 Orthrus 链路。
 
+单机运行日志显示，挂载 Engram 的主机内存每 rank 约 25.75 GiB，主模型与 draft head 的设备权重每 rank 约 38.16 GiB。按固定镜像的 INT8/FP32 表布局估算，权重全放设备约需每卡 63.91 GiB，已超过运行时可见的 60.96 GiB。这套配置使用注册主机内存，NPU 查表时只读命中行。
+
 ```bash
 export LOCAL_IP=<this-node-hccl-ip>
 export NIC_NAME=<hccl-interface>
@@ -149,6 +151,25 @@ MODE=orthrus HEAD_HOST=/data/disk/wangzili/models/orthrus-dsv41-head-v1 \
 
 回放该用例的候选时跳过 draft 前向，主模型的批量 verifier 在同一位置仍选出 token 5136，top-2 logits 为 32.75 和 32.50。target-only 在该位置选出 token 14。回放覆盖了首次分叉，后续生成因候选耗尽结束。分叉出现在 verifier 的打分阶段，具体算子仍待定位。生产场景的严格 greedy 一致性、并发、长上下文和性能仍待验收。
 
+#### 原生 verifier 对照
+
+同一镜像及 W4A8 checkpoint 下，使用原生 MRV2 `ngram_gpu` proposer 接口喂固定候选，服务只载入主模型。下表三次测量的前 16 个输出 token 相同。批量验证在同一轮保留前两个候选 `[21361, 41660]`，后缀对照把余下 29 个候选换成 token 263。
+
+| 控制组 | 验证行数 | token 14 的 logit | token 5136 的 logit | 第 17 个输出 token |
+|---|---:|---:|---:|---:|
+| 主模型逐步解码 | 1 | 32.25 | 32.25 | 14 |
+| 原生 verifier，原候选 | 32 | 32.00 | 32.25 | 5136 |
+| 原生 verifier，替换候选后缀 | 32 | 32.25 | 32.25 | 14 |
+
+独立脚本再跑一遍，三组前 16 个 token 仍相同，第 17 个依次为 5136、14、5136。两次实验均在原生批量 verifier 复现了与逐步解码的排序差异，具体获胜 token 随运行而变。替换后缀的对照也观察到分数变化。要区分批量数值路径与 Attention、缓存边界，需要同输入重复测量，并逐层比较目标行的激活。 [独立复现实测](validation/dsv41/native-verifier-repro-910b3.json)
+
+在已挂载真实 checkpoint 和八张 A2 的固定镜像内，从仓库目录运行下列命令。脚本用临时 vLLM 插件喂候选、抓取目标 logits，并在两次启动结束后清理自身服务。输出包含两个服务日志、`trace.jsonl` 和 `report.json`。 [复现脚本](../scripts/repro_dsv41_native_verifier.py) · [候选 fixture](validation/dsv41/native-verifier-candidates.json)
+
+```bash
+python3 scripts/repro_dsv41_native_verifier.py --model "$MODEL" \
+  --local-ip "$LOCAL_IP" --nic "$NIC_NAME" --output-dir local/native-verifier-repro
+```
+
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
 
 ### 单层在线更新
@@ -160,5 +181,21 @@ MODE=orthrus HEAD_HOST=/data/disk/wangzili/models/orthrus-dsv41-head-v1 \
 CPU 单测验证了可微重放、目标历史不变及更新后 loss 下降。使用真实 1017 第 39 层和 LM head，配合合成边界与教师 logits，连续两步更新的 TV 为 0.84515、0.78542，Q 投影参数发生变化。这个用例验证梯度和权重更新，线上续训效果需用真实请求确认。61 上的固定镜像已通过 MRV2 Orthrus 配置检查。最新 K32 Attention 和目标缓存复验结果见上表。
 
 单机八卡实测中，从真实 verifier 捕获的两行有效反馈完成了一步离线更新，KL 从 2.3541 降至 0.0378，部署精度下 7 个末层张量发生变化。CPU 重放与捕获的 NPU draft logits 平均 TV 为 0.00390，两行 argmax 一致。在线实验连续发布了 13 次单层更新，两条请求各生成 12 个 token，均与 target-only 基线对应前缀一致。这组实验只覆盖链路功能和短样例。
+
+#### 单请求分段计时
+
+单机 TP8/EP8、eager、Engram CPU offload，使用初始化 head，每三轮尝试一次在线更新。预热后，419 个输入 token 的请求生成 12 个 token 用时 51.02 s，其中两次 rank 0 CPU 更新共 42.63 s，两次发布共 1.46 s。CPU 更新计时包含冻结专家权重读取、反量化、前后向及优化器执行。
+
+| 阶段 | 单次中位耗时 | 样本数 |
+|---|---:|---:|
+| 主模型批量 verifier 前向 | 278 ms | 7 |
+| Draft 前向及采样 | 546 ms | 8 |
+| Verifier 采样 | 0.19 ms | 7 |
+| Engram offload 查表，主模型 | 0.23 ms | 16 |
+| Engram offload 查表，draft | 0.24 ms | 16 |
+| CPU 最后一层更新 | 21.32 s | 2 |
+| 发布到 TP8 | 729 ms | 2 |
+
+设备项用 rank 0 的 NPU 事件计时，Engram 项只覆盖单张表在该 rank 上的查表和反量化，部分计时区间互相嵌套。CPU 更新和发布用主机墙钟时间。该样例的在线更新开销主要在 CPU 更新。推理路径中，draft 前向和批量 verifier 的耗时量级高于 Engram 查表。 [计时记录](validation/dsv41/tp8-online-timings-910b3.json)
 
 `scripts/watch_dsv41_single_a2.py --online --offline-handoff` 会在下载完整、固定镜像可用且本机八卡空闲后，依次执行 target-only、Orthrus greedy 对照、离线 head 更新并重载，以及在线发布 smoke。Orthrus 验收检查 verifier 实际收到候选，并抽样检查 draft 前后目标缓存和页表一致。每一步结束后停止本次测试创建的容器。
