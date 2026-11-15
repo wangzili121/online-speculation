@@ -2,6 +2,7 @@
 """Replay the V4.1 token-ranking case through a target-only engine and native MRV2 n-gram."""
 
 import argparse
+from dataclasses import replace
 from functools import wraps
 import json
 import os
@@ -101,6 +102,20 @@ def register():
     NPUModelRunner.sample = trace_sample
     if os.environ.get("DSV41_REPRO_LAYER_TRACE") == "1":
         install_layer_trace(state)
+    if os.environ.get("DSV41_REPRO_SINGLE_ENGINE") == "1":
+        from vllm.v1.core.sched.scheduler import Scheduler
+
+        update = Scheduler.update_draft_token_ids
+
+        @wraps(update)
+        def update_for_control(scheduler, draft_token_ids):
+            if control().startswith("serial"):
+                draft_token_ids = replace(
+                    draft_token_ids, draft_token_ids=[[] for _ in draft_token_ids.req_ids],
+                )
+            return update(scheduler, draft_token_ids)
+
+        Scheduler.update_draft_token_ids = update_for_control
 
 
 def install_layer_trace(state):
@@ -209,6 +224,9 @@ def prepare_plugin(path):
     launcher = path / "vllm"
     launcher.write_text(
         '#!/bin/sh\n'
+        'if [ "$DSV41_REPRO_SINGLE_ENGINE" = 1 ]; then\n'
+        '  set -- "$@" --no-async-scheduling\n'
+        'fi\n'
         'if [ -n "$DSV41_REPRO_SPEC" ]; then\n'
         '  exec "$DSV41_REPRO_VLLM" "$@" --speculative-config "$DSV41_REPRO_SPEC"\n'
         'fi\n'
@@ -282,6 +300,8 @@ def main():
     parser.add_argument("--port", type=int, default=19891)
     parser.add_argument("--layer-trace", action="store_true",
                         help="capture layer activations and repeat each control once")
+    parser.add_argument("--single-engine", action="store_true",
+                        help="reuse the native engine and suppress proposals for the serial controls")
     args = parser.parse_args()
     if not (args.model / "config.json").is_file() or not shutil.which("vllm"):
         parser.error("run inside the pinned Ascend image with the 1017 W4A8 checkpoint mounted")
@@ -296,6 +316,7 @@ def main():
             "DSV41_REPRO_VLLM": shutil.which("vllm"),
             "DSV41_REPRO_STATE": str(state),
             "DSV41_REPRO_LAYER_TRACE": str(int(args.layer_trace)),
+            "DSV41_REPRO_SINGLE_ENGINE": str(int(args.single_engine)),
             "VLLM_PLUGINS": "ascend,ascend_model,ascend_model_loader,dsv41_verifier_repro",
             "PYTHONPATH": python_path,
             "PATH": folder + os.pathsep + os.environ["PATH"],
@@ -308,8 +329,12 @@ def main():
         native = ("original", "original-repeat", "changed-suffix", "changed-suffix-repeat") if args.layer_trace else (
             "original", "changed-suffix",
         )
-        tokens = run_server(args, env | {"DSV41_REPRO_SPEC": ""}, state, *serial)
-        tokens |= run_server(args, env | {"DSV41_REPRO_SPEC": json.dumps(SPEC)}, state, *native)
+        native_env = env | {"DSV41_REPRO_SPEC": json.dumps(SPEC)}
+        if args.single_engine:
+            tokens = run_server(args, native_env, state, *serial, *native)
+        else:
+            tokens = run_server(args, env | {"DSV41_REPRO_SPEC": ""}, state, *serial)
+            tokens |= run_server(args, native_env, state, *native)
     trace = [json.loads(line) for line in state.with_name("trace.jsonl").read_text().splitlines()]
     scores = {row["control"]: row for row in trace if "logits" in row}
     widths = dict.fromkeys(serial, 1) | dict.fromkeys(native, 32)

@@ -172,6 +172,8 @@ python3 scripts/repro_dsv41_native_verifier.py --model "$MODEL" \
 
 `--layer-trace` 会把每组控制重复一次，并捕获第 434 个零起始位置的逐层激活、首层 SWA 的 Q、可见 KV 和原始输出。目标模型连续两次逐步解码时，已观察到第 0 层 Attention 的输入行一致，Attention 输出最早出现差异，最大绝对差为 0.015625。
 
+八卡窗口较短时可加 `--single-engine`。脚本复用一次模型加载，在同步调度器中把逐步组的候选清空，批量组仍走原生 `ngram_gpu`。输出会核对目标位置实际使用一行或 32 行，并记录每条响应中第一个不同的 token 位置。
+
 在四张 A2 上，用实际第 0 层的 `wo_a` 和 `wo_b` 分片构造 BF16 输出投影，固定各 rank 的输入后，rank 0 的本地投影在单行和 32 行之间逐元素一致。差异出现在 HCCL AllReduce 之后。每种形状重复 32 次，默认模式下有 24 次单行结果和 32 次批量结果偏离各自的首次值，跨形状最大差为 0.015625。设置 `HCCL_DETERMINISTIC=strict` 后，重复值与跨形状结果均逐元素一致。 [独立输出投影探针](../scripts/probe_dsv41_oproj_hccl.py)
 
 单机部署入口会将宿主机显式设置的 `HCCL_DETERMINISTIC` 传给容器内的服务。同一开关对实际八卡模型的逐步解码、K32 验证和正式 head 的端到端效果仍待复验。 [vLLM-Ascend batch invariance 实现说明](https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/user_guide/feature_guide/batch_invariance.md)
