@@ -129,6 +129,7 @@ def install_layer_trace(state):
     if getattr(forward, "_dsv41_trace", False):
         return
     trace_position = int(os.environ.get("DSV41_REPRO_TRACE_POSITION", SCORING_ROW))
+    trace_projection = os.environ.get("DSV41_REPRO_TRACE_PROJECTION") == "1"
 
     @wraps(forward)
     def capture(model, input_ids, positions, *args, **kwargs):
@@ -195,7 +196,10 @@ def install_layer_trace(state):
     @wraps(attention)
     def capture_swa(impl, layer, q, metadata, compressed_indices, **kwargs):
         output = attention(impl, layer, q, metadata, compressed_indices, **kwargs)
-        if layer.layer_idx not in (0, 1) or q.shape[0] > 32 or get_tp_group().rank_in_group != 0:
+        if layer.layer_idx not in (0, 1) or q.shape[0] > 32:
+            return output
+        rank = get_tp_group().rank_in_group
+        if rank != 0 and not (trace_projection and layer.layer_idx == 0):
             return output
         positions = metadata.positions[:q.shape[0]].tolist()
         if trace_position not in positions:
@@ -214,6 +218,8 @@ def install_layer_trace(state):
         duplicate = attention(impl, layer, q, metadata, compressed_indices, **kwargs)[row]
         label = state.read_text().strip()
         prefix = "swa" if layer.layer_idx == 0 else "swa-layer-01"
+        if rank:
+            prefix = f"swa-rank-{rank}"
         torch.save({"position": trace_position, "visible_begin": begin,
                     "query": q[row].cpu(), "visible_kv": cache[pages, indices % block].cpu(),
                     "swa_output": first.cpu(), "identical_relaunch": torch.equal(first, duplicate)},
@@ -247,7 +253,7 @@ def install_layer_trace(state):
                    state.with_name(f"oproj-rank-{rank}-{label}.pt"))
         return result
 
-    if os.environ.get("DSV41_REPRO_TRACE_PROJECTION") == "1":
+    if trace_projection:
         AscendDSAV41Impl._project_output = capture_projection
 
 

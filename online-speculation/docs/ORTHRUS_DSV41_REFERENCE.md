@@ -190,6 +190,10 @@ python3 scripts/repro_dsv41_native_verifier.py --model "$MODEL" \
 
 追踪最早不同的历史位置 420 时，rank 0 的第 0 层 Q、可见 KV 和原始 SWA 输出在两种形状下逐元素一致。完整 Attention 输出有 90 个元素不同，最大绝对差为 `0.0078125`。该差异随后进入第 1 层并改变位置 420 写入的 KV。复现脚本的 `--trace-projection` 可继续抓取各 TP rank 的逆 RoPE、低秩投影、本地输出和归约结果。
 
+八个 rank 的 Q 和可见 KV 都一致。rank 5 的 SparseFlashMLA 输出有一个 BF16 元素相差 `0.000244140625`，差异在输出投影后扩大。单卡用实际输入和 sink 逐元素复现了两种八卡结果。把 32 个 query 作为各含一行的序列提交到同一次算子调用，每行仍读同一张页表，使用自己的因果长度。单卡输出与单行解码逐元素一致。 [单 query 元数据补丁](../runtime/vllm_ascend_v0_32/dsv41_swa_single_query.patch)
+
+八卡同时启用 Engram 归约补丁、上述 SWA 补丁和 HCCL 严格模式后，位置 420 的原始 SWA 与输出投影在八个 rank 上都逐元素一致。四组原生 K32 与逐步解码在原先第 17 个 token 的用例上通过，完整 40-token 输出的首次分叉出现在第 31 个 token。补丁当前用于单请求 eager 定位，尚未达到端到端逐 token 验收要求。 [SWA 补丁八卡实测](validation/dsv41/native-verifier-swa-row-invariant-910b3.json)
+
 全局 `VLLM_BATCH_INVARIANT=1` 会强制切到 ND 权重格式。固定镜像的 W4A8 MoE 在 warmup 调用 `aclnnGroupedMatmulSwigluQuantWeightNzV2` 时要求五维 NZ 存储，实际收到一维形状，导致启动失败。局部补丁保留 W4A8 的既有权重布局，只替换 Engram 点积归约。 [vLLM-Ascend batch invariance 实现说明](https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/user_guide/feature_guide/batch_invariance.md)
 
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
