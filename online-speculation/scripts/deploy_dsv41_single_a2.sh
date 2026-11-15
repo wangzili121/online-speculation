@@ -84,6 +84,10 @@ docker_run=(
 model="/data/disk/models/${MODEL_HOST#"$MODELS_HOST"/}"
 head="/data/disk/models/${HEAD_HOST#"$MODELS_HOST"/}"
 service_log="/workspace/online-speculation/local/dsv41-deploy/$CONTAINER/service.log"
+hccl_env=()
+if [[ -n "${HCCL_DETERMINISTIC:-}" ]]; then
+  hccl_env+=(-e "HCCL_DETERMINISTIC=$HCCL_DETERMINISTIC")
+fi
 docker_exec=(
   docker exec -d
   -w /workspace/online-speculation
@@ -98,6 +102,7 @@ docker_exec=(
   -e ORTHRUS_DSV41_ONLINE_STRIDE="${ORTHRUS_DSV41_ONLINE_STRIDE:-0}"
   -e ORTHRUS_DSV41_AUDIT_CACHE="${ORTHRUS_DSV41_AUDIT_CACHE:-0}"
   -e REQUIRE_TRAINED_HEAD="${REQUIRE_TRAINED_HEAD:-0}"
+  "${hccl_env[@]}"
   "$CONTAINER" bash -lc "mkdir -p \"$(dirname "$service_log")\"; exec bash scripts/serve_dsv41_single_a2.sh >\"$service_log\" 2>&1"
 )
 
