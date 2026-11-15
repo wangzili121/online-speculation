@@ -138,6 +138,7 @@ def run_model(args, mode, head, deadline, *, online_baseline=None, feedback=Fals
                 raise RuntimeError(f"no completed online publication recorded in {log}")
         if online and outputs != [ids[:12] for ids in online_baseline]:
             raise RuntimeError(f"online greedy token IDs differ from the target: {outputs}")
+        print(json.dumps({"phase": name, "token_ids": outputs}), flush=True)
         if mode == "orthrus":
             for _ in range(10):
                 with urlopen(api + "/metrics", timeout=10) as response:

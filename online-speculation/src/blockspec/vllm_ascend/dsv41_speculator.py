@@ -19,6 +19,7 @@ from vllm.v1.worker.gpu.input_batch import InputBatch
 from vllm.v1.worker.gpu.spec_decode.dflash import speculator as dflash_speculator
 from vllm.v1.worker.gpu.spec_decode.speculator import DraftModelSpeculator
 from vllm.v1.worker.gpu.spec_decode.utils import get_pp_safe_draft_load_config
+from vllm_ascend.attention.dsa_v41 import AscendDSAV41MetadataBuilder
 from vllm_ascend.worker.v2.attn_utils import build_attn_metadata
 from vllm_ascend.worker.v2.spec_decode.dflash.speculator import (
     AscendDFlashSpeculator,
@@ -229,6 +230,16 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
             target_input_buffers,
             target_attn_groups,
         )
+        # These builders belong to the draft. It only needs the target page
+        # tables, committed lengths and RoPE, and builds its own QLI/SMLA
+        # metadata when running diffusion attention.
+        for groups in self.attn_groups:
+            for group in groups:
+                builder = group.get_metadata_builder(0)
+                if not isinstance(builder, AscendDSAV41MetadataBuilder):
+                    raise TypeError("Orthrus V4.1 requires DeepSeek-V4.1 cache metadata")
+                builder._build_query_metadata = False
+                builder._build_compressor_metadata = False
         self.supports_decode_metadata_update = False
 
         self.draft_kv_cache_group_ids = [
@@ -341,7 +352,9 @@ class AscendOrthrusV41Speculator(AscendDFlashSpeculator):
             kv_cache_config=self.kv_cache_config,
             seq_lens_cpu_upper_bound=cpu_upper,
             positions=self.input_buffers.positions[:num_tokens],
-            causal=False,
+            # The noncausal builder branch constructs DSpark's SWA indices.
+            # Orthrus defines the draft mask in its own attention forward.
+            causal=True,
             skip_ring_state_update=True,
             draft_layer_names=self.draft_attn_layer_names,
         )
