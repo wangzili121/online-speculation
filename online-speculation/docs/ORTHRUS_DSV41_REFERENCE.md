@@ -178,7 +178,9 @@ python3 scripts/repro_dsv41_native_verifier.py --model "$MODEL" \
 
 同一探针加 `--timing-iterations 128`，测两轮输入复制与 AllReduce 的设备时间。单行在默认模式为 0.20–0.22 ms，严格模式为 0.28–0.29 ms。32 行分别为 0.26–0.29 ms 和 0.27–0.28 ms。这组结果只反映四卡通信微基准。
 
-单机部署入口会将宿主机显式设置的 `HCCL_DETERMINISTIC` 传给容器内的服务。同一开关对实际八卡模型的逐步解码、K32 验证和正式 head 的端到端效果仍待复验。 [vLLM-Ascend batch invariance 实现说明](https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/user_guide/feature_guide/batch_invariance.md)
+单机部署入口会将宿主机显式设置的 `HCCL_DETERMINISTIC` 传给容器内的服务。实际八卡模型打开 `strict` 后，两次逐步解码逐 token 一致。原候选和替换后缀各跑两次，四次 K32 验证在同一输入行上得到相同分数，仍在第 17 个输出 token 与逐步解码分叉。该位置逐步解码的 token 14 和 5136 分数均为 32.00。K32 中 token 5136 为 32.25，token 14 仍为 32.00。
+
+该行的首层滑窗 Q、原始 Attention 输出及第一层完整输出都逐元素一致。可见 KV 有一个元素相差 `1.19e-7`。第一处传播到层输入的差异出现在零起始第 1 层的 Engram 注入后，2 个元素有差异，最大绝对差为 `3.05e-5`。随后的 Attention 输出最大绝对差达到 `0.015625`。该测试使用原生 `ngram_gpu` 和固定候选，服务只加载实际 W4A8 主模型。 [八卡严格模式实测](validation/dsv41/native-verifier-hccl-strict-910b3.json)
 
 原生融合路径固定依赖已验证的 post7 SparseFlashMLA ABI。较旧的 post4 栈在 A2/A3 上不支持 `ori_sparse_indices`。167 上的 vLLM-Ascend 0.30 镜像虽然带 post7 Python 包，其本地 CANN kernel 缺少该组合的 tiling key，也不能作为此路径的部署基线。部署必须固定完整镜像 digest、CANN 和驱动，并运行 `probe_dsv41_sparse_mla.py` 作为 preflight。 [原生检索实现](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/models/deepseek_v41/indexer.py) · [原生 Attention 调用](https://github.com/vllm-project/vllm-ascend/blob/v0.30.0/vllm_ascend/attention/dsa_v41.py)
 

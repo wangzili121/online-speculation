@@ -156,6 +156,14 @@ def install_layer_trace(state):
 
         for layer in model.layers:
             name = f"layer.{layer.layer_idx:02d}"
+            if layer.engram is not None:
+                hooks.extend((
+                    layer.engram.register_forward_pre_hook(save_input(f"{name}.engram_hidden", 0)),
+                    layer.engram.register_forward_pre_hook(save_input(f"{name}.engram_lookup", 1)),
+                    layer.engram.register_forward_pre_hook(save_input(f"{name}.engram_mask", 2)),
+                    layer.engram.wkv.register_forward_hook(save_output(f"{name}.engram_kv")),
+                    layer.engram.register_forward_hook(save_output(f"{name}.engram")),
+                ))
             hooks.extend((
                 layer.register_forward_pre_hook(save_input(f"{name}.input", 1)),
                 layer.self_attn.register_forward_pre_hook(save_input(f"{name}.attention_input", 1)),
