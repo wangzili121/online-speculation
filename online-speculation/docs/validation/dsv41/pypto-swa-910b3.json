@@ -1,0 +1,97 @@
+{
+  "passed": true,
+  "compiled": true,
+  "npu_execution": true,
+  "simulator_execution": false,
+  "platform": "a2a3",
+  "torch": "2.10.0+cpu",
+  "pypto": "0.1.0",
+  "shape": {
+    "block": 32,
+    "window": 128,
+    "heads": 8,
+    "dim": 512
+  },
+  "output_tolerance": {
+    "atol": 1e-05,
+    "rtol": 1.3e-06
+  },
+  "lse_tolerance": {
+    "atol": 2e-05,
+    "rtol": 2e-06
+  },
+  "cases": [
+    {
+      "anchor": 0,
+      "history": 0,
+      "inputs_byte_exact": true,
+      "output_max_abs": 4.947185516357422e-06,
+      "lse_max_abs": 4.76837158203125e-07,
+      "resident_call_median_us": 1012.2719686478376
+    },
+    {
+      "anchor": 1,
+      "history": 1,
+      "inputs_byte_exact": true,
+      "output_max_abs": 4.112720489501953e-06,
+      "lse_max_abs": 9.5367431640625e-07,
+      "resident_call_median_us": 993.0520318448544
+    },
+    {
+      "anchor": 31,
+      "history": 31,
+      "inputs_byte_exact": true,
+      "output_max_abs": 5.841255187988281e-06,
+      "lse_max_abs": 4.76837158203125e-07,
+      "resident_call_median_us": 1010.4365646839142
+    },
+    {
+      "anchor": 127,
+      "history": 127,
+      "inputs_byte_exact": true,
+      "output_max_abs": 1.691281795501709e-06,
+      "lse_max_abs": 9.5367431640625e-07,
+      "resident_call_median_us": 1028.672093525529
+    },
+    {
+      "anchor": 128,
+      "history": 128,
+      "inputs_byte_exact": true,
+      "output_max_abs": 2.1457672119140625e-06,
+      "lse_max_abs": 9.5367431640625e-07,
+      "resident_call_median_us": 1015.99155459553
+    },
+    {
+      "anchor": 129,
+      "history": 128,
+      "inputs_byte_exact": true,
+      "output_max_abs": 2.7418136596679688e-06,
+      "lse_max_abs": 4.76837158203125e-07,
+      "resident_call_median_us": 1015.5265918001533
+    },
+    {
+      "anchor": 255,
+      "history": 128,
+      "inputs_byte_exact": true,
+      "output_max_abs": 2.4139881134033203e-06,
+      "lse_max_abs": 9.5367431640625e-07,
+      "resident_call_median_us": 1014.9319423362613
+    },
+    {
+      "anchor": 257,
+      "history": 128,
+      "inputs_byte_exact": true,
+      "output_max_abs": 3.039836883544922e-06,
+      "lse_max_abs": 4.76837158203125e-07,
+      "resident_call_median_us": 1006.8910196423531
+    },
+    {
+      "anchor": 8194,
+      "history": 128,
+      "inputs_byte_exact": true,
+      "output_max_abs": 2.562999725341797e-06,
+      "lse_max_abs": 9.5367431640625e-07,
+      "resident_call_median_us": 1011.4270262420177
+    }
+  ]
+}

@@ -160,6 +160,11 @@ def run_model(args, mode, head, deadline, *, online_baseline=None, feedback=Fals
             saved = REPO / capture_path
             if not saved.is_file() or saved.stat().st_size == 0:
                 raise RuntimeError(f"no real-request feedback captured, see {log}")
+            subprocess.run(
+                ["docker", "exec", "--user", "0", name, "chown", f"{os.getuid()}:{os.getgid()}",
+                 f"/workspace/online-speculation/{capture_path}"],
+                check=True, timeout=20,
+            )
             return outputs, capture_path
         return outputs
     finally:
@@ -177,8 +182,13 @@ def main():
     parser.add_argument("--port", type=int, default=19891)
     parser.add_argument("--watch-hours", type=float, default=24)
     parser.add_argument("--online", action="store_true")
-    parser.add_argument("--offline-handoff", action="store_true", help="verify capture, one KL step and trained head reload")
+    handoff = parser.add_mutually_exclusive_group()
+    handoff.add_argument("--offline-handoff", action="store_true", help="verify greedy parity and offline head reload")
+    handoff.add_argument("--handoff-only", action="store_true", help="capture feedback, run one KL step and smoke-test reload")
     args = parser.parse_args()
+    if args.handoff_only and args.online:
+        parser.error("--online requires the target-only comparison")
+    capture_feedback = args.offline_handoff or args.handoff_only
     deadline = time.monotonic() + args.watch_hours * 3600
     local = REPO / "local"
     local.mkdir(exist_ok=True)
@@ -196,7 +206,7 @@ def main():
         models = args.model.parent.parent
         head = models / "orthrus-dsv41-head-v1-ar-init"
         print("checkpoint and container image verified, waiting for eight idle cards", flush=True)
-        baseline = run_model(args, "target", head, deadline)
+        baseline = None if args.handoff_only else run_model(args, "target", head, deadline)
         if not head.exists():
             text = json.loads((args.model / "config.json").read_text())["text_config"]
             command = [
@@ -210,13 +220,14 @@ def main():
                 "--from-target",
             ]
             subprocess.run(command, check=True, timeout=1800)
-        orth = run_model(args, "orthrus", head, deadline, feedback=args.offline_handoff)
-        if args.offline_handoff:
+        orth = run_model(args, "orthrus", head, deadline, feedback=capture_feedback)
+        if capture_feedback:
             orth, capture = orth
-        if baseline != orth:
-            raise RuntimeError(f"greedy token IDs differ: target={baseline}, Orthrus={orth}")
-        print(json.dumps({"greedy_exact": True, "token_ids": orth}), flush=True)
-        if args.offline_handoff:
+        if baseline is not None:
+            if baseline != orth:
+                raise RuntimeError(f"greedy token IDs differ: target={baseline}, Orthrus={orth}")
+            print(json.dumps({"greedy_exact": True, "token_ids": orth}), flush=True)
+        if capture_feedback:
             trained = models / f"orthrus-dsv41-head-v1-handoff-{os.getpid()}"
             command = [
                 "docker", "run", "--rm", "--network", "none", "--entrypoint", "python3",
@@ -232,9 +243,11 @@ def main():
                 "--output", "/models/" + trained.name,
             ]
             subprocess.run(command, check=True, timeout=2700)
-            if run_model(args, "orthrus", trained, deadline, trained=True) != baseline:
+            reloaded = run_model(args, "orthrus", trained, deadline, trained=True)
+            if baseline is not None and reloaded != baseline:
                 raise RuntimeError("greedy token IDs differ after loading the offline-updated head")
-            print("offline-updated head reloaded and greedy token IDs matched", flush=True)
+            print(json.dumps({"reloaded_head": str(trained), "greedy_exact": None if baseline is None else True}),
+                  flush=True)
         if args.online:
             run_model(args, "orthrus", head, deadline, online_baseline=baseline)
             print("online update published and the following greedy request matched the target", flush=True)
