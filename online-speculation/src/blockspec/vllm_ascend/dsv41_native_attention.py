@@ -17,7 +17,7 @@ def _paged_values(pages: PagedRows) -> torch.Tensor:
         values = values.unsqueeze(2)
     if values.ndim != 4 or values.shape[2] != 1:
         raise ValueError("native V4.1 cache must be [pages,page,1,head_dim]")
-    return values.contiguous()
+    return values
 
 
 def _normalize_lse(
@@ -78,11 +78,14 @@ def _native_sparse_plane(
     if maximum_length == 0:
         lse = sink.float().view(1, 1, heads, 1).expand(batch, block, heads, 1)
         return torch.zeros_like(query), lse
-    if min(maximum_length, pages.table.shape[-1] * pages.values.shape[1]) < block:
-        # SparseFlashMLA assumes Q fits in its advertised KV extent. For a
-        # short history the selected rows fit in a small FP32 matmul.
+    values = _paged_values(pages)
+    if (min(maximum_length, pages.table.shape[-1] * values.shape[1]) < block
+            or not values[0].is_contiguous()):
+        # SparseFlashMLA needs Q to fit in its advertised KV extent and only
+        # accepts stride gaps between pages. Gather the selected rows for the
+        # FP32 path without materializing the cache in either fallback case.
         ids = sparse[..., :maximum_length]
-        rows = gather_paged_cache(_paged_values(pages).squeeze(2), pages.table, ids).float()
+        rows = gather_paged_cache(values.squeeze(2), pages.table, ids).float()
         scores = torch.matmul(query.float(), rows.transpose(-1, -2)) * dim**-0.5
         scores = scores.masked_fill(ids[:, :, None] < 0, -torch.inf)
         sink_logits = sink.float().view(1, 1, heads, 1).expand(batch, block, -1, -1)
@@ -121,7 +124,7 @@ def _native_sparse_plane(
     )
     output, lse = torch.ops._C_ascend.npu_sparse_flash_mla(
         query.flatten(0, 1),
-        ori_kv=_paged_values(pages),
+        ori_kv=values,
         ori_sparse_indices=sparse,
         ori_block_table=pages.table.int(),
         cu_seqlens_q=cu,
