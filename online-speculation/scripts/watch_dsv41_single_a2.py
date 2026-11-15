@@ -120,17 +120,20 @@ def run_model(args, mode, head, deadline, *, online_baseline=None, feedback=Fals
             "List the first ten positive integers, separated by commas.",
             "Read this context and answer with one sentence. " + "The sky is blue. " * 80 + "What color is the sky?",
         )
+        length = 12 if online else 40
         for prompt in prompts:
             body = json.dumps({
-                "model": f"dsv41-{mode}-single-a2", "prompt": prompt, "max_tokens": 12 if online else 40,
-                "temperature": 0, "return_token_ids": True,
+                "model": f"dsv41-{mode}-single-a2",
+                "messages": [{"role": "user", "content": prompt}],
+                "chat_template_kwargs": {"enable_thinking": False},
+                "max_tokens": length, "min_tokens": length, "temperature": 0, "return_token_ids": True,
             }).encode()
-            request = Request(api + "/v1/completions", data=body, headers={"Content-Type": "application/json"})
+            request = Request(api + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
             with urlopen(request, timeout=1200) as response:
                 result = json.load(response)
-            ids = result["choices"][0]["token_ids"]
-            if not ids:
-                raise RuntimeError("completion returned no token IDs")
+            ids = result["choices"][0].get("token_ids") or []
+            if len(ids) != length:
+                raise RuntimeError(f"completion returned {len(ids)} tokens, expected {length}")
             outputs.append(ids)
             if online and len(outputs) == 1 and not any(
                 MARKER in line and "published" in line for line in log.read_text().splitlines()
