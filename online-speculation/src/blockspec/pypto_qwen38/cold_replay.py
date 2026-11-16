@@ -2,6 +2,7 @@
 
 import copy
 from dataclasses import dataclass
+from itertools import takewhile
 import random
 
 from .target import NativeTarget
@@ -47,8 +48,14 @@ def sample_jobs(records, rng: random.Random, *, width, records_per_update=2, anc
 class ReplayRunner:
     """由现有单请求调度器执行重放；持久状态只用于本次内部训练请求。"""
 
-    def __init__(self, runner, learner, *, target_factory=NativeTarget):
+    def __init__(self, runner, learner, *, target_factory=NativeTarget, prefix_supervision=False,
+                 teacher_positions=None):
+        if teacher_positions is not None and (prefix_supervision or type(teacher_positions) is not int
+                                              or teacher_positions < 1):
+            raise ValueError("fixed teacher positions must be positive and exclusive with first rejection")
         self.runner, self.learner, self.target_factory = runner, learner, target_factory
+        self.prefix_supervision = prefix_supervision
+        self.teacher_positions = teacher_positions
         self.job = None
         self.samples = []
 
@@ -85,12 +92,23 @@ class ReplayRunner:
                     target.collector = block
                     teacher_tokens = target.forward(job.tokens[anchor:anchor+job.width])
                     target.collector = None
-                    self.learner.observe_clean_block()
+                    truth = job.tokens[anchor+1:anchor+job.width]
+                    matches = [guess == teacher for guess, teacher in
+                               zip(candidates, teacher_tokens[:-1], strict=True)]
+                    # 遇到 verifier 拒绝，或录制轨迹与当前教师贪心结果分叉，训练都截在该行。
+                    compatible = (same and teacher == token for same, teacher, token in
+                                  zip(matches, teacher_tokens[:-1], truth, strict=True))
+                    accepted = sum(takewhile(bool, compatible))
+                    reached = min(accepted + 1, job.width - 1)
+                    valid = (reached if self.prefix_supervision else
+                             min(self.teacher_positions or job.width - 1, job.width - 1))
+                    self.learner.observe_clean_block(valid=valid)
                     self.samples.append(dict(record_id=job.record_id, anchor=anchor, width=job.width,
-                        supervised_positions=job.width-1,
+                        supervised_positions=valid,
                         head_version=version,
-                        matched_positions=[a == b for a,b in zip(candidates, teacher_tokens[:-1], strict=True)],
-                        teacher_forced_argmax_matches=sum(a == b for a,b in zip(candidates, teacher_tokens[:-1], strict=True))))
+                        matched_positions=matches, reached_prefix_positions=reached,
+                        teacher_reference_matches=sum(a == b for a,b in zip(teacher_tokens[:-1], truth, strict=True)),
+                        teacher_forced_argmax_matches=sum(matches)))
                 finally:
                     target.collector = None
                     target.restore(snapshot)

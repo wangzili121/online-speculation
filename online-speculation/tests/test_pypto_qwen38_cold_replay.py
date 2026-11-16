@@ -8,7 +8,10 @@ import pytest
 from blockspec.pypto_qwen38.cold_replay import ReplayJob, ReplayRunner, sample_jobs
 
 
-def test_overlapping_anchors_restore_before_advancing_the_clean_history():
+@pytest.mark.parametrize(("prefix_supervision", "teacher_positions", "expected"),
+                         [(False, None, 7), (True, None, 3), (False, 4, 4)])
+def test_overlapping_anchors_restore_before_advancing_the_clean_history(
+        prefix_supervision, teacher_positions, expected):
     events=[]
     job=ReplayJob("q",tuple(range(24)),(2,5,9),8)
     native=NS(history=[],requests={})
@@ -19,9 +22,10 @@ def test_overlapping_anchors_restore_before_advancing_the_clean_history():
         resident.pages.length=len(native.history)
         return [99]
     native.run_batch=prefill
-    learner=NS(current=None,rounds=0)
-    def observe():
+    learner=NS(current=None,rounds=0,valid_rows=[])
+    def observe(*, valid=None):
         assert learner.current.rows==8
+        learner.valid_rows.append(valid)
         learner.rounds+=1
         learner.current=None
     learner.observe_clean_block=observe
@@ -31,7 +35,9 @@ def test_overlapping_anchors_restore_before_advancing_the_clean_history():
         assert tuple(request.prompt_ids)==job.tokens[:anchor] and request.generated==[anchor]
         learner.current=NS(past=anchor,width=width,rows=0)
         events.append(("draft",anchor))
-        return [999]*(width-1)
+        guesses = list(job.tokens[anchor+1:anchor+width])
+        guesses[2] = 999
+        return guesses
     class Target:
         def __init__(self,native,request,slot_type):
             self.resident=resident;self.collector=None
@@ -46,15 +52,19 @@ def test_overlapping_anchors_restore_before_advancing_the_clean_history():
                 assert events[-1]==("draft",start)
                 self.collector.rows+=len(inputs)
                 events.append(("teacher",start))
-            return list(inputs)
+            return list(job.tokens[start+1:start+1+len(inputs)])
     runner=NS(native=native,draft=NS(propose=propose,weights=NS(version=0)),slot_type=object)
-    replay=ReplayRunner(runner,learner,target_factory=Target);replay.job=job
+    replay=ReplayRunner(runner,learner,target_factory=Target,
+                        prefix_supervision=prefix_supervision, teacher_positions=teacher_positions);replay.job=job
     request=NS(request_id="r",prompt_ids=job.tokens[:2],max_tokens=1,generated=[])
     result=replay.run_batch([NS(request=request,token_ids=job.tokens[:2],position=0,phase="prefill",completes_prefill=True)])
     assert result==[99] and request.generated==[] and request.prompt_ids==job.tokens[:2]
     assert native.history==list(job.tokens[:9]) and learner.rounds==3
     assert [s["anchor"] for s in replay.samples]==[2,5,9]
-    assert all(s["supervised_positions"]==7 and s["teacher_forced_argmax_matches"]==0 for s in replay.samples)
+    assert learner.valid_rows == [expected]*3
+    assert all(s["reached_prefix_positions"] == 3 for s in replay.samples)
+    assert all(s["supervised_positions"] == expected and
+               s["teacher_forced_argmax_matches"] == 6 for s in replay.samples)
 
 
 def test_sampling_uses_distinct_records_and_reproducible_complete_anchors():

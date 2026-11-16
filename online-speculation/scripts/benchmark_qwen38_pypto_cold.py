@@ -13,7 +13,9 @@ import sys
 import time
 
 from benchmark_qwen38_pypto import DraftMeter, idle
-from benchmark_qwen38_pypto_online import generate, prepare_questions, publish_initial_suffix, summarize
+from benchmark_qwen38_pypto_online import (
+    continued_dataset, generate, prepare_questions, publish_initial_suffix, summarize,
+)
 
 
 def response_records(source, dataset):
@@ -81,6 +83,18 @@ def main():
     p.add_argument("--records-per-update",type=int,default=2)
     p.add_argument("--anchors-per-record",type=int,default=4)
     p.add_argument("--answer-only",action="store_true",help="只从已交付回答中选择 anchor，完整预测块不跨出回答")
+    p.add_argument("--resume-records-checkpoint", action="store_true",
+                   help="恢复 records-report 中的模型和 Adam 状态，--steps 为新增步数")
+    records_group = p.add_mutually_exclusive_group()
+    records_group.add_argument("--fresh-records", type=int, default=0,
+                   help="从同一训练集未用过的问题收集指定条数的真实回答")
+    records_group.add_argument("--frozen-answer-report", type=Path,
+                               help="复用同一实验较早运行所收集的回答")
+    supervision_group = p.add_mutually_exclusive_group()
+    supervision_group.add_argument("--prefix-supervision", action="store_true",
+                   help="整块重放时，按当前 draft 的首拒位置限制参与 loss 的教师行")
+    supervision_group.add_argument("--teacher-positions", type=int,
+                                   help="只监督指定数量的靠前真实教师行，保持起草块宽度")
     p.add_argument("--seed",type=int,default=857)
     p.add_argument("--tokens",type=int,default=48)
     p.add_argument("--test-count",type=int,default=8)
@@ -93,6 +107,9 @@ def main():
     if (a.output.exists() or a.device==a.learner_device or not 2<=a.width<=32 or a.steps<1
             or marks[0]<0 or marks[-1]>a.steps or not 1<=a.tokens<=384
             or a.records_per_update<2 or a.anchors_per_record<1 or a.warmup_steps<1 or a.test_count<1
+            or a.fresh_records < 0 or a.fresh_records and not a.resume_records_checkpoint
+            or a.teacher_positions is not None and not 1 <= a.teacher_positions < a.width
+            or a.frozen_answer_report and not a.resume_records_checkpoint
             or any(not 1<=step<=a.steps for step in audit_steps)):
         p.error("new output, two devices, positive training budgets and valid evaluation steps required")
     logging.getLogger("simpler").setLevel(logging.WARNING)
@@ -102,11 +119,23 @@ def main():
     from blockspec.pypto_qwen38.ar_prefix import borrow_prefix
     from blockspec.pypto_qwen38.cold_replay import ReplayRunner, sample_jobs, anchor_candidates
     source = json.loads(a.records_report.read_text())
+    if not source.get("completed"):
+        p.error("records report must be complete")
+    resume = Path(source["checkpoint"]["path"]) if a.resume_records_checkpoint else None
+    manifest = json.loads((resume/"manifest.json").read_text()) if resume else None
+    initial_step = manifest["step"] if manifest else 0
+    if resume and (initial_step != source["updates"][-1]["step"]
+                   or a.last_layers != source["arguments"]["last_layers"]):
+        p.error("resume requires matching checkpoint step and suffix layout")
     batch = a.records_per_update*a.anchors_per_record
     options = OnlineConfig(objective=a.objective,last_layers=a.last_layers,stride=batch,replay_blocks=batch,
-                           learning_rate=a.learning_rate,learner_device=a.learner_device)
-    report = dict(completed=False, objective=f"full-block {a.objective.upper()}(teacher||draft)",
-        initialization="AR-copy; no pretrained diffusion head",
+                           learning_rate=a.learning_rate,learner_device=a.learner_device,resume_dir=resume)
+    supervision = ("reached_prefix" if a.prefix_supervision else
+                   "fixed_prefix" if a.teacher_positions is not None else "full_block")
+    report = dict(completed=False, objective=f"full-vocabulary {a.objective.upper()}(teacher||draft)",
+        supervision=supervision,
+        initialization="resumed head and Adam" if resume else "AR-copy; no pretrained diffusion head",
+        initial_step=initial_step, initial_checkpoint_sha256=manifest["payload_sha256"] if manifest else None,
         arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()},
         updates=[], replay_jobs=[], samples=[], evaluations=[], audits=[], physical_block_size=32,
         records_source_sha256=hashlib.sha256(a.records_report.read_bytes()).hexdigest())
@@ -133,19 +162,25 @@ def main():
                 report["kernel_checks"].append(dict(path=str(output),passed=True))
         head = HeadSource(a.model)
         engine = make_engine(a.source,a.model,a.device,head,head_transfer="packed",attention_backend="paged",
-                             group_size=4,gdn_backend="vector",online_config=options)
+                             group_size=4,gdn_backend="vector",online_config=options,
+                             verification_backend=source["arguments"].get("verification_backend","full") if resume else "full",
+                             partial_teacher_capture=bool(resume and source["arguments"].get("partial_teacher_capture")))
+        train_count = source["arguments"]["train_count"]
+        excluded = source["dataset"].get("excluded_prewarm_record_ids", []) if resume else []
         dataset = report["dataset"] = prepare_questions(a.data,engine.tokenizer,seed=source["dataset"]["seed"],
-            max_prompt=source["arguments"]["max_prompt"],train_count=source["arguments"]["train_count"],
+            max_prompt=source["arguments"]["max_prompt"],train_count=train_count+len(excluded),
             dev_count=source["arguments"]["dev_count"],test_count=a.test_count)
-        records,collection_seconds = response_records(source,dataset)
+        if resume:
+            dataset = report["dataset"] = continued_dataset(source, dataset, train_count=train_count)
+        if a.frozen_answer_report is not None:
+            previous_replay = json.loads(a.frozen_answer_report.read_text())
+            if (not previous_replay.get("completed") or previous_replay["dataset"] != dataset
+                    or previous_replay["records_source_sha256"] != report["records_source_sha256"]):
+                raise ValueError("frozen responses must come from the same completed replay experiment")
+            records, collection_seconds = previous_replay["records"], previous_replay["collection_seconds"]
+        else:
+            records,collection_seconds = ([],0.) if a.fresh_records else response_records(source,dataset)
         report["records"] = records
-        report["collection_seconds"] = collection_seconds
-        sample_jobs(records,random.Random(a.seed),width=a.width,records_per_update=a.records_per_update,
-                    anchors_per_record=a.anchors_per_record,answer_only=a.answer_only)
-        report["eligible_training_record_ids"] = [row["id"] for row in records
-            if len(anchor_candidates(row,a.width,answer_only=a.answer_only))>=a.anchors_per_record]
-        if any(len(row["tokens"])>512 for row in records):
-            raise ValueError("clean response exceeds pinned total context")
         persist()
         start = time.monotonic()
         engine.start()
@@ -153,18 +188,22 @@ def main():
         runner,learner = engine.runner,engine.runner.draft.learner
         if learner.head_identity != source["head_identity"]:
             raise ValueError("collected responses were generated by a different base/head contract")
-        publish_initial_suffix(learner)
+        if learner.updates != initial_step or runner.draft.weights.version != initial_step:
+            raise ValueError("learner and serving did not restore the requested step")
+        if resume is None:
+            publish_initial_suffix(learner)
         layers,owned = borrow_prefix(runner.native,head,64-a.last_layers)
         runner.draft.handles.extend(owned)
-        runner.draft.weights.publish_many(layers,expected_version=0)
-        runner.draft.weights.version=0
+        runner.draft.weights.publish_many(layers,expected_version=initial_step)
+        runner.draft.weights.version=initial_step
         runner.draft.block_size = a.width
         report["initial_head_sha256"] = learner.head_identity["payload_sha256"]
         report["head_identity"] = learner.head_identity
         report["shared_ar_prefix_layers"] = sorted(layers)
         meter = DraftMeter(runner.draft)
         runner.draft.propose = meter
-        replay = ReplayRunner(runner,learner)
+        replay = ReplayRunner(runner,learner,prefix_supervision=a.prefix_supervision,
+                              teacher_positions=a.teacher_positions)
         original_update = learner.update
 
         def update():
@@ -177,7 +216,7 @@ def main():
                          feedback_valid_rows=valid,**result)
             report["updates"].append(entry)
             emit("update",**entry)
-            if learner.updates in audit_steps:
+            if learner.updates-initial_step in audit_steps:
                 start = time.monotonic()
                 after = replay_loss(learner)
                 audit = dict(step=learner.updates,before=result["loss"],after=after,seconds=time.monotonic()-start)
@@ -194,32 +233,80 @@ def main():
             meter.reset()
             before = (runner.rounds,runner.accepted,learner.updates)
             version = runner.draft.weights.version
-            result=generate(engine,row,a.tokens,a.request_timeout)
+            accepted_by_round = []
+            original_batch = runner.run_batch
+
+            def record_batch(slots):
+                start_rounds, start_accepted = runner.rounds, runner.accepted
+                output = original_batch(slots)
+                if runner.rounds != start_rounds:
+                    if runner.rounds != start_rounds+1:
+                        raise RuntimeError("expected one speculative round per execution")
+                    accepted_by_round.append(runner.accepted-start_accepted)
+                return output
+
+            if not target:
+                runner.run_batch = record_batch
+            try:
+                result=generate(engine,row,a.tokens,a.request_timeout)
+            finally:
+                runner.run_batch = original_batch
             if learner.updates!=before[2] or runner.draft.weights.version!=version:
                 raise AssertionError("held-out inference updated the head")
             result.update(rounds=runner.rounds-before[0],accepted=runner.accepted-before[1],
                           proposed=meter.candidates,head_version_before=version,
-                          head_version_after=runner.draft.weights.version,draft_phases=dict(meter.phases))
+                          head_version_after=runner.draft.weights.version,draft_phases=dict(meter.phases),
+                          accepted_by_round=accepted_by_round)
+            if len(accepted_by_round) != result["rounds"] or sum(accepted_by_round) != result["accepted"]:
+                raise AssertionError("per-round acceptance accounting differs from runner counters")
             return result
 
         def evaluate(step,final=False):
             entry=dict(step=step,dev={},test={})
-            for name in (("dev","test") if step==0 or final else ("dev",)):
+            for name in (("dev","test") if step==initial_step or final else ("dev",)):
                 refs,rows=[],[]
                 for row in dataset["splits"][name]:
                     refs.append(measure(row,True));rows.append(measure(row))
                 entry[name]=dict(rows=rows,target_rows=refs,summary=summarize(rows,target=refs))
                 if not entry[name]["summary"]["greedy_equal_all"]:
                     raise AssertionError("held-out speculative output differs from target")
+                accepted = [n for row in rows for n in row["accepted_by_round"]]
+                entry[name]["summary"]["accepted_at_least"] = {
+                    str(k): sum(n>=k for n in accepted)/len(accepted) for k in (1,2,3,4,8)
+                } if accepted else {}
             report["evaluations"].append(entry)
             emit("heldout",step=step,**{k:v["summary"] for k,v in entry.items() if k!="step" and v})
 
         measure(dataset["splits"]["calibration"][0],True)
         measure(dataset["splits"]["calibration"][0])
-        evaluate(0)
+        if a.fresh_records:
+            used = {row["id"] for row in source["train"]}
+            for row in dataset["splits"]["train"]:
+                if row["id"] in used:
+                    continue
+                answer = measure(row,target=True)
+                collection_seconds += answer["seconds"]
+                record = dict(id=row["id"],tokens=[*row["prompt_ids"],*answer["tokens"]],
+                              answer_start=len(row["prompt_ids"]))
+                if len(anchor_candidates(record,a.width,answer_only=True))>=a.anchors_per_record:
+                    records.append(record)
+                if len(records)==a.fresh_records:
+                    break
+            if len(records)!=a.fresh_records:
+                raise ValueError("not enough fresh answers with complete blocks")
+            emit("collected",records=len(records),seconds=collection_seconds)
+        report["collection_seconds"] = collection_seconds
+        sample_jobs(records,random.Random(a.seed),width=a.width,records_per_update=a.records_per_update,
+                    anchors_per_record=a.anchors_per_record,answer_only=a.answer_only)
+        report["eligible_training_record_ids"] = [row["id"] for row in records
+            if len(anchor_candidates(row,a.width,answer_only=a.answer_only))>=a.anchors_per_record]
+        if any(len(row["tokens"])>512 for row in records):
+            raise ValueError("clean response exceeds pinned total context")
+        evaluate(initial_step)
         rng=random.Random(a.seed)
         replay_seconds=0.
-        for goal in marks[1:]:
+        for additional_steps in marks[1:]:
+            goal = initial_step+additional_steps
             while learner.updates<goal:
                 expected=learner.updates+1
                 jobs=sample_jobs(records,rng,width=a.width,records_per_update=a.records_per_update,
@@ -240,7 +327,7 @@ def main():
                 report["samples"] = list(replay.samples)
                 report["replay_seconds"] = replay_seconds
                 persist()
-            evaluate(goal,final=goal==a.steps)
+            evaluate(goal,final=additional_steps==a.steps)
         if a.last_layers==1:
             from blockspec.pypto_qwen38.online_checkpoint import save
         else:
@@ -259,7 +346,8 @@ def main():
         margin=(1/final["target_tokens_per_second"]-1/final["tokens_per_second"]
                 if final["greedy_equal_all"] else 0.)
         report["cost"]["estimated_future_tokens_to_amortize_replay"]=(replay_seconds/margin if margin>0 else None)
-        report["cost"]["collection_time_origin"]="historical measured AR-only collection; records reused this run"
+        report["cost"]["collection_time_origin"]=("fresh AR-only collection" if a.fresh_records else
+                                                   "historical measured AR-only collection; records reused this run")
         report.update(completed=True,snapshot=engine.snapshot())
         emit("finished",cost=report["cost"])
     except BaseException as error:

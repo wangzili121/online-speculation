@@ -260,12 +260,16 @@ class OnlineLearner:
             self.last_result["checkpoint"] = str(directory)
         return self.last_result
 
-    def observe_clean_block(self):
-        """仅供干净序列重放：教师已用真实输入计算整块，与投机接受长度无关。"""
+    def observe_clean_block(self, *, valid=None):
+        """干净序列重放默认监督整块，也允许用同一份教师做前缀对照。"""
         block, self.current = self.current, None
         if block is None or block.rows != block.width:
             raise RuntimeError("complete clean teacher block required")
-        block.valid = block.width - 1
+        if valid is None:
+            valid = block.width - 1
+        if type(valid) is not int or not 1 <= valid < block.width:
+            raise ValueError("invalid clean teacher supervision length")
+        block.valid = valid
         self.replay.append(block)
         self.rounds += 1
         if self.rounds % self.options.stride == 0:
