@@ -1,0 +1,250 @@
+--- a/models/glm5_3_flash/layer.py
++++ b/models/glm5_3_flash/layer.py
+@@ -144,7 +144,10 @@
+
+
+ FORWARD_ABI_VERSION = 11
+-FORWARD_PROGRAMS = ("prefill", "decode", "verify", "mtp")
++FORWARD_PROGRAMS = ("prefill", "decode", "verify", "mtp", "orthrus")
++from blockspec.pypto_glm53_head import head_layout
++
++_, ORTHRUS_HEAD_WIDTH = head_layout()
+ _COMMON_PARAMETERS = (
+     'embedding_rows', 'query_start_loc', 'kda_state_rows', 'active_tokens', 'execution_mode', 'target_feedback', 'target_feedback_last', 'mtp_feedback_last', 'mtp_feedback_indices', 'mtp_feedback_mode', 'mtp_skip_topk', 'mtp_enorm', 'mtp_hnorm', 'mtp_eh_proj', 'mtp_head_norm', 'mtp_lm_head_weight', 'mtp_selected_pools', 'mtp_selected_valid', 'kda_tri_incl',
+     'kda_tri_strict', 'kda_head_onehot', 'kda_eye_wide', 'kda_w_q', 'kda_w_k', 'kda_w_v', 'kda_conv_q',
+@@ -326,7 +329,10 @@
+     parameters = _COMMON_PARAMETERS
+     if kind == "decode":
+         parameters = ("token_ids", "embedding_weight", *_COMMON_PARAMETERS[1:])
+-    return parameters + _HEAD_PARAMETERS
++    else:
++        parameters = (_COMMON_PARAMETERS[0], "token_ids", "embedding_weight", *_COMMON_PARAMETERS[1:])
++    head = _HEAD_PARAMETERS if kind == "decode" else (*_HEAD_PARAMETERS, "orthrus_head")
++    return parameters + head
+
+
+ def forward_query_tensor_names() -> tuple[str, ...]:
+@@ -339,6 +345,9 @@
+     query_capacity = forward_geometry(kind)["query_capacity"]
+     layouts = {}
+     for name in forward_parameter_names(kind):
++        if name == "orthrus_head":
++            layouts[name] = ((DSA_NUM_LAYERS - 1, ORTHRUS_HEAD_WIDTH), torch.bfloat16)
++            continue
+         shape, dtype = _TENSOR_LAYOUTS[name]
+         if name in _QUERY_PARAMETERS:
+             shape = (query_capacity, *shape[1:])
+@@ -745,7 +754,7 @@
+         normed, query_start_loc,
+         w_q, w_k, w_v, w_f_a, w_f_b, dt_bias, a_log, w_b, w_g_a, w_g_b, mixed_qkv, decay, beta, out_gate,
+     )
+-    if verification_mode == 1:
++    if verification_mode == 1 or verification_mode == 3:
+         kda_conv_recurrent(mixed_qkv, conv_w, conv_state, query_start_loc, kda_state_rows, query, key, value)
+         recurrent_kda(query, key, value, decay, beta, recurrent_state, query_start_loc, kda_state_rows, kda_out)
+     else:
+--- a/models/glm5_3_flash/prefill_fwd.py
++++ b/models/glm5_3_flash/prefill_fwd.py
+@@ -33,6 +33,7 @@
+ from models.glm5_3_flash.rmsnorm import rmsnorm
+ from models.glm5_3_flash.kda import kda_restore_states
+ from models.glm5_3_flash.lm_head import lm_head_project
++from models.glm5_3_flash.lookup_embedding import tp_lookup_embedding
+ from models.glm5_3_flash.mhc import mhc_head
+ from models.glm5_3_flash.layer import (
+     MLA_CACHE_WIDTH, INDEX_RAW_ROWS, POOL_EVENTS, POOL_PAGE_ROWS, INDEX_TAIL_CAPACITY, KDA_CHECKPOINT_BASE as KDA_CHECKPOINT_BASE, SHARED_INTER, VERIFY_QUERY_WIDTH as VERIFY_QUERY_WIDTH,
+@@ -92,12 +93,18 @@
+
+ _inline_prefill_head_rows = pl.jit.inline(auto_scope=False)(prefill_head_rows._func)
+
++from blockspec.pypto_glm53_backbone import make_backbone_mla
++from models.glm5_3_flash.layer import ORTHRUS_HEAD_WIDTH
++
++_orthrus_mla = make_backbone_mla(CAPACITY, TABLE_MAX)
+ _inline_prefill_lm_head_logits = pl.jit.inline(auto_scope=False)(prefill_lm_head_logits._func)
+
+
+ @pl.jit(auto_scope=False)
+ def prefill_hidden_fwd(
+     embedding_rows: pl.Tensor[[QUERY_ROWS_DYN, D], pl.BF16],
++    token_ids: pl.Tensor[[QUERY_ROWS_DYN], pl.INT32],
++    embedding_weight: pl.Tensor[[LOCAL_VOCAB, D], pl.BF16],
+     query_start_loc: pl.Tensor[[BATCH + 1], pl.INT32],
+     kda_state_rows: pl.Tensor[[BATCH, KDA_STATE_COLUMNS], pl.INT32],
+     active_tokens: pl.Tensor[[1], pl.INT32],
+@@ -224,6 +231,7 @@
+     logit_row_indices: pl.Tensor[[LOGIT_ROWS], pl.INT32],
+     head_hidden: pl.Out[pl.Tensor[[LOGIT_ROWS, D], pl.BF16]],
+     ws_x_hc_pair: pl.InOut[pl.Tensor[[2 * CAPACITY, HC_MULT, D], pl.BF16]],
++    orthrus_head: pl.Tensor[[DSA_NUM_LAYERS - 1, ORTHRUS_HEAD_WIDTH], pl.BF16],
+     tp_partial: pld.DistributedTensor[[QUERY_ROWS_DYN, D], pl.FP32],
+     tp_arrived: pld.DistributedTensor[[EP_SIZE, 1], pl.INT32],
+     lane_x: pld.DistributedTensor[[RESIDENT_TOTAL_CAP, D], pl.INT8],
+@@ -242,6 +250,9 @@
+     draft = pl.cast(mode == 2, pl.INDEX)
+     first_layer = draft * NUM_LAYERS
+     layer_count = NUM_LAYERS - draft * (NUM_LAYERS - 1)
++    device_embedding = pl.cast(mode == 1 or mode == 3, pl.INT32)
++    calls_per_step = pl.cast(2 * layer_count, pl.INT32) + device_embedding
++    next_epoch = forward_epoch * calls_per_step + 1
+     seed_offset = (first_layer % 2) * CAPACITY
+     current = pl.slice(ws_x_hc_pair, [rows, HC_MULT, D], [seed_offset, 0, 0])
+     if mode == 2:
+@@ -252,6 +263,10 @@
+             mtp_enorm, mtp_hnorm, mtp_eh_proj, prepared,
+         )
+         _inline_prefill_seed(prepared, current)
++    elif device_embedding != 0:
++        num_tokens: pl.Scalar[pl.INT32] = pl.read(active_tokens, [0])
++        tp_lookup_embedding(token_ids, embedding_weight, ws_attn_partial, ws_sublayer_out, current,
++                            tp_partial, tp_arrived, num_tokens, rank, next_epoch)
+     else:
+         _inline_prefill_seed(embedding_rows, current)
+     for layer in pl.range(first_layer, first_layer + layer_count):
+@@ -270,7 +285,7 @@
+             dsa_ord = pl.cast(layer // 4, pl.INT32)
+             dense_ord = pl.cast(layer, pl.INT32)
+             moe_ord = pl.cast(layer - DENSE_NUM_LAYERS, pl.INT32)
+-            attn_epoch = forward_epoch * pl.cast(2 * layer_count, pl.INT32) + 2 * (bb_ord - pl.cast(first_layer, pl.INT32)) + 1
++            attn_epoch = next_epoch + device_embedding + 2 * (bb_ord - pl.cast(first_layer, pl.INT32))
+             ffn_epoch = attn_epoch + 1
+             moe_count = (1 - pl.cast(draft, pl.INT32)) * (NUM_LAYERS - DENSE_NUM_LAYERS) + pl.cast(draft, pl.INT32)
+             moe_epoch = forward_epoch * moe_count + (1 - pl.cast(draft, pl.INT32)) * moe_ord + 1
+@@ -301,21 +316,32 @@
+                                 request_index = pl.cast(request, pl.INDEX)
+                                 selected_pools[token:token + 1, :] = mtp_selected_pools[request_index:request_index + 1, :]
+                                 selected_valid[token:token + 1, :] = mtp_selected_valid[request_index:request_index + 1, :]
+-                    _inline_prefill_sparse_attention(
+-                        current, request_ids, mla_slots, index_slots, index_tail_slots, seg_start,
+-                        pool_count_tok, tail_start, tail_count, kv_len_tok, pool_token_slots,
+-                        pool_slots, pool_blocks, block_table, active_tokens, execution_mode, mla_w_q_a,
+-                        mla_w_q_a_scale, mla_q_a_norm, mla_w_q_b, mla_w_q_b_scale, mla_w_kv_a,
+-                        mla_w_kv_a_scale, mla_kv_a_norm, mla_w_k, mla_w_v, mla_w_o,
+-                        mla_w_o_scale, idx_w_q_b, idx_w_k, idx_k_norm_w, idx_k_norm_b,
+-                        idx_w_weights, idx_w_compress_gate, idx_compress_ape, mhc_attn_fn, mhc_attn_scale,
+-                        mhc_attn_base, norm_input_norm, mla_latent_cache, index_raw_cache,
+-                        index_pool_cache, tp_partial, tp_arrived, ws_attn_pre,
+-                        ws_attn_post, ws_attn_res, ws_collapsed, ws_normed, ws_attn_partial,
+-                        ws_sublayer_out, ws_x_hc_mid, dsa_query, attn_out, index_q,
+-                        index_k, selected_pools, selected_valid, bb_ord,
+-                        dsa_ord, rank, attn_epoch, skip_topk,
+-                    )
++                    if mode == 3:
++                        _orthrus_mla(
++                            current, orthrus_head, mla_w_k[dsa_ord], mla_w_v[dsa_ord],
++                            mhc_attn_fn[bb_ord], mhc_attn_scale[bb_ord], mhc_attn_base[bb_ord], norm_input_norm[bb_ord],
++                            mla_latent_cache[dsa_ord], block_table, index_pool_cache[dsa_ord], pool_blocks,
++                            seg_start, pool_count_tok, tail_start, tail_count, kv_len_tok, request_ids,
++                            ws_attn_pre, ws_attn_post, ws_attn_res, ws_collapsed, ws_normed,
++                            ws_attn_partial, ws_sublayer_out, ws_x_hc_mid, tp_partial, tp_arrived,
++                            rank, attn_epoch, dsa_ord,
++                        )
++                    else:
++                        _inline_prefill_sparse_attention(
++                            current, request_ids, mla_slots, index_slots, index_tail_slots, seg_start,
++                            pool_count_tok, tail_start, tail_count, kv_len_tok, pool_token_slots,
++                            pool_slots, pool_blocks, block_table, active_tokens, execution_mode, mla_w_q_a,
++                            mla_w_q_a_scale, mla_q_a_norm, mla_w_q_b, mla_w_q_b_scale, mla_w_kv_a,
++                            mla_w_kv_a_scale, mla_kv_a_norm, mla_w_k, mla_w_v, mla_w_o,
++                            mla_w_o_scale, idx_w_q_b, idx_w_k, idx_k_norm_w, idx_k_norm_b,
++                            idx_w_weights, idx_w_compress_gate, idx_compress_ape, mhc_attn_fn, mhc_attn_scale,
++                            mhc_attn_base, norm_input_norm, mla_latent_cache, index_raw_cache,
++                            index_pool_cache, tp_partial, tp_arrived, ws_attn_pre,
++                            ws_attn_post, ws_attn_res, ws_collapsed, ws_normed, ws_attn_partial,
++                            ws_sublayer_out, ws_x_hc_mid, dsa_query, attn_out, index_q,
++                            index_k, selected_pools, selected_valid, bb_ord,
++                            dsa_ord, rank, attn_epoch, skip_topk,
++                        )
+                     if mode == 2 and skip_topk == 0:
+                         for request in pl.spmd(BATCH, name_hint="mtp_save_selected_pools"):
+                             begin = pl.read(query_start_loc, [request])
+@@ -363,6 +389,8 @@
+ @pl.jit(auto_scope=False)
+ def prefill_fwd(
+     embedding_rows: pl.Tensor[[QUERY_ROWS_DYN, D], pl.BF16],
++    token_ids: pl.Tensor[[QUERY_ROWS_DYN], pl.INT32],
++    embedding_weight: pl.Tensor[[LOCAL_VOCAB, D], pl.BF16],
+     query_start_loc: pl.Tensor[[BATCH + 1], pl.INT32],
+     kda_state_rows: pl.Tensor[[BATCH, KDA_STATE_COLUMNS], pl.INT32],
+     active_tokens: pl.Tensor[[1], pl.INT32],
+@@ -492,6 +520,7 @@
+     final_norm: pl.Tensor[[D], pl.BF16],
+     lm_head_weight: pl.Tensor[[HEAD_VOCAB_PAD, D], pl.BF16],
+     logits: pl.Out[pl.Tensor[[LOGIT_ROWS, HEAD_VOCAB_PAD], pl.FP32]],
++    orthrus_head: pl.Tensor[[DSA_NUM_LAYERS - 1, ORTHRUS_HEAD_WIDTH], pl.BF16],
+     tp_partial: pld.DistributedTensor[[QUERY_ROWS_DYN, D], pl.FP32],
+     tp_arrived: pld.DistributedTensor[[EP_SIZE, 1], pl.INT32],
+     lane_x: pld.DistributedTensor[[RESIDENT_TOTAL_CAP, D], pl.INT8],
+@@ -506,7 +535,7 @@
+ ):
+     """Run a complete prefill step with device logits."""
+     _inline_prefill_hidden_fwd(
+-        embedding_rows, query_start_loc, kda_state_rows, active_tokens, execution_mode, target_feedback, target_feedback_last, mtp_feedback_last, mtp_feedback_indices, mtp_feedback_mode, mtp_skip_topk, mtp_enorm, mtp_hnorm, mtp_eh_proj, mtp_head_norm, mtp_lm_head_weight, mtp_selected_pools, mtp_selected_valid, kda_tri_incl,
++        embedding_rows, token_ids, embedding_weight, query_start_loc, kda_state_rows, active_tokens, execution_mode, target_feedback, target_feedback_last, mtp_feedback_last, mtp_feedback_indices, mtp_feedback_mode, mtp_skip_topk, mtp_enorm, mtp_hnorm, mtp_eh_proj, mtp_head_norm, mtp_lm_head_weight, mtp_selected_pools, mtp_selected_valid, kda_tri_incl,
+         kda_tri_strict, kda_head_onehot, kda_eye_wide, kda_w_q, kda_w_k,
+         kda_w_v, kda_conv_q, kda_conv_k, kda_conv_v, kda_w_f_a,
+         kda_w_f_b, kda_w_g_a, kda_w_g_b, kda_w_b, kda_dt_bias,
+@@ -527,7 +556,7 @@
+         mla_latent_cache, index_raw_cache, index_pool_cache, dsa_query, attn_out, index_q, index_k,
+         selected_pools, selected_valid, router_gate_w, router_gate_bias, moe_w_gate_up,
+         moe_w_gate_up_scale, moe_w_down, moe_w_down_scale, moe_shared_w_gate_up, moe_shared_w_gate_up_scale,
+-        moe_shared_w_down, moe_shared_w_down_scale, logit_row_indices, head_hidden, ws_x_hc_pair,
++        moe_shared_w_down, moe_shared_w_down_scale, logit_row_indices, head_hidden, ws_x_hc_pair, orthrus_head,
+         tp_partial, tp_arrived, lane_x, lane_aux, lane_count,
+         count_ready, x_ready, slot_out, return_ready, forward_epoch,
+         rank,
+@@ -553,6 +582,8 @@
+ @pl.jit.host
+ def l3_prefill_fwd(
+     embedding_rows: pl.Tensor[[RANKS, QUERY_ROWS_DYN, D], pl.BF16],
++    token_ids: pl.Tensor[[RANKS, QUERY_ROWS_DYN], pl.INT32],
++    embedding_weight: pl.Tensor[[RANKS, LOCAL_VOCAB, D], pl.BF16],
+     query_start_loc: pl.Tensor[[RANKS, BATCH + 1], pl.INT32],
+     kda_state_rows: pl.Tensor[[RANKS, BATCH, KDA_STATE_COLUMNS], pl.INT32],
+     active_tokens: pl.Tensor[[RANKS, 1], pl.INT32],
+@@ -682,6 +713,7 @@
+     final_norm: pl.Tensor[[RANKS, D], pl.BF16],
+     lm_head_weight: pl.Tensor[[RANKS, HEAD_VOCAB_PAD, D], pl.BF16],
+     logits: pl.Out[pl.Tensor[[RANKS, LOGIT_ROWS, HEAD_VOCAB_PAD], pl.FP32]],
++    orthrus_head: pl.Tensor[[RANKS, DSA_NUM_LAYERS - 1, ORTHRUS_HEAD_WIDTH], pl.BF16],
+     forward_epoch: pl.Scalar[pl.INT32],
+ ):
+     """Launch one complete prefill orchestration per rank."""
+@@ -705,7 +737,7 @@
+         slot_out = pld.window(slot_out_buffer, [RESIDENT_ROUTES_PER_SRC, D], dtype=pl.FP32)
+         return_ready = pld.window(return_ready_buffer, [N_RANKS, 1], dtype=pl.INT32)
+         prefill_fwd(
+-            embedding_rows[rank], query_start_loc[rank], kda_state_rows[rank], active_tokens[rank], execution_mode[rank], target_feedback[rank], target_feedback_last[rank], mtp_feedback_last[rank], mtp_feedback_indices[rank], mtp_feedback_mode[rank], mtp_skip_topk[rank], mtp_enorm[rank], mtp_hnorm[rank], mtp_eh_proj[rank], mtp_head_norm[rank], mtp_lm_head_weight[rank], mtp_selected_pools[rank], mtp_selected_valid[rank], kda_tri_incl[rank],
++            embedding_rows[rank], token_ids[rank], embedding_weight[rank], query_start_loc[rank], kda_state_rows[rank], active_tokens[rank], execution_mode[rank], target_feedback[rank], target_feedback_last[rank], mtp_feedback_last[rank], mtp_feedback_indices[rank], mtp_feedback_mode[rank], mtp_skip_topk[rank], mtp_enorm[rank], mtp_hnorm[rank], mtp_eh_proj[rank], mtp_head_norm[rank], mtp_lm_head_weight[rank], mtp_selected_pools[rank], mtp_selected_valid[rank], kda_tri_incl[rank],
+             kda_tri_strict[rank], kda_head_onehot[rank], kda_eye_wide[rank], kda_w_q[rank], kda_w_k[rank],
+             kda_w_v[rank], kda_conv_q[rank], kda_conv_k[rank], kda_conv_v[rank], kda_w_f_a[rank],
+             kda_w_f_b[rank], kda_w_g_a[rank], kda_w_g_b[rank], kda_w_b[rank], kda_dt_bias[rank],
+@@ -727,7 +759,7 @@
+             selected_pools[rank], selected_valid[rank], router_gate_w[rank], router_gate_bias[rank], moe_w_gate_up[rank],
+             moe_w_gate_up_scale[rank], moe_w_down[rank], moe_w_down_scale[rank], moe_shared_w_gate_up[rank], moe_shared_w_gate_up_scale[rank],
+             moe_shared_w_down[rank], moe_shared_w_down_scale[rank], logit_row_indices[rank], head_hidden[rank], ws_x_hc_pair[rank],
+-            final_norm[rank], lm_head_weight[rank], logits[rank], tp_partial, tp_arrived,
++            final_norm[rank], lm_head_weight[rank], logits[rank], orthrus_head[rank], tp_partial, tp_arrived,
+             lane_x, lane_aux, lane_count, count_ready, x_ready,
+             slot_out, return_ready, forward_epoch, rank, device=rank,
+         )
+@@ -754,6 +786,7 @@
+ # windows and its own phase-local epoch counter.
+ l3_verify_fwd = pl.jit.host(l3_prefill_fwd._func)
+ l3_mtp_fwd = pl.jit.host(l3_prefill_fwd._func)
++l3_orthrus_fwd = pl.jit.host(l3_prefill_fwd._func)
+
+ if not LOGIT_ROWS <= CAPACITY <= PREFILL_MAX_TOKENS or CAPACITY % 16:
+     raise ValueError(f"--capacity must be 192..{PREFILL_MAX_TOKENS} and a multiple of 16, got {CAPACITY}")
+@@ -1845,8 +1878,10 @@
+     embedding_inputs = {"token_ids": token_ids}
+     if phase in ("prefill", "verify", "mtp"):
+         embedding_rows = torch.zeros(CAPACITY, D, dtype=torch.bfloat16)
+-        if total:
++        if total and phase != "verify":
+             embedding_rows[:total] = weights.lookup_rows(ids, mtp=mtp or phase == "mtp")
++        elif phase == "verify" and bool(((ids < 0) | (ids >= weights.model.vocab_size)).any()):
++            raise ValueError("token id is outside the checkpoint vocabulary")
+         embedding_inputs["embedding_rows"] = embedding_rows
+     elif bool(((ids < 0) | (ids >= weights.model.vocab_size)).any()):
+         raise ValueError("token id is outside the checkpoint vocabulary")

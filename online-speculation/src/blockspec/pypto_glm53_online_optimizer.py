@@ -1,0 +1,46 @@
+"""FP32 AdamW state and a BF16 inference copy for draft MLA parameters."""
+
+
+def make_adamw_update(rows, columns):
+    if rows < 1 or columns < 128 or columns % 128:
+        raise ValueError("the packed MLA parameter requires 128-aligned columns")
+    import pypto.language as pl
+
+    tile_width = 128
+    parts = columns // tile_width
+
+    @pl.jit
+    def update(
+        gradient: pl.Tensor[[rows, columns], pl.FP32],
+        master: pl.InOut[pl.Tensor[[rows, columns], pl.FP32]],
+        first_moment: pl.InOut[pl.Tensor[[rows, columns], pl.FP32]],
+        second_moment: pl.InOut[pl.Tensor[[rows, columns], pl.FP32]],
+        serving: pl.Out[pl.Tensor[[rows, columns], pl.BF16]],
+        lr: pl.Scalar[pl.FP32], weight_decay: pl.Scalar[pl.FP32],
+        inverse_bias_one: pl.Scalar[pl.FP32], inverse_bias_two: pl.Scalar[pl.FP32],
+    ):
+        for worker in pl.spmd(48, name_hint="orthrus_glm53_adamw"):
+            for task in pl.range(worker, rows * parts, 48):
+                row, col = task // parts, task % parts * tile_width
+                grad = gradient[row:row + 1, col:col + tile_width]
+                first = pl.add(pl.mul(first_moment[row:row + 1, col:col + tile_width], 0.9), pl.mul(grad, 0.1))
+                second = pl.add(pl.mul(second_moment[row:row + 1, col:col + tile_width], 0.999),
+                                pl.mul(pl.mul(grad, grad), 0.001))
+                step = pl.div(pl.mul(first, inverse_bias_one), pl.add(pl.sqrt(pl.mul(second, inverse_bias_two)), 1e-8))
+                previous = master[row:row + 1, col:col + tile_width]
+                parameter = pl.sub(previous, pl.mul(pl.add(step, pl.mul(previous, weight_decay)), lr))
+                first_moment[row:row + 1, col:col + tile_width] = first
+                second_moment[row:row + 1, col:col + tile_width] = second
+                master[row:row + 1, col:col + tile_width] = parameter
+                serving[row:row + 1, col:col + tile_width] = pl.cast(parameter, pl.BF16, mode="rint")
+        return master, first_moment, second_moment, serving
+
+    @pl.jit.host
+    def entry(gradient: pl.Tensor, master: pl.InOut[pl.Tensor], first_moment: pl.InOut[pl.Tensor],
+              second_moment: pl.InOut[pl.Tensor], serving: pl.Out[pl.Tensor],
+              lr: pl.Scalar[pl.FP32], weight_decay: pl.Scalar[pl.FP32],
+              inverse_bias_one: pl.Scalar[pl.FP32], inverse_bias_two: pl.Scalar[pl.FP32]):
+        update(gradient, master, first_moment, second_moment, serving,
+               lr, weight_decay, inverse_bias_one, inverse_bias_two, device=0)
+
+    return entry

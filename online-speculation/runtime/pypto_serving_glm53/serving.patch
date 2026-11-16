@@ -1,0 +1,272 @@
+--- a/pypto_serving/model/glm53/npu_executor.py
++++ b/pypto_serving/model/glm53/npu_executor.py
+@@ -32,6 +32,7 @@
+     *,
+     platform="a2a3",
+     pypto_build_dir=None,
++    orthrus=False,
+ ):
+     """Compile compute and cache-maintenance entries through the shared JIT path."""
+     compiler = KernelCompiler(
+@@ -50,10 +51,19 @@
+         "decode": compiler.compile("glm53_decode", decode_api.l3_decode_fwd),
+     }
+     programs["_auxiliary"] = {"reset": compiler.compile("glm53_reset", api.l3_reset_request_caches)}
++    if orthrus or os.environ.get("PYPTO_GLM_ORTHRUS_VERIFY") == "1":
++        programs["verify"] = compiler.compile("glm53_verify", api.l3_verify_fwd)
++        programs["_auxiliary"]["orthrus_commit"] = compiler.compile("glm53_orthrus_commit", api.l3_commit_target)
++    if orthrus:
++        programs["orthrus"] = compiler.compile("glm53_orthrus", api.l3_orthrus_fwd)
+     return programs
+
+
+ class Glm53PyptoExecutor(PyptoExecutor):
++    def __init__(self, *args, orthrus_mask_token_id=None, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.orthrus_mask_token_id = orthrus_mask_token_id
++
+     @property
+     def supports_device_decode_embedding(self):
+         return True
+@@ -93,6 +103,7 @@
+             list(self._device_ids),
+             platform=self._platform,
+             pypto_build_dir=self._pypto_build_dir,
++            orthrus=self.orthrus_mask_token_id is not None,
+         )
+         return Glm53CompiledKernels(api, programs, checkpoint, weights)
+
+@@ -116,6 +127,7 @@
+             self._device_ids,
+             self._platform,
+             prepared_weights=compiled.weights,
++            orthrus_mask_token_id=self.orthrus_mask_token_id,
+             **options,
+         )
+
+--- a/pypto_serving/model/glm53/npu_runner.py
++++ b/pypto_serving/model/glm53/npu_runner.py
+@@ -63,6 +63,7 @@
+     logits: torch.Tensor | None = None
+     error: BaseException | None = None
+     reclaimed: bool = False
++    logit_count: int | None = None
+     committed: bool = False
+     lock: object = field(default_factory=threading.RLock)
+
+@@ -80,6 +81,7 @@
+         *,
+         host_num_threads=None,
+         prepared_weights=None,
++        orthrus_mask_token_id=None,
+     ):
+         if host_num_threads is not None and (type(host_num_threads) is not int or host_num_threads <= 0):
+             raise ValueError("host_num_threads must be a positive integer or None")
+@@ -87,6 +89,7 @@
+         self._init_l3_dispatch(stacked=True)
+         self._api, self._programs, self._checkpoint = api, programs, checkpoint
+         self._prepared_weights = prepared_weights
++        self._orthrus_mask_id = orthrus_mask_token_id
+         self._device_ids, self._platform = list(device_ids), platform
+         self._execution_options = dict(
+             host_num_threads=host_num_threads,
+@@ -228,12 +231,17 @@
+         )
+         return PrefillResult(last_hidden=None, logits=logits)
+
++    def verify_orthrus_greedy(self, token_sequences, request_slots, *, stop_ids=()):
++        from blockspec.pypto_glm53_verify import verify_greedy
++
++        return verify_greedy(self, token_sequences, request_slots, stop_ids=stop_ids)
++
+     def run_decode(self, model, batch):
+         return self.run_prepared_decode(model, batch, self.prepare_decode(model, batch, buffer_slot=0))
+
+     @property
+     def supports_async_decode_reclaim(self):
+-        return True
++        return "orthrus" not in self._programs
+
+     def prepare_decode(self, model, batch, *, buffer_slot):
+         """Freeze metadata without reading live request state or placeholder embeddings."""
+@@ -247,6 +255,12 @@
+         return _PreparedDecode(tuple(batch.request_ids), lengths, buffer_slot, groups)
+
+     def run_prepared_decode(self, model, batch, prepared):
++        if "orthrus" in self.programs:
++            from blockspec.pypto_glm53_serving import serve_orthrus
++
++            result = serve_orthrus(self, batch, prepared)
++            if result is not None:
++                return result
+         return self.reclaim_prepared_decode(self.dispatch_prepared_decode(model, batch, prepared))
+
+     def dispatch_prepared_decode(self, model, batch, prepared):
+@@ -339,10 +353,15 @@
+         self._invalid_slots: set[int] = set()
+         self._reset_program = None
+         self._dispatch_error: BaseException | None = None
+-        self._next_forward_epoch = {"prefill": 0, "decode": 0}
++        self._next_forward_epoch = dict.fromkeys(programs, 0)
+         self.main_dispatches = 0
+         self._pending_forwards = {}
+-        if set(programs) != {"prefill", "decode"}:
++        phases = {"prefill", "decode"}
++        if "orthrus_commit" in self.auxiliary_programs:
++            phases.add("verify")
++        if self._orthrus_mask_id is not None:
++            phases.add("orthrus")
++        if set(programs) != phases:
+             raise ValueError("GLM requires separate packed prefill and decode programs")
+         required_auxiliary = {"reset"}
+         missing = required_auxiliary - self.auxiliary_programs.keys()
+@@ -397,7 +416,7 @@
+         inputs = api.prepare_step_inputs(weights, [[] for _ in range(api.BATCH)], cache_pages=self.cache_pages)
+         self._forward_input_args = {
+             (slot, phase): forward_input_task_args(api, phase, inputs)
+-            for slot in range(2) for phase in ("prefill", "decode")
++            for slot in range(2) for phase in self.programs
+         }
+         for args in self._forward_input_args.values():
+             args.allocate_host_shared(None)
+@@ -410,6 +429,12 @@
+                          name=f"glm_logits_{slot}")
+             for slot in range(2)
+         ]
++        self._orthrus_commit_metadata = ()
++        if "orthrus_commit" in self.auxiliary_programs:
++            self._orthrus_commit_metadata = tuple(
++                shared_empty((api.RANKS, api.BATCH), torch.int32, name=f"glm_orthrus_commit_{name}")
++                for name in ("feedback", "source", "destination")
++            )
+         runtime = DistributedWorker(
+             [entry.compiled for entry in (*self.programs.values(), *self.auxiliary_programs.values())],
+             config=config, persistent=True, reset_persistent_windows=False,
+@@ -443,6 +468,19 @@
+                                     dst_offset=offset, worker_id=rank)
+                 print("GLM_RANK_WEIGHTS_READY", rank, flush=True)
+
++            if "orthrus_head" in allocation_layouts:
++                from blockspec.pypto_glm53_head import initialize_rank_head
++
++                if self._orthrus_mask_id is not None:
++                    if not 0 <= self._orthrus_mask_id < weights.model.vocab_size:
++                        raise ValueError("GLM Orthrus mask token is outside the vocabulary")
++                    for rank, tensors in enumerate(per_rank):
++                        handle = tensors["orthrus_head"]
++                        for ordinal, layer in enumerate(weights.model.dsa_layer_ids):
++                            row = initialize_rank_head(self.checkpoint, layer, rank)
++                            runtime.copy_to(handle.data_ptr, row.data_ptr(), row.nbytes,
++                                            dst_offset=ordinal * row.nbytes, worker_id=rank)
++
+             with ThreadPoolExecutor(max_workers=api.RANKS) as executor:
+                 list(executor.map(upload, range(api.RANKS)))
+             head = weights.lm_head()
+@@ -466,7 +504,7 @@
+             self._phase_tensors = []
+             for slot in range(2):
+                 phases = {}
+-                for phase in ("prefill", "decode"):
++                for phase in self.programs:
+                     phase_tensors = dict(self._forward_input_args[slot, phase].tensors)
+                     phase_tensors["head_hidden"] = self._head_rows_by_slot[slot]
+                     phase_tensors["logits"] = self._logits_by_slot[slot]
+@@ -574,7 +612,8 @@
+     def _bind_cache_tables(self, slots, new_lengths, cache_groups=None):
+         """Lower scheduler pages; standalone generation uses the same allocator locally."""
+         api = self._api
+-        if cache_groups is None:
++        local = cache_groups is None
++        if local:
+             cache_groups = [self._local_cache.ensure_group_blocks(str(slot), int(new_lengths[slot]))
+                             for slot in slots]
+         state_rows = torch.full((api.BATCH, api.KDA_STATE_COLUMNS), -1, dtype=torch.int32)
+@@ -585,7 +624,12 @@
+             end = int(new_lengths[slot])
+             start = int(self._seq_lens[slot])
+             attention, states = groups["attention"], groups["kda_state"]
+-            if len(attention) != (end + api.BLOCK_SIZE - 1) // api.BLOCK_SIZE:
++            expected = (end + api.BLOCK_SIZE - 1) // api.BLOCK_SIZE
++            if local or "orthrus" in self.programs:
++                # Reuse reserved lookahead pages across partial acceptance.
++                attention = attention[:expected]
++                states = states[:min(expected, api.KDA_STATE_BLOCKS)]
++            if len(attention) != expected:
+                 raise ValueError("GLM attention table does not cover the request context")
+             if len(states) != min((end + api.BLOCK_SIZE - 1) // api.BLOCK_SIZE, api.KDA_STATE_BLOCKS):
+                 raise ValueError("GLM state table does not cover the request's rolling checkpoints")
+@@ -637,7 +681,7 @@
+         """Stage one slot and submit exactly one complete model program."""
+         api = self._api
+         self._require_healthy_runtime()
+-        if phase not in ("prefill", "decode") or buffer_slot not in (0, 1):
++        if phase not in self.programs or buffer_slot not in (0, 1):
+             raise ValueError("GLM dispatch needs a phase and buffer slot zero or one")
+         with self._state_lock:
+             if buffer_slot in self._pending_forwards:
+@@ -685,10 +729,11 @@
+                     raise FloatingPointError(f"nonfinite head_hidden at step {pending.epoch}")
+                 shards = self._logits_by_slot[pending.buffer_slot]
+                 logits = torch.cat(tuple(shard[:, :api.LOCAL_VOCAB] for shard in shards.unbind(0)), dim=1)
+-                if not bool(torch.isfinite(logits[:api.BATCH]).all()):
++                rows = api.BATCH if pending.logit_count is None else pending.logit_count
++                if not bool(torch.isfinite(logits[:rows]).all()):
+                     self.guard_events.append(f"nonfinite logits at step {pending.epoch}")
+                     raise FloatingPointError(f"nonfinite last-token logits at step {pending.epoch}")
+-                pending.logits = logits[:api.BATCH].clone()
++                pending.logits = logits[:rows].clone()
+                 self.calls += 1
+             except BaseException as error:
+                 pending.error = error
+--- a/pypto_serving/cli/main.py
++++ b/pypto_serving/cli/main.py
+@@ -292,9 +292,20 @@
+         variant=model_variant,
+     )
+     num_speculative_tokens = _resolve_num_speculative_tokens(args)
++    if model_variant == "orthrus" and model_family != "glm53":
++        raise ValueError("method orthrus is available for GLM-5.3-Flash")
+     if model_family == "deepseek_v4":
+         executor_kwargs["compile_kernels"] = True
+         executor_kwargs["num_speculative_tokens"] = num_speculative_tokens
++    elif model_family == "glm53" and model_variant == "orthrus":
++        if args.tensor_parallel_size != 8 or args.expert_parallel_size != 8:
++            raise ValueError("GLM Orthrus requires TP8/EP8")
++        if args.max_num_seqs != 1 or args.pd_role:
++            raise ValueError("GLM Orthrus currently uses a single-request worker without PD")
++        mask_id = args.speculative_config.get("mask_token_id")
++        if type(mask_id) is not int or mask_id < 0:
++            raise ValueError("GLM Orthrus requires mask_token_id")
++        executor_kwargs["orthrus_mask_token_id"] = mask_id
+     elif num_speculative_tokens or model_variant:
+         raise ValueError(
+             "--speculative-config/--num-speculative-tokens is only supported for DeepSeek V4"
+@@ -329,7 +340,7 @@
+     worker_device_ids = first_group if parallel_config.num_replicas == 1 else ()
+     # DSpark rebuilds its private drafter context from a prefilled suffix.
+     # Arbitrary-depth MTP still lacks a grouped prefix-cache contract.
+-    enable_prefix_cache = args.enable_prefix_caching
++    enable_prefix_cache = args.enable_prefix_caching and model_variant != "orthrus"
+     if model_family == "deepseek_v4" and (
+         num_speculative_tokens > 1 and model_variant != "dspark"
+     ):
+@@ -546,7 +557,7 @@
+     if speculative_config is None:
+         return ""
+     method = speculative_config.get("method")
+-    if method in ("mtp", "dspark"):
++    if method in ("mtp", "dspark", "orthrus"):
+         return str(method)
+     raise ValueError(
+         "DeepSeek V4 --speculative-config requires method='mtp' or method='dspark'"
+@@ -561,6 +572,10 @@
+         if configured is not None:
+             raise ValueError("--speculative-config cannot be combined with --num-speculative-tokens")
+         method = speculative_config.get("method")
++        if method == "orthrus":
++            if speculative_config.get("num_speculative_tokens") != 5:
++                raise ValueError("GLM Orthrus currently verifies five candidates per round")
++            return 5
+         if method == "dspark":
+             from pypto_serving.model.deepseek_dspark.npu_runner import (  # noqa: PLC0415
+                 DSPARK_SPECULATIVE_TOKENS,
