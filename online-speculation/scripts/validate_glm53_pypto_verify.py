@@ -91,7 +91,15 @@ def run_cases(runner, vocab_size, mask_id=None):
             next_token = int(logits[0].argmax())
             if next_token != expected:
                 raise AssertionError(f"greedy output diverged after commit for {matched=}")
-        report.append({"accepted_draft_tokens": matched, "target_tokens_match": True})
+        evidence = {"accepted_draft_tokens": matched, "target_tokens_match": True}
+        if mask_id is not None:
+            from blockspec.pypto_glm53_serving import collect_clean_logits
+
+            student, teacher = collect_clean_logits(runner, prompt + baseline, len(prompt), 2, mask_id)
+            if student.argmax(1).tolist() != guesses or teacher.argmax(1).tolist() != baseline[1:6]:
+                raise AssertionError("online replay did not reproduce the draft and clean target predictions")
+            evidence["teacher_replay_matches"] = True
+        report.append(evidence)
     return report
 
 

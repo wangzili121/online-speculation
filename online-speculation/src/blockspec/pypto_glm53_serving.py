@@ -3,7 +3,7 @@
 from .pypto_glm53_verify import bind_verify_snapshots, verify_greedy
 
 
-def propose_greedy(runner, slot, prefix_length, anchor, mask_id, *, cache_groups=None):
+def draft_logits(runner, slot, prefix_length, anchor, mask_id, *, cache_groups=None):
     """Execute the hybrid draft with the resident target's prefix leases."""
     api = runner._api
     width = api.VERIFY_QUERY_WIDTH
@@ -20,13 +20,50 @@ def propose_greedy(runner, slot, prefix_length, anchor, mask_id, *, cache_groups
     try:
         pending = runner._dispatch_step(inputs, phase="orthrus", buffer_slot=0)
         pending.logit_count = width - 1
-        guesses = runner._reclaim_step(pending).argmax(1).tolist()
+        logits = runner._reclaim_step(pending)
     except BaseException as error:
         runner._invalid_slots.add(slot)
         runner._poison_forwards(error)
         raise
     runner._pending_forwards.pop(pending.buffer_slot)
-    return guesses
+    return logits
+
+
+def propose_greedy(runner, slot, prefix_length, anchor, mask_id, *, cache_groups=None):
+    return draft_logits(runner, slot, prefix_length, anchor, mask_id, cache_groups=cache_groups).argmax(1).tolist()
+
+
+def collect_clean_logits(runner, tokens, anchor, slot, mask_id):
+    """Replay a clean, fixed-width block in a private slot for online distillation."""
+    api = runner._api
+    width = api.VERIFY_QUERY_WIDTH
+    if anchor < 0 or anchor + width > len(tokens):
+        raise ValueError("online replay needs an anchor and five known continuation tokens")
+    if len(tokens) > api.MAX_SEQ_LEN or not 0 <= slot < api.BATCH:
+        raise ValueError("online replay exceeds the compiled GLM context or slot geometry")
+    if "orthrus" not in runner.programs or "verify" not in runner.programs:
+        raise RuntimeError("online replay needs the PyPTO draft and verifier programs")
+    with runner._state_lock:
+        if any(state.slot == slot for state in runner._requests.values()) or int(runner._seq_lens[slot]):
+            raise ValueError("online replay needs a private, unused slot")
+        runner._drain_forwards()
+        runner.reset_requests([slot])
+        try:
+            for offset in range(0, anchor, api.CAPACITY):
+                prefix_chunk = list(tokens[offset:min(offset + api.CAPACITY, anchor)])
+                runner.forward_chunks([prefix_chunk], [slot])
+            student = draft_logits(runner, slot, anchor, tokens[anchor], mask_id)
+            block = list(tokens[anchor:anchor + width])
+            inputs, slots = runner._prepare_chunk_inputs([block], [slot], [anchor], phase="verify")
+            bind_verify_snapshots(api, inputs, slots, [width])
+            pending = runner._dispatch_step(inputs, phase="verify", buffer_slot=0)
+            pending.logit_count = width - 1
+            teacher = runner._reclaim_step(pending)
+            runner._pending_forwards.pop(pending.buffer_slot)
+        finally:
+            if runner._dispatch_error is None:
+                runner.reset_requests([slot])
+    return student, teacher
 
 
 def serve_orthrus(runner, batch, prepared):
