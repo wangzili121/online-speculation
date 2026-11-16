@@ -33,6 +33,6 @@ For a 1,280-token context, preflight reports 38.46 GiB per rank for staged targe
 
 ## Online update components
 
-The device KL loss and FP32 logit gradient passed for all 154,880 vocabulary entries. Isolated Ascend tests also passed for the vocabulary shard, final RMSNorm and mHC mean, KDA recurrence, residual-mixing and Sinkhorn derivatives, expert SwiGLU, joint history/draft softmax, MLA output projection and AdamW.
+The device KL loss and FP32 logit gradient passed for all 154,880 vocabulary entries. Isolated Ascend tests also passed for the vocabulary shard, final RMSNorm and mHC mean, KDA recurrence, residual-mixing and Sinkhorn derivatives, expert SwiGLU, joint history/draft softmax, MLA output projection and AdamW. The fused training dispatch updates the actual MLA output weight with an FP32 master copy and publishes its BF16 view. The frozen INT8 linear VJP uses the checkpoint's row scales and passes the activation gradient through the quantization boundary with a straight-through estimator.
 
 Online updates must capture a clean teacher sequence and replay the final draft MLA layer (backbone layer 43, zero-based) with its frozen suffix. The outstanding work includes the remaining attention, KDA projection, mHC and routed-expert derivatives, plus the integration that publishes the updated head to Serving at a request boundary.

@@ -1,7 +1,7 @@
 """FP32 AdamW state and a BF16 inference copy for draft MLA parameters."""
 
 
-def make_adamw_update(rows, columns):
+def make_adamw_update(rows, columns, *, device_entry=False):
     if rows < 1 or columns < 128 or columns % 128:
         raise ValueError("the packed MLA parameter requires 128-aligned columns")
     import pypto.language as pl
@@ -43,4 +43,30 @@ def make_adamw_update(rows, columns):
         update(gradient, master, first_moment, second_moment, serving,
                lr, weight_decay, inverse_bias_one, inverse_bias_two, device=0)
 
-    return entry
+    return update if device_entry else entry
+
+
+def make_mla_output_step():
+    """Update the actual draft output projection from an upstream suffix gradient."""
+    import pypto.language as pl
+    from models.glm5_3_flash.config import D
+
+    from .pypto_glm53_mla import HEADS, VALUE
+    from .pypto_glm53_online_attention import make_output_backward
+
+    backward = make_output_backward(device_entry=True)
+    update = make_adamw_update(D, HEADS * VALUE, device_entry=True)
+
+    @pl.jit.host
+    def step(
+        context: pl.Tensor, upstream: pl.Tensor,
+        master: pl.InOut[pl.Tensor], first: pl.InOut[pl.Tensor], second: pl.InOut[pl.Tensor],
+        serving: pl.InOut[pl.Tensor], weight_gradient: pl.InOut[pl.Tensor], context_gradient: pl.Out[pl.Tensor],
+        lr: pl.Scalar[pl.FP32], weight_decay: pl.Scalar[pl.FP32],
+        inverse_bias_one: pl.Scalar[pl.FP32], inverse_bias_two: pl.Scalar[pl.FP32],
+    ):
+        computed_weight_gradient, _ = backward(context, serving, upstream, weight_gradient, context_gradient, device=0)
+        update(computed_weight_gradient, master, first, second, serving,
+               lr, weight_decay, inverse_bias_one, inverse_bias_two, device=0)
+
+    return step

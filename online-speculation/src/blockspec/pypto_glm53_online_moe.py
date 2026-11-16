@@ -50,3 +50,42 @@ def make_swiglu_backward(rows, width, limit):
         backward(gate, up, upstream, d_gate, d_up, device=0)
 
     return entry
+
+
+def make_frozen_int8_linear_backward(rows, in_features, out_features):
+    """Compute dX with frozen row-scaled weights and an activation-quantization STE."""
+    import pypto.language as pl
+
+    columns, reduction = 64, 128
+    if rows < 16 or rows % 16 or in_features < columns or in_features % columns:
+        raise ValueError("invalid GLM expert input gradient geometry")
+    if out_features < reduction or out_features % reduction:
+        raise ValueError("expert reduction width must be 128-aligned")
+
+    @pl.jit
+    def backward(
+        upstream: pl.Tensor[[rows, out_features], pl.FP32],
+        weight: pl.Tensor[[out_features, in_features], pl.INT8], scale: pl.Tensor[[out_features], pl.FP32],
+        gradient: pl.Out[pl.Tensor[[rows, in_features], pl.FP32]],
+    ):
+        for piece in pl.spmd(in_features // columns, name_hint="orthrus_glm53_frozen_linear_backward"):
+            col = piece * columns
+            accum = pl.create_tensor([rows, columns], dtype=pl.FP32)
+            for start in pl.pipeline(0, out_features, reduction, stage=2):
+                dy = pl.slice(upstream, [rows, reduction], [0, start])
+                channel_scale = pl.reshape(scale[start:start + reduction], [1, reduction])
+                scaled = pl.col_expand_mul(dy, channel_scale)
+                high = pl.cast(scaled, pl.BF16, mode="rint")
+                low = pl.cast(pl.sub(scaled, pl.cast(high, pl.FP32)), pl.BF16, mode="rint")
+                packed = pl.slice(weight, [reduction, columns], [start, col])
+                unpacked = pl.cast(pl.cast(pl.cast(packed, pl.FP16), pl.FP32), pl.BF16, mode="rint")
+                accum = pl.matmul_acc(accum, high, unpacked, init_cond=start == 0)
+                accum = pl.matmul_acc(accum, low, unpacked)
+            gradient[:, col:col + columns] = accum
+        return gradient
+
+    @pl.jit.host
+    def entry(upstream: pl.Tensor, weight: pl.Tensor, scale: pl.Tensor, gradient: pl.Out[pl.Tensor]):
+        backward(upstream, weight, scale, gradient, device=0)
+
+    return entry

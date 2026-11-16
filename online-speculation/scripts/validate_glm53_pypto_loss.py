@@ -16,6 +16,7 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--mla-output", action="store_true", help="validate the draft output projection's VJP")
     modes.add_argument("--optimizer", action="store_true", help="validate a complete AdamW parameter update")
+    modes.add_argument("--mla-update", action="store_true", help="validate device MLA output VJP plus AdamW")
     modes.add_argument("--vocab-backward", action="store_true", help="validate a frozen TP8 vocabulary shard VJP")
     modes.add_argument("--norm-backward", action="store_true", help="validate final RMSNorm and mHC mean backward")
     modes.add_argument("--kda-backward", action="store_true", help="validate the frozen KDA recurrence adjoint")
@@ -23,6 +24,7 @@ def main():
     modes.add_argument("--sinkhorn-backward", action="store_true", help="validate mHC residual normalization VJP")
     modes.add_argument("--swiglu-backward", action="store_true", help="validate the frozen expert activation VJP")
     modes.add_argument("--joint-backward", action="store_true", help="validate joint history/draft softmax VJP")
+    modes.add_argument("--int8-backward", action="store_true", help="validate frozen W8A8 input gradients")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
@@ -35,6 +37,20 @@ def main():
     torch.set_num_threads(4)
     config = RunConfig(platform="a2a3", distributed_config=DistributedConfig(device_ids=[args.device], num_sub_workers=0))
     generator = torch.Generator().manual_seed(142)
+    if args.int8_backward:
+        from models.glm5_3_flash.config import FLASH
+        from blockspec.pypto_glm53_online_moe import make_frozen_int8_linear_backward
+
+        rows, width = 16, FLASH.moe_intermediate_size
+        gradient = torch.randn((rows, D), generator=generator) * 0.01
+        weights = torch.randint(-128, 128, (D, width), generator=generator, dtype=torch.int8)
+        scale = torch.rand(D, generator=generator) * 0.0005
+        output = torch.empty((rows, width), dtype=torch.float32)
+        expected = gradient.double() @ (weights.double() * scale.double().unsqueeze(1))
+        execute(make_frozen_int8_linear_backward(rows, width, D), (gradient, weights, scale, output),
+                3, (), config, {"program": "GLM W8A8 frozen down projection VJP", "passed": False}, args.output,
+                (expected,), ({"atol": 1e-6, "rtol": 3e-5},))
+        return
     if args.joint_backward:
         from blockspec.pypto_glm53_online_attention import make_joint_softmax_backward
 
@@ -178,23 +194,41 @@ def main():
                 {"local_vocab": vocab, "program": "GLM vocabulary VJP", "passed": False}, args.output,
                 (gradients @ weights.float(),), ({"atol": 1.5e-6, "rtol": 3e-5},))
         return
-    if args.optimizer:
+    if args.optimizer or args.mla_update:
         from blockspec.pypto_glm53_mla import HEADS, VALUE
-        from blockspec.pypto_glm53_online_optimizer import make_adamw_update
+        from blockspec.pypto_glm53_online_optimizer import make_adamw_update, make_mla_output_step
 
         shape = (D, HEADS * VALUE)
         gradient, master, moment = (torch.randn(shape, generator=generator) * scale for scale in (0.01, 0.02, 0.01))
         variance = torch.rand(shape, generator=generator) * 1e-4
-        serving = torch.empty(shape, dtype=torch.bfloat16)
+        serving = master.bfloat16()
+        if args.mla_update:
+            context = (torch.randn((16, shape[1]), generator=generator) * 0.2).bfloat16()
+            upstream = (torch.randn((16, D), generator=generator) * 0.1).bfloat16()
+            upstream[5:].zero_()
+            gradient = upstream.float().T @ context.float()
+            d_context = upstream.float() @ serving.float()
         scalars = (1e-4, 0.01, 1 / (1 - 0.9**3), 1 / (1 - 0.999**3))
         lr, decay, bias_one, bias_two = scalars
         m = moment * 0.9 + gradient * 0.1
         v = variance * 0.999 + gradient.square() * 0.001
         after = master - lr * (m * bias_one / ((v * bias_two).sqrt() + 1e-8) + master * decay)
         tolerances = ({"atol": 1e-8, "rtol": 2e-6},) * 3 + ({"atol": 0, "rtol": 0.008},)
-        execute(make_adamw_update(*shape), (gradient, master, moment, variance, serving), 1, scalars, config,
-                {"shape": shape, "program": "MLA AdamW", "passed": False}, args.output,
-                (after, m, v, after.bfloat16()), tolerances)
+        reports = {"shape": shape, "passed": False}
+        tensors = (master, moment, variance, serving)
+        expected = (after, m, v, after.bfloat16())
+        if args.mla_update:
+            kernel = make_mla_output_step()
+            reports["program"] = "MLA output device update"
+            source = (context, upstream)
+            tensors += (torch.empty_like(gradient), torch.empty_like(d_context))
+            expected += (gradient, d_context)
+            tolerances += ({"atol": 2e-5, "rtol": 2e-5},) * 2
+        else:
+            kernel = make_adamw_update(*shape)
+            reports["program"] = "MLA AdamW"
+            source = (gradient,)
+        execute(kernel, source + tensors, len(source), scalars, config, reports, args.output, expected, tolerances)
         return
     if args.mla_output:
         from blockspec.pypto_glm53_mla import HEADS, VALUE

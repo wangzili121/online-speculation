@@ -3,7 +3,7 @@
 from .pypto_glm53_mla import HEADS, VALUE
 
 
-def make_output_backward():
+def make_output_backward(*, device_entry=False):
     """Differentiate the BF16 MLA output projection with FP32 accumulation."""
     import pypto.language as pl
     from models.glm5_3_flash.config import D
@@ -40,7 +40,7 @@ def make_output_backward():
               weight_grad: pl.Out[pl.Tensor], context_grad: pl.Out[pl.Tensor]):
         backward(context, weight, upstream, weight_grad, context_grad, device=0)
 
-    return entry
+    return backward if device_entry else entry
 
 
 def make_joint_softmax_backward(rows, history_capacity, block_capacity=128):
