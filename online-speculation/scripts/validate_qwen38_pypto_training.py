@@ -11,6 +11,8 @@ def main():
     p.add_argument("--device", type=int, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--objective", choices=("tv","kl"), default="tv")
+    p.add_argument("--focus-weight", type=int, default=1,
+                   help="validate TV forward/gradient with extra weight on candidate positions 3 and 4")
     p.add_argument("--vocabulary", type=int, default=1024)
     p.add_argument("--suffix", action="store_true", help="validate the complete last-layer forward/backward")
     p.add_argument("--optimizer", action="store_true", help="validate clipping, Adam states and atomic publication")
@@ -25,13 +27,16 @@ def main():
     a = p.parse_args()
     if a.output.exists():
         p.error("new output required")
+    if (a.focus_weight < 1 or a.focus_weight != 1 and
+            (a.objective != "tv" or a.suffix or a.optimizer or a.feedback or a.bridge)):
+        p.error("position weighting is validated by the standalone TV benchmark")
     import torch
     import pypto
     from pypto.backend import BackendType
     from pypto.ir import DistributedConfig
     from pypto.runtime import DistributedWorker, ExecutionMode, RunConfig
     from blockspec.pypto_qwen38.baseline import runtime_identity
-    from blockspec.pypto_qwen38.training_programs import make_tv, make_kl, make_adam, make_linear
+    from blockspec.pypto_qwen38.training_programs import make_tv, make_kl, make_adam, make_linear, tv_supervision_weight
     torch.set_num_threads(4)
     torch.manual_seed(41)
     config = RunConfig(backend_type=BackendType.Ascend910B, execution_mode=ExecutionMode.ONBOARD,
@@ -48,8 +53,9 @@ def main():
     if a.suffix:
         return suffix(a, config)
     V = a.vocabulary
-    tv = (make_tv if a.objective=="tv" else make_kl)(32, V).compile(empty((32, V)), empty((32, V)), empty((32, V)),
-                                 empty((32, 8), torch.float32), 31, 31, config=config)
+    loss_entry = make_tv(32, V, focus_weight=a.focus_weight) if a.objective=="tv" else make_kl(32, V)
+    tv = loss_entry.compile(empty((32, V)), empty((32, V)), empty((32, V)),
+                            empty((32, 8), torch.float32), 31, tv_supervision_weight(31,a.focus_weight), config=config)
     adam = make_adam((64, 128)).compile(*[empty((64, 128), torch.float32) for _ in range(7)],
                                       .0001, .1, .001, 1., config=config)
     linear = make_linear((32, 128), (64, 128)).compile(empty((32, 128)), empty((64, 128)), empty((32, 64)), config=config)
@@ -71,11 +77,18 @@ def main():
         teacher = torch.randn_like(student)
         ds, dt = alloc(student.detach()), alloc(teacher)
         dg, losses = alloc(torch.zeros_like(student)), alloc(torch.zeros(32, 8))
-        for valid in ((1,7,17,31) if a.objective=="kl" else (1,17,31)):
-            worker.run(tv, ds, dt, dg, losses, valid, valid, config=config)
-            expected = (.5 * (student[:valid].float().softmax(-1) - teacher[:valid].float().softmax(-1)).abs().sum(-1).mean()
-                        if a.objective=="tv" else torch.nn.functional.kl_div(student[:valid].float().log_softmax(-1),
-                            teacher[:valid].float().softmax(-1),reduction="sum")/valid)
+        for valid in ((1,3,4,8,31) if a.focus_weight != 1 else (1,7,17,31) if a.objective=="kl" else (1,17,31)):
+            weights = torch.ones(32)
+            weights[2:4] = a.focus_weight
+            normalizer = tv_supervision_weight(valid, a.focus_weight)
+            assert normalizer == weights[:valid].sum().item()
+            worker.run(tv, ds, dt, dg, losses, valid, normalizer, config=config)
+            if a.objective=="tv":
+                distance = .5 * (student[:valid].float().softmax(-1) - teacher[:valid].float().softmax(-1)).abs().sum(-1)
+                expected = (distance * weights[:valid]).sum() / normalizer
+            else:
+                expected = torch.nn.functional.kl_div(student[:valid].float().log_softmax(-1),
+                            teacher[:valid].float().softmax(-1),reduction="sum")/valid
             grad, = torch.autograd.grad(expected, student)
             actual, loss = read(dg), read(losses)[:, 0].sum()
             torch.testing.assert_close(actual, grad, atol=2e-5, rtol=.03)

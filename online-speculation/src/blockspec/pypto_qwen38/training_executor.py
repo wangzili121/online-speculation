@@ -4,7 +4,7 @@ import json
 
 from .loading import tensor_layout
 from .training_layout_programs import make_layout, make_rope, make_softmax
-from .training_programs import make_element, make_linear, make_rms, make_tv, make_kl
+from .training_programs import make_element, make_linear, make_rms, make_tv, make_kl, tv_supervision_weight
 
 
 class TrainingPrograms:
@@ -56,7 +56,7 @@ class TrainingPrograms:
                 elif node.kind in {"softmax", "softmax_grad"}:
                     entry = make_softmax(*shape, backward=node.kind == "softmax_grad")
                 elif node.kind in {"tv", "kl"}:
-                    entry = (make_tv if node.kind == "tv" else make_kl)(*shape)
+                    entry = (make_tv if node.kind == "tv" else make_kl)(*shape, **node.options)
                 else:
                     raise ValueError(node.kind)
                 if node.kind in {"join", "reduce_block", "softmax"}:
@@ -90,8 +90,9 @@ class TrainingWorkspace:
     def run(self, inputs, *, past, width, valid, normalizer=None, gradients=None):
         import torch
         s = self.programs.graph.shape
-        normalizer = valid if normalizer is None else normalizer
-        if normalizer < valid:
+        block_weight = tv_supervision_weight(valid, getattr(self.programs.graph, "focus_weight", 1))
+        normalizer = block_weight if normalizer is None else normalizer
+        if normalizer < block_weight:
             raise ValueError("normalizer must include all reached positions")
         if not 0 <= past <= s.context - width or not 2 <= width <= s.block or not 1 <= valid < width:
             raise ValueError("history, block and reached-row boundary required")

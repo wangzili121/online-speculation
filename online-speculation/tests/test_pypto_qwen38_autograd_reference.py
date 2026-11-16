@@ -44,6 +44,24 @@ def test_execution_norm_rounds_raw_gamma_before_adding_one():
     assert torch.equal(masters["q_gamma"].grad,torch.ones_like(masters["q_gamma"]))
 
 
+@pytest.mark.parametrize("valid", (3, 8))
+def test_weighted_tv_loss_and_parameter_gradients(valid):
+    shape = SuffixShape(hidden=128, intermediate=256, vocabulary=128, q_heads=4, kv_heads=2,
+                        dimension=64, context=64, rotary=32)
+    graph = LastLayerGraph(shape, focus_weight=4)
+    inputs, masters = sample_inputs(graph, fp32=True)
+    reference = AutogradReference(graph, {k: v for k, v in inputs.items() if k not in masters},
+                                  masters, quantize=False)
+    logits = reference.forward(inputs, past=7, width=9)
+    per_row = (logits[:valid].softmax(-1) - inputs["teacher"][:valid].softmax(-1)).abs().sum(dim=-1) * .5
+    weights = torch.tensor([1., 1., 4., 4., 1., 1., 1., 1.])[:valid]
+    loss = (per_row * weights).sum() / weights.sum()
+    expected = evaluate(graph, inputs, past=7, width=9, valid=valid, fp32=True)
+    torch.testing.assert_close(expected[graph.losses.name][:, 0].sum(), loss)
+    for name, gradient in zip(masters, torch.autograd.grad(loss, tuple(masters.values())), strict=True):
+        torch.testing.assert_close(expected[graph.gradients[name].name], gradient, atol=3e-8, rtol=.001)
+
+
 def test_eight_block_gradients_use_the_same_global_normalizer():
     graph=LastLayerGraph(SuffixShape(hidden=128,intermediate=256,vocabulary=128,q_heads=4,kv_heads=2,
         dimension=64,context=64,rotary=32),objective="kl")

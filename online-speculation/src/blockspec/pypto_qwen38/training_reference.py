@@ -4,9 +4,11 @@
 def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False, observed=None):
     import torch
     from torch.nn import functional as F
+    from .training_programs import tv_supervision_weight
     s = graph.shape
-    normalizer = valid if normalizer is None else normalizer
-    if normalizer < valid:
+    block_weight = tv_supervision_weight(valid, getattr(graph, "focus_weight", 1))
+    normalizer = block_weight if normalizer is None else normalizer
+    if normalizer < block_weight:
         raise ValueError("normalizer must include all reached positions")
     if not 0 <= past <= s.context - width or not 2 <= width <= s.block or not 1 <= valid < width:
         raise ValueError("aligned history/block and reached teacher rows required")
@@ -115,9 +117,10 @@ def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False, 
             p, q = x.float().softmax(-1), teacher.float().softmax(-1)
             sign = .5 * (p - q).sign()
             gradient = p * (sign - (p * sign).sum(-1, keepdim=True)) / normalizer
-            mask = (torch.arange(s.block) < valid)[:, None]
-            losses = .5 * (p-q).abs().sum(-1, keepdim=True) * mask / normalizer
-            return cast(gradient * mask), losses.expand(-1, 8)
+            weights = (torch.arange(s.block) < valid)[:, None].float()
+            weights[2:4] *= cfg.get("focus_weight", 1)
+            losses = .5 * (p-q).abs().sum(-1, keepdim=True) * weights / normalizer
+            return cast(gradient * weights), losses.expand(-1, 8)
         if op == "kl":
             x, teacher = args
             log_q, log_p = x.float().log_softmax(-1), teacher.float().log_softmax(-1)

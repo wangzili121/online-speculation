@@ -44,7 +44,7 @@ def response_records(source, dataset):
 
 def replay_loss(learner):
     """用新参数重算同一批 loss；不调用 Adam、不发布参数，仅用于诊断步幅。"""
-    positions = sum(item.valid for item in learner.replay)
+    positions = learner.feedback_normalizer()
     optimizer = learner.optimizer
     gradients = optimizer.accum if learner.options.last_layers == 1 else optimizer.gradients
     before = (optimizer.steps, learner.updates, learner.draft.weights.version)
@@ -98,6 +98,9 @@ def main():
     p.add_argument("--seed",type=int,default=857)
     p.add_argument("--tokens",type=int,default=48)
     p.add_argument("--test-count",type=int,default=8)
+    p.add_argument("--test-offset", type=int, default=0,
+                   help="在原测试集之后抽取未用于此前选方案的确认题")
+    p.add_argument("--focus-weight", type=int, default=1, help="TV 第 3、4 个候选的 loss 权重")
     p.add_argument("--check-kernel",action="store_true",help="加载模型前核对 KL 及完整末层反向的 NPU 数值")
     p.add_argument("--audit-steps",default="",help="指定步骤在更新后重算同一批 loss，仅诊断，不额外更新")
     p.add_argument("--request-timeout",type=float,default=1200)
@@ -110,6 +113,8 @@ def main():
             or a.fresh_records < 0 or a.fresh_records and not a.resume_records_checkpoint
             or a.teacher_positions is not None and not 1 <= a.teacher_positions < a.width
             or a.frozen_answer_report and not a.resume_records_checkpoint
+            or a.test_offset < 0 or a.test_offset and not a.resume_records_checkpoint
+            or a.focus_weight < 1 or a.focus_weight != 1 and a.objective != "tv"
             or any(not 1<=step<=a.steps for step in audit_steps)):
         p.error("new output, two devices, positive training budgets and valid evaluation steps required")
     logging.getLogger("simpler").setLevel(logging.WARNING)
@@ -127,9 +132,13 @@ def main():
     if resume and (initial_step != source["updates"][-1]["step"]
                    or a.last_layers != source["arguments"]["last_layers"]):
         p.error("resume requires matching checkpoint step and suffix layout")
+    old_tests = len(source["dataset"]["splits"]["test"]) if resume else 0
+    if a.test_offset and a.test_offset < old_tests + len(source["dataset"]["splits"].get("confirm", [])):
+        p.error("test offset must follow the previous test and confirmation questions")
     batch = a.records_per_update*a.anchors_per_record
     options = OnlineConfig(objective=a.objective,last_layers=a.last_layers,stride=batch,replay_blocks=batch,
-                           learning_rate=a.learning_rate,learner_device=a.learner_device,resume_dir=resume)
+                           learning_rate=a.learning_rate,learner_device=a.learner_device,resume_dir=resume,
+                           focus_weight=a.focus_weight)
     supervision = ("reached_prefix" if a.prefix_supervision else
                    "fixed_prefix" if a.teacher_positions is not None else "full_block")
     report = dict(completed=False, objective=f"full-vocabulary {a.objective.upper()}(teacher||draft)",
@@ -169,9 +178,11 @@ def main():
         excluded = source["dataset"].get("excluded_prewarm_record_ids", []) if resume else []
         dataset = report["dataset"] = prepare_questions(a.data,engine.tokenizer,seed=source["dataset"]["seed"],
             max_prompt=source["arguments"]["max_prompt"],train_count=train_count+len(excluded),
-            dev_count=source["arguments"]["dev_count"],test_count=a.test_count)
+            dev_count=source["arguments"]["dev_count"],test_count=max(old_tests,a.test_offset+a.test_count))
+        evaluation_test = dataset["splits"]["test"][a.test_offset:a.test_offset+a.test_count]
         if resume:
             dataset = report["dataset"] = continued_dataset(source, dataset, train_count=train_count)
+        report["evaluation_test"] = evaluation_test
         if a.frozen_answer_report is not None:
             previous_replay = json.loads(a.frozen_answer_report.read_text())
             if (not previous_replay.get("completed") or previous_replay["dataset"] != dataset
@@ -265,7 +276,7 @@ def main():
             entry=dict(step=step,dev={},test={})
             for name in (("dev","test") if step==initial_step or final else ("dev",)):
                 refs,rows=[],[]
-                for row in dataset["splits"][name]:
+                for row in evaluation_test if name == "test" else dataset["splits"][name]:
                     refs.append(measure(row,True));rows.append(measure(row))
                 entry[name]=dict(rows=rows,target_rows=refs,summary=summarize(rows,target=refs))
                 if not entry[name]["summary"]["greedy_equal_all"]:

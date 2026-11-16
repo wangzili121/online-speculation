@@ -13,7 +13,8 @@ from .training_suffix_graph import SuffixGraph
 class SuffixLearner(OnlineLearner):
     def __init__(self, head, options):
         super().__init__(head,options)
-        self.graph = SuffixGraph(options.last_layers, objective=options.objective)
+        self.graph = SuffixGraph(options.last_layers, objective=options.objective,
+                                 focus_weight=options.focus_weight)
 
     def compile(self, samples, config):
         import torch
@@ -137,11 +138,12 @@ class SuffixLearner(OnlineLearner):
     def update(self):
         self.optimizer.zero_grad()
         positions = sum(item.valid for item in self.replay)
+        normalizer = self.feedback_normalizer()
         loss = 0.
         for item in self.replay:
             item.transfer()
             inputs = {**self.shared,**item.training_inputs,**self.optimizer.tensors()}
-            self.workspace.run(inputs,past=item.past,width=item.width,valid=item.valid,normalizer=positions,
+            self.workspace.run(inputs,past=item.past,width=item.width,valid=item.valid,normalizer=normalizer,
                                gradients=self.optimizer.gradients)
             self.optimizer.accumulate()
             handle = self.workspace.values[self.graph.losses.name]

@@ -23,12 +23,16 @@ class OnlineConfig:
     learner_device: int | None = None
     objective: str = "tv"
     reset_optimizer: bool = False
+    focus_weight: int = 1
 
     def __post_init__(self):
         if type(self.reset_optimizer) is not bool or (self.reset_optimizer and self.resume_dir is None):
             raise ValueError("reset_optimizer requires a checkpoint initialization")
         if self.objective not in {"tv", "kl"}:
             raise ValueError("objective must be tv or kl")
+        if (type(self.focus_weight) is not int or self.focus_weight < 1
+                or self.focus_weight != 1 and self.objective != "tv"):
+            raise ValueError("position 3/4 weighting requires TV and a positive integer weight")
         if (type(self.last_layers) is not int or not 1 <= self.last_layers <= 64
                 or type(self.stride) is not int or self.stride < 1
                 or type(self.replay_blocks) is not int or not 1 <= self.replay_blocks <= self.stride
@@ -70,7 +74,7 @@ class FeedbackBlock:
 class OnlineLearner:
     def __init__(self, head, options):
         self.head, self.options = head, options
-        self.graph = LastLayerGraph(objective=options.objective)
+        self.graph = LastLayerGraph(objective=options.objective, focus_weight=options.focus_weight)
         self.rounds = self.updates = 0
         self.last_result = None
         self.current = None
@@ -236,13 +240,14 @@ class OnlineLearner:
         import ctypes
         self.optimizer.zero_grad()
         positions = sum(item.valid for item in self.replay)
+        normalizer = self.feedback_normalizer()
         loss = 0.
         for item in self.replay:
             if self.dedicated:
                 item.transfer()
             inputs = {**self.shared, **item.training_inputs, **self.optimizer.tensors()}
             self.workspace.run(inputs, past=item.past, width=item.width,
-                               valid=item.valid, normalizer=positions, gradients=self.optimizer.accum)
+                               valid=item.valid, normalizer=normalizer, gradients=self.optimizer.accum)
             handle = self.workspace.values[self.graph.losses.name]
             self.trainer.run(self.loss_program, handle, self.loss_device, config=self.training_config)
             self.trainer.copy_from(self.loss_host.data_ptr(), self.loss_device.data_ptr, 32)
@@ -259,6 +264,10 @@ class OnlineLearner:
             save(self.optimizer, directory, self.head_identity)
             self.last_result["checkpoint"] = str(directory)
         return self.last_result
+
+    def feedback_normalizer(self):
+        from .training_programs import tv_supervision_weight
+        return sum(tv_supervision_weight(item.valid, self.options.focus_weight) for item in self.replay)
 
     def observe_clean_block(self, *, valid=None):
         """干净序列重放默认监督整块，也允许用同一份教师做前缀对照。"""

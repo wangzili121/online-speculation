@@ -1,15 +1,22 @@
 """在线训练的显式梯度 kernel；模型值和优化器状态均在设备计算。"""
 
 
-def make_tv(rows, vocabulary, *, inline=False):
+def tv_supervision_weight(valid, focus_weight):
+    return valid + (focus_weight - 1) * max(0, min(valid, 4) - 2)
+
+
+def make_tv(rows, vocabulary, *, inline=False, focus_weight=1):
     """完整词表 TV 及 d(logits)，只监督 verifier 真正走到的行。"""
     if rows < 1 or vocabulary % 64:
         raise ValueError("positive rows and a 64-aligned vocabulary required")
+    if type(focus_weight) is not int or focus_weight < 1:
+        raise ValueError("TV candidate weights must be positive integers")
     import pypto.language as pl
     T = min(512, vocabulary)
     if vocabulary % T:
         raise ValueError("complete vocabulary tiles required")
 
+    focus_reciprocal = 1.0 / focus_weight
     kernel = pl.jit.inline if inline else pl.jit
     @kernel
     def tv(student: pl.Tensor, teacher: pl.Tensor, gradient: pl.Out[pl.Tensor],
@@ -17,6 +24,10 @@ def make_tv(rows, vocabulary, *, inline=False):
         with pl.spmd(rows, name_hint="orthrus_tv_backward"):
             row = pl.tile.get_block_idx()
             if row < valid:
+                denominator = pl.cast(normalizer, pl.FP32)
+                if focus_weight > 1:
+                    if row >= 2 and row < 4:
+                        denominator = denominator * focus_reciprocal
                 sm = pl.full([8, 8], dtype=pl.FP32, value=-3.4028234663852886e38)
                 tm = pl.full([8, 8], dtype=pl.FP32, value=-3.4028234663852886e38)
                 for tile in pl.range(vocabulary // T):
@@ -58,7 +69,7 @@ def make_tv(rows, vocabulary, *, inline=False):
                     tx = pl.row_expand_mul(pl.full([8, 8], dtype=pl.FP32, value=1.), pl.row_sum(pl.transpose(tr, 0, 1)))
                     dot = pl.add(dot, sx)
                     loss = pl.add(loss, tx)
-                losses[row:row + 1, 0:8] = pl.div(pl.slice(loss, [1, 8], [0, 0]), pl.cast(normalizer, pl.FP32))
+                losses[row:row + 1, 0:8] = pl.div(pl.slice(loss, [1, 8], [0, 0]), denominator)
                 for tile in pl.range(vocabulary // T):
                     s = pl.reshape(pl.cast(pl.slice(student, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
                     t = pl.reshape(pl.cast(pl.slice(teacher, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
@@ -66,7 +77,7 @@ def make_tv(rows, vocabulary, *, inline=False):
                     q = pl.row_expand_div(pl.exp(pl.row_expand_sub(t, pl.row_max(tm))), pl.mul(pl.row_sum(tz), .125))
                     diff = pl.sub(p, q)
                     sign = pl.mul(pl.sub(pl.cmp(diff, 0., cmp_type=4), pl.cmp(diff, 0., cmp_type=2)), .5)
-                    ds = pl.div(pl.mul(p, pl.row_expand_sub(sign, pl.mul(pl.row_sum(dot), .125))), pl.cast(normalizer, pl.FP32))
+                    ds = pl.div(pl.mul(p, pl.row_expand_sub(sign, pl.mul(pl.row_sum(dot), .125))), denominator)
                     gradient[row:row + 1, tile * T:tile * T + T] = pl.cast(pl.reshape(ds, [1, T]), pl.BF16, mode="rint")
             else:
                 losses[row:row + 1, 0:8] = pl.full([1, 8], dtype=pl.FP32, value=0.)
