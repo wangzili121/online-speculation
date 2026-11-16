@@ -93,6 +93,9 @@ def test_device_verifier_avoids_duplicate_selection_and_full_logits_copy():
     assert target.forward([10, 11, 12]) == [4, 4, 4]
     assert calls == [("forward", (10, 11)), (("logits", 112, 2), {"target": True}),
                      ("forward", (12,)), (("logits", 112, 1), {"target": True})]
+    calls.clear()
+    target.replay([10, 11, 12])
+    assert calls == [("forward", (10, 11)), ("forward", (12,))]
 
 
 @pytest.mark.parametrize("mode", ("copy", "already_compact", "full_pool", "copy_failure"))

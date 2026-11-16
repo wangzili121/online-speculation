@@ -28,7 +28,7 @@ class Target:
 def test_tiled_verifier_matches_full_transactions_at_all_rejections_and_boundaries():
     # 包含 tile 边界的前后、EOS、输出预算和全接受；比较提交的 AR 输入而非只看输出。
     for reject, budget, stop, rows in product(range(32), (1, 2, 16, 17, 31, 32, 40),
-                                             (None, 1, 16, 17, 31, 32), (1, 8, 16, 32)):
+                                             (None, 1, 16, 17, 31, 32), (1, 3, 8, 16, 32)):
         candidates = list(range(1, 32))
         if reject < 31: candidates[reject] = 300
         full, tiled = Target(), Target()
@@ -65,15 +65,16 @@ def test_failure_in_replay_restores_original_history():
     assert target.inputs == [100]
 
 
-@pytest.mark.parametrize("backend,collecting,lengths", (("full", False, [32, 2]),
-    ("tiled", False, [16, 2]), ("tiled", True, [32, 2])))
-def test_runner_routes_backend_and_keeps_teacher_capture_complete(monkeypatch, backend, collecting, lengths):
+@pytest.mark.parametrize("backend,rows,collecting,lengths", (("full", 16, False, [32, 2]),
+    ("tiled", 16, False, [16, 2]), ("tiled", 3, False, [3, 2]), ("tiled", 3, True, [32, 2])))
+def test_runner_routes_backend_and_keeps_teacher_capture_complete(monkeypatch, backend, rows, collecting, lengths):
     import blockspec.pypto_qwen38.target as module
     target, observed = Target(), []
     candidates = list(range(1, 32)); candidates[1] = 300
     learner = NS(current=object(), observe=observed.append) if collecting else None
     draft = NS(block_size=32, context=512, propose=lambda *args: candidates, learner=learner)
-    runner = module.OrthrusRunner(NS(requests={}), draft, None, verification_backend=backend)
+    runner = module.OrthrusRunner(NS(requests={}), draft, None, verification_backend=backend,
+                                  verification_rows=rows)
     runner.pending["request"] = deque()
     request = NS(request_id="request", generated=[0], max_tokens=64, stop_token_ids=())
     slot = NS(phase="decode", request=request, position=1, token_ids=(0,))
@@ -96,8 +97,9 @@ def test_invalid_verifier_backend_is_rejected():
         OrthrusRunner(NS(requests={}), object(), None, verification_backend="unknown")
 
 
+@pytest.mark.parametrize("rows", (3, 16))
 @pytest.mark.parametrize("reject", (0, 1, 15, 16, 30, None))
-def test_partial_teacher_matches_the_full_supervised_prefix_and_excludes_replay(reject):
+def test_partial_teacher_matches_the_full_supervised_prefix_and_excludes_replay(reject, rows):
     class CapturingTarget(Target):
         def __init__(self):
             super().__init__()
@@ -114,9 +116,10 @@ def test_partial_teacher_matches_the_full_supervised_prefix_and_excludes_replay(
     if reject is not None: candidates[reject] = 300
     full, partial = CapturingTarget(), CapturingTarget()
     expected = verify_transaction(full, 0, candidates, budget=32)
-    actual = verify_tiled(partial, 0, candidates, budget=32, partial_teacher=True)
+    actual = verify_tiled(partial, 0, candidates, budget=32, rows=rows, partial_teacher=True)
     valid = min(expected.accepted+1, 31, len(expected.tokens))
     assert actual == expected and partial.inputs == full.inputs
     assert partial.collector.values[:valid] == full.collector.values[:valid]
     assert partial.collector.prefix_only
-    assert len(partial.collector.values) == (16 if reject is not None and reject < 16 else 32)
+    expected_rows = 32 if reject is None else min(32, (reject // rows + 1) * rows)
+    assert len(partial.collector.values) == expected_rows

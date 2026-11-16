@@ -21,6 +21,8 @@ def main():
                         help="input preparation, greedy selection and GDN transaction snapshots")
     parser.add_argument("--weight-backend", choices=("pypto", "host"), default="pypto")
     parser.add_argument("--verification-backend", choices=("full", "tiled"), default="full")
+    parser.add_argument("--verification-rows", type=int, choices=range(1, 17), default=16,
+                        help="tiled verifier rows per call; draft width is unchanged")
     parser.add_argument("--partial-teacher-capture", action="store_true",
                         help="tiled verification captures only tiles covering supervised teacher rows")
     parser.add_argument("--runtime-log-level", choices=("debug", "info", "timing", "warn", "error"), default="warn")
@@ -49,6 +51,8 @@ def main():
         parser.error("--share-ar-prefix requires AR-copy initialization without --head-dir")
     if args.partial_teacher_capture and args.verification_backend != "tiled":
         parser.error("--partial-teacher-capture requires --verification-backend tiled")
+    if args.verification_rows != 16 and args.verification_backend != "tiled":
+        parser.error("--verification-rows requires --verification-backend tiled")
     if args.reset_online_optimizer and (not args.online or args.resume_online is None):
         parser.error("--reset-online-optimizer requires --online and --resume-online")
     if not args.online and any(value is not None for value in
@@ -85,6 +89,7 @@ def main():
                              gdn_backend=args.gdn_backend, device_serving=args.serving_backend == "device",
                              weight_backend=args.weight_backend, online_config=online_config,
                              verification_backend=args.verification_backend,
+                             verification_rows=args.verification_rows,
                              partial_teacher_capture=args.partial_teacher_capture)
         application.state.engine = engine
         try:

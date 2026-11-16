@@ -50,7 +50,7 @@ def verify_transaction(target, anchor, candidates, *, budget, stop_tokens=()):
         result = correct(candidates, predictions, budget=budget, stop_tokens=stop_tokens)
         if result.committed_inputs < len(inputs):
             target.restore(snapshot)
-            target.forward(inputs[:result.committed_inputs])
+            getattr(target, "replay", target.forward)(inputs[:result.committed_inputs])
         return result
     except BaseException:
         target.restore(snapshot)
@@ -101,7 +101,7 @@ def verify_tiled(target, anchor, candidates, *, budget, stop_tokens=(), rows=16,
                 target.collector = None
             try:
                 target.restore(snapshot)
-                target.forward(inputs[:result.committed_inputs])
+                getattr(target, "replay", target.forward)(inputs[:result.committed_inputs])
             finally:
                 if collector is not None:
                     target.collector = collector

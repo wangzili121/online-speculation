@@ -102,6 +102,13 @@ class NativeTarget:
         pages.length = snapshot.length
 
     def forward(self, inputs):
+        return self._forward(inputs, select=True)
+
+    def replay(self, inputs):
+        """Rebuild committed state without selecting unused target tokens."""
+        self._forward(inputs, select=self.collector is not None)
+
+    def _forward(self, inputs, *, select):
         output = []
         for offset in range(0, len(inputs), self.rows):
             tokens = tuple(inputs[offset:offset + self.rows])
@@ -111,7 +118,8 @@ class NativeTarget:
                 self.runner.run_verifier([slot])
                 if self.collector is not None:
                     self.collector.teacher(self.runner, self.resident.slot, len(tokens))
-                output.extend(serving.select(self.runner.logits, self.resident.slot * 16, len(tokens), target=True))
+                if select:
+                    output.extend(serving.select(self.runner.logits, self.resident.slot * 16, len(tokens), target=True))
                 continue
             self.runner.run_batch([slot])
             if self.collector is not None:
@@ -140,15 +148,20 @@ class OrthrusRunner:
     token at a time; buffered tokens require no extra model invocation.
     """
 
-    def __init__(self, native, draft, slot_type, *, verification_backend="full", partial_teacher_capture=False):
+    def __init__(self, native, draft, slot_type, *, verification_backend="full",
+                 verification_rows=16, partial_teacher_capture=False):
         if getattr(native, "device_ids", None):
             raise ValueError("Orthrus transaction adapter currently requires the native TP1 runner")
         if verification_backend not in {"full", "tiled"}:
             raise ValueError("verification backend must be full or tiled")
+        if (type(verification_rows) is not int or not 1 <= verification_rows <= 16
+                or verification_backend != "tiled" and verification_rows != 16):
+            raise ValueError("verification rows must be 1..16 and require tiled verification")
         if type(partial_teacher_capture) is not bool or partial_teacher_capture and verification_backend != "tiled":
             raise ValueError("partial teacher capture requires the tiled verifier")
         self.native, self.draft, self.slot_type = native, draft, slot_type
         self.verification_backend = verification_backend
+        self.verification_rows = verification_rows
         self.partial_teacher_capture = partial_teacher_capture
         self.pending = {}
         self.rounds = self.accepted = self.restores = 0
@@ -223,10 +236,13 @@ class OrthrusRunner:
                 raise RuntimeError("draft must propose exactly K-1 tokens")
             target = NativeTarget(self.native, request, self.slot_type,
                                   **({"collector": learner.current} if learner is not None else {}))
-            verifier = verify_tiled if self.verification_backend == "tiled" else verify_transaction
-            result = verifier(target, slot.token_ids[0], candidates,
-                              budget=remaining, stop_tokens=request.stop_token_ids,
-                              **({"partial_teacher": True} if self.partial_teacher_capture else {}))
+            if self.verification_backend == "tiled":
+                result = verify_tiled(target, slot.token_ids[0], candidates,
+                                      budget=remaining, stop_tokens=request.stop_token_ids,
+                                      rows=self.verification_rows, partial_teacher=self.partial_teacher_capture)
+            else:
+                result = verify_transaction(target, slot.token_ids[0], candidates,
+                                            budget=remaining, stop_tokens=request.stop_token_ids)
             if learner is not None:
                 learner.observe(result)
         except BaseException:
