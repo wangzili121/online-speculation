@@ -4,6 +4,8 @@
 import argparse
 import json
 from pathlib import Path
+from statistics import median
+from time import perf_counter_ns
 
 import torch
 
@@ -83,10 +85,20 @@ def full_check(args, programs, config, report, checkpoint, parameters):
         for arg in (*router_args, *routed_args, *finish_args):
             if id(arg) not in handles:
                 handles[id(arg)] = worker.alloc_stacked_tensor(arg.share_memory_())
-        router_program, routed_program, finish_program = programs
-        worker.run(router_program, *(handles[id(arg)] for arg in router_args), active, config=config)
-        for program, stage_args in ((routed_program, routed_args), (finish_program, finish_args)):
-            worker.run(program, *(handles[id(arg)] for arg in stage_args), active, 1, config=config)
+        arguments = tuple(tuple(handles[id(arg)] for arg in stage_args)
+                          for stage_args in (router_args, routed_args, finish_args))
+        samples = {stage: [] for stage in ("route", "routed_vjp", "shared_and_norm_vjp")}
+        for epoch in range(1, args.profile_steps + 2):
+            for index, (stage, program, bindings) in enumerate(zip(samples, programs, arguments, strict=True)):
+                scalars = (active,) if index == 0 else (active, epoch)
+                start = perf_counter_ns()
+                worker.run(program, *bindings, *scalars, config=config)
+                if epoch > 1:
+                    samples[stage].append((perf_counter_ns() - start) / 1e6)
+        if args.profile_steps:
+            report["profile"] = {"measured_steps": args.profile_steps,
+                                 "dispatch_ms_median": {key: median(ms) for key, ms in samples.items()},
+                                 "dispatch_ms_samples": samples}
         for rank, shard in enumerate(handles[id(result)].shards):
             worker.copy_from(result[rank].data_ptr(), shard.data_ptr, result[rank].nbytes, worker_id=rank)
 
@@ -127,15 +139,16 @@ def main():
     parser.add_argument("--layer", type=int, choices=(43, 44), default=44)
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--full-moe", action="store_true", help="include native routing, shared experts and RMSNorm")
+    parser.add_argument("--profile-steps", type=int, default=0, help="time extra full MoE steps after warmup")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     ranks = len(args.devices)
+    if args.profile_steps < 0 or (args.profile_steps and (not args.full_moe or args.compile_only)):
+        parser.error("--profile-steps needs device execution with --full-moe")
     if ranks not in (1, 2, 4, 8) or len(set(args.devices)) != ranks or args.output.exists():
         parser.error("use distinct devices and a fresh output path")
     if args.checkpoint is None and not args.compile_only:
         parser.error("device execution needs a GLM W8A8 checkpoint")
-    if args.full_moe and not args.compile_only and ranks < 2:
-        parser.error("the full MoE fixture needs at least eight real routed experts")
 
     from models.glm5_3_flash.config import D, FLASH
     from models.glm5_3_flash.quantization import quantize_per_token_int8
@@ -144,7 +157,9 @@ def main():
     from pypto.runtime import DistributedWorker, RunConfig
 
     torch.set_num_threads(4)
-    local_experts = FLASH.n_routed_experts // ranks if args.compile_only else 4
+    local_experts = FLASH.n_routed_experts // ranks if args.compile_only else (
+        max(4, ROUTES // ranks) if args.full_moe else 4
+    )
     config = RunConfig(platform="a2a3", distributed_config=DistributedConfig(
         device_ids=args.devices, num_sub_workers=0,
     ))

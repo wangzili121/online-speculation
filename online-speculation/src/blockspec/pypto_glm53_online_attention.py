@@ -43,21 +43,16 @@ def make_output_backward(*, device_entry=False):
     return backward if device_entry else entry
 
 
-def make_projection_backward(input_width, output_width, *, device_entry=False, refine=False):
-    """Apply the input and parameter adjoints of a packed BF16 MLA projection."""
+def _make_projection_weight_gradient(input_width, output_width, refine):
     import pypto.language as pl
 
-    rows, columns, reduction = 16, 64, 128
-    if input_width < columns or input_width % columns or output_width < reduction or output_width % reduction:
-        raise ValueError("GLM MLA projections require aligned feature axes")
+    rows, columns = 16, 64
 
-    @pl.jit
-    def projection_backward(
+    @pl.jit.inline
+    def weight_gradient(
         activation: pl.Tensor[[rows, input_width], pl.BF16],
-        weight: pl.Tensor[[output_width, input_width], pl.BF16],
         upstream: pl.Tensor[[rows, output_width], pl.FP32],
-        weight_grad: pl.Out[pl.Tensor[[output_width, input_width], pl.FP32]],
-        input_grad: pl.Out[pl.Tensor[[rows, input_width], pl.FP32]],
+        weight_grad: pl.Tensor[[output_width, input_width], pl.FP32],
     ):
         for tile in pl.spmd((output_width // columns) * (input_width // columns), name_hint="orthrus_glm53_projection_dw"):
             output_column = tile // (input_width // columns) * columns
@@ -72,6 +67,31 @@ def make_projection_backward(input_width, output_width, *, device_entry=False, r
                 remainder = pl.sub(pl.sub(dy, pl.cast(high, pl.FP32)), pl.cast(low, pl.FP32))
                 dw = pl.matmul_acc(dw, pl.cast(remainder, pl.BF16, mode="rint"), values, a_trans=True)
             weight_grad[output_column:output_column + columns, input_column:input_column + columns] = dw
+
+        return weight_grad
+
+    return weight_gradient
+
+
+def make_projection_backward(input_width, output_width, *, device_entry=False, refine=False):
+    """Apply the input and parameter adjoints of a packed BF16 MLA projection."""
+    import pypto.language as pl
+
+    rows, columns, reduction = 16, 64, 128
+    if input_width < columns or input_width % columns or output_width < reduction or output_width % reduction:
+        raise ValueError("GLM MLA projections require aligned feature axes")
+
+    weight_gradient = _make_projection_weight_gradient(input_width, output_width, refine)
+
+    @pl.jit
+    def projection_backward(
+        activation: pl.Tensor[[rows, input_width], pl.BF16],
+        weight: pl.Tensor[[output_width, input_width], pl.BF16],
+        upstream: pl.Tensor[[rows, output_width], pl.FP32],
+        weight_grad: pl.Out[pl.Tensor[[output_width, input_width], pl.FP32]],
+        input_grad: pl.Out[pl.Tensor[[rows, input_width], pl.FP32]],
+    ):
+        weight_gradient(activation, upstream, weight_grad)
 
         for tile in pl.spmd(input_width // columns, name_hint="orthrus_glm53_projection_dx"):
             column = tile * columns
@@ -725,24 +745,33 @@ def make_mla_norm_backward(width, epsilon, *, device_entry=False):
     return norm_backward if device_entry else entry
 
 
+def _mla_input_backward_stages(ranks, rows, output_width):
+    from models.glm5_3_flash.config import FLASH, Q_LORA
+
+    from .pypto_glm53_online_suffix import make_fp32_tp_sum
+
+    q_b = make_projection_backward(Q_LORA, output_width, device_entry=True, refine=True)
+    q_norm = make_mla_norm_backward(Q_LORA, FLASH.rms_norm_eps, device_entry=True)
+    kv_norm = make_mla_norm_backward(LATENT, FLASH.rms_norm_eps, device_entry=True)
+    reduce_q = make_fp32_tp_sum(ranks, rows, Q_LORA)
+    reduce_kv = make_fp32_tp_sum(ranks, rows, LATENT)
+
+    return q_b, q_norm, kv_norm, reduce_q, reduce_kv
+
+
 def make_mla_input_projection_backward(ranks):
     """Reduce the branch gradients before differentiating the replicated MLA weights."""
     import pypto.language as pl
     import pypto.language.distributed as pld
-    from models.glm5_3_flash.config import D, FLASH, Q_LORA
-    from .pypto_glm53_online_suffix import make_fp32_tp_sum
+    from models.glm5_3_flash.config import D, Q_LORA
 
     rows = 16
     output_width = HEADS * VALUE
     if not 1 <= ranks <= 8:
         raise ValueError("GLM MLA gradients use up to eight TP shards")
-    q_b = make_projection_backward(Q_LORA, output_width, device_entry=True, refine=True)
+    q_b, q_norm, kv_norm, reduce_q, reduce_kv = _mla_input_backward_stages(ranks, rows, output_width)
     q_a = make_projection_backward(D, Q_LORA, device_entry=True, refine=True)
     kv_a = make_projection_backward(D, LATENT, device_entry=True, refine=True)
-    q_norm = make_mla_norm_backward(Q_LORA, FLASH.rms_norm_eps, device_entry=True)
-    kv_norm = make_mla_norm_backward(LATENT, FLASH.rms_norm_eps, device_entry=True)
-    reduce_q = make_fp32_tp_sum(ranks, rows, Q_LORA)
-    reduce_kv = make_fp32_tp_sum(ranks, rows, LATENT)
 
     @pl.jit
     def sum_inputs(
@@ -813,5 +842,74 @@ def make_mla_input_projection_backward(ranks):
             _latent_weight, from_latent = kv_a(x[rank], kv_a_weight[rank], d_raw_kv, d_kv_a[rank], input_kv,
                                               device=rank)
             sum_inputs(from_query, from_latent, dx[rank], device=rank)
+
+    return entry
+
+
+def make_mla_input_weight_backward(ranks):
+    """Train the last MLA without computing gradients before its frozen input."""
+    import pypto.language as pl
+    import pypto.language.distributed as pld
+    from models.glm5_3_flash.config import D, Q_LORA
+
+    rows, width = 16, HEADS * VALUE
+    q_b, q_norm, kv_norm, reduce_q, reduce_kv = _mla_input_backward_stages(ranks, rows, width)
+    query_weight = _make_projection_weight_gradient(D, Q_LORA, True)
+    latent_weight = _make_projection_weight_gradient(D, LATENT, True)
+
+    @pl.jit
+    def weights_backward(
+        activation: pl.Tensor[[rows, D], pl.BF16], dq: pl.Tensor[[rows, Q_LORA], pl.FP32],
+        dkv: pl.Tensor[[rows, LATENT], pl.FP32], q: pl.Out[pl.Tensor[[Q_LORA, D], pl.FP32]],
+        kv: pl.Out[pl.Tensor[[LATENT, D], pl.FP32]],
+    ):
+        query_weight(activation, dq, q)
+        latent_weight(activation, dkv, kv)
+
+    @pl.jit.host
+    def entry(
+        x: pl.Tensor[[ranks, rows, D], pl.BF16],
+        q_preactivation: pl.Tensor[[ranks, rows, Q_LORA], pl.BF16],
+        q_normalized: pl.Tensor[[ranks, rows, Q_LORA], pl.BF16],
+        kv_preactivation: pl.Tensor[[ranks, rows, LATENT], pl.BF16],
+        d_query: pl.Tensor[[ranks, rows, width], pl.FP32],
+        d_latent: pl.Tensor[[ranks, rows, LATENT], pl.FP32],
+        q_norm_weight: pl.Tensor[[ranks, Q_LORA], pl.BF16],
+        q_b_weight: pl.Tensor[[ranks, width, Q_LORA], pl.BF16],
+        kv_norm_weight: pl.Tensor[[ranks, LATENT], pl.BF16],
+        d_q_a: pl.Out[pl.Tensor[[ranks, Q_LORA, D], pl.FP32]],
+        d_q_norm: pl.Out[pl.Tensor[[ranks, 1, Q_LORA], pl.FP32]],
+        d_q_b: pl.Out[pl.Tensor[[ranks, width, Q_LORA], pl.FP32]],
+        d_kv_a: pl.Out[pl.Tensor[[ranks, LATENT, D], pl.FP32]],
+        d_kv_norm: pl.Out[pl.Tensor[[ranks, 1, LATENT], pl.FP32]],
+        d_inner: pl.InOut[pl.Tensor[[ranks, rows, Q_LORA], pl.FP32]],
+        d_full_q: pl.InOut[pl.Tensor[[ranks, rows, Q_LORA], pl.FP32]],
+        d_full_kv: pl.InOut[pl.Tensor[[ranks, rows, LATENT], pl.FP32]],
+        d_raw_query: pl.InOut[pl.Tensor[[ranks, rows, Q_LORA], pl.FP32]],
+        d_raw_latent: pl.InOut[pl.Tensor[[ranks, rows, LATENT], pl.FP32]],
+        epoch: pl.Scalar[pl.INT32],
+    ):
+        q_window = pld.alloc_window_buffer([rows, Q_LORA], dtype=pl.FP32)
+        q_ready_window = pld.alloc_window_buffer([ranks, 1], dtype=pl.INT32)
+        kv_window = pld.alloc_window_buffer([rows, LATENT], dtype=pl.FP32)
+        kv_ready_window = pld.alloc_window_buffer([ranks, 1], dtype=pl.INT32)
+        for rank in pl.range(pld.world_size()):
+            q_buffer = pld.window(q_window, [rows, Q_LORA], dtype=pl.FP32)
+            q_ready = pld.window(q_ready_window, [ranks, 1], dtype=pl.INT32)
+            kv_buffer = pld.window(kv_window, [rows, LATENT], dtype=pl.FP32)
+            kv_ready = pld.window(kv_ready_window, [ranks, 1], dtype=pl.INT32)
+            inner = d_inner[rank]
+            full_q = d_full_q[rank]
+            full_kv = d_full_kv[rank]
+            raw_query = d_raw_query[rank]
+            raw_latent = d_raw_latent[rank]
+            _dw, d_local = q_b(q_normalized[rank], q_b_weight[rank], d_query[rank], d_q_b[rank], inner, device=rank)
+            dq = reduce_q(d_local, full_q, q_buffer, q_ready, rank, epoch, device=rank)
+            dkv = reduce_kv(d_latent[rank], full_kv, kv_buffer, kv_ready, rank, epoch, device=rank)
+            dq_raw, _d_q_scale = q_norm(q_preactivation[rank], q_norm_weight[rank], dq,
+                                        raw_query, d_q_norm[rank], device=rank)
+            dkv_raw, _d_kv_scale = kv_norm(kv_preactivation[rank], kv_norm_weight[rank], dkv,
+                                          raw_latent, d_kv_norm[rank], device=rank)
+            weights_backward(x[rank], dq_raw, dkv_raw, d_q_a[rank], d_kv_a[rank], device=rank)
 
     return entry

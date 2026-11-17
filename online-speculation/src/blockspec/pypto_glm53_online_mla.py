@@ -5,7 +5,7 @@ from math import prod
 from .pypto_glm53_draft_attention import make_resident_mla_replay
 from .pypto_glm53_head import head_layout
 from .pypto_glm53_mla import HEADS, HEAD_TILE, LATENT, QUERY_ROWS, TILE, VALUE
-from .pypto_glm53_online_attention import make_mla_input_projection_backward, make_mla_local_backward
+from .pypto_glm53_online_attention import make_mla_input_weight_backward, make_mla_local_backward
 from .pypto_glm53_online_optimizer import (
     make_mla_head_adamw, make_mla_head_optimizer_init, make_mla_head_publish,
 )
@@ -22,7 +22,7 @@ def prepare_mla_update(api, compiler):
     ranks = api.RANKS
     capacity = (TOPK_INDEX_WIDTH + TILE - 1) // TILE * TILE
     entries = (make_resident_mla_replay(api), make_mla_local_backward(capacity, ranks=ranks),
-               make_mla_input_projection_backward(ranks), make_mla_head_optimizer_init(ranks),
+               make_mla_input_weight_backward(ranks), make_mla_head_optimizer_init(ranks),
                make_mla_head_adamw(ranks), make_mla_head_publish(ranks), make_gradient_check(ranks),
                make_mla_input_norm(ranks, api.D))
     return {name: compiler.compile(name, entry) for name, entry in zip(PROGRAMS, entries, strict=True)}
@@ -75,19 +75,28 @@ class ResidentMLAUpdate:
         self.history_bias, self.context = fp32(QUERY_ROWS, capacity), bf16(rows, local)
         self.dquery, self.dblock = fp32(rows, local), fp32(TILE, LATENT)
         self.dlatent = self._view(self.dblock, (rows, LATENT))
-        self.dx = fp32(rows, width)
         self.projection_scratch = (
             fp32(rows, Q_LORA), fp32(rows, Q_LORA), fp32(rows, LATENT), fp32(rows, Q_LORA),
-            fp32(rows, LATENT), fp32(rows, width), fp32(rows, width),
+            fp32(rows, LATENT),
         )
         bias = torch.full((1, TILE), -3.4e38, dtype=torch.float32)
         bias[:, :QUERY_ROWS] = 0
         self.block_bias = fp32(1, TILE)
         self._upload(self.block_bias, bias)
-        self.table = session.allocate((self.runner._api.TABLE_MAX,), torch.int32)
-        self.pool_blocks = session.allocate((self.runner._api.POOL_PAGE_ROWS,), torch.int32)
-        self.query_metadata = {name: session.allocate((QUERY_ROWS,), torch.int32) for name in
-                               ("seg_start", "pool_count_tok", "tail_start", "tail_count", "kv_len_tok")}
+        metadata_sizes = (
+            ("block_table", self.runner._api.TABLE_MAX), ("pool_blocks", self.runner._api.POOL_PAGE_ROWS),
+            ("seg_start", QUERY_ROWS), ("pool_count_tok", QUERY_ROWS), ("tail_start", QUERY_ROWS),
+            ("tail_count", QUERY_ROWS), ("kv_len_tok", QUERY_ROWS),
+        )
+        self.metadata_slices = {}
+        offset = 0
+        for name, size in metadata_sizes:
+            self.metadata_slices[name] = slice(offset, offset + size)
+            offset += (size + 31) // 32 * 32
+        self.metadata_host = torch.zeros(offset, dtype=torch.int32).share_memory_()
+        self.metadata_device = session.allocate((offset,), torch.int32)
+        self.metadata_views = tuple(self._view(self.metadata_device, (item.stop - item.start,), item.start)
+                                    for item in self.metadata_slices.values())
         self._launch(PROGRAMS[3], self.live, self.master, self.first, self.second)
 
     def _view(self, tensor, shape, offset=0):
@@ -110,10 +119,12 @@ class ResidentMLAUpdate:
 
     def replay(self, inputs, slot):
         norm = self.suffix._weight("norm_input_norm", self.layer)
-        self._upload(self.table, inputs["block_table"][slot])
-        self._upload(self.pool_blocks, inputs["pool_blocks"])
-        for name, tensor in self.query_metadata.items():
-            self._upload(tensor, inputs[name][:QUERY_ROWS])
+        for name, location in self.metadata_slices.items():
+            value = inputs[name]
+            if name == "block_table":
+                value = value[slot]
+            self.metadata_host[location].copy_(value[:location.stop - location.start])
+        self._upload(self.metadata_device, self.metadata_host)
         key = self.suffix._weight("mla_w_k", self.ordinal)
         value = self.suffix._weight("mla_w_v", self.ordinal)
         self.ar_key = self._view(key, (HEADS * VALUE, LATENT))
@@ -124,8 +135,8 @@ class ResidentMLAUpdate:
         self._launch(PROGRAMS[7], self.suffix.collapse, norm, self.x)
         self._launch(PROGRAMS[0], self.x, w["q_a"], w["q_norm"], w["q_b"],
                      w["kv_a"], w["kv_norm"], self.ar_key, w["key"], self.ar_value, w["value"],
-                     w["index_q"], w["index_gate"], cache, self.table, pool, self.pool_blocks,
-                     *self.query_metadata.values(), self.block_bias, self.raw_q, self.normed_q,
+                     w["index_q"], w["index_gate"], cache, self.metadata_views[0], pool,
+                     *self.metadata_views[1:], self.block_bias, self.raw_q, self.normed_q,
                      self.query, self.raw_kv, self.query_history, self.query_block, self.block, self.selected,
                      self.history_bias, self.context)
 
@@ -147,8 +158,8 @@ class ResidentMLAUpdate:
                      self.history_bias, self.block_bias, g["out"], g["key"], g["value"], self.dquery, self.dblock)
         step = getattr(self.runner, "_orthrus_mla_epoch", 0) + 1
         self._launch(PROGRAMS[2], self.x, self.raw_q, self.normed_q, self.raw_kv, self.dquery, self.dlatent,
-                     w["q_a"], w["q_norm"], w["q_b"], w["kv_a"], w["kv_norm"],
-                     g["q_a"], g["q_norm"], g["q_b"], g["kv_a"], g["kv_norm"], self.dx,
+                     w["q_norm"], w["q_b"], w["kv_norm"],
+                     g["q_a"], g["q_norm"], g["q_b"], g["kv_a"], g["kv_norm"],
                      *self.projection_scratch, step)
         self.runner._orthrus_mla_epoch = step
         self._check_gradients()
@@ -166,7 +177,7 @@ def make_gradient_check(ranks):
 
     layout, _ = head_layout()
     n = layout["index_q"][0]
-    cores, tile = 48, 128
+    cores, tile = 48, 1024 if n % 1024 == 0 else 128
 
     @pl.jit
     def check(

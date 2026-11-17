@@ -1,12 +1,11 @@
 """FP32 AdamW state and a BF16 inference copy for draft MLA parameters."""
 
 
-def make_adamw_update(rows, columns, *, device_entry=False):
-    if rows < 1 or columns < 128 or columns % 128:
-        raise ValueError("the packed MLA parameter requires 128-aligned columns")
+def make_adamw_update(rows, columns, *, device_entry=False, tile_width=128):
+    if rows < 1 or tile_width < 128 or tile_width % 128 or columns < tile_width or columns % tile_width:
+        raise ValueError("the packed MLA parameter requires whole 128-aligned tiles")
     import pypto.language as pl
 
-    tile_width = 128
     parts = columns // tile_width
 
     @pl.jit
@@ -79,7 +78,8 @@ def make_mla_head_adamw(ranks):
 
     layout, _ = head_layout()
     length = layout["index_q"][0]
-    update = make_adamw_update(1, length, device_entry=True)
+    tile = 1024 if length % 1024 == 0 else 128
+    update = make_adamw_update(1, length, device_entry=True, tile_width=tile)
 
     @pl.jit.host
     def entry(
@@ -105,7 +105,7 @@ def make_mla_head_publish(ranks):
 
     layout, full = head_layout()
     length = layout["index_q"][0]
-    tile = 128
+    tile = 1024 if length % 1024 == 0 else 128
 
     @pl.jit
     def publish(

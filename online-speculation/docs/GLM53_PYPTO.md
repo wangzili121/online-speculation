@@ -117,4 +117,53 @@ python scripts/validate_glm53_pypto_verify.py \
   --artifact-dir /path/to/compile-cache --output resident-tp8.json
 ```
 
-The first command passed on two Ascend devices with real head shards, a paged fixture and synthetic upstream gradients. It checks two consecutive updates, each trainable field, replay after publication and byte-identical Indexer and target cache. Separately, the MLA activation replay passed at anchors 0, 17, 639, 640, 642 and 2,055, and the native local MLA adjoint matched FP64 within `7.62e-8`. The TP8 Serving acceptance uses native draft and teacher logits for the loss, checks that the update changes draft logits with the teacher unchanged, and reruns greedy verification with the updated head. Full-model TP8 execution is pending. The update is exposed through the Python replay session and the acceptance command.
+The first command passed on two Ascend devices with real head shards, a paged fixture and synthetic upstream gradients. It checks two consecutive updates, each trainable field, replay after publication and byte-identical Indexer and target cache. Separately, the MLA activation replay passed at anchors 0, 17, 639, 640, 642 and 2,055, and the native local MLA adjoint matched FP64 within `7.62e-8`. The TP8 Serving acceptance uses native draft and teacher logits for the loss, checks that the update changes draft logits with the teacher unchanged, and reruns greedy verification with the updated head. Full-model TP8 execution is pending.
+
+### Automatic update after an HTTP request
+
+Apply `runtime/pypto_serving_glm53/online_http_serving.patch` after `serving.patch`. The Lib checkout also needs `online_replay_lib.patch` as described above. Set `online_learning_rate` in the Orthrus speculative configuration to opt in.
+
+```bash
+pypto-serving --model "$MODEL" --served-model-name glm53-orthrus \
+  --devices 0,1,2,3,4,5,6,7 --tp 8 --ep 8 \
+  --max-num-seqs 1 --max-model-len 1280 --max-num-batched-tokens 256 \
+  --block-size 640 --host 127.0.0.1 --port 8000 \
+  --speculative-config '{"method":"orthrus","num_speculative_tokens":5,"mask_token_id":0,"device_greedy":true,"online_learning_rate":0.0001}'
+```
+
+A normally completed request with at least six generated tokens supplies one replay. The worker releases the request cache, replays its prompt and the first six scheduler-confirmed output tokens, then runs one update before acknowledging the release. Cancellation, failure, preemption and shorter completions skip the update. The first eligible request initializes optimizer state. Subsequent requests on the same worker reuse that state. The update runs on the same device lane, so its time contributes to terminal request latency. The CLI option, request/worker lifecycle and TP8 Serving compilation have been checked. Full-model requests against the HTTP endpoint still need an eight-device run.
+
+On an idle service, send the following request twice. Each response should contain eight generated tokens and the worker log should report `GLM_ORTHRUS_ONLINE_UPDATE step=1` followed by `step=2`. A third request capped at three tokens should leave the update count unchanged.
+
+```bash
+curl -fsS http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"glm53-orthrus","messages":[{"role":"user","content":"Count from one to twenty."}],"max_tokens":8,"temperature":0,"ignore_eos":true}'
+```
+
+### Profile the update components on fewer devices
+
+```bash
+python scripts/validate_glm53_pypto_resident_step.py \
+  --checkpoint "$MODEL" --devices 0 1 --profile-steps 8 --output mla-profile.json
+python scripts/validate_glm53_pypto_streamed_kda.py \
+  --checkpoint "$MODEL" --device 0 --tp-ranks 0 --resident-adjoint \
+  --profile-steps 8 --output kda-profile.json
+python scripts/validate_glm53_pypto_ep.py \
+  --checkpoint "$MODEL" --devices 0 1 --layer 44 --full-moe \
+  --profile-steps 8 --output moe-profile.json
+```
+
+The reports time synchronous program dispatch, including host overhead. The MLA total includes metadata upload and the finite-gradient check. On the single-card KDA fixture, causal replay took 12.61 ms median, while the temporal and projection VJPs took 1.98 and 1.92 ms. These component timings use short fixtures with resident weight shards. Full-model and HTTP profiling use the TP8 acceptance environment.
+
+
+The final-layer MLA update stops at the frozen input, packs replay metadata into one transfer per rank, and uses wider vector tiles for AdamW, gradient validation and weight publication. On the same physical device with the same fixture, the median of ten measured steps fell from 40.64 ms to 22.30 ms after two warm-up steps. The five input-projection parameter gradients matched FP64 within `1.84e-6`, and the AdamW master weights matched within `2.98e-8`.
+
+| Synchronous MLA dispatch | Before (ms) | After (ms) |
+| --- | ---: | ---: |
+| Input projection backward | 9.21 | 6.74 |
+| AdamW | 9.12 | 2.73 |
+| Finite-gradient scan | 3.21 | 1.50 |
+| Publish updated weights | 3.37 | 1.46 |
+
+In the single-card MoE fixture with eight resident experts, routing took 3.00 ms, routed-expert backward took 8.20 ms, and the shared-expert and RMSNorm backward took 5.79 ms.

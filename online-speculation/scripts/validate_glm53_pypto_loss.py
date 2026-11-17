@@ -47,12 +47,15 @@ def main():
     modes.add_argument("--router-backward", action="store_true", help="validate the selected GLM router weight adjoint")
     modes.add_argument("--router-replay", action="store_true", help="validate native routing inputs for the expert adjoint")
     parser.add_argument("--history-capacity", type=int, default=256, help="padded history length for the MLA replay tests")
+    parser.add_argument("--weights-only", action="store_true", help="skip backbone input gradients for MLA updates")
     parser.add_argument("--resident-mla", action="store_true", help="run the fused rank-stacked MLA adjoint")
     parser.add_argument("--checkpoint", type=Path, help="use real checkpoint weights for the selected adjoint")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
         parser.error("use a fresh output path")
+    if args.weights_only and not args.mla_input_projections:
+        parser.error("--weights-only requires --mla-input-projections")
     if args.peer_device is not None and (not args.mla_input_projections or args.peer_device == args.device):
         parser.error("--peer-device requires --mla-input-projections and a second device")
     if args.shared_expert_backward and args.checkpoint is None:
@@ -879,7 +882,7 @@ def projection_shards(args, generator):
     from pypto.runtime import DistributedWorker, RunConfig
 
     from blockspec.pypto_glm53_head import head_layout, initialize_rank_head
-    from blockspec.pypto_glm53_online_attention import make_mla_input_projection_backward
+    from blockspec.pypto_glm53_online_attention import make_mla_input_projection_backward, make_mla_input_weight_backward
 
     devices = [args.device] if args.peer_device is None else [args.device, args.peer_device]
     ranks = len(devices)
@@ -940,16 +943,23 @@ def projection_shards(args, generator):
     scratch = tuple(torch.empty_like(v, dtype=torch.float32) for v in (
         inputs[1], inputs[1], inputs[3], inputs[1], inputs[3], inputs[0], inputs[0],
     ))
+    outputs_by_name = (*fields, "x")
+    make_backward = make_mla_input_projection_backward
+    if args.weights_only:
+        inputs = (*inputs[:6], inputs[7], inputs[8], inputs[10])
+        outputs, expected, outputs_by_name, scratch = outputs[:-1], expected[:-1], fields, scratch[:-2]
+        make_backward = make_mla_input_weight_backward
     config = RunConfig(platform="a2a3", distributed_config=DistributedConfig(device_ids=devices, num_sub_workers=0))
-    report = {"ranks": ranks, "passed": False, "checkpoint_weights": args.checkpoint is not None}
+    report = {"ranks": ranks, "passed": False, "checkpoint_weights": args.checkpoint is not None,
+              "weights_only": args.weights_only}
     try:
-        program = make_mla_input_projection_backward(ranks).compile(*inputs, *outputs, *scratch, 1, config=config)
+        program = make_backward(ranks).compile(*inputs, *outputs, *scratch, 1, config=config)
         with DistributedWorker([program], config=config, persistent=True) as worker:
             handles = [worker.alloc_stacked_tensor(t.share_memory_()) for t in (*inputs, *outputs, *scratch)]
             worker.run(program, *handles, 1, config=config)
             metrics = {}
             for name, actual, expected_value, handle in zip(
-                (*fields, "x"), outputs, expected, handles[len(inputs):len(inputs) + len(outputs)], strict=True,
+                outputs_by_name, outputs, expected, handles[len(inputs):len(inputs) + len(outputs)], strict=True,
             ):
                 for rank, shard in enumerate(handle.shards):
                     local = actual[rank]

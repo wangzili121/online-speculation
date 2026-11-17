@@ -5,6 +5,8 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from statistics import median
+from time import perf_counter_ns
 
 import torch
 
@@ -64,8 +66,11 @@ def main():
                         help="seed the graph from resident pre-norm activations and committed states")
     parser.add_argument("--resident-adjoint", action="store_true",
                         help="use the resident KDA suffix programs and reduce the input gradient")
+    parser.add_argument("--profile-steps", type=int, default=0, help="time the resident KDA programs on the last shard")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
+    if args.profile_steps < 0 or (args.profile_steps and not args.resident_adjoint):
+        parser.error("--profile-steps requires --resident-adjoint and a nonnegative count")
     if args.resident_adjoint:
         args.resident_replay_seed = True
     if (len(set(args.tp_ranks)) != len(args.tp_ranks)
@@ -244,6 +249,20 @@ def main():
                     raise AssertionError("inactive KDA rows acquired gradients")
                 report["cases"].append({"tp_rank": rank, "core_max_abs": float((core - expected_core).abs().max()),
                                         "dx_max_abs": float((got - expected).abs().max())})
+            if args.profile_steps:
+                keys = (seed_keys, stages[0][1], *adjoint_inputs)
+                dispatches = tuple(tuple(stacked(name) for name in group) for group in keys)
+                samples = {name: [] for name in ("seed", "replay", "temporal_vjp", "projection_vjp", "reduce_vjp")}
+                for epoch in range(len(args.tp_ranks) + 1, len(args.tp_ranks) + args.profile_steps + 2):
+                    for index, (name, program, bindings) in enumerate(zip(samples, all_programs, dispatches, strict=True)):
+                        scalars = (epoch,) if index == len(all_programs) - 1 else ()
+                        start = perf_counter_ns()
+                        worker.run(program, *bindings, *scalars, config=config)
+                        if epoch > len(args.tp_ranks) + 1:
+                            samples[name].append((perf_counter_ns() - start) / 1e6)
+                report["profile"] = {"measured_steps": args.profile_steps, "tp_rank": args.tp_ranks[-1],
+                                     "dispatch_ms_median": {key: median(ms) for key, ms in samples.items()},
+                                     "dispatch_ms_samples": samples}
         report["resident_replay_seed"] = args.resident_replay_seed
         report["resident_adjoint"] = args.resident_adjoint
         report["passed"] = True

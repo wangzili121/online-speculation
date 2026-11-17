@@ -3,7 +3,10 @@
 
 import argparse
 import json
+from collections import defaultdict
 from pathlib import Path
+from statistics import median
+from time import perf_counter_ns
 from types import SimpleNamespace
 
 import torch
@@ -112,6 +115,31 @@ def validate(args, report):
             if not torch.isfinite(current).all() or torch.equal(current, previous):
                 raise AssertionError("replay did not produce a new finite context with the published head")
             torch.testing.assert_close(download(weights["mla_latent_cache"], rank), cache, atol=0, rtol=0)
+        if args.profile_steps:
+            samples = defaultdict(list)
+            names = {id(program): name for name, program in programs.items()}
+
+            def timed_run(program, *bindings, **options):
+                start = perf_counter_ns()
+                worker.run(program, *bindings, **options)
+                samples[names[id(program)]].append((perf_counter_ns() - start) / 1e6)
+
+            runner._run_l3 = timed_run
+            for _ in range(2):
+                updater.step(upstream, meta, slot=0)
+            samples.clear()
+            step_ms = []
+            for _ in range(args.profile_steps):
+                start = perf_counter_ns()
+                updater.step(upstream, meta, slot=0)
+                step_ms.append((perf_counter_ns() - start) / 1e6)
+            report["profile"] = {
+                "warmup_steps": 2, "measured_steps": args.profile_steps,
+                "step_ms_median": median(step_ms),
+                "dispatch_ms_median": {name: median(values) for name, values in samples.items()},
+                "step_ms_samples": step_ms, "dispatch_ms_samples": dict(samples),
+            }
+
         rejected = torch.tensor([float("nan")], dtype=torch.float32)
         upload(updater.gradient, [rejected] * ranks)
         try:
@@ -127,7 +155,10 @@ def main():
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--devices", type=int, nargs="+", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--profile-steps", type=int, default=0, help="time this many extra resident steps after warmup")
     args = parser.parse_args()
+    if args.profile_steps < 0:
+        parser.error("--profile-steps must be nonnegative")
     if args.output.exists() or len(set(args.devices)) != len(args.devices):
         parser.error("use a fresh output path and distinct devices")
     report = {"ranks": len(args.devices), "passed": False}
