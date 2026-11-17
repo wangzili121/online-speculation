@@ -186,3 +186,52 @@ def make_kda_qk_backward(tokens, heads, *, device_entry=False):
         kda_qk_backward(q, k, dq, dk, out_q, out_k, device=0)
 
     return kda_qk_backward if device_entry else entry
+
+
+def make_kda_output_backward(tokens, heads, width, epsilon):
+    """Propagate a frozen KDA output projection through gated RMSNorm."""
+    import pypto.language as pl
+
+    from .pypto_glm53_online_head import make_frozen_bf16_input_backward
+
+    dim = 128
+    if tokens < 1 or tokens % 16 or heads < 1 or width < 64 or width % 64 or epsilon <= 0:
+        raise ValueError("invalid GLM KDA output gradient geometry")
+    rows = tokens * heads
+    projection = make_frozen_bf16_input_backward(width, heads * dim, tokens, device_entry=True, refine=True)
+
+    @pl.jit
+    def gated_norm_backward(
+        core: pl.Tensor[[rows, dim], pl.BF16], gate: pl.Tensor[[rows, dim], pl.BF16],
+        weight: pl.Tensor[[dim], pl.BF16], dy: pl.Tensor[[tokens, heads * dim], pl.FP32],
+        d_core: pl.Out[pl.Tensor[[rows, dim], pl.FP32]], d_gate: pl.Out[pl.Tensor[[rows, dim], pl.FP32]],
+    ):
+        flat = pl.reshape(dy, [rows, dim])
+        for row in pl.spmd(rows, name_hint="glm_kda_gated_norm_vjp"):
+            x = pl.cast(core[row:row + 1, :], pl.FP32)
+            logit = pl.cast(gate[row:row + 1, :], pl.FP32)
+            gamma = pl.cast(pl.reshape(weight, [1, dim]), pl.FP32)
+            g = pl.mul(flat[row:row + 1, :], gamma)
+            e = pl.exp(pl.neg(pl.abs(logit)))
+            positive = pl.cast(pl.cast(pl.cmp(logit, pl.abs(logit), cmp_type=0), pl.INT32), pl.FP32)
+            sigmoid = pl.div(pl.add(e, pl.mul(positive, pl.add(pl.neg(e), 1.0))), pl.add(e, 1.0))
+            upstream = pl.mul(g, sigmoid)
+            zero = pl.full([8, dim], dtype=pl.FP32, value=0.0)
+            second_moment = pl.mul(pl.row_sum(pl.col_expand(zero, pl.mul(x, x))), 1.0 / dim)
+            inverse = pl.recip(pl.sqrt(pl.add(second_moment, epsilon)))
+            dots = pl.row_sum(pl.col_expand(zero, pl.mul(upstream, x)))
+            coupling = pl.mul(pl.mul(dots, pl.mul(inverse, inverse)), 1.0 / dim)
+            inv = pl.read(inverse, [0, 0])
+            adjustment = pl.read(coupling, [0, 0])
+            d_core[row:row + 1, :] = pl.mul(pl.sub(upstream, pl.mul(x, adjustment)), inv)
+            d_gate[row:row + 1, :] = pl.mul(pl.mul(x, upstream), pl.mul(pl.add(pl.neg(sigmoid), 1.0), inv))
+        return d_core, d_gate
+
+    @pl.jit.host
+    def entry(upstream: pl.Tensor, core: pl.Tensor, gate: pl.Tensor, projection_weight: pl.Tensor,
+              norm_weight: pl.Tensor, d_core: pl.Out[pl.Tensor], d_gate: pl.Out[pl.Tensor]):
+        partial = pl.create_tensor([tokens, heads * dim], dtype=pl.FP32)
+        dy = projection(upstream, projection_weight, partial, device=0)
+        gated_norm_backward(core, gate, norm_weight, dy, d_core, d_gate, device=0)
+
+    return entry

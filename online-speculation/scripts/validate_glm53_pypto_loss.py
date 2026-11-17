@@ -23,6 +23,7 @@ def main():
     modes.add_argument("--kda-backward", action="store_true", help="validate the frozen KDA recurrence adjoint")
     modes.add_argument("--kda-conv-backward", action="store_true", help="validate the frozen KDA convolution and SiLU VJP")
     modes.add_argument("--kda-qk-backward", action="store_true", help="validate the KDA Q/K L2 normalization VJP")
+    modes.add_argument("--kda-output-backward", action="store_true", help="validate the KDA output projection and gated RMSNorm")
     modes.add_argument("--mhc-backward", action="store_true", help="validate the mHC residual combination VJP")
     modes.add_argument("--mhc-pre-backward", action="store_true", help="validate the mHC stream collapse VJP")
     modes.add_argument("--mhc-mix-backward", action="store_true", help="validate the mHC coefficient projection VJP")
@@ -35,7 +36,10 @@ def main():
     modes.add_argument("--mla-latent-backward", action="store_true", help="validate the complete latent attention adjoint")
     modes.add_argument("--mla-replay-tape", action="store_true", help="validate MLA training replay from its forward inputs")
     modes.add_argument("--int8-backward", action="store_true", help="validate frozen W8A8 input gradients")
+    modes.add_argument("--expert-backward", action="store_true", help="validate the complete frozen W8A8 expert adjoint")
+    modes.add_argument("--router-backward", action="store_true", help="validate the selected GLM router weight adjoint")
     parser.add_argument("--history-capacity", type=int, default=256, help="padded history length for the MLA replay tests")
+    parser.add_argument("--checkpoint", type=Path, help="load frozen layer 44 weights for the MoE or KDA output adjoints")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
@@ -48,6 +52,122 @@ def main():
     torch.set_num_threads(4)
     config = RunConfig(platform="a2a3", distributed_config=DistributedConfig(device_ids=[args.device], num_sub_workers=0))
     generator = torch.Generator().manual_seed(142)
+    if args.kda_output_backward:
+        from blockspec.pypto_glm53_online_kda import make_kda_output_backward
+        from models.glm5_3_flash.config import FLASH, KDA_DIM, KDA_H
+
+        tokens, heads = 16, KDA_H // 8
+        shape = (tokens * heads, KDA_DIM)
+        if args.checkpoint is None:
+            projection = (torch.randn(D, heads * KDA_DIM, generator=generator) * 0.02).bfloat16()
+            norm = torch.rand(KDA_DIM, generator=generator).bfloat16()
+        else:
+            from models.glm5_3_flash.utils import Checkpoint
+
+            weights = Checkpoint(args.checkpoint).attention(44, tp_rank=0, tp=8)
+            projection, norm = weights["w_o"].contiguous(), weights["norm_weight"]
+        core = torch.randn(shape, generator=generator).bfloat16()
+        core[0].mul_(0.002)
+        gate = (torch.randn(shape, generator=generator) * 4).bfloat16()
+        upstream = torch.randn(tokens, D, generator=generator) * 0.02
+        upstream[6:] = 0
+        x, logit = core.double().requires_grad_(), gate.double().requires_grad_()
+        inv_rms = (x.square().mean(-1, keepdim=True) + FLASH.rms_norm_eps).rsqrt()
+        projected = (x * inv_rms * norm.double() * logit.sigmoid()).reshape(tokens, -1) @ projection.double().T
+        expected = torch.autograd.grad(projected, (x, logit), upstream.double())
+        outputs = (torch.empty(shape), torch.empty(shape))
+        inputs = (upstream, core, gate, projection, norm)
+        execute(make_kda_output_backward(tokens, heads, D, FLASH.rms_norm_eps), (*inputs, *outputs),
+                len(inputs), (), config,
+                {"program": "GLM KDA output projection and gated RMSNorm adjoint", "passed": False,
+                 "checkpoint_weights": args.checkpoint is not None},
+                args.output, expected, ({"atol": 6e-6, "rtol": 5e-5},) * 2)
+        return
+    if args.router_backward:
+        from blockspec.pypto_glm53_online_moe import make_router_backward
+        from models.glm5_3_flash.config import FLASH
+
+        rows, active = 16, 6
+        if args.checkpoint is None:
+            weight = (torch.randn(FLASH.n_routed_experts, D, generator=generator) * 0.01).bfloat16()
+        else:
+            from models.glm5_3_flash.utils import Checkpoint
+
+            weight = Checkpoint(args.checkpoint).read("model.language_model.layers.44.mlp.gate.weight").bfloat16()
+        x = torch.randn(rows, D, generator=generator).bfloat16().double().requires_grad_()
+        scores = (x @ weight.double().T).sigmoid()
+        bias = torch.randn(FLASH.n_routed_experts, generator=generator) * 0.2
+        ids = (scores.detach() + bias).topk(8, dim=1).indices
+        selected_scores = scores.gather(1, ids)
+        differentiable = selected_scores * FLASH.routed_scaling_factor / (selected_scores.sum(1, keepdim=True) + 1e-20)
+        gradient = torch.randn(rows, 8, generator=generator) * 0.2
+        (expected,) = torch.autograd.grad(differentiable[:active], x, gradient[:active].double())
+        ids[active:] = -1
+        output = torch.empty(rows, D)
+        inputs = (selected_scores.detach().float(), ids.int(), gradient, weight)
+        execute(make_router_backward(rows, D, FLASH.n_routed_experts, FLASH.routed_scaling_factor),
+                (*inputs, output), len(inputs), (active,), config,
+                {"program": "GLM selected sigmoid routing adjoint", "passed": False,
+                 "checkpoint_weights": args.checkpoint is not None}, args.output, (expected,),
+                ({"atol": 2e-6, "rtol": 3e-5},))
+        return
+    if args.expert_backward:
+        from blockspec.pypto_glm53_online_moe import make_expert_backward
+        from models.glm5_3_flash.config import FLASH
+        from models.glm5_3_flash.quantization import quantize_per_token_int8
+
+        rows, hidden = 16, FLASH.moe_intermediate_size
+        limit = FLASH.swiglu_limit
+        if args.checkpoint is None:
+            weights = (
+                torch.randint(-127, 128, (2 * hidden, D), dtype=torch.int8, generator=generator),
+                torch.rand(2 * hidden, generator=generator) * 0.001,
+                torch.randint(-127, 128, (D, hidden), dtype=torch.int8, generator=generator),
+                torch.rand(D, generator=generator) * 0.0005,
+            )
+        else:
+            from models.glm5_3_flash.utils import Checkpoint
+
+            checkpoint = Checkpoint(args.checkpoint)
+            root = "model.language_model.layers.44.mlp.experts.0."
+
+            def parameters(name):
+                return checkpoint.read(root + name + ".weight"), checkpoint.read(root + name + ".weight_scale").flatten()
+
+            gate, sg = parameters("gate_proj")
+            up, su = parameters("up_proj")
+            down, sd = parameters("down_proj")
+            weights = (torch.cat((gate, up)), torch.cat((sg, su)).float(), down, sd.float())
+        gu, gu_scale, down, down_scale = weights
+        x = torch.randn(rows, D, generator=generator)
+        x[1:4].mul_(2.5)
+        x_q, x_scale = quantize_per_token_int8(x)
+        raw = (x_q.int() @ gu.int().T).float() * x_scale * gu_scale.bfloat16().float()
+        g, u = raw.chunk(2, dim=-1)
+        activation = torch.nn.functional.silu(g.clamp_max(limit)) * u.clamp(-limit, limit)
+        h_q, h_scale = quantize_per_token_int8(activation)
+        y = ((h_q.int() @ down.int().T).float() * h_scale * down_scale.bfloat16().float()).bfloat16()
+        route = torch.zeros(rows, 8)
+        route[:6, 0] = torch.linspace(0.15, 1.0, 6)
+        grad = torch.randn(rows, D, generator=generator) * 0.01
+        grad[6:] = 0
+
+        x_ref = x.double().requires_grad_()
+        r_ref = route.double().requires_grad_()
+        effective_gu = gu.double() * gu_scale.bfloat16().double().unsqueeze(1)
+        effective_down = down.double() * down_scale.bfloat16().double().unsqueeze(1)
+        # Evaluate derivatives at the deployed forward values and use an identity VJP for activation Q/DQ.
+        g, u = (raw.double() + (x_ref - x_ref.detach()) @ effective_gu.T).chunk(2, dim=-1)
+        h = torch.nn.functional.silu(g.clamp_max(limit)) * u.clamp(-limit, limit)
+        out = y.double() + (h - h.detach()) @ effective_down.T
+        expected = torch.autograd.grad(out * r_ref[:, :1], (x_ref, r_ref), grad.double())
+        outputs = (torch.empty_like(x), torch.empty_like(route))
+        inputs = (grad, x_q, torch.nn.functional.pad(x_scale, (0, 7)), route, *weights)
+        execute(make_expert_backward(rows, D, hidden, limit), (*inputs, *outputs), len(inputs), (), config,
+                {"program": "GLM frozen W8A8 expert input and route adjoint", "passed": False,
+                 "checkpoint_weights": args.checkpoint is not None}, args.output, expected,
+                ({"atol": 4e-5, "rtol": 9e-5}, {"atol": 4e-5, "rtol": 9e-5}))
+        return
     if args.mla_latent_backward or args.mla_replay_tape:
         from blockspec.pypto_glm53_mla import HEADS, HEAD_TILE, LATENT, QUERY_ROWS, TILE, VALUE
         from blockspec.pypto_glm53_online_attention import make_mla_latent_backward, make_mla_replay_tape

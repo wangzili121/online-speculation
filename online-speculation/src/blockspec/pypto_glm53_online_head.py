@@ -3,6 +3,11 @@
 
 def make_vocab_backward(local_vocab, model_width, rows=16, *, device_entry=False):
     """Return a TP-local FP32 activation gradient; the caller sums the ranks."""
+    return make_frozen_bf16_input_backward(local_vocab, model_width, rows, device_entry=device_entry)
+
+
+def make_frozen_bf16_input_backward(local_vocab, model_width, rows=16, *, device_entry=False, refine=False):
+    """Apply a frozen BF16 weight transpose to an FP32 upstream gradient."""
     import pypto.language as pl
 
     reduction = columns = 64
@@ -26,6 +31,9 @@ def make_vocab_backward(local_vocab, model_width, rows=16, *, device_entry=False
                 low = pl.cast(pl.sub(grad, pl.cast(high, pl.FP32)), pl.BF16, mode="rint")
                 acc = pl.matmul_acc(acc, high, weights, init_cond=start == 0)
                 acc = pl.matmul_acc(acc, low, weights)
+                if refine:
+                    rest = pl.sub(pl.sub(grad, pl.cast(high, pl.FP32)), pl.cast(low, pl.FP32))
+                    acc = pl.matmul_acc(acc, pl.cast(rest, pl.BF16, mode="rint"), weights)
             partial[:, column:column + columns] = acc
         return partial
 
