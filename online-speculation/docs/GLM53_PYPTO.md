@@ -98,4 +98,11 @@ python scripts/validate_glm53_pypto_verify.py \
   --artifact-dir /path/to/compile-cache --output frozen-suffix-abi.json
 ```
 
-`--frozen-suffix` adds the training programs to the same Serving worker, uses views into its resident checkpoint tensors, and propagates the KL gradient through the final layer's MoE and mHC to the KDA output. The ABI and TP8 compilation passed. Executing the real TP8 case remains pending. Full online update still requires the resident KDA and MLA adjoints to feed AdamW, followed by a second decode with the updated head.
+`--frozen-suffix` adds the training programs to the same Serving worker and propagates the KL gradient through layer 44 MoE/KDA and layer 43 MoE to the final trainable MLA output. KDA rebuilds its causal tape from the committed convolution and recurrent states in private buffers, uses an FP32 sum over rank-local input gradients, and differentiates the input RMSNorm. Two real TP8 shards streamed through one Ascend device passed the resident KDA forward and backward, with a maximum absolute input-gradient error of `8.58e-8` against FP64. The complete suffix passed TP8 compilation and the Serving ABI check.
+
+```bash
+python scripts/validate_glm53_pypto_streamed_kda.py \
+  --checkpoint "$MODEL" --device 0 --resident-adjoint --output kda-adjoint.json
+```
+
+Real-model TP8 execution remains pending. The native online update still needs to replay the final MLA against the paged history, feed its actual gradients to AdamW, and decode with the published head.

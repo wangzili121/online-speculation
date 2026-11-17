@@ -1,7 +1,7 @@
 """Activation-only adjoints for GLM's frozen causal KDA path."""
 
 
-def make_kda_recurrence_backward(tokens=6, heads=8):
+def make_kda_recurrence_backward(tokens=6, heads=8, *, device_entry=False):
     """Use replayed states, normalized/scaled Q and unit-norm K from the forward."""
     import pypto.language as pl
 
@@ -75,7 +75,7 @@ def make_kda_recurrence_backward(tokens=6, heads=8):
         backward(query, key, value, log_decay, beta, states, gradient,
                  d_query, d_key, d_value, d_decay, d_beta, device=0)
 
-    return entry
+    return backward if device_entry else entry
 
 
 def make_kda_convolution_backward(tokens, channels, *, device_entry=False):
@@ -188,7 +188,7 @@ def make_kda_qk_backward(tokens, heads, *, device_entry=False):
     return kda_qk_backward if device_entry else entry
 
 
-def make_kda_output_backward(tokens, heads, width, epsilon):
+def make_kda_output_backward(tokens, heads, width, epsilon, *, device_stages=False):
     """Propagate a frozen KDA output projection through gated RMSNorm."""
     import pypto.language as pl
 
@@ -234,10 +234,10 @@ def make_kda_output_backward(tokens, heads, width, epsilon):
         dy = projection(upstream, projection_weight, partial, device=0)
         gated_norm_backward(core, gate, norm_weight, dy, d_core, d_gate, device=0)
 
-    return entry
+    return (projection, gated_norm_backward) if device_stages else entry
 
 
-def make_kda_projection_backward(tokens, heads, width, lower_bound, *, beta_width=None):
+def make_kda_projection_backward(tokens, heads, width, lower_bound, *, beta_width=None, device_stages=False):
     """Propagate the frozen QKV, forget, beta and output-gate branches to KDA input."""
     import pypto.language as pl
 
@@ -331,19 +331,19 @@ def make_kda_projection_backward(tokens, heads, width, lower_bound, *, beta_widt
         g_input = from_inner(g_inner, w_g_a, dx_gate, device=0)
         combine(q_input, k_input, v_input, f_input, g_input, beta, d_beta, w_b, out, device=0)
 
-    return entry
+    return (prepare, to_input, to_inner, from_inner, combine) if device_stages else entry
 
 
-def make_kda_training_replay(tokens):
+def make_kda_training_replay(tokens, *, ranks=None):
     """Run the native frozen KDA forward with one snapshot per replayed token."""
     import pypto.language as pl
+    import pypto.language.distributed as pld
     from models.glm5_3_flash.config import D, KDA_DIM, LOCAL_KDA_H, LOCAL_KDA_QKV_DIM
     from models.glm5_3_flash.kda import BETA_PAD, kda_conv_recurrent, kda_projection, recurrent_kda
 
     heads, dim, local = LOCAL_KDA_H, KDA_DIM, LOCAL_KDA_QKV_DIM
     if tokens != 16 or heads != 8:
         raise ValueError("KDA training replay expects a padded 16-token TP8 shard")
-    rows = tokens * heads
 
     @pl.jit
     def replay(
@@ -371,6 +371,40 @@ def make_kda_training_replay(tokens):
         recurrent_kda(q, k, v, decay, beta, states, starts, slots, core)
         return mixed, decay, beta, gate, q, k, v, core
 
+    participants = ranks or 1
+
+    @pl.jit.host
+    def distributed(
+        x: pl.Tensor[[participants, tokens, D], pl.BF16],
+        starts: pl.Tensor[[participants, 2], pl.INT32], slots: pl.Tensor[[participants, 1, tokens + 2], pl.INT32],
+        w_q: pl.Tensor[[participants, local, D], pl.BF16],
+        w_k: pl.Tensor[[participants, local, D], pl.BF16],
+        w_v: pl.Tensor[[participants, local, D], pl.BF16],
+        w_f_a: pl.Tensor[[participants, dim, D], pl.BF16], w_f_b: pl.Tensor[[participants, local, dim], pl.BF16],
+        dt_bias: pl.Tensor[[participants, local], pl.FP32], a_log: pl.Tensor[[participants, heads], pl.FP32],
+        w_b: pl.Tensor[[participants, heads, D], pl.BF16],
+        w_g_a: pl.Tensor[[participants, dim, D], pl.BF16], w_g_b: pl.Tensor[[participants, local, dim], pl.BF16],
+        weight: pl.Tensor[[participants, 4, 3 * local], pl.BF16],
+        conv_states: pl.InOut[pl.Tensor[[participants, tokens + 1, 3, 3 * local], pl.BF16]],
+        states: pl.InOut[pl.Tensor[[participants, tokens + 1, heads, dim, dim], pl.FP32]],
+        mixed: pl.Out[pl.Tensor[[participants, tokens, 3 * local], pl.BF16]],
+        decay: pl.Out[pl.Tensor[[participants, tokens, heads, dim], pl.FP32]],
+        beta: pl.Out[pl.Tensor[[participants, tokens, BETA_PAD], pl.FP32]],
+        gate: pl.Out[pl.Tensor[[participants, tokens, heads, dim], pl.BF16]],
+        q: pl.Out[pl.Tensor[[participants, tokens, heads, dim], pl.BF16]],
+        k: pl.Out[pl.Tensor[[participants, tokens, heads, dim], pl.BF16]],
+        v: pl.Out[pl.Tensor[[participants, tokens, heads, dim], pl.BF16]],
+        core: pl.Out[pl.Tensor[[participants, tokens, heads, dim], pl.BF16]],
+    ):
+        for rank in pl.range(pld.world_size()):
+            replay(x[rank], starts[rank], slots[rank], w_q[rank], w_k[rank], w_v[rank], w_f_a[rank],
+                   w_f_b[rank], dt_bias[rank], a_log[rank], w_b[rank], w_g_a[rank], w_g_b[rank], weight[rank],
+                   conv_states[rank], states[rank], mixed[rank], decay[rank], beta[rank], gate[rank],
+                   q[rank], k[rank], v[rank], core[rank], device=rank)
+
+    if ranks is not None:
+        return distributed
+
     @pl.jit.host
     def entry(
         x: pl.Tensor, starts: pl.Tensor, slots: pl.Tensor,
@@ -386,7 +420,7 @@ def make_kda_training_replay(tokens):
     return entry
 
 
-def make_kda_recurrence_inputs(tokens, heads, beta_width):
+def make_kda_recurrence_inputs(tokens, heads, beta_width, *, device_entry=False):
     """Prepare the same normalized vectors used by the native KDA recurrence."""
     import pypto.language as pl
     from models.glm5_3_flash.elementwise import accurate_divide, accurate_row_sum, accurate_sqrt
@@ -435,10 +469,10 @@ def make_kda_recurrence_inputs(tokens, heads, beta_width):
               k_norm: pl.Out[pl.Tensor], values: pl.Out[pl.Tensor], beta_per_head: pl.Out[pl.Tensor]):
         prepare(q, k, v, beta, q_norm, k_norm, values, beta_per_head, device=0)
 
-    return entry
+    return prepare if device_entry else entry
 
 
-def make_kda_projection_inputs(tokens, heads):
+def make_kda_projection_inputs(tokens, heads, *, device_entry=False):
     """Pack convolution gradients and the per-head beta gradient for the projections."""
     import pypto.language as pl
 
@@ -472,4 +506,311 @@ def make_kda_projection_inputs(tokens, heads):
               convolution: pl.Out[pl.Tensor], beta: pl.Out[pl.Tensor]):
         pack(dq, dk, dv, d_beta, convolution, beta, device=0)
 
+    return pack if device_entry else entry
+
+
+def make_kda_replay_seed(ranks, tokens=16):
+    """Prepare the frozen KDA replay using only the committed state, not verifier scratch."""
+    import pypto.language as pl
+    import pypto.language.distributed as pld
+    from models.glm5_3_flash.config import D, KDA_DIM, LOCAL_KDA_H, LOCAL_KDA_QKV_DIM
+    from models.glm5_3_flash.kda import CONV_DIM, KDA_CONV_K, STATE_LEN, stack_conv_weight
+    from models.glm5_3_flash.rmsnorm import rmsnorm
+
+    if tokens != 16:
+        raise ValueError("GLM KDA replay uses sixteen padded rows")
+    state_rows = LOCAL_KDA_H * KDA_DIM
+    tile = 128
+
+    @pl.jit
+    def seed(
+        collapsed: pl.Tensor[[tokens, D], pl.BF16],
+        norm: pl.Tensor[[D], pl.BF16],
+        conv_q: pl.Tensor[[LOCAL_KDA_QKV_DIM, 1, KDA_CONV_K], pl.BF16],
+        conv_k: pl.Tensor[[LOCAL_KDA_QKV_DIM, 1, KDA_CONV_K], pl.BF16],
+        conv_v: pl.Tensor[[LOCAL_KDA_QKV_DIM, 1, KDA_CONV_K], pl.BF16],
+        conv_state: pl.Tensor[[STATE_LEN, CONV_DIM], pl.BF16],
+        recurrent_state: pl.Tensor[[LOCAL_KDA_H, KDA_DIM, KDA_DIM], pl.FP32],
+        normalized: pl.Out[pl.Tensor[[tokens, D], pl.BF16]],
+        weight: pl.Out[pl.Tensor[[KDA_CONV_K, CONV_DIM], pl.BF16]],
+        conv_replay: pl.InOut[pl.Tensor[[tokens + 1, STATE_LEN, CONV_DIM], pl.BF16]],
+        recurrent_replay: pl.InOut[pl.Tensor[[tokens + 1, LOCAL_KDA_H, KDA_DIM, KDA_DIM], pl.FP32]],
+    ):
+        rmsnorm(collapsed, norm, normalized)
+        stack_conv_weight(conv_q, conv_k, conv_v, weight)
+        destination = pl.reshape(conv_replay, [(tokens + 1) * STATE_LEN, CONV_DIM])
+        recurrent_in = pl.reshape(recurrent_state, [state_rows, KDA_DIM])
+        recurrent_out = pl.reshape(recurrent_replay, [(tokens + 1) * state_rows, KDA_DIM])
+        for task in pl.spmd(STATE_LEN * (CONV_DIM // tile), name_hint="glm_kda_seed_convolution"):
+            row = task // (CONV_DIM // tile)
+            col = task % (CONV_DIM // tile) * tile
+            destination[row:row + 1, col:col + tile] = conv_state[row:row + 1, col:col + tile]
+        for part in pl.spmd(state_rows // 8, name_hint="glm_kda_seed_recurrence"):
+            row = part * 8
+            recurrent_out[row:row + 8, :] = recurrent_in[row:row + 8, :]
+
+    @pl.jit.host
+    def entry(
+        collapsed: pl.Tensor[[ranks, tokens, D], pl.BF16],
+        norm: pl.Tensor[[ranks, D], pl.BF16],
+        conv_q: pl.Tensor[[ranks, LOCAL_KDA_QKV_DIM, 1, KDA_CONV_K], pl.BF16],
+        conv_k: pl.Tensor[[ranks, LOCAL_KDA_QKV_DIM, 1, KDA_CONV_K], pl.BF16],
+        conv_v: pl.Tensor[[ranks, LOCAL_KDA_QKV_DIM, 1, KDA_CONV_K], pl.BF16],
+        conv_state: pl.Tensor[[ranks, STATE_LEN, CONV_DIM], pl.BF16],
+        recurrent_state: pl.Tensor[[ranks, LOCAL_KDA_H, KDA_DIM, KDA_DIM], pl.FP32],
+        normalized: pl.Out[pl.Tensor[[ranks, tokens, D], pl.BF16]],
+        weight: pl.Out[pl.Tensor[[ranks, KDA_CONV_K, CONV_DIM], pl.BF16]],
+        conv_replay: pl.InOut[pl.Tensor[[ranks, tokens + 1, STATE_LEN, CONV_DIM], pl.BF16]],
+        recurrent_replay: pl.InOut[pl.Tensor[[ranks, tokens + 1, LOCAL_KDA_H, KDA_DIM, KDA_DIM], pl.FP32]],
+    ):
+        for rank in pl.range(pld.world_size()):
+            seed(collapsed[rank], norm[rank], conv_q[rank], conv_k[rank], conv_v[rank],
+                 conv_state[rank], recurrent_state[rank], normalized[rank], weight[rank],
+                 conv_replay[rank], recurrent_replay[rank], device=rank)
+
     return entry
+
+
+KDA_PROGRAMS = ("orthrus_kda_seed", "orthrus_kda_replay", "orthrus_kda_temporal",
+                "orthrus_kda_projection", "orthrus_kda_reduce")
+
+
+def prepare_kda_programs(api, compiler, rows):
+    ranks = api.RANKS
+    programs = (make_kda_replay_seed(ranks, rows), make_kda_training_replay(rows, ranks=ranks),
+                *make_kda_resident_backward(ranks, rows))
+    return {name: compiler.compile(name, entry) for name, entry in zip(KDA_PROGRAMS, programs, strict=True)}
+
+
+class ResidentKDAReplay:
+    """Replay and differentiate a frozen KDA layer using the committed request state."""
+
+    def __init__(self, session, rows):
+        import torch
+        from models.glm5_3_flash.kda import BETA_PAD, CONV_DIM, KDA_CONV_K, KDA_DIM, LOCAL_KDA_H, STATE_LEN
+
+        def alloc(shape, dtype):
+            return session.allocate(shape, dtype)
+
+        def upload_metadata(values):
+            values = values.contiguous().share_memory_()
+            tensor = alloc(values.shape, values.dtype)
+            for rank, shard in zip(tensor.worker_ids, tensor.shards, strict=True):
+                session.runtime.copy_to(shard.data_ptr, values.data_ptr(), values.nbytes, worker_id=rank)
+            return tensor
+
+        bf16, fp32 = torch.bfloat16, torch.float32
+        self.starts = upload_metadata(torch.tensor([0, rows], dtype=torch.int32))
+        self.slots = upload_metadata(torch.tensor([[0, rows, *range(1, rows + 1)]], dtype=torch.int32))
+        self.normalized = alloc((rows, session.runner._api.D), bf16)
+        self.conv_weight = alloc((KDA_CONV_K, CONV_DIM), bf16)
+        self.conv = alloc((rows + 1, STATE_LEN, CONV_DIM), bf16)
+        self.recurrent = alloc((rows + 1, LOCAL_KDA_H, KDA_DIM, KDA_DIM), fp32)
+        self.mixed = alloc((rows, CONV_DIM), bf16)
+        self.decay = alloc((rows, LOCAL_KDA_H, KDA_DIM), fp32)
+        self.beta = alloc((rows, BETA_PAD), fp32)
+        self.gate = alloc((rows, LOCAL_KDA_H, KDA_DIM), bf16)
+        self.query = alloc((rows, LOCAL_KDA_H, KDA_DIM), bf16)
+        self.key = alloc((rows, LOCAL_KDA_H, KDA_DIM), bf16)
+        self.value = alloc((rows, LOCAL_KDA_H, KDA_DIM), bf16)
+        self.core = alloc((rows, LOCAL_KDA_H, KDA_DIM), bf16)
+        self.dmixed = alloc((rows, CONV_DIM), fp32)
+        self.dgate = alloc((rows * LOCAL_KDA_H, KDA_DIM), fp32)
+        self.ddecay = alloc((rows * LOCAL_KDA_H, KDA_DIM), fp32)
+        self.dbeta = alloc((rows, LOCAL_KDA_H), fp32)
+        self.partial = alloc((rows, session.runner._api.D), fp32)
+        self.reduced = alloc((rows, session.runner._api.D), fp32)
+        self.input_gradient = alloc((rows, session.runner._api.D), fp32)
+
+    def step(self, launch, collapse, upstream, norm, weights, initial_conv, initial_recurrence, epoch):
+        (conv_q, conv_k, conv_v, wq, wk, wv, wfa, wfb, dt_bias, a_log, wb, wga, wgb, wo, out_norm) = weights
+        launch(KDA_PROGRAMS[0], collapse, norm, conv_q, conv_k, conv_v, initial_conv,
+               initial_recurrence, self.normalized, self.conv_weight, self.conv, self.recurrent)
+        launch(KDA_PROGRAMS[1], self.normalized, self.starts, self.slots, wq, wk, wv, wfa, wfb,
+               dt_bias, a_log, wb, wga, wgb, self.conv_weight, self.conv, self.recurrent,
+               self.mixed, self.decay, self.beta, self.gate, self.query, self.key, self.value, self.core)
+        launch(KDA_PROGRAMS[2], upstream, self.core, self.gate, self.query, self.key, self.value,
+               self.beta, self.decay, self.recurrent, self.mixed, initial_conv, self.conv_weight,
+               wo, out_norm, self.dmixed, self.ddecay, self.dbeta, self.dgate)
+        launch(KDA_PROGRAMS[3], self.dmixed, self.decay, a_log, self.ddecay, self.beta, self.dbeta,
+               self.dgate, wq, wk, wv, wfa, wfb, wb, wga, wgb, self.partial)
+        launch(KDA_PROGRAMS[4], collapse, norm, self.partial, self.reduced, self.input_gradient, epoch)
+        return self.input_gradient
+
+
+def make_kda_resident_backward(ranks, tokens=16):
+    """Differentiate the replayed KDA shard and reduce the gradient to its mHC input."""
+    import pypto.language as pl
+    import pypto.language.distributed as pld
+    from models.glm5_3_flash.config import D, FLASH, KDA_DIM, LOCAL_KDA_H, LOCAL_KDA_QKV_DIM
+    from models.glm5_3_flash.kda import BETA_PAD, CONV_DIM, KDA_CONV_K, STATE_LEN
+
+    from .pypto_glm53_online_head import make_final_norm_backward
+    from .pypto_glm53_online_suffix import make_fp32_tp_sum
+
+    dim, heads, local = KDA_DIM, LOCAL_KDA_H, LOCAL_KDA_QKV_DIM
+    rt = tokens * heads
+    project_out, gated_norm = make_kda_output_backward(tokens, heads, D, FLASH.rms_norm_eps, device_stages=True)
+    split, project_wide, project_inner, project_outer, combine = make_kda_projection_backward(
+        tokens, heads, D, FLASH.linear_lower_bound, beta_width=BETA_PAD, device_stages=True,
+    )
+    vjp_out = pl.jit.inline(project_out._func)
+    vjp_gate = pl.jit.inline(gated_norm._func)
+    project_inputs = pl.jit.inline(split._func)
+    project_to_input = pl.jit.inline(project_wide._func)
+    project_to_inner = pl.jit.inline(project_inner._func)
+    project_from_inner = pl.jit.inline(project_outer._func)
+    sum_projections = pl.jit.inline(combine._func)
+    prepare = pl.jit.inline(make_kda_recurrence_inputs(tokens, heads, BETA_PAD, device_entry=True)._func)
+    recurrence = pl.jit.inline(make_kda_recurrence_backward(tokens, heads, device_entry=True)._func)
+    qk_vjp = pl.jit.inline(make_kda_qk_backward(tokens, heads, device_entry=True)._func)
+    pack = pl.jit.inline(make_kda_projection_inputs(tokens, heads, device_entry=True)._func)
+    conv_vjp = pl.jit.inline(make_kda_convolution_backward(tokens, CONV_DIM, device_entry=True)._func)
+    tp_sum = make_fp32_tp_sum(ranks, tokens, D)
+    rms_vjp = make_final_norm_backward(D, FLASH.rms_norm_eps, tokens, streams=1, device_entry=True)
+
+    @pl.jit
+    def temporal_backward(
+        upstream: pl.Tensor[[tokens, D], pl.FP32],
+        core: pl.Tensor[[tokens, heads, dim], pl.BF16], gate: pl.Tensor[[tokens, heads, dim], pl.BF16],
+        query: pl.Tensor[[tokens, heads, dim], pl.BF16], key: pl.Tensor[[tokens, heads, dim], pl.BF16],
+        value: pl.Tensor[[tokens, heads, dim], pl.BF16], beta: pl.Tensor[[tokens, BETA_PAD], pl.FP32],
+        decay: pl.Tensor[[tokens, heads, dim], pl.FP32],
+        states: pl.Tensor[[tokens + 1, heads, dim, dim], pl.FP32],
+        mixed: pl.Tensor[[tokens, CONV_DIM], pl.BF16], initial: pl.Tensor[[STATE_LEN, CONV_DIM], pl.BF16],
+        conv_weight: pl.Tensor[[KDA_CONV_K, CONV_DIM], pl.BF16],
+        output_weight: pl.Tensor[[D, local], pl.BF16], output_norm: pl.Tensor[[dim], pl.BF16],
+        mixed_grad: pl.Out[pl.Tensor[[tokens, CONV_DIM], pl.FP32]],
+        decay_grad: pl.Out[pl.Tensor[[rt, dim], pl.FP32]],
+        beta_grad: pl.Out[pl.Tensor[[tokens, heads], pl.FP32]],
+        gate_grad: pl.Out[pl.Tensor[[rt, dim], pl.FP32]],
+    ):
+        projected = pl.create_tensor([tokens, local], dtype=pl.FP32)
+        core_grad = pl.create_tensor([rt, dim], dtype=pl.FP32)
+        qn = pl.create_tensor([rt, dim], dtype=pl.FP32)
+        kn = pl.create_tensor([rt, dim], dtype=pl.FP32)
+        vf = pl.create_tensor([rt, dim], dtype=pl.FP32)
+        step_beta = pl.create_tensor([rt, 8], dtype=pl.FP32)
+        dq = pl.create_tensor([rt, dim], dtype=pl.FP32)
+        dk = pl.create_tensor([rt, dim], dtype=pl.FP32)
+        dv = pl.create_tensor([rt, dim], dtype=pl.FP32)
+        step_beta_grad = pl.create_tensor([rt, 8], dtype=pl.FP32)
+        dqn = pl.create_tensor([rt, dim], dtype=pl.FP32)
+        dkn = pl.create_tensor([rt, dim], dtype=pl.FP32)
+        conv_grad = pl.create_tensor([tokens, CONV_DIM], dtype=pl.FP32)
+        q_flat = pl.reshape(query, [rt, dim])
+        k_flat = pl.reshape(key, [rt, dim])
+        v_flat = pl.reshape(value, [rt, dim])
+        core_flat = pl.reshape(core, [rt, dim])
+        gate_flat = pl.reshape(gate, [rt, dim])
+        decay_flat = pl.reshape(decay, [rt, dim])
+        states_flat = pl.reshape(states, [(tokens + 1) * heads * dim, dim])
+        dy = vjp_out(upstream, output_weight, projected)
+        dcore, ignored_gate = vjp_gate(core_flat, gate_flat, output_norm, dy, core_grad, gate_grad)
+        q_unit, k_unit, val, betas = prepare(q_flat, k_flat, v_flat, beta, qn, kn, vf, step_beta)
+        dquery, dkey, dvalue, ignored_decay, dbeta = recurrence(
+            q_unit, k_unit, val, decay_flat, betas, states_flat, dcore, dq, dk, dv, decay_grad, step_beta_grad,
+        )
+        a, b = qk_vjp(q_flat, k_flat, dquery, dkey, dqn, dkn)
+        conv, _ = pack(a, b, dvalue, dbeta, conv_grad, beta_grad)
+        conv_vjp(mixed, initial, conv_weight, conv, mixed_grad)
+
+    @pl.jit
+    def projection_backward(
+        d_qkv: pl.Tensor[[tokens, CONV_DIM], pl.FP32],
+        decay: pl.Tensor[[tokens, heads, dim], pl.FP32], a_log: pl.Tensor[[heads], pl.FP32],
+        d_decay: pl.Tensor[[rt, dim], pl.FP32], beta: pl.Tensor[[tokens, BETA_PAD], pl.FP32],
+        d_beta: pl.Tensor[[tokens, heads], pl.FP32], d_gate: pl.Tensor[[rt, dim], pl.FP32],
+        w_q: pl.Tensor[[local, D], pl.BF16], w_k: pl.Tensor[[local, D], pl.BF16],
+        w_v: pl.Tensor[[local, D], pl.BF16],
+        w_f_a: pl.Tensor[[dim, D], pl.BF16], w_f_b: pl.Tensor[[local, dim], pl.BF16],
+        w_b: pl.Tensor[[heads, D], pl.BF16],
+        w_g_a: pl.Tensor[[dim, D], pl.BF16], w_g_b: pl.Tensor[[local, dim], pl.BF16],
+        output: pl.Out[pl.Tensor[[tokens, D], pl.FP32]],
+    ):
+        d_q = pl.create_tensor([tokens, local], dtype=pl.FP32)
+        d_k = pl.create_tensor([tokens, local], dtype=pl.FP32)
+        d_v = pl.create_tensor([tokens, local], dtype=pl.FP32)
+        d_f = pl.create_tensor([tokens, local], dtype=pl.FP32)
+        fg = pl.create_tensor([tokens, dim], dtype=pl.FP32)
+        gg = pl.create_tensor([tokens, dim], dtype=pl.FP32)
+        dx_q = pl.create_tensor([tokens, D], dtype=pl.FP32)
+        dx_k = pl.create_tensor([tokens, D], dtype=pl.FP32)
+        dx_v = pl.create_tensor([tokens, D], dtype=pl.FP32)
+        dx_f = pl.create_tensor([tokens, D], dtype=pl.FP32)
+        dx_g = pl.create_tensor([tokens, D], dtype=pl.FP32)
+        joined_decay = pl.reshape(decay, [tokens, local])
+        joined_decay_grad = pl.reshape(d_decay, [tokens, local])
+        joined_gate_grad = pl.reshape(d_gate, [tokens, local])
+        a, b, c, f = project_inputs(d_qkv, joined_decay, a_log, joined_decay_grad, d_q, d_k, d_v, d_f)
+        dq = project_to_input(a, w_q, dx_q)
+        dk = project_to_input(b, w_k, dx_k)
+        dv = project_to_input(c, w_v, dx_v)
+        inner_f = project_to_inner(f, w_f_b, fg)
+        inner_g = project_to_inner(joined_gate_grad, w_g_b, gg)
+        df = project_from_inner(inner_f, w_f_a, dx_f)
+        dg = project_from_inner(inner_g, w_g_a, dx_g)
+        sum_projections(dq, dk, dv, df, dg, beta, d_beta, w_b, output)
+
+    @pl.jit.host
+    def temporal(
+        upstream: pl.Tensor[[ranks, tokens, D], pl.FP32],
+        core: pl.Tensor[[ranks, tokens, heads, dim], pl.BF16],
+        gate: pl.Tensor[[ranks, tokens, heads, dim], pl.BF16],
+        query: pl.Tensor[[ranks, tokens, heads, dim], pl.BF16],
+        key: pl.Tensor[[ranks, tokens, heads, dim], pl.BF16],
+        value: pl.Tensor[[ranks, tokens, heads, dim], pl.BF16],
+        beta: pl.Tensor[[ranks, tokens, BETA_PAD], pl.FP32],
+        decay: pl.Tensor[[ranks, tokens, heads, dim], pl.FP32],
+        states: pl.Tensor[[ranks, tokens + 1, heads, dim, dim], pl.FP32],
+        mixed: pl.Tensor[[ranks, tokens, CONV_DIM], pl.BF16],
+        initial: pl.Tensor[[ranks, STATE_LEN, CONV_DIM], pl.BF16],
+        conv_weight: pl.Tensor[[ranks, KDA_CONV_K, CONV_DIM], pl.BF16],
+        output_weight: pl.Tensor[[ranks, D, local], pl.BF16], output_norm: pl.Tensor[[ranks, dim], pl.BF16],
+        mixed_grad: pl.Out[pl.Tensor[[ranks, tokens, CONV_DIM], pl.FP32]],
+        decay_grad: pl.Out[pl.Tensor[[ranks, rt, dim], pl.FP32]],
+        beta_grad: pl.Out[pl.Tensor[[ranks, tokens, heads], pl.FP32]],
+        gate_grad: pl.Out[pl.Tensor[[ranks, rt, dim], pl.FP32]],
+    ):
+        for rank in pl.range(pld.world_size()):
+            temporal_backward(upstream[rank], core[rank], gate[rank], query[rank], key[rank], value[rank], beta[rank],
+                              decay[rank], states[rank], mixed[rank], initial[rank], conv_weight[rank],
+                              output_weight[rank], output_norm[rank], mixed_grad[rank], decay_grad[rank],
+                              beta_grad[rank], gate_grad[rank], device=rank)
+
+    @pl.jit.host
+    def projection(
+        d_qkv: pl.Tensor[[ranks, tokens, CONV_DIM], pl.FP32],
+        decay: pl.Tensor[[ranks, tokens, heads, dim], pl.FP32], a_log: pl.Tensor[[ranks, heads], pl.FP32],
+        d_decay: pl.Tensor[[ranks, rt, dim], pl.FP32], beta: pl.Tensor[[ranks, tokens, BETA_PAD], pl.FP32],
+        d_beta: pl.Tensor[[ranks, tokens, heads], pl.FP32], d_gate: pl.Tensor[[ranks, rt, dim], pl.FP32],
+        w_q: pl.Tensor[[ranks, local, D], pl.BF16], w_k: pl.Tensor[[ranks, local, D], pl.BF16],
+        w_v: pl.Tensor[[ranks, local, D], pl.BF16],
+        w_f_a: pl.Tensor[[ranks, dim, D], pl.BF16], w_f_b: pl.Tensor[[ranks, local, dim], pl.BF16],
+        w_b: pl.Tensor[[ranks, heads, D], pl.BF16],
+        w_g_a: pl.Tensor[[ranks, dim, D], pl.BF16], w_g_b: pl.Tensor[[ranks, local, dim], pl.BF16],
+        partial: pl.Out[pl.Tensor[[ranks, tokens, D], pl.FP32]],
+    ):
+        for rank in pl.range(pld.world_size()):
+            projection_backward(d_qkv[rank], decay[rank], a_log[rank], d_decay[rank], beta[rank], d_beta[rank],
+                                d_gate[rank], w_q[rank], w_k[rank], w_v[rank], w_f_a[rank], w_f_b[rank],
+                                w_b[rank], w_g_a[rank], w_g_b[rank], partial[rank], device=rank)
+
+    @pl.jit.host
+    def finish(
+        collapsed: pl.Tensor[[ranks, tokens, D], pl.BF16], norm: pl.Tensor[[ranks, D], pl.BF16],
+        partial: pl.Tensor[[ranks, tokens, D], pl.FP32], reduced: pl.InOut[pl.Tensor[[ranks, tokens, D], pl.FP32]],
+        output: pl.Out[pl.Tensor[[ranks, tokens, D], pl.FP32]],
+        epoch: pl.Scalar[pl.INT32],
+    ):
+        exchange_buffer = pld.alloc_window_buffer([tokens, D], dtype=pl.FP32)
+        arrivals_buffer = pld.alloc_window_buffer([ranks, 1], dtype=pl.INT32)
+        for rank in pl.range(pld.world_size()):
+            exchange = pld.window(exchange_buffer, [tokens, D], dtype=pl.FP32)
+            arrivals = pld.window(arrivals_buffer, [ranks, 1], dtype=pl.INT32)
+            local = partial[rank]
+            total = reduced[rank]
+            gradient = tp_sum(local, total, exchange, arrivals, rank, epoch, device=rank)
+            rms_vjp(collapsed[rank], norm[rank], gradient, output[rank], device=rank)
+
+    return temporal, projection, finish

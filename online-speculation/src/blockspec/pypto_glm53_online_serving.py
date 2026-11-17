@@ -29,7 +29,7 @@ class ResidentDistillation:
         self.suffix_tape = None
         self.use_frozen_suffix = frozen_suffix
         self.frozen_suffix = None
-        self.kda_output_gradient = None
+        self.mla_output_gradient = None
 
     def allocate(self, shape, dtype):
         from pypto.runtime import StackedDeviceTensor
@@ -94,7 +94,7 @@ class ResidentDistillation:
             self.owned.pop()
         self.suffix_tape = None
         self.frozen_suffix = None
-        self.kda_output_gradient = None
+        self.mla_output_gradient = None
 
     def __exit__(self, exc_type, _error, _traceback):
         if exc_type is None or self.runner._dispatch_error is None:
@@ -130,6 +130,7 @@ class ResidentDistillation:
             raise RuntimeError("resident distillation must be used inside its context")
         with _clean_replay(runner, tokens, anchor, slot):
             inputs = _draft_inputs(runner, slot, anchor, tokens[anchor], mask_id)
+            history_row = int(inputs["kda_state_rows"][slot, 0]) if self.frozen_suffix is not None else None
             self.capture(inputs, "orthrus", self.student, self.hidden)
             inputs = _teacher_inputs(runner, tokens, anchor, slot)
             self.capture(inputs, "verify", self.teacher, self.teacher_hidden)
@@ -143,7 +144,7 @@ class ResidentDistillation:
                     valid, epoch, config=runner.config,
                 )
                 if self.frozen_suffix is not None:
-                    self.kda_output_gradient = self.frozen_suffix.step(self.gradient)
+                    self.mla_output_gradient = self.frozen_suffix.step(self.gradient, history_row)
             except BaseException as error:
                 runner._poison_forwards(error)
                 raise

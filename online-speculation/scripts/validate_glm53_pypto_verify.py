@@ -153,15 +153,19 @@ def run_resident_distillation(runner, mask_id, *, frozen_suffix=False):
                 last_tape = tape
                 evidence["suffix_rows"] = len(tape)
             if frozen_suffix:
-                kda_grad = download(training.kda_output_gradient, 0, torch.float32)
-                if not torch.isfinite(kda_grad).all() or not kda_grad[:valid].count_nonzero():
-                    raise AssertionError("resident suffix produced an invalid KDA output gradient")
-                if kda_grad[valid:].count_nonzero():
+                mla_grad = download(training.mla_output_gradient, 0, torch.float32)
+                if not torch.isfinite(mla_grad).all() or not mla_grad[:valid].count_nonzero():
+                    raise AssertionError("resident suffix produced an invalid MLA output gradient")
+                if mla_grad[valid:].count_nonzero():
                     raise AssertionError("resident suffix differentiated padded output rows")
                 for rank in range(1, api.RANKS):
-                    replica = download(training.kda_output_gradient, rank, torch.float32)
-                    torch.testing.assert_close(replica, kda_grad, atol=3e-6, rtol=2e-4)
-                evidence["kda_output_grad_norm"] = float(kda_grad.norm())
+                    replica = download(training.mla_output_gradient, rank, torch.float32)
+                    torch.testing.assert_close(replica, mla_grad, atol=3e-6, rtol=2e-4)
+                evidence["mla_output_grad_norm"] = float(mla_grad.norm())
+                core = download(training.frozen_suffix.kda.core, 0, torch.bfloat16)[:api.VERIFY_QUERY_WIDTH]
+                if not torch.isfinite(core).all() or not core.count_nonzero():
+                    raise AssertionError("resident KDA replay did not emit a valid block")
+                evidence["kda_replay_core_norm"] = float(core.float().norm())
             report.append(evidence)
     return report
 

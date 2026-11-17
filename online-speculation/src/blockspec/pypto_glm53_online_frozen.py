@@ -1,6 +1,7 @@
 """Replay the resident suffix above the final trainable GLM MLA layer."""
 
 from .pypto_glm53_online_ep import ROUTES, ROUTE_STRIDE, make_frozen_moe_backward
+from .pypto_glm53_online_kda import KDA_PROGRAMS, ResidentKDAReplay, prepare_kda_programs
 from .pypto_glm53_online_mhc import make_mhc_sublayer_adjoint
 
 
@@ -20,7 +21,9 @@ def prepare_frozen_suffix(api, compiler):
         raise ValueError("frozen suffix replay expects MLA followed by KDA in the last two GLM layers")
     mHC = make_mhc_sublayer_adjoint(api.RANKS, api.VERIFY_QUERY_WIDTH)
     moe = make_frozen_moe_backward(api.RANKS, FLASH.n_routed_experts // api.RANKS)
-    return {name: compiler.compile(name, entry) for name, entry in zip(PROGRAMS, (*mHC, *moe), strict=True)}
+    programs = {name: compiler.compile(name, entry) for name, entry in zip(PROGRAMS, (*mHC, *moe), strict=True)}
+    programs.update(prepare_kda_programs(api, compiler, ROWS))
+    return programs
 
 
 class ResidentFrozenSuffix:
@@ -32,7 +35,7 @@ class ResidentFrozenSuffix:
         self.session = session
         self.runner = session.runner
         self.api = self.runner._api
-        missing = set(PROGRAMS).difference(self.runner.auxiliary_programs)
+        missing = set((*PROGRAMS, *KDA_PROGRAMS)).difference(self.runner.auxiliary_programs)
         if missing or self.api.ORTHRUS_TAPE_STREAMS != self.api.HC_MULT + 1:
             raise RuntimeError("resident frozen suffix programs or full mHC tape are missing")
         width, streams = self.api.D, self.api.HC_MULT
@@ -74,6 +77,7 @@ class ResidentFrozenSuffix:
         self.route_gradient = fp32(ROWS, ROUTES)
         self.norm_gradient = fp32(ROWS, width)
         self.collapse_gradient = fp32(ROWS, width)
+        self.kda = ResidentKDAReplay(session, ROWS)
 
     def _view_rows(self, tensor, start, count):
         from pypto.runtime import StackedDeviceTensor
@@ -131,15 +135,35 @@ class ResidentFrozenSuffix:
                      self.tokens, self.scale, self.routed_total, self.shared_partial, self.shared_total,
                      self.route_gradient, self.norm_gradient, self.collapse_gradient, active, epoch)
 
-    def step(self, gradient):
-        """Return the gradient at the output of the final frozen KDA sublayer."""
+    def kda_backward(self, layer, history_row, epoch):
+        from models.glm5_3_flash.config import FLASH
+
+        ordinal = FLASH.kda_layer_ids.index(layer)
+        conv_state = self._weight("kda_conv_state", ordinal)
+        recurrent_state = self._weight("kda_recurrent_state", ordinal)
+        initial_conv = self._view_rows(conv_state, history_row, 1)
+        initial_recurrence = self._view_rows(recurrent_state, history_row, 1)
+        weight_keys = ("conv_q", "conv_k", "conv_v", "w_q", "w_k", "w_v", "w_f_a", "w_f_b",
+                       "dt_bias", "a_log", "w_b", "w_g_a", "w_g_b", "w_o", "o_norm")
+        weights = tuple(self._weight(f"kda_{key}", ordinal) for key in weight_keys)
+        input_norm = self._weight("norm_input_norm", layer)
+        return self.kda.step(self._launch, self.collapse, self.dy, input_norm, weights,
+                             initial_conv, initial_recurrence, epoch)
+
+    def step(self, gradient, history_row):
+        """Return the gradient at the output of the final trainable MLA sublayer."""
         from models.glm5_3_flash.config import FLASH
 
         layer = FLASH.num_hidden_layers - 1
         params = self.enter_mhc(gradient, layer, ffn=True)
-        epoch = getattr(self.runner, "_orthrus_frozen_suffix_epoch", 0) + 1
-        self.moe_backward(layer, epoch)
+        step = getattr(self.runner, "_orthrus_frozen_suffix_epoch", 0) + 1
+        self.moe_backward(layer, 2 * step - 1)
         self.leave_mhc(params, self.collapse_gradient)
-        self.enter_mhc(self.stream_gradient, layer, ffn=False)
-        self.runner._orthrus_frozen_suffix_epoch = epoch
+        params = self.enter_mhc(self.stream_gradient, layer, ffn=False)
+        self.leave_mhc(params, self.kda_backward(layer, history_row, step))
+        params = self.enter_mhc(self.stream_gradient, layer - 1, ffn=True)
+        self.moe_backward(layer - 1, 2 * step)
+        self.leave_mhc(params, self.collapse_gradient)
+        self.enter_mhc(self.stream_gradient, layer - 1, ffn=False)
+        self.runner._orthrus_frozen_suffix_epoch = step
         return self.dy
