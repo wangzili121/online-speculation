@@ -120,6 +120,7 @@ def run_resident_distillation(runner, mask_id):
     api = runner._api
     valid = api.VERIFY_QUERY_WIDTH - 1
     report = []
+    last_tape = None
     with ResidentDistillation(runner) as training:
         for anchor in (2, 7):
             student, teacher = collect_clean_logits(runner, tokens, anchor, 2, mask_id)
@@ -138,8 +139,18 @@ def run_resident_distillation(runner, mask_id):
                 raise AssertionError("resident replay included inactive gradient rows")
             for rank in range(1, api.RANKS):
                 torch.testing.assert_close(download(gradient, rank, torch.float32), first, atol=3e-6, rtol=2e-4)
-            report.append({"anchor": anchor, "loss": float(total.sum()),
-                           "loss_max_abs": float((total[:valid] - expected_loss).abs().max())})
+            evidence = {"anchor": anchor, "loss": float(total.sum()),
+                        "loss_max_abs": float((total[:valid] - expected_loss).abs().max())}
+            if training.suffix_tape is not None:
+                tape = download(training.suffix_tape, 0, torch.bfloat16)
+                views = tape.reshape(4, api.VERIFY_QUERY_WIDTH, api.HC_MULT, api.D)
+                if not torch.isfinite(tape).all() or any(not t.count_nonzero() for t in views):
+                    raise AssertionError("GLM replay did not capture all four suffix boundaries")
+                if last_tape is not None and torch.equal(last_tape, tape):
+                    raise AssertionError("GLM suffix tape is stale after changing the anchor")
+                last_tape = tape
+                evidence["suffix_rows"] = len(tape)
+            report.append(evidence)
     return report
 
 
@@ -177,6 +188,7 @@ def main():
             config = build_pypto_run_config(platform="a2a3", device_ids=args.devices, pypto_build_dir=None)
             programs["_auxiliary"][PROGRAM] = prepare_distillation(api, KernelCompiler(run_config=config))
             result["resident_distillation_compiled"] = True
+            result["suffix_tape_enabled"] = hasattr(api, "ORTHRUS_TAPE_ROWS")
         result["compiled"] = True
         if args.compile_only:
             view = Glm53ModelRunner(api, programs, None, args.devices, "a2a3", orthrus_mask_token_id=args.mask_token_id)

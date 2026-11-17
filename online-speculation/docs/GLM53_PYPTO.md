@@ -72,4 +72,6 @@ python scripts/validate_glm53_pypto_head_publish.py \
 
 The last check stages a device AdamW update to two real packed MLA shards, verifies the live views remain intact, and then publishes the staged weights into those views. It uses fixture gradients. The FP32 master weights matched the reference within `2.98e-8`, and the Indexer weights and neighboring layers remained byte-identical.
 
-Full online update still needs the Serving forward activations and the expert-parallel adjoint connected to the frozen layer 44 and layer 43 suffix. The final acceptance must exercise a true replay, gradient and AdamW step, then decode with the published head on the same Serving runner.
+Apply `runtime/pypto_serving_glm53/online_replay_lib.patch` after `draft_lib.patch` to enable residual capture for the two final backbone layers. Recompile into a fresh artifact directory. With this patch, `--resident-distillation` directs the draft replay to save the inputs to attention and MoE in layers 43 and 44 into a device buffer owned by the distillation session. The standard draft execution leaves the buffer untouched. The TP8 forward kernels compiled and passed the Serving ABI check after artifact reload. The device copy was checked at all four offsets with surrounding rows preserved.
+
+Full online update still needs the expert-parallel adjoint and the frozen suffix wired to the MLA training programs. The final acceptance must exercise a true replay, gradient and AdamW step, then decode with the published head on the same Serving runner.

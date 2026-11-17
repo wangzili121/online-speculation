@@ -26,6 +26,7 @@ class ResidentDistillation:
         self.runner = runner
         self.runtime = runner.runtime
         self.owned = []
+        self.suffix_tape = None
 
     def allocate(self, shape, dtype):
         from pypto.runtime import StackedDeviceTensor
@@ -71,6 +72,8 @@ class ResidentDistillation:
                 self.combined = self.allocate((ROWS, api.D), torch.float32)
                 self.loss = self.allocate((ROWS, 8), torch.float32)
                 self.gradient = self.allocate((ROWS * api.HC_MULT, api.D), torch.float32)
+                if hasattr(api, "ORTHRUS_TAPE_ROWS"):
+                    self.suffix_tape = self.allocate((api.ORTHRUS_TAPE_ROWS, api.HC_MULT, api.D), torch.bfloat16)
             except BaseException:
                 self.close()
                 raise
@@ -81,6 +84,7 @@ class ResidentDistillation:
             rank, handle = self.owned[-1]
             self.runtime.free_tensor(handle, worker_id=rank)
             self.owned.pop()
+        self.suffix_tape = None
 
     def __exit__(self, exc_type, _error, _traceback):
         if exc_type is None or self.runner._dispatch_error is None:
@@ -92,6 +96,11 @@ class ResidentDistillation:
 
         runner = self.runner
         tensors = dict(runner._phase_tensors[0][phase], logits=logits, head_hidden=hidden)
+        if phase == "orthrus" and self.suffix_tape is not None:
+            inputs = dict(inputs, execution_mode=inputs["execution_mode"].new_full(
+                (1,), runner._api.ORTHRUS_REPLAY_MODE,
+            ))
+            tensors["orthrus_suffix_tape"] = self.suffix_tape
         args = forward_task_args(runner._api, phase, tensors)
         try:
             pending = runner._dispatch_step(inputs, phase=phase, buffer_slot=0, task_args=args)
