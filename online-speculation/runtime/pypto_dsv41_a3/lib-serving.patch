@@ -1,16 +1,16 @@
-From c5c9a194eecd2901424b5b45f3261f5b321e0ed7 Mon Sep 17 00:00:00 2001
+From 155b4d65e447bf37521b8319ac46d5ee611636f6 Mon Sep 17 00:00:00 2001
 From: Zili Wang <wangzili121@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 19:57:58 +0800
-Subject: [PATCH] Port the A3 request pool to the optimized resident network
+Subject: [PATCH] Port A3 serving and add provisional Orthrus verification
 
 ---
  docs/models/deepseek_v4_1_flash_a3/decode.md  |  25 +++
  .../deepseek_v4_1_flash_a3/decode_network.py  |  29 ++-
- models/deepseek_v4_1_flash_a3/network.py      |  96 +++++++++-
- .../prefill_resident.py                       |  27 ++-
- models/deepseek_v4_1_flash_a3/state.py        |  87 ++++++++-
- tests/contract/test_ds41_resident_session.py  | 177 +++++++++++++++++-
- 6 files changed, 423 insertions(+), 18 deletions(-)
+ models/deepseek_v4_1_flash_a3/network.py      | 183 ++++++++++++++-
+ .../prefill_resident.py                       |  72 +++++-
+ models/deepseek_v4_1_flash_a3/state.py        | 132 ++++++++++-
+ tests/contract/test_ds41_resident_session.py  | 210 +++++++++++++++++-
+ 6 files changed, 631 insertions(+), 20 deletions(-)
 
 diff --git a/docs/models/deepseek_v4_1_flash_a3/decode.md b/docs/models/deepseek_v4_1_flash_a3/decode.md
 index 38ecf12..4206ec7 100644
@@ -114,7 +114,7 @@ index 2c0a601..23be4eb 100644
      def close(self):
          """Detach this driver; the generation owner closes its shared resources."""
 diff --git a/models/deepseek_v4_1_flash_a3/network.py b/models/deepseek_v4_1_flash_a3/network.py
-index 87fc854..0cf0eb5 100644
+index 87fc854..8d72721 100644
 --- a/models/deepseek_v4_1_flash_a3/network.py
 +++ b/models/deepseek_v4_1_flash_a3/network.py
 @@ -25,7 +25,7 @@ from pypto import ir
@@ -126,16 +126,18 @@ index 87fc854..0cf0eb5 100644
  from .engram import make_prefill_engram_entries
  from .input_pack import make_input_entries
  from .lm_head import make_output_entries
-@@ -37,6 +37,8 @@ from .prefill_network_engram import prepare_network_engram, validate_host_lookup
+@@ -37,6 +37,10 @@ from .prefill_network_engram import prepare_network_engram, validate_host_lookup
  from .utils import file_sha, tensor_sha, write_json
  from .state import NetworkCacheProvider
 
 +SERVING_DISPATCH_CAPACITY = 16
++ORTHRUS_VERIFY_CAPACITY = 128
++ORTHRUS_BLOCK = 32
 +
 
  class Executable:
      """Compile one production operator definition and retain its compiler artifacts."""
-@@ -861,6 +863,9 @@ def prepare_network_provider(inputs, contract, allocation_id, *, geometry_only=F
+@@ -861,6 +865,9 @@ def prepare_network_provider(inputs, contract, allocation_id, *, geometry_only=F
          or contract["scheduler_capacity"] != 8192
      ):
          raise ValueError("Retain the original model modes and bounded actual scheduler ABI")
@@ -145,7 +147,7 @@ index 87fc854..0cf0eb5 100644
      if contract.get("fresh_shared_initialization") != {"topk_indices": -1}:
          raise ValueError("Freeze the same deterministic initial TopK storage as the independent reference")
      engram_contracts = inputs.get("engram_contracts")
-@@ -881,6 +886,7 @@ def prepare_network_provider(inputs, contract, allocation_id, *, geometry_only=F
+@@ -881,6 +888,7 @@ def prepare_network_provider(inputs, contract, allocation_id, *, geometry_only=F
          allocation_id=allocation_id,
          sources_by_case={"fresh": inputs["cache_ABI_sources"]},
          geometry_only=geometry_only,
@@ -153,15 +155,16 @@ index 87fc854..0cf0eb5 100644
      )
      attach_network_cache_geometry(provider)
      provider.require_network_geometry()
-@@ -904,6 +910,7 @@ class GenerationSession:
+@@ -904,6 +912,8 @@ class GenerationSession:
          self.phase_programs = {contract["capacity"]: program}
          self.ownership = [weights.layout.ownership(rank) for rank in range(weights.world)]
          self.epoch, self.closed, self.failed = 0, False, False
 +        self._draft_plane_handles = {}
++        self._verified_requests = None
          self.cache_views = weights.cache_handles
          for rank, cases in enumerate(provider.arenas):
              sources = {case + "/" + name: resident.handle(value, rank)
-@@ -923,6 +930,89 @@ class GenerationSession:
+@@ -923,8 +933,167 @@ class GenerationSession:
          """End the session explicitly; generation never releases a worker between phases."""
          self.close()
 
@@ -220,6 +223,7 @@ index 87fc854..0cf0eb5 100644
 +        if self.closed or self.failed:
 +            raise RuntimeError("A closed or failed session cannot release individual requests")
 +        groups = self.provider.request_pages(dp_rank, request_slot, generation, case=case)
++        self._verified_requests = None
 +        tp = self.contract["topology"]["tp"]
 +        try:
 +            for rank in range(dp_rank * tp, (dp_rank + 1) * tp):
@@ -250,23 +254,131 @@ index 87fc854..0cf0eb5 100644
 +
      def advance(self, chunk, *, output, progress=None, phase="prefill"):
          """Admit fresh controls and run the next chunk over the existing weights and caches."""
++        if phase not in ("decode", "prefill"):
++            raise ValueError("Use the provisional verification entry for Orthrus blocks")
++        self._verified_requests = None
++        return self._advance(chunk, output=output, progress=progress, phase=phase)
++
++    @staticmethod
++    def _candidate_requests(chunk):
++        engines = chunk["inputs"]["input_contract"]["DP_engines"]
++        owners = set()
++        result = {}
++        for engine in engines:
++            for request in engine["requests"]:
++                owner = engine["dp_rank"], request["request_slot"], request["generation"]
++                if owner in owners:
++                    raise ValueError("Verifier request generation appears twice")
++                owners.add(owner)
++                result[(*owner, request["initial_context_length"])] = tuple(request["token_ids"])
++        return result
++
++    def verify_candidates(self, chunk, *, output, progress=None):
++        """Evaluate packed causal K32 candidates and restore authoritative state before returning logits."""
++        if self.closed or self.failed or self.provider.max_requests_per_partition is None:
++            raise RuntimeError("Verification needs a live serving generation session")
++        actual = chunk["inputs"]["input_contract"]
++        contract = chunk["contract"]
++        if contract["capacity"] != ORTHRUS_VERIFY_CAPACITY:
++            raise ValueError("Verification needs the wide native program")
++        requests = self._candidate_requests(chunk)
++        if not requests or any(not 1 < len(tokens) <= ORTHRUS_BLOCK for tokens in requests.values()):
++            raise ValueError("Verification requires the pending anchor plus 1..31 candidates")
++        for dp, slot, generation, start in requests:
++            _, committed = self.provider.request_history(dp, slot, generation)
++            if start != committed:
++                raise ValueError("Verification starts at the first uncommitted token")
++        self._verified_requests = None
++        previous = (self.epoch, self.contract, self.engram_contracts, self.program, self.provider.capacity)
++        world = self.contract["topology"]
++        metadata = chunk["cache"]["cache_ABI"]
++        if len(metadata) != world["ep"] or len(actual["DP_engines"]) != world["dp"]:
++            raise ValueError("Verification metadata must describe every resident rank")
++        try:
++            with ExitStack() as restore:
++                restore.enter_context(self.provider.provisional_dispatch())
++                for rank, payload in enumerate(metadata):
++                    if not actual["DP_engines"][rank // world["tp"]]["requests"]:
++                        continue
++                    intervals, history_pages = self.provider.verification_ranges(rank, payload)
++                    raw = self.provider.arenas[rank]["fresh"]
++                    ranges = [(raw[key], sorted(extents)) for key, extents in intervals.items()]
++                    restore.enter_context(self.runtime.preserve_cache_ranges(rank, ranges))
++                    for page in history_pages:
++                        history = self.provider.history.caches[rank]["fresh"][page * 128:(page + 1) * 128]
++                        restore.callback(history.copy_, history.clone())
++                result = self._advance(chunk, output=output, progress=progress, phase="verify")
++            self._verified_requests = requests
++            return result
++        except BaseException:
++            self.failed = True
++            raise
++        finally:
++            self.epoch, self.contract, self.engram_contracts, self.program, capacity = previous
++            self.provider.set_execution_capacity(capacity)
++
++    def commit_candidates(self, chunk, *, output, progress=None):
++        """Commit the anchor and accepted prefixes through the wide target forward."""
++        requests = self._candidate_requests(chunk)
++        verified = self._verified_requests
++        if (chunk["contract"]["capacity"] != ORTHRUS_VERIFY_CAPACITY or verified is None
++                or requests.keys() != verified.keys()
++                or any(not tokens or tokens != verified[key][:len(tokens)] for key, tokens in requests.items())):
++            raise ValueError("Commit must contain a prefix for every verified request generation")
++        self._verified_requests = None
++        return self._advance(chunk, output=output, progress=progress, phase="accept")
++
++    def _advance(self, chunk, *, output, progress, phase):
          if self.closed or self.failed:
-@@ -932,8 +1022,10 @@ class GenerationSession:
+             raise RuntimeError("A closed or failed generation session cannot advance")
+         following, contract = chunk["inputs"], chunk["contract"]
+@@ -932,8 +1101,11 @@ class GenerationSession:
          if any(contract[name] != self.contract[name] for name in fixed):
              raise ValueError("Continuation cannot change the session's model or topology")
          capacity = contract["capacity"]
 -        if capacity not in self.phase_programs or (phase == "decode" and capacity != 16):
-+        if capacity not in self.phase_programs or (phase == "decode" and capacity != SERVING_DISPATCH_CAPACITY):
++        if phase != "verify" and (capacity not in self.phase_programs or
++                                  (phase == "decode" and capacity != SERVING_DISPATCH_CAPACITY)):
              raise ValueError("Continuation requires a precompiled phase execution capacity")
 +        if contract.get("max_requests_per_partition") != self.contract.get("max_requests_per_partition"):
 +            raise ValueError("Continuation cannot change the service request-pool capacity")
          actual, epoch = following["input_contract"], self.epoch + 1
          input_path = Path(contract["input_contract_path"])
          if (actual["epoch"] != epoch or type(actual["epoch"]) is not int
+@@ -960,7 +1132,9 @@ class GenerationSession:
+             self.provider.set_execution_capacity(capacity)
+             self.engram_contracts = {slot: dict(item, capacity=capacity)
+                                      for slot, item in self.engram_contracts.items()}
+-            self.program = self.phase_programs[capacity]
++            new_program = capacity not in self.phase_programs
++            self.program = (NetworkProgram(self.output / "compiled-verify") if new_program
++                            else self.phase_programs[capacity])
+             self.provider.begin_chunk(epoch=epoch, token_map_id=contract["input_contract_sha256"],
+                 input_by_case={"fresh": actual}, metadata_by_case={"fresh": metadata},
+                 metadata_sources_by_case={"fresh": receipts})
+@@ -969,6 +1143,9 @@ class GenerationSession:
+                 raise RuntimeError("Chunk admission replaced a persistent cache or history allocation")
+             validate_host_lookup(following["engram_lookup"], self.engram_contracts[1], self.provider.hash_batch())
+             self.program.compile(self.provider, contract["model_config"], contract["topology"], self.engram_contracts)
++            if new_program:
++                self.runtime.register(self.program)
++                self.phase_programs[capacity] = self.program
+             output = Path(output)
+             output.mkdir(parents=True, exist_ok=False)
+             result = run_network_chunk(following, contract=contract, output=output, provider=self.provider,
 diff --git a/models/deepseek_v4_1_flash_a3/prefill_resident.py b/models/deepseek_v4_1_flash_a3/prefill_resident.py
-index 81b0410..6d78611 100644
+index 81b0410..9e5023b 100644
 --- a/models/deepseek_v4_1_flash_a3/prefill_resident.py
 +++ b/models/deepseek_v4_1_flash_a3/prefill_resident.py
+@@ -13,7 +13,7 @@ import os
+ import struct
+ from collections import OrderedDict
+ from concurrent.futures import ThreadPoolExecutor
+-from contextlib import ExitStack
++from contextlib import ExitStack, contextmanager
+ from time import perf_counter
+ from threading import Condition, Lock, RLock, Thread
+ import torch
 @@ -184,6 +184,7 @@ class ResidentNetworkRuntime:
          self.device_readonly = {}
          self.device_active = {}
@@ -275,7 +387,15 @@ index 81b0410..6d78611 100644
          self.rotations = {}
          self.programs = {}
          self.static_parameters = {}
-@@ -339,6 +340,7 @@ class ResidentNetworkRuntime:
+@@ -224,6 +225,7 @@ class ResidentNetworkRuntime:
+                           device_weight_upload_seconds=0.0,
+                           dynamic_allocations=0, cache_h2d_bytes=0, control_d2h_bytes=0, output_d2h_bytes=0,
+                           activation_d2h_bytes=0, d2d_bytes=0, program_evictions=0, staging_worker_initializations=0,
++                          verify_backup_d2d_bytes=0, verify_restore_d2d_bytes=0,
+                           workspace_fill_bytes=0, workspace_requests=0, workspace_reuses=0)
+         try:
+             if worker_factory is None:
+@@ -339,6 +341,7 @@ class ResidentNetworkRuntime:
              self.staging_workers.clear()
              self.device_active.clear()
              self.alias_leases.clear()
@@ -283,7 +403,7 @@ index 81b0410..6d78611 100644
              self.parameter_abis.clear()
              self.values.clear()
              self.free_values.clear()
-@@ -410,15 +412,35 @@ class ResidentNetworkRuntime:
+@@ -410,15 +413,77 @@ class ResidentNetworkRuntime:
              elif name.startswith("raw/"):
                  self._record_transfer(rank, "cache_h2d_bytes", allocation.nbytes)
 
@@ -317,10 +437,52 @@ index 81b0410..6d78611 100644
 +            owner["host"][offset:offset + count].fill_(byte)
 +            self.stats["request_reset_bytes"] = self.stats.get("request_reset_bytes", 0) + count
 +
++    @contextmanager
++    def preserve_cache_ranges(self, rank, ranges):
++        """Restore selected pinned cache bytes in place after a speculative forward."""
++        if self._closed:
++            raise RuntimeError("Resident runtime is closed")
++        spans = []
++        for value, intervals in ranges:
++            owner = self.pinned[rank, value.untyped_storage()._cdata]
++            if owner["readonly"] or not owner["name"].startswith("raw/"):
++                raise ValueError("Verification can preserve only mutable target cache arenas")
++            allocation = owner["allocation"]
++            end = 0
++            for offset, count in intervals:
++                if not end <= offset < offset + count <= allocation.nbytes:
++                    raise ValueError("Verification ranges overlap or exceed the target arena")
++                spans.append((allocation.data_ptr + offset, count))
++                end = offset + count
++        if not spans:
++            yield
++            return
++        self._select(rank)
++        worker = self.workers[rank]
++        backup = worker.alloc_tensor((sum(count for _, count in spans),), torch.uint8)
++        saved = []
++        try:
++            offset = 0
++            for pointer, count in spans:
++                self._device_copy(backup.data_ptr + offset, pointer, count, rank)
++                saved.append((pointer, backup.data_ptr + offset, count))
++                offset += count
++            self._record_transfer(rank, "verify_backup_d2d_bytes", offset)
++            try:
++                yield
++            finally:
++                self._select(rank)
++                for pointer, copy, count in saved:
++                    self._device_copy(pointer, copy, count, rank)
++                self._record_transfer(rank, "verify_restore_d2d_bytes", offset)
++        finally:
++            self._select(rank)
++            worker.free_tensor(backup)
++
      def register(self, program):
          """Admit every phase and boundary entry to the same worker registry."""
          if self._closed:
-@@ -502,6 +524,8 @@ class ResidentNetworkRuntime:
+@@ -502,6 +567,8 @@ class ResidentNetworkRuntime:
                      raise ValueError("Resident device operand is retired or released")
                  if direction != "In" and self.device_readonly[id(value.buffer)]:
                      raise ValueError("A compiled entry writes an immutable resident weight")
@@ -329,7 +491,7 @@ index 81b0410..6d78611 100644
                  bound.append(value)
                  continue
              if value.device.type != "cpu" or not value.is_contiguous():
-@@ -802,6 +826,7 @@ class ResidentNetworkRuntime:
+@@ -802,6 +869,7 @@ class ResidentNetworkRuntime:
                  else:
                      self.free_values.setdefault((key[0], allocation.nbytes), []).append(allocation)
          self.alias_leases = {key: value for key, value in self.alias_leases.items() if id(value.buffer) not in retired}
@@ -338,10 +500,18 @@ index 81b0410..6d78611 100644
      def _group_ranks(self, group):
          world, tp = self.topology["ep"], self.topology["tp"]
 diff --git a/models/deepseek_v4_1_flash_a3/state.py b/models/deepseek_v4_1_flash_a3/state.py
-index 42dfc1c..30bd62f 100644
+index 42dfc1c..b074ede 100644
 --- a/models/deepseek_v4_1_flash_a3/state.py
 +++ b/models/deepseek_v4_1_flash_a3/state.py
-@@ -154,6 +154,7 @@ class NetworkCacheProvider:
+@@ -10,6 +10,7 @@
+
+ import hashlib
+ import json
++from contextlib import contextmanager
+ from copy import deepcopy
+ import torch
+ from .cache import resolve_layer_role
+@@ -154,6 +155,7 @@ class NetworkCacheProvider:
          allocation_id,
          sources_by_case,
          geometry_only=False,
@@ -349,7 +519,7 @@ index 42dfc1c..30bd62f 100644
      ):
          _require(
              topology["tp"] in (1, 2, 4)
-@@ -199,6 +200,10 @@ class NetworkCacheProvider:
+@@ -199,6 +201,10 @@ class NetworkCacheProvider:
          self._seen_chunks, self._chunk = set(), None
          self._completed_layers, self._batches = [], {}
          self._sequence_tokens, self._pending_sequence_tokens = {}, {}
@@ -360,7 +530,7 @@ index 42dfc1c..30bd62f 100644
          self._input_by_case = _metadata_copy(input_by_case)
          self._abi_by_case = {}
          for case, payloads in abi_by_case.items():
-@@ -495,7 +500,9 @@ class NetworkCacheProvider:
+@@ -495,7 +501,9 @@ class NetworkCacheProvider:
              "Chunk cases cannot replace allocation ownership",
          )
          batches = {layer: dict(cases={}, epoch=epoch, token_map_id=token_map_id) for layer in range(40)}
@@ -371,7 +541,7 @@ index 42dfc1c..30bd62f 100644
          for case, records in payloads.items():
              _require(
                  len(records) == self.topology["ep"], "Every chunk must retain empty as well as active ranks"
-@@ -510,11 +517,34 @@ class NetworkCacheProvider:
+@@ -510,11 +518,34 @@ class NetworkCacheProvider:
                  }
                  current_slots = {request["request_slot"] for request in engine["requests"]}
                  _require(
@@ -407,7 +577,7 @@ index 42dfc1c..30bd62f 100644
                      previous = self._sequence_tokens.get(key, [])
                      _require(
                          request["initial_context_length"] == len(previous)
-@@ -537,6 +567,19 @@ class NetworkCacheProvider:
+@@ -537,6 +568,19 @@ class NetworkCacheProvider:
                          positions=record["positions"].tolist(),
                      )
                  )
@@ -427,7 +597,7 @@ index 42dfc1c..30bd62f 100644
          digest = hashlib.sha256(
              json.dumps(token_maps, sort_keys=True, separators=(",", ":")).encode()
          ).hexdigest()
-@@ -550,6 +593,7 @@ class NetworkCacheProvider:
+@@ -550,6 +594,7 @@ class NetworkCacheProvider:
          self._seen_chunks.add(identity)
          self._chunk, self._completed_layers, self._batches = identity, [], batches
          self._pending_sequence_tokens = pending_sequences
@@ -435,7 +605,7 @@ index 42dfc1c..30bd62f 100644
          self._metadata_sources = (
              deepcopy(metadata_sources_by_case) if metadata_sources_by_case is not None else self.sources
          )
-@@ -590,6 +634,8 @@ class NetworkCacheProvider:
+@@ -590,6 +635,8 @@ class NetworkCacheProvider:
          _require(len(blocks) == 1, "The existing core requires one uniform physical page count")
          records = [record for rows in self._batches[0]["cases"].values() for record in rows]
          requests = max(1, max(len(record["metadata"]["seq_lens"]) for record in records))
@@ -444,7 +614,7 @@ index 42dfc1c..30bd62f 100644
          pages = max(
              group["block_table"].shape[1]
              for rows in self._batches.values()
-@@ -605,6 +651,43 @@ class NetworkCacheProvider:
+@@ -605,6 +652,87 @@ class NetworkCacheProvider:
              scheduler_capacity=self.scheduler_capacity,
          )
 
@@ -465,6 +635,50 @@ index 42dfc1c..30bd62f 100644
 +        """Describe the completed generation's page tables and committed token count."""
 +        key, owned = self._completed_owner(dp_rank, request_slot, generation, case)
 +        return deepcopy(owned["groups"]), len(self._sequence_tokens.get(key, []))
++
++    def verification_ranges(self, rank, metadata):
++        """Translate admitted physical pages into target arena and Engram extents."""
++        layout = self.layouts[rank]["fresh"]
++        intervals, history = {}, set()
++        for group in metadata["groups"]:
++            pages = set(group["live_block_ids"])
++            table = {page for row in group["block_table"].tolist() for page in row if page >= 0}
++            slots = {page for page, _ in group["slot_mapping"].tolist() if page >= 0}
++            if table != pages or not slots <= pages:
++                raise ValueError("Verifier cache ranges must cover all request page mappings")
++            if "model.layers.1.self_attn.swa_cache" in group["names"]:
++                history.update(pages)
++            for name in group["names"]:
++                for plane in _descriptor_planes(layout["views"][name]):
++                    if any(type(page) is not int or not 0 < page < plane["shape"][0] for page in pages):
++                        raise ValueError("Verification cache page lies outside its owning arena")
++                    page_bytes = plane["stride"][0] * DTYPE_BYTES[plane["dtype"]]
++                    intervals.setdefault(plane["storage_key"], set()).update(
++                        (page * page_bytes, page_bytes) for page in pages)
++        return intervals, tuple(sorted(history))
++
++    @contextmanager
++    def provisional_dispatch(self):
++        """Retain the committed request ledger around verification."""
++        _require(self._completed_layers == list(range(40)), "Verification requires an idle, completed network")
++        fields = ("_chunk", "_completed_layers", "_batches", "_sequence_tokens", "_pending_sequence_tokens",
++                  "_request_pool", "_metadata_sources")
++        original = tuple(getattr(self, field) for field in fields)
++        try:
++            yield
++        finally:
++            # Publications are dispatch-local. The next real step must rebuild them.
++            for versions in self.versions:
++                for state in versions.values():
++                    state.clear()
++            for ranks in self._states.values():
++                for records in ranks:
++                    for state in records.values():
++                        state.pop("network_engram", None)
++            if self._chunk != original[0]:
++                self.history.prepared.discard(self._chunk)
++            for field, value in zip(fields, original, strict=True):
++                setattr(self, field, value)
 +
 +    def request_pool_summary(self):
 +        """Report live generations and committed history without exposing tensor payloads."""
@@ -489,7 +703,7 @@ index 42dfc1c..30bd62f 100644
          """Expose original typed cache handles for a future reviewed separate-buffer adapter."""
          resolve_layer_role(layer_id)
 diff --git a/tests/contract/test_ds41_resident_session.py b/tests/contract/test_ds41_resident_session.py
-index f3b2782..401d004 100644
+index f3b2782..14e9dd7 100644
 --- a/tests/contract/test_ds41_resident_session.py
 +++ b/tests/contract/test_ds41_resident_session.py
 @@ -72,6 +72,14 @@ def test_static_views_and_cache_aliases_keep_their_owner_and_reject_overruns():
@@ -533,7 +747,7 @@ index f3b2782..401d004 100644
      assert worker.closed
 
 
-@@ -261,3 +270,165 @@ def test_preload_opens_each_shard_once_and_keeps_loaded_tensors_valid_after_seal
+@@ -261,3 +270,198 @@ def test_preload_opens_each_shard_once_and_keeps_loaded_tensors_valid_after_seal
      assert torch.equal(first, torch.ones(4))
      assert torch.equal(second, torch.zeros(4))
      reader.close()
@@ -565,6 +779,30 @@ index f3b2782..401d004 100644
 +            runtime.clear_ranges(cache, 0, [(30, 3)])
 +        with pytest.raises(ValueError, match="static weights"):
 +            runtime.clear_ranges(weight, 0, [(0, 4)])
++
++
++def test_verifier_preserves_only_bound_bytes_and_restores_on_error():
++    worker = HostWorker()
++    with ResidentNetworkRuntime([0], dict(dp=1, tp=1, ep=1), worker_factory=lambda rank: worker,
++                                device_copy=lambda dst, src, size, rank: ctypes.memmove(dst, src, size)) as runtime:
++        host = torch.arange(20, dtype=torch.uint8)
++        runtime.pin(host, [0], readonly=False, name="raw/0/fresh/cache")
++        handle = runtime.handle(host, 0)
++        device = worker.live[handle.data_ptr]
++        with pytest.raises(RuntimeError, match="fake failed verifier"):
++            with runtime.preserve_cache_ranges(0, [(host, [(1, 3), (10, 4)])]):
++                device[1:4].fill_(60)
++                device[10:14].fill_(70)
++                device[16] = 90
++                raise RuntimeError("fake failed verifier")
++        assert device[1:4].tolist() == [1, 2, 3]
++        assert device[10:14].tolist() == [10, 11, 12, 13]
++        assert int(device[16]) == 90
++        assert runtime.handle(host, 0).data_ptr == handle.data_ptr
++        assert runtime.stats["verify_backup_d2d_bytes"] == runtime.stats["verify_restore_d2d_bytes"] == 7
++        with pytest.raises(ValueError, match="overlap"):
++            with runtime.preserve_cache_ranges(0, [(host, [(1, 3), (3, 4)])]):
++                pytest.fail("overlapping ranges")
 +
 +
 +def test_request_pool_retains_inactive_history_rejects_aliases_and_retires_generations(tmp_path):
@@ -676,6 +914,15 @@ index f3b2782..401d004 100644
 +    assert provider.runtime_geometry()["requests"] == 2
 +    following = inputs.chunk([5])
 +    actual, records = controls(following, 0, 1)
++    with provider.provisional_dispatch():
++        spans, history = provider.verification_ranges(0, records[0])
++        assert spans and history
++        provider.begin_chunk(epoch=2, token_map_id="candidate", input_by_case={"fresh": actual},
++                             metadata_by_case={"fresh": records}, metadata_sources_by_case=replacement)
++        complete_controls()
++        assert provider.request_history(0, 0, 1)[1] == 2
++    assert provider.request_history(0, 0, 1)[1] == 1
++    assert provider.request_history(0, 1, 1)[1] == 1
 +    provider.begin_chunk(epoch=2, token_map_id="resume-first", input_by_case={"fresh": actual},
 +                         metadata_by_case={"fresh": records}, metadata_sources_by_case=replacement)
 +    complete_controls()

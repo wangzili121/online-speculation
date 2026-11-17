@@ -1,31 +1,200 @@
-From 34d67979faea8cb031de738c718b6b7f0a450ca4 Mon Sep 17 00:00:00 2001
+From 0623c452012eb8dc9c33ce77b9fbf122b25955b8 Mon Sep 17 00:00:00 2001
 From: wangzili <wangzili14@huawei.com>
 Date: Tue, 17 Nov 2026 20:13:26 +0800
-Subject: [PATCH] Pair the A3 adapter with the optimized resident network
+Subject: [PATCH] Pair A3 serving with native Orthrus block verification
 
 ---
- models/deepseek_v41_a3/source.py | 15 +++++++++++----
- 1 file changed, 11 insertions(+), 4 deletions(-)
+ models/deepseek_v41_a3/runner.py              | 65 +++++++++++++++++--
+ models/deepseek_v41_a3/session.py             | 31 ++++++---
+ models/deepseek_v41_a3/source.py              | 17 +++--
+ models/deepseek_v41_a3/state.py               | 25 +++++--
+ .../model/deepseek_v41_a3/test_lifecycle.py   | 32 +++++++++
+ .../model/deepseek_v41_a3/test_session.py     | 13 +++-
+ 6 files changed, 162 insertions(+), 21 deletions(-)
 
+diff --git a/models/deepseek_v41_a3/runner.py b/models/deepseek_v41_a3/runner.py
+index a6aa6d0..d5bc621 100644
+--- a/models/deepseek_v41_a3/runner.py
++++ b/models/deepseek_v41_a3/runner.py
+@@ -19,5 +19,5 @@ from pypto_serving.config.types import DecodeResult, PrefillResult
+
+ from .metadata import rank_metadata
+-from .state import RequestLedger
++from .state import ORTHRUS_BLOCK, RequestLedger
+
+ logger = logging.getLogger(__name__)
+@@ -33,5 +33,5 @@ class ResidentSession(Protocol):
+     compressed/ring KV, Indexer/candidates, source versions and Engram history.
+     """
+-    def execute(self, phase, input_contract, rank_payloads, handles) -> torch.Tensor: ...
++    def execute(self, phase, input_contract, rank_payloads, handles) -> torch.Tensor | tuple[torch.Tensor, ...]: ...
+     def clear_request(self, handle) -> None: ...
+     def close(self) -> None: ...
+@@ -53,5 +53,5 @@ class A3Runner:
+             raise RuntimeError("A3 resident runner is closed or failed; teardown is required")
+
+-    def _batch(self, batch, phase):
++    def _batch(self, batch, phase, candidates=None):
+         self._check_open()
+         count = len(batch.request_ids)
+@@ -62,5 +62,5 @@ class A3Runner:
+         if batch.token_ids.device.type != "cpu" or batch.token_ids.dtype not in (torch.int32, torch.int64):
+             raise ValueError("A3 input token metadata must be CPU integers")
+-        if phase == "decode" and any(not params.temperature <= 0 for params in batch.sampling_params):
++        if phase in ("decode", "verify") and any(not params.temperature <= 0 for params in batch.sampling_params):
+             raise ValueError("A3 currently supports greedy generation only")
+         tokens = batch.token_ids.reshape(-1).tolist()
+@@ -107,4 +107,6 @@ class A3Runner:
+                         raise ValueError("Decode has no Prefill state for this request")
+                     selected, start = [tokens[row]], int(batch.seq_lens.reshape(-1)[row]) - 1
++                    if phase == "verify":
++                        selected.extend(candidates[row])
+                 if state.handle.dp != dp:
+                     raise ValueError("Live A3 request cannot change DP partition")
+@@ -148,4 +150,59 @@ class A3Runner:
+         return PrefillResult(None, output) if phase == "prefill" else DecodeResult(None, output)
+
++    def verify_draft(self, batch, candidates):
++        """Run a greedy Orthrus round using externally supplied draft token IDs."""
++        self._check_open()
++        if batch.constraint_states or any(getattr(params, "forbidden_token_ids", ()) for params in batch.sampling_params):
++            raise ValueError("A3 Orthrus verifier requires unconstrained greedy requests")
++        proposed = []
++        for request_id, tokens in zip(batch.request_ids, candidates, strict=True):
++            # Leave room for the correction or bonus token supplied by the target.
++            mask = batch.stop_token_masks.get(request_id)
++            limit = min(ORTHRUS_BLOCK - 1, mask.remaining_tokens - 1) if mask else ORTHRUS_BLOCK - 1
++            tokens = tuple(tokens)[:max(0, limit)]
++            if mask:
++                stop = next((i for i, token in enumerate(tokens) if token in mask.stop_token_ids), len(tokens))
++                tokens = tokens[:stop]
++            if not tokens:
++                raise ValueError("Use ordinary Decode for requests without a draft to verify")
++            proposed.append(tokens)
++        chunks = self._batch(batch, "verify", candidates=proposed)
++        outputs = [None] * len(chunks)
++        try:
++            for wave in self.ledger.dispatches(chunks):
++                contract, order = self.ledger.input_contract(wave)
++                payloads = rank_metadata(self.source, self.cache_plan, self.ledger, wave)
++                handles = tuple(handle for handle, _ in order)
++                verifier_rows = self.session.execute("verify", contract, payloads, handles)
++                by_handle = {chunk.handle: chunk for chunk in wave}
++                accepted = []
++                for handle, logits in zip(handles, verifier_rows, strict=True):
++                    chunk = by_handle[handle]
++                    if (not isinstance(logits, torch.Tensor) or not logits.is_floating_point()
++                            or logits.shape != (len(chunk.tokens), self.vocabulary)
++                            or logits.device.type != "cpu" or not torch.isfinite(logits).all()):
++                        raise ValueError("A3 verifier must return one finite logit row per block position")
++                    target = logits.argmax(dim=-1).tolist()
++                    draft = chunk.tokens[1:]
++                    match = next((i for i, token in enumerate(draft) if token != target[i]), len(draft))
++                    outputs[chunk.output_row] = list(draft[:match]) + [target[match]]
++                    accepted.append(self.ledger.prepare_chunk(handle, chunk.tokens[:match + 1],
++                                                              chunk.start, chunk.output_row, "accept"))
++                accept_contract, accept_order = self.ledger.input_contract(accepted)
++                accept_payloads = rank_metadata(self.source, self.cache_plan, self.ledger, accepted)
++                self.session.execute("accept", accept_contract, accept_payloads,
++                                     tuple(handle for handle, _ in accept_order))
++                self.ledger.commit(accepted)
++                self.dispatch_count += 2
++        except Exception:
++            self.failed = True
++            try:
++                self.release_finished_requests(batch.request_ids)
++            except Exception:
++                logger.exception("A3 request cleanup failed after Orthrus verification")
++            raise
++        return DecodeResult(None, None, accepted_token_ids=outputs,
++                            num_draft_tokens=[len(tokens) for tokens in proposed])
++
+     def release_finished_requests(self, request_ids):
+         errors = []
+diff --git a/models/deepseek_v41_a3/session.py b/models/deepseek_v41_a3/session.py
+index 47347dd..a17f5b5 100644
+--- a/models/deepseek_v41_a3/session.py
++++ b/models/deepseek_v41_a3/session.py
+@@ -27,4 +27,5 @@ from .bindings import A3Bindings
+ from .host_storage import managed_host_engram
+ from .source import integration_identity
++from .state import ORTHRUS_DISPATCH_CAPACITY
+ from .telemetry import HBMSampler
+ from .weights import A3Checkpoint
+@@ -93,9 +94,12 @@ class NativeSession:
+             stream.write(json.dumps(receipt) + "\n")
+
+-    def _prepare(self, input_contract, rank_payloads):
+-        directory = self.directory / f"controls-{self.calls}"
++    def _prepare(self, input_contract, rank_payloads, phase):
++        wide = phase in ("verify", "accept")
++        directory = self.directory / (f"controls-{phase}-{self.calls}" if wide else f"controls-{self.calls}")
+         directory.mkdir()
+         actual = dict(input_contract, checkpoint=self.checkpoint, checkpoint_sha256=self.identity,
+                       epoch=self.calls, predecessor_input_sha256=self.predecessor)
++        if wide:
++            actual["phase"] = phase
+         input_path = directory / "input-contract.json"
+         utility = self.source.module("utils")
+@@ -112,4 +116,6 @@ class NativeSession:
+             payload_sha256=row["sha256"], report_sha256=row["sha256"]) for row in sources])
+         contract = dict(self.native_config, input_contract_path=str(input_path), input_contract_sha256=identity)
++        if wide:
++            contract["capacity"] = ORTHRUS_DISPATCH_CAPACITY
+         inputs = dict(input_contract=actual, prepare_input_stage=True)
+         inputs["engram_lookup"] = self.host.lookup(inputs, cache=cache, config=contract)
+@@ -129,5 +135,5 @@ class NativeSession:
+
+     def _execute(self, phase, input_contract, rank_payloads, handles):
+-        chunk = self._prepare(input_contract, rank_payloads)
++        chunk = self._prepare(input_contract, rank_payloads, phase)
+         before = self.native.weights.counters() if self.native is not None else None
+         begin = time.perf_counter()
+@@ -150,4 +156,10 @@ class NativeSession:
+             result = self.native.advance(chunk, output=self.directory / f"prefill-{self.calls}",
+                                          progress=progress, phase="prefill")
++        elif phase == "verify":
++            result = self.native.verify_candidates(chunk, output=self.directory / f"verify-{self.calls}",
++                                                   progress=progress)
++        elif phase == "accept":
++            result = self.native.commit_candidates(chunk, output=self.directory / f"accept-{self.calls}",
++                                                   progress=progress)
+         else:
+             raise ValueError("Unknown native serving phase")
+@@ -164,9 +176,12 @@ class NativeSession:
+                     raise ValueError("Native TP vocabulary rows disagree")
+             for request in engine["requests"]:
+-                end += len(request["token_ids"])
+-                rows[(dp, request["request_slot"], request["generation"])] = logits[end - 1]
+-        output = torch.stack([rows[(h.dp, h.slot, h.generation)] for h in handles])
+-        self.predecessor = chunk["contract"]["input_contract_sha256"]
+-        self.calls += 1
++                start, end = end, end + len(request["token_ids"])
++                rows[(dp, request["request_slot"], request["generation"])] = (
++                    logits[start:end] if phase == "verify" else logits[end - 1])
++        ordered = tuple(rows[(h.dp, h.slot, h.generation)] for h in handles)
++        output = ordered if phase == "verify" else torch.stack(ordered)
++        if phase != "verify":
++            self.predecessor = chunk["contract"]["input_contract_sha256"]
++            self.calls += 1
+         self._record(dict(phase=phase, seconds=time.perf_counter() - begin, owners=[asdict(h) for h in handles],
+             actual_rows=len(handles), completed_layers=result["completed_layers"],
 diff --git a/models/deepseek_v41_a3/source.py b/models/deepseek_v41_a3/source.py
-index 3c273bd..60845e6 100644
+index 3c273bd..119deb1 100644
 --- a/models/deepseek_v41_a3/source.py
 +++ b/models/deepseek_v41_a3/source.py
-@@ -22,9 +22,9 @@ import sys
- from dataclasses import dataclass
+@@ -23,7 +23,7 @@ from dataclasses import dataclass
  from types import ModuleType
 
 -A3_BASE_COMMIT = "2685c70292b17401b6e89fb62ff545915f60cd33"
 -A3_COMMIT = "cabe2276de32e64fc8105ac1c80d2dae1604e6bf"
 -A3_TREE = "78ff41f76fb5ade61df1dd9209a8f3a765404d6f"
 +A3_BASE_COMMIT = "8dfbec1e11975cd3a8b2e7b2f8f45545de9bf360"
-+A3_COMMIT = "c5c9a194eecd2901424b5b45f3261f5b321e0ed7"
-+A3_TREE = "2ec8faa2c83339b104c91425ed84e4b2db81adc7"
++A3_COMMIT = "155b4d65e447bf37521b8319ac46d5ee611636f6"
++A3_TREE = "bbbb803ecadc4feedbb6eb7672b28231c1401f54"
  KERNEL_DIRECTORY = "models/deepseek_v4_1_flash_a3"
 
-
-@@ -93,7 +93,12 @@ class KernelSource:
-         raise ValueError(f"Missing positive kernel capacity {module}.{name}")
+@@ -94,5 +94,10 @@ class KernelSource:
 
      def network_capacity(self) -> int:
 -        """Read the Prefill runtime's explicit capacity check, not a Decode case size."""
@@ -37,13 +206,161 @@ index 3c273bd..60845e6 100644
 +            pass
          tree = ast.parse((self.directory / "network.py").read_text())
          function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
-                         and node.name == "prepare_network_provider")
-@@ -147,6 +152,8 @@ class KernelSource:
-             "state_continuation_entry": "network.GenerationSession.advance",
+@@ -148,4 +153,8 @@ class KernelSource:
              "decode_entry": "decode_network.DecodeNetwork.step(chunk=...)",
              "release_entry": "network.GenerationSession.release_request",
 +            "draft_history_entry": ("network.GenerationSession.draft_history"
 +                                    if "draft_history" in session else None),
++            "verifier_entry": ("network.GenerationSession.verify_candidates"
++                               if {"verify_candidates", "commit_candidates"} <= session else None),
              "generation_ready": ready, "supported_topology": topology,
              "context_limit": self.integer_constant("decode_network", "MAX_CONTEXT"),
-             "prefill_dispatch_tokens_per_dp": self.network_capacity(),
+diff --git a/models/deepseek_v41_a3/state.py b/models/deepseek_v41_a3/state.py
+index 67b52b9..b3d33ed 100644
+--- a/models/deepseek_v41_a3/state.py
++++ b/models/deepseek_v41_a3/state.py
+@@ -15,4 +15,6 @@ from dataclasses import dataclass, field
+ from .config import A3Config
+
++ORTHRUS_BLOCK = 32
++ORTHRUS_DISPATCH_CAPACITY = 128
+
+ @dataclass(frozen=True)
+@@ -123,5 +125,5 @@ class RequestLedger:
+         state = self.get(handle)
+         tokens = tuple(tokens)
+-        if phase not in ("prefill", "decode"):
++        if phase not in ("prefill", "decode", "verify", "accept"):
+             raise ValueError("Unknown A3 execution phase")
+         if not tokens or any(type(t) is not int or not 0 <= t < self.vocabulary for t in tokens):
+@@ -130,5 +132,6 @@ class RequestLedger:
+             raise ValueError("A3 request position differs from committed history")
+         end = start + len(tokens)
+-        if end > self.config.max_context or len(tokens) > self.config.dispatch_tokens_per_dp:
++        limit = ORTHRUS_BLOCK if phase in ("verify", "accept") else self.config.dispatch_tokens_per_dp
++        if end > self.config.max_context or len(tokens) > limit:
+             raise ValueError("A3 context or per-dispatch token capacity exceeded")
+         if phase == "prefill" and (state.prefilled or end > state.prompt_length):
+@@ -136,4 +139,6 @@ class RequestLedger:
+         if phase == "decode" and (not state.prefilled or len(tokens) != 1):
+             raise ValueError("Decode requires the same request's completed Prefill state")
++        if phase in ("verify", "accept") and (not state.prefilled or (phase == "verify" and len(tokens) < 2)):
++            raise ValueError("Orthrus needs an admitted generation and a valid block")
+         self._validated_pages(state.pages, handle.dp, handle, end)
+         return RequestChunk(handle, tokens, start, output_row, phase)
+@@ -143,4 +148,6 @@ class RequestLedger:
+         seen = set()
+         for chunk in chunks:
++            if chunk.phase == "verify":
++                raise ValueError("Cannot commit a provisional verifier chunk")
+             if chunk.handle in seen:
+                 raise ValueError("A request appears twice in one dispatch")
+@@ -170,4 +177,5 @@ class RequestLedger:
+         """Split a scheduler batch into bounded collective calls, retaining active slots."""
+         pending = list(chunks)
++        capacity = self._dispatch_capacity(pending)
+         while pending:
+             current, following = [], []
+@@ -175,5 +183,5 @@ class RequestLedger:
+             for chunk in pending:
+                 size = len(chunk.tokens)
+-                if counts[chunk.handle.dp] + size <= self.config.dispatch_tokens_per_dp:
++                if counts[chunk.handle.dp] + size <= capacity:
+                     counts[chunk.handle.dp] += size
+                     current.append(chunk)
+@@ -185,6 +193,15 @@ class RequestLedger:
+             pending = following
+
++    def _dispatch_capacity(self, chunks):
++        phases = {chunk.phase for chunk in chunks}
++        if len(phases) > 1:
++            raise ValueError("A3 dispatch cannot mix execution phases")
++        if phases & {"verify", "accept"}:
++            return ORTHRUS_DISPATCH_CAPACITY
++        return self.config.dispatch_tokens_per_dp
++
+     def input_contract(self, chunks):
+         """Build the existing A3 DP_engines ABI; empty partitions remain explicit."""
++        chunks = tuple(chunks)
+         engines = [dict(dp_rank=dp, active=0, requests=[]) for dp in range(self.config.dp)]
+         rows = []
+@@ -199,5 +216,5 @@ class RequestLedger:
+             engine["requests"].append(request)
+             rows.append((chunk.handle, chunk.output_row))
+-        if any(engine["active"] > self.config.dispatch_tokens_per_dp for engine in engines):
++        if any(engine["active"] > self._dispatch_capacity(chunks) for engine in engines):
+             raise ValueError("A3 per-DP collective token capacity exceeded")
+         # Actual logits arrive in DP-major request order; retain the original
+diff --git a/tests/unit/model/deepseek_v41_a3/test_lifecycle.py b/tests/unit/model/deepseek_v41_a3/test_lifecycle.py
+index ae0befb..ea5a0c2 100644
+--- a/tests/unit/model/deepseek_v41_a3/test_lifecycle.py
++++ b/tests/unit/model/deepseek_v41_a3/test_lifecycle.py
+@@ -79,4 +79,36 @@ def test_generation_rejects_stale_commit_and_release(runner, plan):
+
+
++def test_orthrus_block_verifies_once_and_commits_only_accepted_prefixes(runner, plan, session, monkeypatch):
++    ids = ["all", "none", "some"]
++    partitions = [3, 0, 1]
++    for begin in range(0, 128, 16):
++        size = min(16, 127 - begin)
++        runner.run(prefill(plan, ids, partitions, tokens=[[5] * size] * 3, starts=[begin] * 3,
++                           prompt_lens=[127] * 3), "prefill")
++
++    original = session.execute
++    full_block = list(range(12, 43))
++    predictions = {"all": [*full_block, 43], "none": [90, 0, 0], "some": [12, 91, 0]}
++
++    def execute(phase, contract, payloads, handles):
++        result = original(phase, contract, payloads, handles)
++        if phase == "verify":
++            return tuple(torch.nn.functional.one_hot(torch.tensor(predictions[h.request_id]), num_classes=128)
++                         .float() for h in handles)
++        return result
++
++    monkeypatch.setattr(session, "execute", execute)
++    batch = DecodeBatch(ids, torch.tensor([[11]] * 3), None, torch.tensor([128] * 3, dtype=torch.int32),
++                        block_ids_by_group=[pages(plan)] * 3, cache_partitions=partitions)
++    result = runner.verify_draft(batch, [full_block, [12, 13], [12, 13]])
++    assert result.accepted_token_ids == [[*full_block, 43], [90], [12, 91]]
++    assert result.num_draft_tokens == [31, 2, 2]
++    assert [runner.ledger.requests[key].history[127:] for key in ids] == [[11, *full_block], [11], [11, 12]]
++    verification, committed = session.calls[-2:]
++    assert verification[0] == "verify" and committed[0] == "accept"
++    assert [engine["active"] for engine in verification[1]["DP_engines"]] == [3, 3, 0, 32]
++    assert [engine["active"] for engine in committed[1]["DP_engines"]] == [1, 2, 0, 32]
++
++
+ def test_rejects_page_alias_between_live_requests(runner, plan):
+     runner.run(prefill(plan, ["a"], [0]), "prefill")
+diff --git a/tests/unit/model/deepseek_v41_a3/test_session.py b/tests/unit/model/deepseek_v41_a3/test_session.py
+index 73d2bb5..03dc1dc 100644
+--- a/tests/unit/model/deepseek_v41_a3/test_session.py
++++ b/tests/unit/model/deepseek_v41_a3/test_session.py
+@@ -57,4 +57,8 @@ def test_native_session_reuses_one_owner_across_chunks_and_decode_and_maps_last_
+             self.epoch += 1
+             return result(chunk["inputs"]["input_contract"], options["phase"])
++        def verify_candidates(self, chunk, **options):
++            return result(chunk["inputs"]["input_contract"], "verify")
++        def commit_candidates(self, chunk, **options):
++            return self.advance(chunk, phase="accept")
+         def release_request(self, dp, slot, generation):
+             released.append((dp, slot, generation))
+@@ -84,5 +88,5 @@ def test_native_session_reuses_one_owner_across_chunks_and_decode_and_maps_last_
+     native.source = SimpleNamespace(module=lambda name: SimpleNamespace(DecodeNetwork=lambda **options:
+         SimpleNamespace(step=lambda **kw: owner.advance(kw["chunk"], phase="decode"), close=lambda: None)))
+-    native._prepare = lambda contract, payloads: dict(inputs={"input_contract": contract}, cache={},
++    native._prepare = lambda contract, payloads, phase: dict(inputs={"input_contract": contract}, cache={},
+                                                      contract={"input_contract_sha256": str(native.calls)})
+     native._record = native.receipts.append
+@@ -100,4 +104,11 @@ def test_native_session_reuses_one_owner_across_chunks_and_decode_and_maps_last_
+     assert calls == ["prefill", "prefill", "decode"]
+     assert native.native is owner and native.calls == 3
++    batch.token_ids = torch.tensor([20, 21, 22])
++    batch.seq_lens.add_(1)
++    batch.constraint_states = batch.stop_token_masks = {}
++    output = runner.verify_draft(batch, [[20, 99], [21, 99], [22, 99]])
++    assert output.accepted_token_ids == [[20, 20], [21, 21], [22, 22]]
++    assert calls[-2:] == ["verify", "accept"]
++    assert native.calls == 4 and owner.epoch == 3
+     runner.close()
+     assert len(released) == 3 and owner.closed and native.closed

@@ -16,9 +16,9 @@ git -C "$PYPTO_SERVING_ROOT" am "$ORTHRUS_ROOT/online-speculation/runtime/pypto_
 export PYPTO_LIB_ROOT
 ```
 
-Serving 校验 Lib 的工作树状态和 Git tree。补丁只开放基模 Serving 入口。Lib 的 `GenerationSession.draft_history` 根据 DP 分区、请求 slot 和 generation 绑定已经提交的行，拒绝过期请求、跨分区访问和错误的 anchor。各层的滑窗页、压缩源层页与 indexer 页直接返回带类型的设备视图，连同行步长、偏移和物理页表供 draft 读取。常驻运行时拒绝内核将该视图绑定为输出或原地写入参数，主模型仍可通过原有入口提交 KV。
+Serving 校验 Lib 的工作树状态和 Git tree。公开入口运行基模，内部 runner 提供给定候选的 greedy 验证入口。Lib 的 `GenerationSession.draft_history` 根据 DP 分区、请求 slot 和 generation 绑定已经提交的行，拒绝过期请求、跨分区访问和错误的 anchor。各层的滑窗页、压缩源层页与 indexer 页直接返回带类型的设备视图，连同行步长、偏移和物理页表供 draft 读取。常驻运行时拒绝内核将该视图绑定为输出或原地写入参数，主模型仍可通过原有入口提交 KV。
 
-在干净检出中重放两份补丁并通过源码配对检查。使用 PyPTO `72a62d13` 及其固定的 Simpler `6b6b88f`，Lib 的 12 项常驻资源和缓存测试、Serving 的 74 项 CPU 测试全部通过。PTOAS 使用该工具链要求的 v0.70。 [PyPTO 提交](https://github.com/hw-native-sys/pypto/commit/72a62d13efabbb25d240e35944f68ba5bcc22b7f) · [PTOAS v0.70](https://github.com/hw-native-sys/PTOAS/releases/tag/v0.70)
+在干净检出中重放两份补丁并通过源码配对检查。使用 PyPTO `72a62d13` 及其固定的 Simpler `6b6b88f`，Lib 的 13 项常驻资源和缓存测试、Serving 的 75 项 CPU 测试全部通过。PTOAS 使用该工具链要求的 v0.70。 [PyPTO 提交](https://github.com/hw-native-sys/pypto/commit/72a62d13efabbb25d240e35944f68ba5bcc22b7f) · [PTOAS v0.70](https://github.com/hw-native-sys/PTOAS/releases/tag/v0.70)
 
 ## K32 SWA
 
@@ -41,8 +41,14 @@ PYTHONPATH=src python3 scripts/validate_dsv41_pypto_swa.py \
 
 在命令末加 `--heads 16 --compressed` 并指定新的输出路径，即可验证 A3 TP4 的单 rank 形状。用配套的 PyPTO、Simpler 和 PTOAS 在单张 910B3 上通过六组用例，覆盖 C1A/C2A、部分压缩组、乱序物理页、不同 query 的有效长度以及最多 512 行。C2A 使用每页 64 个有效压缩行、128 行物理跨度，避免选择行落到 padding 上。与 FP32 reference 比较，联合输出和 LSE 最大误差分别为 `5.90e-6` 和 `9.54e-7`，SWA 和压缩缓存逐字节一致。 [压缩历史源码](../src/blockspec/pypto_dsv41_sparse.py) · [TP4 单 rank 记录](validation/dsv41/pypto-compressed-tp4-910b3.json) · [模拟器记录](validation/dsv41/pypto-compressed-a2a3sim.json)
 
-## 进入整模前的接口
+## K32 验证和提交
+
+`A3Runner.verify_draft(batch, candidates)` 接收请求账本已分配页的 anchor 和最多 31 个候选。它用每 DP 128 行的原生因果 Prefill 程序验证整块，读取每个候选位置对应的 logits。验证期在设备端保存涉及的目标页，完成后原地恢复。CPU 上的 Engram 请求历史和已提交长度也恢复。runner 再用同一个主模型程序执行 anchor 和接受前缀，将其 KV 正式写入。目标补发的 token 留给下一轮处理。这个路径会重跑接受前缀，用于先验证缓存和输出语义，整模吞吐需要单独测。
+
+CPU 测试覆盖完整 K32、部分接受、零接受、跨 128 行分页以及多个 DP 的请求顺序。单张 910B3 验证了设备范围快照在正常返回和异常退出时均可逐字节恢复。该用例直接测试设备复制和恢复接口，16 卡整模验证仍待执行。
+
+## 整模联调
 
 1. **C2A/C1A 检索。** 将同一个 anchor 的已提交长度、源层的索引页和 diffusion query 交给检索。Full 计算本轮 Top-K，C1A Reindex 在本轮候选池内重排，Reuse 复用源层结果。先与现有 Torch golden 对照整数行号，再评估 A2/A3 上已有打分和 Top-K 内核的输入布局。
 2. **Draft 前向。** 在同一 resident session 中绑定 diffusion head、主模型共享权重以及各层已提交的历史页。将检索、SWA 和压缩 Attention 串成 K32 的设备执行，让临时块的 KV 留在独立工作缓冲区。
-3. **整块验证。** 当前 A3 Serving 每次 Decode 只处理一个 anchor，native service 每个 DP dispatch 最多 16 行。需要单独提供 K32 验证入口，在临时状态上完成验证，再由请求账本提交接受前缀。缓存验收要覆盖 SWA、压缩 KV、indexer、compressor 残余状态和 Engram 历史。DSpark 的事务与 DecodeResult 组织方式可以借鉴。整模执行和精度验收需要 16 张 A3。 [V4.1 DSpark 入口](https://github.com/hw-native-sys/pypto-serving/pull/324) · [候选回放脚本](../scripts/probe_dsv41_matched_candidates.py)
+3. **开启 Serving 调度。** 将运行中的 draft 提案接到验证入口，让调度器为候选位置预留页，并覆盖尾部普通 Decode 回退。之后在 16 张 A3 上回放同一候选序列，和 target-only 对照输出 token、SWA、压缩 KV、indexer、compressor 残余状态及 Engram 历史。 [V4.1 DSpark 入口](https://github.com/hw-native-sys/pypto-serving/pull/324) · [候选回放脚本](../scripts/probe_dsv41_matched_candidates.py)
