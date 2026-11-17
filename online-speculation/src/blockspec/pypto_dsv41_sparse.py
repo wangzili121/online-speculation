@@ -1,11 +1,41 @@
 """Merge per-query compressed history into the V4.1 SWA and draft-block output."""
 
-from .pypto_dsv41_swa import BLOCK, HEAD_DIM
+from .pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW
 
 TOPK = 512
 TILE = 128
 HEAD_TILE = 16
 PARTS = TOPK // TILE
+
+
+def compressed_physical_rows(selected, page_table, *, anchor, ratio, physical_pages, stride_rows, offset_rows=0):
+    """Lower packed Top-K selections against the committed history and raw page stride."""
+    import torch
+
+    if (ratio not in (1, 2) or anchor < 0 or physical_pages < 1
+            or not 0 <= offset_rows <= stride_rows - WINDOW // ratio):
+        raise ValueError("invalid compressed history geometry")
+    if selected.shape != (BLOCK, TOPK) or selected.dtype not in (torch.int32, torch.int64):
+        raise ValueError("require one padded Top-K row per draft position")
+    if page_table.ndim != 1 or page_table.dtype not in (torch.int32, torch.int64):
+        raise ValueError("require an integer logical-to-physical page table")
+    live = selected != -1
+    lengths = live.sum(dim=-1, dtype=torch.int32)
+    if not torch.equal(live, torch.arange(TOPK, device=selected.device) < lengths[:, None]):
+        raise ValueError("valid Top-K selections must precede padding")
+    logical = selected[live]
+    if ((logical < 0) | (logical >= anchor // ratio)).any():
+        raise ValueError("compressed row extends beyond committed history")
+    page_rows = WINDOW // ratio
+    page, offset = logical // page_rows, logical % page_rows
+    if (page >= page_table.numel()).any():
+        raise ValueError("compressed row has no logical page")
+    physical = page_table[page]
+    if ((physical < 0) | (physical >= physical_pages)).any():
+        raise ValueError("compressed row has no physical page")
+    rows = torch.full_like(selected, -1, dtype=torch.int32)
+    rows[live] = (physical * stride_rows + offset_rows + offset).int()
+    return rows, lengths
 
 
 def make_sparse_program():

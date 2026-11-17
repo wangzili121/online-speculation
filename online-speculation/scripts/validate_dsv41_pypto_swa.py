@@ -11,7 +11,7 @@ import time
 import torch
 import torch.nn.functional as F
 
-from blockspec.pypto_dsv41_sparse import HEAD_TILE, TILE, TOPK, make_sparse_program
+from blockspec.pypto_dsv41_sparse import HEAD_TILE, TILE, TOPK, compressed_physical_rows, make_sparse_program
 from blockspec.pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW, make_swa_program, swa_spans
 from blockspec.vllm_ascend.dsv41_attention import PagedRows, draft_attention
 
@@ -49,27 +49,31 @@ def compressed_fixture(anchor, ratio, seed, local):
     swa = PagedRows(local[1].unflatten(0, (-1, WINDOW)), swa_table(anchor))
     count = anchor // ratio
     generator = torch.Generator().manual_seed(seed + 120)
-    pages = torch.full((12, WINDOW, HEAD_DIM), float("nan"), dtype=torch.bfloat16)
-    table = torch.randperm(pages.shape[0], generator=generator, dtype=torch.int32)[:9]
+    page_rows = WINDOW // ratio
+    pool_stride = WINDOW
+    pool = torch.full((20, pool_stride, HEAD_DIM), float("nan"), dtype=torch.bfloat16)
+    pages = pool[:, :page_rows]
+    table = torch.randperm(pages.shape[0], generator=generator, dtype=torch.int32)
     logical = torch.arange(count)
-    physical = table[logical // WINDOW] * WINDOW + logical % WINDOW
-    pages.flatten(0, 1)[physical.long()] = torch.randn((count, HEAD_DIM), generator=generator).bfloat16()
+    physical = table[logical // page_rows] * pool_stride + logical % page_rows
+    pool.flatten(0, 1)[physical.long()] = torch.randn((count, HEAD_DIM), generator=generator).bfloat16()
     lengths = torch.tensor((0, 1, 31, 127, 128, 129, 333, TOPK) * 4, dtype=torch.int32).clamp_max(count)
     bias = torch.full((BLOCK, TOPK), -torch.inf)
     selected = torch.full((1, BLOCK, TOPK), -1, dtype=torch.long)
-    physical_rows = torch.full((BLOCK, TOPK), -1, dtype=torch.int32)
     for token, take in enumerate(lengths.tolist()):
         rows = torch.randperm(count, generator=generator)[:take].sort().values
         selected[0, token, :take] = rows
-        physical_rows[token, :take] = physical[rows].int()
         bias[token, :take] = 0
+    physical_rows, lengths = compressed_physical_rows(
+        selected[0], table, anchor=anchor, ratio=ratio, physical_pages=pool.shape[0], stride_rows=pool_stride,
+    )
     gold = draft_attention(
         query, local[3][None], swa, torch.tensor([anchor]), local[5], window=WINDOW,
         global_kv=PagedRows(pages, table[None]), global_indices=selected,
     )
     tensors = [
         F.pad(query[0], (0, 0, 0, HEAD_TILE - heads)).reshape(-1, HEAD_DIM).contiguous(),
-        pages.flatten(0, 1), physical_rows, lengths, bias,
+        pool.flatten(0, 1), physical_rows, lengths, bias,
         torch.zeros((TILE, HEAD_DIM), dtype=torch.bfloat16),
         torch.empty((BLOCK * HEAD_TILE, HEAD_DIM)), torch.empty((BLOCK * HEAD_TILE, 1)),
         torch.empty((BLOCK * HEAD_TILE, HEAD_DIM)), torch.empty((BLOCK * HEAD_TILE, 1)),
@@ -98,7 +102,7 @@ def download(worker, resident, handles):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--heads", type=int, choices=(8, 64), default=8)
+    parser.add_argument("--heads", type=int, choices=(8, 16, 64), default=8)
     parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--compile-only", action="store_true")
@@ -107,8 +111,8 @@ def main():
     args = parser.parse_args()
     if args.iterations < 1 or args.device < 0 or args.output.exists():
         parser.error("need positive iterations, a nonnegative device and a new output path")
-    if args.compressed and args.heads != 8:
-        parser.error("compressed history probe uses eight local heads")
+    if args.compressed and args.heads > HEAD_TILE:
+        parser.error("compressed history probe supports up to sixteen local heads")
 
     from pypto.backend import BackendType
     from pypto.ir import DistributedConfig

@@ -1,0 +1,49 @@
+From da55ca006d3b95f7105a0c1bcfc32224a33ea049 Mon Sep 17 00:00:00 2001
+From: wangzili <wangzili14@huawei.com>
+Date: Tue, 17 Nov 2026 20:13:26 +0800
+Subject: [PATCH] Pair the A3 adapter with the optimized resident network
+
+---
+ models/deepseek_v41_a3/source.py | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/models/deepseek_v41_a3/source.py b/models/deepseek_v41_a3/source.py
+index 3c273bd..62d970a 100644
+--- a/models/deepseek_v41_a3/source.py
++++ b/models/deepseek_v41_a3/source.py
+@@ -22,9 +22,9 @@ import sys
+ from dataclasses import dataclass
+ from types import ModuleType
+
+-A3_BASE_COMMIT = "2685c70292b17401b6e89fb62ff545915f60cd33"
+-A3_COMMIT = "cabe2276de32e64fc8105ac1c80d2dae1604e6bf"
+-A3_TREE = "78ff41f76fb5ade61df1dd9209a8f3a765404d6f"
++A3_BASE_COMMIT = "8dfbec1e11975cd3a8b2e7b2f8f45545de9bf360"
++A3_COMMIT = "d801492c00cf03328c740284ab2ec352d9526141"
++A3_TREE = "35527bc98aa3030acb9f1a26cbdd49ad3815cfb6"
+ KERNEL_DIRECTORY = "models/deepseek_v4_1_flash_a3"
+
+
+@@ -93,7 +93,12 @@ class KernelSource:
+         raise ValueError(f"Missing positive kernel capacity {module}.{name}")
+
+     def network_capacity(self) -> int:
+-        """Read the Prefill runtime's explicit capacity check, not a Decode case size."""
++        """Read the native service dispatch capacity."""
++        try:
++            return self.integer_constant("network", "SERVING_DISPATCH_CAPACITY")
++        except ValueError:
++            # Historical contract fixtures expose the capacity in the provider guard.
++            pass
+         tree = ast.parse((self.directory / "network.py").read_text())
+         function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                         and node.name == "prepare_network_provider")
+@@ -147,6 +152,8 @@ class KernelSource:
+             "state_continuation_entry": "network.GenerationSession.advance",
+             "decode_entry": "decode_network.DecodeNetwork.step(chunk=...)",
+             "release_entry": "network.GenerationSession.release_request",
++            "draft_history_entry": ("network.GenerationSession.draft_history"
++                                    if "draft_history" in session else None),
+             "generation_ready": ready, "supported_topology": topology,
+             "context_limit": self.integer_constant("decode_network", "MAX_CONTEXT"),
+             "prefill_dispatch_tokens_per_dp": self.network_capacity(),

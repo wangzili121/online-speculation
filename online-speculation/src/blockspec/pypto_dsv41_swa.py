@@ -5,9 +5,9 @@ WINDOW = 128
 HEAD_DIM = 512
 
 
-def swa_spans(page_table, anchor: int, physical_pages: int):
+def swa_spans(page_table, anchor: int, physical_pages: int, *, stride_rows=WINDOW, offset_rows=0):
     """Lower an anchor's logical SWA window to two (destination, source, length) spans."""
-    if anchor < 0 or physical_pages <= 0:
+    if anchor < 0 or physical_pages <= 0 or not 0 <= offset_rows <= stride_rows - WINDOW:
         raise ValueError("invalid SWA anchor or pool capacity")
     start = max(0, anchor - WINDOW)
     row = start
@@ -17,7 +17,7 @@ def swa_spans(page_table, anchor: int, physical_pages: int):
         if logical >= len(page_table) or not 0 <= page_table[logical] < physical_pages:
             raise ValueError("committed SWA row has no physical page")
         length = min(WINDOW - offset, anchor - row)
-        spans.append((row - start, page_table[logical] * WINDOW + offset, length))
+        spans.append((row - start, page_table[logical] * stride_rows + offset_rows + offset, length))
         row += length
     return tuple(spans + [(0, 0, 0)] * (2 - len(spans)))
 

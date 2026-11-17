@@ -1,0 +1,87 @@
+{
+  "passed": true,
+  "compiled": true,
+  "npu_execution": true,
+  "simulator_execution": false,
+  "platform": "a2a3",
+  "torch": "2.10.0+cpu",
+  "pypto": "0.1.0",
+  "shape": {
+    "block": 32,
+    "window": 128,
+    "heads": 16,
+    "dim": 512,
+    "topk": 512
+  },
+  "output_tolerance": {
+    "atol": 1e-05,
+    "rtol": 1.3e-06
+  },
+  "lse_tolerance": {
+    "atol": 2e-05,
+    "rtol": 2e-06
+  },
+  "cases": [
+    {
+      "anchor": 0,
+      "history": 0,
+      "inputs_byte_exact": true,
+      "output_max_abs": 5.900859832763672e-06,
+      "lse_max_abs": 9.5367431640625e-07,
+      "resident_call_median_us": 1151.5079531818628,
+      "ratio": 1,
+      "max_selected": 0
+    },
+    {
+      "anchor": 31,
+      "history": 31,
+      "inputs_byte_exact": true,
+      "output_max_abs": 3.7550926208496094e-06,
+      "lse_max_abs": 9.5367431640625e-07,
+      "resident_call_median_us": 1433.2964783534408,
+      "ratio": 2,
+      "max_selected": 15
+    },
+    {
+      "anchor": 129,
+      "history": 128,
+      "inputs_byte_exact": true,
+      "output_max_abs": 2.2351741790771484e-06,
+      "lse_max_abs": 9.5367431640625e-07,
+      "resident_call_median_us": 1424.4909398257732,
+      "ratio": 1,
+      "max_selected": 129
+    },
+    {
+      "anchor": 257,
+      "history": 128,
+      "inputs_byte_exact": true,
+      "output_max_abs": 2.384185791015625e-06,
+      "lse_max_abs": 9.5367431640625e-07,
+      "resident_call_median_us": 1516.607473604381,
+      "ratio": 2,
+      "max_selected": 128
+    },
+    {
+      "anchor": 1025,
+      "history": 128,
+      "inputs_byte_exact": true,
+      "output_max_abs": 2.682209014892578e-06,
+      "lse_max_abs": 9.5367431640625e-07,
+      "resident_call_median_us": 1475.666998885572,
+      "ratio": 1,
+      "max_selected": 512
+    },
+    {
+      "anchor": 1025,
+      "history": 128,
+      "inputs_byte_exact": true,
+      "output_max_abs": 2.205371856689453e-06,
+      "lse_max_abs": 9.5367431640625e-07,
+      "resident_call_median_us": 1687.7250745892525,
+      "ratio": 2,
+      "max_selected": 512
+    }
+  ],
+  "swa_input": "pypto_swa_output_with_host_layout_conversion"
+}
