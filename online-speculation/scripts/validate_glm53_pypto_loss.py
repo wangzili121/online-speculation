@@ -45,6 +45,7 @@ def main():
     modes.add_argument("--expert-backward", action="store_true", help="validate the complete frozen W8A8 expert adjoint")
     modes.add_argument("--shared-expert-backward", action="store_true", help="validate the frozen NZ shared expert adjoint")
     modes.add_argument("--router-backward", action="store_true", help="validate the selected GLM router weight adjoint")
+    modes.add_argument("--router-replay", action="store_true", help="validate native routing inputs for the expert adjoint")
     parser.add_argument("--history-capacity", type=int, default=256, help="padded history length for the MLA replay tests")
     parser.add_argument("--checkpoint", type=Path, help="use real checkpoint weights for the selected adjoint")
     parser.add_argument("--output", type=Path, required=True)
@@ -55,6 +56,8 @@ def main():
         parser.error("--peer-device requires --mla-input-projections and a second device")
     if args.shared_expert_backward and args.checkpoint is None:
         parser.error("--shared-expert-backward requires the GLM checkpoint")
+    if args.router_replay and args.checkpoint is None:
+        parser.error("--router-replay requires the GLM checkpoint")
     if args.mla_local_backward and (args.checkpoint is None or args.history_capacity % 128 or args.history_capacity < 256):
         parser.error("--mla-local-backward requires the checkpoint and aligned history capacity of at least 256")
 
@@ -73,6 +76,9 @@ def main():
         return
     if args.mla_local_backward:
         local_attention(args, generator, config)
+        return
+    if args.router_replay:
+        router_replay(args, generator, config)
         return
     if args.mla_absorb_backward:
         from blockspec.pypto_glm53_mla import HEADS, HEAD_TILE, LATENT, QUERY_ROWS, VALUE
@@ -730,6 +736,33 @@ def main():
     execute(make_kl_program(rows, VOCAB), tensors, 2, (active, active), config, report, args.output,
             (expected_grad, expected_loss[:, None].expand(rows, 8)),
             ({"atol": 2e-7, "rtol": 2e-4}, {"atol": 3e-5, "rtol": 2e-5}))
+
+
+def router_replay(args, generator, config):
+    from models.glm5_3_flash.config import D, TOPK
+    from models.glm5_3_flash.gate import gate
+    from models.glm5_3_flash.rmsnorm import golden_rmsnorm_quant
+    from models.glm5_3_flash.utils import Checkpoint, layer_router
+
+    from blockspec.pypto_glm53_online_moe import make_router_replay
+
+    rows, active = 16, 6
+    checkpoint = Checkpoint(args.checkpoint)
+    router = layer_router(checkpoint, 44)
+    norm = checkpoint.read(checkpoint.layer_key(44, "post_attention_layernorm.weight")).bfloat16()
+    x = torch.randn(rows, D, generator=generator).bfloat16()
+    normalized, quantized, scale = golden_rmsnorm_quant(x[:active], norm)
+    coefficients, selected = gate(normalized, router.weight, router.correction_bias)
+    picked = (normalized.double() @ router.weight.double().T).sigmoid().gather(1, selected.long())
+    expected = tuple(torch.nn.functional.pad(value, (0, 0, 0, rows - active))
+                     for value in (selected, coefficients, picked, quantized, scale))
+    outputs = (torch.empty((rows, TOPK), dtype=torch.int32), torch.empty(rows, TOPK),
+               torch.empty(rows, TOPK), torch.empty_like(x, dtype=torch.int8), torch.empty(rows, 1))
+    inputs = (x, norm, router.weight, router.correction_bias)
+    execute(make_router_replay(), (*inputs, *outputs), len(inputs), (active,), config,
+            {"program": "GLM native router replay", "passed": False, "layer": 44}, args.output, expected,
+            ({"atol": 0, "rtol": 0}, {"atol": 2e-6, "rtol": 3e-5}, {"atol": 2e-6, "rtol": 3e-5},
+             {"atol": 1, "rtol": 0}, {"atol": 2e-7, "rtol": 2e-5}))
 
 
 def local_attention(args, generator, config):

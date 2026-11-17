@@ -344,6 +344,55 @@ def make_shared_expert_backward(rows, width, hidden, limit):
     return entry
 
 
+def make_router_replay():
+    """Recover the actual expert routes and the unnormalized selected sigmoid scores."""
+    import pypto.language as pl
+    from models.glm5_3_flash.config import D, N_EXPERTS, TOPK
+    from models.glm5_3_flash.elementwise import accurate_sigmoid
+    from models.glm5_3_flash.gate import GATE_N_TILE, moe_gate
+    from models.glm5_3_flash.linear import bf16_linear_row
+    from models.glm5_3_flash.rmsnorm import rmsnorm
+
+    rows = 16
+
+    @pl.jit
+    def replay(
+        x: pl.Tensor[[rows, D], pl.BF16], norm_weight: pl.Tensor[[D], pl.BF16],
+        weight: pl.Tensor[[N_EXPERTS, D], pl.BF16], correction: pl.Tensor[[N_EXPERTS], pl.FP32],
+        selected: pl.Out[pl.Tensor[[rows, TOPK], pl.INT32]],
+        coefficients: pl.Out[pl.Tensor[[rows, TOPK], pl.FP32]],
+        sigmoid: pl.Out[pl.Tensor[[rows, TOPK], pl.FP32]],
+        quantized: pl.Out[pl.Tensor[[rows, D], pl.INT8]],
+        scale: pl.Out[pl.Tensor[[rows, 1], pl.FP32]],
+        active: pl.Scalar[pl.INT32],
+    ):
+        normalized = pl.create_tensor([rows, D], dtype=pl.BF16)
+        moe_gate(x, norm_weight, weight, correction, coefficients, selected, quantized, scale, active)
+        rmsnorm(x, norm_weight, normalized)
+        # One task owns an entire output row. The selected weights are
+        # differentiated with the exact IDs produced by the deployed router.
+        for row in pl.spmd(rows, name_hint="glm_moe_selected_sigmoid"):
+            output = pl.full([1, TOPK], dtype=pl.FP32, value=0.0)
+            if row < active:
+                for route in pl.range(TOPK):
+                    expert = pl.cast(pl.read(selected, [row, route]), pl.INDEX)
+                    start = expert // GATE_N_TILE * GATE_N_TILE
+                    logits = pl.create_tensor([1, GATE_N_TILE], dtype=pl.FP32)
+                    logits[:, :] = bf16_linear_row(normalized, weight, row, start, GATE_N_TILE, D, 128, 2)
+                    p = accurate_sigmoid(logits, 1, GATE_N_TILE)
+                    pl.write(output, [0, route], pl.read(p, [0, expert % GATE_N_TILE]))
+            sigmoid[row:row + 1, :] = output
+        return selected, coefficients, sigmoid, quantized, scale
+
+    @pl.jit.host
+    def entry(x: pl.Tensor, norm_weight: pl.Tensor, weight: pl.Tensor, correction: pl.Tensor,
+              selected: pl.Out[pl.Tensor], coefficients: pl.Out[pl.Tensor], sigmoid: pl.Out[pl.Tensor],
+              quantized: pl.Out[pl.Tensor], scale: pl.Out[pl.Tensor], active: pl.Scalar[pl.INT32]):
+        replay(x, norm_weight, weight, correction, selected, coefficients, sigmoid, quantized, scale, active, device=0)
+
+    return entry
+
+
 def make_router_backward(rows, width, experts, route_scale):
     """Differentiate the selected sigmoid weights with the forward Top-K IDs fixed."""
     import pypto.language as pl
