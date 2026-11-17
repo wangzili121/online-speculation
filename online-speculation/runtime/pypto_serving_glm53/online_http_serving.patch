@@ -1,0 +1,245 @@
+--- a/pypto_serving/cli/main.py
++++ b/pypto_serving/cli/main.py
+@@ -13,6 +13,7 @@
+ import contextlib
+ import dataclasses
+ import json
++import math
+ import os
+ import sys
+ from collections.abc import Iterator, Sequence
+@@ -310,6 +311,11 @@
+         if type(device_greedy) is not bool:
+             raise ValueError("GLM Orthrus device_greedy must be true or false")
+         executor_kwargs["orthrus_device_greedy"] = device_greedy
++        online_lr = args.speculative_config.get("online_learning_rate")
++        if online_lr is not None:
++            if type(online_lr) not in (int, float) or not 0 < online_lr < math.inf:
++                raise ValueError("GLM Orthrus online_learning_rate must be a positive finite number")
++            executor_kwargs["orthrus_online_learning_rate"] = float(online_lr)
+     elif num_speculative_tokens or model_variant:
+         raise ValueError(
+             "--speculative-config/--num-speculative-tokens is only supported for DeepSeek V4"
+--- a/pypto_serving/model/glm53/npu_executor.py
++++ b/pypto_serving/model/glm53/npu_executor.py
+@@ -34,6 +34,7 @@
+     pypto_build_dir=None,
+     orthrus=False,
+     orthrus_device_greedy=False,
++    orthrus_online=False,
+ ):
+     """Compile compute and cache-maintenance entries through the shared JIT path."""
+     compiler = KernelCompiler(
+@@ -63,14 +64,24 @@
+         from blockspec.pypto_glm53_greedy import PROGRAM, prepare_greedy
+ 
+         programs["_auxiliary"][PROGRAM] = prepare_greedy(api, compiler)
++    if orthrus_online:
++        if not orthrus:
++            raise ValueError("online update requires GLM Orthrus")
++        from blockspec.pypto_glm53_online_serving import prepare_online_update
++
++        programs["_auxiliary"].update(prepare_online_update(api, compiler))
+     return programs
+ 
+ 
+ class Glm53PyptoExecutor(PyptoExecutor):
+-    def __init__(self, *args, orthrus_mask_token_id=None, orthrus_device_greedy=False, **kwargs):
++    def __init__(
++        self, *args, orthrus_mask_token_id=None, orthrus_device_greedy=False,
++        orthrus_online_learning_rate=None, **kwargs,
++    ):
+         super().__init__(*args, **kwargs)
+         self.orthrus_mask_token_id = orthrus_mask_token_id
+         self.orthrus_device_greedy = orthrus_device_greedy
++        self.orthrus_online_learning_rate = orthrus_online_learning_rate
+ 
+     @property
+     def supports_device_decode_embedding(self):
+@@ -113,6 +124,7 @@
+             pypto_build_dir=self._pypto_build_dir,
+             orthrus=self.orthrus_mask_token_id is not None,
+             orthrus_device_greedy=self.orthrus_device_greedy,
++            orthrus_online=self.orthrus_online_learning_rate is not None,
+         )
+         return Glm53CompiledKernels(api, programs, checkpoint, weights)
+ 
+@@ -137,11 +149,15 @@
+             self._platform,
+             prepared_weights=compiled.weights,
+             orthrus_mask_token_id=self.orthrus_mask_token_id,
++            orthrus_online_learning_rate=self.orthrus_online_learning_rate,
+             **options,
+         )
+ 
+     def lookup_embeddings(self, model, token_ids):
+         return self._runners[model.config.model_id].weights.lookup_rows(token_ids)
++
++    def run_orthrus_update(self, model_id, prompt, completion):
++        self._runners[model_id].run_orthrus_update(prompt, completion)
+ 
+     def release_finished_requests(self, request_ids):
+         for runner in self._runners.values():
+--- a/pypto_serving/model/glm53/npu_runner.py
++++ b/pypto_serving/model/glm53/npu_runner.py
+@@ -11,6 +11,7 @@
+ 
+ from __future__ import annotations
+ 
++import logging
+ import time
+ from concurrent.futures import ThreadPoolExecutor
+ from dataclasses import dataclass, field
+@@ -36,6 +37,9 @@
+     from pypto.runtime import RunConfig
+ 
+ 
++logger = logging.getLogger(__name__)
++
++
+ @dataclass
+ class _RequestState:
+     slot: int
+@@ -82,6 +86,7 @@
+         host_num_threads=None,
+         prepared_weights=None,
+         orthrus_mask_token_id=None,
++        orthrus_online_learning_rate=None,
+     ):
+         if host_num_threads is not None and (type(host_num_threads) is not int or host_num_threads <= 0):
+             raise ValueError("host_num_threads must be a positive integer or None")
+@@ -90,6 +95,8 @@
+         self._api, self._programs, self._checkpoint = api, programs, checkpoint
+         self._prepared_weights = prepared_weights
+         self._orthrus_mask_id = orthrus_mask_token_id
++        self._orthrus_online_learning_rate = orthrus_online_learning_rate
++        self._orthrus_learner = None
+         self._device_ids, self._platform = list(device_ids), platform
+         self._execution_options = dict(
+             host_num_threads=host_num_threads,
+@@ -321,6 +328,27 @@
+             self._requests.pop(request_id)
+         self._free_slots = sorted(self._free_slots + slots)
+ 
++    def run_orthrus_update(self, prompt, completion):
++        """Run one opted-in request replay after the worker releases its cache."""
++        if self._orthrus_online_learning_rate is None:
++            return
++        from blockspec.pypto_glm53_online_serving import ResidentDistillation
++
++        with self._state_lock:
++            width = self._api.VERIFY_QUERY_WIDTH
++            if len(completion) != width or len(prompt) + width > self._max_seq_len:
++                return
++            if self._requests or not self._free_slots:
++                return
++            if self._orthrus_learner is None:
++                self._orthrus_learner = ResidentDistillation(
++                    self, learning_rate=self._orthrus_online_learning_rate,
++                ).__enter__()
++            tokens = [*prompt, *completion]
++            learner = self._orthrus_learner
++            learner.step(tokens, len(prompt), self._free_slots[0], self._orthrus_mask_id)
++            logger.info("GLM_ORTHRUS_ONLINE_UPDATE step=%d", learner.mla_update.step_count)
++
+     def _initialize_execution(
+         self,
+         checkpoint,
+@@ -815,6 +843,7 @@
+             raise
+         self._l3_worker = None
+         self.runtime = None
++        self._orthrus_learner = None
+         self._close_error = None
+         self._reset_program = None
+         self._pending_forwards.clear()
+--- a/pypto_serving/serving/server/ipc.py
++++ b/pypto_serving/serving/server/ipc.py
+@@ -122,6 +122,8 @@
+     # Monotonic step counter, echoed back on StepResult. Cheap ordering guard for
+     # the pipelined loop (the worker is FIFO, so results must return in order).
+     step_id: int = 0
++    # Scheduler-confirmed continuation tokens from opted-in completed requests.
++    orthrus_replays: dict[str, list[int]] = msgspec.field(default_factory=dict)
+ 
+ 
+ class ShutdownCommand(msgspec.Struct, tag="shutdown"):
+--- a/pypto_serving/serving/engine/async_engine.py
++++ b/pypto_serving/serving/engine/async_engine.py
+@@ -177,6 +177,7 @@
+     # The terminal output is queued, but its worker release may still be in
+     # flight. Cancellation must not schedule a second release in that window.
+     terminal_output_queued: bool = False
++    orthrus_replay_tokens: tuple[int, ...] = ()
+     # When False (non-streaming), intermediate TokenOutputs are suppressed and
+     # only the final one is enqueued — one queue push / one HTTP wake-up per
+     # request instead of one per token. Stop-string detection still runs every
+@@ -965,6 +966,14 @@
+                 continue
+             return raw
+ 
++    def _orthrus_replays(self, finished_ids: Sequence[str]) -> dict[str, list[int]]:
++        return {
++            request_id: list(ctx.orthrus_replay_tokens)
++            for request_id in finished_ids
++            if (ctx := self._request_contexts.get(request_id)) is not None
++            and getattr(ctx, "orthrus_replay_tokens", ())
++        }
++
+     def _build_step_command(
+         self,
+         scheduler_output: SchedulerOutput,
+@@ -1078,6 +1087,7 @@
+             decode_requests=decode_requests,
+             finished_request_ids=finished_ids,
+             step_id=step_id,
++            orthrus_replays=self._orthrus_replays(finished_ids),
+         )
+ 
+     async def _flush_pending_frees(self) -> None:
+@@ -1108,6 +1118,7 @@
+             decode_requests=[],
+             finished_request_ids=finished_ids,
+             step_id=self._step_counter,
++            orthrus_replays=self._orthrus_replays(finished_ids),
+         )
+         try:
+             self._input_queue.put(encode_command(cleanup_cmd))
+@@ -1405,6 +1416,12 @@
+                 # Keep the context until the worker acknowledges its release;
+                 # otherwise the terminal consumer cannot observe the barrier.
+                 ctx.terminal_output_queued = True
++                options = getattr(getattr(self, "config", None), "executor_kwargs", {})
++                if (release_worker and options.get("orthrus_online_learning_rate") is not None
++                        and req_output.finish_reason in ("FINISHED_EOS", "FINISHED_STOP", "FINISHED_LENGTH")):
++                    width = self._runtime.num_speculative_tokens + 1
++                    if output_count >= width:
++                        ctx.orthrus_replay_tokens = tuple(ctx.request.output_token_ids[:width])
+             ctx.queue.put_nowait(token_output)
+ 
+     def _detokenize_incrementally(
+--- a/pypto_serving/serving/server/serving_worker.py
++++ b/pypto_serving/serving/server/serving_worker.py
+@@ -856,10 +856,22 @@
+             self._constraint_states = {}
+         if not hasattr(self, "_accepted_output_lengths"):
+             self._accepted_output_lengths = {}
++        replays = []
++        if cmd.orthrus_replays:
++            cached = self._req_cache if expected_cache_entries is None else expected_cache_entries
++            for request_id in dict.fromkeys(cmd.finished_request_ids):
++                completion = cmd.orthrus_replays.get(request_id)
++                request = cached.get(request_id, _MISSING_REQUEST)
++                if completion and request is not _MISSING_REQUEST and not request.initialize_from_cache:
++                    replays.append((request.prompt_token_ids, completion))
+         self._release_finished_request_state(
+             cmd.finished_request_ids,
+             expected_cache_entries=expected_cache_entries,
+         )
++        if replays:
++            run_online_update = self.executor.run_orthrus_update
++            for prompt, completion in replays:
++                run_online_update(self.model_record.config.model_id, prompt, completion)
+         for new_request in cmd.new_requests:
+             previous_state = self._constraint_states.pop(new_request.request_id, None)
+             if previous_state is not None:

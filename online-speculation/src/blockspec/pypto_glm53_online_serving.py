@@ -19,6 +19,18 @@ def prepare_distillation(api, compiler):
     return compiler.compile(PROGRAM, entry)
 
 
+def prepare_online_update(api, compiler):
+    """Register all native programs needed for an updating Serving session."""
+    from .pypto_glm53_online_frozen import prepare_frozen_suffix
+    from .pypto_glm53_online_mla import prepare_mla_update
+
+    return {
+        PROGRAM: prepare_distillation(api, compiler),
+        **prepare_frozen_suffix(api, compiler),
+        **prepare_mla_update(api, compiler),
+    }
+
+
 class ResidentDistillation:
     """Own the replay banks and device gradients for one Serving runner."""
 
