@@ -51,7 +51,7 @@ PYTHONPATH=src python3 scripts/validate_dsv41_pypto_qkv.py \
   --layer 2 --ratio 2 --device 0 --output /tmp/dsv41-draft-c2a.json
 ```
 
-单张 910B3 用从 DSV4.1 W4A8 checkpoint 初始化的 BF16 head、合成隐藏状态和历史页，测试第 0、2、20 层的 TP4 单 rank 形状。压缩路径的选中行由测试提供，覆盖最多 512 行和跨页访问。投影各算子与同输入的 BF16 参考分别对照，Attention 与同输入的 FP32 参考对照，历史页在执行前后逐字节一致。 [投影源码](../src/blockspec/pypto_dsv41_draft.py) · [实测记录](validation/dsv41/pypto-draft-layer-tp4-910b3.json)
+单张 910B3 用从 DSV4.1 W4A8 checkpoint 初始化的 BF16 head、合成隐藏状态和历史页，测试第 0、2、20 层的 TP4 单 rank 形状。压缩路径的选中行由测试提供，覆盖最多 512 行和跨页访问。投影各算子与同输入的 BF16 参考分别对照，Attention 与同输入的 FP32 参考对照，历史页在执行前后逐字节一致。C2A 在 A3 固定的 PyPTO `72a62d13`、Simpler `6b6b88f`、PTOAS `0.70` 上复跑，误差结果一致。 [投影源码](../src/blockspec/pypto_dsv41_draft.py) · [实测记录](validation/dsv41/pypto-draft-layer-tp4-910b3.json)
 
 ## K32 验证和提交
 
