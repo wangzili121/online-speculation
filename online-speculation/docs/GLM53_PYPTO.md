@@ -25,6 +25,16 @@ python scripts/validate_glm53_pypto_verify.py \
 
 The script checks ordinary decode against forced zero, partial and full acceptance across a cache page, then checks the initialized Orthrus draft. The corresponding HTTP configuration is `--tensor-parallel-size 8 --expert-parallel-size 8 --block-size 640 --max-num-seqs 1 --speculative-config '{"method":"orthrus","num_speculative_tokens":5,"mask_token_id":0}'`.
 
+Set `"device_greedy":true` in `--speculative-config` or use `--device-greedy` in the acceptance script to evaluate device-side top-1. The draft and verifier write logits to an NPU buffer. PyPTO scans the local vocabulary in parallel and uses the GLM TP reduction with its lowest-global-ID tie break. The host reads the compact token IDs from one rank and matches the accepted prefix. An active ID of -1 reports a nonfinite score on any shard. Distillation still gets full resident logits through its own buffers.
+
+The standalone regression exercises the reduction without loading the model. It uses synthetic logits, changes the active query count over consecutive calls, and covers ties, padding and nonfinite inputs.
+
+```bash
+python scripts/validate_glm53_pypto_greedy.py --devices 0 1 --output greedy-tp2.json
+```
+
+The TP2 regression passed on Ascend. A two-device Serving dispatch smoke used synthetic draft and verify programs and checked accepted prefixes of lengths 0, 2 and 5. In a separate six-row benchmark on the same two devices, the final parallel top-1 dispatch and compact readback took 3.06 ms median, versus 10.37 ms for the initial serial device scan. Each number uses ten samples after two warm-ups and excludes model forward. The TP8 model artifacts and device-greedy auxiliary program passed compilation and the runner ABI check.
+
 ## Validation status
 
 The complete TP8 program set passed compilation, runner ABI checks and artifact reload. Single-card Ascend tests covered empty history, the 640-token page boundary, and history beyond the 2,048-token Indexer selection limit. C8 cache and other input bytes remained unchanged. The complete BF16 draft attention sublayer had maximum relative L2 error of 0.1244% with synthetic weights and 0.0746% with the final MLA layer initialized from the W8A8 checkpoint. The native KDA test checked convolution and recurrent rollback against its golden. Full-model eight-device generation and HTTP acceptance remain to be run.

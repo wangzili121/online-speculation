@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from .pypto_glm53_greedy import top1_predictions
+
 
 @dataclass(frozen=True)
 class GreedyVerification:
@@ -61,9 +63,7 @@ def verify_greedy(runner, token_sequences, request_slots, *, stop_ids=(), cache_
         bind_verify_snapshots(api, inputs, slots, counts)
         total = sum(counts)
         try:
-            pending = runner._dispatch_step(inputs, phase="verify", buffer_slot=0)
-            pending.logit_count = total
-            predictions = runner._reclaim_step(pending).argmax(dim=1).tolist()
+            predictions = top1_predictions(runner, inputs, "verify", total)
             results = []
             metadata = runner._orthrus_commit_metadata
             feedback, source, destination = metadata
@@ -106,7 +106,6 @@ def verify_greedy(runner, token_sequences, request_slots, *, stop_ids=(), cache_
             runner._invalid_slots.update(slots)
             runner._poison_forwards(error)
             raise
-        runner._pending_forwards.pop(pending.buffer_slot)
         for slot, result in zip(slots, results, strict=True):
             runner._seq_lens[slot] += result.committed
         runner._prefix_seed_slots.difference_update(slots)

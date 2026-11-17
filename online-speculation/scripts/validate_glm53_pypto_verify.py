@@ -161,6 +161,7 @@ def main():
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--artifact-dir", type=Path, help="save or reuse precompiled programs")
     parser.add_argument("--mask-token-id", type=int, help="also compile and exercise the actual draft model")
+    parser.add_argument("--device-greedy", action="store_true", help="return draft and verifier token IDs from the NPU")
     parser.add_argument("--resident-distillation", action="store_true", help="check the Serving-to-PyPTO replay and KL path")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
@@ -168,8 +169,8 @@ def main():
         parser.error("use eight distinct devices and a new output file")
     if args.checkpoint is None and not args.compile_only:
         parser.error("a GLM W8A8 checkpoint is required for device execution")
-    if args.resident_distillation and args.mask_token_id is None:
-        parser.error("--resident-distillation requires --mask-token-id")
+    if (args.resident_distillation or args.device_greedy) and args.mask_token_id is None:
+        parser.error("--resident-distillation and --device-greedy require --mask-token-id")
 
     from pypto_serving.model.glm53.kernel_api import import_kernel
     from pypto_serving.model.glm53.npu_runner import Glm53ModelRunner
@@ -180,13 +181,20 @@ def main():
         api = import_kernel("prefill_fwd", tp_size=8, ep_size=8, capacity=256, max_seq_len=1280)
         os.environ["PYPTO_GLM_ORTHRUS_VERIFY"] = "1"
         programs = prepare_programs(api, args.devices, args.artifact_dir, args.mask_token_id is not None)
-        if args.resident_distillation:
+        if args.resident_distillation or args.device_greedy:
             from pypto_serving.model.glm53.npu_executor import KernelCompiler, build_pypto_run_config
 
+            config = build_pypto_run_config(platform="a2a3", device_ids=args.devices, pypto_build_dir=None)
+            compiler = KernelCompiler(run_config=config)
+        if args.device_greedy:
+            from blockspec.pypto_glm53_greedy import PROGRAM, prepare_greedy
+
+            programs["_auxiliary"][PROGRAM] = prepare_greedy(api, compiler)
+            result["device_greedy_compiled"] = True
+        if args.resident_distillation:
             from blockspec.pypto_glm53_online_serving import PROGRAM, prepare_distillation
 
-            config = build_pypto_run_config(platform="a2a3", device_ids=args.devices, pypto_build_dir=None)
-            programs["_auxiliary"][PROGRAM] = prepare_distillation(api, KernelCompiler(run_config=config))
+            programs["_auxiliary"][PROGRAM] = prepare_distillation(api, compiler)
             result["resident_distillation_compiled"] = True
             result["suffix_tape_enabled"] = hasattr(api, "ORTHRUS_TAPE_ROWS")
         result["compiled"] = True

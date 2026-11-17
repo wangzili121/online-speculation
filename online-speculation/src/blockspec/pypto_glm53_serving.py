@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 
+from .pypto_glm53_greedy import top1_predictions
 from .pypto_glm53_verify import bind_verify_snapshots, verify_greedy
 
 
@@ -37,7 +38,13 @@ def draft_logits(runner, slot, prefix_length, anchor, mask_id, *, cache_groups=N
 
 
 def propose_greedy(runner, slot, prefix_length, anchor, mask_id, *, cache_groups=None):
-    return draft_logits(runner, slot, prefix_length, anchor, mask_id, cache_groups=cache_groups).argmax(1).tolist()
+    inputs = _draft_inputs(runner, slot, prefix_length, anchor, mask_id, cache_groups=cache_groups)
+    try:
+        return top1_predictions(runner, inputs, "orthrus", runner._api.VERIFY_QUERY_WIDTH - 1)
+    except BaseException as error:
+        runner._invalid_slots.add(slot)
+        runner._poison_forwards(error)
+        raise
 
 
 @contextmanager

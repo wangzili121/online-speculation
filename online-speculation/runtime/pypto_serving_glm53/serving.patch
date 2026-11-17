@@ -1,14 +1,15 @@
 --- a/pypto_serving/model/glm53/npu_executor.py
 +++ b/pypto_serving/model/glm53/npu_executor.py
-@@ -32,6 +32,7 @@
+@@ -32,6 +32,8 @@
      *,
      platform="a2a3",
      pypto_build_dir=None,
 +    orthrus=False,
++    orthrus_device_greedy=False,
  ):
      """Compile compute and cache-maintenance entries through the shared JIT path."""
      compiler = KernelCompiler(
-@@ -50,10 +51,19 @@
+@@ -50,10 +52,26 @@
          "decode": compiler.compile("glm53_decode", decode_api.l3_decode_fwd),
      }
      programs["_auxiliary"] = {"reset": compiler.compile("glm53_reset", api.l3_reset_request_caches)}
@@ -17,26 +18,34 @@
 +        programs["_auxiliary"]["orthrus_commit"] = compiler.compile("glm53_orthrus_commit", api.l3_commit_target)
 +    if orthrus:
 +        programs["orthrus"] = compiler.compile("glm53_orthrus", api.l3_orthrus_fwd)
++    if orthrus_device_greedy:
++        if not orthrus:
++            raise ValueError("device greedy requires GLM Orthrus")
++        from blockspec.pypto_glm53_greedy import PROGRAM, prepare_greedy
++
++        programs["_auxiliary"][PROGRAM] = prepare_greedy(api, compiler)
      return programs
 
 
  class Glm53PyptoExecutor(PyptoExecutor):
-+    def __init__(self, *args, orthrus_mask_token_id=None, **kwargs):
++    def __init__(self, *args, orthrus_mask_token_id=None, orthrus_device_greedy=False, **kwargs):
 +        super().__init__(*args, **kwargs)
 +        self.orthrus_mask_token_id = orthrus_mask_token_id
++        self.orthrus_device_greedy = orthrus_device_greedy
 +
      @property
      def supports_device_decode_embedding(self):
          return True
-@@ -93,6 +103,7 @@
+@@ -93,6 +111,8 @@
              list(self._device_ids),
              platform=self._platform,
              pypto_build_dir=self._pypto_build_dir,
 +            orthrus=self.orthrus_mask_token_id is not None,
++            orthrus_device_greedy=self.orthrus_device_greedy,
          )
          return Glm53CompiledKernels(api, programs, checkpoint, weights)
 
-@@ -116,6 +127,7 @@
+@@ -116,6 +136,7 @@
              self._device_ids,
              self._platform,
              prepared_weights=compiled.weights,
@@ -70,7 +79,17 @@
          self._device_ids, self._platform = list(device_ids), platform
          self._execution_options = dict(
              host_num_threads=host_num_threads,
-@@ -228,12 +231,17 @@
+@@ -94,6 +97,9 @@
+         self.runtime = None
+         self._close_error: BaseException | None = None
+         self._forward_args = {}
++        self._orthrus_greedy_args = {}
++        self._orthrus_greedy_result = None
++        self._orthrus_greedy_logit_view = None
+         self._forward_input_args = {}
+         self._pending_forwards = {}
+         self._state_lock = threading.RLock()
+@@ -228,12 +234,17 @@
          )
          return PrefillResult(last_hidden=None, logits=logits)
 
@@ -89,7 +108,7 @@
 
      def prepare_decode(self, model, batch, *, buffer_slot):
          """Freeze metadata without reading live request state or placeholder embeddings."""
-@@ -247,6 +255,12 @@
+@@ -247,6 +258,12 @@
          return _PreparedDecode(tuple(batch.request_ids), lengths, buffer_slot, groups)
 
      def run_prepared_decode(self, model, batch, prepared):
@@ -102,7 +121,7 @@
          return self.reclaim_prepared_decode(self.dispatch_prepared_decode(model, batch, prepared))
 
      def dispatch_prepared_decode(self, model, batch, prepared):
-@@ -339,10 +353,15 @@
+@@ -339,11 +356,18 @@
          self._invalid_slots: set[int] = set()
          self._reset_program = None
          self._dispatch_error: BaseException | None = None
@@ -118,9 +137,12 @@
 +            phases.add("orthrus")
 +        if set(programs) != phases:
              raise ValueError("GLM requires separate packed prefill and decode programs")
++        if "orthrus_greedy" in self.auxiliary_programs and "orthrus" not in phases:
++            raise ValueError("device greedy requires GLM Orthrus")
          required_auxiliary = {"reset"}
          missing = required_auxiliary - self.auxiliary_programs.keys()
-@@ -397,7 +416,7 @@
+         if missing:
+@@ -397,7 +421,7 @@
          inputs = api.prepare_step_inputs(weights, [[] for _ in range(api.BATCH)], cache_pages=self.cache_pages)
          self._forward_input_args = {
              (slot, phase): forward_input_task_args(api, phase, inputs)
@@ -129,7 +151,7 @@
          }
          for args in self._forward_input_args.values():
              args.allocate_host_shared(None)
-@@ -410,6 +429,12 @@
+@@ -410,6 +434,19 @@
                           name=f"glm_logits_{slot}")
              for slot in range(2)
          ]
@@ -139,10 +161,17 @@
 +                shared_empty((api.RANKS, api.BATCH), torch.int32, name=f"glm_orthrus_commit_{name}")
 +                for name in ("feedback", "source", "destination")
 +            )
++        device_greedy = "orthrus_greedy" in self.auxiliary_programs
++        if device_greedy:
++            from blockspec.pypto_glm53_greedy import top1_buffer_rows
++
++            shape = (top1_buffer_rows(api.VERIFY_QUERY_WIDTH),)
++            self._orthrus_greedy_result = shared_empty(shape, torch.int32, name="glm_orthrus_greedy_ids")
++        self._orthrus_greedy_epoch = 1
          runtime = DistributedWorker(
              [entry.compiled for entry in (*self.programs.values(), *self.auxiliary_programs.values())],
              config=config, persistent=True, reset_persistent_windows=False,
-@@ -417,6 +442,7 @@
+@@ -417,6 +454,7 @@
          self._l3_worker = runtime
          self._l3_run_config = config
          self.runtime, self.config = runtime, config
@@ -150,7 +179,18 @@
          try:
              layouts = api.forward_tensor_layouts("prefill")
              allocation_layouts = dict(api.CACHE_LAYOUTS)
-@@ -443,6 +469,19 @@
+@@ -430,6 +468,10 @@
+                                        if name not in mutable_inputs | {"head_hidden"}})
+             for name in ("final_norm", "lm_head_weight", "logits", "ws_x_hc_a", "ws_x_hc_b"):
+                 allocation_layouts.pop(name, None)
++            if device_greedy:
++                allocation_layouts["orthrus_greedy_logits"] = layouts["logits"]
++                allocation_layouts["orthrus_greedy_hidden"] = layouts["head_hidden"]
++                allocation_layouts["orthrus_greedy_ids"] = (shape, torch.int32)
+             per_rank = [{} for _ in self.device_ids]
+             for rank, tensors in enumerate(per_rank):
+                 for name, (shape, dtype) in allocation_layouts.items():
+@@ -443,6 +485,19 @@
                                      dst_offset=offset, worker_id=rank)
                  print("GLM_RANK_WEIGHTS_READY", rank, flush=True)
 
@@ -170,7 +210,7 @@
              with ThreadPoolExecutor(max_workers=api.RANKS) as executor:
                  list(executor.map(upload, range(api.RANKS)))
              head = weights.lm_head()
-@@ -466,7 +505,7 @@
+@@ -466,7 +521,7 @@
              self._phase_tensors = []
              for slot in range(2):
                  phases = {}
@@ -179,7 +219,35 @@
                      phase_tensors = dict(self._forward_input_args[slot, phase].tensors)
                      phase_tensors["head_hidden"] = self._head_rows_by_slot[slot]
                      phase_tensors["logits"] = self._logits_by_slot[slot]
-@@ -574,7 +613,8 @@
+@@ -483,6 +538,8 @@
+                         api, phase, phase_tensors,
+                     )
+                 self._phase_tensors.append(phases)
++            if device_greedy:
++                self._bind_orthrus_greedy()
+             self.weights = weights
+             self._seq_lens.zero_()
+             self._invalid_slots.clear()
+@@ -498,6 +555,18 @@
+             self._free_slots = list(range(self._max_batch_size))
+         return self
+
++    def _bind_orthrus_greedy(self):
++        api = self._api
++        logits = self.stacked["orthrus_greedy_logits"]
++        hidden = self.stacked["orthrus_greedy_hidden"]
++        shape = (self._orthrus_greedy_result.shape[0], api.HEAD_VOCAB_PAD)
++        views = [self.runtime.view_tensor(shard, shape, worker_id=rank)
++                 for rank, shard in zip(logits.worker_ids, logits.shards, strict=True)]
++        self._orthrus_greedy_logit_view = StackedDeviceTensor(views, (api.RANKS, *shape), logits.worker_ids)
++        for phase in ("verify", "orthrus"):
++            tensors = dict(self._phase_tensors[0][phase], logits=logits, head_hidden=hidden)
++            self._orthrus_greedy_args[phase] = forward_task_args(api, phase, tensors)
++
+     def _restore_host_num_threads(self) -> None:
+         previous, self._previous_host_num_threads = self._previous_host_num_threads, None
+         if previous is not None:
+@@ -574,7 +643,8 @@
      def _bind_cache_tables(self, slots, new_lengths, cache_groups=None):
          """Lower scheduler pages; standalone generation uses the same allocator locally."""
          api = self._api
@@ -189,7 +257,7 @@
              cache_groups = [self._local_cache.ensure_group_blocks(str(slot), int(new_lengths[slot]))
                              for slot in slots]
          state_rows = torch.full((api.BATCH, api.KDA_STATE_COLUMNS), -1, dtype=torch.int32)
-@@ -585,7 +625,12 @@
+@@ -585,7 +655,12 @@
              end = int(new_lengths[slot])
              start = int(self._seq_lens[slot])
              attention, states = groups["attention"], groups["kda_state"]
@@ -203,7 +271,7 @@
                  raise ValueError("GLM attention table does not cover the request context")
              if len(states) != min((end + api.BLOCK_SIZE - 1) // api.BLOCK_SIZE, api.KDA_STATE_BLOCKS):
                  raise ValueError("GLM state table does not cover the request's rolling checkpoints")
-@@ -633,11 +678,11 @@
+@@ -633,11 +708,11 @@
 
 
 
@@ -217,7 +285,7 @@
              raise ValueError("GLM dispatch needs a phase and buffer slot zero or one")
          with self._state_lock:
              if buffer_slot in self._pending_forwards:
-@@ -656,7 +701,8 @@
+@@ -656,7 +731,8 @@
                  host_inputs.stage(values)
                  self.last_dispatch_started_at = time.monotonic()
                  print("GLM_DEVICE_START", self.main_dispatches, flush=True)
@@ -227,7 +295,7 @@
                  dispatch = self._submit_l3(self.programs[phase], *args, epoch, config=self.config)
              except BaseException as error:
                  self._poison_forwards(error)
-@@ -685,10 +731,11 @@
+@@ -685,10 +761,11 @@
                      raise FloatingPointError(f"nonfinite head_hidden at step {pending.epoch}")
                  shards = self._logits_by_slot[pending.buffer_slot]
                  logits = torch.cat(tuple(shard[:, :api.LOCAL_VOCAB] for shard in shards.unbind(0)), dim=1)
@@ -241,9 +309,21 @@
                  self.calls += 1
              except BaseException as error:
                  pending.error = error
+@@ -752,6 +829,11 @@
+             for args in self._forward_args.values():
+                 args.close()
+             self._forward_args.clear()
++            for args in self._orthrus_greedy_args.values():
++                args.close()
++            self._orthrus_greedy_args.clear()
++            self._orthrus_greedy_result = None
++            self._orthrus_greedy_logit_view = None
+             self._reset_l3_dispatch()
+         finally:
+             self._restore_host_num_threads()
 --- a/pypto_serving/cli/main.py
 +++ b/pypto_serving/cli/main.py
-@@ -292,9 +292,20 @@
+@@ -292,9 +292,24 @@
          variant=model_variant,
      )
      num_speculative_tokens = _resolve_num_speculative_tokens(args)
@@ -261,10 +341,14 @@
 +        if type(mask_id) is not int or mask_id < 0:
 +            raise ValueError("GLM Orthrus requires mask_token_id")
 +        executor_kwargs["orthrus_mask_token_id"] = mask_id
++        device_greedy = args.speculative_config.get("device_greedy", False)
++        if type(device_greedy) is not bool:
++            raise ValueError("GLM Orthrus device_greedy must be true or false")
++        executor_kwargs["orthrus_device_greedy"] = device_greedy
      elif num_speculative_tokens or model_variant:
          raise ValueError(
              "--speculative-config/--num-speculative-tokens is only supported for DeepSeek V4"
-@@ -329,7 +340,7 @@
+@@ -329,7 +344,7 @@
      worker_device_ids = first_group if parallel_config.num_replicas == 1 else ()
      # DSpark rebuilds its private drafter context from a prefilled suffix.
      # Arbitrary-depth MTP still lacks a grouped prefix-cache contract.
@@ -273,7 +357,7 @@
      if model_family == "deepseek_v4" and (
          num_speculative_tokens > 1 and model_variant != "dspark"
      ):
-@@ -546,7 +557,7 @@
+@@ -546,7 +561,7 @@
      if speculative_config is None:
          return ""
      method = speculative_config.get("method")
@@ -282,7 +366,7 @@
          return str(method)
      raise ValueError(
          "DeepSeek V4 --speculative-config requires method='mtp' or method='dspark'"
-@@ -561,6 +572,10 @@
+@@ -561,6 +576,10 @@
          if configured is not None:
              raise ValueError("--speculative-config cannot be combined with --num-speculative-tokens")
          method = speculative_config.get("method")

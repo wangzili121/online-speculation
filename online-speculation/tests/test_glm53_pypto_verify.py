@@ -4,6 +4,7 @@ from threading import RLock
 import pytest
 import torch
 
+from blockspec.pypto_glm53_greedy import PROGRAM, top1_predictions
 from blockspec.pypto_glm53_serving import collect_clean_logits
 from blockspec.pypto_glm53_verify import GreedyVerification, accept_greedy, bind_verify_snapshots
 
@@ -43,3 +44,42 @@ def test_teacher_replay_rejects_a_live_request_slot():
     runner._seq_lens[1] = 2
     with pytest.raises(ValueError, match="private, unused slot"):
         collect_clean_logits(runner, range(12), 1, 1, 0)
+
+
+def test_resident_greedy_dispatch_returns_ids_and_uses_a_separate_epoch():
+    api = SimpleNamespace(VERIFY_QUERY_WIDTH=6)
+    binding = object()
+    logit_view = object()
+    ids = torch.full((8,), -1, dtype=torch.int32)
+    device_ids = SimpleNamespace(shards=[SimpleNamespace(data_ptr=42)])
+    config_token = object()
+    dispatched = []
+
+    def dispatch(inputs, *, phase, buffer_slot, task_args):
+        assert (inputs, phase, buffer_slot, task_args) == ({}, "verify", 0, binding)
+        return SimpleNamespace(dispatch=SimpleNamespace(wait=lambda: dispatched.append("forward")),
+                               buffer_slot=0, epoch=7)
+
+    def run(program, logits, out_ids, rows, epoch, *, config):
+        assert (program, logits, out_ids, rows, config) == (PROGRAM, logit_view, device_ids, 3, config_token)
+        dispatched.append(epoch)
+
+    def copy_from(destination, source, size, *, worker_id):
+        assert (destination, source, size, worker_id) == (ids.data_ptr(), 42, ids.nbytes, 0)
+        ids[:3] = torch.tensor([17, 53 if dispatched[-1] == 1 else -1, 4])
+
+    runner = SimpleNamespace(
+        auxiliary_programs={PROGRAM: PROGRAM}, _api=api, _dispatch_step=dispatch, _run_l3=run,
+        _orthrus_greedy_args={"verify": binding}, _orthrus_greedy_logit_view=logit_view,
+        _orthrus_greedy_result=ids, _orthrus_greedy_epoch=1, config=config_token,
+        runtime=SimpleNamespace(copy_from=copy_from), stacked={"orthrus_greedy_ids": device_ids},
+        calls=0, guard_events=[], _pending_forwards={0: object()},
+    )
+    assert top1_predictions(runner, {}, "verify", 3) == [17, 53, 4]
+    assert not runner._pending_forwards
+    assert runner.calls == 1
+    runner._pending_forwards[0] = object()
+    with pytest.raises(FloatingPointError, match="step 7"):
+        top1_predictions(runner, {}, "verify", 3)
+    assert dispatched == ["forward", 1, "forward", 2]
+    assert runner.calls == 1
