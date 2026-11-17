@@ -1,0 +1,295 @@
+"""Orthrus K32 program for the OneServing packed TP2 Qwen3.8 worker."""
+
+from .attention import AttentionShape
+from .attention_programs import make_attention
+
+
+# Bound the device dispatch to one group of three GDN layers and one full-attention layer.
+GROUP_LAYERS = 4
+
+
+def make_draft_program(*, pool_pages):
+    import pypto.language as pl
+    import pypto.language.distributed as pld
+    from serving.model import (
+        delta_gate, delta_normalize, embed, ffn_gate_up_nz_m32, linear_bf16_m32,
+        linear_partial_m32, packed_greedy_fwd, prepare_heads,
+        residual_add, rms_norm, tp_finish, tp_sum,
+    )
+
+    @pl.jit.inline
+    def parameters(a: pl.Tensor, b: pl.Tensor, a_log: pl.Tensor[[1, 32], pl.FP32], dt: pl.Tensor,
+                   decay: pl.Tensor, beta: pl.Tensor):
+        # Match native decay and beta while preserving the learned FP32 A_log.
+        with pl.spmd(2, name_hint="orthrus_tp2_gdn_parameters"):
+            row = pl.tile.get_block_idx() * 16
+            av = pl.cast(pl.slice(a, [16, 32], [row, 0]), pl.FP32)
+            bv = pl.cast(pl.slice(b, [16, 32], [row, 0]), pl.FP32)
+            bias = pl.cast(pl.slice(dt, [1, 32], [0, 0]), pl.FP32)
+            x = pl.col_expand_add(av, bias)
+            softplus = pl.add(pl.maximum(x, 0.), pl.log(pl.add(pl.exp(pl.neg(pl.abs(x))), 1.)))
+            decay[row:row + 16, 0:32] = pl.neg(pl.col_expand_mul(softplus, pl.exp(a_log)))
+            y = pl.div(pl.full([16, 32], pl.FP32, value=1.), pl.add(pl.exp(pl.neg(bv)), 1.),
+                       high_precision=True)
+            beta[row:row + 16, 0:32] = pl.cast(pl.cast(y, pl.BF16, mode="rint"), pl.FP32)
+        return decay, beta
+
+    attention, _ = make_attention(
+        AttentionShape(q_heads=12, kv_heads=2, page_size=128, query_tile=32),
+        backend="staged", physical_pages=pool_pages, pool_layers=17,
+    )
+
+    @pl.jit.inline
+    def convolution(projected: pl.Tensor, weight: pl.Tensor, history: pl.Tensor,
+                    out: pl.Tensor, slot: pl.Scalar[pl.INT32], layer: pl.Scalar[pl.INT32]):
+        rows = pl.reshape(history, [32 * 48 * 4, 5120])
+        with pl.spmd(40, name_hint="orthrus_tp2_conv"):
+            col = pl.tile.get_block_idx() * 128
+            base = (slot * 48 + layer) * 4
+            p1 = pl.cast(pl.slice(rows, [1, 128], [base + 1, col]), pl.FP32)
+            p2 = pl.cast(pl.slice(rows, [1, 128], [base + 2, col]), pl.FP32)
+            p3 = pl.cast(pl.slice(rows, [1, 128], [base + 3, col]), pl.FP32)
+            w0 = pl.cast(pl.slice(weight, [1, 128], [0, col]), pl.FP32)
+            w1 = pl.cast(pl.slice(weight, [1, 128], [1, col]), pl.FP32)
+            w2 = pl.cast(pl.slice(weight, [1, 128], [2, col]), pl.FP32)
+            w3 = pl.cast(pl.slice(weight, [1, 128], [3, col]), pl.FP32)
+            for token in pl.range(32):
+                current = pl.cast(pl.slice(projected, [1, 128], [token, col]), pl.FP32)
+                x = pl.add(pl.add(pl.mul(p1, w0), pl.mul(p2, w1)),
+                           pl.add(pl.mul(p3, w2), pl.mul(current, w3)))
+                x = pl.cast(pl.cast(x, pl.BF16, mode="rint"), pl.FP32)
+                out[token:token + 1, col:col + 128] = pl.cast(
+                    pl.div(x, pl.add(pl.exp(pl.neg(x)), 1.), high_precision=True),
+                    pl.BF16, mode="rint")
+                p1 = p2
+                p2 = p3
+                p3 = current
+        return out
+
+    @pl.jit.inline
+    def recurrent(q: pl.Tensor, k: pl.Tensor, v: pl.Tensor, decay: pl.Tensor, beta: pl.Tensor,
+                  history: pl.Tensor, out: pl.Tensor, slot: pl.Scalar[pl.INT32],
+                  layer: pl.Scalar[pl.INT32]):
+        states = pl.reshape(history, [32 * 48 * 24 * 128, 128])
+        with pl.spmd(48, name_hint="orthrus_tp2_recurrent"):
+            task = pl.tile.get_block_idx()
+            head = task // 2
+            col = task % 2 * 64
+            start = ((slot * 48 + layer) * 24 + head) * 128 + col
+            state = pl.slice(states, [64, 128], [start, 0])
+            for token in pl.range(32):
+                query = pl.slice(q, [1, 128], [token, head * 128])
+                key = pl.slice(k, [1, 128], [token, head * 128])
+                log_decay = pl.read(decay, [token, head])
+                strength = pl.read(beta, [token, head])
+                factor = pl.exp(pl.mul(pl.full([1, 128], pl.FP32, value=1.), log_decay))
+                faded = pl.col_expand_mul(state, factor)
+                remembered = pl.row_sum(pl.col_expand_mul(faded, key))
+                value = pl.cast(pl.slice(v, [1, 64], [token, 2048 + head * 128 + col]), pl.FP32)
+                delta = pl.mul(pl.sub(pl.reshape(value, [64, 1]), remembered), strength)
+                state = pl.add(faded, pl.col_expand_mul(
+                    pl.row_expand_mul(pl.full([64, 128], pl.FP32, value=1.), delta), key))
+                y = pl.reshape(pl.row_sum(pl.col_expand_mul(state, query)), [1, 64])
+                out[token:token + 1, head * 128 + col:head * 128 + col + 64] = pl.cast(
+                    y, pl.BF16, mode="rint")
+        return out
+
+    @pl.jit.inline(auto_scope=False)
+    def gdn(x: pl.Tensor, qw: pl.Tensor, zw: pl.Tensor, ow: pl.Tensor, aw: pl.Tensor,
+            bw: pl.Tensor, cw: pl.Tensor, al: pl.Tensor[[1, 32], pl.FP32], dt: pl.Tensor, norm: pl.Tensor,
+            conv_state: pl.Tensor, recurrent_state: pl.Tensor, partial: pl.Tensor,
+            slot: pl.Scalar[pl.INT32], layer: pl.Scalar[pl.INT32]):
+        with pl.scope():
+            projected = pl.create_tensor([32, 5120], dtype=pl.BF16)
+            z = pl.create_tensor([32, 3072], dtype=pl.BF16)
+            a = pl.create_tensor([32, 128], dtype=pl.BF16)
+            b = pl.create_tensor([32, 128], dtype=pl.BF16)
+            conv = pl.create_tensor([32, 5120], dtype=pl.BF16)
+            decay = pl.create_tensor([32, 32], dtype=pl.FP32)
+            beta = pl.create_tensor([32, 32], dtype=pl.FP32)
+            qn = pl.create_tensor([32, 3072], dtype=pl.FP32)
+            kn = pl.create_tensor([32, 3072], dtype=pl.FP32)
+            core = pl.create_tensor([32, 3072], dtype=pl.BF16)
+            gated = pl.create_tensor([32, 3072], dtype=pl.BF16)
+            linear_bf16_m32(x, qw, projected)
+            linear_bf16_m32(x, zw, z)
+            linear_bf16_m32(x, aw, a)
+            linear_bf16_m32(x, bw, b)
+            convolution(projected, cw, conv_state, conv, slot, layer)
+            parameters(a, b, al, dt, decay, beta)
+            delta_normalize(conv, qn, kn)
+            recurrent(qn, kn, conv, decay, beta, recurrent_state, core, slot, layer)
+            delta_gate(core, z, norm, gated)
+            linear_partial_m32(gated, ow, partial)
+        return partial
+
+    @pl.jit.inline(auto_scope=False)
+    def full(x: pl.Tensor, qw: pl.Tensor, kw: pl.Tensor, vw: pl.Tensor, qgamma: pl.Tensor,
+             kgamma: pl.Tensor, ow: pl.Tensor, cos: pl.Tensor, sin: pl.Tensor,
+             key_pool: pl.Tensor, value_pool: pl.Tensor, table: pl.Tensor, bias: pl.Tensor,
+             partial: pl.Tensor, layer: pl.Scalar[pl.INT32], past: pl.Scalar[pl.INT32],
+             width: pl.Scalar[pl.INT32]):
+        with pl.scope():
+            qp = pl.create_tensor([32, 6144], dtype=pl.BF16)
+            kp = pl.create_tensor([32, 512], dtype=pl.BF16)
+            v = pl.create_tensor([32, 512], dtype=pl.BF16)
+            q = pl.create_tensor([32, 3072], dtype=pl.BF16)
+            k = pl.create_tensor([32, 512], dtype=pl.BF16)
+            gate = pl.create_tensor([32, 3072], dtype=pl.BF16)
+            attended = pl.create_tensor([32, 3072], dtype=pl.BF16)
+            linear_bf16_m32(x, qw, qp)
+            linear_bf16_m32(x, kw, kp)
+            linear_bf16_m32(x, vw, v)
+            prepare_heads(qp, kp, qgamma, kgamma, cos, sin, q, k, gate)
+            attention(q, k, v, gate, key_pool, value_pool, table, bias, attended, past, width, layer)
+            linear_partial_m32(attended, ow, partial)
+        return partial
+
+    @pl.jit
+    def embed_draft(ids: pl.Tensor[[32], pl.INT32], rows: pl.Tensor[[32], pl.INT32],
+                    embedding: pl.Tensor, hidden: pl.Out[pl.Tensor[[32, 5120], pl.BF16]]):
+        # The pinned compiler misbinds the loop-carried hidden buffer if this is
+        # a conditional write inside the same device entry as the layer loop.
+        return embed(ids, embedding, rows, hidden)
+
+    @pl.jit(auto_scope=False)
+    def predict(
+        final_gamma: pl.Tensor, lm_head: pl.Tensor,
+        input_gamma: pl.Tensor, post_gamma: pl.Tensor,
+        mlp_gate: pl.Tensor[[64, 8704, 5120], pl.BF16, pl.NZ],
+        mlp_up: pl.Tensor[[64, 8704, 5120], pl.BF16, pl.NZ], mlp_down: pl.Tensor,
+        delta_qkv: pl.Tensor, delta_z: pl.Tensor, delta_out: pl.Tensor,
+        delta_a: pl.Tensor, delta_b: pl.Tensor, delta_conv: pl.Tensor,
+        delta_a_log: pl.Tensor, delta_dt_bias: pl.Tensor, delta_norm: pl.Tensor,
+        full_q: pl.Tensor, full_k: pl.Tensor, full_v: pl.Tensor, full_q_gamma: pl.Tensor,
+        full_k_gamma: pl.Tensor, full_out: pl.Tensor,
+        head_qkv: pl.Tensor, head_z: pl.Tensor, head_out: pl.Tensor,
+        head_a: pl.Tensor, head_b: pl.Tensor, head_conv: pl.Tensor,
+        head_a_log: pl.Tensor, head_dt_bias: pl.Tensor, head_norm: pl.Tensor,
+        head_q: pl.Tensor, head_k: pl.Tensor, head_v: pl.Tensor, head_q_gamma: pl.Tensor,
+        head_k_gamma: pl.Tensor, head_o: pl.Tensor,
+        conv_state: pl.Tensor, recurrent_state: pl.Tensor, key_pool: pl.Tensor, value_pool: pl.Tensor,
+        cos: pl.Tensor, sin: pl.Tensor, table: pl.Tensor, bias: pl.Tensor,
+        hidden: pl.InOut[pl.Tensor[[32, 5120], pl.BF16]],
+        logits: pl.Out[pl.Tensor[[32, 124160], pl.BF16]],
+        slot: pl.Scalar[pl.INT32], past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32],
+        begin: pl.Scalar[pl.INT32],
+        comm_data: pld.DistributedTensor[[16384, 5120], pl.FP32],
+        comm_signals: pld.DistributedTensor[[2, 1], pl.INT32], rank: pl.Scalar[pl.INT32],
+    ):
+        with pl.scope():
+            normalized = pl.create_tensor([32, 5120], dtype=pl.BF16)
+            partial = pl.create_tensor([32, 5120], dtype=pl.FP32)
+            reduced = pl.create_tensor([32, 5120], dtype=pl.BF16)
+            residual = pl.create_tensor([32, 5120], dtype=pl.BF16)
+            post_norm = pl.create_tensor([32, 5120], dtype=pl.BF16)
+            middle = pl.create_tensor([32, 8704], dtype=pl.BF16)
+            for offset in pl.range(GROUP_LAYERS):
+                layer = begin + offset
+                with pl.scope():
+                    gamma = pl.slice(input_gamma, [1, 5120], [layer, 0])
+                    rms_norm(hidden, gamma, normalized)
+                    if layer % 4 != 3:
+                        linear = layer - layer // 4
+                        if layer < 60:
+                            qw = pl.slice(delta_qkv, [5120, 5120], [linear * 5120, 0])
+                            zw = pl.slice(delta_z, [3072, 5120], [linear * 3072, 0])
+                            ow = pl.slice(delta_out, [5120, 3072], [linear * 5120, 0])
+                            aw = pl.slice(delta_a, [128, 5120], [linear * 128, 0])
+                            bw = pl.slice(delta_b, [128, 5120], [linear * 128, 0])
+                            cw = pl.slice(delta_conv, [4, 5120], [linear * 4, 0])
+                            al = pl.slice(delta_a_log, [1, 32], [linear, 0])
+                            dt = pl.slice(delta_dt_bias, [1, 32], [linear, 0])
+                            norm = pl.slice(delta_norm, [1, 128], [linear, 0])
+                            gdn(normalized, qw, zw, ow, aw, bw, cw, al, dt, norm,
+                                conv_state, recurrent_state, partial, slot, linear)
+                        else:
+                            tail = layer - 60
+                            tqw = pl.slice(head_qkv, [5120, 5120], [tail * 5120, 0])
+                            tzw = pl.slice(head_z, [3072, 5120], [tail * 3072, 0])
+                            tow = pl.slice(head_out, [5120, 3072], [tail * 5120, 0])
+                            taw = pl.slice(head_a, [128, 5120], [tail * 128, 0])
+                            tbw = pl.slice(head_b, [128, 5120], [tail * 128, 0])
+                            tcw = pl.slice(head_conv, [4, 5120], [tail * 4, 0])
+                            tal = pl.slice(head_a_log, [1, 32], [tail, 0])
+                            tdt = pl.slice(head_dt_bias, [1, 32], [tail, 0])
+                            tnorm = pl.slice(head_norm, [1, 128], [tail, 0])
+                            gdn(normalized, tqw, tzw, tow, taw, tbw, tcw, tal, tdt, tnorm,
+                                conv_state, recurrent_state, partial, slot, linear)
+                    else:
+                        index = layer // 4
+                        if layer < 63:
+                            aq = pl.slice(full_q, [6144, 5120], [index * 6144, 0])
+                            ak = pl.slice(full_k, [512, 5120], [index * 512, 0])
+                            av = pl.slice(full_v, [512, 5120], [index * 512, 0])
+                            qg = pl.slice(full_q_gamma, [1, 256], [index, 0])
+                            kg = pl.slice(full_k_gamma, [1, 256], [index, 0])
+                            ao = pl.slice(full_out, [5120, 3072], [index * 5120, 0])
+                            full(normalized, aq, ak, av, qg, kg, ao, cos, sin,
+                                 key_pool, value_pool, table, bias, partial, index, past, width)
+                        else:
+                            full(normalized, head_q, head_k, head_v, head_q_gamma, head_k_gamma, head_o,
+                                 cos, sin, key_pool, value_pool, table, bias, partial, index, past, width)
+                tp_sum(partial, comm_data, comm_signals, reduced, rank, offset * 2 + 1)
+                residual_add(hidden, reduced, residual)
+                post = pl.slice(post_gamma, [1, 5120], [layer, 0])
+                rms_norm(residual, post, post_norm)
+                gate_w = pl.slice(mlp_gate, [1, 8704, 5120], [layer, 0, 0])
+                up_w = pl.slice(mlp_up, [1, 8704, 5120], [layer, 0, 0])
+                down_w = pl.slice(mlp_down, [5120, 8704], [layer * 5120, 0])
+                with pl.scope():
+                    ffn_gate_up_nz_m32(post_norm, gate_w, up_w, middle)
+                    linear_partial_m32(middle, down_w, partial)
+                tp_sum(partial, comm_data, comm_signals, reduced, rank, offset * 2 + 2)
+                residual_add(residual, reduced, hidden)
+            if begin == 64 - GROUP_LAYERS:
+                rms_norm(hidden, final_gamma, hidden)
+                linear_bf16_m32(hidden, lm_head, logits)
+            tp_finish(comm_signals, rank, GROUP_LAYERS * 2)
+        return hidden, logits
+
+    @pl.jit.host
+    def draft_host(
+        ids: pl.Tensor, rows: pl.Tensor, embedding: pl.Tensor, final_gamma: pl.Tensor, lm_head: pl.Tensor,
+        input_gamma: pl.Tensor, post_gamma: pl.Tensor,
+        mlp_gate: pl.Tensor[[2, 64, 8704, 5120], pl.BF16],
+        mlp_up: pl.Tensor[[2, 64, 8704, 5120], pl.BF16], mlp_down: pl.Tensor,
+        delta_qkv: pl.Tensor, delta_z: pl.Tensor, delta_out: pl.Tensor,
+        delta_a: pl.Tensor, delta_b: pl.Tensor, delta_conv: pl.Tensor, delta_a_log: pl.Tensor,
+        delta_dt_bias: pl.Tensor, delta_norm: pl.Tensor, full_q: pl.Tensor, full_k: pl.Tensor,
+        full_v: pl.Tensor, full_q_gamma: pl.Tensor, full_k_gamma: pl.Tensor, full_out: pl.Tensor,
+        head_qkv: pl.Tensor, head_z: pl.Tensor, head_out: pl.Tensor, head_a: pl.Tensor,
+        head_b: pl.Tensor, head_conv: pl.Tensor, head_a_log: pl.Tensor, head_dt_bias: pl.Tensor,
+        head_norm: pl.Tensor, head_q: pl.Tensor, head_k: pl.Tensor, head_v: pl.Tensor,
+        head_q_gamma: pl.Tensor, head_k_gamma: pl.Tensor, head_o: pl.Tensor,
+        conv_state: pl.Tensor, recurrent_state: pl.Tensor, key_pool: pl.Tensor, value_pool: pl.Tensor,
+        cos: pl.Tensor, sin: pl.Tensor, table: pl.Tensor, bias: pl.Tensor,
+        hidden: pl.InOut[pl.Tensor], logits: pl.Out[pl.Tensor],
+        valid: pl.Tensor, decisions: pl.Out[pl.Tensor],
+        slot: pl.Scalar[pl.INT32], past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32],
+        begin: pl.Scalar[pl.INT32],
+    ):
+        data = pld.alloc_window_buffer([16384, 5120], dtype=pl.FP32)
+        signals = pld.alloc_window_buffer([2, 1], dtype=pl.INT32)
+        for rank in pl.range(2):
+            window = pld.window(data, [16384, 5120], dtype=pl.FP32)
+            signal = pld.window(signals, [2, 1], dtype=pl.INT32)
+            if begin == 0:
+                embed_draft(ids[rank], rows[rank], embedding[rank], hidden[rank], device=rank)
+            predict(
+                final_gamma[rank], lm_head[rank],
+                input_gamma[rank], post_gamma[rank], mlp_gate[rank], mlp_up[rank], mlp_down[rank],
+                delta_qkv[rank], delta_z[rank], delta_out[rank], delta_a[rank], delta_b[rank],
+                delta_conv[rank], delta_a_log[rank], delta_dt_bias[rank], delta_norm[rank],
+                full_q[rank], full_k[rank], full_v[rank], full_q_gamma[rank], full_k_gamma[rank], full_out[rank],
+                head_qkv[rank], head_z[rank], head_out[rank], head_a[rank], head_b[rank], head_conv[rank],
+                head_a_log[rank], head_dt_bias[rank], head_norm[rank], head_q[rank], head_k[rank],
+                head_v[rank], head_q_gamma[rank], head_k_gamma[rank], head_o[rank],
+                conv_state[rank], recurrent_state[rank], key_pool[rank], value_pool[rank],
+                cos[rank], sin[rank], table[rank], bias[rank], hidden[rank], logits[rank],
+                slot, past, width, begin,
+                window, signal, rank, device=rank)
+            if begin == 64 - GROUP_LAYERS:
+                packed_greedy_fwd(logits[rank], valid[rank], decisions[rank], rank, device=rank)
+
+    return draft_host

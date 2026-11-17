@@ -1,0 +1,23 @@
+diff --git a/pypto-serving-qwen3.8-27B/serving/runtime.py b/pypto-serving-qwen3.8-27B/serving/runtime.py
+index 4575bbe..df6ac40 100644
+--- a/pypto-serving-qwen3.8-27B/serving/runtime.py
++++ b/pypto-serving-qwen3.8-27B/serving/runtime.py
+@@ -485,6 +485,9 @@ class TensorParallelRunner:
+     @staticmethod
+     def _bucket(count): return next(b for b in (1, 4, 16, 32) if count <= b)
+ 
++    def _target_decode_row_limit(self):
++        return 1 + self.settings.speculative_tokens
++
+     def _scratch(self, kind, batch, rows):
+         if kind not in ('target', 'draft'):
+             raise ValueError('Unknown scratch owner')
+@@ -546,7 +549,7 @@ class TensorParallelRunner:
+         offsets = []; total = 0
+         for slot, count, position in zip(slots, counts, positions, strict=True):
+             offsets.append(total); total += count
+-            limit = (self.chunk_threshold or self.settings.max_model_len) if slot.phase == 'prefill' else 1 + self.settings.speculative_tokens
++            limit = (self.chunk_threshold or self.settings.max_model_len) if slot.phase == 'prefill' else self._target_decode_row_limit()
+             if count > limit or position < 0 or position + count > self.settings.max_model_len:
+                 raise ValueError('Model rows exceed the configured position/chunk contract')
+         self._resident_state()
