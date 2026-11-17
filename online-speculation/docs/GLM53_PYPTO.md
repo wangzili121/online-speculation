@@ -82,7 +82,7 @@ python scripts/validate_glm53_pypto_head_publish.py \
   --checkpoint "$MODEL" --devices 0 1 --output mla-publish.json
 ```
 
-The last check stages a device AdamW update to two real packed MLA shards, verifies the live views remain intact, and then publishes the staged weights into those views. It uses fixture gradients. The FP32 master weights matched the reference within `2.98e-8`, and the Indexer weights and neighboring layers remained byte-identical.
+The last check initializes the FP32 master weight and zero moments from two resident BF16 MLA shards. It stages AdamW with fixture gradients, verifies that staging preserves the live weights, and publishes the update. The FP32 master matched the reference within `2.98e-8`. Indexer weights and neighboring layers remained byte-identical.
 
 Apply `runtime/pypto_serving_glm53/online_replay_lib.patch` after `draft_lib.patch` and compile into a fresh artifact directory. For layers 43 and 44, the draft replay records the four mHC residual streams and the BF16 sublayer output at both the attention and MoE boundaries. Normal inference leaves this tape untouched. All four offsets passed an Ascend copy test with byte-identical values and untouched neighboring rows.
 

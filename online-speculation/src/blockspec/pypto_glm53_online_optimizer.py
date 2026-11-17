@@ -127,3 +127,36 @@ def make_mla_head_publish(ranks):
             publish(staged[rank], live[rank], device=rank)
 
     return entry
+
+
+def make_mla_head_optimizer_init(ranks):
+    """Initialize FP32 AdamW state directly from the resident BF16 draft weights."""
+    import pypto.language as pl
+
+    from .pypto_glm53_head import head_layout
+
+    layout, full = head_layout()
+    length = layout["index_q"][0]
+    tile, cores = 128, 48
+
+    @pl.jit
+    def initialize(
+        live: pl.Tensor[[1, full], pl.BF16], master: pl.Out[pl.Tensor[[1, length], pl.FP32]],
+        first: pl.Out[pl.Tensor[[1, length], pl.FP32]], second: pl.Out[pl.Tensor[[1, length], pl.FP32]],
+    ):
+        for core in pl.spmd(cores, name_hint="glm_mla_adamw_init"):
+            for col in pl.range(core * tile, length, cores * tile):
+                zero = pl.full([1, tile], dtype=pl.FP32, value=0.0)
+                master[:, col:col + tile] = pl.cast(live[:, col:col + tile], pl.FP32)
+                first[:, col:col + tile] = zero
+                second[:, col:col + tile] = zero
+
+    @pl.jit.host
+    def entry(
+        live: pl.Tensor[[ranks, 1, full], pl.BF16], master: pl.Out[pl.Tensor[[ranks, 1, length], pl.FP32]],
+        first: pl.Out[pl.Tensor[[ranks, 1, length], pl.FP32]], second: pl.Out[pl.Tensor[[ranks, 1, length], pl.FP32]],
+    ):
+        for rank in pl.range(ranks):
+            initialize(live[rank], master[rank], first[rank], second[rank], device=rank)
+
+    return entry

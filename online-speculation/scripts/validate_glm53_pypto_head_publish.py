@@ -8,7 +8,11 @@ from pathlib import Path
 import torch
 
 from blockspec.pypto_glm53_head import head_layout, initialize_rank_head
-from blockspec.pypto_glm53_online_optimizer import make_mla_head_adamw, make_mla_head_publish
+from blockspec.pypto_glm53_online_optimizer import (
+    make_mla_head_adamw,
+    make_mla_head_optimizer_init,
+    make_mla_head_publish,
+)
 
 
 def main():
@@ -32,23 +36,23 @@ def main():
     config = RunConfig(platform="a2a3", distributed_config=DistributedConfig(device_ids=args.devices, num_sub_workers=0))
     gradient = torch.full((ranks, 1, length), 0.03)
     gradient[..., 1::2] = -0.04
-    master = torch.empty_like(gradient)
+    master = torch.full_like(gradient, float("nan"))
     staged = torch.empty_like(gradient, dtype=torch.bfloat16)
-    first, second = torch.zeros_like(gradient), torch.zeros_like(gradient)
+    first, second = torch.ones_like(gradient), torch.ones_like(gradient)
     live = torch.empty((ranks, 3, total), dtype=torch.bfloat16)
     live[:, 0].fill_(0.125)
     live[:, 2].fill_(-0.25)
     for rank in range(ranks):
         live[rank, 1].copy_(initialize_rank_head(weights, 43, rank))
-        master[rank, 0].copy_(live[rank, 1, :length])
 
     lr, decay = 1e-3, 0.01
     scalars = (lr, decay, 1 / (1 - 0.9), 1 / (1 - 0.999))
     report = {"passed": False, "ranks": ranks, "trainable_prefix": length, "packed_layer": total}
     try:
+        initialize = make_mla_head_optimizer_init(ranks).compile(config=config)
         update = make_mla_head_adamw(ranks).compile(gradient, master, first, second, staged, *scalars, config=config)
         publish = make_mla_head_publish(ranks).compile(staged, live[:, 1:2, :].contiguous(), config=config)
-        with DistributedWorker([update, publish], config=config, persistent=True) as worker:
+        with DistributedWorker([initialize, update, publish], config=config, persistent=True) as worker:
             handles = [worker.alloc_stacked_tensor(value.share_memory_())
                        for value in (gradient, master, first, second, staged, live)]
             offset = live.element_size() * total
@@ -63,6 +67,14 @@ def main():
                 worker.copy_from(host.data_ptr(), shard.data_ptr, host.nbytes, worker_id=rank)
                 return host
 
+            worker.run(initialize, middle, *handles[1:4], config=config)
+            for rank in range(ranks):
+                initialized = download(rank, handles[1].shards[rank], (1, length), torch.float32)[0]
+                torch.testing.assert_close(initialized, live[rank, 1, :length].float(), atol=0, rtol=0)
+                for index in (2, 3):
+                    moment = download(rank, handles[index].shards[rank], (1, length), torch.float32)
+                    if moment.count_nonzero():
+                        raise AssertionError("optimizer moments were not initialized to zero")
             worker.run(update, *handles[:5], *scalars, config=config)
             for rank, shard in enumerate(handles[-1].shards):
                 before = download(rank, shard, (3, total), torch.bfloat16)
@@ -77,7 +89,7 @@ def main():
                 if not torch.equal(after[1, length:], live[rank, 1, length:]):
                     raise AssertionError("the indexer parameters changed")
                 g = gradient[rank, 0]
-                original = master[rank, 0]
+                original = live[rank, 1, :length].float()
                 expected = original - lr * (g / (g.abs() + 1e-8) + decay * original)
                 got_master = download(rank, handles[1].shards[rank], (1, length), torch.float32)[0]
                 torch.testing.assert_close(got_master, expected, atol=2e-7, rtol=3e-6)
@@ -85,7 +97,8 @@ def main():
                 if not torch.equal(after[1, :length], packed) or torch.equal(after[1], live[rank, 1]):
                     raise AssertionError("the inference view did not receive the staged update")
                 max_difference = max(max_difference, float((got_master - expected).abs().max()))
-        report.update(passed=True, master_max_abs=max_difference, indexer_and_neighboring_layers_unchanged=True)
+        report.update(passed=True, resident_optimizer_init=True, master_max_abs=max_difference,
+                      indexer_and_neighboring_layers_unchanged=True)
     except BaseException as error:
         report["error"] = repr(error)
         raise
