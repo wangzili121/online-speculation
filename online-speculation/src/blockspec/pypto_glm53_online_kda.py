@@ -235,3 +235,98 @@ def make_kda_output_backward(tokens, heads, width, epsilon):
         gated_norm_backward(core, gate, norm_weight, dy, d_core, d_gate, device=0)
 
     return entry
+
+
+def make_kda_projection_backward(tokens, heads, width, lower_bound):
+    """Propagate the frozen QKV, forget, beta and output-gate branches to KDA input."""
+    import pypto.language as pl
+
+    from .pypto_glm53_online_head import make_frozen_bf16_input_backward
+
+    dim, tile = 128, 128
+    local = heads * dim
+    if tokens < 1 or tokens % 16 or heads != 8 or width < tile or width % tile or lower_bound >= 0.0:
+        raise ValueError("KDA projection backward expects the GLM TP8 geometry")
+    to_input = make_frozen_bf16_input_backward(local, width, tokens, device_entry=True)
+    to_inner = make_frozen_bf16_input_backward(local, dim, tokens, device_entry=True)
+    from_inner = make_frozen_bf16_input_backward(dim, width, tokens, device_entry=True)
+
+    @pl.jit
+    def prepare(
+        d_qkv: pl.Tensor[[tokens, 3 * local], pl.FP32],
+        decay: pl.Tensor[[tokens, local], pl.FP32],
+        decay_rate: pl.Tensor[[heads], pl.FP32],
+        d_decay: pl.Tensor[[tokens, local], pl.FP32],
+        dq: pl.Out[pl.Tensor[[tokens, local], pl.FP32]],
+        dk: pl.Out[pl.Tensor[[tokens, local], pl.FP32]],
+        dv: pl.Out[pl.Tensor[[tokens, local], pl.FP32]],
+        d_forget: pl.Out[pl.Tensor[[tokens, local], pl.FP32]],
+    ):
+        for task in pl.spmd(tokens * heads, name_hint="glm_kda_prepare_projection_vjp"):
+            row = task // heads
+            head = task % heads
+            col = head * dim
+            dq[row:row + 1, col:col + dim] = pl.slice(d_qkv, [1, dim], [row, col])
+            dk[row:row + 1, col:col + dim] = pl.slice(d_qkv, [1, dim], [row, col + local])
+            dv[row:row + 1, col:col + dim] = pl.slice(d_qkv, [1, dim], [row, col + 2 * local])
+            sigmoid = pl.mul(decay[row:row + 1, col:col + dim], 1.0 / lower_bound)
+            a_log = pl.read(decay_rate, [head])
+            aligned = pl.add(pl.full([1, dim], dtype=pl.FP32, value=0.0), a_log)
+            slope = pl.mul(pl.mul(sigmoid, pl.add(pl.neg(sigmoid), 1.0)), pl.exp(aligned))
+            d_forget[row:row + 1, col:col + dim] = pl.mul(
+                pl.mul(slope, lower_bound), d_decay[row:row + 1, col:col + dim],
+            )
+        return dq, dk, dv, d_forget
+
+    @pl.jit
+    def combine(
+        q: pl.Tensor[[tokens, width], pl.FP32], k: pl.Tensor[[tokens, width], pl.FP32],
+        v: pl.Tensor[[tokens, width], pl.FP32], forget: pl.Tensor[[tokens, width], pl.FP32],
+        gate: pl.Tensor[[tokens, width], pl.FP32], beta: pl.Tensor[[tokens, heads], pl.FP32],
+        d_beta: pl.Tensor[[tokens, heads], pl.FP32], beta_weight: pl.Tensor[[heads, width], pl.BF16],
+        output: pl.Out[pl.Tensor[[tokens, width], pl.FP32]],
+    ):
+        for task in pl.spmd(tokens * (width // tile), name_hint="glm_kda_projection_vjp_sum"):
+            row = task // (width // tile)
+            col = task % (width // tile) * tile
+            dx = pl.add(q[row:row + 1, col:col + tile], k[row:row + 1, col:col + tile])
+            dx = pl.add(dx, v[row:row + 1, col:col + tile])
+            dx = pl.add(dx, forget[row:row + 1, col:col + tile])
+            dx = pl.add(dx, gate[row:row + 1, col:col + tile])
+            for head in pl.unroll(heads):
+                b = pl.read(beta, [row, head])
+                scale = pl.read(d_beta, [row, head]) * b * (1.0 - b)
+                weight = pl.cast(beta_weight[head:head + 1, col:col + tile], pl.FP32)
+                dx = pl.add(dx, pl.mul(weight, scale))
+            output[row:row + 1, col:col + tile] = dx
+        return output
+
+    @pl.jit.host
+    def entry(
+        d_qkv: pl.Tensor, decay: pl.Tensor, a_log: pl.Tensor, d_decay: pl.Tensor,
+        beta: pl.Tensor, d_beta: pl.Tensor, d_output_gate: pl.Tensor,
+        w_q: pl.Tensor, w_k: pl.Tensor, w_v: pl.Tensor, w_f_a: pl.Tensor, w_f_b: pl.Tensor,
+        w_b: pl.Tensor, w_g_a: pl.Tensor, w_g_b: pl.Tensor, out: pl.Out[pl.Tensor],
+    ):
+        q = pl.create_tensor([tokens, local], dtype=pl.FP32)
+        k = pl.create_tensor([tokens, local], dtype=pl.FP32)
+        v = pl.create_tensor([tokens, local], dtype=pl.FP32)
+        forget = pl.create_tensor([tokens, local], dtype=pl.FP32)
+        forget_inner = pl.create_tensor([tokens, dim], dtype=pl.FP32)
+        gate_inner = pl.create_tensor([tokens, dim], dtype=pl.FP32)
+        dx_q = pl.create_tensor([tokens, width], dtype=pl.FP32)
+        dx_k = pl.create_tensor([tokens, width], dtype=pl.FP32)
+        dx_v = pl.create_tensor([tokens, width], dtype=pl.FP32)
+        dx_forget = pl.create_tensor([tokens, width], dtype=pl.FP32)
+        dx_gate = pl.create_tensor([tokens, width], dtype=pl.FP32)
+        d_q, d_k, d_v, d_f = prepare(d_qkv, decay, a_log, d_decay, q, k, v, forget, device=0)
+        q_input = to_input(d_q, w_q, dx_q, device=0)
+        k_input = to_input(d_k, w_k, dx_k, device=0)
+        v_input = to_input(d_v, w_v, dx_v, device=0)
+        f_inner = to_inner(d_f, w_f_b, forget_inner, device=0)
+        g_inner = to_inner(d_output_gate, w_g_b, gate_inner, device=0)
+        f_input = from_inner(f_inner, w_f_a, dx_forget, device=0)
+        g_input = from_inner(g_inner, w_g_a, dx_gate, device=0)
+        combine(q_input, k_input, v_input, f_input, g_input, beta, d_beta, w_b, out, device=0)
+
+    return entry

@@ -24,6 +24,7 @@ def main():
     modes.add_argument("--kda-conv-backward", action="store_true", help="validate the frozen KDA convolution and SiLU VJP")
     modes.add_argument("--kda-qk-backward", action="store_true", help="validate the KDA Q/K L2 normalization VJP")
     modes.add_argument("--kda-output-backward", action="store_true", help="validate the KDA output projection and gated RMSNorm")
+    modes.add_argument("--kda-projection-backward", action="store_true", help="validate the five KDA input projection branches")
     modes.add_argument("--mhc-backward", action="store_true", help="validate the mHC residual combination VJP")
     modes.add_argument("--mhc-pre-backward", action="store_true", help="validate the mHC stream collapse VJP")
     modes.add_argument("--mhc-mix-backward", action="store_true", help="validate the mHC coefficient projection VJP")
@@ -52,6 +53,50 @@ def main():
     torch.set_num_threads(4)
     config = RunConfig(platform="a2a3", distributed_config=DistributedConfig(device_ids=[args.device], num_sub_workers=0))
     generator = torch.Generator().manual_seed(142)
+    if args.kda_projection_backward:
+        from blockspec.pypto_glm53_online_kda import make_kda_projection_backward
+        from models.glm5_3_flash.config import FLASH, KDA_DIM, KDA_H
+
+        tokens, heads, dim = 16, KDA_H // 8, KDA_DIM
+        local, lower = heads * dim, FLASH.linear_lower_bound
+        names = ("w_q", "w_k", "w_v", "w_f_a", "w_f_b", "w_b", "w_g_a", "w_g_b")
+        if args.checkpoint is None:
+            shapes = ((local, D), (local, D), (local, D), (dim, D), (local, dim), (heads, D), (dim, D), (local, dim))
+            weight = {name: (torch.randn(shape, generator=generator) * 0.01).bfloat16()
+                      for name, shape in zip(names, shapes, strict=True)}
+            weight["a_log"] = torch.linspace(-0.4, 1.0, heads)
+            weight["dt_bias"] = torch.linspace(-1.0, 1.0, local)
+        else:
+            from models.glm5_3_flash.utils import Checkpoint
+
+            weight = Checkpoint(args.checkpoint).attention(44, tp_rank=0, tp=8)
+        x = (torch.randn(tokens, D, generator=generator) * 0.3).bfloat16().double().requires_grad_()
+
+        def project(value, name):
+            out = value @ weight[name].double().T
+            return out + (out.bfloat16().double() - out).detach()
+
+        qkv = torch.cat(tuple(project(x, name) for name in names[:3]), dim=-1)
+        forget = project(project(x, "w_f_a"), "w_f_b") + weight["dt_bias"]
+        rates = weight["a_log"].double().exp().repeat_interleave(dim)
+        decay = (forget * rates).sigmoid() * lower
+        beta = project(x, "w_b").sigmoid()
+        output_gate = project(project(x, "w_g_a"), "w_g_b")
+        upstream = tuple(torch.randn(value.shape, generator=generator) * 0.02
+                         for value in (qkv, decay, beta, output_gate))
+        for tensor in upstream:
+            tensor[6:] = 0
+        (expected,) = torch.autograd.grad((qkv, decay, beta, output_gate), x,
+                                         tuple(tensor.double() for tensor in upstream))
+        d_qkv, d_decay, d_beta, d_gate = upstream
+        result = torch.empty(tokens, D)
+        inputs = (d_qkv, decay.detach().float(), weight["a_log"], d_decay, beta.detach().float(), d_beta, d_gate,
+                  *(weight[name].contiguous() for name in names))
+        execute(make_kda_projection_backward(tokens, heads, D, lower), (*inputs, result), len(inputs), (), config,
+                {"program": "GLM frozen KDA QKV and gate projection adjoint", "passed": False,
+                 "checkpoint_weights": args.checkpoint is not None},
+                args.output, (expected,), ({"atol": 1e-5, "rtol": 9e-5},))
+        return
     if args.kda_output_backward:
         from blockspec.pypto_glm53_online_kda import make_kda_output_backward
         from models.glm5_3_flash.config import FLASH, KDA_DIM, KDA_H
