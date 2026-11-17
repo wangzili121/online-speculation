@@ -84,6 +84,18 @@ python scripts/validate_glm53_pypto_head_publish.py \
 
 The last check stages a device AdamW update to two real packed MLA shards, verifies the live views remain intact, and then publishes the staged weights into those views. It uses fixture gradients. The FP32 master weights matched the reference within `2.98e-8`, and the Indexer weights and neighboring layers remained byte-identical.
 
-Apply `runtime/pypto_serving_glm53/online_replay_lib.patch` after `draft_lib.patch` to enable residual capture for the two final backbone layers. Recompile into a fresh artifact directory. With this patch, `--resident-distillation` directs the draft replay to save the inputs to attention and MoE in layers 43 and 44 into a device buffer owned by the distillation session. The standard draft execution leaves the buffer untouched. The TP8 forward kernels compiled and passed the Serving ABI check after artifact reload. The device copy was checked at all four offsets with surrounding rows preserved.
+Apply `runtime/pypto_serving_glm53/online_replay_lib.patch` after `draft_lib.patch` and compile into a fresh artifact directory. For layers 43 and 44, the draft replay records the four mHC residual streams and the BF16 sublayer output at both the attention and MoE boundaries. Normal inference leaves this tape untouched. All four offsets passed an Ascend copy test with byte-identical values and untouched neighboring rows.
 
-Full online update still needs the expert-parallel adjoint and the frozen suffix wired to the MLA training programs. The final acceptance must exercise a true replay, gradient and AdamW step, then decode with the published head on the same Serving runner.
+The mHC replay uses the native coefficient calculation and backpropagates through stream collapse, post-mixing and the Sinkhorn-normalized residual coefficients. With layers 43 and 44 checkpoint parameters and fixture sublayer VJPs, the largest deviation from FP64 autograd was `1.61e-8`. The complete MoE VJP replays the native router, differentiates the selected W8A8 experts and the NZ shared expert, and applies the frozen RMSNorm adjoint. Layer 43 and 44 two-device tests used real weights for eight expert IDs and covered six active rows. The largest input-gradient error was `2.07e-7` against the FP64 STE reference. The TP8 MoE graph also compiled with 36 routed experts per rank.
+
+```bash
+python scripts/validate_glm53_pypto_mhc_replay.py \
+  --checkpoint "$MODEL" --devices 0 --layer 44 --output mhc-replay.json
+python scripts/validate_glm53_pypto_ep.py \
+  --checkpoint "$MODEL" --devices 0 1 --layer 44 --full-moe --output moe-adjoint.json
+python scripts/validate_glm53_pypto_verify.py \
+  --compile-only --mask-token-id 0 --device-greedy --frozen-suffix \
+  --artifact-dir /path/to/compile-cache --output frozen-suffix-abi.json
+```
+
+`--frozen-suffix` adds the training programs to the same Serving worker, uses views into its resident checkpoint tensors, and propagates the KL gradient through the final layer's MoE and mHC to the KDA output. The ABI and TP8 compilation passed. Executing the real TP8 case remains pending. Full online update still requires the resident KDA and MLA adjoints to feed AdamW, followed by a second decode with the updated head.

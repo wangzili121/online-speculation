@@ -1,28 +1,35 @@
 --- a/models/glm5_3_flash/layer.py
 +++ b/models/glm5_3_flash/layer.py
-@@ -149,4 +149,6 @@
+@@ -144,9 +144,12 @@
+
+
+-FORWARD_ABI_VERSION = 11
++FORWARD_ABI_VERSION = 12
+ FORWARD_PROGRAMS = ("prefill", "decode", "verify", "mtp", "orthrus")
+ from blockspec.pypto_glm53_head import head_layout
 
  _, ORTHRUS_HEAD_WIDTH = head_layout()
 +ORTHRUS_REPLAY_MODE = 4
 +ORTHRUS_TAPE_ROWS = 4 * VERIFY_QUERY_WIDTH
++ORTHRUS_TAPE_STREAMS = HC_MULT + 1
  _COMMON_PARAMETERS = (
      'embedding_rows', 'query_start_loc', 'kda_state_rows', 'active_tokens', 'execution_mode', 'target_feedback', 'target_feedback_last', 'mtp_feedback_last', 'mtp_feedback_indices', 'mtp_feedback_mode', 'mtp_skip_topk', 'mtp_enorm', 'mtp_hnorm', 'mtp_eh_proj', 'mtp_head_norm', 'mtp_lm_head_weight', 'mtp_selected_pools', 'mtp_selected_valid', 'kda_tri_incl',
-@@ -332,5 +334,5 @@
+@@ -332,5 +335,5 @@
      else:
          parameters = (_COMMON_PARAMETERS[0], "token_ids", "embedding_weight", *_COMMON_PARAMETERS[1:])
 -    head = _HEAD_PARAMETERS if kind == "decode" else (*_HEAD_PARAMETERS, "orthrus_head")
 +    head = _HEAD_PARAMETERS if kind == "decode" else (*_HEAD_PARAMETERS, "orthrus_head", "orthrus_suffix_tape")
      return parameters + head
 
-@@ -349,4 +351,7 @@
+@@ -349,4 +352,7 @@
              layouts[name] = ((DSA_NUM_LAYERS - 1, ORTHRUS_HEAD_WIDTH), torch.bfloat16)
              continue
 +        if name == "orthrus_suffix_tape":
-+            layouts[name] = ((ORTHRUS_TAPE_ROWS, HC_MULT, D), torch.bfloat16)
++            layouts[name] = ((ORTHRUS_TAPE_ROWS, ORTHRUS_TAPE_STREAMS, D), torch.bfloat16)
 +            continue
          shape, dtype = _TENSOR_LAYOUTS[name]
          if name in _QUERY_PARAMETERS:
-@@ -755,5 +760,5 @@
+@@ -755,5 +761,5 @@
          w_q, w_k, w_v, w_f_a, w_f_b, dt_bias, a_log, w_b, w_g_a, w_g_b, mixed_qkv, decay, beta, out_gate,
      )
 -    if verification_mode == 1 or verification_mode == 3:
@@ -35,10 +42,10 @@
 
  from blockspec.pypto_glm53_backbone import make_backbone_mla
 -from models.glm5_3_flash.layer import ORTHRUS_HEAD_WIDTH
-+from models.glm5_3_flash.layer import ORTHRUS_HEAD_WIDTH, ORTHRUS_REPLAY_MODE, ORTHRUS_TAPE_ROWS
++from models.glm5_3_flash.layer import ORTHRUS_HEAD_WIDTH, ORTHRUS_REPLAY_MODE, ORTHRUS_TAPE_ROWS, ORTHRUS_TAPE_STREAMS
 
  _orthrus_mla = make_backbone_mla(CAPACITY, TABLE_MAX)
-@@ -101,4 +101,18 @@
+@@ -101,4 +101,32 @@
 
 
 +@pl.jit.inline
@@ -55,15 +62,29 @@
 +    return tape
 +
 +
++
++@pl.jit.inline
++def _save_orthrus_sublayer(output: pl.Tensor, tape: pl.Tensor, start: pl.Scalar[pl.INDEX]):
++    """Record the BF16 output consumed by mHC post-mix before workspace reuse."""
++    tile = 512
++    columns = D // tile
++    for job in pl.spmd(VERIFY_QUERY_WIDTH * columns, name_hint="glm_orthrus_save_sublayer"):
++        row = job // columns
++        col = job % columns * tile
++        value = pl.reshape(pl.slice(output, [1, tile], [row, col]), [1, 1, tile])
++        tape = pl.assemble(tape, value, [start + row, HC_MULT, col])
++    return tape
++
++
  @pl.jit(auto_scope=False)
  def prefill_hidden_fwd(
-@@ -233,4 +247,5 @@
+@@ -233,4 +261,5 @@
      ws_x_hc_pair: pl.InOut[pl.Tensor[[2 * CAPACITY, HC_MULT, D], pl.BF16]],
      orthrus_head: pl.Tensor[[DSA_NUM_LAYERS - 1, ORTHRUS_HEAD_WIDTH], pl.BF16],
-+    orthrus_suffix_tape: pl.InOut[pl.Tensor[[ORTHRUS_TAPE_ROWS, HC_MULT, D], pl.BF16]],
++    orthrus_suffix_tape: pl.InOut[pl.Tensor[[ORTHRUS_TAPE_ROWS, ORTHRUS_TAPE_STREAMS, D], pl.BF16]],
      tp_partial: pld.DistributedTensor[[QUERY_ROWS_DYN, D], pl.FP32],
      tp_arrived: pld.DistributedTensor[[EP_SIZE, 1], pl.INT32],
-@@ -251,5 +266,6 @@
+@@ -251,5 +280,6 @@
      first_layer = draft * NUM_LAYERS
      layer_count = NUM_LAYERS - draft * (NUM_LAYERS - 1)
 -    device_embedding = pl.cast(mode == 1 or mode == 3, pl.INT32)
@@ -71,7 +92,7 @@
 +    device_embedding = pl.cast(mode == 1 or orthrus, pl.INT32)
      calls_per_step = pl.cast(2 * layer_count, pl.INT32) + device_embedding
      next_epoch = forward_epoch * calls_per_step + 1
-@@ -291,4 +307,8 @@
+@@ -291,4 +321,8 @@
              moe_epoch = forward_epoch * moe_count + (1 - pl.cast(draft, pl.INT32)) * moe_ord + 1
              skip_topk = pl.cast(draft, pl.INT32) * pl.read(mtp_skip_topk, [0])
 +            save_replay = mode == ORTHRUS_REPLAY_MODE and layer >= NUM_LAYERS - 2
@@ -80,40 +101,48 @@
 +                _save_orthrus_stream(current, orthrus_suffix_tape, tape_offset)
              if layer < DENSE_NUM_LAYERS:
                  _inline_prefill_dense_layer(
-@@ -317,5 +337,5 @@
+@@ -317,5 +351,5 @@
                                  selected_pools[token:token + 1, :] = mtp_selected_pools[request_index:request_index + 1, :]
                                  selected_valid[token:token + 1, :] = mtp_selected_valid[request_index:request_index + 1, :]
 -                    if mode == 3:
 +                    if orthrus:
                          _orthrus_mla(
                              current, orthrus_head, mla_w_k[dsa_ord], mla_w_v[dsa_ord],
-@@ -365,4 +385,6 @@
+@@ -365,4 +399,7 @@
                      )
                  _complete_forward_stage(ws_x_hc_mid)
 +                if save_replay:
++                    _save_orthrus_sublayer(ws_sublayer_out, orthrus_suffix_tape, tape_offset)
 +                    _save_orthrus_stream(ws_x_hc_mid, orthrus_suffix_tape, tape_offset + VERIFY_QUERY_WIDTH)
                  _inline_moe_layer(
                      ws_x_hc_mid, active_tokens, execution_mode, mhc_ffn_fn, mhc_ffn_scale, mhc_ffn_base,
-@@ -522,4 +544,5 @@
+@@ -376,4 +413,6 @@
+                 )
+             _complete_forward_stage(following)
++            if save_replay:
++                _save_orthrus_sublayer(ws_ffn_out, orthrus_suffix_tape, tape_offset + VERIFY_QUERY_WIDTH)
+     final_offset = ((first_layer + layer_count) % 2) * CAPACITY
+     current = pl.slice(ws_x_hc_pair, [rows, HC_MULT, D], [final_offset, 0, 0])
+@@ -522,4 +561,5 @@
      logits: pl.Out[pl.Tensor[[LOGIT_ROWS, HEAD_VOCAB_PAD], pl.FP32]],
      orthrus_head: pl.Tensor[[DSA_NUM_LAYERS - 1, ORTHRUS_HEAD_WIDTH], pl.BF16],
-+    orthrus_suffix_tape: pl.InOut[pl.Tensor[[ORTHRUS_TAPE_ROWS, HC_MULT, D], pl.BF16]],
++    orthrus_suffix_tape: pl.InOut[pl.Tensor[[ORTHRUS_TAPE_ROWS, ORTHRUS_TAPE_STREAMS, D], pl.BF16]],
      tp_partial: pld.DistributedTensor[[QUERY_ROWS_DYN, D], pl.FP32],
      tp_arrived: pld.DistributedTensor[[EP_SIZE, 1], pl.INT32],
-@@ -557,5 +580,5 @@
+@@ -557,5 +597,5 @@
          selected_pools, selected_valid, router_gate_w, router_gate_bias, moe_w_gate_up,
          moe_w_gate_up_scale, moe_w_down, moe_w_down_scale, moe_shared_w_gate_up, moe_shared_w_gate_up_scale,
 -        moe_shared_w_down, moe_shared_w_down_scale, logit_row_indices, head_hidden, ws_x_hc_pair, orthrus_head,
 +        moe_shared_w_down, moe_shared_w_down_scale, logit_row_indices, head_hidden, ws_x_hc_pair, orthrus_head, orthrus_suffix_tape,
          tp_partial, tp_arrived, lane_x, lane_aux, lane_count,
          count_ready, x_ready, slot_out, return_ready, forward_epoch,
-@@ -715,4 +738,5 @@
+@@ -715,4 +755,5 @@
      logits: pl.Out[pl.Tensor[[RANKS, LOGIT_ROWS, HEAD_VOCAB_PAD], pl.FP32]],
      orthrus_head: pl.Tensor[[RANKS, DSA_NUM_LAYERS - 1, ORTHRUS_HEAD_WIDTH], pl.BF16],
-+    orthrus_suffix_tape: pl.InOut[pl.Tensor[[RANKS, ORTHRUS_TAPE_ROWS, HC_MULT, D], pl.BF16]],
++    orthrus_suffix_tape: pl.InOut[pl.Tensor[[RANKS, ORTHRUS_TAPE_ROWS, ORTHRUS_TAPE_STREAMS, D], pl.BF16]],
      forward_epoch: pl.Scalar[pl.INT32],
  ):
-@@ -760,5 +784,5 @@
+@@ -760,5 +801,5 @@
              moe_w_gate_up_scale[rank], moe_w_down[rank], moe_w_down_scale[rank], moe_shared_w_gate_up[rank], moe_shared_w_gate_up_scale[rank],
              moe_shared_w_down[rank], moe_shared_w_down_scale[rank], logit_row_indices[rank], head_hidden[rank], ws_x_hc_pair[rank],
 -            final_norm[rank], lm_head_weight[rank], logits[rank], orthrus_head[rank], tp_partial, tp_arrived,

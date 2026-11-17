@@ -46,7 +46,7 @@ def make_mhc_pre_backward(width=4096, tokens=6, *, device_entry=False):
     return mhc_pre_backward if device_entry else entry
 
 
-def make_mhc_post_backward(width=4096, tokens=6):
+def make_mhc_post_backward(width=4096, tokens=6, *, device_entry=False):
     """Differentiate ``post * sublayer + residual_mix.T @ streams``."""
     import pypto.language as pl
 
@@ -134,10 +134,10 @@ def make_mhc_post_backward(width=4096, tokens=6):
               dy: pl.Out[pl.Tensor], dx: pl.Out[pl.Tensor], dpost: pl.Out[pl.Tensor], dmix: pl.Out[pl.Tensor]):
         backward(sublayer, residual, post, mix, upstream, dy, dx, dpost, dmix, device=0)
 
-    return entry
+    return backward if device_entry else entry
 
 
-def make_sinkhorn_backward(tokens, iterations, epsilon):
+def make_sinkhorn_backward(tokens, iterations, epsilon, *, device_entry=False):
     """Backpropagate exact GLM residual-mixing normalization on 4x4 matrices."""
     import pypto.language as pl
 
@@ -206,10 +206,10 @@ def make_sinkhorn_backward(tokens, iterations, epsilon):
     def entry(logits: pl.Tensor, gradient: pl.Tensor, output: pl.Out[pl.Tensor]):
         backward(logits, gradient, output, device=0)
 
-    return entry
+    return backward if device_entry else entry
 
 
-def make_mhc_mix_backward(tokens, width, norm_epsilon, mix_epsilon):
+def make_mhc_mix_backward(tokens, width, norm_epsilon, mix_epsilon, *, device_entry=False):
     """Backpropagate the frozen coefficient projection and its input RMS."""
     import pypto.language as pl
 
@@ -219,9 +219,11 @@ def make_mhc_mix_backward(tokens, width, norm_epsilon, mix_epsilon):
     if tokens < 1 or width < tile or width % tile or norm_epsilon <= 0 or mix_epsilon <= 0:
         raise ValueError("invalid GLM mHC coefficient geometry")
 
+    saved_shape = [tokens * streams, width] if device_entry else [tokens, flat_width]
+
     @pl.jit
     def mhc_mix_backward(
-        activation: pl.Tensor[[tokens, flat_width], pl.BF16],
+        saved: pl.Tensor[saved_shape, pl.BF16],
         function: pl.Tensor[[coefficients, flat_width], pl.BF16],
         scale: pl.Tensor[[3], pl.FP32],
         pre: pl.Tensor[[tokens, padded], pl.FP32],
@@ -231,6 +233,7 @@ def make_mhc_mix_backward(tokens, width, norm_epsilon, mix_epsilon):
         d_residual_logits: pl.Tensor[[tokens * padded, padded], pl.FP32],
         output: pl.Out[pl.Tensor[[tokens, flat_width], pl.FP32]],
     ):
+        activation = pl.reshape(saved, [tokens, flat_width])
         # A token's scalar writes need a dedicated 128-byte cache line.
         d_dot = pl.create_tensor([tokens, 32], dtype=pl.FP32)
         projected = pl.create_tensor([tokens, flat_width], dtype=pl.FP32)
@@ -279,4 +282,193 @@ def make_mhc_mix_backward(tokens, width, norm_epsilon, mix_epsilon):
               d_pre: pl.Tensor, d_post: pl.Tensor, d_residual_logits: pl.Tensor, output: pl.Out[pl.Tensor]):
         mhc_mix_backward(activation, function, scale, pre, post, d_pre, d_post, d_residual_logits, output, device=0)
 
-    return entry
+    return mhc_mix_backward if device_entry else entry
+
+
+def make_mhc_sublayer_adjoint(ranks, block_rows=6):
+    """Wrap an opaque sublayer VJP in the GLM four-stream residual VJP."""
+    import pypto.language as pl
+    import pypto.language.distributed as pld
+    from models.glm5_3_flash.config import D, FLASH, HC_MULT
+    from models.glm5_3_flash.elementwise import accurate_rsqrt
+    from models.glm5_3_flash.linear import bf16_linear_row
+    from models.glm5_3_flash.mhc import mhc_mixes, mhc_pre
+
+    rows, streams, pad, tile = 16, HC_MULT, 8, 128
+    width, coeffs = streams * D, streams * (2 + streams)
+    epsilon = FLASH.rms_norm_eps
+    if not 0 < block_rows <= rows:
+        raise ValueError("invalid GLM mHC tape rows")
+    post_vjp = make_mhc_post_backward(D, rows, device_entry=True)
+    pre_vjp = make_mhc_pre_backward(D, rows, device_entry=True)
+    sinkhorn_vjp = make_sinkhorn_backward(rows, FLASH.hc_sinkhorn_iters, FLASH.hc_eps, device_entry=True)
+    mix_vjp = make_mhc_mix_backward(rows, D, FLASH.rms_norm_eps, FLASH.hc_eps, device_entry=True)
+
+    @pl.jit
+    def replay(
+        tape: pl.Tensor[[block_rows, streams + 1, D], pl.BF16],
+        function: pl.Tensor[[coeffs, width], pl.BF16],
+        scale: pl.Tensor[[3], pl.FP32], base: pl.Tensor[[coeffs], pl.FP32],
+        residual: pl.Out[pl.Tensor[[rows * streams, D], pl.BF16]],
+        sublayer: pl.Out[pl.Tensor[[rows, D], pl.BF16]],
+        collapse: pl.Out[pl.Tensor[[rows, D], pl.BF16]],
+        pre: pl.Out[pl.Tensor[[rows, pad], pl.FP32]],
+        post: pl.Out[pl.Tensor[[rows, pad], pl.FP32]],
+        mix: pl.Out[pl.Tensor[[rows * streams, pad], pl.FP32]],
+        logits: pl.Out[pl.Tensor[[rows * pad, pad], pl.FP32]],
+    ):
+        input_rows = residual
+        tape_rows = pl.reshape(tape, [block_rows * (streams + 1), D])
+        for task in pl.spmd(rows * (D // tile), name_hint="glm_mhc_unpack_replay"):
+            t = task // (D // tile)
+            col = task % (D // tile) * tile
+            if t < block_rows:
+                source = t * (streams + 1)
+                input_rows[t * streams:t * streams + streams, col:col + tile] = tape_rows[
+                    source:source + streams, col:col + tile
+                ]
+                sublayer[t:t + 1, col:col + tile] = tape_rows[source + streams:source + streams + 1, col:col + tile]
+            else:
+                input_rows[t * streams:t * streams + streams, col:col + tile] = pl.full(
+                    [streams, tile], dtype=pl.BF16, value=0.0
+                )
+                sublayer[t:t + 1, col:col + tile] = pl.full([1, tile], dtype=pl.BF16, value=0.0)
+        x = pl.reshape(input_rows, [rows, streams, D])
+        p = pl.create_tensor([rows, streams], dtype=pl.FP32)
+        q = pl.create_tensor([rows, streams], dtype=pl.FP32)
+        r = pl.create_tensor([rows, streams, streams], dtype=pl.FP32)
+        p, q, r = mhc_mixes(x, function, scale, base, p, q, r)
+        mhc_pre(x, p, collapse)
+        r_flat = pl.reshape(r, [rows * streams, streams])
+        flat = pl.reshape(x, [rows, width])
+        for token in pl.spmd(rows, name_hint="glm_mhc_training_coefficients"):
+            a = pl.full([1, pad], dtype=pl.FP32, value=0.0)
+            b = pl.full([1, pad], dtype=pl.FP32, value=0.0)
+            c = pl.full([streams, pad], dtype=pl.FP32, value=0.0)
+            for stream in pl.unroll(streams):
+                pl.write(a, [0, stream], pl.read(p, [token, stream]))
+                pl.write(b, [0, stream], pl.read(q, [token, stream]))
+                for dest in pl.unroll(streams):
+                    pl.write(c, [stream, dest], pl.read(r_flat, [token * streams + stream, dest]))
+            pre[token:token + 1, :] = a
+            post[token:token + 1, :] = b
+            mix[token * streams:token * streams + streams, :] = c
+        # Sinkhorn's input logits are absent from the deployed forward outputs.
+        # Replay the coefficient projection from its saved BF16 residual streams.
+        for token_idx in pl.spmd(rows, name_hint="glm_mhc_training_sinkhorn_logits"):
+            squares = pl.full([1, tile], dtype=pl.FP32, value=0.0)
+            for offset in pl.range(0, width, tile):
+                u = pl.cast(flat[token_idx:token_idx + 1, offset:offset + tile], pl.FP32)
+                squares = pl.add(squares, pl.mul(u, u))
+            square_rows = pl.col_expand(pl.full([pad, tile], dtype=pl.FP32, value=0.0), squares)
+            variance = pl.add(pl.mul(pl.row_sum(square_rows), 1.0 / width), epsilon)
+            inverse = pl.read(accurate_rsqrt(variance), [0, 0])
+            first = bf16_linear_row(flat, function, token_idx, 2 * streams, pad, width, tile, 2)
+            second = bf16_linear_row(flat, function, token_idx, 2 * streams + pad, pad, width, tile, 2)
+            block = pl.create_tensor([pad, pad], dtype=pl.FP32)
+            for i in pl.unroll(pad):
+                for j in pl.unroll(pad):
+                    lane = i % streams * streams + j % streams
+                    value = pl.cast(0.0, pl.FP32)
+                    if lane < pad:
+                        value = pl.read(first, [0, lane])
+                    else:
+                        value = pl.read(second, [0, lane - pad])
+                    pl.write(block, [i, j], value * inverse * pl.read(scale, [2]) + pl.read(base, [2 * streams + lane]))
+            logits[token_idx * pad:token_idx * pad + pad, :] = block
+        return residual, sublayer, collapse, pre, post, mix, logits
+
+    @pl.jit
+    def pad_mix_gradient(
+        source: pl.Tensor[[rows * streams, pad], pl.FP32],
+        output: pl.Out[pl.Tensor[[rows * pad, pad], pl.FP32]],
+    ):
+        for row in pl.spmd(rows * pad, name_hint="glm_mhc_sinkhorn_gradient_pad"):
+            src = row // pad * streams + row % streams
+            line = pl.full([1, pad], dtype=pl.FP32, value=0.0)
+            for col in pl.unroll(pad):
+                pl.write(line, [0, col], pl.read(source, [src, col % streams]))
+            output[row:row + 1, :] = line
+        return output
+
+    @pl.jit
+    def combine(
+        direct: pl.Tensor[[rows * streams, D], pl.FP32],
+        via_pre: pl.Tensor[[rows * streams, D], pl.FP32],
+        via_mix: pl.Tensor[[rows, width], pl.FP32],
+        output: pl.Out[pl.Tensor[[rows * streams, D], pl.FP32]],
+    ):
+        coeff = pl.reshape(via_mix, [rows * streams, D])
+        for task in pl.spmd(rows * streams * (D // tile), name_hint="glm_mhc_residual_vjp"):
+            row = task // (D // tile)
+            col = task % (D // tile) * tile
+            data = pl.add(direct[row:row + 1, col:col + tile], via_pre[row:row + 1, col:col + tile])
+            output[row:row + 1, col:col + tile] = pl.add(data, coeff[row:row + 1, col:col + tile])
+        return output
+
+    @pl.jit.host
+    def enter(
+        tape: pl.Tensor[[ranks, block_rows, streams + 1, D], pl.BF16],
+        function: pl.Tensor[[ranks, coeffs, width], pl.BF16],
+        scale: pl.Tensor[[ranks, 3], pl.FP32],
+        base: pl.Tensor[[ranks, coeffs], pl.FP32],
+        upstream: pl.Tensor[[ranks, rows * streams, D], pl.FP32],
+        residual: pl.Out[pl.Tensor[[ranks, rows * streams, D], pl.BF16]],
+        collapse: pl.Out[pl.Tensor[[ranks, rows, D], pl.BF16]],
+        pre: pl.Out[pl.Tensor[[ranks, rows, pad], pl.FP32]],
+        post: pl.Out[pl.Tensor[[ranks, rows, pad], pl.FP32]],
+        logits: pl.Out[pl.Tensor[[ranks, rows * pad, pad], pl.FP32]],
+        dy: pl.Out[pl.Tensor[[ranks, rows, D], pl.FP32]],
+        direct: pl.Out[pl.Tensor[[ranks, rows * streams, D], pl.FP32]],
+        dpost: pl.Out[pl.Tensor[[ranks, rows, pad], pl.FP32]],
+        dmix: pl.Out[pl.Tensor[[ranks, rows * streams, pad], pl.FP32]],
+        sublayer_scratch: pl.InOut[pl.Tensor[[ranks, rows, D], pl.BF16]],
+        mix_scratch: pl.InOut[pl.Tensor[[ranks, rows * streams, pad], pl.FP32]],
+    ):
+        for rank in pl.range(pld.world_size()):
+            y = sublayer_scratch[rank]
+            mix = mix_scratch[rank]
+            x = residual[rank]
+            p = pre[rank]
+            q = post[rank]
+            z = collapse[rank]
+            logits_out = logits[rank]
+            replayed_x, replayed_y, _, replayed_pre, replayed_post, replayed_mix, replayed_logits = replay(
+                tape[rank], function[rank], scale[rank], base[rank], x, y, z, p, q, mix, logits_out, device=rank,
+            )
+            post_vjp(replayed_y, replayed_x, replayed_post, replayed_mix, upstream[rank],
+                     dy[rank], direct[rank], dpost[rank], dmix[rank], device=rank)
+
+    @pl.jit.host
+    def leave(
+        residual: pl.Tensor[[ranks, rows * streams, D], pl.BF16],
+        function: pl.Tensor[[ranks, coeffs, width], pl.BF16],
+        scale: pl.Tensor[[ranks, 3], pl.FP32],
+        pre: pl.Tensor[[ranks, rows, pad], pl.FP32],
+        post: pl.Tensor[[ranks, rows, pad], pl.FP32],
+        logits: pl.Tensor[[ranks, rows * pad, pad], pl.FP32],
+        direct: pl.Tensor[[ranks, rows * streams, D], pl.FP32],
+        dpost: pl.Tensor[[ranks, rows, pad], pl.FP32],
+        dmix: pl.Tensor[[ranks, rows * streams, pad], pl.FP32],
+        dcollapse: pl.Tensor[[ranks, rows, D], pl.FP32],
+        output: pl.Out[pl.Tensor[[ranks, rows * streams, D], pl.FP32]],
+        via_pre_scratch: pl.InOut[pl.Tensor[[ranks, rows * streams, D], pl.FP32]],
+        dpre_scratch: pl.InOut[pl.Tensor[[ranks, rows, pad], pl.FP32]],
+        packed_grad_scratch: pl.InOut[pl.Tensor[[ranks, rows * pad, pad], pl.FP32]],
+        dlogits_scratch: pl.InOut[pl.Tensor[[ranks, rows * pad, pad], pl.FP32]],
+        via_mix_scratch: pl.InOut[pl.Tensor[[ranks, rows, width], pl.FP32]],
+    ):
+        for rank in pl.range(pld.world_size()):
+            via_pre = via_pre_scratch[rank]
+            dpre = dpre_scratch[rank]
+            packed_grad = packed_grad_scratch[rank]
+            dlogits = dlogits_scratch[rank]
+            via_mix = via_mix_scratch[rank]
+            x = residual[rank]
+            dr, dp = pre_vjp(x, pre[rank], dcollapse[rank], via_pre, dpre, device=rank)
+            ds = pad_mix_gradient(dmix[rank], packed_grad, device=rank)
+            dl = sinkhorn_vjp(logits[rank], ds, dlogits, device=rank)
+            dx = mix_vjp(x, function[rank], scale[rank], pre[rank], post[rank], dp, dpost[rank], dl, via_mix, device=rank)
+            combine(direct[rank], dr, dx, output[rank], device=rank)
+
+    return enter, leave

@@ -22,11 +22,14 @@ def prepare_distillation(api, compiler):
 class ResidentDistillation:
     """Own the replay banks and device gradients for one Serving runner."""
 
-    def __init__(self, runner):
+    def __init__(self, runner, *, frozen_suffix=False):
         self.runner = runner
         self.runtime = runner.runtime
         self.owned = []
         self.suffix_tape = None
+        self.use_frozen_suffix = frozen_suffix
+        self.frozen_suffix = None
+        self.kda_output_gradient = None
 
     def allocate(self, shape, dtype):
         from pypto.runtime import StackedDeviceTensor
@@ -73,7 +76,12 @@ class ResidentDistillation:
                 self.loss = self.allocate((ROWS, 8), torch.float32)
                 self.gradient = self.allocate((ROWS * api.HC_MULT, api.D), torch.float32)
                 if hasattr(api, "ORTHRUS_TAPE_ROWS"):
-                    self.suffix_tape = self.allocate((api.ORTHRUS_TAPE_ROWS, api.HC_MULT, api.D), torch.bfloat16)
+                    streams = getattr(api, "ORTHRUS_TAPE_STREAMS", api.HC_MULT)
+                    self.suffix_tape = self.allocate((api.ORTHRUS_TAPE_ROWS, streams, api.D), torch.bfloat16)
+                if self.use_frozen_suffix:
+                    from .pypto_glm53_online_frozen import ResidentFrozenSuffix
+
+                    self.frozen_suffix = ResidentFrozenSuffix(self)
             except BaseException:
                 self.close()
                 raise
@@ -85,6 +93,8 @@ class ResidentDistillation:
             self.runtime.free_tensor(handle, worker_id=rank)
             self.owned.pop()
         self.suffix_tape = None
+        self.frozen_suffix = None
+        self.kda_output_gradient = None
 
     def __exit__(self, exc_type, _error, _traceback):
         if exc_type is None or self.runner._dispatch_error is None:
@@ -132,6 +142,8 @@ class ResidentDistillation:
                     self.dlogit, self.local, self.combined, self.loss, self.gradient,
                     valid, epoch, config=runner.config,
                 )
+                if self.frozen_suffix is not None:
+                    self.kda_output_gradient = self.frozen_suffix.step(self.gradient)
             except BaseException as error:
                 runner._poison_forwards(error)
                 raise

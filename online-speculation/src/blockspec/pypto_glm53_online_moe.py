@@ -223,8 +223,7 @@ def _make_expert_swiglu_backward(rows, hidden, limit):
     return expert_swiglu_backward
 
 
-def make_expert_backward(rows, width, hidden, limit):
-    """Replay and differentiate a frozen routed W8A8 expert."""
+def _make_routed_expert_stages(rows, width, hidden, limit):
     import pypto.language as pl
 
     if limit <= 0:
@@ -256,6 +255,39 @@ def make_expert_backward(rows, width, hidden, limit):
         return weighted, route_grad
 
     expert_swiglu_backward = _make_expert_swiglu_backward(rows, hidden, limit)
+    return replay, apply_route, down, expert_swiglu_backward, gate_up
+
+
+def make_expert_backward(rows, width, hidden, limit, *, inline=False):
+    """Replay and differentiate a frozen routed W8A8 expert."""
+    import pypto.language as pl
+
+    replay, apply_route, down, swiglu, gate_up = _make_routed_expert_stages(rows, width, hidden, limit)
+    if inline:
+        inline_replay = pl.jit.inline(replay._func)
+        inline_route = pl.jit.inline(apply_route._func)
+        inline_down = pl.jit.inline(down._func)
+        inline_swiglu = pl.jit.inline(swiglu._func)
+        inline_gate_up = pl.jit.inline(gate_up._func)
+
+        @pl.jit.inline
+        def expert_vjp(upstream: pl.Tensor, x: pl.Tensor, x_scale: pl.Tensor, route: pl.Tensor,
+                       gate_up_weight: pl.Tensor, gate_up_scale: pl.Tensor, down_weight: pl.Tensor,
+                       down_scale: pl.Tensor, grad_input: pl.Tensor, grad_route: pl.Tensor):
+            weighted = pl.create_tensor([rows, width], dtype=pl.FP32)
+            activation_grad = pl.create_tensor([rows, hidden], dtype=pl.FP32)
+            preactivation_grad = pl.create_tensor([rows, 2 * hidden], dtype=pl.FP32)
+            gate_up_tape = pl.create_tensor([rows, 2 * hidden], dtype=pl.FP32)
+            unweighted = pl.create_tensor([rows, width], dtype=pl.BF16)
+            raw, values = inline_replay(x, x_scale, gate_up_weight, gate_up_scale, down_weight, down_scale,
+                                        gate_up_tape, unweighted)
+            dy, route_gradient = inline_route(upstream, values, route, weighted, grad_route)
+            d_activation = inline_down(dy, down_weight, down_scale, activation_grad)
+            d_raw = inline_swiglu(raw, d_activation, preactivation_grad)
+            dx = inline_gate_up(d_raw, gate_up_weight, gate_up_scale, grad_input)
+            return dx, route_gradient
+
+        return expert_vjp
 
     @pl.jit.host
     def entry(
@@ -272,7 +304,7 @@ def make_expert_backward(rows, width, hidden, limit):
                                      gate_up_tape, unweighted, device=0)
         dy, _route = apply_route(upstream, unweighted_out, route, weighted, grad_route, device=0)
         d_activation = down(dy, down_weight, down_scale, activation_grad, device=0)
-        d_raw = expert_swiglu_backward(raw, d_activation, preactivation_grad, device=0)
+        d_raw = swiglu(raw, d_activation, preactivation_grad, device=0)
         gate_up(d_raw, gate_up_weight, gate_up_scale, grad_input, device=0)
 
     return entry
@@ -303,7 +335,7 @@ def _make_expert_nz_unpack(out_features, in_features):
     return unpack
 
 
-def make_shared_expert_backward(rows, width, hidden, limit):
+def make_shared_expert_backward(rows, width, hidden, limit, *, device_stages=False):
     """Backpropagate through one TP shard of the resident NZ shared expert."""
     import pypto.language as pl
 
@@ -318,10 +350,16 @@ def make_shared_expert_backward(rows, width, hidden, limit):
     project = _make_expert_projection(rows, width, 2 * hidden, round_output=True)
 
     @pl.jit
-    def replay(x: pl.Tensor, x_scale: pl.Tensor, weights: pl.Tensor, weight_scale: pl.Tensor,
-               raw: pl.Out[pl.Tensor[[rows, 2 * hidden], pl.FP32]]):
+    def replay(
+        x: pl.Tensor[[rows, width], pl.INT8], x_scale: pl.Tensor[[rows, 8], pl.FP32],
+        weights: pl.Tensor[[2 * hidden, width], pl.INT8], weight_scale: pl.Tensor[[2 * hidden], pl.FP32],
+        raw: pl.Out[pl.Tensor[[rows, 2 * hidden], pl.FP32]],
+    ):
         raw = project(x, x_scale, weights, weight_scale, raw)
         return raw
+
+    if device_stages:
+        return unpack_gate_up, unpack_down, replay, down, swiglu, gate_up
 
     @pl.jit.host
     def entry(
@@ -344,7 +382,7 @@ def make_shared_expert_backward(rows, width, hidden, limit):
     return entry
 
 
-def make_router_replay():
+def make_router_replay(*, device_entry=False):
     """Recover the actual expert routes and the unnormalized selected sigmoid scores."""
     import pypto.language as pl
     from models.glm5_3_flash.config import D, N_EXPERTS, TOPK
@@ -390,10 +428,10 @@ def make_router_replay():
               quantized: pl.Out[pl.Tensor], scale: pl.Out[pl.Tensor], active: pl.Scalar[pl.INT32]):
         replay(x, norm_weight, weight, correction, selected, coefficients, sigmoid, quantized, scale, active, device=0)
 
-    return entry
+    return replay if device_entry else entry
 
 
-def make_router_backward(rows, width, experts, route_scale):
+def make_router_backward(rows, width, experts, route_scale, *, device_entry=False):
     """Differentiate the selected sigmoid weights with the forward Top-K IDs fixed."""
     import pypto.language as pl
 
@@ -442,4 +480,4 @@ def make_router_backward(rows, width, experts, route_scale):
               grad_input: pl.Out[pl.Tensor], active: pl.Scalar[pl.INT32]):
         router_backward(sigmoid, indices, route_gradient, gate_weight, grad_input, active, device=0)
 
-    return entry
+    return router_backward if device_entry else entry

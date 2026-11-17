@@ -103,7 +103,7 @@ def run_cases(runner, vocab_size, mask_id=None):
     return report
 
 
-def run_resident_distillation(runner, mask_id):
+def run_resident_distillation(runner, mask_id, *, frozen_suffix=False):
     """Compare two real Serving replay rounds with a full-vocabulary reference."""
     import torch
 
@@ -121,7 +121,7 @@ def run_resident_distillation(runner, mask_id):
     valid = api.VERIFY_QUERY_WIDTH - 1
     report = []
     last_tape = None
-    with ResidentDistillation(runner) as training:
+    with ResidentDistillation(runner, frozen_suffix=frozen_suffix) as training:
         for anchor in (2, 7):
             student, teacher = collect_clean_logits(runner, tokens, anchor, 2, mask_id)
             logits_a = student.double().log_softmax(1)
@@ -143,13 +143,25 @@ def run_resident_distillation(runner, mask_id):
                         "loss_max_abs": float((total[:valid] - expected_loss).abs().max())}
             if training.suffix_tape is not None:
                 tape = download(training.suffix_tape, 0, torch.bfloat16)
-                views = tape.reshape(4, api.VERIFY_QUERY_WIDTH, api.HC_MULT, api.D)
+                views = tape.reshape(4, api.VERIFY_QUERY_WIDTH, tape.shape[1], api.D)
                 if not torch.isfinite(tape).all() or any(not t.count_nonzero() for t in views):
                     raise AssertionError("GLM replay did not capture all four suffix boundaries")
+                if tape.shape[1] > api.HC_MULT and any(not t[:, -1].count_nonzero() for t in views):
+                    raise AssertionError("GLM replay did not capture the four sublayer outputs")
                 if last_tape is not None and torch.equal(last_tape, tape):
                     raise AssertionError("GLM suffix tape is stale after changing the anchor")
                 last_tape = tape
                 evidence["suffix_rows"] = len(tape)
+            if frozen_suffix:
+                kda_grad = download(training.kda_output_gradient, 0, torch.float32)
+                if not torch.isfinite(kda_grad).all() or not kda_grad[:valid].count_nonzero():
+                    raise AssertionError("resident suffix produced an invalid KDA output gradient")
+                if kda_grad[valid:].count_nonzero():
+                    raise AssertionError("resident suffix differentiated padded output rows")
+                for rank in range(1, api.RANKS):
+                    replica = download(training.kda_output_gradient, rank, torch.float32)
+                    torch.testing.assert_close(replica, kda_grad, atol=3e-6, rtol=2e-4)
+                evidence["kda_output_grad_norm"] = float(kda_grad.norm())
             report.append(evidence)
     return report
 
@@ -163,12 +175,15 @@ def main():
     parser.add_argument("--mask-token-id", type=int, help="also compile and exercise the actual draft model")
     parser.add_argument("--device-greedy", action="store_true", help="return draft and verifier token IDs from the NPU")
     parser.add_argument("--resident-distillation", action="store_true", help="check the Serving-to-PyPTO replay and KL path")
+    parser.add_argument("--frozen-suffix", action="store_true", help="extend resident distillation through the final MoE")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     if len(set(args.devices)) != 8 or args.output.exists():
         parser.error("use eight distinct devices and a new output file")
     if args.checkpoint is None and not args.compile_only:
         parser.error("a GLM W8A8 checkpoint is required for device execution")
+    if args.frozen_suffix:
+        args.resident_distillation = True
     if (args.resident_distillation or args.device_greedy) and args.mask_token_id is None:
         parser.error("--resident-distillation and --device-greedy require --mask-token-id")
 
@@ -197,6 +212,11 @@ def main():
             programs["_auxiliary"][PROGRAM] = prepare_distillation(api, compiler)
             result["resident_distillation_compiled"] = True
             result["suffix_tape_enabled"] = hasattr(api, "ORTHRUS_TAPE_ROWS")
+        if args.frozen_suffix:
+            from blockspec.pypto_glm53_online_frozen import prepare_frozen_suffix
+
+            programs["_auxiliary"].update(prepare_frozen_suffix(api, compiler))
+            result["frozen_suffix_compiled"] = True
         result["compiled"] = True
         if args.compile_only:
             view = Glm53ModelRunner(api, programs, None, args.devices, "a2a3", orthrus_mask_token_id=args.mask_token_id)
@@ -213,7 +233,9 @@ def main():
         if args.mask_token_id is not None:
             result["draft"] = run_cases(runner, vocab_size, args.mask_token_id)
         if args.resident_distillation:
-            result["resident_distillation"] = run_resident_distillation(runner, args.mask_token_id)
+            result["resident_distillation"] = run_resident_distillation(
+                runner, args.mask_token_id, frozen_suffix=args.frozen_suffix,
+            )
         result.update(passed=True, executed=True)
     except BaseException as error:
         result["error"] = repr(error)
