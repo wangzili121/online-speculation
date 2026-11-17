@@ -17,13 +17,16 @@ from blockspec.pypto_dsv41_draft import (
     prepare_output,
     prepare_qkv,
 )
+from blockspec.pypto_dsv41_indexer import INDEX_DIM, INDEX_HEADS, make_indexer_program
 from blockspec.pypto_dsv41_sparse import make_sparse_attention
 from blockspec.pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW, make_swa_attention
 from blockspec.vllm_ascend.dsv41_attention import PagedRows, draft_attention
+from dsv41_pypto_indexer_fixture import check as check_indexer
+from dsv41_pypto_indexer_fixture import fixture as indexer_fixture
 from validate_dsv41_pypto_swa import compressed_fixture, fixture, swa_table
 
 
-def synthetic_weights(config, rank):
+def synthetic_weights(config, rank, *, indexer=False):
     generator = torch.Generator().manual_seed(492)
     hidden, latent = config["hidden_size"], config["q_lora_rank"]
     heads = config["num_attention_heads"]
@@ -44,6 +47,9 @@ def synthetic_weights(config, rank):
     }
     packed = prepare_qkv(weights, config, tp_rank=rank)
     packed.update(prepare_output(weights, config, tp_rank=rank))
+    if indexer:
+        packed.update(idx_wq=projection(latent, INDEX_HEADS * INDEX_DIM),
+                      idx_weight=projection(hidden, INDEX_HEADS))
     width = heads // 4 * HEAD_DIM
     torch.testing.assert_close(packed["wq_b"].T, weights["wq_b.weight"][rank * width:(rank + 1) * width],
                                atol=0, rtol=0)
@@ -60,12 +66,16 @@ def main():
     parser.add_argument("--head", type=Path)
     parser.add_argument("--layer", type=int, default=0)
     parser.add_argument("--ratio", type=int, choices=(1, 2), help="include the corresponding compressed KV path")
+    parser.add_argument("--indexer", action="store_true", help="select the compressed history with draft QLI")
+    parser.add_argument("--anchor", type=int)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--simulate", action="store_true")
     mode.add_argument("--compile-only", action="store_true")
     args = parser.parse_args()
     if bool(args.model) != bool(args.head) or args.output.exists():
         parser.error("provide both model and head or neither, and choose a new output file")
+    if args.indexer and not args.ratio:
+        parser.error("--indexer requires --ratio")
     sys.path.insert(0, str(args.lib.resolve()))
 
     def native(name):
@@ -83,11 +93,16 @@ def main():
         artifact_role = manifest["artifact_role"]
     else:
         config = asdict(native("config").FLASH)
-        operands = synthetic_weights(config, args.tp_rank)
+        operands = synthetic_weights(config, args.tp_rank, indexer=args.indexer)
+    if args.indexer and "idx_wq" not in operands:
+        parser.error("--indexer needs a layer owning diffusion index projections")
     hidden, latent = config["hidden_size"], config["q_lora_rank"]
     heads, rope_dim = config["num_attention_heads"] // 4, config["qk_rope_head_dim"]
     width = heads * HEAD_DIM
-    anchor = 1025 if args.ratio else 257
+    max_context = native("decode_network").MAX_CONTEXT
+    anchor = args.anchor if args.anchor is not None else (1025 if args.ratio else 257)
+    if not 0 <= anchor <= max_context:
+        parser.error(f"--anchor must be within the A3 context limit of {max_context}")
     x = torch.randn((BLOCK, hidden), generator=torch.Generator().manual_seed(49)).bfloat16()
     phase = torch.arange(anchor, anchor + BLOCK)[:, None] * torch.linspace(0.001, 0.11, rope_dim // 2)[None]
     cos, sin = phase.cos(), phase.sin()
@@ -108,8 +123,20 @@ def main():
     compiled_qkv = qkv.compile(config=options)
     compiled_swa = swa.compile(*attention_args, config=options)
     if args.ratio:
-        compressed, _ = compressed_fixture(anchor, args.ratio, 75, local)
-        sparse_args = [*compressed[1:6], local[-2], local[-1], *compressed[-2:]]
+        if args.indexer:
+            geometry, index_buffers, index_outputs, kv_pages, zeros, gold_kv = indexer_fixture(
+                config, anchor, args.ratio, max_context=max_context)
+            buffers.update(index_buffers)
+            indexer_program = make_indexer_program(native, config, geometry)
+            indexer_args = [buffers[name] for name in indexer_program.param_names]
+            compiled_indexer = indexer_program.compile(config=options)
+            compressed = [buffers["physical_rows"], buffers["lengths"], buffers["bias"], zeros]
+            outputs = [torch.empty_like(value) for value in local[-2:]]
+        else:
+            compressed_fixture_args, _ = compressed_fixture(anchor, args.ratio, 75, local)
+            kv_pages, *compressed = compressed_fixture_args[1:6]
+            outputs = compressed_fixture_args[-2:]
+        sparse_args = [kv_pages, *compressed, local[-2], local[-1], *outputs]
         sparse = make_sparse_attention(head_major_swa=True)
         compiled_sparse = sparse.compile(buffers["query"].view(-1, HEAD_DIM), *sparse_args, config=options)
     attention = sparse_args[-2] if args.ratio else local[-2]
@@ -144,6 +171,8 @@ def main():
         try:
             worker.run(compiled_qkv, *(bind(tensor) for tensor in qkv_args))
             worker.run(compiled_swa, *(bind(tensor) for tensor in attention_args))
+            if args.indexer:
+                worker.run(compiled_indexer, *(bind(tensor) for tensor in indexer_args))
             if args.ratio:
                 flat_query = worker.view_tensor(bind(buffers["query"]), (BLOCK * heads, HEAD_DIM))
                 worker.run(compiled_sparse, flat_query, *(bind(tensor) for tensor in sparse_args))
@@ -153,6 +182,10 @@ def main():
                 compressed_output, compressed_lse, compressed_pages = map(read, (
                     sparse_args[-2], sparse_args[-1], sparse_args[0],
                 ))
+            if args.indexer:
+                index_results = {name: read(buffers[name]) for name in index_outputs}
+                for name in ("index_codes", "index_scales"):
+                    assert torch.equal(read(buffers[name]).view(torch.uint8), buffers[name].view(torch.uint8))
             projected = {name: read(buffers[name]) for name, _ in qkv_shapes}
             output, lse, pages_after = map(read, (local[-2], local[-1], local[1]))
         finally:
@@ -198,13 +231,25 @@ def main():
         expected = expected.transpose(1, 2).reshape_as(actual)
         torch.testing.assert_close(actual, expected, atol=1e-5, rtol=2e-6)
         errors[name] = float((actual - expected).abs().max())
-    if args.ratio:
+    index_report = None
+    if args.indexer:
+        index_report = check_indexer(native, index_results, buffers, geometry, gold_kv, anchor=anchor)
+        index_query_gold = rope(linear(actual_qr, operands["idx_wq"]), cos, sin, INDEX_HEADS, INDEX_DIM, rope_dim)
+        torch.testing.assert_close(index_results["idx_query"].flatten(1), index_query_gold, atol=2e-3, rtol=8e-3)
+        weights_gold = linear(x, operands["idx_weight"]).float() * (INDEX_DIM * INDEX_HEADS) ** -0.5
+        torch.testing.assert_close(index_results["idx_scaled_weights"], weights_gold.half(), atol=5e-5, rtol=8e-3)
+        compressed_gold = draft_attention(
+            actual_q.view(1, BLOCK, heads, HEAD_DIM), actual_kv[None],
+            PagedRows(local[1].unflatten(0, (-1, WINDOW)), swa_table(anchor)), torch.tensor([anchor]),
+            operands["sink"], window=WINDOW, global_kv=gold_kv, global_indices=index_results["logical_rows"][None])
+    elif args.ratio:
         reference_inputs = list(local)
         reference_inputs[0] = actual_q.view(BLOCK, heads, HEAD_DIM).transpose(0, 1).reshape(-1, HEAD_DIM)
         reference_inputs[3] = actual_kv
         reference_inputs[5] = operands["sink"]
         _, compressed_gold = compressed_fixture(anchor, args.ratio, 75, reference_inputs)
-        torch.testing.assert_close(compressed_pages.view(torch.uint8), compressed[1].view(torch.uint8), rtol=0, atol=0)
+    if args.ratio:
+        torch.testing.assert_close(compressed_pages.view(torch.uint8), kv_pages.view(torch.uint8), rtol=0, atol=0)
         for name, actual, expected in zip(
             ("compressed_attention", "compressed_lse"), (compressed_output, compressed_lse), compressed_gold, strict=True,
         ):
@@ -233,6 +278,8 @@ def main():
                   query_kv_device_handoff=True, compressed_ratio=args.ratio,
                   swa_lse_device_handoff=bool(args.ratio), max_absolute_error=errors,
                   attention_output_device_handoff=True, projection_stage_max_absolute_error=stage_errors)
+    if args.indexer:
+        report["indexer"] = index_report
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)
 

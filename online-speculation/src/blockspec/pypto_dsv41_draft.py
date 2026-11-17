@@ -4,6 +4,7 @@ from .pypto_dsv41_swa import BLOCK, HEAD_DIM
 
 QKV_TENSORS = ("wq_a.weight", "q_norm.weight", "wq_b.weight", "wkv.weight", "kv_norm.weight", "attn_sink")
 OUTPUT_TENSORS = ("wo_a.weight", "wo_b.weight")
+INDEX_TENSORS = ("indexer.wq_b.weight", "indexer.weights_proj.weight")
 
 
 def load_draft_layer(model, head, layer, *, tp_rank, tp=4):
@@ -21,9 +22,11 @@ def load_draft_layer(model, head, layer, *, tp_rank, tp=4):
     if not 0 <= layer < config["num_hidden_layers"]:
         raise ValueError("Draft layer is outside the checkpoint")
     files = read_json(find_weight_index(head))["weight_map"]
+    owns_index = manifest["layers"][layer]["index_source"] == layer
+    names = QKV_TENSORS + OUTPUT_TENSORS + (INDEX_TENSORS if owns_index else ())
     with ExitStack() as stack:
         weights, shards = {}, {}
-        for name in QKV_TENSORS + OUTPUT_TENSORS:
+        for name in names:
             key = f"layers.{layer}.attn.{name}"
             file = files[key]
             if file not in shards:
@@ -31,6 +34,9 @@ def load_draft_layer(model, head, layer, *, tp_rank, tp=4):
             weights[name] = shards[file].get_tensor(key)
         operands = prepare_qkv(weights, config, tp_rank=tp_rank, tp=tp)
         operands.update(prepare_output(weights, config, tp_rank=tp_rank, tp=tp))
+        if owns_index:
+            operands.update(idx_wq=weights[INDEX_TENSORS[0]].T.contiguous(),
+                            idx_weight=weights[INDEX_TENSORS[1]].T.contiguous())
         return config, manifest, operands
 
 

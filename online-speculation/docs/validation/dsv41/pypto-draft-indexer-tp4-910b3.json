@@ -1,0 +1,322 @@
+{
+  "device": "Ascend 910B3",
+  "runtime": {
+    "pypto": "72a62d13efabbb25d240e35944f68ba5bcc22b7f",
+    "simpler": "6b6b88f2353cca12cfafe809750b50b59931b0d1",
+    "ptoas": "0.70",
+    "cann": "8.5.2"
+  },
+  "head": "orthrus-dsv41-head-v1-ar-init",
+  "base": "DeepSeek-V4.1-Flash-1017-w4a8",
+  "input": "single TP4 rank, fixed BF16 head, synthetic paged target KV and index history",
+  "cases": [
+    {
+      "block": 32,
+      "anchor": 1,
+      "local_heads": 16,
+      "layer": 2,
+      "tp_rank": 2,
+      "synthetic_weights": false,
+      "artifact_role": "initialized-plumbing",
+      "cache_byte_exact": true,
+      "execution": "npu",
+      "query_kv_device_handoff": true,
+      "compressed_ratio": 2,
+      "swa_lse_device_handoff": true,
+      "max_absolute_error": {
+        "latent": 0.001953125,
+        "query": 0.03125,
+        "temporary_kv": 0.0001220703125,
+        "attention": 9.059906005859375e-06,
+        "lse": 2.384185791015625e-06,
+        "compressed_attention": 9.059906005859375e-06,
+        "compressed_lse": 2.384185791015625e-06
+      },
+      "attention_output_device_handoff": true,
+      "projection_stage_max_absolute_error": {
+        "qa": 0.001953125,
+        "latent": 0.0,
+        "qb": 0.015625,
+        "query": 0.0,
+        "kv": 0.00048828125,
+        "normalized_kv": 0.0,
+        "temporary": 0.0,
+        "context": 0.0,
+        "unrotated": 0.0,
+        "grouped": 0.00048828125,
+        "contribution": 0.0009765625
+      },
+      "indexer": {
+        "visible": 0,
+        "bucket": 512,
+        "selected_per_query": 0,
+        "sets_exact": 32,
+        "max_score_error": 0.0
+      }
+    },
+    {
+      "block": 32,
+      "anchor": 3,
+      "local_heads": 16,
+      "layer": 2,
+      "tp_rank": 2,
+      "synthetic_weights": false,
+      "artifact_role": "initialized-plumbing",
+      "cache_byte_exact": true,
+      "execution": "npu",
+      "query_kv_device_handoff": true,
+      "compressed_ratio": 2,
+      "swa_lse_device_handoff": true,
+      "max_absolute_error": {
+        "latent": 0.001953125,
+        "query": 0.03125,
+        "temporary_kv": 0.0001220703125,
+        "attention": 1.3113021850585938e-05,
+        "lse": 2.86102294921875e-06,
+        "compressed_attention": 1.1682510375976562e-05,
+        "compressed_lse": 2.86102294921875e-06
+      },
+      "attention_output_device_handoff": true,
+      "projection_stage_max_absolute_error": {
+        "qa": 0.001953125,
+        "latent": 0.0,
+        "qb": 0.015625,
+        "query": 0.0,
+        "kv": 0.00048828125,
+        "normalized_kv": 0.0,
+        "temporary": 0.0,
+        "context": 0.0,
+        "unrotated": 0.0,
+        "grouped": 0.00048828125,
+        "contribution": 0.001953125
+      },
+      "indexer": {
+        "visible": 1,
+        "bucket": 512,
+        "selected_per_query": 1,
+        "sets_exact": 32,
+        "max_score_error": 0.0
+      }
+    },
+    {
+      "block": 32,
+      "anchor": 257,
+      "local_heads": 16,
+      "layer": 2,
+      "tp_rank": 2,
+      "synthetic_weights": false,
+      "artifact_role": "initialized-plumbing",
+      "cache_byte_exact": true,
+      "execution": "npu",
+      "query_kv_device_handoff": true,
+      "compressed_ratio": 2,
+      "swa_lse_device_handoff": true,
+      "max_absolute_error": {
+        "latent": 0.001953125,
+        "query": 0.03125,
+        "temporary_kv": 0.0001220703125,
+        "attention": 1.1444091796875e-05,
+        "lse": 2.86102294921875e-06,
+        "compressed_attention": 8.821487426757812e-06,
+        "compressed_lse": 2.86102294921875e-06
+      },
+      "attention_output_device_handoff": true,
+      "projection_stage_max_absolute_error": {
+        "qa": 0.001953125,
+        "latent": 0.0,
+        "qb": 0.015625,
+        "query": 0.0,
+        "kv": 0.00048828125,
+        "normalized_kv": 0.0,
+        "temporary": 0.0,
+        "context": 0.0,
+        "unrotated": 0.0,
+        "grouped": 0.0009765625,
+        "contribution": 0.001953125
+      },
+      "indexer": {
+        "visible": 128,
+        "bucket": 512,
+        "selected_per_query": 128,
+        "sets_exact": 32,
+        "max_score_error": 0.0
+      }
+    },
+    {
+      "block": 32,
+      "anchor": 1537,
+      "local_heads": 16,
+      "layer": 2,
+      "tp_rank": 2,
+      "synthetic_weights": false,
+      "artifact_role": "initialized-plumbing",
+      "cache_byte_exact": true,
+      "execution": "npu",
+      "query_kv_device_handoff": true,
+      "compressed_ratio": 2,
+      "swa_lse_device_handoff": true,
+      "max_absolute_error": {
+        "latent": 0.001953125,
+        "query": 0.03125,
+        "temporary_kv": 0.0001220703125,
+        "attention": 7.867813110351562e-06,
+        "lse": 2.86102294921875e-06,
+        "compressed_attention": 5.125999450683594e-06,
+        "compressed_lse": 9.5367431640625e-07
+      },
+      "attention_output_device_handoff": true,
+      "projection_stage_max_absolute_error": {
+        "qa": 0.001953125,
+        "latent": 0.0,
+        "qb": 0.015625,
+        "query": 0.0,
+        "kv": 0.00048828125,
+        "normalized_kv": 0.0,
+        "temporary": 0.0,
+        "context": 0.0,
+        "unrotated": 0.0,
+        "grouped": 0.0009765625,
+        "contribution": 0.001953125
+      },
+      "indexer": {
+        "visible": 768,
+        "bucket": 1024,
+        "selected_per_query": 512,
+        "sets_exact": 32,
+        "max_score_error": 0.0
+      }
+    },
+    {
+      "block": 32,
+      "anchor": 1541,
+      "local_heads": 16,
+      "layer": 2,
+      "tp_rank": 2,
+      "synthetic_weights": false,
+      "artifact_role": "initialized-plumbing",
+      "cache_byte_exact": true,
+      "execution": "npu",
+      "query_kv_device_handoff": true,
+      "compressed_ratio": 2,
+      "swa_lse_device_handoff": true,
+      "max_absolute_error": {
+        "latent": 0.001953125,
+        "query": 0.03125,
+        "temporary_kv": 0.0001220703125,
+        "attention": 1.2874603271484375e-05,
+        "lse": 2.86102294921875e-06,
+        "compressed_attention": 5.364418029785156e-06,
+        "compressed_lse": 1.9073486328125e-06
+      },
+      "attention_output_device_handoff": true,
+      "projection_stage_max_absolute_error": {
+        "qa": 0.001953125,
+        "latent": 0.0,
+        "qb": 0.015625,
+        "query": 0.0,
+        "kv": 0.00048828125,
+        "normalized_kv": 0.0,
+        "temporary": 0.0,
+        "context": 0.0,
+        "unrotated": 0.0,
+        "grouped": 0.001953125,
+        "contribution": 0.0009765625
+      },
+      "indexer": {
+        "visible": 770,
+        "bucket": 1024,
+        "selected_per_query": 512,
+        "sets_exact": 32,
+        "max_score_error": 0.0
+      }
+    },
+    {
+      "block": 32,
+      "anchor": 1539,
+      "local_heads": 16,
+      "layer": 20,
+      "tp_rank": 2,
+      "synthetic_weights": false,
+      "artifact_role": "initialized-plumbing",
+      "cache_byte_exact": true,
+      "execution": "npu",
+      "query_kv_device_handoff": true,
+      "compressed_ratio": 1,
+      "swa_lse_device_handoff": true,
+      "max_absolute_error": {
+        "latent": 0.00390625,
+        "query": 0.03125,
+        "temporary_kv": 3.814697265625e-06,
+        "attention": 3.4868717193603516e-06,
+        "lse": 4.76837158203125e-07,
+        "compressed_attention": 2.1457672119140625e-06,
+        "compressed_lse": 9.5367431640625e-07
+      },
+      "attention_output_device_handoff": true,
+      "projection_stage_max_absolute_error": {
+        "qa": 0.00390625,
+        "latent": 0.0,
+        "qb": 0.015625,
+        "query": 0.0,
+        "kv": 1.9073486328125e-06,
+        "normalized_kv": 0.0,
+        "temporary": 0.0,
+        "context": 0.0,
+        "unrotated": 0.0,
+        "grouped": 0.001953125,
+        "contribution": 0.0009765625
+      },
+      "indexer": {
+        "visible": 1539,
+        "bucket": 2048,
+        "selected_per_query": 512,
+        "sets_exact": 32,
+        "max_score_error": 0.0
+      }
+    },
+    {
+      "block": 32,
+      "anchor": 1089,
+      "local_heads": 16,
+      "layer": 24,
+      "tp_rank": 2,
+      "synthetic_weights": false,
+      "artifact_role": "initialized-plumbing",
+      "cache_byte_exact": true,
+      "execution": "npu",
+      "query_kv_device_handoff": true,
+      "compressed_ratio": 1,
+      "swa_lse_device_handoff": true,
+      "max_absolute_error": {
+        "latent": 0.00390625,
+        "query": 0.015625,
+        "temporary_kv": 0.0078125,
+        "attention": 3.159046173095703e-06,
+        "lse": 4.76837158203125e-07,
+        "compressed_attention": 1.087784767150879e-06,
+        "compressed_lse": 9.5367431640625e-07
+      },
+      "attention_output_device_handoff": true,
+      "projection_stage_max_absolute_error": {
+        "qa": 0.00390625,
+        "latent": 0.0,
+        "qb": 0.0078125,
+        "query": 0.0,
+        "kv": 0.00390625,
+        "normalized_kv": 0.0,
+        "temporary": 0.0,
+        "context": 0.0,
+        "unrotated": 0.0,
+        "grouped": 0.0009765625,
+        "contribution": 0.0009765625
+      },
+      "indexer": {
+        "visible": 1089,
+        "bucket": 2048,
+        "selected_per_query": 512,
+        "sets_exact": 32,
+        "max_score_error": 0.0
+      }
+    }
+  ]
+}

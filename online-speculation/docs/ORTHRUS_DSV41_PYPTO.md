@@ -53,6 +53,14 @@ PYTHONPATH=src python3 scripts/validate_dsv41_pypto_qkv.py \
 
 单张 910B3 用从 DSV4.1 W4A8 checkpoint 初始化的 BF16 head、合成隐藏状态和历史页，测试第 0、2、20 层的 TP4 单 rank 形状。压缩路径的选中行由测试提供，覆盖最多 512 行和跨页访问。投影各算子与同输入的 BF16 参考分别对照，Attention 与同输入的 FP32 参考对照，历史页在执行前后逐字节一致。C2A 在 A3 固定的 PyPTO `72a62d13`、Simpler `6b6b88f`、PTOAS `0.70` 上复跑，误差结果一致。 [投影源码](../src/blockspec/pypto_dsv41_draft.py) · [实测记录](validation/dsv41/pypto-draft-layer-tp4-910b3.json)
 
+## Draft Indexer
+
+拥有 indexer 的层从 BF16 head 加载自己的 query 和权重投影。每个 draft 位置用自己的投影结果打分，全部 32 个位置共用同一个历史边界 `anchor // compress_ratio`。PyPTO 按页表读取 INT8 key 和 FP16 scale，复用 A3 QLI 的 query 量化、打分和 Top-512。选出的逻辑行在设备上转为压缩 KV 物理行，再交给压缩 Attention。
+
+当前 A3 上下文上限为 2048 个 token。C1A 历史最多涉及 256 个 8 行候选块，checkpoint 允许保留 2048 个候选块，因此 Reindex 对全部可见历史重新打分与在候选池内打分等价。设备入口会拒绝候选池需要裁剪的配置。压缩历史消费层跨层复用选择结果，由整模接入时的 draft 调度负责。
+
+在单层验证命令上加 `--indexer --anchor 1537` 即可验证第 2 层自行选行，`--layer 20 --ratio 1` 和 `--layer 24 --ratio 1` 分别用于 C1A Full 和 Reindex。固定工具链下，单张 910B3 跑过 7 组 TP4 单 rank 用例，覆盖空历史、短历史、奇数 anchor、跨页和 512/1024/2048 行桶。224 个查询的选中集合与 A3 QLI 参考一致，压缩 Attention 最大绝对误差为 `1.17e-5`，历史页逐字节一致。测试使用 BF16 初始化 head 和构造的分页历史。 [Indexer 源码](../src/blockspec/pypto_dsv41_indexer.py) · [实测记录](validation/dsv41/pypto-draft-indexer-tp4-910b3.json)
+
 ## K32 验证和提交
 
 `A3Runner.verify_draft(batch, candidates)` 接收请求账本已分配页的 anchor 和最多 31 个候选。它用每 DP 128 行的原生因果 Prefill 程序验证整块，读取每个候选位置对应的 logits。验证期在设备端保存涉及的目标页，完成后原地恢复。CPU 上的 Engram 请求历史和已提交长度也恢复。runner 再用同一个主模型程序执行 anchor 和接受前缀，将其 KV 正式写入。目标补发的 token 留给下一轮处理。这个路径会重跑接受前缀，用于先验证缓存和输出语义，整模吞吐需要单独测。
@@ -61,6 +69,5 @@ CPU 测试覆盖完整 K32、部分接受、零接受、跨 128 行分页以及�
 
 ## 整模联调
 
-1. **C2A/C1A 检索。** 将同一个 anchor 的已提交长度、源层的索引页和 diffusion query 交给检索。Full 计算本轮 Top-K，C1A Reindex 在本轮候选池内重排，Reuse 复用源层结果。先与现有 Torch golden 对照整数行号，再评估 A2/A3 上已有打分和 Top-K 内核的输入布局。
-2. **Draft 前向。** 在整模 resident session 中绑定 diffusion head 和各层已提交的历史页。将已验证的单层 Attention 接到共享的 Embedding、Engram、mHC、MoE 和 LM Head，连起 40 层并对 TP 的输出贡献做归约。
-3. **开启 Serving 调度。** 将运行中的 draft 提案接到验证入口，让调度器为候选位置预留页，并覆盖尾部普通 Decode 回退。之后在 16 张 A3 上回放同一候选序列，和 target-only 对照输出 token、SWA、压缩 KV、indexer、compressor 残余状态及 Engram 历史。 [V4.1 DSpark 入口](https://github.com/hw-native-sys/pypto-serving/pull/324) · [候选回放脚本](../scripts/probe_dsv41_matched_candidates.py)
+1. **Draft 前向。** 在整模 resident session 中绑定 diffusion head 和各层已提交的历史页。连起 40 层的单层 Attention、跨层 indexer 选择复用，以及共享的 Embedding、Engram、mHC、MoE 和 LM Head，再对 TP 的输出贡献做归约。
+2. **开启 Serving 调度。** 将运行中的 draft 提案接到验证入口，让调度器为候选位置预留页，并覆盖尾部普通 Decode 回退。之后在 16 张 A3 上回放同一候选序列，和 target-only 对照输出 token、SWA、压缩 KV、indexer、compressor 残余状态及 Engram 历史。 [V4.1 DSpark 入口](https://github.com/hw-native-sys/pypto-serving/pull/324) · [候选回放脚本](../scripts/probe_dsv41_matched_candidates.py)
