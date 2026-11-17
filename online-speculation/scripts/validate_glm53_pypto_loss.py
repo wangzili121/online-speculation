@@ -15,12 +15,17 @@ def main():
     parser.add_argument("--device", type=int, default=0)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--mla-output", action="store_true", help="validate the draft output projection's VJP")
+    modes.add_argument("--mla-projection-fp32", action="store_true", help="validate MLA projection with FP32 upstream gradients")
     modes.add_argument("--optimizer", action="store_true", help="validate a complete AdamW parameter update")
     modes.add_argument("--mla-update", action="store_true", help="validate device MLA output VJP plus AdamW")
     modes.add_argument("--vocab-backward", action="store_true", help="validate a frozen TP8 vocabulary shard VJP")
     modes.add_argument("--norm-backward", action="store_true", help="validate final RMSNorm and mHC mean backward")
     modes.add_argument("--kda-backward", action="store_true", help="validate the frozen KDA recurrence adjoint")
+    modes.add_argument("--kda-conv-backward", action="store_true", help="validate the frozen KDA convolution and SiLU VJP")
+    modes.add_argument("--kda-qk-backward", action="store_true", help="validate the KDA Q/K L2 normalization VJP")
     modes.add_argument("--mhc-backward", action="store_true", help="validate the mHC residual combination VJP")
+    modes.add_argument("--mhc-pre-backward", action="store_true", help="validate the mHC stream collapse VJP")
+    modes.add_argument("--mhc-mix-backward", action="store_true", help="validate the mHC coefficient projection VJP")
     modes.add_argument("--sinkhorn-backward", action="store_true", help="validate mHC residual normalization VJP")
     modes.add_argument("--swiglu-backward", action="store_true", help="validate the frozen expert activation VJP")
     modes.add_argument("--joint-backward", action="store_true", help="validate joint history/draft softmax VJP")
@@ -37,6 +42,90 @@ def main():
     torch.set_num_threads(4)
     config = RunConfig(platform="a2a3", distributed_config=DistributedConfig(device_ids=[args.device], num_sub_workers=0))
     generator = torch.Generator().manual_seed(142)
+    if args.mhc_mix_backward:
+        from blockspec.pypto_glm53_online_mhc import make_mhc_mix_backward
+        from models.glm5_3_flash.config import FLASH
+
+        tokens, width, pad = 6, 4 * D, 8
+        x = torch.randn(tokens, width, generator=generator).bfloat16()
+        x[0].mul_(0.001)
+        weights = (torch.randn(24, width, generator=generator) * 0.01).bfloat16()
+        scale = torch.tensor([0.2, -0.3, 0.4])
+        bias = torch.randn(24, generator=generator)
+        dp = torch.randn(tokens, pad, generator=generator) * 0.1
+        dq = torch.randn(tokens, pad, generator=generator) * 0.1
+        dr = torch.randn(tokens, pad, pad, generator=generator) * 0.1
+        xd = x.double().requires_grad_()
+        normalized = xd * (xd.square().mean(-1, keepdim=True) + FLASH.rms_norm_eps).rsqrt()
+        raw = normalized @ weights.double().t()
+        p = (raw[:, :4] * scale[0] + bias[:4]).sigmoid() + FLASH.hc_eps
+        q = (raw[:, 4:8] * scale[1] + bias[4:8]).sigmoid() * 2.0
+        r = (raw[:, 8:] * scale[2] + bias[8:]).reshape(tokens, 4, 4)
+        (expected,) = torch.autograd.grad((p, q, r), xd, (dp[:, :4].double(), dq[:, :4].double(), dr[:, :4, :4].double()))
+        p = torch.nn.functional.pad(p.detach().float(), (0, 4))
+        q = torch.nn.functional.pad(q.detach().float(), (0, 4))
+        output = torch.empty(x.shape)
+        execute(make_mhc_mix_backward(tokens, D, FLASH.rms_norm_eps, FLASH.hc_eps),
+                (x, weights, scale, p, q, dp, dq, dr.reshape(tokens * pad, pad), output), 8, (), config,
+                {"program": "GLM mHC coefficient projection VJP", "passed": False}, args.output,
+                (expected,), ({"atol": 3e-6, "rtol": 5e-5},))
+        return
+    if args.mhc_pre_backward:
+        from blockspec.pypto_glm53_online_mhc import make_mhc_pre_backward
+
+        tokens, streams, pad = 6, 4, 8
+        x = torch.randn(tokens * streams, D, generator=generator).bfloat16()
+        weights = torch.rand(tokens, pad, generator=generator)
+        grad = torch.randn(tokens, D, generator=generator) * 0.01
+        x_ref = x.double().requires_grad_()
+        w_ref = weights.double().requires_grad_()
+        collapsed = (x_ref.reshape(tokens, streams, D) * w_ref[:, :streams, None]).sum(1)
+        expected = torch.autograd.grad(collapsed, (x_ref, w_ref), grad.double())
+        outputs = (torch.empty(x.shape), torch.empty_like(weights))
+        execute(make_mhc_pre_backward(D, tokens), (x, weights, grad, *outputs), 3, (), config,
+                {"program": "GLM mHC stream collapse VJP", "passed": False}, args.output, expected,
+                ({"atol": 2e-6, "rtol": 3e-5},) * 2)
+        return
+    if args.kda_qk_backward:
+        from blockspec.pypto_glm53_online_kda import make_kda_qk_backward
+        from models.glm5_3_flash.config import KDA_DIM, KDA_H
+
+        tokens, heads = 6, KDA_H // 8
+        shape = (tokens * heads, KDA_DIM)
+        query = torch.randn(shape, generator=generator).bfloat16()
+        key = torch.randn(shape, generator=generator).bfloat16()
+        query[0].zero_()
+        key[1].mul_(0.0001)
+        grad_q = torch.randn(shape, generator=generator)
+        grad_k = torch.randn(shape, generator=generator)
+        q, k = query.double().requires_grad_(), key.double().requires_grad_()
+        norm = lambda x: x * (x.square().sum(-1, keepdim=True) + 1e-6).rsqrt()
+        expected = torch.autograd.grad((norm(q) * KDA_DIM ** -0.5, norm(k)), (q, k),
+                                       (grad_q.double(), grad_k.double()))
+        outputs = (torch.empty_like(grad_q), torch.empty_like(grad_k))
+        execute(make_kda_qk_backward(tokens, heads), (query, key, grad_q, grad_k, *outputs),
+                4, (), config, {"program": "GLM KDA Q/K L2 normalization VJP", "passed": False},
+                args.output, expected, ({"atol": 2e-6, "rtol": 2e-5},) * 2)
+        return
+    if args.kda_conv_backward:
+        from blockspec.pypto_glm53_online_kda import make_kda_convolution_backward
+        from models.glm5_3_flash.config import KDA_CONV_K, KDA_DIM, KDA_H
+
+        tokens = 6
+        channels = 3 * (KDA_H // 8) * KDA_DIM
+        mixed = torch.randn(tokens, channels, generator=generator).bfloat16()
+        history = torch.randn(KDA_CONV_K - 1, channels, generator=generator).bfloat16()
+        weight = (torch.randn(KDA_CONV_K, channels, generator=generator) * 0.25).bfloat16()
+        gradient = torch.randn(tokens, channels, generator=generator) * 0.05
+        x = mixed.double().requires_grad_()
+        joined = torch.cat((history.double(), x))
+        convolution = (joined.unfold(0, KDA_CONV_K, 1) * weight.double().t()).sum(-1)
+        (expected,) = torch.autograd.grad(torch.nn.functional.silu(convolution), x, gradient.double())
+        output = torch.empty_like(gradient)
+        execute(make_kda_convolution_backward(tokens, channels), (mixed, history, weight, gradient, output),
+                4, (), config, {"program": "GLM causal KDA convolution and SiLU VJP", "passed": False},
+                args.output, (expected,), ({"atol": 4e-7, "rtol": 2e-5},))
+        return
     if args.int8_backward:
         from models.glm5_3_flash.config import FLASH
         from blockspec.pypto_glm53_online_moe import make_frozen_int8_linear_backward
@@ -230,22 +319,25 @@ def main():
             source = (gradient,)
         execute(kernel, source + tensors, len(source), scalars, config, reports, args.output, expected, tolerances)
         return
-    if args.mla_output:
+    if args.mla_output or args.mla_projection_fp32:
         from blockspec.pypto_glm53_mla import HEADS, VALUE
-        from blockspec.pypto_glm53_online_attention import make_output_backward
+        from blockspec.pypto_glm53_online_attention import make_output_backward, make_projection_backward
 
         rows, width = 16, HEADS * VALUE
         context = torch.randn((rows, width), generator=generator).bfloat16()
         weight = (torch.randn((D, width), generator=generator) * 0.02).bfloat16()
-        upstream = torch.randn((rows, D), generator=generator).bfloat16()
+        upstream = torch.randn((rows, D), generator=generator)
+        if not args.mla_projection_fp32:
+            upstream = upstream.bfloat16()
         upstream[5:].zero_()
         weight_grad = torch.empty(weight.shape, dtype=torch.float32)
         context_grad = torch.empty(context.shape, dtype=torch.float32)
         tensors = (context, weight, upstream, weight_grad, context_grad)
         expected = (upstream.float().T @ context.float(), upstream.float() @ weight.float())
         report = {"rows": rows, "program": "MLA output VJP", "passed": False}
-        execute(make_output_backward(), tensors, 3, (), config, report, args.output, expected,
-                ({"atol": 2e-5, "rtol": 2e-5}, {"atol": 2e-5, "rtol": 2e-5}))
+        program = make_projection_backward(width, D) if args.mla_projection_fp32 else make_output_backward()
+        tolerance = {"atol": 2e-4 if args.mla_projection_fp32 else 2e-5, "rtol": 3e-5}
+        execute(program, tensors, 3, (), config, report, args.output, expected, (tolerance, tolerance))
         return
 
     rows, active = 6, 5

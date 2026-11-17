@@ -43,6 +43,54 @@ def make_output_backward(*, device_entry=False):
     return backward if device_entry else entry
 
 
+def make_projection_backward(input_width, output_width, *, device_entry=False):
+    """Apply the input and parameter adjoints of a packed BF16 MLA projection."""
+    import pypto.language as pl
+
+    rows, columns, reduction = 16, 64, 128
+    if input_width < columns or input_width % columns or output_width < reduction or output_width % reduction:
+        raise ValueError("GLM MLA projections require aligned feature axes")
+
+    @pl.jit
+    def projection_backward(
+        activation: pl.Tensor[[rows, input_width], pl.BF16],
+        weight: pl.Tensor[[output_width, input_width], pl.BF16],
+        upstream: pl.Tensor[[rows, output_width], pl.FP32],
+        weight_grad: pl.Out[pl.Tensor[[output_width, input_width], pl.FP32]],
+        input_grad: pl.Out[pl.Tensor[[rows, input_width], pl.FP32]],
+    ):
+        for tile in pl.spmd((output_width // columns) * (input_width // columns), name_hint="orthrus_glm53_projection_dw"):
+            output_column = tile // (input_width // columns) * columns
+            input_column = tile % (input_width // columns) * columns
+            dy = pl.slice(upstream, [rows, columns], [0, output_column])
+            values = pl.slice(activation, [rows, columns], [0, input_column])
+            high = pl.cast(dy, pl.BF16, mode="rint")
+            dw = pl.matmul(high, values, a_trans=True, out_dtype=pl.FP32)
+            low = pl.cast(pl.sub(dy, pl.cast(high, pl.FP32)), pl.BF16, mode="rint")
+            dw = pl.matmul_acc(dw, low, values, a_trans=True)
+            weight_grad[output_column:output_column + columns, input_column:input_column + columns] = dw
+
+        for tile in pl.spmd(input_width // columns, name_hint="orthrus_glm53_projection_dx"):
+            column = tile * columns
+            dc = pl.create_tensor([rows, columns], dtype=pl.FP32)
+            for start in pl.pipeline(0, output_width, reduction, stage=2):
+                grad_tile = pl.slice(upstream, [rows, reduction], [0, start])
+                weight_tile = pl.slice(weight, [reduction, columns], [start, column])
+                high_input = pl.cast(grad_tile, pl.BF16, mode="rint")
+                dc = pl.matmul_acc(dc, high_input, weight_tile, init_cond=start == 0)
+                low_input = pl.cast(pl.sub(grad_tile, pl.cast(high_input, pl.FP32)), pl.BF16, mode="rint")
+                dc = pl.matmul_acc(dc, low_input, weight_tile)
+            input_grad[:, column:column + columns] = dc
+        return weight_grad, input_grad
+
+    @pl.jit.host
+    def entry(context: pl.Tensor, weight: pl.Tensor, upstream: pl.Tensor,
+              weight_grad: pl.Out[pl.Tensor], context_grad: pl.Out[pl.Tensor]):
+        projection_backward(context, weight, upstream, weight_grad, context_grad, device=0)
+
+    return projection_backward if device_entry else entry
+
+
 def make_joint_softmax_backward(rows, history_capacity, block_capacity=128):
     """Apply the score adjoint across the shared history and the draft block."""
     import pypto.language as pl

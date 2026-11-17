@@ -1,6 +1,51 @@
 """Derivatives of the GLM mHC residual combination."""
 
 
+def make_mhc_pre_backward(width=4096, tokens=6, *, device_entry=False):
+    """Differentiate mHC's learned collapse of the four input streams."""
+    import pypto.language as pl
+
+    tile, streams, padded = 128, 4, 8
+    if width < tile or width % tile or tokens < 1:
+        raise ValueError("invalid GLM mHC collapse geometry")
+    columns = width // tile
+
+    @pl.jit
+    def mhc_pre_backward(
+        streams_in: pl.Tensor[[tokens * streams, width], pl.BF16],
+        weights: pl.Tensor[[tokens, padded], pl.FP32],
+        grad: pl.Tensor[[tokens, width], pl.FP32],
+        d_streams: pl.Out[pl.Tensor[[tokens * streams, width], pl.FP32]],
+        d_weights: pl.Out[pl.Tensor[[tokens, padded], pl.FP32]],
+    ):
+        for task in pl.spmd(tokens * columns, name_hint="glm_mhc_pre_streams_vjp"):
+            row = task // columns
+            col = task % columns * tile
+            upstream = grad[row:row + 1, col:col + tile]
+            for stream in pl.unroll(streams):
+                destination = row * streams + stream
+                gate = pl.read(weights, [row, stream])
+                d_streams[destination:destination + 1, col:col + tile] = pl.mul(upstream, gate)
+
+        for row in pl.spmd(tokens, name_hint="glm_mhc_pre_weights_vjp"):
+            accumulated = pl.full([padded, tile], dtype=pl.FP32, value=0.0)
+            for col in pl.range(0, width, tile):
+                x = pl.create_tensor([padded, tile], dtype=pl.FP32)
+                x[:streams, :] = pl.cast(pl.slice(streams_in, [streams, tile], [row * streams, col]), pl.FP32)
+                x[streams:, :] = pl.full([padded - streams, tile], dtype=pl.FP32, value=0.0)
+                upstream = grad[row:row + 1, col:col + tile]
+                accumulated = pl.add(accumulated, pl.col_expand_mul(x, upstream))
+            d_weights[row:row + 1, :] = pl.reshape(pl.row_sum(accumulated), [1, padded])
+        return d_streams, d_weights
+
+    @pl.jit.host
+    def entry(inputs: pl.Tensor, weights: pl.Tensor, grad: pl.Tensor,
+              d_streams: pl.Out[pl.Tensor], d_weights: pl.Out[pl.Tensor]):
+        mhc_pre_backward(inputs, weights, grad, d_streams, d_weights, device=0)
+
+    return mhc_pre_backward if device_entry else entry
+
+
 def make_mhc_post_backward(width=4096, tokens=6):
     """Differentiate ``post * sublayer + residual_mix.T @ streams``."""
     import pypto.language as pl
@@ -146,5 +191,78 @@ def make_sinkhorn_backward(tokens, iterations, epsilon):
     @pl.jit.host
     def entry(logits: pl.Tensor, gradient: pl.Tensor, output: pl.Out[pl.Tensor]):
         backward(logits, gradient, output, device=0)
+
+    return entry
+
+
+def make_mhc_mix_backward(tokens, width, norm_epsilon, mix_epsilon):
+    """Backpropagate the frozen coefficient projection and its input RMS."""
+    import pypto.language as pl
+
+    streams, padded, tile = 4, 8, 128
+    flat_width = width * streams
+    coefficients = 2 * streams + streams * streams
+    if tokens < 1 or width < tile or width % tile or norm_epsilon <= 0 or mix_epsilon <= 0:
+        raise ValueError("invalid GLM mHC coefficient geometry")
+
+    @pl.jit
+    def mhc_mix_backward(
+        activation: pl.Tensor[[tokens, flat_width], pl.BF16],
+        function: pl.Tensor[[coefficients, flat_width], pl.BF16],
+        scale: pl.Tensor[[3], pl.FP32],
+        pre: pl.Tensor[[tokens, padded], pl.FP32],
+        post: pl.Tensor[[tokens, padded], pl.FP32],
+        d_pre: pl.Tensor[[tokens, padded], pl.FP32],
+        d_post: pl.Tensor[[tokens, padded], pl.FP32],
+        d_residual_logits: pl.Tensor[[tokens * padded, padded], pl.FP32],
+        output: pl.Out[pl.Tensor[[tokens, flat_width], pl.FP32]],
+    ):
+        # A token's scalar writes need a dedicated 128-byte cache line.
+        d_dot = pl.create_tensor([tokens, 32], dtype=pl.FP32)
+        projected = pl.create_tensor([tokens, flat_width], dtype=pl.FP32)
+        for row in pl.spmd(tokens, name_hint="glm_mhc_coefficients_vjp"):
+            for stream in pl.unroll(streams):
+                gate_pre = pl.read(pre, [row, stream]) - mix_epsilon
+                gate_post = pl.read(post, [row, stream]) * 0.5
+                a = pl.read(d_pre, [row, stream]) * gate_pre * (1.0 - gate_pre)
+                b = pl.read(d_post, [row, stream]) * gate_post * (1.0 - gate_post) * 2.0
+                pl.write(d_dot, [row, stream], a * pl.read(scale, [0]))
+                pl.write(d_dot, [row, streams + stream], b * pl.read(scale, [1]))
+                for dest in pl.unroll(streams):
+                    dc = pl.read(d_residual_logits, [row * padded + stream, dest])
+                    pl.write(d_dot, [row, 2 * streams + stream * streams + dest], dc * pl.read(scale, [2]))
+        for task in pl.spmd(tokens * (flat_width // tile), name_hint="glm_mhc_projection_vjp"):
+            row = task // (flat_width // tile)
+            col = task % (flat_width // tile) * tile
+            g = pl.full([1, tile], dtype=pl.FP32, value=0.0)
+            for lane in pl.range(coefficients):
+                w = pl.cast(function[lane:lane + 1, col:col + tile], pl.FP32)
+                g = pl.add(g, pl.mul(w, pl.read(d_dot, [row, lane])))
+            projected[row:row + 1, col:col + tile] = g
+        for row in pl.spmd(tokens, name_hint="glm_mhc_input_rms_vjp"):
+            squares = pl.full([1, tile], dtype=pl.FP32, value=0.0)
+            dots = pl.full([1, tile], dtype=pl.FP32, value=0.0)
+            for col in pl.range(0, flat_width, tile):
+                x = pl.cast(activation[row:row + 1, col:col + tile], pl.FP32)
+                g = projected[row:row + 1, col:col + tile]
+                squares = pl.add(squares, pl.mul(x, x))
+                dots = pl.add(dots, pl.mul(x, g))
+            zero = pl.full([8, tile], dtype=pl.FP32, value=0.0)
+            variance = pl.add(pl.mul(pl.row_sum(pl.col_expand(zero, squares)), 1.0 / flat_width), norm_epsilon)
+            inverse = pl.recip(pl.sqrt(variance))
+            inner = pl.row_sum(pl.col_expand(zero, dots))
+            coupling = pl.mul(pl.mul(inner, pl.mul(inverse, inverse)), 1.0 / flat_width)
+            inv = pl.read(inverse, [0, 0])
+            correction = pl.read(coupling, [0, 0])
+            for col in pl.range(0, flat_width, tile):
+                x = pl.cast(activation[row:row + 1, col:col + tile], pl.FP32)
+                g = projected[row:row + 1, col:col + tile]
+                output[row:row + 1, col:col + tile] = pl.mul(pl.sub(g, pl.mul(x, correction)), inv)
+        return output
+
+    @pl.jit.host
+    def entry(activation: pl.Tensor, function: pl.Tensor, scale: pl.Tensor, pre: pl.Tensor, post: pl.Tensor,
+              d_pre: pl.Tensor, d_post: pl.Tensor, d_residual_logits: pl.Tensor, output: pl.Out[pl.Tensor]):
+        mhc_mix_backward(activation, function, scale, pre, post, d_pre, d_post, d_residual_logits, output, device=0)
 
     return entry

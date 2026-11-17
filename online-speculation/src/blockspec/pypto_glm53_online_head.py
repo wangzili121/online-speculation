@@ -1,7 +1,7 @@
 """Propagate the online loss through GLM's frozen vocabulary projection."""
 
 
-def make_vocab_backward(local_vocab, model_width, rows=16):
+def make_vocab_backward(local_vocab, model_width, rows=16, *, device_entry=False):
     """Return a TP-local FP32 activation gradient; the caller sums the ranks."""
     import pypto.language as pl
 
@@ -11,7 +11,7 @@ def make_vocab_backward(local_vocab, model_width, rows=16):
     vocab_pad = (local_vocab + reduction - 1) // reduction * reduction
 
     @pl.jit
-    def backward(
+    def vocab_backward(
         grad_logits: pl.Tensor[[rows, vocab_pad], pl.FP32],
         vocabulary: pl.Tensor[[vocab_pad, model_width], pl.BF16],
         partial: pl.Out[pl.Tensor[[rows, model_width], pl.FP32]],
@@ -31,12 +31,12 @@ def make_vocab_backward(local_vocab, model_width, rows=16):
 
     @pl.jit.host
     def entry(grad_logits: pl.Tensor, vocabulary: pl.Tensor, partial: pl.Out[pl.Tensor]):
-        backward(grad_logits, vocabulary, partial, device=0)
+        vocab_backward(grad_logits, vocabulary, partial, device=0)
 
-    return entry
+    return vocab_backward if device_entry else entry
 
 
-def make_final_norm_backward(model_width, epsilon, rows=16, streams=4):
+def make_final_norm_backward(model_width, epsilon, rows=16, streams=4, *, device_entry=False):
     """Differentiate the frozen RMSNorm and distribute to the mean-pooled streams."""
     import pypto.language as pl
 
@@ -45,7 +45,7 @@ def make_final_norm_backward(model_width, epsilon, rows=16, streams=4):
         raise ValueError("invalid GLM output normalization geometry")
 
     @pl.jit
-    def backward(
+    def norm_backward(
         activation: pl.Tensor[[rows, model_width], pl.BF16], scale: pl.Tensor[[model_width], pl.BF16],
         gradient: pl.Tensor[[rows, model_width], pl.FP32],
         output: pl.Out[pl.Tensor[[rows * streams, model_width], pl.FP32]],
@@ -77,6 +77,6 @@ def make_final_norm_backward(model_width, epsilon, rows=16, streams=4):
 
     @pl.jit.host
     def entry(activation: pl.Tensor, scale: pl.Tensor, gradient: pl.Tensor, output: pl.Out[pl.Tensor]):
-        backward(activation, scale, gradient, output, device=0)
+        norm_backward(activation, scale, gradient, output, device=0)
 
-    return entry
+    return norm_backward if device_entry else entry
