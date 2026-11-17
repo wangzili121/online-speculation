@@ -103,7 +103,7 @@ def run_cases(runner, vocab_size, mask_id=None):
     return report
 
 
-def run_resident_distillation(runner, mask_id, *, frozen_suffix=False):
+def run_resident_distillation(runner, mask_id, *, frozen_suffix=False, learning_rate=None):
     """Compare two real Serving replay rounds with a full-vocabulary reference."""
     import torch
 
@@ -113,7 +113,8 @@ def run_resident_distillation(runner, mask_id, *, frozen_suffix=False):
     def download(bank, rank, dtype):
         shard = bank.shards[rank]
         host = torch.empty(shard.shape, dtype=dtype).share_memory_()
-        runner.runtime.copy_from(host.data_ptr(), shard.data_ptr, host.nbytes, worker_id=rank)
+        runner.runtime.copy_from(host.data_ptr(), shard.data_ptr - shard.byte_offset, host.nbytes,
+                                 src_offset=shard.byte_offset, worker_id=rank)
         return host
 
     tokens = [1949, 373, 358, 264, 6823] * 3
@@ -121,7 +122,11 @@ def run_resident_distillation(runner, mask_id, *, frozen_suffix=False):
     valid = api.VERIFY_QUERY_WIDTH - 1
     report = []
     last_tape = None
-    with ResidentDistillation(runner, frozen_suffix=frozen_suffix) as training:
+    with ResidentDistillation(runner, frozen_suffix=frozen_suffix, learning_rate=learning_rate) as training:
+        if training.mla_update is not None:
+            update = training.mla_update
+            live = download(update.live, 0, torch.bfloat16)
+            frozen_tail = live[:, update.gradient.shape[-1]:].clone()
         for anchor in (2, 7):
             student, teacher = collect_clean_logits(runner, tokens, anchor, 2, mask_id)
             logits_a = student.double().log_softmax(1)
@@ -166,6 +171,18 @@ def run_resident_distillation(runner, mask_id, *, frozen_suffix=False):
                 if not torch.isfinite(core).all() or not core.count_nonzero():
                     raise AssertionError("resident KDA replay did not emit a valid block")
                 evidence["kda_replay_core_norm"] = float(core.float().norm())
+            if training.mla_update is not None:
+                updated_student, frozen_teacher = collect_clean_logits(runner, tokens, anchor, 2, mask_id)
+                torch.testing.assert_close(frozen_teacher, teacher, rtol=0, atol=0)
+                delta = (updated_student - student).abs().max()
+                if float(delta) <= 0 or not torch.isfinite(updated_student).all():
+                    raise AssertionError("publishing trained MLA weights did not change draft logits")
+                current = download(update.live, 0, torch.bfloat16)
+                if torch.equal(current, live) or not torch.equal(current[:, update.gradient.shape[-1]:], frozen_tail):
+                    raise AssertionError("online update must change MLA weights and preserve the Indexer")
+                live = current
+                evidence.update(optimizer_step=update.step_count, student_logit_max_delta=float(delta),
+                                frozen_teacher_logits_equal=True)
             report.append(evidence)
     return report
 
@@ -180,12 +197,20 @@ def main():
     parser.add_argument("--device-greedy", action="store_true", help="return draft and verifier token IDs from the NPU")
     parser.add_argument("--resident-distillation", action="store_true", help="check the Serving-to-PyPTO replay and KL path")
     parser.add_argument("--frozen-suffix", action="store_true", help="extend resident distillation through the final MoE")
+    parser.add_argument("--resident-update", type=float, metavar="LR",
+                        help="run and verify a full resident MLA AdamW update at this learning rate")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     if len(set(args.devices)) != 8 or args.output.exists():
         parser.error("use eight distinct devices and a new output file")
     if args.checkpoint is None and not args.compile_only:
         parser.error("a GLM W8A8 checkpoint is required for device execution")
+    if args.resident_update is not None:
+        import math
+
+        if not math.isfinite(args.resident_update) or args.resident_update <= 0:
+            parser.error("--resident-update needs a positive finite learning rate")
+        args.frozen_suffix = True
     if args.frozen_suffix:
         args.resident_distillation = True
     if (args.resident_distillation or args.device_greedy) and args.mask_token_id is None:
@@ -221,6 +246,11 @@ def main():
 
             programs["_auxiliary"].update(prepare_frozen_suffix(api, compiler))
             result["frozen_suffix_compiled"] = True
+        if args.resident_update is not None:
+            from blockspec.pypto_glm53_online_mla import prepare_mla_update
+
+            programs["_auxiliary"].update(prepare_mla_update(api, compiler))
+            result["resident_update_compiled"] = True
         result["compiled"] = True
         if args.compile_only:
             view = Glm53ModelRunner(api, programs, None, args.devices, "a2a3", orthrus_mask_token_id=args.mask_token_id)
@@ -238,8 +268,10 @@ def main():
             result["draft"] = run_cases(runner, vocab_size, args.mask_token_id)
         if args.resident_distillation:
             result["resident_distillation"] = run_resident_distillation(
-                runner, args.mask_token_id, frozen_suffix=args.frozen_suffix,
+                runner, args.mask_token_id, frozen_suffix=args.frozen_suffix, learning_rate=args.resident_update,
             )
+        if args.resident_update is not None:
+            result["draft_after_update"] = run_cases(runner, vocab_size, args.mask_token_id)
         result.update(passed=True, executed=True)
     except BaseException as error:
         result["error"] = repr(error)

@@ -9,17 +9,52 @@ PAGE = 640
 TILE = 128
 
 
-def make_mla_kernel(selected_capacity: int, *, inline=False):
+def make_selected_latent_reader(capacity):
+    """Read committed token IDs from the paged C8 cache into a BF16 training or inference tile."""
+    import pypto.language as pl
+    from models.glm5_3_flash.attention import mla_dequant_cache_block
+
+    rows = QUERY_ROWS * capacity
+
+    @pl.jit.inline(auto_scope=False)
+    def read(
+        history: pl.Tensor, table: pl.Tensor, indices: pl.Tensor, lengths: pl.Tensor,
+        selected: pl.Tensor[[rows, LATENT], pl.BF16],
+    ):
+        # Every selected latent is unpacked once, regardless of the number of local heads.
+        with pl.spmd(48, name_hint="orthrus_glm53_unpack"):
+            worker = pl.tile.get_block_idx()
+            for turn in pl.range((rows - worker + 47) // 48):
+                unpack_row = worker + turn * 48
+                unpack_token = unpack_row // capacity
+                unpack_offset = unpack_row % capacity
+                if unpack_offset < pl.cast(pl.read(lengths, [unpack_token]), pl.INDEX):
+                    logical = pl.cast(pl.read(indices, [unpack_token, unpack_offset]), pl.INDEX)
+                    page = pl.cast(pl.read(table, [logical // PAGE]), pl.INDEX)
+                    physical = page * PAGE + logical % PAGE
+                    for segment in pl.unroll(LATENT // TILE):
+                        column = pl.cast(segment * TILE, pl.INDEX)
+                        selected[unpack_row:unpack_row + 1, column:column + TILE] = mla_dequant_cache_block(
+                            history, physical, column
+                        )
+                else:
+                    selected[unpack_row:unpack_row + 1, :] = pl.full([1, LATENT], dtype=pl.BF16, value=0.0)
+        return selected
+
+    return read
+
+
+def make_mla_kernel(selected_capacity: int, *, inline=False, selected_input=False):
     """Build the device attention implementation for TP8 and a six-row block."""
     if selected_capacity <= 0 or selected_capacity % TILE:
         raise ValueError("selection capacity must contain whole tiles")
     import pypto.language as pl
-    from models.glm5_3_flash.attention import mla_dequant_cache_block
 
     parts = selected_capacity // TILE
     scale = VALUE ** -0.5
     selected_rows = QUERY_ROWS * selected_capacity
     partial_rows = QUERY_ROWS * parts * HEAD_TILE
+    read_selected = make_selected_latent_reader(selected_capacity)
 
     @pl.jit.inline
     def attention_tile(q: pl.Tensor, kv: pl.Tensor, bias: pl.Tensor):
@@ -34,38 +69,16 @@ def make_mla_kernel(selected_capacity: int, *, inline=False):
 
     jit = pl.jit.inline if inline else pl.jit
 
-    @jit
-    def run(
-        q_history: pl.Tensor, q_draft: pl.Tensor, history: pl.Tensor, table: pl.Tensor,
-        indices: pl.Tensor, history_bias: pl.Tensor, lengths: pl.Tensor,
-        block: pl.Tensor, block_bias: pl.Tensor, ar_value: pl.Tensor, draft_value: pl.Tensor,
-        output: pl.Out[pl.Tensor],
+    @pl.jit.inline(auto_scope=False)
+    def attend_selected(
+        q_history: pl.Tensor, q_draft: pl.Tensor, selected: pl.Tensor[[selected_rows, LATENT], pl.BF16],
+        history_bias: pl.Tensor, lengths: pl.Tensor, block: pl.Tensor, block_bias: pl.Tensor,
+        ar_value: pl.Tensor, draft_value: pl.Tensor, output: pl.Out[pl.Tensor],
     ):
-        # Unpack each selected row once for all local heads. Bad/padding rows
-        # never address the target arena; the binders supply anchor-limited IDs.
-        selected = pl.create_tensor([selected_rows, LATENT], dtype=pl.BF16)
-        with pl.spmd(48, name_hint="orthrus_glm53_unpack") as unpack:
-            worker = pl.tile.get_block_idx()
-            for turn in pl.range((selected_rows - worker + 47) // 48):
-                unpack_row = worker + turn * 48
-                unpack_token = unpack_row // selected_capacity
-                unpack_offset = unpack_row % selected_capacity
-                if unpack_offset < pl.cast(pl.read(lengths, [unpack_token]), pl.INDEX):
-                    logical = pl.cast(pl.read(indices, [unpack_token, unpack_offset]), pl.INDEX)
-                    page = pl.cast(pl.read(table, [logical // PAGE]), pl.INDEX)
-                    physical = page * PAGE + logical % PAGE
-                    for segment in pl.unroll(LATENT // TILE):
-                        column = pl.cast(segment * TILE, pl.INDEX)
-                        selected[unpack_row:unpack_row + 1, column:column + TILE] = mla_dequant_cache_block(
-                            history, physical, column
-                        )
-                else:
-                    selected[unpack_row:unpack_row + 1, :] = pl.full([1, LATENT], dtype=pl.BF16, value=0.0)
-
         part_max = pl.create_tensor([partial_rows, 1], dtype=pl.FP32)
         part_denom = pl.create_tensor([partial_rows, 1], dtype=pl.FP32)
         part_value = pl.create_tensor([partial_rows, LATENT], dtype=pl.FP32)
-        with pl.spmd(QUERY_ROWS * parts, name_hint="orthrus_glm53_history", deps=[unpack]) as scored:
+        with pl.spmd(QUERY_ROWS * parts, name_hint="orthrus_glm53_history") as scored:
             history_task = pl.tile.get_block_idx()
             history_token, history_offset = history_task // parts, history_task % parts * TILE
             start = history_task * HEAD_TILE
@@ -139,6 +152,22 @@ def make_mla_kernel(selected_capacity: int, *, inline=False):
                 output[token * HEADS + head:token * HEADS + head + 1, channel:channel + vt] = pl.reshape(values, [1, vt])
         return output
 
+    if selected_input:
+        return attend_selected
+
+    @jit
+    def run(
+        q_history: pl.Tensor, q_draft: pl.Tensor, history: pl.Tensor, table: pl.Tensor,
+        indices: pl.Tensor, history_bias: pl.Tensor, lengths: pl.Tensor,
+        block: pl.Tensor, block_bias: pl.Tensor, ar_value: pl.Tensor, draft_value: pl.Tensor,
+        output: pl.Out[pl.Tensor],
+    ):
+        buffer = pl.create_tensor([selected_rows, LATENT], dtype=pl.BF16)
+        selected = read_selected(history, table, indices, lengths, buffer)
+        attend_selected(q_history, q_draft, selected, history_bias, lengths, block, block_bias,
+                        ar_value, draft_value, output)
+        return output
+
     return run
 
 
@@ -186,31 +215,25 @@ def make_history_selector(*, inline=False):
     return select, TOPK_INDEX_WIDTH
 
 
-def make_indexed_mla_kernel(*, inline=False):
-    """Run history retrieval and attention in one device-resident dispatch."""
+def make_indexed_history_metadata():
+    """Reuse the exact prefix-only history selection and masking in backward replay."""
     import pypto.language as pl
     from models.glm5_3_flash.config import INDEX_KPOOL, KPOOL_SELECT_K
 
     select, width = make_history_selector(inline=True)
     capacity = (width + TILE - 1) // TILE * TILE
-    attend = make_mla_kernel(capacity, inline=True)
-    jit = pl.jit.inline if inline else pl.jit
 
-    @jit
-    def indexed_attention(
-        q_history: pl.Tensor, q_draft: pl.Tensor, history: pl.Tensor, table: pl.Tensor,
+    @pl.jit.inline
+    def metadata(
         index_query: pl.Tensor, head_weights: pl.Tensor, pool_cache: pl.Tensor, pool_blocks: pl.Tensor,
-        starts: pl.Tensor, pool_counts: pl.Tensor, tail_start: pl.Tensor, tail_count: pl.Tensor,
-        prefix: pl.Tensor, block: pl.Tensor, block_bias: pl.Tensor, ar_value: pl.Tensor, draft_value: pl.Tensor,
-        output: pl.Out[pl.Tensor],
+        starts: pl.Tensor[[QUERY_ROWS], pl.INT32], pool_counts: pl.Tensor[[QUERY_ROWS], pl.INT32],
+        tail_start: pl.Tensor[[QUERY_ROWS], pl.INT32], tail_count: pl.Tensor[[QUERY_ROWS], pl.INT32],
+        prefix: pl.Tensor[[QUERY_ROWS], pl.INT32], ids: pl.Tensor[[QUERY_ROWS, width], pl.INT32],
+        bias: pl.Tensor[[QUERY_ROWS, capacity], pl.FP32], lengths: pl.Tensor[[QUERY_ROWS], pl.INT32],
     ):
-        ids = pl.create_tensor([QUERY_ROWS, width], dtype=pl.INT32)
         select(index_query, head_weights, pool_cache, pool_blocks, starts, pool_counts, tail_start, tail_count,
                prefix, ids)
-        bias = pl.create_tensor([QUERY_ROWS, capacity], dtype=pl.FP32)
-        lengths = pl.create_tensor([QUERY_ROWS], dtype=pl.INT32)
-        # Produce an aligned mask while retaining the native, 2051-wide indexer
-        # result. An index is read only when its lane is within the true count.
+        # Align the mask without reading padding lanes of the native indexer output.
         for worker in pl.spmd(1, name_hint="orthrus_glm53_lengths"):
             for row in pl.range(worker, QUERY_ROWS):
                 count = pl.min(pl.read(pool_counts, [row]), KPOOL_SELECT_K) * INDEX_KPOOL
@@ -223,11 +246,72 @@ def make_indexed_mla_kernel(*, inline=False):
             lane = pl.arange(pl.cast(offset, pl.INT32), [1, TILE], dtype=pl.INT32)
             invalid = pl.minimum(pl.maximum(pl.sub(pl.add(lane, 1), active), 0), 1)
             bias[token:token + 1, offset:offset + TILE] = pl.mul(pl.cast(invalid, pl.FP32), -3.4e38)
-        attend(q_history, q_draft, history, table, ids, bias, lengths, block, block_bias,
+        return ids, bias, lengths
+
+    return metadata, width, capacity
+
+
+def make_indexed_mla_kernel(*, inline=False):
+    """Run history retrieval and attention in one device-resident dispatch."""
+    import pypto.language as pl
+
+    metadata, width, capacity = make_indexed_history_metadata()
+    attend = make_mla_kernel(capacity, inline=True)
+    jit = pl.jit.inline if inline else pl.jit
+
+    @jit
+    def indexed_attention(
+        q_history: pl.Tensor, q_draft: pl.Tensor, history: pl.Tensor, table: pl.Tensor,
+        index_query: pl.Tensor, head_weights: pl.Tensor, pool_cache: pl.Tensor, pool_blocks: pl.Tensor,
+        starts: pl.Tensor, pool_counts: pl.Tensor, tail_start: pl.Tensor, tail_count: pl.Tensor,
+        prefix: pl.Tensor, block: pl.Tensor, block_bias: pl.Tensor, ar_value: pl.Tensor, draft_value: pl.Tensor,
+        output: pl.Out[pl.Tensor],
+    ):
+        ids = pl.create_tensor([QUERY_ROWS, width], dtype=pl.INT32)
+        bias = pl.create_tensor([QUERY_ROWS, capacity], dtype=pl.FP32)
+        lengths = pl.create_tensor([QUERY_ROWS], dtype=pl.INT32)
+        indices, history_bias, count = metadata(index_query, head_weights, pool_cache, pool_blocks, starts,
+                                                pool_counts, tail_start, tail_count, prefix, ids, bias, lengths)
+        attend(q_history, q_draft, history, table, indices, history_bias, count, block, block_bias,
                ar_value, draft_value, output)
         return output
 
     return indexed_attention, width
+
+
+def make_mla_history_replay(*, device_entry=False):
+    """Rebuild the precise latent rows and masks consumed by the draft MLA."""
+    import pypto.language as pl
+
+    metadata, width, capacity = make_indexed_history_metadata()
+    read_latents = make_selected_latent_reader(capacity)
+
+    @pl.jit
+    def replay(
+        history: pl.Tensor, table: pl.Tensor, query: pl.Tensor, weights: pl.Tensor,
+        pool_cache: pl.Tensor, pool_blocks: pl.Tensor, start: pl.Tensor, pools: pl.Tensor,
+        tail: pl.Tensor, tail_count: pl.Tensor, prefix: pl.Tensor,
+        selected: pl.Out[pl.Tensor[[QUERY_ROWS * capacity, LATENT], pl.BF16]],
+        bias: pl.Out[pl.Tensor[[QUERY_ROWS, capacity], pl.FP32]],
+    ):
+        ids = pl.create_tensor([QUERY_ROWS, width], dtype=pl.INT32)
+        lengths = pl.create_tensor([QUERY_ROWS], dtype=pl.INT32)
+        indices, history_bias, counts = metadata(query, weights, pool_cache, pool_blocks, start, pools,
+                                                 tail, tail_count, prefix, ids, bias, lengths)
+        latents = read_latents(history, table, indices, counts, selected)
+        return latents, history_bias
+
+    @pl.jit.host
+    def entry(
+        history: pl.Tensor, table: pl.Tensor, query: pl.Tensor, weights: pl.Tensor,
+        pool_cache: pl.Tensor, pool_blocks: pl.Tensor, start: pl.Tensor, pools: pl.Tensor,
+        tail: pl.Tensor, tail_count: pl.Tensor, prefix: pl.Tensor,
+        selected: pl.Out[pl.Tensor], bias: pl.Out[pl.Tensor],
+    ):
+        replay(history, table, query, weights, pool_cache, pool_blocks, start, pools,
+               tail, tail_count, prefix, selected, bias, device=0)
+
+    return (replay if device_entry else entry), width, capacity
 
 
 def make_indexed_mla_program():

@@ -105,4 +105,16 @@ python scripts/validate_glm53_pypto_streamed_kda.py \
   --checkpoint "$MODEL" --device 0 --resident-adjoint --output kda-adjoint.json
 ```
 
-Real-model TP8 execution remains pending. The native online update still needs to replay the final MLA against the paged history, feed its actual gradients to AdamW, and decode with the published head.
+### Update the final draft MLA
+
+`--resident-update LR` extends replay through the final trainable MLA and publishes a device AdamW update to the live Serving head. One session retains its optimizer state across requests. It rebuilds the final layer's BF16 projections, pooled Indexer selection and selected C8 history with the same kernels as the draft forward. It differentiates the shared history/block softmax, the absorbed key/value paths and the input projections. The trainable set is Q-A, its RMSNorm, Q-B, KV-A, its RMSNorm, the draft key/value bases and the output projection. Top-K selection and the two Indexer projections remain fixed. Model activations, gradients and weights stay on the NPU. The host passes page/segment metadata and checks the compact finite-gradient flags before publishing.
+
+```bash
+python scripts/validate_glm53_pypto_resident_step.py \
+  --checkpoint "$MODEL" --devices 0 1 --output resident-step.json
+python scripts/validate_glm53_pypto_verify.py \
+  --checkpoint "$MODEL" --mask-token-id 0 --device-greedy --resident-update 0.0001 \
+  --artifact-dir /path/to/compile-cache --output resident-tp8.json
+```
+
+The first command passed on two Ascend devices with real head shards, a paged fixture and synthetic upstream gradients. It checks two consecutive updates, each trainable field, replay after publication and byte-identical Indexer and target cache. Separately, the MLA activation replay passed at anchors 0, 17, 639, 640, 642 and 2,055, and the native local MLA adjoint matched FP64 within `7.62e-8`. The TP8 Serving acceptance uses native draft and teacher logits for the loss, checks that the update changes draft logits with the teacher unchanged, and reruns greedy verification with the updated head. Full-model TP8 execution is pending. The update is exposed through the Python replay session and the acceptance command.

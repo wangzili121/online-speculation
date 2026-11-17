@@ -522,7 +522,7 @@ def make_mla_absorb_backward(*, device_entry=False):
     return absorb_backward if device_entry else entry
 
 
-def make_mla_local_backward(history_capacity):
+def make_mla_local_backward(history_capacity, *, ranks=None):
     """Backpropagate from MLA output to the sharded weights and input-branch gradients."""
     import pypto.language as pl
     from models.glm5_3_flash.config import D
@@ -547,6 +547,12 @@ def make_mla_local_backward(history_capacity):
             else:
                 padded[row:row + 1, :] = pl.full([1, VALUE], dtype=pl.FP32, value=0.0)
         return padded
+
+    if ranks is not None:
+        return _make_mla_distributed_backward(
+            ranks, history_capacity, output_projection, arrange_heads, replay, value, mixture,
+            softmax, scores, absorb, add_block_grads,
+        )
 
     @pl.jit.host
     def entry(
@@ -583,6 +589,89 @@ def make_mla_local_backward(history_capacity):
         dq_h, dq_b, dk = scores(ds, history, block, q_block, d_hist_query, d_block_query, d_block_key, device=0)
         absorb(query, history_key, draft_key, dq_h, dq_b, d_query, d_key, device=0)
         add_block_grads(dk, dv, d_block_latent, device=0)
+
+    return entry
+
+
+def _make_mla_distributed_backward(ranks, history_capacity, *stages):
+    """Run the existing per-rank MLA adjoint against resident replay buffers."""
+    import pypto.language as pl
+    import pypto.language.distributed as pld
+    from models.glm5_3_flash.config import D as width
+
+    tokens, local = 16, HEADS * VALUE
+    score_rows, score_width = QUERY_ROWS * HEAD_TILE, history_capacity + TILE
+    hist_rows = QUERY_ROWS * history_capacity
+    projection, pad_gradients, replay, value, mixture, softmax, scores, absorb, add_block_grads = (
+        pl.jit.inline(stage._func) for stage in stages
+    )
+
+    @pl.jit
+    def layer_backward(
+        output_gradient: pl.Tensor[[tokens, width], pl.FP32],
+        context: pl.Tensor[[tokens, local], pl.BF16], output_weight: pl.Tensor[[width, local], pl.BF16],
+        query: pl.Tensor[[tokens, local], pl.BF16],
+        history_key: pl.Tensor[[local, LATENT], pl.BF16], draft_key: pl.Tensor[[local, LATENT], pl.BF16],
+        history_value: pl.Tensor[[local, LATENT], pl.BF16], draft_value: pl.Tensor[[local, LATENT], pl.BF16],
+        q_history: pl.Tensor[[score_rows, LATENT], pl.BF16], q_block: pl.Tensor[[score_rows, LATENT], pl.BF16],
+        history: pl.Tensor[[hist_rows, LATENT], pl.BF16], block: pl.Tensor[[TILE, LATENT], pl.BF16],
+        history_bias: pl.Tensor[[QUERY_ROWS, history_capacity], pl.FP32],
+        block_bias: pl.Tensor[[1, TILE], pl.FP32],
+        d_output: pl.Out[pl.Tensor[[width, local], pl.FP32]],
+        d_key: pl.Out[pl.Tensor[[local, LATENT], pl.FP32]],
+        d_value: pl.Out[pl.Tensor[[local, LATENT], pl.FP32]],
+        d_query: pl.Out[pl.Tensor[[tokens, local], pl.FP32]],
+        d_block_latent: pl.Out[pl.Tensor[[TILE, LATENT], pl.FP32]],
+    ):
+        projection_gradient = pl.create_tensor([tokens, local], dtype=pl.FP32)
+        padded_gradient = pl.create_tensor([score_rows, VALUE], dtype=pl.FP32)
+        probability = pl.create_tensor([score_rows, score_width], dtype=pl.FP32)
+        draft_mix = pl.create_tensor([score_rows, LATENT], dtype=pl.FP32)
+        d_hist_mix = pl.create_tensor([score_rows, LATENT], dtype=pl.FP32)
+        d_block_mix = pl.create_tensor([score_rows, LATENT], dtype=pl.FP32)
+        d_prob = pl.create_tensor([score_rows, score_width], dtype=pl.FP32)
+        d_scores = pl.create_tensor([score_rows, score_width], dtype=pl.FP32)
+        d_block_value = pl.create_tensor([TILE, LATENT], dtype=pl.FP32)
+        d_block_key = pl.create_tensor([TILE, LATENT], dtype=pl.FP32)
+        d_hist_query = pl.create_tensor([score_rows, LATENT], dtype=pl.FP32)
+        d_block_query = pl.create_tensor([score_rows, LATENT], dtype=pl.FP32)
+
+        _dw, flat_grad = projection(context, output_weight, output_gradient, d_output,
+                                           projection_gradient)
+        ctx_grad = pad_gradients(flat_grad, padded_gradient)
+        p, block_mix = replay(q_history, q_block, history, block, history_bias, block_bias,
+                              probability, draft_mix)
+        dm_h, dm_b, _dv = value(ctx_grad, block_mix, history_value, draft_value,
+                                d_hist_mix, d_block_mix, d_value)
+        dp, dv = mixture(p, history, block, dm_h, dm_b, d_prob, d_block_value)
+        ds = softmax(p, dp, d_scores)
+        dq_h, dq_b, dk = scores(ds, history, block, q_block, d_hist_query, d_block_query, d_block_key)
+        absorb(query, history_key, draft_key, dq_h, dq_b, d_query, d_key)
+        add_block_grads(dk, dv, d_block_latent)
+
+    @pl.jit.host
+    def entry(
+        output_gradient: pl.Tensor[[ranks, tokens, width], pl.FP32],
+        context: pl.Tensor[[ranks, tokens, local], pl.BF16], output_weight: pl.Tensor[[ranks, width, local], pl.BF16],
+        query: pl.Tensor[[ranks, tokens, local], pl.BF16],
+        history_key: pl.Tensor[[ranks, local, LATENT], pl.BF16], draft_key: pl.Tensor[[ranks, local, LATENT], pl.BF16],
+        history_value: pl.Tensor[[ranks, local, LATENT], pl.BF16], draft_value: pl.Tensor[[ranks, local, LATENT], pl.BF16],
+        q_history: pl.Tensor[[ranks, score_rows, LATENT], pl.BF16], q_block: pl.Tensor[[ranks, score_rows, LATENT], pl.BF16],
+        history: pl.Tensor[[ranks, hist_rows, LATENT], pl.BF16], block: pl.Tensor[[ranks, TILE, LATENT], pl.BF16],
+        history_bias: pl.Tensor[[ranks, QUERY_ROWS, history_capacity], pl.FP32],
+        block_bias: pl.Tensor[[ranks, 1, TILE], pl.FP32],
+        d_output: pl.Out[pl.Tensor[[ranks, width, local], pl.FP32]],
+        d_key: pl.Out[pl.Tensor[[ranks, local, LATENT], pl.FP32]],
+        d_value: pl.Out[pl.Tensor[[ranks, local, LATENT], pl.FP32]],
+        d_query: pl.Out[pl.Tensor[[ranks, tokens, local], pl.FP32]],
+        d_block_latent: pl.Out[pl.Tensor[[ranks, TILE, LATENT], pl.FP32]],
+    ):
+        for rank in pl.range(pld.world_size()):
+            layer_backward(output_gradient[rank], context[rank], output_weight[rank],
+                           query[rank], history_key[rank], draft_key[rank], history_value[rank], draft_value[rank],
+                           q_history[rank], q_block[rank], history[rank], block[rank], history_bias[rank],
+                           block_bias[rank], d_output[rank], d_key[rank], d_value[rank], d_query[rank],
+                           d_block_latent[rank], device=rank)
 
     return entry
 

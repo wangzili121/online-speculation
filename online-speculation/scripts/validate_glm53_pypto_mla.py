@@ -3,6 +3,7 @@
 
 import argparse
 import json
+from collections import Counter
 from pathlib import Path
 
 import torch
@@ -10,7 +11,7 @@ import torch.nn.functional as F
 
 from blockspec.pypto_glm53_mla import (
     HEADS, HEAD_TILE, LATENT, PAGE, QUERY_ROWS, TILE, VALUE,
-    make_history_selector, make_indexed_mla_program, make_mla_program,
+    make_history_selector, make_indexed_mla_program, make_mla_history_replay, make_mla_program,
 )
 
 PAGE_ORDER = (2, 0, 4, 1, 3)
@@ -148,6 +149,8 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--selector", action="store_true", help="validate the read-only target indexer stage")
     modes.add_argument("--indexed", action="store_true", help="validate indexer and MLA in a single dispatch")
+    modes.add_argument("--history-replay", action="store_true", help="validate latent rows and masks for backward")
+    modes.add_argument("--training-replay", action="store_true", help="replay the full native draft activation tape")
     modes.add_argument("--draft", action="store_true", help="validate full rank-local MLA draft attention")
     parser.add_argument("--checkpoint", type=Path, help="initialize draft layer 43 from the real W8A8 checkpoint")
     parser.add_argument("--compile-only", action="store_true")
@@ -156,8 +159,8 @@ def main():
     args = parser.parse_args()
     if args.output.exists() or args.selection < TILE or args.selection % TILE:
         parser.error("use a new output path and a positive multiple of 128 selection rows")
-    if args.checkpoint is not None and not args.draft:
-        parser.error("checkpoint validation requires --draft")
+    if args.checkpoint is not None and not (args.draft or args.training_replay):
+        parser.error("checkpoint validation requires --draft or --training-replay")
 
     from pypto.backend import BackendType
     from pypto.ir import DistributedConfig
@@ -170,14 +173,15 @@ def main():
     if config.execution_mode != mode:
         raise RuntimeError("PyPTO overrode the requested execution mode")
     report = {"platform": config.platform, "passed": False, "compiled": False, "executed": False,
-              "mode": next((key for key in ("draft", "indexed", "selector") if getattr(args, key)), "attention"),
+              "mode": next((key for key in ("draft", "indexed", "selector", "history_replay", "training_replay") if getattr(args, key)), "attention"),
               "selection_capacity": args.selection, "cases": []}
     worker, handles = None, []
     try:
-        if args.draft:
-            from blockspec.pypto_glm53_draft_attention import make_draft_attention_program
+        if args.draft or args.training_replay:
+            from models.glm5_3_flash.config import Q_LORA, TOPK_INDEX_WIDTH
+            from blockspec.pypto_glm53_draft_attention import make_draft_attention_program, make_draft_attention_replay_program
 
-            entry = make_draft_attention_program()
+            entry = make_draft_attention_replay_program() if args.training_replay else make_draft_attention_program()
             weights = None
             if args.checkpoint is not None:
                 from models.glm5_3_flash.utils import Checkpoint
@@ -191,7 +195,16 @@ def main():
                 report["checkpoint_tp_rank"] = 7
 
             def make_fixture(anchor, seed):
-                return draft_fixture(anchor, seed, weights)
+                draft, expected = draft_fixture(anchor, seed, weights)
+                if not args.training_replay:
+                    return draft, expected
+                capacity = (TOPK_INDEX_WIDTH + TILE - 1) // TILE * TILE
+                shapes = ((16, Q_LORA), (16, Q_LORA), (16, HEADS * VALUE), (16, LATENT),
+                          (QUERY_ROWS * HEAD_TILE, LATENT), (QUERY_ROWS * HEAD_TILE, LATENT), (TILE, LATENT),
+                          (QUERY_ROWS * capacity, LATENT), (QUERY_ROWS, capacity), (16, HEADS * VALUE))
+                tape = [torch.empty(shape, dtype=torch.float32 if i == 8 else torch.bfloat16)
+                        for i, shape in enumerate(shapes)]
+                return draft[:10] + draft[11:-1] + tape, (expected, draft[10])
         elif args.selector:
             from pypto import language as pl
 
@@ -205,6 +218,21 @@ def main():
 
             def make_fixture(anchor, seed):
                 return selection_fixture(anchor, seed, width)
+        elif args.history_replay:
+            from models.glm5_3_flash.attention import dequant_mla_cache
+
+            entry, width, capacity = make_mla_history_replay()
+
+            def make_fixture(anchor, seed):
+                selector_args, picked = selection_fixture(anchor, seed, width)
+                attention_args, _ = fixture(anchor, capacity, seed, picked)
+                cache, table = attention_args[2:4]
+                selected = torch.empty((QUERY_ROWS * capacity, LATENT), dtype=torch.bfloat16)
+                bias = torch.empty((QUERY_ROWS, capacity), dtype=torch.float32)
+                logical = picked.long()
+                physical = table[logical // PAGE].long() * PAGE + logical % PAGE
+                expected = dequant_mla_cache(cache)[physical].bfloat16()
+                return [cache, table, *selector_args[:-1], selected, bias], expected
         elif args.indexed:
             entry, width = make_indexed_mla_program()
 
@@ -228,28 +256,48 @@ def main():
         worker = DistributedWorker([program], config=config, inherited_host_tensors=resident)
         for tensor in resident:
             handles.append(worker.alloc_tensor(tuple(tensor.shape), tensor.dtype))
+        output_count = 10 if args.training_replay else 2 if args.history_replay else 1
         for case, anchor in enumerate((0, 17, 639, 640, 642, 2055)):
             tensors, expected = make_fixture(anchor, 174 + case)
-            for src, host, handle in zip(tensors[:-1], resident[:-1], handles[:-1], strict=True):
+            for src, host, handle in zip(tensors[:-output_count], resident[:-output_count], handles[:-output_count], strict=True):
                 host.copy_(src)
                 worker.copy_to(handle.data_ptr, host.data_ptr(), host.nbytes)
             worker.run(program, *handles, config=config)
             for host, handle in zip(resident, handles, strict=True):
                 worker.copy_from(host.data_ptr(), handle.data_ptr, host.nbytes)
-            for actual, original in zip(resident[:-1], tensors[:-1], strict=True):
+            for actual, original in zip(resident[:-output_count], tensors[:-output_count], strict=True):
                 if not torch.equal(actual.view(torch.uint8), original.view(torch.uint8)):
                     raise AssertionError("GLM MLA changed a read-only input")
             output = resident[-1]
-            if args.selector:
+            if args.history_replay:
+                selected, bias = resident[-2:]
+                selected = selected.view(QUERY_ROWS, capacity, LATENT)
+                count = expected.shape[1]
+                # The indexer returns pools in score order. All rows in each selected pool
+                # must match by value regardless of the relative order of distinct pools.
+                for actual, want in zip(selected[:, :count], expected, strict=True):
+                    a = Counter(row.tobytes() for row in actual.view(torch.int16).numpy())
+                    b = Counter(row.tobytes() for row in want.view(torch.int16).numpy())
+                    if a != b:
+                        raise AssertionError("replayed latent rows differ from the selected paged C8 values")
+                if selected[:, count:].count_nonzero() or bias[:, :count].count_nonzero() or not (bias[:, count:] < -1e30).all():
+                    raise AssertionError("replayed backward tile differs from the committed history mask")
+                result = {"anchor": anchor, "selected": count, "inputs_byte_exact": True}
+            elif args.selector:
                 count = expected.shape[1]
                 torch.testing.assert_close(output[:, :count].sort(1).values, expected, rtol=0, atol=0)
                 if not bool((output[:, count:] == -1).all()):
                     raise AssertionError("indexer exposed an invalid row outside the committed prefix")
                 result = {"anchor": anchor, "selected": count, "inputs_byte_exact": True}
             else:
+                if args.training_replay:
+                    expected, out_weight = expected
+                    output = output.float() @ out_weight.float().T
+                    if not all(torch.isfinite(part).all() for part in resident[-output_count:]):
+                        raise AssertionError("the MLA replay tape contains a nonfinite value")
                 error = output - expected
                 result = {"anchor": anchor, "max_abs": float(error.abs().max()), "inputs_byte_exact": True}
-                if args.draft:
+                if args.draft or args.training_replay:
                     # The complete sublayer rounds at several BF16 boundaries.
                     # Compare the residual stream as well as its largest residual
                     # to keep near-zero elements from dominating the error metric.
@@ -260,7 +308,7 @@ def main():
                         raise AssertionError(result)
                 else:
                     torch.testing.assert_close(output, expected, atol=3e-5, rtol=2e-5)
-                if not args.indexed and not args.draft:
+                if not args.indexed and not (args.draft or args.training_replay):
                     result["selected_max"] = int(tensors[6].max())
             report["cases"].append(result)
             print(json.dumps(result), flush=True)

@@ -47,6 +47,7 @@ def main():
     modes.add_argument("--router-backward", action="store_true", help="validate the selected GLM router weight adjoint")
     modes.add_argument("--router-replay", action="store_true", help="validate native routing inputs for the expert adjoint")
     parser.add_argument("--history-capacity", type=int, default=256, help="padded history length for the MLA replay tests")
+    parser.add_argument("--resident-mla", action="store_true", help="run the fused rank-stacked MLA adjoint")
     parser.add_argument("--checkpoint", type=Path, help="use real checkpoint weights for the selected adjoint")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -58,6 +59,8 @@ def main():
         parser.error("--shared-expert-backward requires the GLM checkpoint")
     if args.router_replay and args.checkpoint is None:
         parser.error("--router-replay requires the GLM checkpoint")
+    if args.resident_mla and not args.mla_local_backward:
+        parser.error("--resident-mla requires --mla-local-backward")
     if args.mla_local_backward and (args.checkpoint is None or args.history_capacity % 128 or args.history_capacity < 256):
         parser.error("--mla-local-backward requires the checkpoint and aligned history capacity of at least 256")
 
@@ -829,11 +832,11 @@ def local_attention(args, generator, config):
         head_padding(q_history.detach().bfloat16()), head_padding(q_block.detach().bfloat16()), old.flatten(0, 1),
         block, mask_old, mask_block,
     )
-    execute(make_mla_local_backward(history_capacity), (*inputs, *outputs), len(inputs), (), config,
+    execute(make_mla_local_backward(history_capacity, ranks=1 if args.resident_mla else None), (*inputs, *outputs), len(inputs), (), config,
             {"program": "GLM MLA output through absorbed attention adjoint", "passed": False,
-             "checkpoint_weights": True, "history_capacity": history_capacity,
+             "checkpoint_weights": True, "history_capacity": history_capacity, "resident_mla": args.resident_mla,
              "outputs": ["out", "key", "value", "query", "block_latent"]}, args.output, expected,
-            ({"atol": 1e-5, "rtol": 2e-4},) * len(expected))
+            ({"atol": 1e-5, "rtol": 2e-4},) * len(expected), rank_axis=args.resident_mla)
 
 
 def shared_expert(args, generator, config):
@@ -963,17 +966,19 @@ def projection_shards(args, generator):
         args.output.write_text(json.dumps(report, indent=2) + "\n")
 
 
-def execute(entry, tensors, source_count, scalars, config, report, output, expected, tolerances):
-    from pypto.runtime import DistributedWorker
+def execute(entry, tensors, source_count, scalars, config, report, output, expected, tolerances, *, rank_axis=False):
+    from pypto.runtime import DistributedWorker, StackedDeviceTensor
 
     worker, handles = None, []
     try:
         tensors = tuple(value.share_memory_() for value in tensors)
-        program = entry.compile(*tensors, *scalars, config=config)
+        bindings = tuple(t.unsqueeze(0) for t in tensors) if rank_axis else tensors
+        program = entry.compile(*bindings, *scalars, config=config)
         worker = DistributedWorker([program], config=config, inherited_host_tensors=tensors)
         for tensor in tensors:
             handles.append(worker.alloc_tensor(tuple(tensor.shape), tensor.dtype, init=tensor))
-        worker.run(program, *handles, *scalars, config=config)
+        arguments = [StackedDeviceTensor([h], (1, *h.shape), [0]) for h in handles] if rank_axis else handles
+        worker.run(program, *arguments, *scalars, config=config)
         errors = []
         for tensor, handle, reference, tolerance in zip(
             tensors[source_count:], handles[source_count:], expected, tolerances, strict=True,

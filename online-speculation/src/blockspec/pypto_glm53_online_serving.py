@@ -22,12 +22,15 @@ def prepare_distillation(api, compiler):
 class ResidentDistillation:
     """Own the replay banks and device gradients for one Serving runner."""
 
-    def __init__(self, runner, *, frozen_suffix=False):
+    def __init__(self, runner, *, frozen_suffix=False, learning_rate=None, weight_decay=0.01):
         self.runner = runner
         self.runtime = runner.runtime
         self.owned = []
         self.suffix_tape = None
-        self.use_frozen_suffix = frozen_suffix
+        self.use_frozen_suffix = frozen_suffix or learning_rate is not None
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.mla_update = None
         self.frozen_suffix = None
         self.mla_output_gradient = None
 
@@ -82,6 +85,18 @@ class ResidentDistillation:
                     from .pypto_glm53_online_frozen import ResidentFrozenSuffix
 
                     self.frozen_suffix = ResidentFrozenSuffix(self)
+                if self.learning_rate is not None:
+                    import math
+
+                    from .pypto_glm53_online_mla import PROGRAMS, ResidentMLAUpdate
+
+                    if not math.isfinite(self.learning_rate) or self.learning_rate <= 0:
+                        raise ValueError("online learning rate must be positive and finite")
+                    if not math.isfinite(self.weight_decay) or self.weight_decay < 0:
+                        raise ValueError("online weight decay must be nonnegative and finite")
+                    if set(PROGRAMS).difference(runner.auxiliary_programs):
+                        raise RuntimeError("the MLA update programs were not registered before opening Serving")
+                    self.mla_update = ResidentMLAUpdate(self, self.frozen_suffix, ROWS, self.learning_rate, self.weight_decay)
             except BaseException:
                 self.close()
                 raise
@@ -95,6 +110,7 @@ class ResidentDistillation:
         self.suffix_tape = None
         self.frozen_suffix = None
         self.mla_output_gradient = None
+        self.mla_update = None
 
     def __exit__(self, exc_type, _error, _traceback):
         if exc_type is None or self.runner._dispatch_error is None:
@@ -129,9 +145,9 @@ class ResidentDistillation:
         if not self.owned:
             raise RuntimeError("resident distillation must be used inside its context")
         with _clean_replay(runner, tokens, anchor, slot):
-            inputs = _draft_inputs(runner, slot, anchor, tokens[anchor], mask_id)
-            history_row = int(inputs["kda_state_rows"][slot, 0]) if self.frozen_suffix is not None else None
-            self.capture(inputs, "orthrus", self.student, self.hidden)
+            draft = _draft_inputs(runner, slot, anchor, tokens[anchor], mask_id)
+            history_row = int(draft["kda_state_rows"][slot, 0]) if self.frozen_suffix is not None else None
+            self.capture(draft, "orthrus", self.student, self.hidden)
             inputs = _teacher_inputs(runner, tokens, anchor, slot)
             self.capture(inputs, "verify", self.teacher, self.teacher_hidden)
             valid = runner._api.VERIFY_QUERY_WIDTH - 1
@@ -145,6 +161,8 @@ class ResidentDistillation:
                 )
                 if self.frozen_suffix is not None:
                     self.mla_output_gradient = self.frozen_suffix.step(self.gradient, history_row)
+                if self.mla_update is not None:
+                    self.mla_update.step(self.mla_output_gradient, draft, slot)
             except BaseException as error:
                 runner._poison_forwards(error)
                 raise
