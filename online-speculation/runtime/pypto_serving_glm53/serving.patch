@@ -142,7 +142,15 @@
          runtime = DistributedWorker(
              [entry.compiled for entry in (*self.programs.values(), *self.auxiliary_programs.values())],
              config=config, persistent=True, reset_persistent_windows=False,
-@@ -443,6 +468,19 @@
+@@ -417,6 +442,7 @@
+         self._l3_worker = runtime
+         self._l3_run_config = config
+         self.runtime, self.config = runtime, config
++        self._orthrus_distillation_epoch = 0
+         try:
+             layouts = api.forward_tensor_layouts("prefill")
+             allocation_layouts = dict(api.CACHE_LAYOUTS)
+@@ -443,6 +469,19 @@
                                      dst_offset=offset, worker_id=rank)
                  print("GLM_RANK_WEIGHTS_READY", rank, flush=True)
 
@@ -162,7 +170,7 @@
              with ThreadPoolExecutor(max_workers=api.RANKS) as executor:
                  list(executor.map(upload, range(api.RANKS)))
              head = weights.lm_head()
-@@ -466,7 +504,7 @@
+@@ -466,7 +505,7 @@
              self._phase_tensors = []
              for slot in range(2):
                  phases = {}
@@ -171,7 +179,7 @@
                      phase_tensors = dict(self._forward_input_args[slot, phase].tensors)
                      phase_tensors["head_hidden"] = self._head_rows_by_slot[slot]
                      phase_tensors["logits"] = self._logits_by_slot[slot]
-@@ -574,7 +612,8 @@
+@@ -574,7 +613,8 @@
      def _bind_cache_tables(self, slots, new_lengths, cache_groups=None):
          """Lower scheduler pages; standalone generation uses the same allocator locally."""
          api = self._api
@@ -181,7 +189,7 @@
              cache_groups = [self._local_cache.ensure_group_blocks(str(slot), int(new_lengths[slot]))
                              for slot in slots]
          state_rows = torch.full((api.BATCH, api.KDA_STATE_COLUMNS), -1, dtype=torch.int32)
-@@ -585,7 +624,12 @@
+@@ -585,7 +625,12 @@
              end = int(new_lengths[slot])
              start = int(self._seq_lens[slot])
              attention, states = groups["attention"], groups["kda_state"]
@@ -195,7 +203,12 @@
                  raise ValueError("GLM attention table does not cover the request context")
              if len(states) != min((end + api.BLOCK_SIZE - 1) // api.BLOCK_SIZE, api.KDA_STATE_BLOCKS):
                  raise ValueError("GLM state table does not cover the request's rolling checkpoints")
-@@ -637,7 +681,7 @@
+@@ -633,11 +678,11 @@
+
+
+
+-    def _dispatch_step(self, inputs, *, phase, buffer_slot):
++    def _dispatch_step(self, inputs, *, phase, buffer_slot, task_args=None):
          """Stage one slot and submit exactly one complete model program."""
          api = self._api
          self._require_healthy_runtime()
@@ -204,7 +217,17 @@
              raise ValueError("GLM dispatch needs a phase and buffer slot zero or one")
          with self._state_lock:
              if buffer_slot in self._pending_forwards:
-@@ -685,10 +729,11 @@
+@@ -656,7 +701,8 @@
+                 host_inputs.stage(values)
+                 self.last_dispatch_started_at = time.monotonic()
+                 print("GLM_DEVICE_START", self.main_dispatches, flush=True)
+-                args = self._forward_args[buffer_slot, phase].build(use_cache=True)
++                bindings = self._forward_args[buffer_slot, phase] if task_args is None else task_args
++                args = bindings.build(use_cache=True)
+                 dispatch = self._submit_l3(self.programs[phase], *args, epoch, config=self.config)
+             except BaseException as error:
+                 self._poison_forwards(error)
+@@ -685,10 +731,11 @@
                      raise FloatingPointError(f"nonfinite head_hidden at step {pending.epoch}")
                  shards = self._logits_by_slot[pending.buffer_slot]
                  logits = torch.cat(tuple(shard[:, :api.LOCAL_VOCAB] for shard in shards.unbind(0)), dim=1)

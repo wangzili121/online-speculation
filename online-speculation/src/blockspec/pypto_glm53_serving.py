@@ -1,10 +1,11 @@
 """Stage a single Orthrus block and return GLM Serving's accepted tokens."""
 
+from contextlib import contextmanager
+
 from .pypto_glm53_verify import bind_verify_snapshots, verify_greedy
 
 
-def draft_logits(runner, slot, prefix_length, anchor, mask_id, *, cache_groups=None):
-    """Execute the hybrid draft with the resident target's prefix leases."""
+def _draft_inputs(runner, slot, prefix_length, anchor, mask_id, *, cache_groups=None):
     api = runner._api
     width = api.VERIFY_QUERY_WIDTH
     block = [anchor] + [mask_id] * (width - 1)
@@ -17,9 +18,15 @@ def draft_logits(runner, slot, prefix_length, anchor, mask_id, *, cache_groups=N
     inputs["tail_count"][:width].fill_(tail)
     inputs["kv_len_tok"][:width].fill_(prefix_length)
     bind_verify_snapshots(api, inputs, slots, [width])
+    return inputs
+
+
+def draft_logits(runner, slot, prefix_length, anchor, mask_id, *, cache_groups=None):
+    """Execute the hybrid draft with the resident target's prefix leases."""
+    inputs = _draft_inputs(runner, slot, prefix_length, anchor, mask_id, cache_groups=cache_groups)
     try:
         pending = runner._dispatch_step(inputs, phase="orthrus", buffer_slot=0)
-        pending.logit_count = width - 1
+        pending.logit_count = runner._api.VERIFY_QUERY_WIDTH - 1
         logits = runner._reclaim_step(pending)
     except BaseException as error:
         runner._invalid_slots.add(slot)
@@ -33,8 +40,9 @@ def propose_greedy(runner, slot, prefix_length, anchor, mask_id, *, cache_groups
     return draft_logits(runner, slot, prefix_length, anchor, mask_id, cache_groups=cache_groups).argmax(1).tolist()
 
 
-def collect_clean_logits(runner, tokens, anchor, slot, mask_id):
-    """Replay a clean, fixed-width block in a private slot for online distillation."""
+@contextmanager
+def _clean_replay(runner, tokens, anchor, slot):
+    """Keep replay cache writes in an unused slot while holding the runner lock."""
     api = runner._api
     width = api.VERIFY_QUERY_WIDTH
     if anchor < 0 or anchor + width > len(tokens):
@@ -52,17 +60,29 @@ def collect_clean_logits(runner, tokens, anchor, slot, mask_id):
             for offset in range(0, anchor, api.CAPACITY):
                 prefix_chunk = list(tokens[offset:min(offset + api.CAPACITY, anchor)])
                 runner.forward_chunks([prefix_chunk], [slot])
-            student = draft_logits(runner, slot, anchor, tokens[anchor], mask_id)
-            block = list(tokens[anchor:anchor + width])
-            inputs, slots = runner._prepare_chunk_inputs([block], [slot], [anchor], phase="verify")
-            bind_verify_snapshots(api, inputs, slots, [width])
-            pending = runner._dispatch_step(inputs, phase="verify", buffer_slot=0)
-            pending.logit_count = width - 1
-            teacher = runner._reclaim_step(pending)
-            runner._pending_forwards.pop(pending.buffer_slot)
+            yield
         finally:
             if runner._dispatch_error is None:
                 runner.reset_requests([slot])
+
+
+def _teacher_inputs(runner, tokens, anchor, slot):
+    width = runner._api.VERIFY_QUERY_WIDTH
+    block = list(tokens[anchor:anchor + width])
+    inputs, slots = runner._prepare_chunk_inputs([block], [slot], [anchor], phase="verify")
+    bind_verify_snapshots(runner._api, inputs, slots, [width])
+    return inputs
+
+
+def collect_clean_logits(runner, tokens, anchor, slot, mask_id):
+    """Replay a clean, fixed-width block in a private slot for online distillation."""
+    with _clean_replay(runner, tokens, anchor, slot):
+        student = draft_logits(runner, slot, anchor, tokens[anchor], mask_id)
+        inputs = _teacher_inputs(runner, tokens, anchor, slot)
+        pending = runner._dispatch_step(inputs, phase="verify", buffer_slot=0)
+        pending.logit_count = runner._api.VERIFY_QUERY_WIDTH - 1
+        teacher = runner._reclaim_step(pending)
+        runner._pending_forwards.pop(pending.buffer_slot)
     return student, teacher
 
 

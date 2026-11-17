@@ -103,6 +103,46 @@ def run_cases(runner, vocab_size, mask_id=None):
     return report
 
 
+def run_resident_distillation(runner, mask_id):
+    """Compare two real Serving replay rounds with a full-vocabulary reference."""
+    import torch
+
+    from blockspec.pypto_glm53_online_serving import ResidentDistillation
+    from blockspec.pypto_glm53_serving import collect_clean_logits
+
+    def download(bank, rank, dtype):
+        shard = bank.shards[rank]
+        host = torch.empty(shard.shape, dtype=dtype).share_memory_()
+        runner.runtime.copy_from(host.data_ptr(), shard.data_ptr, host.nbytes, worker_id=rank)
+        return host
+
+    tokens = [1949, 373, 358, 264, 6823] * 3
+    api = runner._api
+    valid = api.VERIFY_QUERY_WIDTH - 1
+    report = []
+    with ResidentDistillation(runner) as training:
+        for anchor in (2, 7):
+            student, teacher = collect_clean_logits(runner, tokens, anchor, 2, mask_id)
+            logits_a = student.double().log_softmax(1)
+            logits_b = teacher.double().log_softmax(1)
+            expected_loss = ((logits_b - logits_a) * logits_b.exp()).sum(1) / valid
+            loss, gradient = training.step(tokens, anchor, 2, mask_id)
+            total = sum(download(loss, rank, torch.float32)[:, 0].double() for rank in range(api.RANKS))
+            torch.testing.assert_close(total[:valid], expected_loss, atol=3e-5, rtol=2e-4)
+            if torch.count_nonzero(total[valid:]):
+                raise AssertionError("resident replay included inactive logit rows")
+            first = download(gradient, 0, torch.float32)
+            if not torch.isfinite(first).all() or not torch.count_nonzero(first[:valid * api.HC_MULT]):
+                raise AssertionError("resident GLM gradient is nonfinite or empty")
+            if torch.count_nonzero(first[valid * api.HC_MULT:]):
+                raise AssertionError("resident replay included inactive gradient rows")
+            for rank in range(1, api.RANKS):
+                torch.testing.assert_close(download(gradient, rank, torch.float32), first, atol=3e-6, rtol=2e-4)
+            report.append({"anchor": anchor, "loss": float(total.sum()),
+                           "loss_max_abs": float((total[:valid] - expected_loss).abs().max())})
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path)
@@ -110,12 +150,15 @@ def main():
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--artifact-dir", type=Path, help="save or reuse precompiled programs")
     parser.add_argument("--mask-token-id", type=int, help="also compile and exercise the actual draft model")
+    parser.add_argument("--resident-distillation", action="store_true", help="check the Serving-to-PyPTO replay and KL path")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     if len(set(args.devices)) != 8 or args.output.exists():
         parser.error("use eight distinct devices and a new output file")
     if args.checkpoint is None and not args.compile_only:
         parser.error("a GLM W8A8 checkpoint is required for device execution")
+    if args.resident_distillation and args.mask_token_id is None:
+        parser.error("--resident-distillation requires --mask-token-id")
 
     from pypto_serving.model.glm53.kernel_api import import_kernel
     from pypto_serving.model.glm53.npu_runner import Glm53ModelRunner
@@ -126,6 +169,14 @@ def main():
         api = import_kernel("prefill_fwd", tp_size=8, ep_size=8, capacity=256, max_seq_len=1280)
         os.environ["PYPTO_GLM_ORTHRUS_VERIFY"] = "1"
         programs = prepare_programs(api, args.devices, args.artifact_dir, args.mask_token_id is not None)
+        if args.resident_distillation:
+            from pypto_serving.model.glm53.npu_executor import KernelCompiler, build_pypto_run_config
+
+            from blockspec.pypto_glm53_online_serving import PROGRAM, prepare_distillation
+
+            config = build_pypto_run_config(platform="a2a3", device_ids=args.devices, pypto_build_dir=None)
+            programs["_auxiliary"][PROGRAM] = prepare_distillation(api, KernelCompiler(run_config=config))
+            result["resident_distillation_compiled"] = True
         result["compiled"] = True
         if args.compile_only:
             view = Glm53ModelRunner(api, programs, None, args.devices, "a2a3", orthrus_mask_token_id=args.mask_token_id)
@@ -141,6 +192,8 @@ def main():
         result["verifier"] = run_cases(runner, vocab_size)
         if args.mask_token_id is not None:
             result["draft"] = run_cases(runner, vocab_size, args.mask_token_id)
+        if args.resident_distillation:
+            result["resident_distillation"] = run_resident_distillation(runner, args.mask_token_id)
         result.update(passed=True, executed=True)
     except BaseException as error:
         result["error"] = repr(error)
