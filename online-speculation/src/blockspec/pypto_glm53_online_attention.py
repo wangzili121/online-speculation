@@ -328,7 +328,7 @@ def make_mla_mixture_backward(history_capacity, *, device_entry=False):
 
 
 def make_mla_latent_backward(history_capacity):
-    """Compose the exact attention adjoint around the draft and history latent spaces."""
+    """Replay the joint probabilities and apply the latent attention adjoint."""
     import pypto.language as pl
 
     rows = QUERY_ROWS * HEAD_TILE
@@ -337,6 +337,7 @@ def make_mla_latent_backward(history_capacity):
     mixture = make_mla_mixture_backward(history_capacity, device_entry=True)
     softmax = make_joint_softmax_backward(rows, history_capacity, TILE, device_entry=True)
     scores = make_mla_score_backward(history_capacity, device_entry=True)
+    replay = make_mla_replay_tape(history_capacity, device_entry=True)
 
     @pl.jit
     def add_block_grads(
@@ -350,23 +351,102 @@ def make_mla_latent_backward(history_capacity):
 
     @pl.jit.host
     def entry(
-        ctx_grad: pl.Tensor, draft_mixture: pl.Tensor, history_weight: pl.Tensor, draft_weight: pl.Tensor,
-        probability: pl.Tensor, history: pl.Tensor, block: pl.Tensor, q_block: pl.Tensor,
+        ctx_grad: pl.Tensor, history_weight: pl.Tensor, draft_weight: pl.Tensor,
+        q_history: pl.Tensor, q_block: pl.Tensor, history: pl.Tensor, block: pl.Tensor,
+        history_bias: pl.Tensor, block_bias: pl.Tensor,
         d_hist_query: pl.Out[pl.Tensor], d_block_query: pl.Out[pl.Tensor],
         d_draft_value: pl.Out[pl.Tensor], d_block_latent: pl.Out[pl.Tensor],
     ):
+        probability = pl.create_tensor([rows, width], dtype=pl.FP32)
+        draft_mixture = pl.create_tensor([rows, LATENT], dtype=pl.FP32)
         hist_mixture_grad = pl.create_tensor([rows, LATENT], dtype=pl.FP32)
         block_mixture_grad = pl.create_tensor([rows, LATENT], dtype=pl.FP32)
         probability_grad = pl.create_tensor([rows, width], dtype=pl.FP32)
         scores_grad = pl.create_tensor([rows, width], dtype=pl.FP32)
         block_value_grad = pl.create_tensor([TILE, LATENT], dtype=pl.FP32)
         block_key_grad = pl.create_tensor([TILE, LATENT], dtype=pl.FP32)
-        dm_history, dm_block, _w = value(ctx_grad, draft_mixture, history_weight, draft_weight,
+        p, draft_mix = replay(q_history, q_block, history, block, history_bias, block_bias,
+                              probability, draft_mixture, device=0)
+        dm_history, dm_block, _w = value(ctx_grad, draft_mix, history_weight, draft_weight,
                                          hist_mixture_grad, block_mixture_grad, d_draft_value, device=0)
-        dp, dv = mixture(probability, history, block, dm_history, dm_block,
+        dp, dv = mixture(p, history, block, dm_history, dm_block,
                          probability_grad, block_value_grad, device=0)
-        ds = softmax(probability, dp, scores_grad, device=0)
+        ds = softmax(p, dp, scores_grad, device=0)
         _qh, _qb, dk = scores(ds, history, block, q_block, d_hist_query, d_block_query, block_key_grad, device=0)
         add_block_grads(dk, dv, d_block_latent, device=0)
 
     return entry
+
+
+def make_mla_replay_tape(history_capacity, *, device_entry=False):
+    """Recompute the shared probabilities and draft mixture for the last MLA layer."""
+    import pypto.language as pl
+
+    if history_capacity < TILE or history_capacity % TILE:
+        raise ValueError("GLM MLA replay needs tile-aligned history")
+    rows = QUERY_ROWS * HEAD_TILE
+    selected = QUERY_ROWS * history_capacity
+    capacity = history_capacity + TILE
+    parts = history_capacity // TILE
+    scale = VALUE ** -0.5
+
+    @pl.jit
+    def replay(
+        q_history: pl.Tensor[[rows, LATENT], pl.BF16],
+        q_block: pl.Tensor[[rows, LATENT], pl.BF16],
+        history: pl.Tensor[[selected, LATENT], pl.BF16],
+        block: pl.Tensor[[TILE, LATENT], pl.BF16],
+        history_bias: pl.Tensor[[QUERY_ROWS, history_capacity], pl.FP32],
+        block_bias: pl.Tensor[[1, TILE], pl.FP32],
+        probability: pl.Out[pl.Tensor[[rows, capacity], pl.FP32]],
+        mixed_block: pl.Out[pl.Tensor[[rows, LATENT], pl.FP32]],
+    ):
+        logits = pl.create_tensor([rows, capacity], dtype=pl.FP32)
+        for job in pl.spmd(QUERY_ROWS * parts, name_hint="glm_replay_history_scores"):
+            token = job // parts
+            position = job % parts * TILE
+            row = token * HEAD_TILE
+            queries = pl.slice(q_history, [HEAD_TILE, LATENT], [row, 0])
+            latent = pl.slice(history, [TILE, LATENT], [job * TILE, 0])
+            h_scores = pl.matmul(queries, latent, b_trans=True, out_dtype=pl.FP32)
+            h_bias = history_bias[token:token + 1, position:position + TILE]
+            logits[row:row + HEAD_TILE, position:position + TILE] = pl.col_expand_add(pl.mul(h_scores, scale), h_bias)
+        for token in pl.spmd(QUERY_ROWS, name_hint="glm_replay_block_scores"):
+            row = token * HEAD_TILE
+            queries = pl.slice(q_block, [HEAD_TILE, LATENT], [row, 0])
+            b_scores = pl.matmul(queries, block, b_trans=True, out_dtype=pl.FP32)
+            logits[row:row + HEAD_TILE, history_capacity:capacity] = pl.col_expand_add(
+                pl.mul(b_scores, scale), block_bias,
+            )
+        for token in pl.spmd(QUERY_ROWS, name_hint="glm_replay_shared_softmax"):
+            row = token * HEAD_TILE
+            block_logits = logits[row:row + HEAD_TILE, history_capacity:capacity]
+            maximum = pl.row_max(block_logits)
+            for offset in pl.range(0, history_capacity, TILE):
+                maximum = pl.maximum(maximum, pl.row_max(logits[row:row + HEAD_TILE, offset:offset + TILE]))
+            denominator = pl.row_sum(pl.exp(pl.row_expand_sub(block_logits, maximum)))
+            for offset in pl.range(0, history_capacity, TILE):
+                shifted = pl.row_expand_sub(logits[row:row + HEAD_TILE, offset:offset + TILE], maximum)
+                denominator = pl.add(denominator, pl.row_sum(pl.exp(shifted)))
+            for offset in pl.range(0, capacity, TILE):
+                shifted = pl.row_expand_sub(logits[row:row + HEAD_TILE, offset:offset + TILE], maximum)
+                p = pl.row_expand_div(pl.exp(shifted), denominator)
+                probability[row:row + HEADS, offset:offset + TILE] = pl.slice(p, [HEADS, TILE], [0, 0])
+                probability[row + HEADS:row + HEAD_TILE, offset:offset + TILE] = pl.full(
+                    [HEAD_TILE - HEADS, TILE], dtype=pl.FP32, value=0.0,
+                )
+        for token in pl.spmd(QUERY_ROWS, name_hint="glm_replay_draft_mixture"):
+            row = token * HEAD_TILE
+            p_block = pl.slice(probability, [HEAD_TILE, TILE], [row, history_capacity])
+            high = pl.cast(p_block, pl.BF16, mode="rint")
+            low = pl.cast(pl.sub(p_block, pl.cast(high, pl.FP32)), pl.BF16, mode="rint")
+            mix = pl.matmul(high, block, out_dtype=pl.FP32)
+            mixed_block[row:row + HEAD_TILE, :] = pl.matmul_acc(mix, low, block)
+        return probability, mixed_block
+
+    @pl.jit.host
+    def entry(q_history: pl.Tensor, q_block: pl.Tensor, history: pl.Tensor, block: pl.Tensor, history_bias: pl.Tensor,
+              block_bias: pl.Tensor, probability: pl.Out[pl.Tensor], mixed_block: pl.Out[pl.Tensor]):
+        replay(q_history, q_block, history, block, history_bias, block_bias, probability, mixed_block, device=0)
+
+    return replay if device_entry else entry

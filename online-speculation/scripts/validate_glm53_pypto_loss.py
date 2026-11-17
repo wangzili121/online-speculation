@@ -33,7 +33,9 @@ def main():
     modes.add_argument("--mla-value-backward", action="store_true", help="validate the two latent MLA value branches")
     modes.add_argument("--mla-mixture-backward", action="store_true", help="validate the shared probabilities and draft value VJP")
     modes.add_argument("--mla-latent-backward", action="store_true", help="validate the complete latent attention adjoint")
+    modes.add_argument("--mla-replay-tape", action="store_true", help="validate MLA training replay from its forward inputs")
     modes.add_argument("--int8-backward", action="store_true", help="validate frozen W8A8 input gradients")
+    parser.add_argument("--history-capacity", type=int, default=256, help="padded history length for the MLA replay tests")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
@@ -46,11 +48,13 @@ def main():
     torch.set_num_threads(4)
     config = RunConfig(platform="a2a3", distributed_config=DistributedConfig(device_ids=[args.device], num_sub_workers=0))
     generator = torch.Generator().manual_seed(142)
-    if args.mla_latent_backward:
+    if args.mla_latent_backward or args.mla_replay_tape:
         from blockspec.pypto_glm53_mla import HEADS, HEAD_TILE, LATENT, QUERY_ROWS, TILE, VALUE
-        from blockspec.pypto_glm53_online_attention import make_mla_latent_backward
+        from blockspec.pypto_glm53_online_attention import make_mla_latent_backward, make_mla_replay_tape
 
-        aligned = 2 * TILE
+        aligned = args.history_capacity
+        if aligned < 2 * TILE or aligned % TILE:
+            parser.error("--history-capacity must be a multiple of 128 and at least 256")
 
         def normal_bf16(*shape):
             return (torch.randn(shape, generator=generator) * 0.1).bfloat16()
@@ -65,23 +69,34 @@ def main():
         hist_scores = qh_ref @ history.double().transpose(1, 2)
         block_scores = qb_ref @ block_ref.t()
         logits = torch.cat((hist_scores, block_scores), -1) * VALUE ** -0.5
-        lengths = torch.tensor((0, 1, 16, 127, 129, 241))
+        lengths = torch.tensor((0, 1, 16, 127, 129, aligned - 15))
         hist_mask = torch.arange(aligned) >= lengths[:, None]
         block_mask = (torch.arange(TILE) >= QUERY_ROWS).expand(QUERY_ROWS, -1)
         prob = logits.masked_fill(torch.cat((hist_mask, block_mask), dim=-1)[:, None], -torch.inf).softmax(-1)
         mixed_hist = prob[..., :aligned] @ history.double()
         mixed_block = prob[..., aligned:] @ block_ref
+
+        def padded_heads(tensor):
+            return torch.nn.functional.pad(tensor.detach(), (0, 0, 0, HEAD_TILE - HEADS)).flatten(0, 1)
+
+        history_bias = torch.zeros(hist_mask.shape).masked_fill(hist_mask, -1e30)
+        block_bias = torch.zeros((1, TILE)).masked_fill(block_mask[:1], -1e30)
+        replay_inputs = (padded_heads(qh), padded_heads(qb), history.flatten(0, 1), block, history_bias, block_bias)
+        if args.mla_replay_tape:
+            expected = (padded_heads(prob), padded_heads(mixed_block))
+            outputs = tuple(torch.empty(t.shape, dtype=torch.float32) for t in expected)
+            execute(make_mla_replay_tape(aligned), (*replay_inputs, *outputs), len(replay_inputs), (), config,
+                    {"program": "GLM MLA joint normalization replay", "passed": False}, args.output,
+                    expected, ({"atol": 3e-6, "rtol": 5e-5},) * 2)
+            return
+
         context = torch.einsum("thl,hvl->thv", mixed_hist, wh.double())
         context = context + torch.einsum("thl,hvl->thv", mixed_block, wb_ref)
         ctx_grad = torch.randn(context.shape, generator=generator) * 0.05
         dqh, dqb, dw, dblock = torch.autograd.grad(context, (qh_ref, qb_ref, wb_ref, block_ref), ctx_grad.double())
 
-        def padded_heads(tensor):
-            return torch.nn.functional.pad(tensor.detach(), (0, 0, 0, HEAD_TILE - HEADS)).flatten(0, 1)
-
         expected = (padded_heads(dqh), padded_heads(dqb), dw.flatten(0, 1), dblock)
-        inputs = (padded_heads(ctx_grad), padded_heads(mixed_block.float()), wh.flatten(0, 1), wb.flatten(0, 1),
-                  padded_heads(prob.float()), history.flatten(0, 1), block, padded_heads(qb))
+        inputs = (padded_heads(ctx_grad), wh.flatten(0, 1), wb.flatten(0, 1), *replay_inputs)
         outputs = tuple(torch.empty(t.shape) for t in expected)
         execute(make_mla_latent_backward(aligned), (*inputs, *outputs), len(inputs), (), config,
                 {"program": "GLM shared-history and bidirectional draft latent attention adjoint", "passed": False},
@@ -443,7 +458,7 @@ def main():
         expected = (upstream.float().T @ context.float(), upstream.float() @ weight.float())
         report = {"rows": rows, "program": "MLA output VJP", "passed": False}
         program = make_projection_backward(width, D) if args.mla_projection_fp32 else make_output_backward()
-        tolerance = {"atol": 2e-4 if args.mla_projection_fp32 else 2e-5, "rtol": 3e-5}
+        tolerance = {"atol": 2e-4, "rtol": 3e-5} if args.mla_projection_fp32 else {"atol": 2e-5, "rtol": 2e-5}
         execute(program, tensors, 3, (), config, report, args.output, expected, (tolerance, tolerance))
         return
 
