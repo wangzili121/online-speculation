@@ -1,6 +1,6 @@
 """Explicit derivatives for the parameterized GLM draft MLA output."""
 
-from .pypto_glm53_mla import HEADS, VALUE
+from .pypto_glm53_mla import HEADS, HEAD_TILE, LATENT, QUERY_ROWS, TILE, VALUE
 
 
 def make_output_backward(*, device_entry=False):
@@ -91,7 +91,7 @@ def make_projection_backward(input_width, output_width, *, device_entry=False):
     return projection_backward if device_entry else entry
 
 
-def make_joint_softmax_backward(rows, history_capacity, block_capacity=128):
+def make_joint_softmax_backward(rows, history_capacity, block_capacity=128, *, device_entry=False):
     """Apply the score adjoint across the shared history and the draft block."""
     import pypto.language as pl
 
@@ -128,5 +128,245 @@ def make_joint_softmax_backward(rows, history_capacity, block_capacity=128):
     @pl.jit.host
     def entry(probability: pl.Tensor, upstream: pl.Tensor, score_gradient: pl.Out[pl.Tensor]):
         backward(probability, upstream, score_gradient, device=0)
+
+    return backward if device_entry else entry
+
+
+def make_mla_score_backward(history_capacity, *, device_entry=False):
+    """Backpropagate scaled joint scores into latent queries and the draft block."""
+    import pypto.language as pl
+
+    if history_capacity < TILE or history_capacity % TILE:
+        raise ValueError("GLM MLA score backward needs tile-aligned history")
+    rows = QUERY_ROWS * HEAD_TILE
+    selected = QUERY_ROWS * history_capacity
+    scores_width = history_capacity + TILE
+    scale = VALUE ** -0.5
+
+    @pl.jit
+    def score_backward(
+        grad_scores: pl.Tensor[[rows, scores_width], pl.FP32],
+        history: pl.Tensor[[selected, LATENT], pl.BF16],
+        block: pl.Tensor[[TILE, LATENT], pl.BF16],
+        q_block: pl.Tensor[[rows, LATENT], pl.BF16],
+        d_hist_query: pl.Out[pl.Tensor[[rows, LATENT], pl.FP32]],
+        d_block_query: pl.Out[pl.Tensor[[rows, LATENT], pl.FP32]],
+        d_block_key: pl.Out[pl.Tensor[[TILE, LATENT], pl.FP32]],
+    ):
+        for task in pl.spmd(QUERY_ROWS * (LATENT // TILE), name_hint="glm_mla_score_query_vjp"):
+            row = task // (LATENT // TILE) * HEAD_TILE
+            col = task % (LATENT // TILE) * TILE
+            history_offset = row // HEAD_TILE * history_capacity
+            accumulated = pl.create_tensor([HEAD_TILE, TILE], dtype=pl.FP32)
+            for start in pl.pipeline(0, history_capacity, TILE, stage=2):
+                k = history[history_offset + start:history_offset + start + TILE, col:col + TILE]
+                g = pl.mul(grad_scores[row:row + HEAD_TILE, start:start + TILE], scale)
+                hi = pl.cast(g, pl.BF16, mode="rint")
+                lo = pl.cast(pl.sub(g, pl.cast(hi, pl.FP32)), pl.BF16, mode="rint")
+                accumulated = pl.matmul_acc(accumulated, hi, k, init_cond=start == 0)
+                accumulated = pl.matmul_acc(accumulated, lo, k)
+            d_hist_query[row:row + HEAD_TILE, col:col + TILE] = accumulated
+            block_key = block[:, col:col + TILE]
+            block_grad = pl.mul(grad_scores[row:row + HEAD_TILE, history_capacity:scores_width], scale)
+            high = pl.cast(block_grad, pl.BF16, mode="rint")
+            low = pl.cast(pl.sub(block_grad, pl.cast(high, pl.FP32)), pl.BF16, mode="rint")
+            dq = pl.matmul(high, block_key, out_dtype=pl.FP32)
+            dq = pl.matmul_acc(dq, low, block_key)
+            d_block_query[row:row + HEAD_TILE, col:col + TILE] = dq
+        for task in pl.spmd(LATENT // TILE, name_hint="glm_mla_score_key_vjp"):
+            col = task * TILE
+            key_gradient = pl.create_tensor([TILE, TILE], dtype=pl.FP32)
+            for row in pl.pipeline(0, rows, HEAD_TILE, stage=2):
+                q = q_block[row:row + HEAD_TILE, col:col + TILE]
+                dlogit = pl.mul(grad_scores[row:row + HEAD_TILE, history_capacity:scores_width], scale)
+                major = pl.cast(dlogit, pl.BF16, mode="rint")
+                minor = pl.cast(pl.sub(dlogit, pl.cast(major, pl.FP32)), pl.BF16, mode="rint")
+                key_gradient = pl.matmul_acc(key_gradient, major, q, a_trans=True, init_cond=row == 0)
+                key_gradient = pl.matmul_acc(key_gradient, minor, q, a_trans=True)
+            d_block_key[:, col:col + TILE] = key_gradient
+        return d_hist_query, d_block_query, d_block_key
+
+    @pl.jit.host
+    def entry(grad_scores: pl.Tensor, history: pl.Tensor, block: pl.Tensor, q_block: pl.Tensor,
+              d_hist_query: pl.Out[pl.Tensor], d_block_query: pl.Out[pl.Tensor], d_block_key: pl.Out[pl.Tensor]):
+        score_backward(grad_scores, history, block, q_block, d_hist_query, d_block_query, d_block_key, device=0)
+
+    return score_backward if device_entry else entry
+
+
+def make_mla_value_backward(*, device_entry=False):
+    """Differentiate the two value bases that are added at the attention output."""
+    import pypto.language as pl
+
+    rows = QUERY_ROWS * HEAD_TILE
+    weight_rows = HEADS * VALUE
+    lane_width = 32
+    latent_tiles = LATENT // TILE
+    value_tiles = VALUE // lane_width
+
+    @pl.jit
+    def value_backward(
+        ctx_grad: pl.Tensor[[rows, VALUE], pl.FP32],
+        draft_mixture: pl.Tensor[[rows, LATENT], pl.FP32],
+        history_weight: pl.Tensor[[weight_rows, LATENT], pl.BF16],
+        draft_weight: pl.Tensor[[weight_rows, LATENT], pl.BF16],
+        d_hist_mixture: pl.Out[pl.Tensor[[rows, LATENT], pl.FP32]],
+        d_block_mixture: pl.Out[pl.Tensor[[rows, LATENT], pl.FP32]],
+        d_draft_value: pl.Out[pl.Tensor[[weight_rows, LATENT], pl.FP32]],
+    ):
+        for task in pl.spmd(rows * latent_tiles, name_hint="glm_mla_latent_vjp"):
+            row = task // latent_tiles
+            head = row % HEAD_TILE
+            col = task % latent_tiles * TILE
+            hist = pl.full([1, TILE], dtype=pl.FP32, value=0.0)
+            block = pl.full([1, TILE], dtype=pl.FP32, value=0.0)
+            if head < HEADS:
+                for start in pl.range(0, VALUE, lane_width):
+                    index = head * VALUE + start
+                    wh = pl.cast(history_weight[index:index + lane_width, col:col + TILE], pl.FP32)
+                    wb = pl.cast(draft_weight[index:index + lane_width, col:col + TILE], pl.FP32)
+                    context = pl.reshape(ctx_grad[row:row + 1, start:start + lane_width], [lane_width, 1])
+                    hist = pl.add(hist, pl.col_sum(pl.row_expand_mul(wh, context)))
+                    block = pl.add(block, pl.col_sum(pl.row_expand_mul(wb, context)))
+            d_hist_mixture[row:row + 1, col:col + TILE] = hist
+            d_block_mixture[row:row + 1, col:col + TILE] = block
+        for task in pl.spmd(HEADS * value_tiles * latent_tiles, name_hint="glm_mla_wv_vjp"):
+            head = task // (value_tiles * latent_tiles)
+            start = task // latent_tiles % value_tiles * lane_width
+            col = task % latent_tiles * TILE
+            accumulated = pl.full([lane_width, TILE], dtype=pl.FP32, value=0.0)
+            for token in pl.range(QUERY_ROWS):
+                row = token * HEAD_TILE + head
+                context = pl.reshape(ctx_grad[row:row + 1, start:start + lane_width], [lane_width, 1])
+                mixture = draft_mixture[row:row + 1, col:col + TILE]
+                broadcast = pl.col_expand(pl.full([lane_width, TILE], dtype=pl.FP32, value=0.0), mixture)
+                accumulated = pl.add(accumulated, pl.row_expand_mul(broadcast, context))
+            index = head * VALUE + start
+            d_draft_value[index:index + lane_width, col:col + TILE] = accumulated
+        return d_hist_mixture, d_block_mixture, d_draft_value
+
+    @pl.jit.host
+    def entry(ctx_grad: pl.Tensor, draft_mixture: pl.Tensor, history_weight: pl.Tensor, draft_weight: pl.Tensor,
+              d_hist_mixture: pl.Out[pl.Tensor], d_block_mixture: pl.Out[pl.Tensor], d_draft_value: pl.Out[pl.Tensor]):
+        value_backward(ctx_grad, draft_mixture, history_weight, draft_weight,
+                       d_hist_mixture, d_block_mixture, d_draft_value, device=0)
+
+    return value_backward if device_entry else entry
+
+
+def make_mla_mixture_backward(history_capacity, *, device_entry=False):
+    """Differentiate the history and block sums under the same attention probabilities."""
+    import pypto.language as pl
+
+    if history_capacity < TILE or history_capacity % TILE:
+        raise ValueError("GLM MLA mixture backward needs tile-aligned history")
+    rows = QUERY_ROWS * HEAD_TILE
+    selected = QUERY_ROWS * history_capacity
+    scores_width = history_capacity + TILE
+    segments = history_capacity // TILE
+
+    @pl.jit
+    def mixture_backward(
+        probability: pl.Tensor[[rows, scores_width], pl.FP32],
+        history: pl.Tensor[[selected, LATENT], pl.BF16],
+        block: pl.Tensor[[TILE, LATENT], pl.BF16],
+        d_hist_mixture: pl.Tensor[[rows, LATENT], pl.FP32],
+        d_block_mixture: pl.Tensor[[rows, LATENT], pl.FP32],
+        d_probability: pl.Out[pl.Tensor[[rows, scores_width], pl.FP32]],
+        d_block_value: pl.Out[pl.Tensor[[TILE, LATENT], pl.FP32]],
+    ):
+        for task in pl.spmd(QUERY_ROWS * segments, name_hint="glm_mla_history_probability_vjp"):
+            token = task // segments
+            offset = task % segments * TILE
+            row = token * HEAD_TILE
+            selected_row = token * history_capacity + offset
+            hist_grad = pl.create_tensor([HEAD_TILE, TILE], dtype=pl.FP32)
+            for col in pl.pipeline(0, LATENT, TILE, stage=2):
+                hist_keys = pl.slice(history, [TILE, TILE], [selected_row, col])
+                dh = pl.slice(d_hist_mixture, [HEAD_TILE, TILE], [row, col])
+                hi_hist = pl.cast(dh, pl.BF16, mode="rint")
+                lo_hist = pl.cast(pl.sub(dh, pl.cast(hi_hist, pl.FP32)), pl.BF16, mode="rint")
+                hist_grad = pl.matmul_acc(hist_grad, hi_hist, hist_keys, b_trans=True, init_cond=col == 0)
+                hist_grad = pl.matmul_acc(hist_grad, lo_hist, hist_keys, b_trans=True)
+            d_probability[row:row + HEAD_TILE, offset:offset + TILE] = hist_grad
+        for token in pl.spmd(QUERY_ROWS, name_hint="glm_mla_block_probability_vjp"):
+            row = token * HEAD_TILE
+            draft_grad = pl.create_tensor([HEAD_TILE, TILE], dtype=pl.FP32)
+            for col in pl.pipeline(0, LATENT, TILE, stage=2):
+                draft_keys = pl.slice(block, [TILE, TILE], [0, col])
+                db = pl.slice(d_block_mixture, [HEAD_TILE, TILE], [row, col])
+                hi_draft = pl.cast(db, pl.BF16, mode="rint")
+                lo_draft = pl.cast(pl.sub(db, pl.cast(hi_draft, pl.FP32)), pl.BF16, mode="rint")
+                draft_grad = pl.matmul_acc(draft_grad, hi_draft, draft_keys, b_trans=True, init_cond=col == 0)
+                draft_grad = pl.matmul_acc(draft_grad, lo_draft, draft_keys, b_trans=True)
+            d_probability[row:row + HEAD_TILE, history_capacity:scores_width] = draft_grad
+        for task in pl.spmd(LATENT // TILE, name_hint="glm_mla_block_value_vjp"):
+            col = task * TILE
+            value_grad = pl.create_tensor([TILE, TILE], dtype=pl.FP32)
+            for row in pl.pipeline(0, rows, HEAD_TILE, stage=2):
+                p = probability[row:row + HEAD_TILE, history_capacity:scores_width]
+                g = d_block_mixture[row:row + HEAD_TILE, col:col + TILE]
+                p_high = pl.cast(p, pl.BF16, mode="rint")
+                p_low = pl.cast(pl.sub(p, pl.cast(p_high, pl.FP32)), pl.BF16, mode="rint")
+                g_high = pl.cast(g, pl.BF16, mode="rint")
+                g_low = pl.cast(pl.sub(g, pl.cast(g_high, pl.FP32)), pl.BF16, mode="rint")
+                value_grad = pl.matmul_acc(value_grad, p_high, g_high, a_trans=True, init_cond=row == 0)
+                value_grad = pl.matmul_acc(value_grad, p_high, g_low, a_trans=True)
+                value_grad = pl.matmul_acc(value_grad, p_low, g_high, a_trans=True)
+                value_grad = pl.matmul_acc(value_grad, p_low, g_low, a_trans=True)
+            d_block_value[:, col:col + TILE] = value_grad
+        return d_probability, d_block_value
+
+    @pl.jit.host
+    def entry(probability: pl.Tensor, history: pl.Tensor, block: pl.Tensor,
+              d_hist_mixture: pl.Tensor, d_block_mixture: pl.Tensor,
+              d_probability: pl.Out[pl.Tensor], d_block_value: pl.Out[pl.Tensor]):
+        mixture_backward(probability, history, block, d_hist_mixture, d_block_mixture,
+                         d_probability, d_block_value, device=0)
+
+    return mixture_backward if device_entry else entry
+
+
+def make_mla_latent_backward(history_capacity):
+    """Compose the exact attention adjoint around the draft and history latent spaces."""
+    import pypto.language as pl
+
+    rows = QUERY_ROWS * HEAD_TILE
+    width = history_capacity + TILE
+    value = make_mla_value_backward(device_entry=True)
+    mixture = make_mla_mixture_backward(history_capacity, device_entry=True)
+    softmax = make_joint_softmax_backward(rows, history_capacity, TILE, device_entry=True)
+    scores = make_mla_score_backward(history_capacity, device_entry=True)
+
+    @pl.jit
+    def add_block_grads(
+        score_grad: pl.Tensor[[TILE, LATENT], pl.FP32],
+        value_grad: pl.Tensor[[TILE, LATENT], pl.FP32],
+        output: pl.Out[pl.Tensor[[TILE, LATENT], pl.FP32]],
+    ):
+        for row in pl.spmd(TILE, name_hint="glm_mla_add_block_adjoints"):
+            output[row:row + 1, :] = pl.add(score_grad[row:row + 1, :], value_grad[row:row + 1, :])
+        return output
+
+    @pl.jit.host
+    def entry(
+        ctx_grad: pl.Tensor, draft_mixture: pl.Tensor, history_weight: pl.Tensor, draft_weight: pl.Tensor,
+        probability: pl.Tensor, history: pl.Tensor, block: pl.Tensor, q_block: pl.Tensor,
+        d_hist_query: pl.Out[pl.Tensor], d_block_query: pl.Out[pl.Tensor],
+        d_draft_value: pl.Out[pl.Tensor], d_block_latent: pl.Out[pl.Tensor],
+    ):
+        hist_mixture_grad = pl.create_tensor([rows, LATENT], dtype=pl.FP32)
+        block_mixture_grad = pl.create_tensor([rows, LATENT], dtype=pl.FP32)
+        probability_grad = pl.create_tensor([rows, width], dtype=pl.FP32)
+        scores_grad = pl.create_tensor([rows, width], dtype=pl.FP32)
+        block_value_grad = pl.create_tensor([TILE, LATENT], dtype=pl.FP32)
+        block_key_grad = pl.create_tensor([TILE, LATENT], dtype=pl.FP32)
+        dm_history, dm_block, _w = value(ctx_grad, draft_mixture, history_weight, draft_weight,
+                                         hist_mixture_grad, block_mixture_grad, d_draft_value, device=0)
+        dp, dv = mixture(probability, history, block, dm_history, dm_block,
+                         probability_grad, block_value_grad, device=0)
+        ds = softmax(probability, dp, scores_grad, device=0)
+        _qh, _qb, dk = scores(ds, history, block, q_block, d_hist_query, d_block_query, block_key_grad, device=0)
+        add_block_grads(dk, dv, d_block_latent, device=0)
 
     return entry
