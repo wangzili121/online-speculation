@@ -22,7 +22,7 @@ def swa_spans(page_table, anchor: int, physical_pages: int, *, stride_rows=WINDO
     return tuple(spans + [(0, 0, 0)] * (2 - len(spans)))
 
 
-def make_swa_program(heads: int):
+def make_swa_attention(heads: int, *, token_major_query: bool = False):
     import pypto.language as pl
 
     @pl.jit
@@ -56,7 +56,10 @@ def make_swa_program(heads: int):
                     )
 
             row = head * BLOCK
-            q = pl.slice(query, [BLOCK, HEAD_DIM], [row, 0])
+            if token_major_query:
+                q = pl.slice(query, [BLOCK, HEAD_DIM], [0, head * HEAD_DIM])
+            else:
+                q = pl.slice(query, [BLOCK, HEAD_DIM], [row, 0])
             local = pl.mul(pl.matmul(q, history, b_trans=True, out_dtype=pl.FP32), HEAD_DIM ** -0.5)
             local = pl.col_expand_add(local, history_bias)
             block = pl.mul(pl.matmul(q, temporary, b_trans=True, out_dtype=pl.FP32), HEAD_DIM ** -0.5)
@@ -81,6 +84,14 @@ def make_swa_program(heads: int):
             output[row:row + BLOCK, 0:HEAD_DIM] = pl.matmul_acc(value, block_lo, temporary)
             lse[row:row + BLOCK, 0:1] = pl.add(ref, pl.log(total))
         return output, lse
+
+    return attention
+
+
+def make_swa_program(heads: int):
+    import pypto.language as pl
+
+    attention = make_swa_attention(heads)
 
     @pl.jit.host
     def entry(

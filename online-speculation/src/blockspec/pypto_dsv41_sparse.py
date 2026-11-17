@@ -38,7 +38,7 @@ def compressed_physical_rows(selected, page_table, *, anchor, ratio, physical_pa
     return rows, lengths
 
 
-def make_sparse_program():
+def make_sparse_attention(*, head_major_swa=False):
     import pypto.language as pl
 
     @pl.jit
@@ -49,6 +49,23 @@ def make_sparse_program():
     ):
         segment_output = pl.create_tensor([BLOCK * PARTS * HEAD_TILE, HEAD_DIM], dtype=pl.FP32)
         segment_lse = pl.create_tensor([BLOCK * PARTS * HEAD_TILE, 1], dtype=pl.FP32)
+        if head_major_swa:
+            # SWA emits one block per head. Merge consumes all heads of one token.
+            local_values = pl.create_tensor([BLOCK * HEAD_TILE, HEAD_DIM], dtype=pl.FP32)
+            lse_rows = pl.create_tensor([BLOCK, HEAD_TILE], dtype=pl.FP32)
+            with pl.spmd(BLOCK, name_hint="orthrus_v41_swa_layout"):
+                token = pl.tile.get_block_idx()
+                lse_row = pl.tile.full([1, HEAD_TILE], pl.FP32, value=0.0)
+                for head in pl.range(HEAD_TILE):
+                    source = head * BLOCK + token
+                    dest = token * HEAD_TILE + head
+                    local_values[dest:dest + 1, :] = local_output[source:source + 1, :]
+                    pl.tile.write(lse_row, [0, head], pl.read(local_lse, [source, 0]))
+                pl.store(lse_row, [token, 0], lse_rows)
+            local_logsumexp = pl.reshape(lse_rows, [BLOCK * HEAD_TILE, 1])
+        else:
+            local_values = local_output
+            local_logsumexp = local_lse
 
         # Each query has its own Top-K. Heads within that query reuse the same KV tile.
         with pl.spmd(BLOCK * PARTS, name_hint="orthrus_v41_compressed"):
@@ -79,8 +96,8 @@ def make_sparse_program():
             token = pl.tile.get_block_idx()
             start = token * HEAD_TILE
             count = pl.cast(pl.read(lengths, [token]), pl.INDEX)
-            merged = pl.slice(local_output, [HEAD_TILE, HEAD_DIM], [start, 0])
-            merged_lse = pl.slice(local_lse, [HEAD_TILE, 1], [start, 0])
+            merged = pl.slice(local_values, [HEAD_TILE, HEAD_DIM], [start, 0])
+            merged_lse = pl.slice(local_logsumexp, [HEAD_TILE, 1], [start, 0])
             for part in pl.range(PARTS):
                 if part * TILE < count:
                     source = (token * PARTS + part) * HEAD_TILE
@@ -98,6 +115,14 @@ def make_sparse_program():
             output[start:start + HEAD_TILE, 0:HEAD_DIM] = merged
             lse[start:start + HEAD_TILE, 0:1] = merged_lse
         return output, lse
+
+    return attend
+
+
+def make_sparse_program():
+    import pypto.language as pl
+
+    attend = make_sparse_attention()
 
     @pl.jit.host
     def entry(

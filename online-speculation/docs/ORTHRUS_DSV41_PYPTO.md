@@ -37,9 +37,21 @@ PYTHONPATH=src python3 scripts/validate_dsv41_pypto_swa.py \
 
 ## C1A/C2A 压缩历史 Attention
 
-压缩历史程序接收各 draft query 已选中的物理 KV 行。每 128 行计算一段输出和 LSE，再在设备端与 SWA 和临时块的结果合并。SWA 侧已经计入 sink，各压缩分段无需再计。当前 demo 通过宿主机转换两段间的张量布局，后续 Serving 增加设备侧直接绑定。
+压缩历史程序接收各 draft query 已选中的物理 KV 行。每 128 行计算一段输出和 LSE，再在设备端与 SWA 和临时块的结果合并。SWA 侧已经计入 sink。连通 draft 单层时，压缩程序直接接收 SWA 在设备上输出的值和 LSE，并在设备端换成压缩段合并所需的布局。
 
 在命令末加 `--heads 16 --compressed` 并指定新的输出路径，即可验证 A3 TP4 的单 rank 形状。用配套的 PyPTO、Simpler 和 PTOAS 在单张 910B3 上通过六组用例，覆盖 C1A/C2A、部分压缩组、乱序物理页、不同 query 的有效长度以及最多 512 行。C2A 使用每页 64 个有效压缩行、128 行物理跨度，避免选择行落到 padding 上。与 FP32 reference 比较，联合输出和 LSE 最大误差分别为 `5.90e-6` 和 `9.54e-7`，SWA 和压缩缓存逐字节一致。 [压缩历史源码](../src/blockspec/pypto_dsv41_sparse.py) · [TP4 单 rank 记录](validation/dsv41/pypto-compressed-tp4-910b3.json) · [模拟器记录](validation/dsv41/pypto-compressed-a2a3sim.json)
+
+## Draft 单层投影和 Attention
+
+先按 BF16 head 契约校验模型和权重身份。每个 TP rank 复制 Q 的低秩投影和潜在 KV 投影，按 head 切分 Q 的第二级投影，按完整分组切分 Wo-A 和相应的 Wo-B 列。投影复用 A3 的 BF16 GEMM、RMSNorm、RoPE 和分组输出实现。Q 和临时 KV、SWA 输出与 LSE，以及合并后的 Attention 输出都在同一个设备 worker 内交接。该单层入口输出当前 TP rank 对隐状态的贡献。
+
+```bash
+PYTHONPATH=src python3 scripts/validate_dsv41_pypto_qkv.py \
+  --lib "$PYPTO_LIB_ROOT" --model "$TARGET_WEIGHTS" --head "$DRAFT_HEAD" \
+  --layer 2 --ratio 2 --device 0 --output /tmp/dsv41-draft-c2a.json
+```
+
+单张 910B3 用从 DSV4.1 W4A8 checkpoint 初始化的 BF16 head、合成隐藏状态和历史页，测试第 0、2、20 层的 TP4 单 rank 形状。压缩路径的选中行由测试提供，覆盖最多 512 行和跨页访问。投影各算子与同输入的 BF16 参考分别对照，Attention 与同输入的 FP32 参考对照，历史页在执行前后逐字节一致。 [投影源码](../src/blockspec/pypto_dsv41_draft.py) · [实测记录](validation/dsv41/pypto-draft-layer-tp4-910b3.json)
 
 ## K32 验证和提交
 
@@ -50,5 +62,5 @@ CPU 测试覆盖完整 K32、部分接受、零接受、跨 128 行分页以及�
 ## 整模联调
 
 1. **C2A/C1A 检索。** 将同一个 anchor 的已提交长度、源层的索引页和 diffusion query 交给检索。Full 计算本轮 Top-K，C1A Reindex 在本轮候选池内重排，Reuse 复用源层结果。先与现有 Torch golden 对照整数行号，再评估 A2/A3 上已有打分和 Top-K 内核的输入布局。
-2. **Draft 前向。** 在同一 resident session 中绑定 diffusion head、主模型共享权重以及各层已提交的历史页。将检索、SWA 和压缩 Attention 串成 K32 的设备执行，让临时块的 KV 留在独立工作缓冲区。
+2. **Draft 前向。** 在整模 resident session 中绑定 diffusion head 和各层已提交的历史页。将已验证的单层 Attention 接到共享的 Embedding、Engram、mHC、MoE 和 LM Head，连起 40 层并对 TP 的输出贡献做归约。
 3. **开启 Serving 调度。** 将运行中的 draft 提案接到验证入口，让调度器为候选位置预留页，并覆盖尾部普通 Decode 回退。之后在 16 张 A3 上回放同一候选序列，和 target-only 对照输出 token、SWA、压缩 KV、indexer、compressor 残余状态及 Engram 历史。 [V4.1 DSpark 入口](https://github.com/hw-native-sys/pypto-serving/pull/324) · [候选回放脚本](../scripts/probe_dsv41_matched_candidates.py)
