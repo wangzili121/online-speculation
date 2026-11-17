@@ -68,6 +68,20 @@ def make_mhc_post_backward(width=4096, tokens=6):
         dpost: pl.Out[pl.Tensor[[tokens, padded], pl.FP32]],
         dmix: pl.Out[pl.Tensor[[tokens * streams, padded], pl.FP32]],
     ):
+        # Match the BF16 coefficients used by the forward mHC post-mix.
+        # The coefficient gradients cross the casts with an identity VJP.
+        rounded_post = pl.create_tensor([tokens, padded], dtype=pl.FP32)
+        rounded_mix = pl.create_tensor([tokens * streams, padded], dtype=pl.FP32)
+        for coefficient in pl.spmd(tokens, name_hint="glm_mhc_post_restore_precision"):
+            row = coefficient * streams
+            aligned = pl.create_tensor([streams + 1, 2 * padded], dtype=pl.FP32)
+            aligned[:streams, :padded] = mix[row:row + streams, :]
+            aligned[streams:streams + 1, :padded] = post[coefficient:coefficient + 1, :]
+            aligned[:, padded:] = pl.full([streams + 1, padded], dtype=pl.FP32, value=0.0)
+            values = pl.cast(pl.cast(aligned, pl.BF16, mode="rint"), pl.FP32)
+            rounded_post[coefficient:coefficient + 1, :] = values[streams:streams + 1, :padded]
+            rounded_mix[row:row + streams, :] = values[:streams, :padded]
+
         for task in pl.spmd(tokens * shards, name_hint="orthrus_glm53_mhc_dx"):
             token = task // shards
             begin = task % shards * tile
@@ -75,7 +89,7 @@ def make_mhc_post_backward(width=4096, tokens=6):
             for destination in pl.unroll(streams):
                 dest_row = token * streams + destination
                 g = upstream[dest_row:dest_row + 1, begin:begin + tile]
-                gate = pl.read(post, [token, destination])
+                gate = pl.read(rounded_post, [token, destination])
                 sub_grad = pl.add(sub_grad, pl.mul(g, gate))
             dy[token:token + 1, begin:begin + tile] = sub_grad
             for source in pl.unroll(streams):
@@ -84,7 +98,7 @@ def make_mhc_post_backward(width=4096, tokens=6):
                 for destination in pl.unroll(streams):
                     dest_row = token * streams + destination
                     g = upstream[dest_row:dest_row + 1, begin:begin + tile]
-                    gate = pl.read(mix, [src_row, destination])
+                    gate = pl.read(rounded_mix, [src_row, destination])
                     residual_grad = pl.add(residual_grad, pl.mul(g, gate))
                 dx[src_row:src_row + 1, begin:begin + tile] = residual_grad
 

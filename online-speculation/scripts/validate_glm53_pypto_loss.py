@@ -568,11 +568,17 @@ def main():
         layout = (tokens, streams, D)
         sublayer = torch.randn((tokens, D), generator=generator).bfloat16()
         residual = torch.randn(layout, generator=generator).bfloat16()
-        post = torch.rand((tokens, streams), generator=generator).bfloat16()
-        mix = torch.rand((tokens, streams, streams), generator=generator).bfloat16()
+        post = torch.rand((tokens, streams), generator=generator)
+        mix = torch.rand((tokens, streams, streams), generator=generator)
         upstream = torch.randn(layout, generator=generator)
         y, x, p, r = (value.double().requires_grad_() for value in (sublayer, residual, post, mix))
-        output = y[:, None, :] * p[:, :, None] + torch.einsum("tij,tid->tjd", r, x)
+
+        def round_ste(tensor):
+            return tensor + (tensor.bfloat16().double() - tensor).detach()
+
+        update = round_ste(y[:, None, :] * round_ste(p)[:, :, None])
+        mixed = round_ste(torch.einsum("tij,tid->tjd", round_ste(r), x))
+        output = round_ste(update + mixed)
         dy, dx, dp, dr = torch.autograd.grad((output * upstream).sum(), (y, x, p, r))
         pad = torch.nn.functional.pad
         inputs = (sublayer, residual.flatten(0, 1), pad(post.float(), (0, 4)), pad(mix.float().flatten(0, 1), (0, 4)),
