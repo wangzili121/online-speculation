@@ -31,6 +31,8 @@ The complete TP8 program set passed compilation, runner ABI checks and artifact 
 
 For a 1,280-token context, preflight reports 38.46 GiB per rank for staged target weights, 6.33 GiB for resident caches and 0.58 GiB for draft MLA. These allocations are separate from the vocabulary head, runtime rings and temporary kernel memory.
 
+The pinned GLM Serving runner allocates the full device weight stacks before startup. The same checkpoint requires 76.38 GiB of target weights per TP4/EP4 rank before caches and runtime buffers. The streamed validation below moves individual shards through a single NPU. It exercises native kernels with real weights while the TP8 Serving acceptance retains its original topology.
+
 ## Online update components
 
 The device KL loss and FP32 logit gradient passed for all 154,880 vocabulary entries on one device. Isolated Ascend tests also passed for the vocabulary shard, final RMSNorm and mHC mean, KDA recurrence, causal convolution and SiLU, KDA Q/K L2 normalization, mHC pre/post mixing, coefficient projection and Sinkhorn derivatives, expert SwiGLU, joint history/draft softmax, MLA projections and AdamW. A separate training dispatch updates the actual MLA output weight with an FP32 master copy and emits its BF16 view. The frozen INT8 linear VJP uses the checkpoint's row scales and passes the activation gradient through the quantization boundary with a straight-through estimator.
@@ -42,5 +44,13 @@ The device KL loss and FP32 logit gradient passed for all 154,880 vocabulary ent
 The inference acceptance harness checks teacher logits against clean target predictions. With `--resident-distillation`, it also binds the draft and teacher replay to separate device output banks and feeds those banks and the resident LM head to the distillation program. This option compiles with the TP8 Serving runner. A two-device smoke exercised the same dispatch and buffer bindings for three consecutive rounds with synthetic forwards. The two real-model replay rounds require eight idle devices. The reference readback is confined to the acceptance harness.
 
 On a single Ascend device, the W8A8 expert replay and input/route adjoints passed with layer 44 expert 0 checkpoint weights. The maximum absolute errors were `7.19e-8` for the input gradient and `8.96e-5` for the route gradient. The selected sigmoid router adjoint also passed with the layer 44 weights. The deployed rank-0 KDA shard passed the output projection and gated RMSNorm tests, including near-zero activations. Its QKV, forget, beta and output-gate projection adjoints also passed, with a maximum input gradient error of `3.13e-7`.
+
+Run the complete local KDA forward replay and input adjoint on one device by streaming the eight real TP8 shards in turn. The test uses nonzero initial convolution and recurrent states and six active loss rows. It passed on 111 with a largest input gradient error of `1.21e-7` against an FP64 reference.
+
+```bash
+python scripts/validate_glm53_pypto_streamed_kda.py \
+  --checkpoint /data/disk1/wangzili/models/Eco-Tech/GLM-5.3-Flash-w8a8 \
+  --device 0 --output streamed-kda.json
+```
 
 The remaining integration needs to connect the final mHC gradient through the full frozen suffix to the trainable MLA projections in backbone layer 43 (zero-based), and publish the updated head at a request boundary.

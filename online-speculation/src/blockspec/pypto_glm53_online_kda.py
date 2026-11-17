@@ -237,7 +237,7 @@ def make_kda_output_backward(tokens, heads, width, epsilon):
     return entry
 
 
-def make_kda_projection_backward(tokens, heads, width, lower_bound):
+def make_kda_projection_backward(tokens, heads, width, lower_bound, *, beta_width=None):
     """Propagate the frozen QKV, forget, beta and output-gate branches to KDA input."""
     import pypto.language as pl
 
@@ -245,7 +245,9 @@ def make_kda_projection_backward(tokens, heads, width, lower_bound):
 
     dim, tile = 128, 128
     local = heads * dim
-    if tokens < 1 or tokens % 16 or heads != 8 or width < tile or width % tile or lower_bound >= 0.0:
+    beta_width = heads if beta_width is None else beta_width
+    if (tokens < 1 or tokens % 16 or heads != 8 or width < tile or width % tile
+            or lower_bound >= 0.0 or beta_width < heads):
         raise ValueError("KDA projection backward expects the GLM TP8 geometry")
     to_input = make_frozen_bf16_input_backward(local, width, tokens, device_entry=True)
     to_inner = make_frozen_bf16_input_backward(local, dim, tokens, device_entry=True)
@@ -282,7 +284,7 @@ def make_kda_projection_backward(tokens, heads, width, lower_bound):
     def combine(
         q: pl.Tensor[[tokens, width], pl.FP32], k: pl.Tensor[[tokens, width], pl.FP32],
         v: pl.Tensor[[tokens, width], pl.FP32], forget: pl.Tensor[[tokens, width], pl.FP32],
-        gate: pl.Tensor[[tokens, width], pl.FP32], beta: pl.Tensor[[tokens, heads], pl.FP32],
+        gate: pl.Tensor[[tokens, width], pl.FP32], beta: pl.Tensor[[tokens, beta_width], pl.FP32],
         d_beta: pl.Tensor[[tokens, heads], pl.FP32], beta_weight: pl.Tensor[[heads, width], pl.BF16],
         output: pl.Out[pl.Tensor[[tokens, width], pl.FP32]],
     ):
@@ -328,5 +330,146 @@ def make_kda_projection_backward(tokens, heads, width, lower_bound):
         f_input = from_inner(f_inner, w_f_a, dx_forget, device=0)
         g_input = from_inner(g_inner, w_g_a, dx_gate, device=0)
         combine(q_input, k_input, v_input, f_input, g_input, beta, d_beta, w_b, out, device=0)
+
+    return entry
+
+
+def make_kda_training_replay(tokens):
+    """Run the native frozen KDA forward with one snapshot per replayed token."""
+    import pypto.language as pl
+    from models.glm5_3_flash.config import D, KDA_DIM, LOCAL_KDA_H, LOCAL_KDA_QKV_DIM
+    from models.glm5_3_flash.kda import BETA_PAD, kda_conv_recurrent, kda_projection, recurrent_kda
+
+    heads, dim, local = LOCAL_KDA_H, KDA_DIM, LOCAL_KDA_QKV_DIM
+    if tokens != 16 or heads != 8:
+        raise ValueError("KDA training replay expects a padded 16-token TP8 shard")
+    rows = tokens * heads
+
+    @pl.jit
+    def replay(
+        x: pl.Tensor[[tokens, D], pl.BF16],
+        starts: pl.Tensor[[2], pl.INT32], slots: pl.Tensor[[1, tokens + 2], pl.INT32],
+        w_q: pl.Tensor[[local, D], pl.BF16], w_k: pl.Tensor[[local, D], pl.BF16], w_v: pl.Tensor[[local, D], pl.BF16],
+        w_f_a: pl.Tensor[[dim, D], pl.BF16], w_f_b: pl.Tensor[[local, dim], pl.BF16],
+        dt_bias: pl.Tensor[[local], pl.FP32], a_log: pl.Tensor[[heads], pl.FP32],
+        w_b: pl.Tensor[[heads, D], pl.BF16], w_g_a: pl.Tensor[[dim, D], pl.BF16], w_g_b: pl.Tensor[[local, dim], pl.BF16],
+        weight: pl.Tensor[[4, 3 * local], pl.BF16],
+        conv_states: pl.InOut[pl.Tensor[[tokens + 1, 3, 3 * local], pl.BF16]],
+        states: pl.InOut[pl.Tensor[[tokens + 1, heads, dim, dim], pl.FP32]],
+        mixed: pl.Out[pl.Tensor[[tokens, 3 * local], pl.BF16]],
+        decay: pl.Out[pl.Tensor[[tokens, heads, dim], pl.FP32]],
+        beta: pl.Out[pl.Tensor[[tokens, BETA_PAD], pl.FP32]],
+        gate: pl.Out[pl.Tensor[[tokens, heads, dim], pl.BF16]],
+        q: pl.Out[pl.Tensor[[tokens, heads, dim], pl.BF16]],
+        k: pl.Out[pl.Tensor[[tokens, heads, dim], pl.BF16]],
+        v: pl.Out[pl.Tensor[[tokens, heads, dim], pl.BF16]],
+        core: pl.Out[pl.Tensor[[tokens, heads, dim], pl.BF16]],
+    ):
+        kda_projection(x, starts, w_q, w_k, w_v, w_f_a, w_f_b, dt_bias, a_log, w_b, w_g_a, w_g_b,
+                       mixed, decay, beta, gate)
+        kda_conv_recurrent(mixed, weight, conv_states, starts, slots, q, k, v)
+        recurrent_kda(q, k, v, decay, beta, states, starts, slots, core)
+        return mixed, decay, beta, gate, q, k, v, core
+
+    @pl.jit.host
+    def entry(
+        x: pl.Tensor, starts: pl.Tensor, slots: pl.Tensor,
+        w_q: pl.Tensor, w_k: pl.Tensor, w_v: pl.Tensor, w_f_a: pl.Tensor, w_f_b: pl.Tensor,
+        dt_bias: pl.Tensor, a_log: pl.Tensor, w_b: pl.Tensor, w_g_a: pl.Tensor, w_g_b: pl.Tensor, weight: pl.Tensor,
+        conv_states: pl.InOut[pl.Tensor], states: pl.InOut[pl.Tensor],
+        mixed: pl.Out[pl.Tensor], decay: pl.Out[pl.Tensor], beta: pl.Out[pl.Tensor], gate: pl.Out[pl.Tensor],
+        q: pl.Out[pl.Tensor], k: pl.Out[pl.Tensor], v: pl.Out[pl.Tensor], core: pl.Out[pl.Tensor],
+    ):
+        replay(x, starts, slots, w_q, w_k, w_v, w_f_a, w_f_b, dt_bias, a_log, w_b, w_g_a, w_g_b, weight,
+               conv_states, states, mixed, decay, beta, gate, q, k, v, core, device=0)
+
+    return entry
+
+
+def make_kda_recurrence_inputs(tokens, heads, beta_width):
+    """Prepare the same normalized vectors used by the native KDA recurrence."""
+    import pypto.language as pl
+    from models.glm5_3_flash.elementwise import accurate_divide, accurate_row_sum, accurate_sqrt
+
+    dim, chunk = 128, 16
+    rows = tokens * heads
+    if rows % chunk:
+        raise ValueError("KDA recurrence tape requires whole normalization tiles")
+
+    @pl.jit
+    def prepare(
+        q: pl.Tensor[[rows, dim], pl.BF16], k: pl.Tensor[[rows, dim], pl.BF16],
+        v: pl.Tensor[[rows, dim], pl.BF16], beta: pl.Tensor[[tokens, beta_width], pl.FP32],
+        q_norm: pl.Out[pl.Tensor[[rows, dim], pl.FP32]], k_norm: pl.Out[pl.Tensor[[rows, dim], pl.FP32]],
+        values: pl.Out[pl.Tensor[[rows, dim], pl.FP32]], beta_per_head: pl.Out[pl.Tensor[[rows, 8], pl.FP32]],
+    ):
+        for tile in pl.spmd(rows // chunk, name_hint="glm_kda_replay_normalize"):
+            row = tile * chunk
+            for kind in pl.unroll(2):
+                activation = pl.create_tensor([chunk, dim], dtype=pl.FP32)
+                if kind == 0:
+                    activation[:, :] = pl.cast(q[row:row + chunk, :], pl.FP32)
+                else:
+                    activation[:, :] = pl.cast(k[row:row + chunk, :], pl.FP32)
+                squares = pl.create_tensor([chunk, dim], dtype=pl.FP32)
+                squares[:, :] = pl.mul(activation, activation)
+                variance = pl.create_tensor([chunk, 1], dtype=pl.FP32)
+                variance[:, :] = pl.add(accurate_row_sum(squares), 1e-6)
+                divisor = pl.create_tensor([chunk, dim], dtype=pl.FP32)
+                divisor[:, :] = pl.row_expand_mul(
+                    pl.full([chunk, dim], dtype=pl.FP32, value=1.0), accurate_sqrt(variance),
+                )
+                unit = accurate_divide(activation, divisor)
+                if kind == 0:
+                    q_norm[row:row + chunk, :] = pl.mul(unit, dim ** -0.5)
+                else:
+                    k_norm[row:row + chunk, :] = unit
+            values[row:row + chunk, :] = pl.cast(v[row:row + chunk, :], pl.FP32)
+        for row in pl.spmd(rows, name_hint="glm_kda_replay_beta"):
+            b = pl.read(beta, [row // heads, row % heads])
+            beta_per_head[row:row + 1, :] = pl.add(pl.full([1, 8], dtype=pl.FP32, value=0.0), b)
+        return q_norm, k_norm, values, beta_per_head
+
+    @pl.jit.host
+    def entry(q: pl.Tensor, k: pl.Tensor, v: pl.Tensor, beta: pl.Tensor, q_norm: pl.Out[pl.Tensor],
+              k_norm: pl.Out[pl.Tensor], values: pl.Out[pl.Tensor], beta_per_head: pl.Out[pl.Tensor]):
+        prepare(q, k, v, beta, q_norm, k_norm, values, beta_per_head, device=0)
+
+    return entry
+
+
+def make_kda_projection_inputs(tokens, heads):
+    """Pack convolution gradients and the per-head beta gradient for the projections."""
+    import pypto.language as pl
+
+    dim = 128
+    local = heads * dim
+    rows = tokens * heads
+
+    @pl.jit
+    def pack(
+        dq: pl.Tensor[[rows, dim], pl.FP32], dk: pl.Tensor[[rows, dim], pl.FP32],
+        dv: pl.Tensor[[rows, dim], pl.FP32], d_beta: pl.Tensor[[rows, 8], pl.FP32],
+        convolution: pl.Out[pl.Tensor[[tokens, 3 * local], pl.FP32]],
+        beta: pl.Out[pl.Tensor[[tokens, heads], pl.FP32]],
+    ):
+        for row in pl.spmd(rows, name_hint="glm_kda_pack_convolution_vjp"):
+            token = row // heads
+            col = row % heads * dim
+            convolution[token:token + 1, col:col + dim] = dq[row:row + 1, :]
+            second = col + local
+            third = col + 2 * local
+            convolution[token:token + 1, second:second + dim] = dk[row:row + 1, :]
+            convolution[token:token + 1, third:third + dim] = dv[row:row + 1, :]
+        for token in pl.spmd(1, name_hint="glm_kda_pack_beta_vjp"):
+            for step in pl.range(token, tokens, 1):
+                for head in pl.unroll(heads):
+                    pl.write(beta, [step, head], pl.read(d_beta, [step * heads + head, 0]))
+        return convolution, beta
+
+    @pl.jit.host
+    def entry(dq: pl.Tensor, dk: pl.Tensor, dv: pl.Tensor, d_beta: pl.Tensor,
+              convolution: pl.Out[pl.Tensor], beta: pl.Out[pl.Tensor]):
+        pack(dq, dk, dv, d_beta, convolution, beta, device=0)
 
     return entry
