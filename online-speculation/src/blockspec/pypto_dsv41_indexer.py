@@ -7,7 +7,7 @@ from .pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW
 
 INDEX_HEADS = 32
 INDEX_DIM = 128
-INDEX_CAPACITIES = (512, 1024, 2048)
+INDEX_CAPACITIES = (512, 1024, 2048, 4096, 8192, 16384)
 
 
 @dataclass(frozen=True)

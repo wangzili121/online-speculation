@@ -9,19 +9,28 @@ INDEX_TENSORS = ("indexer.wq_b.weight", "indexer.weights_proj.weight")
 
 def load_draft_layer(model, head, layer, *, tp_rank, tp=4):
     """Validate the exchange artifact and load one layer's attention projections."""
-    from contextlib import ExitStack
+    config, manifest, files = read_draft_artifact(model, head)
+    weights = read_draft_weights(head, manifest, files, layer)
+    return config, manifest, prepare_draft_operands(weights, config, tp_rank=tp_rank, tp=tp)
 
-    from safetensors import safe_open
 
+def read_draft_artifact(model, head):
     from .vllm_ascend.dsv41_contract import text_config, validate_head
     from .vllm_ascend.head_contract import find_weight_index, read_json
 
     manifest = read_json(head / "manifest.json")
     manifest = validate_head(model, head, mask_token_id=manifest["mask_token_id"])
     config = text_config(read_json(model / "config.json"))
-    if not 0 <= layer < config["num_hidden_layers"]:
+    return config, manifest, read_json(find_weight_index(head))["weight_map"]
+
+
+def read_draft_weights(head, manifest, files, layer):
+    from contextlib import ExitStack
+
+    from safetensors import safe_open
+
+    if not 0 <= layer < len(manifest["layers"]):
         raise ValueError("Draft layer is outside the checkpoint")
-    files = read_json(find_weight_index(head))["weight_map"]
     owns_index = manifest["layers"][layer]["index_source"] == layer
     names = QKV_TENSORS + OUTPUT_TENSORS + (INDEX_TENSORS if owns_index else ())
     with ExitStack() as stack:
@@ -32,12 +41,16 @@ def load_draft_layer(model, head, layer, *, tp_rank, tp=4):
             if file not in shards:
                 shards[file] = stack.enter_context(safe_open(head / file, framework="pt", device="cpu"))
             weights[name] = shards[file].get_tensor(key)
-        operands = prepare_qkv(weights, config, tp_rank=tp_rank, tp=tp)
-        operands.update(prepare_output(weights, config, tp_rank=tp_rank, tp=tp))
-        if owns_index:
-            operands.update(idx_wq=weights[INDEX_TENSORS[0]].T.contiguous(),
-                            idx_weight=weights[INDEX_TENSORS[1]].T.contiguous())
-        return config, manifest, operands
+        return weights
+
+
+def prepare_draft_operands(weights, config, *, tp_rank, tp=4):
+    operands = prepare_qkv(weights, config, tp_rank=tp_rank, tp=tp)
+    operands.update(prepare_output(weights, config, tp_rank=tp_rank, tp=tp))
+    if INDEX_TENSORS[0] in weights:
+        operands.update(idx_wq=weights[INDEX_TENSORS[0]].T.contiguous(),
+                        idx_weight=weights[INDEX_TENSORS[1]].T.contiguous())
+    return operands
 
 
 def prepare_qkv(weights, config, *, tp_rank, tp=4):

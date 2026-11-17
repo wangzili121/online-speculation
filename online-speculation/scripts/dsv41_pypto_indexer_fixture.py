@@ -12,7 +12,8 @@ def fixture(config, anchor, ratio, *, max_context):
     gen = torch.Generator().manual_seed(751)
     visible = anchor // ratio
     page_rows = WINDOW // ratio
-    num_pages, page_bytes = 19, 131072
+    num_pages = max(19, (anchor + WINDOW - 1) // WINDOW + 3)
+    page_bytes = 131072
     code_stride, scale_stride = page_bytes // INDEX_DIM, page_bytes // 2
     code_offset = 512 if ratio == 2 else 0
     scale_offset = 36864 if ratio == 2 else 8192

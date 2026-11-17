@@ -4,19 +4,19 @@ DSV4.1 Flash 的 A3 路径使用 W8A8 权重和 DP4/TP4/EP16，Engram 大表在 
 
 ## A3 Serving 基线
 
-Lib 基线为 `8dfbec1`，Serving 基线为 `cd81894`。原 Serving 固定了较早的 `cabe227`；新版 Lib 保留了原生优化，但需要移植请求池、按请求清理以及接收 Serving 所生成 Decode 元数据的入口。以下补丁将两边配对，并保持 Engram 的 HOST 加载路径。 [Lib 基线](https://github.com/Adelaide999/pypto-lib/commit/8dfbec1e11975cd3a8b2e7b2f8f45545de9bf360) · [Lib 补丁](../runtime/pypto_dsv41_a3/lib-serving.patch) · [Serving 补丁](../runtime/pypto_dsv41_a3/serving-pair.patch)
+Lib 基线为 `e32726b`，Serving 基线为 `cd81894`。Lib 提供 8192-token Prefill 分块和 16384-token 总上下文。原 Serving 固定了较早的 `cabe227`；新版 Lib 保留了原生优化，但需要移植请求池、按请求清理以及接收 Serving 所生成 Decode 元数据的入口。以下补丁将两边配对，并保持 Engram 的 HOST 加载路径。 [Lib 基线](https://github.com/Adelaide999/pypto-lib/commit/e32726b7edb31ee17e398a0431c0272ebd545974) · [Lib 补丁](../runtime/pypto_dsv41_a3/lib-serving.patch) · [Serving 补丁](../runtime/pypto_dsv41_a3/serving-pair.patch)
 
 在三个仓库均已检出的情况下，将下列变量设为对应的绝对路径。在干净的工作分支应用补丁。
 
 ```bash
-git -C "$PYPTO_LIB_ROOT" switch -c feature/orthrus-dsv41-a3 8dfbec1e11975cd3a8b2e7b2f8f45545de9bf360
+git -C "$PYPTO_LIB_ROOT" switch -c feature/orthrus-dsv41-a3 e32726b7edb31ee17e398a0431c0272ebd545974
 git -C "$PYPTO_LIB_ROOT" am "$ORTHRUS_ROOT/online-speculation/runtime/pypto_dsv41_a3/lib-serving.patch"
 git -C "$PYPTO_SERVING_ROOT" switch -c feature/orthrus-dsv41-a3 cd818945c3c4e5454b8c259306d4e6f9e865e05c
 git -C "$PYPTO_SERVING_ROOT" am "$ORTHRUS_ROOT/online-speculation/runtime/pypto_dsv41_a3/serving-pair.patch"
 export PYPTO_LIB_ROOT
 ```
 
-Serving 校验 Lib 的工作树状态和 Git tree。公开入口运行基模，内部 runner 提供给定候选的 greedy 验证入口。Lib 的 `GenerationSession.draft_history` 根据 DP 分区、请求 slot 和 generation 绑定已经提交的行，拒绝过期请求、跨分区访问和错误的 anchor。各层的滑窗页、压缩源层页与 indexer 页直接返回带类型的设备视图，连同行步长、偏移和物理页表供 draft 读取。常驻运行时拒绝内核将该视图绑定为输出或原地写入参数，主模型仍可通过原有入口提交 KV。
+Serving 校验 Lib 的工作树状态和 Git tree。可通过 `--speculative-config` 启用 Orthrus，缺省走基模原生 Decode。Lib 的 `GenerationSession.draft_history` 根据 DP 分区、请求 slot 和 generation 绑定已经提交的行，拒绝过期请求、跨分区访问和错误的 anchor。各层的滑窗页、压缩源层页与 indexer 页直接返回带类型的设备视图，连同行步长、偏移和物理页表供 draft 读取。常驻运行时拒绝内核将该视图绑定为输出或原地写入参数，主模型仍可通过原有入口提交 KV。
 
 在干净检出中重放两份补丁并通过源码配对检查。使用 PyPTO `72a62d13` 及其固定的 Simpler `6b6b88f`，Lib 的 13 项常驻资源和缓存测试、Serving 的 75 项 CPU 测试全部通过。PTOAS 使用该工具链要求的 v0.70。 [PyPTO 提交](https://github.com/hw-native-sys/pypto/commit/72a62d13efabbb25d240e35944f68ba5bcc22b7f) · [PTOAS v0.70](https://github.com/hw-native-sys/PTOAS/releases/tag/v0.70)
 
@@ -57,7 +57,7 @@ PYTHONPATH=src python3 scripts/validate_dsv41_pypto_qkv.py \
 
 拥有 indexer 的层从 BF16 head 加载自己的 query 和权重投影。每个 draft 位置用自己的投影结果打分，全部 32 个位置共用同一个历史边界 `anchor // compress_ratio`。PyPTO 按页表读取 INT8 key 和 FP16 scale，复用 A3 QLI 的 query 量化、打分和 Top-512。选出的逻辑行在设备上转为压缩 KV 物理行，再交给压缩 Attention。
 
-当前 A3 上下文上限为 2048 个 token。C1A 历史最多涉及 256 个 8 行候选块，checkpoint 允许保留 2048 个候选块，因此 Reindex 对全部可见历史重新打分与在候选池内打分等价。设备入口会拒绝候选池需要裁剪的配置。压缩历史消费层跨层复用选择结果，由整模接入时的 draft 调度负责。
+当前 A3 上下文上限为 16384 个 token。C1A 历史最多涉及 2048 个 8 行候选块，与 checkpoint 的候选池容量一致，所以 Reindex 可以对全部可见历史重新打分。设备入口会拒绝候选池需要裁剪的配置。压缩历史消费层在同一请求、同一 rank 上复用来源层的 Top-K。
 
 在单层验证命令上加 `--indexer --anchor 1537` 即可验证第 2 层自行选行，`--layer 20 --ratio 1` 和 `--layer 24 --ratio 1` 分别用于 C1A Full 和 Reindex。固定工具链下，单张 910B3 跑过 7 组 TP4 单 rank 用例，覆盖空历史、短历史、奇数 anchor、跨页和 512/1024/2048 行桶。224 个查询的选中集合与 A3 QLI 参考一致，压缩 Attention 最大绝对误差为 `1.17e-5`，历史页逐字节一致。测试使用 BF16 初始化 head 和构造的分页历史。 [Indexer 源码](../src/blockspec/pypto_dsv41_indexer.py) · [实测记录](validation/dsv41/pypto-draft-indexer-tp4-910b3.json)
 
@@ -67,7 +67,45 @@ PYTHONPATH=src python3 scripts/validate_dsv41_pypto_qkv.py \
 
 CPU 测试覆盖完整 K32、部分接受、零接受、跨 128 行分页以及多个 DP 的请求顺序。单张 910B3 验证了设备范围快照在正常返回和异常退出时均可逐字节恢复。该用例直接测试设备复制和恢复接口，16 卡整模验证仍待执行。
 
-## 整模联调
+## Serving 入口与实机验收
 
-1. **Draft 前向。** 在整模 resident session 中绑定 diffusion head 和各层已提交的历史页。连起 40 层的单层 Attention、跨层 indexer 选择复用，以及共享的 Embedding、Engram、mHC、MoE 和 LM Head，再对 TP 的输出贡献做归约。
-2. **开启 Serving 调度。** 将运行中的 draft 提案接到验证入口，让调度器为候选位置预留页，并覆盖尾部普通 Decode 回退。之后在 16 张 A3 上回放同一候选序列，和 target-only 对照输出 token、SWA、压缩 KV、indexer、compressor 残余状态及 Engram 历史。 [V4.1 DSpark 入口](https://github.com/hw-native-sys/pypto-serving/pull/324) · [候选回放脚本](../scripts/probe_dsv41_matched_candidates.py)
+原生 resident session 中，draft 复用基模的 Embedding、CPU Engram 查表、mHC、MoE 和 LM Head。每层的 Attention 由 diffusion 参数计算，Wo-B 使用 TP4 分片，输出贡献经原生 TP 归约后再进入共享 MoE。临时块和 Top-K 保存在设备上，全部 head 参数只在初始化时上传。请求接近上下文上限或需要额外采样约束时，runner 走普通 Decode。
+
+固定工具链下，单张 910B3 依次执行了 40 层的一个 TP4 rank，覆盖 SWA、C2A、C1A Full、Reindex 和跨层复用；校验了非零块偏移和 TP 归约前的打包、目标缓存逐字节一致以及 head 权重零重复上传。另测了 4096、8192、16384 行桶，96 个 query 的 Top-512 集合与参考一致，压缩 Attention 最大绝对误差为 `7.63e-6`。该测试使用初始化 head 和构造的分页历史。 [实机结果](validation/dsv41/pypto-resident-draft-tp4-910b3.json) · [运行入口](../scripts/validate_dsv41_pypto_resident_draft.py)
+
+在 Serving 所用的 Python 环境安装本仓库的 `online-speculation` 包，或在已准备好依赖的环境中设置 `PYTHONPATH="$ORTHRUS_ROOT/online-speculation/src${PYTHONPATH:+:$PYTHONPATH}"`。申请一个完整的 A3 16-rank 作业，在同一设备映射和相同提示下分别运行 target-only 和 Orthrus。Engram 仍按配对 Serving 的 HOST 路径分配。
+
+```bash
+export PYPTO_LIB_ROOT
+orthrus_config=$(python3 -c 'import json, sys; print(json.dumps(dict(method="orthrus", model=sys.argv[1], num_speculative_tokens=31)))' "$DRAFT_HEAD")
+common=(
+  --model "$TARGET_WEIGHTS" --devices "$TASK_DEVICE" --platform a2a3
+  --dp 4 --tp 4 --ep 16 --max-num-seqs 4 --max-model-len 512
+  --max-num-batched-tokens 128 --block-size 128
+  --long-prefill-token-threshold 16 --enable-chunked-prefill --no-enable-prefix-caching
+  --prompt 'Continue the list of positive integers from 1.'
+  --generate-config '{"max_new_tokens":64,"temperature":0,"ignore_eos":true}'
+)
+python -m pypto_serving_a3.offline "${common[@]}" --output "$RESULTS/target"
+python -m pypto_serving_a3.offline "${common[@]}" --output "$RESULTS/orthrus" \
+  --speculative-config "$orthrus_config"
+
+python3 - "$RESULTS" <<'PYCOMPARE'
+import json
+from pathlib import Path
+import sys
+
+result = Path(sys.argv[1])
+target, orth = (
+    json.loads((result / mode / "result.json").read_text())["requests"]
+    for mode in ("target", "orthrus")
+)
+for baseline, draft in zip(target, orth, strict=True):
+    for field in ("prompt_ids", "token_ids", "finish_reason", "usage"):
+        if baseline[field] != draft[field]:
+            raise SystemExit(f"Greedy mismatch in request {baseline['index']} field {field}")
+print("Greedy parity passed")
+PYCOMPARE
+```
+
+`TARGET_WEIGHTS` 使用配套 A3 W8A8 导出，`DRAFT_HEAD` 使用与目标模型配置及权重索引哈希匹配的 BF16 head。Eco-Tech 公开的 1017 W8A8 包将部分 Q/KV 投影保留为浮点，Engram scale 为 E8M0；此 Lib 的基模加载器要求相应投影使用带 scale/offset 的 INT8，并读取 FP32 Engram scale。整模仍待用配套权重验证逐 token 一致性、分页与拒绝回滚、并发及性能。 [公开 checkpoint](https://www.modelscope.cn/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8)

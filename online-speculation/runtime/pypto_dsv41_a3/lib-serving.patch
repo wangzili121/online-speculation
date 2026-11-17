@@ -1,22 +1,25 @@
-From 155b4d65e447bf37521b8319ac46d5ee611636f6 Mon Sep 17 00:00:00 2001
+From 8e85bae2e8cae60c4d1960c8e52db9f67e893602 Mon Sep 17 00:00:00 2001
 From: Zili Wang <wangzili121@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 19:57:58 +0800
-Subject: [PATCH] Port A3 serving and add provisional Orthrus verification
+Subject: [PATCH] Port resident A3 serving and integrate Orthrus draft and
+ verification
 
 ---
- docs/models/deepseek_v4_1_flash_a3/decode.md  |  25 +++
+ docs/models/deepseek_v4_1_flash_a3/decode.md  |  25 ++
  .../deepseek_v4_1_flash_a3/decode_network.py  |  29 ++-
- models/deepseek_v4_1_flash_a3/network.py      | 183 ++++++++++++++-
- .../prefill_resident.py                       |  72 +++++-
- models/deepseek_v4_1_flash_a3/state.py        | 132 ++++++++++-
- tests/contract/test_ds41_resident_session.py  | 210 +++++++++++++++++-
- 6 files changed, 631 insertions(+), 20 deletions(-)
+ models/deepseek_v4_1_flash_a3/network.py      | 233 +++++++++++++++++-
+ .../deepseek_v4_1_flash_a3/prefill_layer.py   |  30 ++-
+ .../prefill_network_engram.py                 |  21 +-
+ .../prefill_resident.py                       |  77 +++++-
+ models/deepseek_v4_1_flash_a3/state.py        | 132 +++++++++-
+ tests/contract/test_ds41_resident_session.py  | 210 +++++++++++++++-
+ 8 files changed, 712 insertions(+), 45 deletions(-)
 
 diff --git a/docs/models/deepseek_v4_1_flash_a3/decode.md b/docs/models/deepseek_v4_1_flash_a3/decode.md
-index 38ecf12..4206ec7 100644
+index 9713d97..e5bc0c7 100644
 --- a/docs/models/deepseek_v4_1_flash_a3/decode.md
 +++ b/docs/models/deepseek_v4_1_flash_a3/decode.md
-@@ -92,6 +92,31 @@ step writes `decode/step-N/decode.json` and the full execution receipt.
+@@ -95,6 +95,31 @@ step writes `decode/step-N/decode.json` and the full execution receipt.
  `generation/answer.txt` and `generation/tokens.json` are updated after each
  generated token. Execution success does not establish independent accuracy.
 
@@ -49,10 +52,10 @@ index 38ecf12..4206ec7 100644
 
  Standalone Decode initializes the same shared ABI once and consumes the
 diff --git a/models/deepseek_v4_1_flash_a3/decode_network.py b/models/deepseek_v4_1_flash_a3/decode_network.py
-index 2c0a601..23be4eb 100644
+index 0d508de..a67cc51 100644
 --- a/models/deepseek_v4_1_flash_a3/decode_network.py
 +++ b/models/deepseek_v4_1_flash_a3/decode_network.py
-@@ -57,7 +57,7 @@ class DecodeNetwork:
+@@ -56,7 +56,7 @@ class DecodeNetwork:
      def _bind(self, session):
          if session.closed or session.failed or session.contract["topology"] != TOPOLOGY:
              raise ValueError("Decode requires a live DP4/TP4/EP16 generation session")
@@ -61,7 +64,7 @@ index 2c0a601..23be4eb 100644
              raise ValueError("Decode requires the session's original request metadata owner")
          if self.devices is not None and list(map(int, self.devices)) != list(map(int, session.runtime.devices)):
              raise ValueError("Decode devices differ from the existing session worker mapping")
-@@ -67,25 +67,34 @@ class DecodeNetwork:
+@@ -66,25 +66,34 @@ class DecodeNetwork:
                  raise ValueError("Decode cannot replace the session runtime, weights or cache allocations")
          self.session, self.runtime, self.weights = session, session.runtime, session.weights
          self.cache_views = session.cache_views
@@ -104,7 +107,7 @@ index 2c0a601..23be4eb 100644
              self.session.failed = True
              raise RuntimeError("Non-finite Decode vocabulary logits")
          self.weights.assert_static_unchanged()
-@@ -99,7 +108,7 @@ class DecodeNetwork:
+@@ -98,7 +107,7 @@ class DecodeNetwork:
              runtime_identity=id(self.runtime), head_backend="a3", engram_compute_backend="a3",
              engram_lookup="dynamic_host_rows")
          write_json(self.output / f"step-{self._steps}" / "decode.json", self.last_timings)
@@ -114,7 +117,7 @@ index 2c0a601..23be4eb 100644
      def close(self):
          """Detach this driver; the generation owner closes its shared resources."""
 diff --git a/models/deepseek_v4_1_flash_a3/network.py b/models/deepseek_v4_1_flash_a3/network.py
-index 87fc854..8d72721 100644
+index aff4f8d..d5c5e41 100644
 --- a/models/deepseek_v4_1_flash_a3/network.py
 +++ b/models/deepseek_v4_1_flash_a3/network.py
 @@ -25,7 +25,7 @@ from pypto import ir
@@ -126,7 +129,7 @@ index 87fc854..8d72721 100644
  from .engram import make_prefill_engram_entries
  from .input_pack import make_input_entries
  from .lm_head import make_output_entries
-@@ -37,6 +37,10 @@ from .prefill_network_engram import prepare_network_engram, validate_host_lookup
+@@ -38,6 +38,10 @@ from .prefill_network_engram import prepare_network_engram, validate_host_lookup
  from .utils import file_sha, tensor_sha, write_json
  from .state import NetworkCacheProvider
 
@@ -137,7 +140,22 @@ index 87fc854..8d72721 100644
 
  class Executable:
      """Compile one production operator definition and retain its compiler artifacts."""
-@@ -861,6 +865,9 @@ def prepare_network_provider(inputs, contract, allocation_id, *, geometry_only=F
+@@ -627,12 +631,12 @@ class NetworkExecutor:
+             self.activation_banks[key] = hidden, premix
+         return self.activation_banks[key]
+
+-    def retain_boundaries(self, hidden, premix):
++    def retain_boundaries(self, hidden, premix, extra=()):
+         """Retire completed scratch and preserve the current device boundary buffers."""
+         keep = [(rank, value) for rows in (hidden, premix)
+                 for rank, cases in enumerate(rows) for value in cases.values()]
+         keep.extend((rank, value) for (rank, _, _), pair in self.activation_banks.items() for value in pair)
+-        self.resident.release_values(keep)
++        self.resident.release_values(keep + list(extra))
+
+     def for_layer(self, layer_id):
+         moe_geometry = self.program.moe_geometry[layer_id]
+@@ -864,6 +868,9 @@ def prepare_network_provider(inputs, contract, allocation_id, *, geometry_only=F
          or contract["scheduler_capacity"] != 8192
      ):
          raise ValueError("Retain the original model modes and bounded actual scheduler ABI")
@@ -147,7 +165,7 @@ index 87fc854..8d72721 100644
      if contract.get("fresh_shared_initialization") != {"topk_indices": -1}:
          raise ValueError("Freeze the same deterministic initial TopK storage as the independent reference")
      engram_contracts = inputs.get("engram_contracts")
-@@ -881,6 +888,7 @@ def prepare_network_provider(inputs, contract, allocation_id, *, geometry_only=F
+@@ -884,6 +891,7 @@ def prepare_network_provider(inputs, contract, allocation_id, *, geometry_only=F
          allocation_id=allocation_id,
          sources_by_case={"fresh": inputs["cache_ABI_sources"]},
          geometry_only=geometry_only,
@@ -155,7 +173,7 @@ index 87fc854..8d72721 100644
      )
      attach_network_cache_geometry(provider)
      provider.require_network_geometry()
-@@ -904,6 +912,8 @@ class GenerationSession:
+@@ -907,6 +915,8 @@ class GenerationSession:
          self.phase_programs = {contract["capacity"]: program}
          self.ownership = [weights.layout.ownership(rank) for rank in range(weights.world)]
          self.epoch, self.closed, self.failed = 0, False, False
@@ -164,7 +182,7 @@ index 87fc854..8d72721 100644
          self.cache_views = weights.cache_handles
          for rank, cases in enumerate(provider.arenas):
              sources = {case + "/" + name: resident.handle(value, rank)
-@@ -923,8 +933,167 @@ class GenerationSession:
+@@ -926,8 +936,198 @@ class GenerationSession:
          """End the session explicitly; generation never releases a worker between phases."""
          self.close()
 
@@ -273,6 +291,37 @@ index 87fc854..8d72721 100644
 +                result[(*owner, request["initial_context_length"])] = tuple(request["token_ids"])
 +        return result
 +
++    def propose_candidates(self, chunk, attention, *, output, progress=None):
++        """Run the diffusion head over committed target history and temporary blocks."""
++        if self.closed or self.failed or self.provider.max_requests_per_partition is None:
++            raise RuntimeError("Draft attention needs a live serving generation session")
++        if chunk["contract"]["capacity"] != ORTHRUS_VERIFY_CAPACITY:
++            raise ValueError("Draft attention needs the wide native program")
++        if attention.resident is not self.runtime:
++            raise ValueError("Draft attention must use the target session's worker owners")
++        requests = self._candidate_requests(chunk)
++        if not requests or any(len(tokens) != ORTHRUS_BLOCK or any(
++                token != attention.mask_token_id for token in tokens[1:]) for tokens in requests.values()):
++            raise ValueError("Draft blocks require the pending anchor plus 31 MASK tokens")
++        tp = self.contract["topology"]["tp"]
++        histories = {
++            (rank, layer, (dp, slot, generation)): self.draft_history(
++                dp, slot, generation, rank=rank, layer=layer, anchor_position=anchor,
++            )
++            for dp, slot, generation, anchor in requests
++            for rank in range(dp * tp, (dp + 1) * tp)
++            for layer in range(40)
++        }
++        self._verified_requests = None
++        previous = (self.epoch, self.contract, self.engram_contracts, self.program, self.provider.capacity)
++        try:
++            with self.provider.provisional_dispatch():
++                return self._advance(chunk, output=output, progress=progress, phase="draft",
++                                     draft=attention.start_round(histories))
++        finally:
++            self.epoch, self.contract, self.engram_contracts, self.program, capacity = previous
++            self.provider.set_execution_capacity(capacity)
++
 +    def verify_candidates(self, chunk, *, output, progress=None):
 +        """Evaluate packed causal K32 candidates and restore authoritative state before returning logits."""
 +        if self.closed or self.failed or self.provider.max_requests_per_partition is None:
@@ -328,16 +377,16 @@ index 87fc854..8d72721 100644
 +        self._verified_requests = None
 +        return self._advance(chunk, output=output, progress=progress, phase="accept")
 +
-+    def _advance(self, chunk, *, output, progress, phase):
++    def _advance(self, chunk, *, output, progress, phase, draft=None):
          if self.closed or self.failed:
              raise RuntimeError("A closed or failed generation session cannot advance")
          following, contract = chunk["inputs"], chunk["contract"]
-@@ -932,8 +1101,11 @@ class GenerationSession:
+@@ -935,8 +1135,11 @@ class GenerationSession:
          if any(contract[name] != self.contract[name] for name in fixed):
              raise ValueError("Continuation cannot change the session's model or topology")
          capacity = contract["capacity"]
 -        if capacity not in self.phase_programs or (phase == "decode" and capacity != 16):
-+        if phase != "verify" and (capacity not in self.phase_programs or
++        if phase not in ("verify", "draft") and (capacity not in self.phase_programs or
 +                                  (phase == "decode" and capacity != SERVING_DISPATCH_CAPACITY)):
              raise ValueError("Continuation requires a precompiled phase execution capacity")
 +        if contract.get("max_requests_per_partition") != self.contract.get("max_requests_per_partition"):
@@ -345,7 +394,7 @@ index 87fc854..8d72721 100644
          actual, epoch = following["input_contract"], self.epoch + 1
          input_path = Path(contract["input_contract_path"])
          if (actual["epoch"] != epoch or type(actual["epoch"]) is not int
-@@ -960,7 +1132,9 @@ class GenerationSession:
+@@ -963,7 +1166,9 @@ class GenerationSession:
              self.provider.set_execution_capacity(capacity)
              self.engram_contracts = {slot: dict(item, capacity=capacity)
                                       for slot, item in self.engram_contracts.items()}
@@ -356,7 +405,7 @@ index 87fc854..8d72721 100644
              self.provider.begin_chunk(epoch=epoch, token_map_id=contract["input_contract_sha256"],
                  input_by_case={"fresh": actual}, metadata_by_case={"fresh": metadata},
                  metadata_sources_by_case={"fresh": receipts})
-@@ -969,6 +1143,9 @@ class GenerationSession:
+@@ -972,12 +1177,15 @@ class GenerationSession:
                  raise RuntimeError("Chunk admission replaced a persistent cache or history allocation")
              validate_host_lookup(following["engram_lookup"], self.engram_contracts[1], self.provider.hash_batch())
              self.program.compile(self.provider, contract["model_config"], contract["topology"], self.engram_contracts)
@@ -366,20 +415,231 @@ index 87fc854..8d72721 100644
              output = Path(output)
              output.mkdir(parents=True, exist_ok=False)
              result = run_network_chunk(following, contract=contract, output=output, provider=self.provider,
+                 weights=self.weights, memory=self.memory, ownership=self.ownership, assigned=self.assigned,
+                 engram_contracts=self.engram_contracts, program=self.program, epoch=epoch, progress=progress,
+-                resident=self.runtime, phase=phase)
++                resident=self.runtime, phase=phase, draft=draft)
+             self.weights.assert_static_unchanged()
+             if cache_uploads != self.runtime.stats["cache_h2d_bytes"]:
+                 raise RuntimeError("A token step uploaded persistent cache bytes")
+@@ -1100,6 +1308,7 @@ def run_network_chunk(
+     progress=None,
+     resident=None,
+     phase="prefill",
++    draft=None,
+ ):
+     """Execute embedding, the complete backbone and the final head with persistent owners."""
+     begin = perf_counter()
+@@ -1107,7 +1316,7 @@ def run_network_chunk(
+     initial_read_seconds, initial_read_calls = weights.reader.read_seconds, weights.reader.read_calls
+     topology, model_config = contract["topology"], contract["model_config"]
+     text = dict(model_config["text_config"], image_sentinel_base_id=model_config["image_token_id"])
+-    namespace = f"chunk{epoch}"
++    namespace = f"chunk{epoch}-draft" if draft is not None else f"chunk{epoch}"
+     resident.profiling.begin_chunk(phase, epoch)
+     if progress is not None:
+         progress(dict(stage="executing_embedding", epoch=epoch))
+@@ -1191,6 +1400,7 @@ def run_network_chunk(
+         weights.raw_for_layer,
+         eng_runtime,
+         lookup=inputs["engram_lookup"],
++        write_history=draft is None,
+     )
+     for layer in (1, 14):
+         prepared_engram.attach(layer, provider.state_handles_for_layer(layer))
+@@ -1203,6 +1413,8 @@ def run_network_chunk(
+         actual = executor.for_layer(layer)
+         actual["required_modes"] = contract["required_modes"]
+         actual["engram"] = prepared_engram.apply
++        if draft is not None:
++            actual["draft_attention"] = draft
+         return actual
+
+     completed_layers = []
+@@ -1216,8 +1428,10 @@ def run_network_chunk(
+                 executor.execute_entry(program.entries_for_stage("validation")["finite"], rank, arguments)
+                 if not bool(resident.read_control(status, rank).all()):
+                     raise RuntimeError(f"Non-finite {phase} state after layer {layer} on rank {rank}")
+-        executor.retain_boundaries(result["hidden"], result["pre_mix"])
+-        provider.observe_layer(layer, result)
++        if draft is None:
++            provider.observe_layer(layer, result)
++        extra = () if draft is None else draft.finish_layer(layer)
++        executor.retain_boundaries(result["hidden"], result["pre_mix"], extra)
+         completed_layers.append(layer)
+         layer_timings.append(dict(layer=layer, weight_load_seconds=0.0,
+                                   total_seconds=perf_counter() - layer_started[layer]))
+@@ -1294,6 +1508,7 @@ def run_network_chunk(
+                                  weight_load_seconds=weights.load_seconds - initial_load_seconds,
+                                  checkpoint_read_calls=weights.reader.read_calls - initial_read_calls))
+     except BaseException as error:
++        resident.profiling.finish_chunk(completed=False)
+         write_json(
+             output / "failure.json",
+             dict(
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_layer.py b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+index d56889e..1f3fc2d 100644
+--- a/models/deepseek_v4_1_flash_a3/prefill_layer.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+@@ -181,6 +181,7 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+     epoch, token_map_id = batch["epoch"], batch["token_map_id"]
+     if epoch != runtime["epoch"] or token_map_id != runtime["token_map_id"]:
+         raise ValueError("Layer runtime and batch must identify the same chunk and token map")
++    draft = runtime.get("draft_attention")
+     for case, records in batch["cases"].items():
+         def validate_rank_state(rank):
+             original = records[rank]
+@@ -194,6 +195,8 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+                 raise ValueError("Require local delayed FP32 HC pre [capacity,4]")
+             if hidden.device.type != "cpu" or pre.device.type != "cpu":
+                 raise ValueError("Layer descriptors require CPU shape and storage metadata")
++            if draft is not None:
++                return
+             live = cache_state[rank][case]
+             checked_live = live
+             if role["candidate_filter"]:
+@@ -231,7 +234,8 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+     def invalidate_rank_state(rank):
+         for case in batch["cases"]:
+             invalidate_live_versions(role, cache_state[rank][case])
+-    map_ranks(invalidate_rank_state)
++    if draft is None:
++        map_ranks(invalidate_rank_state)
+     engram_states = None
+     if role["engram_slot"] is not None:
+         if not callable(runtime.get("engram")):
+@@ -299,7 +303,8 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+             state = states[rank][case]
+             physical, total = state["physical"], state["total"]
+             if not total:
+-                head_packets[rank][case] = zeros(rank, tp * capacity, head_width)
++                if draft is None:
++                    head_packets[rank][case] = zeros(rank, tp * capacity, head_width)
+                 return
+             full_norm = zeros(rank, capacity, 5120)
+             execute(
+@@ -310,9 +315,6 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+                 {"normed": full_norm},
+                 "attention_norm",
+             )
+-            start, end, per_rank, _padded = original["cp_token_range"]
+-            query_rows = max(0, min(end, total) - min(start, total))
+-            q_input = pad(full_norm[start : start + query_rows], rank)
+             positions = pad(original["positions"], rank)
+             cosine, sine = zeros(rank, capacity, 32, dtype=torch.float32), zeros(rank, capacity, 32, dtype=torch.float32)
+             execute(
+@@ -323,6 +325,14 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+                 dict(cosine=cosine, sine=sine),
+                 "rope",
+             )
++            if draft is not None:
++                contribution = zeros(rank, capacity, 5120)
++                draft.project_layer(rank, layer_id, original, full_norm, cosine, sine, contribution)
++                state["draft_contribution"] = contribution
++                return
++            start, end, per_rank, _padded = original["cp_token_range"]
++            query_rows = max(0, min(end, total) - min(start, total))
++            q_input = pad(full_norm[start : start + query_rows], rank)
+             q_cos = pad(cosine[start:start + query_rows], rank)
+             q_sin = pad(sine[start:start + query_rows], rank)
+             wqa, latent, qb, query = (
+@@ -455,7 +465,7 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+             state.update(cache=cache, per_rank=per_rank, positions=positions)
+             head_packets[rank][case] = packet
+         map_ranks(attend_rank)
+-    exchanged = exchange("attention-head-exchange", head_packets, "all_to_all", "tp")
++    exchanged = exchange("attention-head-exchange", head_packets, "all_to_all", "tp") if draft is None else None
+     reduction = [{} for _ in range(world)]
+     for case in batch["cases"]:
+         def project_rank(rank):
+@@ -464,6 +474,11 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+             if not total:
+                 reduction[rank][case] = zeros(rank, tp * capacity, 5120)
+                 return
++            if draft is not None:
++                packed = zeros(rank, tp * capacity, 5120)
++                draft.pack(rank, state["draft_contribution"], packed, physical, total)
++                reduction[rank][case] = packed
++                return
+             heads, woa, wob = (
+                 zeros(rank, capacity, head_width),
+                 zeros(rank, capacity, output_width),
+@@ -682,7 +697,8 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+     def publish_rank_state(rank):
+         for case in batch["cases"]:
+             publish_live_versions(role, cache_state[rank][case], epoch, token_map_id)
+-    map_ranks(publish_rank_state)
++    if draft is None:
++        map_ranks(publish_rank_state)
+     return {"hidden": final_hidden, "pre_mix": final_pre, "states": states}
+
+
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_network_engram.py b/models/deepseek_v4_1_flash_a3/prefill_network_engram.py
+index e08783c..a427ad8 100644
+--- a/models/deepseek_v4_1_flash_a3/prefill_network_engram.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_network_engram.py
+@@ -222,7 +222,7 @@ def validate_host_lookup(lookup, contract, batch):
+                     raise ValueError("Host Engram control ABI changed: " + name)
+
+
+-def prepare_network_engram(contract, batch, history, layer_contracts, raw_for_layer, runtime, *, lookup):
++def prepare_network_engram(contract, batch, history, layer_contracts, raw_for_layer, runtime, *, lookup, write_history=True):
+     """Consume ready host rows; the forward never opens or registers a full table."""
+     topology, capacity = runtime["topology"], runtime["capacity"]
+     world = topology["ep"]
+@@ -254,15 +254,16 @@ def prepare_network_engram(contract, batch, history, layer_contracts, raw_for_la
+     for case, records in batch["cases"].items():
+         for rank, original in enumerate(records):
+             ready = lookup["cases"][case][rank]
+-            cache = history.caches[rank][case]
+-            total = len(original["full_input_ids"])
+-            update_slot_history(
+-                original["full_input_ids"],
+-                constants["token_map"],
+-                ready["mask"][:total] == 0,
+-                _hash_slots(original["metadata"]["slot_mapping"]),
+-                cache,
+-            )
++            if write_history:
++                cache = history.caches[rank][case]
++                total = len(original["full_input_ids"])
++                update_slot_history(
++                    original["full_input_ids"],
++                    constants["token_map"],
++                    ready["mask"][:total] == 0,
++                    _hash_slots(original["metadata"]["slot_mapping"]),
++                    cache,
++                )
+             report = runtime["reports"][rank]
+             report.setdefault("network_engram_hash", {})[case] = dict(
+                 owner_layer=1,
 diff --git a/models/deepseek_v4_1_flash_a3/prefill_resident.py b/models/deepseek_v4_1_flash_a3/prefill_resident.py
-index 81b0410..9e5023b 100644
+index bae2601..514fc74 100644
 --- a/models/deepseek_v4_1_flash_a3/prefill_resident.py
 +++ b/models/deepseek_v4_1_flash_a3/prefill_resident.py
-@@ -13,7 +13,7 @@ import os
- import struct
+@@ -14,7 +14,7 @@ import struct
+ import sys
  from collections import OrderedDict
  from concurrent.futures import ThreadPoolExecutor
 -from contextlib import ExitStack
 +from contextlib import ExitStack, contextmanager
+ from pathlib import Path
  from time import perf_counter
  from threading import Condition, Lock, RLock, Thread
- import torch
-@@ -184,6 +184,7 @@ class ResidentNetworkRuntime:
+@@ -192,9 +192,10 @@ class NetworkProfiler:
+         """Open a fresh capture scope after model initialization and before dispatch."""
+         if self.current is not None:
+             raise RuntimeError("The previous profiling chunk has not been finalized")
+-        if not self.level or self.phase not in ("all", phase):
++        route = "decode" if phase in ("draft", "verify", "accept") else phase
++        if not self.level or self.phase not in ("all", route):
+             return
+-        if phase not in ("prefill", "decode") or type(epoch) is not int or epoch < 0:
++        if route not in ("prefill", "decode") or type(epoch) is not int or epoch < 0:
+             raise ValueError("Profiling requires a valid phase and nonnegative chunk epoch")
+         if not self.started:
+             self.output.mkdir(parents=True, exist_ok=False)
+@@ -306,6 +307,7 @@ class ResidentNetworkRuntime:
          self.device_readonly = {}
          self.device_active = {}
          self.alias_leases = {}
@@ -387,7 +647,7 @@ index 81b0410..9e5023b 100644
          self.rotations = {}
          self.programs = {}
          self.static_parameters = {}
-@@ -224,6 +225,7 @@ class ResidentNetworkRuntime:
+@@ -346,6 +348,7 @@ class ResidentNetworkRuntime:
                            device_weight_upload_seconds=0.0,
                            dynamic_allocations=0, cache_h2d_bytes=0, control_d2h_bytes=0, output_d2h_bytes=0,
                            activation_d2h_bytes=0, d2d_bytes=0, program_evictions=0, staging_worker_initializations=0,
@@ -395,7 +655,7 @@ index 81b0410..9e5023b 100644
                            workspace_fill_bytes=0, workspace_requests=0, workspace_reuses=0)
          try:
              if worker_factory is None:
-@@ -339,6 +341,7 @@ class ResidentNetworkRuntime:
+@@ -466,6 +469,7 @@ class ResidentNetworkRuntime:
              self.staging_workers.clear()
              self.device_active.clear()
              self.alias_leases.clear()
@@ -403,7 +663,7 @@ index 81b0410..9e5023b 100644
              self.parameter_abis.clear()
              self.values.clear()
              self.free_values.clear()
-@@ -410,15 +413,77 @@ class ResidentNetworkRuntime:
+@@ -537,15 +541,77 @@ class ResidentNetworkRuntime:
              elif name.startswith("raw/"):
                  self._record_transfer(rank, "cache_h2d_bytes", allocation.nbytes)
 
@@ -482,7 +742,7 @@ index 81b0410..9e5023b 100644
      def register(self, program):
          """Admit every phase and boundary entry to the same worker registry."""
          if self._closed:
-@@ -502,6 +567,8 @@ class ResidentNetworkRuntime:
+@@ -629,6 +695,8 @@ class ResidentNetworkRuntime:
                      raise ValueError("Resident device operand is retired or released")
                  if direction != "In" and self.device_readonly[id(value.buffer)]:
                      raise ValueError("A compiled entry writes an immutable resident weight")
@@ -491,16 +751,16 @@ index 81b0410..9e5023b 100644
                  bound.append(value)
                  continue
              if value.device.type != "cpu" or not value.is_contiguous():
-@@ -802,6 +869,7 @@ class ResidentNetworkRuntime:
-                 else:
-                     self.free_values.setdefault((key[0], allocation.nbytes), []).append(allocation)
+@@ -962,6 +1030,7 @@ class ResidentNetworkRuntime:
+             else:
+                 self.free_values.setdefault((key[0], allocation.nbytes), []).append(allocation)
          self.alias_leases = {key: value for key, value in self.alias_leases.items() if id(value.buffer) not in retired}
 +        self.readonly_aliases.intersection_update(self.alias_leases)
 
      def _group_ranks(self, group):
          world, tp = self.topology["ep"], self.topology["tp"]
 diff --git a/models/deepseek_v4_1_flash_a3/state.py b/models/deepseek_v4_1_flash_a3/state.py
-index 42dfc1c..b074ede 100644
+index 903b272..d8dec0e 100644
 --- a/models/deepseek_v4_1_flash_a3/state.py
 +++ b/models/deepseek_v4_1_flash_a3/state.py
 @@ -10,6 +10,7 @@
@@ -511,7 +771,7 @@ index 42dfc1c..b074ede 100644
  from copy import deepcopy
  import torch
  from .cache import resolve_layer_role
-@@ -154,6 +155,7 @@ class NetworkCacheProvider:
+@@ -155,6 +156,7 @@ class NetworkCacheProvider:
          allocation_id,
          sources_by_case,
          geometry_only=False,
@@ -519,7 +779,7 @@ index 42dfc1c..b074ede 100644
      ):
          _require(
              topology["tp"] in (1, 2, 4)
-@@ -199,6 +201,10 @@ class NetworkCacheProvider:
+@@ -200,6 +202,10 @@ class NetworkCacheProvider:
          self._seen_chunks, self._chunk = set(), None
          self._completed_layers, self._batches = [], {}
          self._sequence_tokens, self._pending_sequence_tokens = {}, {}
@@ -530,7 +790,7 @@ index 42dfc1c..b074ede 100644
          self._input_by_case = _metadata_copy(input_by_case)
          self._abi_by_case = {}
          for case, payloads in abi_by_case.items():
-@@ -495,7 +501,9 @@ class NetworkCacheProvider:
+@@ -496,7 +502,9 @@ class NetworkCacheProvider:
              "Chunk cases cannot replace allocation ownership",
          )
          batches = {layer: dict(cases={}, epoch=epoch, token_map_id=token_map_id) for layer in range(40)}
@@ -541,7 +801,7 @@ index 42dfc1c..b074ede 100644
          for case, records in payloads.items():
              _require(
                  len(records) == self.topology["ep"], "Every chunk must retain empty as well as active ranks"
-@@ -510,11 +518,34 @@ class NetworkCacheProvider:
+@@ -511,11 +519,34 @@ class NetworkCacheProvider:
                  }
                  current_slots = {request["request_slot"] for request in engine["requests"]}
                  _require(
@@ -577,7 +837,7 @@ index 42dfc1c..b074ede 100644
                      previous = self._sequence_tokens.get(key, [])
                      _require(
                          request["initial_context_length"] == len(previous)
-@@ -537,6 +568,19 @@ class NetworkCacheProvider:
+@@ -538,6 +569,19 @@ class NetworkCacheProvider:
                          positions=record["positions"].tolist(),
                      )
                  )
@@ -597,7 +857,7 @@ index 42dfc1c..b074ede 100644
          digest = hashlib.sha256(
              json.dumps(token_maps, sort_keys=True, separators=(",", ":")).encode()
          ).hexdigest()
-@@ -550,6 +594,7 @@ class NetworkCacheProvider:
+@@ -551,6 +595,7 @@ class NetworkCacheProvider:
          self._seen_chunks.add(identity)
          self._chunk, self._completed_layers, self._batches = identity, [], batches
          self._pending_sequence_tokens = pending_sequences
@@ -605,7 +865,7 @@ index 42dfc1c..b074ede 100644
          self._metadata_sources = (
              deepcopy(metadata_sources_by_case) if metadata_sources_by_case is not None else self.sources
          )
-@@ -590,6 +635,8 @@ class NetworkCacheProvider:
+@@ -591,6 +636,8 @@ class NetworkCacheProvider:
          _require(len(blocks) == 1, "The existing core requires one uniform physical page count")
          records = [record for rows in self._batches[0]["cases"].values() for record in rows]
          requests = max(1, max(len(record["metadata"]["seq_lens"]) for record in records))
@@ -614,7 +874,7 @@ index 42dfc1c..b074ede 100644
          pages = max(
              group["block_table"].shape[1]
              for rows in self._batches.values()
-@@ -605,6 +652,87 @@ class NetworkCacheProvider:
+@@ -606,6 +653,87 @@ class NetworkCacheProvider:
              scheduler_capacity=self.scheduler_capacity,
          )
 
