@@ -53,4 +53,19 @@ python scripts/validate_glm53_pypto_streamed_kda.py \
   --device 0 --output streamed-kda.json
 ```
 
-The remaining integration needs to connect the final mHC gradient through the full frozen suffix to the trainable MLA projections in backbone layer 43 (zero-based), and publish the updated head at a request boundary.
+The shared expert test consumes the same NZ-packed W8A8 weights used by Serving. It unpacks the tiles on device and replays the checkpoint's BF16 rounding before differentiating SwiGLU. The layer 44 rank-0 shard matched the FP64 STE reference with a maximum input gradient error of `1.39e-7`.
+
+The layer 43 MLA input adjoint reduces the normalized query and latent gradients across ranks before backpropagating through the replicated weights. Each rank retains its own query-up projection gradient. On two devices using real TP8 shards, the four replicated parameter gradients matched bit-for-bit across ranks and all six outputs matched the FP64 reference with maximum absolute error `2.49e-6`. The absorbed-query and draft key-basis adjoints also passed on real layer-43 weights.
+
+```bash
+python scripts/validate_glm53_pypto_loss.py --mla-input-projections \
+  --checkpoint "$MODEL" --device 0 --peer-device 1 --output mla-projections.json
+python scripts/validate_glm53_pypto_loss.py --shared-expert-backward \
+  --checkpoint "$MODEL" --device 0 --output moe-shared.json
+python scripts/validate_glm53_pypto_head_publish.py \
+  --checkpoint "$MODEL" --devices 0 1 --output mla-publish.json
+```
+
+The last check stages a device AdamW update to two real packed MLA shards, verifies the live views remain intact, and then publishes the staged weights into those views. It uses fixture gradients. The FP32 master weights matched the reference within `2.98e-8`, and the Indexer weights and neighboring layers remained byte-identical.
+
+Full online update still needs the Serving forward activations and the expert-parallel adjoint connected to the frozen layer 44 and layer 43 suffix. The final acceptance must exercise a true replay, gradient and AdamW step, then decode with the published head on the same Serving runner.

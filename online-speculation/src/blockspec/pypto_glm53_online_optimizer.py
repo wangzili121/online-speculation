@@ -70,3 +70,60 @@ def make_mla_output_step():
                lr, weight_decay, inverse_bias_one, inverse_bias_two, device=0)
 
     return step
+
+
+def make_mla_head_adamw(ranks):
+    """Stage an update of the differentiable MLA prefix on every resident rank."""
+    import pypto.language as pl
+    from .pypto_glm53_head import head_layout
+
+    layout, _ = head_layout()
+    length = layout["index_q"][0]
+    update = make_adamw_update(1, length, device_entry=True)
+
+    @pl.jit.host
+    def entry(
+        gradient: pl.Tensor[[ranks, 1, length], pl.FP32],
+        master: pl.InOut[pl.Tensor[[ranks, 1, length], pl.FP32]],
+        first: pl.InOut[pl.Tensor[[ranks, 1, length], pl.FP32]],
+        second: pl.InOut[pl.Tensor[[ranks, 1, length], pl.FP32]],
+        staged: pl.Out[pl.Tensor[[ranks, 1, length], pl.BF16]],
+        lr: pl.Scalar[pl.FP32], weight_decay: pl.Scalar[pl.FP32],
+        inverse_bias_one: pl.Scalar[pl.FP32], inverse_bias_two: pl.Scalar[pl.FP32],
+    ):
+        for rank in pl.range(ranks):
+            update(gradient[rank], master[rank], first[rank], second[rank], staged[rank],
+                   lr, weight_decay, inverse_bias_one, inverse_bias_two, device=rank)
+
+    return entry
+
+
+def make_mla_head_publish(ranks):
+    """Copy a completed staged update into the selected live head layer."""
+    import pypto.language as pl
+    from .pypto_glm53_head import head_layout
+
+    layout, full = head_layout()
+    length = layout["index_q"][0]
+    tile = 128
+
+    @pl.jit
+    def publish(
+        staged: pl.Tensor[[1, length], pl.BF16],
+        live: pl.InOut[pl.Tensor[[1, full], pl.BF16]],
+    ):
+        for lane in pl.spmd(48, name_hint="glm_publish_mla"):
+            for part in pl.range(lane, length // tile, 48):
+                begin = part * tile
+                live[:, begin:begin + tile] = staged[:, begin:begin + tile]
+        return live
+
+    @pl.jit.host
+    def entry(
+        staged: pl.Tensor[[ranks, 1, length], pl.BF16],
+        live: pl.InOut[pl.Tensor[[ranks, 1, full], pl.BF16]],
+    ):
+        for rank in pl.range(ranks):
+            publish(staged[rank], live[rank], device=rank)
+
+    return entry

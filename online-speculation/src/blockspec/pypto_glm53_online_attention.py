@@ -43,7 +43,7 @@ def make_output_backward(*, device_entry=False):
     return backward if device_entry else entry
 
 
-def make_projection_backward(input_width, output_width, *, device_entry=False):
+def make_projection_backward(input_width, output_width, *, device_entry=False, refine=False):
     """Apply the input and parameter adjoints of a packed BF16 MLA projection."""
     import pypto.language as pl
 
@@ -68,6 +68,9 @@ def make_projection_backward(input_width, output_width, *, device_entry=False):
             dw = pl.matmul(high, values, a_trans=True, out_dtype=pl.FP32)
             low = pl.cast(pl.sub(dy, pl.cast(high, pl.FP32)), pl.BF16, mode="rint")
             dw = pl.matmul_acc(dw, low, values, a_trans=True)
+            if refine:
+                remainder = pl.sub(pl.sub(dy, pl.cast(high, pl.FP32)), pl.cast(low, pl.FP32))
+                dw = pl.matmul_acc(dw, pl.cast(remainder, pl.BF16, mode="rint"), values, a_trans=True)
             weight_grad[output_column:output_column + columns, input_column:input_column + columns] = dw
 
         for tile in pl.spmd(input_width // columns, name_hint="orthrus_glm53_projection_dx"):
@@ -80,6 +83,9 @@ def make_projection_backward(input_width, output_width, *, device_entry=False):
                 dc = pl.matmul_acc(dc, high_input, weight_tile, init_cond=start == 0)
                 low_input = pl.cast(pl.sub(grad_tile, pl.cast(high_input, pl.FP32)), pl.BF16, mode="rint")
                 dc = pl.matmul_acc(dc, low_input, weight_tile)
+                if refine:
+                    remainder_input = pl.sub(pl.sub(grad_tile, pl.cast(high_input, pl.FP32)), pl.cast(low_input, pl.FP32))
+                    dc = pl.matmul_acc(dc, pl.cast(remainder_input, pl.BF16, mode="rint"), weight_tile)
             input_grad[:, column:column + columns] = dc
         return weight_grad, input_grad
 
@@ -450,3 +456,199 @@ def make_mla_replay_tape(history_capacity, *, device_entry=False):
         replay(q_history, q_block, history, block, history_bias, block_bias, probability, mixed_block, device=0)
 
     return replay if device_entry else entry
+
+
+def make_mla_absorb_backward():
+    """Differentiate the shared query and the draft-specific absorbed key basis."""
+    import pypto.language as pl
+
+    tokens, channels = 16, 32
+    rows = QUERY_ROWS * HEAD_TILE
+    width = HEADS * VALUE
+    pieces = width // channels
+
+    @pl.jit
+    def absorb_backward(
+        query: pl.Tensor[[tokens, width], pl.BF16],
+        history_basis: pl.Tensor[[width, LATENT], pl.BF16],
+        draft_basis: pl.Tensor[[width, LATENT], pl.BF16],
+        d_history: pl.Tensor[[rows, LATENT], pl.FP32],
+        d_draft: pl.Tensor[[rows, LATENT], pl.FP32],
+        d_query: pl.Out[pl.Tensor[[tokens, width], pl.FP32]],
+        d_basis: pl.Out[pl.Tensor[[width, LATENT], pl.FP32]],
+    ):
+        for task in pl.spmd(tokens * pieces, name_hint="glm_mla_absorb_query_vjp"):
+            token = task // pieces
+            feature = task % pieces * channels
+            head = feature // VALUE
+            output = pl.full([channels, TILE], dtype=pl.FP32, value=0.0)
+            if token < QUERY_ROWS:
+                row = token * HEAD_TILE + head
+                for col in pl.range(0, LATENT, TILE):
+                    wh = pl.cast(history_basis[feature:feature + channels, col:col + TILE], pl.FP32)
+                    wd = pl.cast(draft_basis[feature:feature + channels, col:col + TILE], pl.FP32)
+                    dh = d_history[row:row + 1, col:col + TILE]
+                    dd = d_draft[row:row + 1, col:col + TILE]
+                    output = pl.add(output, pl.add(pl.col_expand_mul(wh, dh), pl.col_expand_mul(wd, dd)))
+            d_query[token:token + 1, feature:feature + channels] = pl.reshape(pl.row_sum(output), [1, channels])
+        for task in pl.spmd(pieces * (LATENT // TILE), name_hint="glm_mla_absorb_key_vjp"):
+            feature = task // (LATENT // TILE) * channels
+            head = feature // VALUE
+            col = task % (LATENT // TILE) * TILE
+            grad = pl.full([channels, TILE], dtype=pl.FP32, value=0.0)
+            for token in pl.range(QUERY_ROWS):
+                row = token * HEAD_TILE + head
+                latent = d_draft[row:row + 1, col:col + TILE]
+                broadcast = pl.col_expand(pl.full([channels, TILE], dtype=pl.FP32, value=0.0), latent)
+                q = pl.cast(query[token:token + 1, feature:feature + channels], pl.FP32)
+                grad = pl.add(grad, pl.row_expand_mul(broadcast, pl.reshape(q, [channels, 1])))
+            d_basis[feature:feature + channels, col:col + TILE] = grad
+        return d_query, d_basis
+
+    @pl.jit.host
+    def entry(query: pl.Tensor, history_basis: pl.Tensor, draft_basis: pl.Tensor, d_history: pl.Tensor,
+              d_draft: pl.Tensor, d_query: pl.Out[pl.Tensor], d_basis: pl.Out[pl.Tensor]):
+        absorb_backward(query, history_basis, draft_basis, d_history, d_draft, d_query, d_basis, device=0)
+
+    return entry
+
+
+def make_mla_norm_backward(width, epsilon, *, device_entry=False):
+    """Differentiate the draft-owned query or latent RMSNorm, including its scale."""
+    import pypto.language as pl
+
+    tokens, tile = 16, 128
+    if width < tile or width % tile or epsilon <= 0:
+        raise ValueError("invalid GLM trainable MLA norm geometry")
+
+    @pl.jit
+    def norm_backward(
+        value: pl.Tensor[[tokens, width], pl.BF16], weight: pl.Tensor[[width], pl.BF16],
+        upstream: pl.Tensor[[tokens, width], pl.FP32],
+        d_value: pl.Out[pl.Tensor[[tokens, width], pl.FP32]], d_weight: pl.Out[pl.Tensor[[1, width], pl.FP32]],
+    ):
+        partial = pl.create_tensor([tokens, width], dtype=pl.FP32)
+        for row in pl.spmd(tokens, name_hint="glm_mla_rmsnorm_input_vjp"):
+            sq = pl.full([1, tile], dtype=pl.FP32, value=0.0)
+            dot = pl.full([1, tile], dtype=pl.FP32, value=0.0)
+            for col in pl.range(0, width, tile):
+                x = pl.cast(value[row:row + 1, col:col + tile], pl.FP32)
+                gamma = pl.cast(pl.reshape(weight[col:col + tile], [1, tile]), pl.FP32)
+                dy = upstream[row:row + 1, col:col + tile]
+                sq = pl.add(sq, pl.mul(x, x))
+                dot = pl.add(dot, pl.mul(pl.mul(x, dy), gamma))
+            zeros = pl.full([8, tile], dtype=pl.FP32, value=0.0)
+            var = pl.mul(pl.row_sum(pl.col_expand(zeros, sq)), 1.0 / width)
+            inv_tile = pl.recip(pl.sqrt(pl.add(var, epsilon)))
+            inv = pl.read(inv_tile, [0, 0])
+            dot_tile = pl.mul(pl.row_sum(pl.col_expand(zeros, dot)), 1.0 / width)
+            correction = pl.read(pl.mul(dot_tile, pl.mul(inv_tile, inv_tile)), [0, 0])
+            for col in pl.range(0, width, tile):
+                x = pl.cast(value[row:row + 1, col:col + tile], pl.FP32)
+                gamma = pl.cast(pl.reshape(weight[col:col + tile], [1, tile]), pl.FP32)
+                dy = upstream[row:row + 1, col:col + tile]
+                d_value[row:row + 1, col:col + tile] = pl.mul(pl.sub(pl.mul(dy, gamma), pl.mul(x, correction)), inv)
+                partial[row:row + 1, col:col + tile] = pl.mul(pl.mul(dy, x), inv)
+        for piece in pl.spmd(width // tile, name_hint="glm_mla_rmsnorm_scale_vjp"):
+            col = piece * tile
+            d_weight[:, col:col + tile] = pl.col_sum(partial[:, col:col + tile])
+        return d_value, d_weight
+
+    @pl.jit.host
+    def entry(value: pl.Tensor, weight: pl.Tensor, upstream: pl.Tensor,
+              d_value: pl.Out[pl.Tensor], d_weight: pl.Out[pl.Tensor]):
+        norm_backward(value, weight, upstream, d_value, d_weight, device=0)
+
+    return norm_backward if device_entry else entry
+
+
+def make_mla_input_projection_backward(ranks):
+    """Reduce the branch gradients before differentiating the replicated MLA weights."""
+    import pypto.language as pl
+    import pypto.language.distributed as pld
+    from models.glm5_3_flash.config import D, FLASH, Q_LORA
+    from .pypto_glm53_online_suffix import make_fp32_tp_sum
+
+    rows = 16
+    output_width = HEADS * VALUE
+    if not 1 <= ranks <= 8:
+        raise ValueError("GLM MLA gradients use up to eight TP shards")
+    q_b = make_projection_backward(Q_LORA, output_width, device_entry=True, refine=True)
+    q_a = make_projection_backward(D, Q_LORA, device_entry=True, refine=True)
+    kv_a = make_projection_backward(D, LATENT, device_entry=True, refine=True)
+    q_norm = make_mla_norm_backward(Q_LORA, FLASH.rms_norm_eps, device_entry=True)
+    kv_norm = make_mla_norm_backward(LATENT, FLASH.rms_norm_eps, device_entry=True)
+    reduce_q = make_fp32_tp_sum(ranks, rows, Q_LORA)
+    reduce_kv = make_fp32_tp_sum(ranks, rows, LATENT)
+
+    @pl.jit
+    def sum_inputs(
+        q: pl.Tensor[[rows, D], pl.FP32], kv: pl.Tensor[[rows, D], pl.FP32],
+        result: pl.Out[pl.Tensor[[rows, D], pl.FP32]],
+    ):
+        for task in pl.spmd(rows * (D // TILE), name_hint="glm_mla_sum_input_gradients"):
+            row = task // (D // TILE)
+            col = task % (D // TILE) * TILE
+            result[row:row + 1, col:col + TILE] = pl.add(q[row:row + 1, col:col + TILE], kv[row:row + 1, col:col + TILE])
+        return result
+
+    @pl.jit.host
+    def entry(
+        x: pl.Tensor[[ranks, rows, D], pl.BF16],
+        q_preactivation: pl.Tensor[[ranks, rows, Q_LORA], pl.BF16],
+        q_normalized: pl.Tensor[[ranks, rows, Q_LORA], pl.BF16],
+        kv_preactivation: pl.Tensor[[ranks, rows, LATENT], pl.BF16],
+        d_query: pl.Tensor[[ranks, rows, output_width], pl.FP32],
+        d_latent: pl.Tensor[[ranks, rows, LATENT], pl.FP32],
+        q_a_weight: pl.Tensor[[ranks, Q_LORA, D], pl.BF16],
+        q_norm_weight: pl.Tensor[[ranks, Q_LORA], pl.BF16],
+        q_b_weight: pl.Tensor[[ranks, output_width, Q_LORA], pl.BF16],
+        kv_a_weight: pl.Tensor[[ranks, LATENT, D], pl.BF16],
+        kv_norm_weight: pl.Tensor[[ranks, LATENT], pl.BF16],
+        d_q_a: pl.Out[pl.Tensor[[ranks, Q_LORA, D], pl.FP32]],
+        d_q_norm: pl.Out[pl.Tensor[[ranks, 1, Q_LORA], pl.FP32]],
+        d_q_b: pl.Out[pl.Tensor[[ranks, output_width, Q_LORA], pl.FP32]],
+        d_kv_a: pl.Out[pl.Tensor[[ranks, LATENT, D], pl.FP32]],
+        d_kv_norm: pl.Out[pl.Tensor[[ranks, 1, LATENT], pl.FP32]],
+        dx: pl.Out[pl.Tensor[[ranks, rows, D], pl.FP32]],
+        d_inner: pl.InOut[pl.Tensor[[ranks, rows, Q_LORA], pl.FP32]],
+        d_full_q: pl.InOut[pl.Tensor[[ranks, rows, Q_LORA], pl.FP32]],
+        d_full_kv: pl.InOut[pl.Tensor[[ranks, rows, LATENT], pl.FP32]],
+        d_raw_query: pl.InOut[pl.Tensor[[ranks, rows, Q_LORA], pl.FP32]],
+        d_raw_latent: pl.InOut[pl.Tensor[[ranks, rows, LATENT], pl.FP32]],
+        d_input_q: pl.InOut[pl.Tensor[[ranks, rows, D], pl.FP32]],
+        d_input_kv: pl.InOut[pl.Tensor[[ranks, rows, D], pl.FP32]],
+        epoch: pl.Scalar[pl.INT32],
+    ):
+        q_window = pld.alloc_window_buffer([rows, Q_LORA], dtype=pl.FP32)
+        q_ready_window = pld.alloc_window_buffer([ranks, 1], dtype=pl.INT32)
+        kv_window = pld.alloc_window_buffer([rows, LATENT], dtype=pl.FP32)
+        kv_ready_window = pld.alloc_window_buffer([ranks, 1], dtype=pl.INT32)
+        for rank in pl.range(pld.world_size()):
+            q_buffer = pld.window(q_window, [rows, Q_LORA], dtype=pl.FP32)
+            q_ready = pld.window(q_ready_window, [ranks, 1], dtype=pl.INT32)
+            kv_buffer = pld.window(kv_window, [rows, LATENT], dtype=pl.FP32)
+            kv_ready = pld.window(kv_ready_window, [ranks, 1], dtype=pl.INT32)
+            inner = d_inner[rank]
+            full_q = d_full_q[rank]
+            full_kv = d_full_kv[rank]
+            raw_query = d_raw_query[rank]
+            raw_latent = d_raw_latent[rank]
+            input_q = d_input_q[rank]
+            input_kv = d_input_kv[rank]
+
+            _sharded_weight, d_local_q = q_b(q_normalized[rank], q_b_weight[rank], d_query[rank], d_q_b[rank],
+                                           inner, device=rank)
+            d_q = reduce_q(d_local_q, full_q, q_buffer, q_ready, rank, epoch, device=rank)
+            d_kv = reduce_kv(d_latent[rank], full_kv, kv_buffer, kv_ready, rank, epoch, device=rank)
+            d_raw_q, _query_scale = q_norm(q_preactivation[rank], q_norm_weight[rank], d_q, raw_query,
+                                          d_q_norm[rank], device=rank)
+            _query_weight, from_query = q_a(x[rank], q_a_weight[rank], d_raw_q, d_q_a[rank], input_q,
+                                           device=rank)
+            d_raw_kv, _latent_scale = kv_norm(kv_preactivation[rank], kv_norm_weight[rank], d_kv, raw_latent,
+                                             d_kv_norm[rank], device=rank)
+            _latent_weight, from_latent = kv_a(x[rank], kv_a_weight[rank], d_raw_kv, d_kv_a[rank], input_kv,
+                                              device=rank)
+            sum_inputs(from_query, from_latent, dx[rank], device=rank)
+
+    return entry

@@ -13,6 +13,7 @@ from blockspec.pypto_glm53_online_loss import make_kl_program
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=int, default=0)
+    parser.add_argument("--peer-device", type=int, help="second device for the packed MLA projection adjoint")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--mla-output", action="store_true", help="validate the draft output projection's VJP")
     modes.add_argument("--mla-projection-fp32", action="store_true", help="validate MLA projection with FP32 upstream gradients")
@@ -36,15 +37,23 @@ def main():
     modes.add_argument("--mla-mixture-backward", action="store_true", help="validate the shared probabilities and draft value VJP")
     modes.add_argument("--mla-latent-backward", action="store_true", help="validate the complete latent attention adjoint")
     modes.add_argument("--mla-replay-tape", action="store_true", help="validate MLA training replay from its forward inputs")
+    modes.add_argument("--mla-absorb-backward", action="store_true", help="validate the two MLA query bases")
+    modes.add_argument("--mla-norm-backward", choices=("q", "kv"), help="validate a trainable MLA RMSNorm")
+    modes.add_argument("--mla-input-projections", action="store_true", help="validate both MLA input projection adjoints")
     modes.add_argument("--int8-backward", action="store_true", help="validate frozen W8A8 input gradients")
     modes.add_argument("--expert-backward", action="store_true", help="validate the complete frozen W8A8 expert adjoint")
+    modes.add_argument("--shared-expert-backward", action="store_true", help="validate the frozen NZ shared expert adjoint")
     modes.add_argument("--router-backward", action="store_true", help="validate the selected GLM router weight adjoint")
     parser.add_argument("--history-capacity", type=int, default=256, help="padded history length for the MLA replay tests")
-    parser.add_argument("--checkpoint", type=Path, help="load frozen layer 44 weights for the MoE or KDA output adjoints")
+    parser.add_argument("--checkpoint", type=Path, help="use real checkpoint weights for the selected adjoint")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
         parser.error("use a fresh output path")
+    if args.peer_device is not None and (not args.mla_input_projections or args.peer_device == args.device):
+        parser.error("--peer-device requires --mla-input-projections and a second device")
+    if args.shared_expert_backward and args.checkpoint is None:
+        parser.error("--shared-expert-backward requires the GLM checkpoint")
 
     from models.glm5_3_flash.config import D, VOCAB
     from pypto.ir import DistributedConfig
@@ -53,6 +62,68 @@ def main():
     torch.set_num_threads(4)
     config = RunConfig(platform="a2a3", distributed_config=DistributedConfig(device_ids=[args.device], num_sub_workers=0))
     generator = torch.Generator().manual_seed(142)
+    if args.mla_input_projections:
+        projection_shards(args, generator)
+        return
+    if args.shared_expert_backward:
+        shared_expert(args, generator, config)
+        return
+    if args.mla_absorb_backward:
+        from blockspec.pypto_glm53_mla import HEADS, HEAD_TILE, LATENT, QUERY_ROWS, VALUE
+        from blockspec.pypto_glm53_online_attention import make_mla_absorb_backward
+
+        width = HEADS * VALUE
+        if args.checkpoint is None:
+            target_basis = (torch.randn(width, LATENT, generator=generator) * 0.04).bfloat16()
+        else:
+            from models.glm5_3_flash.utils import Checkpoint
+
+            attn = Checkpoint(args.checkpoint).attention(43, tp_rank=0, tp=8, mla_mode="native")
+            target_basis = attn["w_k"].reshape(width, LATENT).contiguous()
+        draft_basis = target_basis.flip(1).contiguous()
+        q = (torch.randn(16, width, generator=generator) * 0.3).bfloat16()
+        d_h, d_b = (torch.randn(QUERY_ROWS, HEAD_TILE, LATENT, generator=generator) * 0.025 for _ in range(2))
+        projected_q = q.double().requires_grad_()
+        basis = draft_basis.double().requires_grad_()
+        live = projected_q[:QUERY_ROWS].view(QUERY_ROWS, HEADS, VALUE)
+        history = torch.einsum("thd,hdl->thl", live, target_basis.double().view(HEADS, VALUE, LATENT))
+        block = torch.einsum("thd,hdl->thl", live, basis.view(HEADS, VALUE, LATENT))
+        expected = torch.autograd.grad((history, block), (projected_q, basis),
+                                       (d_h[:, :HEADS].double(), d_b[:, :HEADS].double()))
+        inputs = (q, target_basis, draft_basis, d_h.flatten(0, 1), d_b.flatten(0, 1))
+        outputs = (torch.empty(q.shape), torch.empty(draft_basis.shape))
+        execute(make_mla_absorb_backward(), (*inputs, *outputs), len(inputs), (), config,
+                {"program": "GLM MLA absorbed history/draft query adjoint", "passed": False}, args.output,
+                expected, ({"atol": 3e-6, "rtol": 4e-5},) * 2)
+        return
+    if args.mla_norm_backward:
+        from blockspec.pypto_glm53_online_attention import make_mla_norm_backward
+        from models.glm5_3_flash.config import FLASH
+
+        eps = FLASH.rms_norm_eps
+        width = FLASH.q_lora_rank if args.mla_norm_backward == "q" else FLASH.kv_lora_rank
+        if args.checkpoint is None:
+            weight = torch.rand(width, generator=generator).bfloat16()
+        else:
+            from models.glm5_3_flash.utils import Checkpoint
+
+            attn = Checkpoint(args.checkpoint).attention(43, tp_rank=0, tp=8, mla_mode="native")
+            name = "q_a_norm_weight" if args.mla_norm_backward == "q" else "kv_a_norm_weight"
+            weight = attn[name].contiguous()
+        x = torch.randn(16, width, generator=generator).bfloat16()
+        x[0].mul_(0.001)
+        x[1].zero_()
+        upstream = torch.randn(16, width, generator=generator) * 0.02
+        upstream[6:] = 0
+        x_ref, w_ref = x.double().requires_grad_(), weight.double().requires_grad_()
+        y = x_ref * (x_ref.square().mean(-1, keepdim=True) + eps).rsqrt() * w_ref
+        dx, dw = torch.autograd.grad(y, (x_ref, w_ref), upstream.double())
+        inputs = (x, weight, upstream)
+        outputs = (torch.empty_like(upstream), torch.empty(1, width))
+        execute(make_mla_norm_backward(width, eps), (*inputs, *outputs), len(inputs), (), config,
+                {"program": "GLM trainable MLA RMSNorm adjoint", "kind": args.mla_norm_backward, "passed": False},
+                args.output, (dx, dw.unsqueeze(0)), ({"atol": 4e-6, "rtol": 6e-5},) * 2)
+        return
     if args.kda_projection_backward:
         from blockspec.pypto_glm53_online_kda import make_kda_projection_backward
         from models.glm5_3_flash.config import FLASH, KDA_DIM, KDA_H
@@ -647,6 +718,133 @@ def main():
     execute(make_kl_program(rows, VOCAB), tensors, 2, (active, active), config, report, args.output,
             (expected_grad, expected_loss[:, None].expand(rows, 8)),
             ({"atol": 2e-7, "rtol": 2e-4}, {"atol": 3e-5, "rtol": 2e-5}))
+
+
+def shared_expert(args, generator, config):
+    from models.glm5_3_flash.config import D, FLASH
+    from models.glm5_3_flash.quantization import quantize_per_token_int8
+    from models.glm5_3_flash.utils import Checkpoint, load_shared_expert, pack_int8_nz
+
+    from blockspec.pypto_glm53_online_moe import make_shared_expert_backward
+
+    rows, hidden = 16, FLASH.moe_intermediate_size // 8
+    limit = FLASH.swiglu_limit
+    shard = load_shared_expert(Checkpoint(args.checkpoint), 44, tp_rank=0, tp_size=8)
+    gu, gu_scale = shard.gate_up, shard.gate_up_scale.flatten().float()
+    down, down_scale = shard.down, shard.down_scale.flatten().float()
+    x = torch.randn(rows, D, generator=generator)
+    x[:3].mul_(3.0)
+    x_q, scale = quantize_per_token_int8(x)
+    upstream = torch.randn(rows, D, generator=generator) * 0.02
+    upstream[6:] = 0
+
+    x_ref = x.double().requires_grad_()
+    dequantized_gu = gu.double() * gu_scale.bfloat16().double()[:, None]
+    dequantized_down = down.double() * down_scale.bfloat16().double()[:, None]
+    gu_forward = ((x_q.int() @ gu.int().T).float() * scale * gu_scale.bfloat16().float()).bfloat16()
+    gate, up = (gu_forward.double() + (x_ref - x_ref.detach()) @ dequantized_gu.T).chunk(2, dim=-1)
+    activation = torch.nn.functional.silu(gate.clamp_max(limit)) * up.clamp(-limit, limit)
+    (expected,) = torch.autograd.grad(activation @ dequantized_down.T, x_ref, upstream.double())
+    inputs = (upstream, x_q, torch.nn.functional.pad(scale, (0, 7)),
+              pack_int8_nz(gu), gu_scale, pack_int8_nz(down), down_scale)
+    output = torch.empty_like(x)
+    execute(make_shared_expert_backward(rows, D, hidden, limit), (*inputs, output), len(inputs), (), config,
+            {"program": "GLM shared NZ expert input adjoint", "passed": False, "layer": 44, "tp_rank": 0},
+            args.output, (expected,), ({"atol": 4e-6, "rtol": 9e-5},))
+
+
+def projection_shards(args, generator):
+    from models.glm5_3_flash.config import D, FLASH
+    from models.glm5_3_flash.utils import Checkpoint
+    from pypto.ir import DistributedConfig
+    from pypto.runtime import DistributedWorker, RunConfig
+
+    from blockspec.pypto_glm53_head import head_layout, initialize_rank_head
+    from blockspec.pypto_glm53_online_attention import make_mla_input_projection_backward
+
+    devices = [args.device] if args.peer_device is None else [args.device, args.peer_device]
+    ranks = len(devices)
+    fields = ("q_a", "q_norm", "q_b", "kv_a", "kv_norm")
+    layout, _ = head_layout()
+    if args.checkpoint is None:
+        weights = [(torch.randn(layout[name][2], generator=generator) * 0.04).bfloat16()
+                   for name in fields]
+        local_query = torch.stack([weights[2] for _ in devices])
+    else:
+        checkpoint = Checkpoint(args.checkpoint)
+        packed = [initialize_rank_head(checkpoint, 43, rank) for rank in range(ranks)]
+
+        def read_field(bank, name):
+            start, length, shape = layout[name]
+            return bank[start:start + length].reshape(shape)
+
+        weights = [read_field(packed[0], name) for name in fields]
+        for bank in packed[1:]:
+            for name in fields:
+                if name != "q_b" and not torch.equal(read_field(bank, name), read_field(packed[0], name)):
+                    raise AssertionError(f"{name} is not replicated in the checkpoint")
+        local_query = torch.stack([read_field(bank, "q_b") for bank in packed])
+    weights[2] = local_query
+    x = (torch.randn(16, D, generator=generator) * 0.1).bfloat16()
+    x_ref = x.double().requires_grad_()
+    qa, qn, qb, ka, kn = (w.double().requires_grad_() for w in weights)
+
+    def rounded(value):
+        return value + (value.bfloat16().double() - value).detach()
+
+    def rms(value, weight):
+        inv = (value.square().mean(-1, keepdim=True) + FLASH.rms_norm_eps).rsqrt()
+        return rounded(value * inv * weight)
+
+    q_raw, kv_raw = (rounded(x_ref @ weight.T) for weight in (qa, ka))
+    q_normalized = rms(q_raw, qn)
+    projected_query = rounded(q_normalized @ qb.transpose(-1, -2))
+    projected_kv = rms(kv_raw, kn)
+    dy = torch.randn(projected_query.shape, generator=generator) * 0.025
+    dz = torch.randn((ranks, *projected_kv.shape), generator=generator) * 0.025
+    dy[:, 6:] = 0
+    dz[:, 6:] = 0
+    gradients = torch.autograd.grad((projected_query, projected_kv), (qa, qn, qb, ka, kn, x_ref),
+                                    (dy.double(), dz.double().sum(0)))
+
+    def replicate(tensor):
+        return tensor.detach().unsqueeze(0).expand(ranks, *tensor.shape).contiguous()
+
+    expected = tuple(
+        t if name == "q_b" else replicate(t.unsqueeze(0) if t.ndim == 1 else t)
+        for name, t in zip((*fields, "x"), gradients, strict=True)
+    )
+    outputs = tuple(torch.empty(t.shape, dtype=torch.float32) for t in expected)
+    inputs = tuple(replicate(t.bfloat16()) for t in (x, q_raw, q_normalized, kv_raw))
+    inputs += (dy, dz, *(w if name == "q_b" else replicate(w)
+                         for name, w in zip(fields, weights, strict=True)))
+    scratch = tuple(torch.empty_like(v, dtype=torch.float32) for v in (
+        inputs[1], inputs[1], inputs[3], inputs[1], inputs[3], inputs[0], inputs[0],
+    ))
+    config = RunConfig(platform="a2a3", distributed_config=DistributedConfig(device_ids=devices, num_sub_workers=0))
+    report = {"ranks": ranks, "passed": False, "checkpoint_weights": args.checkpoint is not None}
+    try:
+        program = make_mla_input_projection_backward(ranks).compile(*inputs, *outputs, *scratch, 1, config=config)
+        with DistributedWorker([program], config=config, persistent=True) as worker:
+            handles = [worker.alloc_stacked_tensor(t.share_memory_()) for t in (*inputs, *outputs, *scratch)]
+            worker.run(program, *handles, 1, config=config)
+            metrics = {}
+            for name, actual, expected_value, handle in zip(
+                (*fields, "x"), outputs, expected, handles[len(inputs):len(inputs) + len(outputs)], strict=True,
+            ):
+                for rank, shard in enumerate(handle.shards):
+                    local = actual[rank]
+                    worker.copy_from(local.data_ptr(), shard.data_ptr, local.nbytes, worker_id=rank)
+                metrics[name] = float((actual - expected_value).abs().max())
+                torch.testing.assert_close(actual, expected_value.float(), atol=8e-6, rtol=9e-5)
+                if name != "q_b" and any(not torch.equal(actual[0], t) for t in actual[1:]):
+                    raise AssertionError(f"{name} gradients differ between replicas")
+            report.update(passed=True, max_abs=metrics)
+    except BaseException as error:
+        report["error"] = repr(error)
+        raise
+    finally:
+        args.output.write_text(json.dumps(report, indent=2) + "\n")
 
 
 def execute(entry, tensors, source_count, scalars, config, report, output, expected, tolerances):
