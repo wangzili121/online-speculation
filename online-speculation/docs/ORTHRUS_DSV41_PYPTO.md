@@ -16,9 +16,9 @@ git -C "$PYPTO_SERVING_ROOT" am "$ORTHRUS_ROOT/online-speculation/runtime/pypto_
 export PYPTO_LIB_ROOT
 ```
 
-Serving 校验 Lib 的工作树状态和 Git tree。补丁只开放基模 Serving 入口。Lib 的 `GenerationSession.draft_history` 根据 DP 分区、请求 slot 和 generation 绑定已经提交的行，拒绝过期请求、跨分区访问和错误的 anchor。各层的滑窗页、压缩源层页与 indexer 页会返回原生设备 handle，连同 stride、偏移和物理页表供 draft 读取。
+Serving 校验 Lib 的工作树状态和 Git tree。补丁只开放基模 Serving 入口。Lib 的 `GenerationSession.draft_history` 根据 DP 分区、请求 slot 和 generation 绑定已经提交的行，拒绝过期请求、跨分区访问和错误的 anchor。各层的滑窗页、压缩源层页与 indexer 页直接返回带类型的设备视图，连同行步长、偏移和物理页表供 draft 读取。常驻运行时拒绝内核将该视图绑定为输出或原地写入参数，主模型仍可通过原有入口提交 KV。
 
-在干净检出中重放两份补丁并通过源码配对检查。A3 Serving 的 74 项 CPU 测试通过，Lib 的请求池和 draft 缓存绑定测试通过。用现有 PyPTO `9875278` 跑 Lib 的完整 resident 测试时，5 项因其 `DeviceTensor` 构造接口缺少 `byte_offset` 而失败。相同错误在未打补丁的 `8dfbec1` 上也可复现。整模验证需要先准备与该分支匹配的运行时。
+在干净检出中重放两份补丁并通过源码配对检查。使用 PyPTO `72a62d13` 及其固定的 Simpler `6b6b88f`，Lib 的 12 项常驻资源和缓存测试、Serving 的 74 项 CPU 测试全部通过。PTOAS 使用该工具链要求的 v0.70。 [PyPTO 提交](https://github.com/hw-native-sys/pypto/commit/72a62d13efabbb25d240e35944f68ba5bcc22b7f) · [PTOAS v0.70](https://github.com/hw-native-sys/PTOAS/releases/tag/v0.70)
 
 ## K32 SWA
 
@@ -39,7 +39,7 @@ PYTHONPATH=src python3 scripts/validate_dsv41_pypto_swa.py \
 
 压缩历史程序接收各 draft query 已选中的物理 KV 行。每 128 行计算一段输出和 LSE，再在设备端与 SWA 和临时块的结果合并。SWA 侧已经计入 sink，各压缩分段无需再计。当前 demo 通过宿主机转换两段间的张量布局，后续 Serving 增加设备侧直接绑定。
 
-在命令末加 `--heads 16 --compressed` 并指定新的输出路径，即可验证 A3 TP4 的单 rank 形状。六组 910B3 用例覆盖 C1A/C2A、部分压缩组、乱序物理页、不同 query 的有效长度以及最多 512 行。C2A 使用每页 64 个有效压缩行、128 行物理跨度，避免选择行落到 padding 上。与 FP32 reference 比较，联合输出和 LSE 最大误差分别为 `5.90e-6` 和 `9.54e-7`，SWA 和压缩缓存逐字节一致。 [压缩历史源码](../src/blockspec/pypto_dsv41_sparse.py) · [TP4 单 rank 记录](validation/dsv41/pypto-compressed-tp4-910b3.json) · [模拟器记录](validation/dsv41/pypto-compressed-a2a3sim.json)
+在命令末加 `--heads 16 --compressed` 并指定新的输出路径，即可验证 A3 TP4 的单 rank 形状。用配套的 PyPTO、Simpler 和 PTOAS 在单张 910B3 上通过六组用例，覆盖 C1A/C2A、部分压缩组、乱序物理页、不同 query 的有效长度以及最多 512 行。C2A 使用每页 64 个有效压缩行、128 行物理跨度，避免选择行落到 padding 上。与 FP32 reference 比较，联合输出和 LSE 最大误差分别为 `5.90e-6` 和 `9.54e-7`，SWA 和压缩缓存逐字节一致。 [压缩历史源码](../src/blockspec/pypto_dsv41_sparse.py) · [TP4 单 rank 记录](validation/dsv41/pypto-compressed-tp4-910b3.json) · [模拟器记录](validation/dsv41/pypto-compressed-a2a3sim.json)
 
 ## 进入整模前的接口
 

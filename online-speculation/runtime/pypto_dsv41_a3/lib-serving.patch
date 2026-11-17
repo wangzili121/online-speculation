@@ -1,16 +1,16 @@
-From d801492c00cf03328c740284ab2ec352d9526141 Mon Sep 17 00:00:00 2001
+From c5c9a194eecd2901424b5b45f3261f5b321e0ed7 Mon Sep 17 00:00:00 2001
 From: Zili Wang <wangzili121@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 19:57:58 +0800
 Subject: [PATCH] Port the A3 request pool to the optimized resident network
 
 ---
  docs/models/deepseek_v4_1_flash_a3/decode.md  |  25 +++
- .../deepseek_v4_1_flash_a3/decode_network.py  |  29 ++--
- models/deepseek_v4_1_flash_a3/network.py      |  83 +++++++++-
- .../prefill_resident.py                       |  18 +++
- models/deepseek_v4_1_flash_a3/state.py        |  87 ++++++++++-
- tests/contract/test_ds41_resident_session.py  | 143 ++++++++++++++++++
- 6 files changed, 372 insertions(+), 13 deletions(-)
+ .../deepseek_v4_1_flash_a3/decode_network.py  |  29 ++-
+ models/deepseek_v4_1_flash_a3/network.py      |  96 +++++++++-
+ .../prefill_resident.py                       |  27 ++-
+ models/deepseek_v4_1_flash_a3/state.py        |  87 ++++++++-
+ tests/contract/test_ds41_resident_session.py  | 177 +++++++++++++++++-
+ 6 files changed, 423 insertions(+), 18 deletions(-)
 
 diff --git a/docs/models/deepseek_v4_1_flash_a3/decode.md b/docs/models/deepseek_v4_1_flash_a3/decode.md
 index 38ecf12..4206ec7 100644
@@ -114,9 +114,18 @@ index 2c0a601..23be4eb 100644
      def close(self):
          """Detach this driver; the generation owner closes its shared resources."""
 diff --git a/models/deepseek_v4_1_flash_a3/network.py b/models/deepseek_v4_1_flash_a3/network.py
-index 87fc854..817f7d5 100644
+index 87fc854..0cf0eb5 100644
 --- a/models/deepseek_v4_1_flash_a3/network.py
 +++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -25,7 +25,7 @@ from pypto import ir
+ from pypto.backend import BackendType
+ from pypto.runtime import ExecutionMode, RunConfig
+ from .activation import make_finite_check
+-from .cache import attach_network_cache_geometry, network_cache_geometry, resolve_layer_role
++from .cache import DTYPES, attach_network_cache_geometry, network_cache_geometry, resolve_layer_role
+ from .engram import make_prefill_engram_entries
+ from .input_pack import make_input_entries
+ from .lm_head import make_output_entries
 @@ -37,6 +37,8 @@ from .prefill_network_engram import prepare_network_engram, validate_host_lookup
  from .utils import file_sha, tensor_sha, write_json
  from .state import NetworkCacheProvider
@@ -144,7 +153,15 @@ index 87fc854..817f7d5 100644
      )
      attach_network_cache_geometry(provider)
      provider.require_network_geometry()
-@@ -923,6 +929,79 @@ class GenerationSession:
+@@ -904,6 +910,7 @@ class GenerationSession:
+         self.phase_programs = {contract["capacity"]: program}
+         self.ownership = [weights.layout.ownership(rank) for rank in range(weights.world)]
+         self.epoch, self.closed, self.failed = 0, False, False
++        self._draft_plane_handles = {}
+         self.cache_views = weights.cache_handles
+         for rank, cases in enumerate(provider.arenas):
+             sources = {case + "/" + name: resident.handle(value, rank)
+@@ -923,6 +930,89 @@ class GenerationSession:
          """End the session explicitly; generation never releases a worker between phases."""
          self.close()
 
@@ -152,7 +169,7 @@ index 87fc854..817f7d5 100644
 +        """Bind committed target pages to a draft reader while the session is idle.
 +
 +        The current anchor is pending and must be included by the draft block.
-+        Handles alias target allocations. Draft programs must bind them as inputs.
++        Handles alias target allocations and may be bound only to input parameters.
 +        """
 +        if self.closed or self.failed:
 +            raise RuntimeError("A closed or failed generation session cannot bind draft history")
@@ -181,10 +198,20 @@ index 87fc854..817f7d5 100644
 +                shape = tuple(descriptor["shape"])
 +                if any(not 0 < page < shape[0] for page in pages):
 +                    raise ValueError("Draft history page escapes its target cache allocation")
-+                bindings.append(dict(handle=self.cache_views[rank]["fresh/" + storage], pages=pages,
-+                                     dtype=descriptor["dtype"], shape=shape, stride=tuple(descriptor["stride"]),
-+                                     offset_bytes=(descriptor["storage_offset_bytes"]
-+                                                   - layout["raw"][storage]["storage_offset_bytes"])))
++                dtype, width = DTYPES[descriptor["dtype"]], shape[-1]
++                stride = tuple(descriptor["stride"])
++                raw = self.provider.arenas[rank]["fresh"][storage]
++                matrix = raw.view(dtype).view(-1, width)
++                offset_bytes = descriptor["storage_offset_bytes"] - layout["raw"][storage]["storage_offset_bytes"]
++                row_bytes = width * matrix.element_size()
++                if stride[0] % width or offset_bytes % row_bytes or stride[1:] != (width, width, 1):
++                    raise ValueError("Draft history plane requires aligned contiguous rows")
++                key = rank, storage, dtype, width
++                if key not in self._draft_plane_handles:
++                    self._draft_plane_handles[key] = self.resident.handle(matrix, rank, readonly=True)
++                bindings.append(dict(handle=self._draft_plane_handles[key], pages=pages,
++                                     dtype=descriptor["dtype"], shape=shape, stride=stride,
++                                     stride_rows=stride[0] // width, offset_rows=offset_bytes // row_bytes))
 +            planes[kind] = tuple(bindings)
 +        return dict(role=role, committed_tokens=committed, planes=planes)
 +
@@ -224,7 +251,7 @@ index 87fc854..817f7d5 100644
      def advance(self, chunk, *, output, progress=None, phase="prefill"):
          """Admit fresh controls and run the next chunk over the existing weights and caches."""
          if self.closed or self.failed:
-@@ -932,8 +1011,10 @@ class GenerationSession:
+@@ -932,8 +1022,10 @@ class GenerationSession:
          if any(contract[name] != self.contract[name] for name in fixed):
              raise ValueError("Continuation cannot change the session's model or topology")
          capacity = contract["capacity"]
@@ -237,11 +264,39 @@ index 87fc854..817f7d5 100644
          input_path = Path(contract["input_contract_path"])
          if (actual["epoch"] != epoch or type(actual["epoch"]) is not int
 diff --git a/models/deepseek_v4_1_flash_a3/prefill_resident.py b/models/deepseek_v4_1_flash_a3/prefill_resident.py
-index 81b0410..7cbaca9 100644
+index 81b0410..6d78611 100644
 --- a/models/deepseek_v4_1_flash_a3/prefill_resident.py
 +++ b/models/deepseek_v4_1_flash_a3/prefill_resident.py
-@@ -419,6 +419,24 @@ class ResidentNetworkRuntime:
+@@ -184,6 +184,7 @@ class ResidentNetworkRuntime:
+         self.device_readonly = {}
+         self.device_active = {}
+         self.alias_leases = {}
++        self.readonly_aliases = set()
+         self.rotations = {}
+         self.programs = {}
+         self.static_parameters = {}
+@@ -339,6 +340,7 @@ class ResidentNetworkRuntime:
+             self.staging_workers.clear()
+             self.device_active.clear()
+             self.alias_leases.clear()
++            self.readonly_aliases.clear()
+             self.parameter_abis.clear()
+             self.values.clear()
+             self.free_values.clear()
+@@ -410,15 +412,35 @@ class ResidentNetworkRuntime:
+             elif name.startswith("raw/"):
+                 self._record_transfer(rank, "cache_h2d_bytes", allocation.nbytes)
+
+-    def handle(self, value, rank):
++    def handle(self, value, rank, *, readonly=False):
+         """Return a typed alias of an already uploaded host allocation."""
+         if self._closed:
+             raise RuntimeError("Resident runtime is closed")
+         owner = self.pinned[rank, value.untyped_storage()._cdata]
+         result = _device_view(owner["allocation"], value, owner["base_offset"])
          self.alias_leases[id(result)] = result
++        if readonly:
++            self.readonly_aliases.add(id(result))
          return result
 
 +    def clear_ranges(self, value, rank, intervals, *, byte=0):
@@ -265,6 +320,23 @@ index 81b0410..7cbaca9 100644
      def register(self, program):
          """Admit every phase and boundary entry to the same worker registry."""
          if self._closed:
+@@ -502,6 +524,8 @@ class ResidentNetworkRuntime:
+                     raise ValueError("Resident device operand is retired or released")
+                 if direction != "In" and self.device_readonly[id(value.buffer)]:
+                     raise ValueError("A compiled entry writes an immutable resident weight")
++                if direction != "In" and id(value) in self.readonly_aliases:
++                    raise ValueError("A compiled entry writes a read-only resident alias")
+                 bound.append(value)
+                 continue
+             if value.device.type != "cpu" or not value.is_contiguous():
+@@ -802,6 +826,7 @@ class ResidentNetworkRuntime:
+                 else:
+                     self.free_values.setdefault((key[0], allocation.nbytes), []).append(allocation)
+         self.alias_leases = {key: value for key, value in self.alias_leases.items() if id(value.buffer) not in retired}
++        self.readonly_aliases.intersection_update(self.alias_leases)
+
+     def _group_ranks(self, group):
+         world, tp = self.topology["ep"], self.topology["tp"]
 diff --git a/models/deepseek_v4_1_flash_a3/state.py b/models/deepseek_v4_1_flash_a3/state.py
 index 42dfc1c..30bd62f 100644
 --- a/models/deepseek_v4_1_flash_a3/state.py
@@ -417,10 +489,51 @@ index 42dfc1c..30bd62f 100644
          """Expose original typed cache handles for a future reviewed separate-buffer adapter."""
          resolve_layer_role(layer_id)
 diff --git a/tests/contract/test_ds41_resident_session.py b/tests/contract/test_ds41_resident_session.py
-index f3b2782..f6356fc 100644
+index f3b2782..401d004 100644
 --- a/tests/contract/test_ds41_resident_session.py
 +++ b/tests/contract/test_ds41_resident_session.py
-@@ -261,3 +261,146 @@ def test_preload_opens_each_shard_once_and_keeps_loaded_tensors_valid_after_seal
+@@ -72,6 +72,14 @@ def test_static_views_and_cache_aliases_keep_their_owner_and_reject_overruns():
+         assert view.data_ptr == source.data_ptr
+         assert view.buffer is source.buffer
+         assert view.byte_offset == 16
++        draft = runtime.handle(value[4:12], 0, readonly=True)
++        assert draft.buffer is source.buffer
++        program = object()
++        runtime.execute(program, 0, [draft], dict(params=[dict(shape=[8])], effective_directions=["In"]))
++        abi = dict(params=[dict(shape=[8])], effective_directions=["InOut"])
++        with pytest.raises(ValueError, match="read-only"):
++            runtime.execute(program, 0, [draft], abi)
++        runtime.execute(program, 0, [source], abi)
+         with pytest.raises(ValueError, match="exceeds"):
+             decode_cache_views({"source": source}, {"decode": ("source", (9,))})
+         with pytest.raises(ValueError, match="exceeds"):
+@@ -83,6 +91,7 @@ def test_dispatch_reuses_dynamic_buffers_and_never_reuploads_static_or_cache_vie
+     worker = HostWorker()
+     with ResidentNetworkRuntime([0], dict(dp=1, tp=1, ep=1), worker_factory=lambda rank: worker) as runtime:
+         weight, cache = torch.ones(8), torch.zeros(16)
++        scratch = torch.zeros(8)
+         runtime.pin(weight, [0], readonly=True, name="weight")
+         runtime.pin(cache, [0], readonly=False, name="raw/0/fresh/shared")
+         abi = dict(params=[dict(shape=[8]), dict(shape=[8]), dict(shape=[8])],
+@@ -91,14 +100,14 @@ def test_dispatch_reuses_dynamic_buffers_and_never_reuploads_static_or_cache_vie
+         static_uploads = runtime.stats["device_weight_upload_calls"]
+         cache_uploads = runtime.stats["cache_h2d_bytes"]
+         for _ in range(3):
+-            runtime.execute(program, 0, [weight, cache[:8], torch.zeros(8)], abi)
++            runtime.execute(program, 0, [weight, cache[:8], scratch], abi)
+         assert runtime.stats["device_weight_upload_calls"] == static_uploads
+         assert runtime.stats["cache_h2d_bytes"] == cache_uploads
+         assert runtime.stats["dynamic_allocations"] == 1
+         assert worker.runs == 3
+         weight.add_(1)
+-        with pytest.raises(ValueError, match="Immutable"):
+-            runtime.execute(program, 0, [weight, cache[:8], torch.zeros(8)], abi)
++        with pytest.raises(ValueError, match="changed on the host"):
++            runtime.execute(program, 0, [weight, cache[:8], scratch], abi)
+     assert worker.closed
+
+
+@@ -261,3 +270,165 @@ def test_preload_opens_each_shard_once_and_keeps_loaded_tensors_valid_after_seal
      assert torch.equal(first, torch.ones(4))
      assert torch.equal(second, torch.zeros(4))
      reader.close()
@@ -428,12 +541,17 @@ index f3b2782..f6356fc 100644
 +
 +def test_request_reset_clears_only_owned_mutable_ranges_and_preserves_static_uploads():
 +    worker = HostWorker()
-+    with ResidentNetworkRuntime([0], dict(dp=1, tp=1, ep=1), worker_factory=lambda rank: worker) as runtime:
++
++    def fill(pointer, count, byte, rank):
++        assert rank == 0
++        ctypes.memset(pointer, byte, count)
++
++    with ResidentNetworkRuntime([0], dict(dp=1, tp=1, ep=1), worker_factory=lambda rank: worker,
++                                device_fill=fill) as runtime:
 +        cache = torch.full((32,), 7, dtype=torch.uint8)
 +        weight = torch.ones(8)
 +        runtime.pin(cache, [0], readonly=False, name="raw/0/fresh/cache")
 +        runtime.pin(weight, [0], readonly=True, name="weight")
-+        runtime.memory = SimpleNamespace(fill=lambda pointer, count, byte: ctypes.memset(pointer, byte, count))
 +        uploads = runtime.stats["device_weight_upload_calls"]
 +        identity = runtime.handle(cache, 0)
 +        runtime.clear_ranges(cache, 0, [(4, 8)])
@@ -513,9 +631,17 @@ index f3b2782..f6356fc 100644
 +    provider.begin_chunk(epoch=0, token_map_id="first")
 +    complete_controls()
 +    layout = provider.layouts[2]["fresh"]
-+    handles = {f"fresh/{name}": object() for name in layout["raw"]}
++    handles = {}
++
++    def resident_handle(matrix, rank, *, readonly):
++        assert readonly
++        handle = object()
++        handles[handle] = (matrix, rank)
++        return handle
++
 +    session = SimpleNamespace(closed=False, failed=False, contract={"topology": topology},
-+                              provider=provider, cache_views={2: handles})
++                              provider=provider, _draft_plane_handles={},
++                              resident=SimpleNamespace(handle=resident_handle))
 +    def bind(layer, anchor=1, rank=2):
 +        return GenerationSession.draft_history(session, 0, 0, 1, rank=rank, layer=layer, anchor_position=anchor)
 +
@@ -530,7 +656,13 @@ index f3b2782..f6356fc 100644
 +        descriptors = descriptors if isinstance(descriptors, list) else [descriptors]
 +        assert len(source[key]) == len(descriptors)
 +        for plane, descriptor in zip(source[key], descriptors, strict=True):
-+            assert plane["handle"] is handles["fresh/" + descriptor["storage_key"]]
++            matrix, rank = handles[plane["handle"]]
++            assert rank == 2
++            raw = provider.arenas[rank]["fresh"][descriptor["storage_key"]]
++            assert matrix.untyped_storage()._cdata == raw.untyped_storage()._cdata
++            assert matrix.dtype == getattr(torch, descriptor["dtype"].split(".")[-1])
++            assert matrix.shape[1] == descriptor["shape"][-1]
++            assert plane["stride_rows"] * matrix.shape[1] == descriptor["stride"][0]
 +            assert plane["pages"] and all(page > 0 for page in plane["pages"])
 +    with pytest.raises(ValueError, match="anchor"):
 +        bind(2, anchor=2)
