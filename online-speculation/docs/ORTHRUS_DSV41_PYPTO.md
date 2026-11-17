@@ -18,6 +18,8 @@ export PYPTO_LIB_ROOT
 
 Serving 校验 Lib 的工作树状态和 Git tree。补丁只开放基模 Serving 入口。Lib 的 `GenerationSession.draft_history` 根据 DP 分区、请求 slot 和 generation 绑定已经提交的行，拒绝过期请求、跨分区访问和错误的 anchor。各层的滑窗页、压缩源层页与 indexer 页会返回原生设备 handle，连同 stride、偏移和物理页表供 draft 读取。
 
+在干净检出中重放两份补丁并通过源码配对检查。A3 Serving 的 74 项 CPU 测试通过，Lib 的请求池和 draft 缓存绑定测试通过。用现有 PyPTO `9875278` 跑 Lib 的完整 resident 测试时，5 项因其 `DeviceTensor` 构造接口缺少 `byte_offset` 而失败。相同错误在未打补丁的 `8dfbec1` 上也可复现。整模验证需要先准备与该分支匹配的运行时。
+
 ## K32 SWA
 
 PyPTO 程序接收 RoPE 后的 32 行 query、128 行分页滑窗的只读视图、32 行临时 latent KV，以及每头的 Attention sink。输入页号经过宿主侧的 `swa_spans` 转为最多两段物理行。设备只搬读对应的历史行。所有 draft 位置读取同一 anchor 历史和整块临时 KV。两部分分数和 sink 使用同一个 FP32 softmax，输出 FP32 Attention 结果和 LSE。
