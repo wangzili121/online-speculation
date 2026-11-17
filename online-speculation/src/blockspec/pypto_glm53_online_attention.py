@@ -333,12 +333,10 @@ def make_mla_mixture_backward(history_capacity, *, device_entry=False):
     return mixture_backward if device_entry else entry
 
 
-def make_mla_latent_backward(history_capacity):
-    """Replay the joint probabilities and apply the latent attention adjoint."""
+def _mla_latent_adjoint_stages(history_capacity):
     import pypto.language as pl
 
     rows = QUERY_ROWS * HEAD_TILE
-    width = history_capacity + TILE
     value = make_mla_value_backward(device_entry=True)
     mixture = make_mla_mixture_backward(history_capacity, device_entry=True)
     softmax = make_joint_softmax_backward(rows, history_capacity, TILE, device_entry=True)
@@ -354,6 +352,17 @@ def make_mla_latent_backward(history_capacity):
         for row in pl.spmd(TILE, name_hint="glm_mla_add_block_adjoints"):
             output[row:row + 1, :] = pl.add(score_grad[row:row + 1, :], value_grad[row:row + 1, :])
         return output
+
+    return replay, value, mixture, softmax, scores, add_block_grads
+
+
+def make_mla_latent_backward(history_capacity):
+    """Replay the joint probabilities and apply the latent attention adjoint."""
+    import pypto.language as pl
+
+    rows = QUERY_ROWS * HEAD_TILE
+    width = history_capacity + TILE
+    replay, value, mixture, softmax, scores, add_block_grads = _mla_latent_adjoint_stages(history_capacity)
 
     @pl.jit.host
     def entry(
@@ -458,7 +467,7 @@ def make_mla_replay_tape(history_capacity, *, device_entry=False):
     return replay if device_entry else entry
 
 
-def make_mla_absorb_backward():
+def make_mla_absorb_backward(*, device_entry=False):
     """Differentiate the shared query and the draft-specific absorbed key basis."""
     import pypto.language as pl
 
@@ -509,6 +518,71 @@ def make_mla_absorb_backward():
     def entry(query: pl.Tensor, history_basis: pl.Tensor, draft_basis: pl.Tensor, d_history: pl.Tensor,
               d_draft: pl.Tensor, d_query: pl.Out[pl.Tensor], d_basis: pl.Out[pl.Tensor]):
         absorb_backward(query, history_basis, draft_basis, d_history, d_draft, d_query, d_basis, device=0)
+
+    return absorb_backward if device_entry else entry
+
+
+def make_mla_local_backward(history_capacity):
+    """Backpropagate from MLA output to the sharded weights and input-branch gradients."""
+    import pypto.language as pl
+    from models.glm5_3_flash.config import D
+
+    tokens, scoring_rows = 16, QUERY_ROWS * HEAD_TILE
+    local_width, score_width = HEADS * VALUE, history_capacity + TILE
+    output_projection = make_projection_backward(local_width, D, device_entry=True, refine=True)
+    absorb = make_mla_absorb_backward(device_entry=True)
+    replay, value, mixture, softmax, scores, add_block_grads = _mla_latent_adjoint_stages(history_capacity)
+
+    @pl.jit
+    def arrange_heads(
+        gradient: pl.Tensor[[tokens, local_width], pl.FP32],
+        padded: pl.Out[pl.Tensor[[scoring_rows, VALUE], pl.FP32]],
+    ):
+        for row in pl.spmd(scoring_rows, name_hint="glm_mla_context_grad_layout"):
+            token = row // HEAD_TILE
+            head = row % HEAD_TILE
+            if head < HEADS:
+                col = head * VALUE
+                padded[row:row + 1, :] = gradient[token:token + 1, col:col + VALUE]
+            else:
+                padded[row:row + 1, :] = pl.full([1, VALUE], dtype=pl.FP32, value=0.0)
+        return padded
+
+    @pl.jit.host
+    def entry(
+        output_gradient: pl.Tensor, context: pl.Tensor, output_weight: pl.Tensor,
+        query: pl.Tensor, history_key: pl.Tensor, draft_key: pl.Tensor,
+        history_value: pl.Tensor, draft_value: pl.Tensor,
+        q_history: pl.Tensor, q_block: pl.Tensor, history: pl.Tensor, block: pl.Tensor,
+        history_bias: pl.Tensor, block_bias: pl.Tensor,
+        d_output: pl.Out[pl.Tensor], d_key: pl.Out[pl.Tensor], d_value: pl.Out[pl.Tensor],
+        d_query: pl.Out[pl.Tensor], d_block_latent: pl.Out[pl.Tensor],
+    ):
+        projection_gradient = pl.create_tensor([tokens, local_width], dtype=pl.FP32)
+        padded_gradient = pl.create_tensor([scoring_rows, VALUE], dtype=pl.FP32)
+        probability = pl.create_tensor([scoring_rows, score_width], dtype=pl.FP32)
+        draft_mix = pl.create_tensor([scoring_rows, LATENT], dtype=pl.FP32)
+        d_hist_mix = pl.create_tensor([scoring_rows, LATENT], dtype=pl.FP32)
+        d_block_mix = pl.create_tensor([scoring_rows, LATENT], dtype=pl.FP32)
+        d_prob = pl.create_tensor([scoring_rows, score_width], dtype=pl.FP32)
+        d_scores = pl.create_tensor([scoring_rows, score_width], dtype=pl.FP32)
+        d_block_value = pl.create_tensor([TILE, LATENT], dtype=pl.FP32)
+        d_block_key = pl.create_tensor([TILE, LATENT], dtype=pl.FP32)
+        d_hist_query = pl.create_tensor([scoring_rows, LATENT], dtype=pl.FP32)
+        d_block_query = pl.create_tensor([scoring_rows, LATENT], dtype=pl.FP32)
+
+        _dw, flat_grad = output_projection(context, output_weight, output_gradient, d_output,
+                                           projection_gradient, device=0)
+        ctx_grad = arrange_heads(flat_grad, padded_gradient, device=0)
+        p, block_mix = replay(q_history, q_block, history, block, history_bias, block_bias,
+                              probability, draft_mix, device=0)
+        dm_h, dm_b, _dv = value(ctx_grad, block_mix, history_value, draft_value,
+                                d_hist_mix, d_block_mix, d_value, device=0)
+        dp, dv = mixture(p, history, block, dm_h, dm_b, d_prob, d_block_value, device=0)
+        ds = softmax(p, dp, d_scores, device=0)
+        dq_h, dq_b, dk = scores(ds, history, block, q_block, d_hist_query, d_block_query, d_block_key, device=0)
+        absorb(query, history_key, draft_key, dq_h, dq_b, d_query, d_key, device=0)
+        add_block_grads(dk, dv, d_block_latent, device=0)
 
     return entry
 

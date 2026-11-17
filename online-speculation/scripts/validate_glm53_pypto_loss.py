@@ -40,6 +40,7 @@ def main():
     modes.add_argument("--mla-absorb-backward", action="store_true", help="validate the two MLA query bases")
     modes.add_argument("--mla-norm-backward", choices=("q", "kv"), help="validate a trainable MLA RMSNorm")
     modes.add_argument("--mla-input-projections", action="store_true", help="validate both MLA input projection adjoints")
+    modes.add_argument("--mla-local-backward", action="store_true", help="validate the local MLA output-to-input adjoint")
     modes.add_argument("--int8-backward", action="store_true", help="validate frozen W8A8 input gradients")
     modes.add_argument("--expert-backward", action="store_true", help="validate the complete frozen W8A8 expert adjoint")
     modes.add_argument("--shared-expert-backward", action="store_true", help="validate the frozen NZ shared expert adjoint")
@@ -54,6 +55,8 @@ def main():
         parser.error("--peer-device requires --mla-input-projections and a second device")
     if args.shared_expert_backward and args.checkpoint is None:
         parser.error("--shared-expert-backward requires the GLM checkpoint")
+    if args.mla_local_backward and (args.checkpoint is None or args.history_capacity % 128 or args.history_capacity < 256):
+        parser.error("--mla-local-backward requires the checkpoint and aligned history capacity of at least 256")
 
     from models.glm5_3_flash.config import D, VOCAB
     from pypto.ir import DistributedConfig
@@ -67,6 +70,9 @@ def main():
         return
     if args.shared_expert_backward:
         shared_expert(args, generator, config)
+        return
+    if args.mla_local_backward:
+        local_attention(args, generator, config)
         return
     if args.mla_absorb_backward:
         from blockspec.pypto_glm53_mla import HEADS, HEAD_TILE, LATENT, QUERY_ROWS, VALUE
@@ -718,6 +724,77 @@ def main():
     execute(make_kl_program(rows, VOCAB), tensors, 2, (active, active), config, report, args.output,
             (expected_grad, expected_loss[:, None].expand(rows, 8)),
             ({"atol": 2e-7, "rtol": 2e-4}, {"atol": 3e-5, "rtol": 2e-5}))
+
+
+def local_attention(args, generator, config):
+    from models.glm5_3_flash.utils import Checkpoint
+
+    from blockspec.pypto_glm53_head import head_layout, initialize_rank_head
+    from blockspec.pypto_glm53_mla import HEADS, HEAD_TILE, LATENT, QUERY_ROWS, TILE, VALUE
+    from blockspec.pypto_glm53_online_attention import make_mla_local_backward
+
+    history_capacity = args.history_capacity
+    width, rows = HEADS * VALUE, 16
+    layout, _ = head_layout()
+    packed = initialize_rank_head(Checkpoint(args.checkpoint), 43, 0)
+
+    def weight(name):
+        offset, count, shape = layout[name]
+        return packed[offset:offset + count].reshape(shape)
+
+    def sample(*shape):
+        return (torch.randn(shape, generator=generator) * 0.12).bfloat16()
+
+    def round_ste(tensor):
+        return tensor + (tensor.bfloat16().double() - tensor).detach()
+
+    def head_padding(tensor):
+        return torch.nn.functional.pad(tensor, (0, 0, 0, HEAD_TILE - HEADS)).flatten(0, 1)
+
+    q = sample(rows, width)
+    old = sample(QUERY_ROWS, history_capacity, LATENT)
+    block = sample(TILE, LATENT)
+    ar_key, ar_value, out_weight = (weight(name) for name in ("key", "value", "out"))
+    draft_key = ar_key.flip(1).contiguous()
+    draft_value = ar_value.flip(1).contiguous()
+    q_ref, block_ref, out_ref, key_ref, value_ref = (
+        t.double().requires_grad_() for t in (q, block, out_weight, draft_key, draft_value)
+    )
+    active_q = q_ref[:QUERY_ROWS].reshape(QUERY_ROWS, HEADS, VALUE)
+    q_history, q_block = (
+        round_ste(torch.einsum("thv,hvl->thl", active_q, w.reshape(HEADS, VALUE, LATENT)))
+        for w in (ar_key.double(), key_ref)
+    )
+    score_h = q_history @ old.double().transpose(-1, -2)
+    score_b = q_block @ block_ref.T
+    lengths = torch.tensor([0, 1, 127, 128, history_capacity - 1, history_capacity])
+    history_mask = torch.arange(history_capacity) >= lengths[:, None]
+    block_mask = torch.arange(TILE)[None, :] >= QUERY_ROWS
+    combined_mask = torch.cat((history_mask, block_mask.expand(QUERY_ROWS, -1)), dim=1)
+    scores = (torch.cat((score_h, score_b), dim=-1) * VALUE ** -0.5).masked_fill(combined_mask[:, None], -torch.inf)
+    p_old, p_block = scores.softmax(-1).split((history_capacity, TILE), dim=-1)
+    hidden_h = p_old @ old.double()
+    hidden_b = p_block @ block_ref
+    context = torch.einsum("thl,hvl->thv", hidden_h, ar_value.double().reshape(HEADS, VALUE, LATENT))
+    context = context + torch.einsum("thl,hvl->thv", hidden_b, value_ref.reshape(HEADS, VALUE, LATENT))
+    context = round_ste(torch.nn.functional.pad(context.flatten(1), (0, 0, 0, rows - QUERY_ROWS)))
+    output = context @ out_ref.T
+    upstream = torch.randn(output.shape, generator=generator) * 0.02
+    upstream[QUERY_ROWS:] = 0
+    expected = torch.autograd.grad(output, (out_ref, key_ref, value_ref, q_ref, block_ref), upstream.double())
+    outputs = tuple(torch.empty(t.shape, dtype=torch.float32) for t in expected)
+    mask_old = torch.zeros(history_mask.shape).masked_fill(history_mask, -3.4e38)
+    mask_block = torch.zeros(block_mask.shape).masked_fill(block_mask, -3.4e38)
+    inputs = (
+        upstream, context.detach().bfloat16(), out_weight, q, ar_key, draft_key, ar_value, draft_value,
+        head_padding(q_history.detach().bfloat16()), head_padding(q_block.detach().bfloat16()), old.flatten(0, 1),
+        block, mask_old, mask_block,
+    )
+    execute(make_mla_local_backward(history_capacity), (*inputs, *outputs), len(inputs), (), config,
+            {"program": "GLM MLA output through absorbed attention adjoint", "passed": False,
+             "checkpoint_weights": True, "history_capacity": history_capacity,
+             "outputs": ["out", "key", "value", "query", "block_latent"]}, args.output, expected,
+            ({"atol": 1e-5, "rtol": 2e-4},) * len(expected))
 
 
 def shared_expert(args, generator, config):

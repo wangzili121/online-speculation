@@ -57,9 +57,13 @@ The shared expert test consumes the same NZ-packed W8A8 weights used by Serving.
 
 The layer 43 MLA input adjoint reduces the normalized query and latent gradients across ranks before backpropagating through the replicated weights. Each rank retains its own query-up projection gradient. On two devices using real TP8 shards, the four replicated parameter gradients matched bit-for-bit across ranks and all six outputs matched the FP64 reference with maximum absolute error `2.49e-6`. The absorbed-query and draft key-basis adjoints also passed on real layer-43 weights.
 
+The local MLA backward now starts at the FP32 attention output gradient and runs the output projection, shared history/draft softmax and both absorbed query paths in one PyPTO submission. With layer 43 checkpoint weights, synthetic activations and 2,176 history slots, all five gradients matched the FP64 reference within `7.62e-8`.
+
 ```bash
 python scripts/validate_glm53_pypto_loss.py --mla-input-projections \
   --checkpoint "$MODEL" --device 0 --peer-device 1 --output mla-projections.json
+python scripts/validate_glm53_pypto_loss.py --mla-local-backward --history-capacity 2176 \
+  --checkpoint "$MODEL" --device 0 --output mla-local.json
 python scripts/validate_glm53_pypto_loss.py --shared-expert-backward \
   --checkpoint "$MODEL" --device 0 --output moe-shared.json
 python scripts/validate_glm53_pypto_head_publish.py \
