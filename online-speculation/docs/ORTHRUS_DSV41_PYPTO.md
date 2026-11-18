@@ -20,6 +20,18 @@ Serving 校验 Lib 的工作树状态和 Git tree。可通过 `--speculative-con
 
 在干净检出中重放两份补丁并通过源码配对检查。使用 PyPTO `72a62d13` 及其固定的 Simpler `6b6b88f`，Lib 的 13 项常驻资源和缓存测试、Serving 的 75 项 CPU 测试全部通过。PTOAS 使用该工具链要求的 v0.70。 [PyPTO 提交](https://github.com/hw-native-sys/pypto/commit/72a62d13efabbb25d240e35944f68ba5bcc22b7f) · [PTOAS v0.70](https://github.com/hw-native-sys/PTOAS/releases/tag/v0.70)
 
+## 内网权重预检
+
+默认权重目录为 `/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8`。把两份补丁应用到 PyPTO Lib 和 Serving 后，在 Serving 的 Python 环境下执行。脚本读取配置、索引及 safetensors header，可在两台机器分别运行，无需 NPU。若有 head，可追加 `--head "$DRAFT_HEAD"` 校验其与目标权重的身份是否一致。两台使用本地盘时，对照输出的 `identity` 确认配置、索引和 tokenizer 相同。
+
+```bash
+export TARGET_WEIGHTS="${TARGET_WEIGHTS:-/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8}"
+PYTHONPATH="$ORTHRUS_ROOT/online-speculation/src${PYTHONPATH:+:$PYTHONPATH}" \
+  python3 "$ORTHRUS_ROOT/online-speculation/scripts/preflight_dsv41_pypto.py" --model "$TARGET_WEIGHTS"
+```
+
+公开 W8A8 包和按 A3 loader 格式导出的版本可能用相同目录名。预检按实际文件识别。当前 A3 服务入口使用单机设备上下文。两台各 8 张卡的内网部署还需实现跨机 rank 和 collective，预检用来提前确认权重这一项。
+
 ## K32 SWA
 
 PyPTO 程序接收 RoPE 后的 32 行 query、128 行分页滑窗的只读视图、32 行临时 latent KV，以及每头的 Attention sink。输入页号经过宿主侧的 `swa_spans` 转为最多两段物理行。设备只搬读对应的历史行。所有 draft 位置读取同一 anchor 历史和整块临时 KV。两部分分数和 sink 使用同一个 FP32 softmax，输出 FP32 Attention 结果和 LSE。
@@ -77,6 +89,7 @@ CPU 测试覆盖完整 K32、部分接受、零接受、跨 128 行分页以及�
 
 ```bash
 export PYPTO_LIB_ROOT
+export TARGET_WEIGHTS="${TARGET_WEIGHTS:-/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8}"
 orthrus_config=$(python3 -c 'import json, sys; print(json.dumps(dict(method="orthrus", model=sys.argv[1], num_speculative_tokens=31)))' "$DRAFT_HEAD")
 common=(
   --model "$TARGET_WEIGHTS" --devices "$TASK_DEVICE" --platform a2a3
