@@ -30,12 +30,17 @@ SHAPES = (
     ((512, 5120), torch.bfloat16), ((1, 256), torch.float32),
     ((1, 256), torch.float32), ((5120, 3072), torch.bfloat16),
 )
-INPUTS = (
-    ("orthrus_ids", (BLOCK,), torch.int32), ("orthrus_rows", (BLOCK,), torch.int32),
-    ("orthrus_cos", (BLOCK, 64), torch.bfloat16), ("orthrus_sin", (BLOCK, 64), torch.bfloat16),
-    ("orthrus_table", (512 // BLOCK_SIZE,), torch.int32), ("orthrus_mask", (1, 512), torch.float32),
-    ("orthrus_valid", (BLOCK,), torch.int32),
-)
+
+
+def draft_inputs(batch_size):
+    rows = BLOCK * batch_size
+    return (
+        ("ids", (rows,), torch.int32), ("rows", (rows,), torch.int32),
+        ("cos", (rows, 64), torch.bfloat16), ("sin", (rows, 64), torch.bfloat16),
+        ("table", (batch_size, 512 // BLOCK_SIZE), torch.int32),
+        ("bias", (batch_size, 512), torch.float32),
+        ("valid", (rows,), torch.int32),
+    )
 
 
 def digest(path):
@@ -121,7 +126,7 @@ def check_chunk(sequence, offset, selected):
 
 class OrthrusTP2Runner(TensorParallelRunner):
     def __init__(self, config, head_directory, *, output_candidates=31, group_layers=GROUP_LAYERS,
-                 attention_backend="paged", on_cache_event=None):
+                 attention_backend="paged", draft_batch_size=1, on_cache_event=None):
         if (config.speculative_tokens or config.prefix_cache or config.max_model_len != 512
                 or config.long_prefill_token_threshold != VERIFY_ROWS
                 or config.max_num_batched_tokens < config.max_num_seqs * VERIFY_ROWS):
@@ -133,43 +138,58 @@ class OrthrusTP2Runner(TensorParallelRunner):
         self.output_candidates = output_candidates
         self.group_layers = group_layers
         self.attention_backend = attention_backend
+        if draft_batch_size not in (1, 2):
+            raise ValueError("draft batch must contain one or two requests")
+        self.draft_batch_size = draft_batch_size
         super().__init__(config, on_cache_event=on_cache_event)
-        self._host_slabs.update({name: shared((2, *shape), dtype) for name, shape, dtype in INPUTS})
-        self.spec_stats.update(rounds=0, verify_calls=0, restore_ns=0)
+        for size in range(1, self.draft_batch_size + 1):
+            self._host_slabs.update({f"orthrus_{size}_{name}": shared((2, *shape), dtype)
+                                     for name, shape, dtype in draft_inputs(size)})
+        self.spec_stats.update(rounds=0, verify_calls=0, restore_ns=0, draft_batches=0, draft_pair_batches=0)
 
     def compile_programs(self):
         entries = super().compile_programs()
         self.orthrus = self.compile_draft()
-        return [*entries, self.orthrus]
+        entries.append(self.orthrus)
+        if self.draft_batch_size == 2:
+            self.orthrus_pair = self.compile_draft(2)
+            entries.append(self.orthrus_pair)
+        return entries
 
     def _target_decode_row_limit(self):
         # Keep native MTP disabled while authorizing short Orthrus verification calls.
         return VERIFY_ROWS if self.output_candidates else 1
 
-    def compile_draft(self):
+    def compile_draft(self, batch_size=1):
         def meta(shape, dtype):
             return torch.empty((2, *shape), dtype=dtype, device="meta")
 
-        sample_inputs = {name: meta(shape, dtype) for name, shape, dtype in INPUTS}
+        inputs = draft_inputs(batch_size)
+        rows = BLOCK * batch_size
+        sample_inputs = {name: meta(shape, dtype) for name, shape, dtype in inputs}
         banks = [meta(shape, getattr(torch, dtype)) for _, shape, dtype in TP_BANK_SPECS[:23]]
         banks[DECAY_BANK] = meta(TP_BANK_SPECS[DECAY_BANK][1], torch.float32)
         suffix = [meta(shape, dtype) for shape, dtype in SHAPES]
         state = [meta(shape, dtype) for shape, dtype in self.state_specs[:4]]
         draft = make_draft_program(pool_pages=self.pool_blocks, group_layers=self.group_layers,
-                                   attention_backend=self.attention_backend)
-        return draft.compile(sample_inputs["orthrus_ids"], sample_inputs["orthrus_rows"],
-                             *banks, *suffix, *state,
-                             *(sample_inputs[name] for name, _, _ in INPUTS[2:-1]),
-                             meta((BLOCK, HIDDEN), torch.bfloat16),
-                             meta((BLOCK, TP_VOCAB), torch.bfloat16), sample_inputs["orthrus_valid"],
-                             meta((BLOCK, 16), torch.float32), 0, 64, BLOCK, 0, config=self.runconfig)
+                                   attention_backend=self.attention_backend, batch_size=batch_size,
+                                   compact_tp=self.draft_batch_size == 2)
+        return draft.compile(sample_inputs["ids"], sample_inputs["rows"], *banks, *suffix, *state,
+                             *(sample_inputs[name] for name, _, _ in inputs[2:-1]),
+                             meta((rows, HIDDEN), torch.bfloat16),
+                             meta((rows, TP_VOCAB), torch.bfloat16), sample_inputs["valid"],
+                             meta((rows, 16), torch.float32), 0, 64, BLOCK, 1, 70, BLOCK, 0,
+                             config=self.runconfig)
 
     def _check_memory_admission(self):
         super()._check_memory_admission()
         extra = sum(torch.empty(shape, dtype=dtype, device="meta").nbytes for shape, dtype in SHAPES)
-        extra += BLOCK * ((HIDDEN + TP_VOCAB) * 2 + 16 * 4)
-        # Native MTP is disabled, so the stock admission estimate covers only the AR window.
-        extra += 16384 * HIDDEN * 4 + 32
+        # Native MTP is disabled. Charge each resident draft program's own buffer and TP window.
+        for size in range(1, self.draft_batch_size + 1):
+            rows = size * BLOCK
+            extra += rows * ((HIDDEN + TP_VOCAB) * 2 + 16 * 4)
+            window_rows = rows if self.draft_batch_size == 2 else 16384
+            extra += window_rows * HIDDEN * 4 + 32
         for rank in self.admission:
             rank["orthrus_extra_bytes"] = extra
             if rank["headroom_bytes"] < extra:
@@ -184,10 +204,15 @@ class OrthrusTP2Runner(TensorParallelRunner):
                 if any(value.shape != shape or value.dtype != dtype for value in (first, second)):
                     raise ValueError("Incorrect resident suffix shape or dtype")
                 self.suffix.append(self._allocate(shape, dtype, (first, second)))
-            self.draft_hidden = self._allocate((BLOCK, HIDDEN), torch.bfloat16)
-            self.draft_logits = self._allocate((BLOCK, TP_VOCAB), torch.bfloat16)
-            self.draft_decisions = self._allocate((BLOCK, 16), torch.float32)
-            self.host_decisions = torch.empty((2, BLOCK, 16), dtype=torch.float32)
+            self.draft_buffers = {}
+            for size in range(1, self.draft_batch_size + 1):
+                rows = size * BLOCK
+                self.draft_buffers[size] = (
+                    self._allocate((rows, HIDDEN), torch.bfloat16),
+                    self._allocate((rows, TP_VOCAB), torch.bfloat16),
+                    self._allocate((rows, 16), torch.float32),
+                )
+            self.host_decisions = torch.empty((2, self.draft_batch_size * BLOCK, 16), dtype=torch.float32)
             text = TextWeights(self.settings.model_root)
             decay_shape = TP_BANK_SPECS[DECAY_BANK][1]
             decay = torch.stack([text.layer(layer, "linear_attn.A_log") for layer in text.linear_layers])
@@ -199,43 +224,61 @@ class OrthrusTP2Runner(TensorParallelRunner):
             raise
 
     def propose(self, slot, candidates):
-        request = slot.request
-        record = self.requests[request.request_id]
-        position = slot.position
-        if record["pages"].length != position:
-            raise RuntimeError("Draft anchor must follow the committed history")
-        # Match the trained K32 block. Near the context limit, only in-range rows are visible.
-        width = min(BLOCK, self.settings.max_model_len - position)
-        if candidates >= width:
-            raise RuntimeError("Draft prediction budget exceeds block width")
+        return self.propose_many([(slot, candidates)])[0]
+
+    def propose_many(self, requests):
+        """Prepare one or two independent K32 proposals in a single device call."""
         start = time.monotonic_ns()
-        ids, rows, cos, sin, table, mask, valid = (self._host_slabs[name] for name, _, _ in INPUTS)
+        size = len(requests)
+        program = self.orthrus_pair if size == 2 else self.orthrus
+        hidden, logits, decisions = self.draft_buffers[size]
+        ids, rows, cos, sin, table, mask, valid = (
+            self._host_slabs[f"orthrus_{size}_{name}"] for name, _, _ in draft_inputs(size))
         ids.fill_(self.head["source_head_contract"]["mask_token_id"])
-        ids[:, 0] = slot.token_ids[0]
-        rows.zero_()
-        rows[:, width:] = -1
+        rows.fill_(-1)
         cos.fill_(1)
         sin.zero_()
-        cos[:, :width].copy_(self.cos[position:position + width])
-        sin[:, :width].copy_(self.sin[position:position + width])
-        table.copy_(self.tables[:, record["slot"]])
         mask.fill_(-10000)
-        mask[:, :, :position + width] = 0
         valid.zero_()
-        valid[:, :candidates] = 1
+        metadata = []
+        valid_indices = []
+        for index, (slot, candidates) in enumerate(requests):
+            record = self.requests[slot.request.request_id]
+            position = slot.position
+            if record["pages"].length != position:
+                raise RuntimeError("Draft anchor must follow the committed history")
+            width = min(BLOCK, self.settings.max_model_len - position)
+            if not 0 < candidates < width:
+                raise RuntimeError("Draft prediction budget exceeds block width")
+            first = index * BLOCK
+            ids[:, first] = slot.token_ids[0]
+            rows[:, first:first + width] = index
+            cos[:, first:first + width].copy_(self.cos[position:position + width])
+            sin[:, first:first + width].copy_(self.sin[position:position + width])
+            table[:, index].copy_(self.tables[:, record["slot"]])
+            mask[:, index, :position + width] = 0
+            valid[:, first:first + candidates] = 1
+            valid_indices.extend(range(first, first + candidates))
+            metadata.extend((record["slot"], position, width))
+        if size == 1:
+            metadata.extend(metadata)
         for begin in range(0, 64, self.group_layers):
-            self._worker_call("run", self.orthrus, ids, rows, *self.draft_banks, *self.suffix,
-                              *self.resident[:4], cos, sin, table, mask, self.draft_hidden,
-                              self.draft_logits, valid, self.draft_decisions, record["slot"],
-                              position, width, begin, config=self.runconfig)
-        for rank, shard in enumerate(self.draft_decisions.shards):
-            value = self.host_decisions[rank]
+            self._worker_call("run", program, ids, rows, *self.draft_banks, *self.suffix,
+                              *self.resident[:4], cos, sin, table, mask, hidden, logits,
+                              valid, decisions, *metadata, begin, config=self.runconfig)
+        count = size * BLOCK
+        host = self.host_decisions[:, :count]
+        for rank, shard in enumerate(decisions.shards):
+            value = host[rank]
             self._worker_call("copy_from", value.data_ptr(), shard.data_ptr, value.nbytes, worker_id=rank)
-        selected = self._merge_packed_decisions(self.host_decisions, range(candidates), BLOCK)
+        selected = self._merge_packed_decisions(host, valid_indices, count)
         self.spec_stats["draft_ns"] += time.monotonic_ns() - start
-        self.spec_stats["rounds"] += 1
-        self.spec_stats["proposed"] += candidates
-        return [selected[i] for i in range(candidates)]
+        self.spec_stats["rounds"] += size
+        self.spec_stats["proposed"] += len(valid_indices)
+        self.spec_stats["draft_batches"] += 1
+        self.spec_stats["draft_pair_batches"] += int(size == 2)
+        return [[selected[index * BLOCK + row] for row in range(budget)]
+                for index, (_, budget) in enumerate(requests)]
 
     def run_batch(self, slots):
         if any(slot.request.sampling.temperature != 0 for slot in slots):
@@ -245,9 +288,21 @@ class OrthrusTP2Runner(TensorParallelRunner):
                    if slot.phase == "decode" else 0 for slot in slots]
         if not any(budgets):
             return super().run_batch(slots)
+        if self.draft_batch_size == 2 and any(slot.phase == "prefill" for slot in slots):
+            # Advancing both requests through native decode lets their drafts amortize a later dispatch.
+            return super().run_batch(slots)
 
-        proposed = [list(slot.token_ids) + (self.propose(slot, budget) if budget else [])
-                    for slot, budget in zip(slots, budgets, strict=True)]
+        proposed = [list(slot.token_ids) for slot in slots]
+        active = [(index, (slot, budget))
+                  for index, (slot, budget) in enumerate(zip(slots, budgets, strict=True)) if budget]
+        for offset in range(0, len(active), self.draft_batch_size):
+            group = active[offset:offset + self.draft_batch_size]
+            if len(group) == 1:
+                index, args = group[0]
+                proposed[index].extend(self.propose(*args))
+            else:
+                for (index, _), guesses in zip(group, self.propose_many([args for _, args in group]), strict=True):
+                    proposed[index].extend(guesses)
         results = [None if slot.phase == "prefill" and not slot.completes_prefill else [] for slot in slots]
         offsets = [0] * len(slots)
         pending = list(range(len(slots)))

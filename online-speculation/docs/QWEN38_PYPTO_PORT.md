@@ -415,3 +415,16 @@ Orthrus HTTP 检查在 61 的单张 A2 上通过，加载的是 TP2 在线 last-
 早期容器中的设备枚举错误记录保留在 `port-20261105/`。本次通过用户目录下的原生环境完成验证，没有修改 OneServing 模型源码；原容器启动失败的具体原因仍未确认。
 
 后续扩展请求边界，并随原生模型演进接入完整 TP、head 驻留、上下文和采样。完整训练继续使用现有 PyTorch 路径；PyPTO 在线入口可配置末尾 N 层，重启加载完整 head 与进程内在线更新是不同操作。
+
+## OneServing TP2 双请求起草
+
+在 OneServing `b99e118` 的 TP2 runner 中，给 `OrthrusTP2Runner` 传入 `draft_batch_size=2` 即可启用双请求合批。两条请求各保留自己的 K32 块、页表和 GDN 历史初态，投影与 MLP 按 64 行一起执行，两个 TP rank 在归约时直接完成残差相加。批内同时有 prefill 和 decode 时用原生目标模型推进，两个请求都进入 decode 后再合批起草。只剩一个可起草请求时仍走单块路径。
+
+基准测试使用 BF16、greedy、512 总上下文，关闭 OneServing MTP 和 prefix cache，并将 `long_prefill_token_threshold` 设为 `4`。性能对照在同一进程内切换 AR 和 Orthrus，每种模式都先运行一次双请求，以便单独排除首次 TP 通信初始化时间。主模型、输入和生成参数相同，固定输出长度。
+
+| 并发 | 原生 AR | 逐请求起草 | 双请求合批与混合调度 |
+| --- | ---: | ---: | ---: |
+| 1 | 15.11 tok/s | 18.71 tok/s | 单请求路径 |
+| 2 | 29.32 tok/s | 25.48 tok/s | **31.89 tok/s（+8.8%）** |
+
+两张 A2 上用 step160 head 跑 8 条 GSM8K 请求，每条生成 64 token。单请求和双请求均与原生 AR 逐 token 一致。双并发起草调用从 174 次减到 88 次，其中 79 次合批。把 TP 归约和残差加法拆开再测为 32.00 tok/s，融合的独立收益在这组测试中很小。另用两组各两条请求验过 232 和 480 token 输入的分页历史与短尾块，输出均一致。结果及计时口径见 [TP2 基准记录](validation/pypto-qwen38/oneserving-tp2-20261118/summary.json)。
