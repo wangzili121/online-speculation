@@ -51,6 +51,7 @@ configure_dsv41_network() {
     echo "NODE_RANK must be 0 or 1 for the qualified A2 DP2/TP8 topology" >&2
     return 1
   fi
+  export VLLM_HOST_IP="$LOCAL_IP"
   export HCCL_IF_IP="$LOCAL_IP"
   export GLOO_SOCKET_IFNAME="$NIC_NAME"
   export TP_SOCKET_IFNAME="$NIC_NAME"

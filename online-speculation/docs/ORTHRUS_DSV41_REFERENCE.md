@@ -110,21 +110,9 @@ PYTHONPATH=src python scripts/smoke_dsv41_runtime_chain.py \
 
 ## A2 两节点部署
 
-正式 A2 路径采用官方的两节点 colocated 拓扑：全局 DP2，每个 DP rank 在一台 8 卡服务器上运行 TP8，并启用 expert parallel。两台服务器必须使用同一镜像、同一绝对模型/head 路径和可互通的 HCCL 网卡。当前固定镜像为 `quay.io/ascend/vllm-ascend:nightly-releases-v0.32.0rc`，仓库 digest 是 `sha256:f040ca190fe5c5864a5491b2cbe19e687966ae8609b8a68fccc2c1ad1d260cbe`，本地镜像 ID 是 `sha256:5a70e7cdbe81b2b2addad33cf31db6f8e8163fa4b510ff307a8864d9db36b3a2`。先启动 Node 0，再启动 Node 1；只有 Node 0 暴露 API。
+两台八卡服务器使用 W4A8 权重，采用 DP2/TP8/EP16。节点 0 可以直接启动两台，也可以分别在两台机器启动。 [内网部署命令和 HCCL 检查](ORTHRUS_DSV41_INTRANET.md)
 
-```bash
-# 两台服务器都在仓库根目录执行；按本机填写 NODE_RANK/LOCAL_IP。
-export NODE0_IP=<node-0-ip>
-export LOCAL_IP=<this-node-hccl-ip>
-export NIC_NAME=<hccl-interface>
-export NODE_RANK=0                    # 另一台设为 1
-export ACK_EXCLUSIVE_NODE=1           # 确认本节点八卡已预留
-PROFILE=smoke-16k scripts/deploy_dsv41_node.sh
-```
-
-宿主机脚本校验不可变镜像 digest，挂载代码、模型和八张 NPU，再在容器内调用服务脚本。模型和 head 默认取 `/data/disk/models` 下的约定目录，也可用 `MODEL_HOST`、`HEAD_HOST` 覆盖。`PROFILE` 可改为 `prod-128k` 或 `prod-1m`。Orthrus 脚本会安装本仓插件、校验 trained head 和基模哈希，然后以 eager 模式运行 K32；设置 `MODE=target` 是 target-only 回滚路径。部署前可设置 `DRY_RUN=1` 查看完整命令而不创建容器。 [官方 A2 拓扑](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4.1-Flash.html)
-
-固定镜像内已实际安装并发现 `blockspec_orthrus` entry point；两节点启动脚本使用的 headless DP、TP8、Engram、speculative config、lazy safetensors 和 SWA 参数均存在于该镜像的 `vllm serve --help=all`，不是只按文档推测。 [验证记录](validation/dsv41/deployment-cli-v032.json)
+固定镜像内已安装并发现 `blockspec_orthrus` entry point；headless DP、TP8、Engram、speculative config、lazy safetensors 和 SWA 启动参数均通过 CLI 检查。 [验证记录](validation/dsv41/deployment-cli-v032.json)
 
 ### 实验性单机 A2 smoke
 

@@ -32,6 +32,19 @@ fi
 export VLLM_PLUGINS="${VLLM_PLUGINS:-ascend,ascend_model,ascend_model_loader,blockspec_orthrus}"
 export PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}"
 
+if [[ "${DRY_RUN:-0}" != 1 && "${INIT_HEAD:-0}" == 1 && ! -e "$HEAD" ]]; then
+  if [[ "${REQUIRE_TRAINED_HEAD:-1}" == 1 ]]; then
+    echo "A trained Orthrus head is required. Provide HEAD or set REQUIRE_TRAINED_HEAD=0 for a smoke test." >&2
+    exit 1
+  fi
+  echo "Exporting BF16 smoke-test head from the W4A8 target Attention."
+  # Both nodes may share the storage. The exporter publishes the completed
+  # directory by rename; a peer that wins the rename is followed by preflight.
+  "$python_bin" "$repo_root/scripts/export_dsv41_orthrus_head.py" \
+    --model "$MODEL" --output "$HEAD" --from-target --mask-token-id "${MASK_TOKEN_ID:-128799}" ||
+    [[ -f "$HEAD/manifest.json" ]]
+fi
+
 preflight=(
   "$python_bin" "$repo_root/scripts/preflight_dsv41_orthrus.py"
   --model "$MODEL"

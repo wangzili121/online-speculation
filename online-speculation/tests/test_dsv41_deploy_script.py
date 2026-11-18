@@ -26,14 +26,44 @@ def test_host_launcher_pins_image_and_maps_eight_cards():
         text=True,
         env=environment,
     )
-    commands = [shlex.split(line.removeprefix("command: ")) for line in result.stdout.splitlines()]
-    docker_run, docker_exec = commands
-    assert docker_run[:3] == ["docker", "run", "-d"]
-    assert docker_run.count("--device") == 11
-    assert docker_run[-4].startswith("quay.io/ascend/vllm-ascend@sha256:")
-    assert docker_exec[:3] == ["docker", "exec", "-d"]
-    assert "NODE_RANK=1" in docker_exec
-    assert "scripts/serve_dsv41_orthrus.sh" in docker_exec[-1]
+    command = shlex.split(result.stdout.removeprefix("command: "))
+    assert command[:5] == ["docker", "run", "--pull", "never", "-d"]
+    assert command.count("--device") == 11
+    assert command[-3].startswith("quay.io/ascend/vllm-ascend@sha256:")
+    assert "NODE_RANK=1" in command
+    assert "/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w4a8:/workspace/target:ro" in command
+    assert command[-1] == "scripts/serve_dsv41_orthrus.sh"
+
+
+def test_two_node_deploy_lowers_both_roles():
+    environment = os.environ | {
+        "DRY_RUN": "1",
+        "NODE0_IP": "10.0.0.1",
+        "NODE1_IP": "10.0.0.2",
+        "NODE1_SSH": "test@10.0.0.2",
+        "NIC0": "eth2",
+        "NIC1": "eth3",
+        "HEAD_HOST": "/workspace/custom head",
+    }
+    script = ROOT / "scripts/dsv41_two_node.sh"
+
+    def commands(action):
+        output = subprocess.check_output([script, action], text=True, env=environment)
+        return [shlex.split(line.removeprefix("command: ")) for line in output.splitlines()]
+
+    main, peer = commands("up")
+    for rank, command in enumerate((main, peer)):
+        assert f"NODE_RANK={rank}" in command
+        assert f"LOCAL_IP=10.0.0.{rank + 1}" in command
+        assert f"NIC_NAME=eth{rank + 2}" in command
+        assert "INIT_HEAD=1" in command
+        assert "HEAD=/workspace/heads/custom head" in command
+        assert command[-1] == "scripts/serve_dsv41_orthrus.sh"
+    main, peer = commands("probe")
+    for rank, command in enumerate((main, peer)):
+        assert f"NODE_RANK={rank}" in command
+        assert "MODEL=/workspace/target" not in command
+        assert "scripts/probe_dsv41_cluster.py" in command[-3]
 
 
 def test_experimental_single_a2_launcher_maps_one_eight_card_node():
