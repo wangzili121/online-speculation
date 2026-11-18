@@ -120,7 +120,8 @@ def check_chunk(sequence, offset, selected):
 
 
 class OrthrusTP2Runner(TensorParallelRunner):
-    def __init__(self, config, head_directory, *, output_candidates=31, on_cache_event=None):
+    def __init__(self, config, head_directory, *, output_candidates=31, group_layers=GROUP_LAYERS,
+                 attention_backend="paged", on_cache_event=None):
         if (config.speculative_tokens or config.prefix_cache or config.max_model_len != 512
                 or config.long_prefill_token_threshold != VERIFY_ROWS
                 or config.max_num_batched_tokens < config.max_num_seqs * VERIFY_ROWS):
@@ -130,6 +131,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
         self.head_directory = Path(head_directory)
         self.head = checkpoint_manifest(self.head_directory, config.model_root)
         self.output_candidates = output_candidates
+        self.group_layers = group_layers
+        self.attention_backend = attention_backend
         super().__init__(config, on_cache_event=on_cache_event)
         self._host_slabs.update({name: shared((2, *shape), dtype) for name, shape, dtype in INPUTS})
         self.spec_stats.update(rounds=0, verify_calls=0, restore_ns=0)
@@ -152,7 +155,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
         banks[DECAY_BANK] = meta(TP_BANK_SPECS[DECAY_BANK][1], torch.float32)
         suffix = [meta(shape, dtype) for shape, dtype in SHAPES]
         state = [meta(shape, dtype) for shape, dtype in self.state_specs[:4]]
-        draft = make_draft_program(pool_pages=self.pool_blocks)
+        draft = make_draft_program(pool_pages=self.pool_blocks, group_layers=self.group_layers,
+                                   attention_backend=self.attention_backend)
         return draft.compile(sample_inputs["orthrus_ids"], sample_inputs["orthrus_rows"],
                              *banks, *suffix, *state,
                              *(sample_inputs[name] for name, _, _ in INPUTS[2:-1]),
@@ -164,6 +168,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
         super()._check_memory_admission()
         extra = sum(torch.empty(shape, dtype=dtype, device="meta").nbytes for shape, dtype in SHAPES)
         extra += BLOCK * ((HIDDEN + TP_VOCAB) * 2 + 16 * 4)
+        # Native MTP is disabled, so the stock admission estimate covers only the AR window.
+        extra += 16384 * HIDDEN * 4 + 32
         for rank in self.admission:
             rank["orthrus_extra_bytes"] = extra
             if rank["headroom_bytes"] < extra:
@@ -217,7 +223,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
         mask[:, :, :position + width] = 0
         valid.zero_()
         valid[:, :candidates] = 1
-        for begin in range(0, 64, GROUP_LAYERS):
+        for begin in range(0, 64, self.group_layers):
             self._worker_call("run", self.orthrus, ids, rows, *self.draft_banks, *self.suffix,
                               *self.resident[:4], cos, sin, table, mask, self.draft_hidden,
                               self.draft_logits, valid, self.draft_decisions, record["slot"],

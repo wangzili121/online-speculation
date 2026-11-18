@@ -117,8 +117,8 @@ def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity):
 
 def make_paged_attention(shape=AttentionShape(), *, physical_pages=256, pool_layers=1, capacity=None):
     """按有效历史与块长选择固定形状 kernel；控制流在编排层，不进入混合核。"""
-    if shape.context != 512 or shape.page_size != 16 or shape.query_tile not in {16, 32}:
-        raise ValueError("the pinned paged backend requires context=512, page_size=16 and query_tile=16 or 32")
+    if shape.context != 512 or shape.page_size not in {16, 128} or shape.query_tile not in {16, 32}:
+        raise ValueError("paged attention requires context=512, page_size=16 or 128 and query_tile=16 or 32")
     if any(type(n) is not int or n < 1 for n in (physical_pages, pool_layers)):
         raise ValueError("positive physical page and cache-layer counts required")
     if capacity is not None:

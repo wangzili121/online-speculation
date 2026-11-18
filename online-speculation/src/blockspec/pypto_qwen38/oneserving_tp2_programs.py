@@ -2,13 +2,16 @@
 
 from .attention import AttentionShape
 from .attention_programs import make_attention
+from .paged_attention_programs import make_paged_attention
 
 
-# Bound the device dispatch to one group of three GDN layers and one full-attention layer.
-GROUP_LAYERS = 4
+# The A2-validated serial path dispatches the full draft in one call.
+GROUP_LAYERS = 64
 
 
-def make_draft_program(*, pool_pages):
+def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backend="paged"):
+    if group_layers not in (4, 8, 16, 32, 64):
+        raise ValueError("layer groups must divide the 64-layer backbone and end on full attention")
     import pypto.language as pl
     import pypto.language.distributed as pld
     from serving.model import (
@@ -34,10 +37,11 @@ def make_draft_program(*, pool_pages):
             beta[row:row + 16, 0:32] = pl.cast(pl.cast(y, pl.BF16, mode="rint"), pl.FP32)
         return decay, beta
 
-    attention, _ = make_attention(
-        AttentionShape(q_heads=12, kv_heads=2, page_size=128, query_tile=32),
-        backend="staged", physical_pages=pool_pages, pool_layers=17,
-    )
+    shape = AttentionShape(q_heads=12, kv_heads=2, page_size=128, query_tile=32)
+    if attention_backend == "paged":
+        attention, _ = make_paged_attention(shape, physical_pages=pool_pages, pool_layers=17)
+    else:
+        attention, _ = make_attention(shape, backend=attention_backend, physical_pages=pool_pages, pool_layers=17)
 
     @pl.jit.inline
     def convolution(projected: pl.Tensor, weight: pl.Tensor, history: pl.Tensor,
@@ -184,7 +188,7 @@ def make_draft_program(*, pool_pages):
             residual = pl.create_tensor([32, 5120], dtype=pl.BF16)
             post_norm = pl.create_tensor([32, 5120], dtype=pl.BF16)
             middle = pl.create_tensor([32, 8704], dtype=pl.BF16)
-            for offset in pl.range(GROUP_LAYERS):
+            for offset in pl.range(group_layers):
                 layer = begin + offset
                 with pl.scope():
                     gamma = pl.slice(input_gamma, [1, 5120], [layer, 0])
@@ -242,10 +246,10 @@ def make_draft_program(*, pool_pages):
                     linear_partial_m32(middle, down_w, partial)
                 tp_sum(partial, comm_data, comm_signals, reduced, rank, offset * 2 + 2)
                 residual_add(residual, reduced, hidden)
-            if begin == 64 - GROUP_LAYERS:
+            if begin == 64 - group_layers:
                 rms_norm(hidden, final_gamma, hidden)
                 linear_bf16_m32(hidden, lm_head, logits)
-            tp_finish(comm_signals, rank, GROUP_LAYERS * 2)
+            tp_finish(comm_signals, rank, group_layers * 2)
         return hidden, logits
 
     @pl.jit.host
@@ -289,7 +293,7 @@ def make_draft_program(*, pool_pages):
                 cos[rank], sin[rank], table[rank], bias[rank], hidden[rank], logits[rank],
                 slot, past, width, begin,
                 window, signal, rank, device=rank)
-            if begin == 64 - GROUP_LAYERS:
+            if begin == 64 - group_layers:
                 packed_greedy_fwd(logits[rank], valid[rank], decisions[rank], rank, device=rank)
 
     return draft_host
