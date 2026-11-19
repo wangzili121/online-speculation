@@ -113,20 +113,28 @@ class Slot:
     token_ids: tuple
 
 
-def test_runner_prefetches_both_requests_before_learning_and_drains_before_completion(monkeypatch):
+@pytest.mark.parametrize('queued', [False, True])
+def test_runner_prefetches_both_requests_before_learning_and_drains_before_completion(monkeypatch, queued):
     events, busy = [], [False]
     runner = object.__new__(OrthrusTP2Runner)
     def start_update():
         events.append('start')
         busy[0] = True
+        online.queued_update = None
     def before_device():
         events.append('wait')
         busy[0] = False
     online = runner.online = SimpleNamespace(
         overlap_sampling=True, evaluation_paused=False, prepare_batch=lambda: None,
+        queued_update=object() if queued else None,
         feedback_index=lambda _: None, launch_sampling_update=start_update,
         before_device=before_device, observe_teacher=lambda *a, **k: None,
         finish_batch=lambda _: events.append('finish'), flush_updates=lambda: events.append('drain'))
+    original_prefetch = LazyProposals.prefetch
+    def prefetch(self, stop):
+        assert queued, 'ordinary sampling must not clone a prefetched logits buffer'
+        return original_prefetch(self, stop)
+    monkeypatch.setattr(LazyProposals, 'prefetch', prefetch)
     runner.stochastic, runner.lazy_sampling = True, True
     runner.output_candidates, runner.draft_batch_size, runner.verify_chunk_size = 31, 2, 4
     runner.spec_stats = Counter()
@@ -162,7 +170,11 @@ def test_runner_prefetches_both_requests_before_learning_and_drains_before_compl
     runner._distribution = lambda batch, index, row, request: torch.nn.functional.one_hot(
         torch.tensor(10 if row == 0 else 12), 128).float()
     assert runner.run_batch(slots) == [[10, 12], [10, 12]]
-    assert events[:3] == ['read0', 'read1', 'start']
+    assert events[:2] == ['read0', 'read1']
+    if queued:
+        assert events[2] == 'start'
+    else:
+        assert 'start' not in events
     assert events.index('wait') < events.index('gpu')
     assert events[-2:] == ['finish', 'drain']
 

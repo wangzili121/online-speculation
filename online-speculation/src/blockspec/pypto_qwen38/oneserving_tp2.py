@@ -487,7 +487,9 @@ class OrthrusTP2Runner(TensorParallelRunner):
         pending = list(range(len(slots)))
         while pending:
             if stochastic and self.lazy_sampling:
-                if getattr(online, "overlap_sampling", False):
+                if (getattr(online, "overlap_sampling", False)
+                        and getattr(online, "queued_update", None) is not None):
+                    # 仅在即将交出设备时持有独立副本；普通采样不额外拷贝 logits。
                     prefetch_started = time.monotonic_ns()
                     for i in pending:
                         proposal = proposals.get(slots[i].request.request_id)
