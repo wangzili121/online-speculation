@@ -191,7 +191,7 @@ def main(*, guard=None):
     p.add_argument("--seed", default=743, type=int)
     p.add_argument("--background", action="store_true", help="train on the learner while serving")
     p.add_argument("--overlap-sampling", action="store_true",
-                   help="run colocated last-1 updates during CPU lazy sampling; drain before GPU work and request completion")
+                   help="run colocated suffix updates during CPU lazy sampling; drain before GPU work and request completion")
     p.add_argument("--interleaved", action="store_true",
                    help="alternate frozen/online request pairs using resident banks; synchronous learning only")
     p.add_argument("--compile-only", action="store_true")

@@ -131,8 +131,8 @@ class TP2Online:
                  focus_weight=1, audit_replay=False, teacher_temperature=1.0, warmup_updates=0,
                  lr_schedule="constant", parameter_scope="full", warm_update_stride=None,
                  warm_update_steps=0, publication_backend="auto", inner_steps=1, overlap_sampling=False):
-        if type(overlap_sampling) is not bool or overlap_sampling and (background or last_layers != 1):
-            raise ValueError("sampling overlap requires last-1 and no dedicated background learner")
+        if type(overlap_sampling) is not bool or overlap_sampling and (background or last_layers not in (1, 4)):
+            raise ValueError("sampling overlap requires last-1 or last-4 and no dedicated background learner")
         self.overlap_sampling = overlap_sampling
         self.queued_update = None
         if parameter_scope not in {"full", "norms", "output_norms"} or parameter_scope != "full" and checkpoint is not None:

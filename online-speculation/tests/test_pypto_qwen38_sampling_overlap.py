@@ -36,7 +36,7 @@ def test_prefetch_preserves_rows_and_rng_until_sampling():
     assert torch.equal(torch.stack(lazy.distributions), expected)
 
 
-@pytest.mark.parametrize('options', [dict(background=True), dict(last_layers=4), dict(device=2)])
+@pytest.mark.parametrize('options', [dict(background=True), dict(last_layers=2), dict(device=2)])
 def test_overlap_is_explicit_and_uses_no_third_card(options):
     kw = dict(device=0, last_layers=1, overlap_sampling=True) | options
     with pytest.raises(ValueError, match='overlap'):
@@ -44,8 +44,9 @@ def test_overlap_is_explicit_and_uses_no_third_card(options):
         learner.bind_devices((0, 1))
 
 
-def test_queue_launches_on_sampling_window_and_commits_on_device_owner(monkeypatch):
-    learner = TP2Online(None, device=0, last_layers=1, overlap_sampling=True)
+@pytest.mark.parametrize('last_layers', [1, 4])
+def test_queue_launches_on_sampling_window_and_commits_on_device_owner(monkeypatch, last_layers):
+    learner = TP2Online(None, device=0, last_layers=last_layers, overlap_sampling=True)
     learner.bind_devices((0, 1))
     learner.runner = SimpleNamespace(spec_stats=Counter(), suffix='initial')
     learner.initial_step, learner.stride = 0, 2
@@ -82,6 +83,14 @@ def test_queue_launches_on_sampling_window_and_commits_on_device_owner(monkeypat
     assert commits == [owner]
     assert learner.completed_version == learner.published_version == 1
     assert learner.queued_update is learner.pending_update is None
+
+
+def test_last_four_overlap_keeps_the_whole_suffix_on_serving_rank_zero():
+    learner = TP2Online(None, device=0, last_layers=4, overlap_sampling=True)
+    learner.bind_devices((0, 1))
+    assert learner.colocated and learner.device == 0 and not learner.background
+    assert tuple(learner.layers) == (60, 61, 62, 63)
+    assert learner.publish_banks == frozenset(range(15))
 
 
 @pytest.mark.parametrize('view', ['initial', 'current'])

@@ -1,0 +1,32 @@
+{
+  "completed": true,
+  "case": "a111-v38-two-card-last4-overlap-t1-audit-r1",
+  "physical_cards": 2,
+  "tp": 2,
+  "last_layers": 4,
+  "trainable_parameters": 454944000,
+  "updates": 10,
+  "source28_sync_updates": 11,
+  "first_update_math_and_replay_exact": true,
+  "first_update_comparison_fields": [
+    "round",
+    "loss",
+    "supervised",
+    "feedback_blocks",
+    "full_feedback_blocks",
+    "supervision_weight",
+    "learning_rate",
+    "version",
+    "gradient_norm",
+    "clip_scale",
+    "interval",
+    "replay_audits"
+  ],
+  "first_update_mismatches": [],
+  "max_replay_tv": 0.0007677077664993703,
+  "max_replay_l2": 0.005134089384227991,
+  "export_exact": true,
+  "frozen_feedback_updates_publications_zero": true,
+  "pair_ends_queued_pending_none": true,
+  "notes": "Full four-layer control validated with existing512loss,10sampling/boundaryupdatesvs11sync; firstupdate exact but latertrajectory need notmatch dueoneproposal publication lag. Short audit includes extra gradient replay; do not use throughput as a production gain."
+}

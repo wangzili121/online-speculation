@@ -1,0 +1,22 @@
+{
+  "case": "a111-v54-two-card-last4-combined-t1-audit-r1",
+  "completed": false,
+  "failure_class": "global_host_oom_before_measurement",
+  "kernel_lines": [
+    "[Fri Nov 20 04:43:15 2026] 2846823 2846805 58951224K 31736128K     S (sleeping) python3.10      ",
+    "[Fri Nov 20 04:43:15 2026] [2846823]     0 2846823 14737806  7934032 65036288        0             0 python3.10      ",
+    "[Fri Nov 20 04:43:15 2026] oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0-7,global_oom,task_memcg=/docker/39a97917f76fcf477ac5675e74a8abf7361b8211963fa2fd14e5cf0bde21ad68,task=python3.10,pid=2846823,uid=0",
+    "[Fri Nov 20 04:43:15 2026] Out of memory: Killed process 2846823 (python3.10) total-vm:58951224kB, anon-rss:29915956kB, file-rss:0kB, shmem-rss:1820172kB, UID:0 pgtables:63512kB oom_score_adj:0",
+    "[Fri Nov 20 04:43:16 2026] 2846823 2846805       0K       0K       Z (zombie) python3.10      ",
+    "[Fri Nov 20 04:43:21 2026] oom_reaper: reaped process 2846823 (python3.10), now anon-rss:0kB, file-rss:0kB, shmem-rss:1820756kB"
+  ],
+  "local_kernel_timezone": "Asia/Shanghai",
+  "utc_date": "Thu Nov 19 20:47:03 UTC 2026",
+  "current_meminfo": [
+    "MemTotal:       1582638912 kB",
+    "MemFree:        35777932 kB",
+    "MemAvailable:   52169944 kB",
+    "Buffers:          174612 kB"
+  ],
+  "recovery": "Preserve failed result; retry same source54 after MemAvailable>=96GiB before acquiring NPUs. Existing launched NN not stopped; no changes to other-user jobs."
+}
