@@ -1,0 +1,98 @@
+{
+  "cases": [
+    {
+      "tag": "v5-export-head-smoke-r1",
+      "launcher": "run_dense_v5.py",
+      "args": [
+        "--head",
+        "step160-suffix-tp2",
+        "--learner-device",
+        "0",
+        "--last-layers",
+        "1",
+        "--tokens",
+        "64",
+        "--strides",
+        "16",
+        "--replay-blocks",
+        "1",
+        "--publish-every",
+        "2",
+        "--learning-rate",
+        "0.00001",
+        "--objective",
+        "tv",
+        "--candidates",
+        "7",
+        "--stop-on-eos",
+        "--request-file",
+        "dense-smoke.json",
+        "--holdout-file",
+        "dense-smoke-holdout.json",
+        "--ar-check-requests",
+        "2",
+        "--wait",
+        "14400",
+        "--feedback-mode",
+        "delayed",
+        "--teacher-tokens",
+        "7",
+        "--audit-replay"
+      ]
+    },
+    {
+      "tag": "v5-gsm384-prewarm-tv1e5-longflow-r1",
+      "launcher": "run_dense_v5.py",
+      "args": [
+        "--head",
+        "kl-prewarm-suffix-tp2",
+        "--learner-device",
+        "0",
+        "--last-layers",
+        "1",
+        "--tokens",
+        "192",
+        "--strides",
+        "32,64",
+        "--replay-blocks",
+        "2",
+        "--publish-every",
+        "2",
+        "--learning-rate",
+        "0.00001",
+        "--objective",
+        "tv",
+        "--candidates",
+        "7",
+        "--stop-on-eos",
+        "--request-file",
+        "gsm-train384.json",
+        "--holdout-file",
+        "gsm8k-holdout.json",
+        "--ar-check-requests",
+        "16",
+        "--wait",
+        "14400",
+        "--feedback-mode",
+        "reached",
+        "--warmup-updates",
+        "0",
+        "--lr-schedule",
+        "constant",
+        "--skip-seen-replay"
+      ],
+      "requires": [
+        {
+          "file": "v5-export-head-smoke-r1.json",
+          "audit": true,
+          "greedy": true
+        }
+      ],
+      "confirm": {
+        "requests": "gsm8k-confirm.json",
+        "holdout": "gsm8k-confirm-holdout.json"
+      }
+    }
+  ],
+  "notes": "Extend the promising same-start prewarm128 reached-feedback TV recipe on a separate official train stream; AR subset is exploratory only, full AR and final-head replay in all reserved confirmations."
+}

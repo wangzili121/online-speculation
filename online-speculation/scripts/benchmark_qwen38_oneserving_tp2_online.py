@@ -117,6 +117,8 @@ def main(*, guard=None):
                    help="limit the AR correctness sample; online and frozen are still matched in full")
     p.add_argument("--replay-learned-head", action="store_true",
                    help="replay the full request stream with the final published head and updates disabled")
+    p.add_argument("--export-heads", type=Path,
+                   help="save each final published head outside the timed stream")
     p.add_argument("--gather-feedback", action="store_true", help="pack paged training history on the NPU")
     p.add_argument("--temperature", default=0, type=float, choices=(0, 1))
     p.add_argument("--lazy-sampling", action="store_true")
@@ -124,6 +126,8 @@ def main(*, guard=None):
     p.add_argument("--background", action="store_true", help="train on the learner while serving")
     p.add_argument("--compile-only", action="store_true")
     args = p.parse_args()
+    if args.export_heads is not None and args.export_heads.exists():
+        p.error("head export directory must be new")
     try:
         policy = update_policy(args.max_updates, require_continuous=args.continuous_updates)
     except ValueError as error:
@@ -273,9 +277,13 @@ def main(*, guard=None):
             trainer.compile = prepare_learner
     try:
         start = time.monotonic()
+        summary["stage"] = "starting"
+        persist()
         print("starting TP2 + learner", flush=True)
         engine.start()
         summary["startup_seconds"] = time.monotonic() - start
+        summary["stage"] = "measuring"
+        persist()
         print("ready TP2 + learner", summary["startup_seconds"], flush=True)
         runner.output_candidates = 0
         issue(prompts[0], args.tokens)
@@ -364,6 +372,16 @@ def main(*, guard=None):
                                         for base, row in zip(frozen, learned, strict=True)],
                     )
                     print("learned replay", runner.head["step"], stride, replay, flush=True)
+                if args.export_heads is not None:
+                    from blockspec.pypto_qwen38.tp2_head_checkpoint import export_served_head
+                    destination = args.export_heads / f"head{runner.head['step']}-stride{stride}"
+                    started = time.monotonic()
+                    deadline = started + 5
+                    while runner.requests and time.monotonic() < deadline:
+                        time.sleep(.001)
+                    manifest = export_served_head(trainer, destination)
+                    result["exported_head"] = dict(path=str(destination), manifest=manifest,
+                                                   seconds=time.monotonic() - started)
                 persist()
                 print("stride", runner.head["step"], stride, result["stream"], result["holdout"], flush=True)
 
@@ -382,6 +400,7 @@ def main(*, guard=None):
             cold = summary["cold"] = {"head_step": runner.head["step"], "results": {}}
             suite(cold["results"], [strides[0]])
         summary["completed"] = True
+        summary["stage"] = "completed"
     except BaseException as error:
         summary["error"] = repr(error)
         raise
