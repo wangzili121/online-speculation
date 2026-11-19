@@ -16,6 +16,8 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
     if batch_size not in (1, 2) or batch_size == 2 and not compact_tp:
         raise ValueError("a paired draft requires compact TP")
     capture_feedback = capture_layer is not None
+    # JIT 会解析条件分支；关闭反馈时也须保持层号比较为数值类型。
+    capture_index = capture_layer if capture_feedback else -1
     fused_residual = batch_size == 2
     rows_per_dispatch = 32 * batch_size
     window_rows = rows_per_dispatch if compact_tp else 16384
@@ -296,7 +298,7 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
             for offset in pl.range(group_layers):
                 layer = begin + offset
                 if capture_feedback:
-                    if layer == capture_layer:
+                    if layer == capture_index:
                         if feedback_row >= 0:
                             if rank == 0:
                                 with pl.spmd(20, name_hint="orthrus_online_suffix_input"):

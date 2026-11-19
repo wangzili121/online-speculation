@@ -1,0 +1,244 @@
+diff --git a/online-speculation/scripts/benchmark_qwen38_oneserving_tp2_online.py b/online-speculation/scripts/benchmark_qwen38_oneserving_tp2_online.py
+index d85ae76..994f949 100644
+--- a/online-speculation/scripts/benchmark_qwen38_oneserving_tp2_online.py
++++ b/online-speculation/scripts/benchmark_qwen38_oneserving_tp2_online.py
+@@ -120,6 +120,8 @@ def main(*, guard=None):
+     p.add_argument("--kv-pages", type=int, help="cap the resident KV pool equally for all modes")
+     p.add_argument("--ring-heap-mib", type=int, default=256,
+                    help="minimum temporary heap per ring; identical for AR, frozen and online")
++    p.add_argument("--prefill-chunk", type=int, default=0,
++                   help="native per-request prefill cap; zero uses the shared token budget, independently of verify width")
+     p.add_argument("--strides", default="16,32,64")
+     p.add_argument("--tokens", default=128, type=int)
+     p.add_argument("--stop-on-eos", action="store_true", help="use natural EOS within the token budget")
+@@ -188,7 +190,7 @@ def main(*, guard=None):
+     from serving.distributed import SamplingParams, ServingConfig
+     from serving.engine import InferenceEngine
+ 
+-    from blockspec.pypto_qwen38.oneserving_tp2 import OrthrusTP2Runner
++    from blockspec.pypto_qwen38.oneserving_tp2 import OrthrusTP2Runner, VERIFY_ROWS
+     from blockspec.pypto_qwen38.oneserving_tp2_online import TP2Online
+ 
+     configure_log("warn")
+@@ -208,7 +210,7 @@ def main(*, guard=None):
+                         publication_backend=args.publication_backend, **extra)
+     config = ServingConfig(args.model, (0, 1), max_model_len=512, max_num_batched_tokens=128,
+                            max_num_seqs=2, speculative_tokens=0, prefix_cache=False,
+-                           long_prefill_token_threshold=4)
++                           long_prefill_token_threshold=args.prefill_chunk)
+     engine = InferenceEngine(config)
+     runner = engine.runner = OrthrusTP2Runner(config, args.head, draft_batch_size=2,
+                                               online=trainer, kv_pages=args.kv_pages,
+@@ -225,6 +227,9 @@ def main(*, guard=None):
+                    publication_backend="device" if trainer.device_publication else "cpu",
+                    physical_device_count=2 if trainer.colocated else 3, kv_pages=runner.pool_blocks,
+                    resource_policy=runner.resource_policy,
++                   prefill_chunk=args.prefill_chunk,
++                   verification_rows=VERIFY_ROWS,
++                   sampling_backend="cpu_full_vocabulary" if args.temperature else "pypto_packed_greedy",
+                    learning_rate=args.learning_rate, background=args.background,
+                    warmup_updates=args.warmup_updates,
+                    warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
+@@ -248,6 +253,7 @@ def main(*, guard=None):
+                    optimizer_init="checkpoint" if args.checkpoint is not None else "fresh", results={})
+ 
+     def persist():
++        summary["target_execution_totals"] = dict(runner.execution_totals)
+         tmp = args.output.with_suffix(".tmp")
+         tmp.write_text(json.dumps(summary, indent=2) + "\n")
+         tmp.replace(args.output)
+diff --git a/online-speculation/src/blockspec/pypto_qwen38/oneserving_resources.py b/online-speculation/src/blockspec/pypto_qwen38/oneserving_resources.py
+index dd8bec2..03b915b 100644
+--- a/online-speculation/src/blockspec/pypto_qwen38/oneserving_resources.py
++++ b/online-speculation/src/blockspec/pypto_qwen38/oneserving_resources.py
+@@ -1,4 +1,22 @@
+-"""Orthrus 的临时任务池预算；不改变模型计算或运行时全局设置。"""
++"""Orthrus 的目标执行预算及 compact logits 坐标契约。"""
++
++
++def validate_target_contract(config, verify_rows=4):
++    if (config.speculative_tokens or config.prefix_cache or config.max_model_len != 512
++            or config.max_num_batched_tokens < config.max_num_seqs * verify_rows):
++        raise ValueError("Orthrus TP2 requires 512 context, native MTP/prefix cache off and capacity for verification rows")
++    threshold = config.long_prefill_token_threshold
++    if type(threshold) is not int or not 0 <= threshold <= config.max_model_len:
++        raise ValueError("prefill threshold must be zero or a positive limit within the context")
++
++
++def compact_teacher_row(input_count, batch_slot, source_row, count, retained=4):
++    """原生输出只保存每个请求的末四行，长 prefill 的绝对行号需先平移。"""
++    if (input_count < 1 or batch_slot < 0 or count < 1
++            or source_row < input_count - min(input_count, retained)
++            or source_row + count > input_count):
++        raise ValueError("teacher rows must lie within the retained native logits")
++    return retained * batch_slot + source_row - (input_count - min(input_count, retained))
+ 
+ 
+ def bounded_ring_policy(native, minimum_mib):
+diff --git a/online-speculation/src/blockspec/pypto_qwen38/oneserving_tp2.py b/online-speculation/src/blockspec/pypto_qwen38/oneserving_tp2.py
+index 7655297..ff2eb28 100644
+--- a/online-speculation/src/blockspec/pypto_qwen38/oneserving_tp2.py
++++ b/online-speculation/src/blockspec/pypto_qwen38/oneserving_tp2.py
+@@ -18,7 +18,7 @@ from ..sampling import SamplingConfig, draw, probabilities, residual
+ from .head import POLICY, tensor_schema
+ from .oneserving_tp2_programs import GROUP_LAYERS, make_draft_program
+ from .lazy_proposals import LazyProposals
+-from .oneserving_resources import bounded_ring_policy
++from .oneserving_resources import bounded_ring_policy, validate_target_contract
+ 
+ 
+ BLOCK = 32
+@@ -153,10 +153,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
+     def __init__(self, config, head_directory, *, output_candidates=31, group_layers=GROUP_LAYERS,
+                  attention_backend="paged", draft_batch_size=1, online=None, kv_pages=None, stochastic=False,
+                  lazy_sampling=False, ring_heap_min_mib=256, on_cache_event=None):
+-        if (config.speculative_tokens or config.prefix_cache or config.max_model_len != 512
+-                or config.long_prefill_token_threshold != VERIFY_ROWS
+-                or config.max_num_batched_tokens < config.max_num_seqs * VERIFY_ROWS):
+-            raise ValueError("Orthrus TP2 requires capped prefill, 512 context, and native MTP/prefix cache off")
++        validate_target_contract(config, VERIFY_ROWS)
+         if not 1 <= output_candidates < BLOCK:
+             raise ValueError("candidate budget must be in [1, 31]")
+         self.head_directory = Path(head_directory)
+@@ -422,8 +419,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
+                    if slot.phase == "decode" else 0 for slot in slots]
+         if not any(budgets):
+             return self._native_batch(slots)
+-        if self.draft_batch_size == 2 and any(slot.phase == "prefill" for slot in slots):
+-            # Advancing both requests through native decode lets their drafts amortize a later dispatch.
++        if any(slot.phase == "prefill" for slot in slots):
++            # Native prefill consumes the whole granted chunk; VERIFY_ROWS only limits decode verification.
+             return self._native_batch(slots)
+ 
+         proposed = [list(slot.token_ids) for slot in slots]
+diff --git a/online-speculation/src/blockspec/pypto_qwen38/oneserving_tp2_online.py b/online-speculation/src/blockspec/pypto_qwen38/oneserving_tp2_online.py
+index d8d1026..07670d1 100644
+--- a/online-speculation/src/blockspec/pypto_qwen38/oneserving_tp2_online.py
++++ b/online-speculation/src/blockspec/pypto_qwen38/oneserving_tp2_online.py
+@@ -27,6 +27,7 @@ from .training_executor import TrainingPrograms, TrainingWorkspace
+ from .training_memory import require_suffix_memory
+ from .training_suffix_graph import SuffixGraph
+ from .training_programs import tv_supervision_weight
++from .oneserving_resources import compact_teacher_row
+ 
+ 
+ FULL_BANK_START = 9
+@@ -522,10 +523,12 @@ class TP2Online:
+             if offset != state["valid"] or state["complete"]:
+                 raise RuntimeError("feedback teacher rows must be a fresh contiguous verified prefix")
+             count = min(count, state["candidates"] - offset)
+-            source = self.runner.outputs[self.runner._last_layout["output_key"]][1]
++            layout = self.runner._last_layout
++            source = self.runner.outputs[layout["output_key"]][1]
++            first = compact_teacher_row(layout["counts"][batch_slot], batch_slot, source_row, count)
+             parts = [torch.empty((count, TP_VOCAB), dtype=torch.bfloat16) for _ in range(2)]
+             for rank in range(2):
+-                self.read(rank, source, parts[rank], (4 * batch_slot + source_row) * TP_VOCAB * 2)
++                self.read(rank, source, parts[rank], first * TP_VOCAB * 2)
+             # Pack both vocabulary shards by row, then upload the entire
+             # verified chunk in one transfer instead of two calls per row.
+             teacher = self.training_teacher(torch.cat(parts, dim=-1))
+diff --git a/online-speculation/tests/test_pypto_qwen38_oneserving_resources.py b/online-speculation/tests/test_pypto_qwen38_oneserving_resources.py
+index 0ec0db9..34db13f 100644
+--- a/online-speculation/tests/test_pypto_qwen38_oneserving_resources.py
++++ b/online-speculation/tests/test_pypto_qwen38_oneserving_resources.py
+@@ -1,6 +1,6 @@
+ import pytest
+ 
+-from blockspec.pypto_qwen38.oneserving_resources import bounded_ring_policy
++from blockspec.pypto_qwen38.oneserving_resources import bounded_ring_policy, validate_target_contract, compact_teacher_row
+ 
+ 
+ def test_heap_floor_preserves_larger_native_budgets_and_admission_reserves():
+@@ -19,3 +19,28 @@ def test_heap_floor_preserves_larger_native_budgets_and_admission_reserves():
+ def test_invalid_heap_floor(size):
+     with pytest.raises(ValueError, match="power of two"):
+         bounded_ring_policy(dict(ring_heap_bytes=[256 << 20] * 4), size)
++
++
++@pytest.mark.parametrize("threshold", [0, 4, 32, 128, 512])
++def test_prefill_budget_is_independent_of_verification_width(threshold):
++    from types import SimpleNamespace
++    config = SimpleNamespace(speculative_tokens=0, prefix_cache=False, max_model_len=512,
++                             max_num_batched_tokens=128, max_num_seqs=2,
++                             long_prefill_token_threshold=threshold)
++    validate_target_contract(config, 4)
++    config.max_num_batched_tokens = 7
++    with pytest.raises(ValueError, match="capacity"):
++        validate_target_contract(config, 4)
++
++
++@pytest.mark.parametrize("length,first,count,expected", [(4, 1, 3, 5), (128, 127, 1, 7),
++                                                         (64, 60, 4, 4), (1, 0, 1, 4)])
++def test_teacher_coordinates_follow_compact_last_four_rows(length, first, count, expected):
++    assert compact_teacher_row(length, 1, first, count) == expected
++    with pytest.raises(ValueError, match="retained"):
++        compact_teacher_row(length, 1, first, length + 1)
++
++
++def test_discarded_prefill_logits_are_not_read_as_teacher():
++    with pytest.raises(ValueError, match="retained"):
++        compact_teacher_row(128, 0, 0, 1)
+diff --git a/online-speculation/tests/test_pypto_qwen38_tp2_online.py b/online-speculation/tests/test_pypto_qwen38_tp2_online.py
+index 6cf41b5..386c835 100644
+--- a/online-speculation/tests/test_pypto_qwen38_tp2_online.py
++++ b/online-speculation/tests/test_pypto_qwen38_tp2_online.py
+@@ -14,6 +14,20 @@ from blockspec.pypto_qwen38.oneserving_tp2 import check_sampled_chunk
+ from blockspec.pypto_qwen38.oneserving_tp2_online import TP2Online
+ 
+ 
++@pytest.mark.parametrize("draft_batch_size", [1, 2])
++def test_mixed_long_prefill_does_not_enter_four_row_verification(draft_batch_size):
++    from blockspec.pypto_qwen38.oneserving_tp2 import OrthrusTP2Runner
++    runner = object.__new__(OrthrusTP2Runner)
++    runner.online, runner.stochastic = None, False
++    runner.output_candidates, runner.draft_batch_size = 31, draft_batch_size
++    request = SimpleNamespace(sampling=SimpleNamespace(temperature=0), max_tokens=192, generated=[])
++    slots = [SimpleNamespace(phase="decode", token_ids=(1,), request=request),
++             SimpleNamespace(phase="prefill", token_ids=tuple(range(128)), request=request)]
++    sentinel = object()
++    runner._native_batch = lambda actual: sentinel if actual is slots else None
++    assert runner.run_batch(slots) is sentinel
++
++
+ @pytest.mark.parametrize("layers,indices", [(1, {12, 13}), (4, {8, 12, 13})])
+ def test_norm_scope_only_packs_changed_norm_banks(layers, indices):
+     from math import prod
+@@ -134,26 +148,28 @@ def test_inverse_sqrt_decays_after_warmup_without_stopping_updates():
+     assert trainer.max_updates is None
+ 
+ 
+-def test_teacher_shards_are_interleaved_by_row_in_one_upload(monkeypatch):
++@pytest.mark.parametrize("input_count,source_row,rows,expected_offset", [(4, 1, 3, 40),
++                                                                      (128, 127, 1, 56),
++                                                                      (64, 60, 4, 32)])
++def test_teacher_shards_are_interleaved_by_row_in_one_upload(monkeypatch, input_count, source_row, rows, expected_offset):
+     from blockspec.pypto_qwen38 import oneserving_tp2_online as module
+     monkeypatch.setattr(module, "TP_VOCAB", 4)
+     trainer = TP2Online(None, device=0, last_layers=1)
+     trainer.feedback = dict(candidates=7, valid=2, complete=False)
+     trainer.runner = SimpleNamespace(outputs={"target": (None, "logits")},
+-                                    _last_layout={"output_key": "target"}, spec_stats=Counter())
++                                    _last_layout={"output_key": "target", "counts": [1, input_count]}, spec_stats=Counter())
+     reads, uploads = [], []
+     def read(rank, source, destination, offset):
+         reads.append((rank, offset))
+-        destination.copy_(torch.arange(12).reshape(3, 4) + rank * 100)
++        destination.copy_(torch.arange(rows * 4).reshape(rows, 4) + rank * 100)
+     monkeypatch.setattr(trainer, "read", read)
+     monkeypatch.setattr(trainer, "upload", lambda key, data, offset: uploads.append((key, data.clone(), offset)))
+-    trainer.capture_teacher(1, 2, 3, final=True, source_row=1)
+-    assert reads == [(0, 40), (1, 40)]
++    trainer.capture_teacher(1, 2, rows, final=True, source_row=source_row)
++    assert reads == [(0, expected_offset), (1, expected_offset)]
+     assert len(uploads) == 1 and uploads[0][2] == 32
+-    assert uploads[0][1].tolist() == [[0,1,2,3,100,101,102,103],
+-                                      [4,5,6,7,104,105,106,107],
+-                                      [8,9,10,11,108,109,110,111]]
+-    assert trainer.feedback["valid"] == 5 and trainer.feedback["complete"]
++    expected = torch.arange(rows * 4).reshape(rows, 4)
++    assert torch.equal(uploads[0][1], torch.cat([expected, expected + 100], -1))
++    assert trainer.feedback["valid"] == 2 + rows and trainer.feedback["complete"]
+ 
+ 
+ @pytest.mark.parametrize("temperature", [0., -1., float("inf"), float("nan")])
