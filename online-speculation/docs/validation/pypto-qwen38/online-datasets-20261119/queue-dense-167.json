@@ -108,6 +108,64 @@
       ]
     },
     {
+      "tag": "v5-gsm128-prewarm-tv1e5-dense7-r1",
+      "launcher": "run_dense_v5.py",
+      "args": [
+        "--head",
+        "kl-prewarm-suffix-tp2",
+        "--learner-device",
+        "0",
+        "--last-layers",
+        "1",
+        "--tokens",
+        "192",
+        "--strides",
+        "32,64",
+        "--replay-blocks",
+        "1",
+        "--publish-every",
+        "4",
+        "--learning-rate",
+        "1e-05",
+        "--objective",
+        "tv",
+        "--candidates",
+        "7",
+        "--stop-on-eos",
+        "--request-file",
+        "gsm8k-explore.json",
+        "--holdout-file",
+        "gsm8k-holdout.json",
+        "--ar-check-requests",
+        "16",
+        "--wait",
+        "14400",
+        "--feedback-mode",
+        "delayed",
+        "--teacher-tokens",
+        "7",
+        "--teacher-temperature",
+        "1",
+        "--warmup-updates",
+        "0",
+        "--lr-schedule",
+        "constant",
+        "--temperature",
+        "0",
+        "--skip-seen-replay"
+      ],
+      "confirm": {
+        "requests": "gsm8k-confirm.json",
+        "holdout": "gsm8k-confirm-holdout.json"
+      },
+      "requires": [
+        {
+          "file": "v3-dense7-sharp-kl-audit-r1.json",
+          "audit": true
+        }
+      ]
+    },
+    {
       "tag": "v4-pseudo56-step160-klsharp-dense7-r1",
       "launcher": "run_dense_v5.py",
       "args": [
@@ -332,6 +390,64 @@
       "confirm": {
         "requests": "gsm8k-confirm.json",
         "holdout": "gsm8k-confirm-holdout.json"
+      },
+      "requires": [
+        {
+          "file": "v3-dense7-sharp-kl-audit-r1.json",
+          "audit": true
+        }
+      ]
+    },
+    {
+      "tag": "v5-pseudo96-prefix64-last1-2card-r1",
+      "launcher": "run_dense_v5.py",
+      "args": [
+        "--head",
+        "step160-suffix-tp2",
+        "--learner-device",
+        "0",
+        "--last-layers",
+        "1",
+        "--tokens",
+        "64",
+        "--strides",
+        "32,64",
+        "--replay-blocks",
+        "1",
+        "--publish-every",
+        "4",
+        "--learning-rate",
+        "3e-05",
+        "--objective",
+        "kl",
+        "--candidates",
+        "7",
+        "--stop-on-eos",
+        "--request-file",
+        "pseudo-prefix64-explore.json",
+        "--holdout-file",
+        "pseudo-holdout.json",
+        "--ar-check-requests",
+        "16",
+        "--wait",
+        "14400",
+        "--feedback-mode",
+        "delayed",
+        "--teacher-tokens",
+        "7",
+        "--teacher-temperature",
+        "0.5",
+        "--warmup-updates",
+        "8",
+        "--lr-schedule",
+        "inverse_sqrt",
+        "--temperature",
+        "0",
+        "--skip-seen-replay"
+      ],
+      "confirm": {
+        "requests": "pseudo-confirm.json",
+        "holdout": "pseudo-confirm-holdout.json"
       },
       "requires": [
         {
