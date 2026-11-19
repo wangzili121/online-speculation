@@ -195,6 +195,8 @@ class TP2Online:
         self.completed_version = self.published_version = 0
         self.pending_reset = self.pending_drain = False
         self.pending_head = None
+        self.pending_evaluation = None
+        self.evaluation_paused = False
         self.stride = None
         self.rounds = self.version = 0
         self.feedback = None
@@ -380,6 +382,11 @@ class TP2Online:
         self.completed_version = self.published_version = self.version
 
     def prepare_batch(self):
+        if self.pending_evaluation is not None:
+            if self.pending_evaluation not in {"initial", "current"}:
+                raise ValueError("evaluation view must be initial or current")
+            if self.background or self.pending_update is not None:
+                raise RuntimeError("interleaved evaluation requires synchronous learning")
         self.collect_update(wait=self.pending_drain or self.pending_reset or self.pending_head is not None)
         self.pending_drain = False
         if self.pending_head is not None:
@@ -388,6 +395,12 @@ class TP2Online:
         if self.pending_reset:
             self.restore()
             self.pending_reset = False
+        if self.pending_evaluation is not None:
+            # 两组 bank 已常驻；只在 runner 线程切换指针，不复制权重或重置 Adam。
+            self.evaluation_paused = self.pending_evaluation == "initial"
+            self.runner.suffix = (self.original if self.evaluation_paused
+                                  or self.published_version == self.initial_step else self.updated)
+            self.pending_evaluation = None
 
     def load_head(self, directory):
         """Reload a tested start between benchmark phases, with no learner enabled."""

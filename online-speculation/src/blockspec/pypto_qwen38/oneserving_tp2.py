@@ -406,13 +406,14 @@ class OrthrusTP2Runner(TensorParallelRunner):
 
     def _native_batch(self, slots):
         outputs = super().run_batch(slots)
-        if self.online is not None:
+        if self.online is not None and not getattr(self.online, "evaluation_paused", False):
             self.online.observe_native(slots, outputs)
         return outputs
 
     def run_batch(self, slots):
         if self.online is not None:
             self.online.prepare_batch()
+        online = (None if getattr(self.online, "evaluation_paused", False) else self.online)
         sampling_modes = {bool(slot.request.sampling.temperature) for slot in slots}
         stochastic = True in sampling_modes
         if stochastic and (not self.stochastic or False in sampling_modes):
@@ -430,7 +431,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
         proposals = {} if stochastic else None
         active = [(index, (slot, budget))
                   for index, (slot, budget) in enumerate(zip(slots, budgets, strict=True)) if budget]
-        feedback_index = None if self.online is None else self.online.feedback_index(len(active))
+        feedback_index = None if online is None else online.feedback_index(len(active))
         feedback_slot = None if feedback_index is None else active[feedback_index][0]
         for offset in range(0, len(active), self.draft_batch_size):
             group = active[offset:offset + self.draft_batch_size]
@@ -494,9 +495,9 @@ class OrthrusTP2Runner(TensorParallelRunner):
                     else:
                         target = [self._distribution(batch, j, row, slot.request) for row in range(len(chunk))]
                         emitted, count, accepted, done = check_chunk(proposed[i], offsets[i], target)
-                    if self.online is not None:
-                        self.online.observe_teacher(slot, j, emitted, results[i], offsets[i],
-                                                    count, final=done, selected=i == feedback_slot)
+                    if online is not None:
+                        online.observe_teacher(slot, j, emitted, results[i], offsets[i],
+                                               count, final=done, selected=i == feedback_slot)
                     results[i].extend(emitted)
                     self.spec_stats["accepted"] += accepted
                     bonus = offsets[i] + count == len(proposed[i])
@@ -518,6 +519,6 @@ class OrthrusTP2Runner(TensorParallelRunner):
             for pages, end in committed:
                 self.cache.commit(pages, end)
             pending = unfinished
-        if self.online is not None:
-            self.online.finish_batch(len(active))
+        if online is not None:
+            online.finish_batch(len(active))
         return results

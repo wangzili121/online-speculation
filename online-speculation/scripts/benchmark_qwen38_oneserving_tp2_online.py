@@ -84,6 +84,32 @@ def request_timeline(rows):
             for i, row in enumerate(rows)]
 
 
+def learner_snapshot(trainer):
+    return dict(rounds=trainer.rounds, optimizer_version=trainer.version,
+                completed_version=trainer.completed_version, published_version=trainer.published_version,
+                update_limit_reached=trainer.update_limit_reached(),
+                pending_update=trainer.pending_update is not None)
+
+
+def measure_interleaved(pairs, issue, trainer, checkpoint=None):
+    """逐对请求交错测量；固定 bank 和在线 bank 常驻，学习状态仅随在线组前进。"""
+    if trainer.background or trainer.pending_update is not None:
+        raise ValueError("interleaved measurement requires synchronous learning")
+    rows = {"frozen": [], "online": []}
+    for index, pair in enumerate(pairs):
+        order = ("frozen", "online") if index % 2 == 0 else ("online", "frozen")
+        for mode in order:
+            trainer.pending_evaluation = "initial" if mode == "frozen" else "current"
+            row = issue(pair, index)
+            row["learner"] = learner_snapshot(trainer)
+            if mode == "frozen" and (row["stats"]["updates"] or row["stats"]["publications"]):
+                raise RuntimeError("frozen evaluation performed an update or publication")
+            rows[mode].append(row)
+        if checkpoint is not None:
+            checkpoint(rows, index)
+    return rows["frozen"], rows["online"]
+
+
 def exception_chain(error):
     result, seen = [], set()
     while error is not None and id(error) not in seen:
@@ -159,6 +185,8 @@ def main(*, guard=None):
     p.add_argument("--lazy-sampling", action="store_true")
     p.add_argument("--seed", default=743, type=int)
     p.add_argument("--background", action="store_true", help="train on the learner while serving")
+    p.add_argument("--interleaved", action="store_true",
+                   help="alternate frozen/online request pairs using resident banks; synchronous learning only")
     p.add_argument("--compile-only", action="store_true")
     args = p.parse_args()
     if args.export_heads is not None and args.export_heads.exists():
@@ -171,6 +199,8 @@ def main(*, guard=None):
     if args.cold_head is not None and args.checkpoint is not None:
         p.error("cold fallback uses fresh Adam for both starts")
     strides = [int(value) for value in args.strides.split(",")]
+    if args.interleaved and (args.background or len(strides) != 1):
+        p.error("interleaved evaluation requires one stride and synchronous updates")
     if (min(args.replay_blocks, args.publish_every) < 1 or len(set(strides)) != len(strides)
             or any(n < 2 * args.replay_blocks for n in strides) or args.tokens < 2 or args.output.exists()):
         p.error("use distinct strides >= twice replay-blocks, positive counts and a fresh result path")
@@ -226,6 +256,8 @@ def main(*, guard=None):
                    physical_device_count=2 if trainer.colocated else 3, kv_pages=runner.pool_blocks,
                    resource_policy=runner.resource_policy,
                    learning_rate=args.learning_rate, background=args.background,
+                   benchmark_layout="interleaved_pairs" if args.interleaved else "separate_streams",
+                   interleaved_order="alternating_within_pair" if args.interleaved else None,
                    warmup_updates=args.warmup_updates,
                    warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
                    lr_schedule=args.lr_schedule,
@@ -275,11 +307,7 @@ def main(*, guard=None):
             # Background work between submissions counts against the same stream.
             row["seconds"] = finished - previous
             previous = finished
-            row["learner"] = dict(rounds=trainer.rounds, optimizer_version=trainer.version,
-                                  completed_version=trainer.completed_version,
-                                  published_version=trainer.published_version,
-                                  update_limit_reached=trainer.update_limit_reached(),
-                                  pending_update=trainer.pending_update is not None)
+            row["learner"] = learner_snapshot(trainer)
             rows.append(row)
             if label is not None and index + 1 < len(pairs) and (index + 1) % 16 == 0:
                 stream = summarize(rows)
@@ -342,16 +370,21 @@ def main(*, guard=None):
         persist()
 
         def suite(results, suite_strides):
-            frozen, holdout_frozen = measure(prompts, label=f"frozen_{runner.head['step']}"), measure(holdout)
-            check_tokens(frozen[:len(ar)], ar)
+            if args.interleaved:
+                trainer.pending_evaluation = "initial"
+                frozen, holdout_frozen = None, measure(holdout)
+            else:
+                frozen, holdout_frozen = measure(prompts, label=f"frozen_{runner.head['step']}"), measure(holdout)
+                results["frozen"] = dict(stream=summarize(frozen), holdout=summarize(holdout_frozen),
+                                         request_timeline=request_timeline(frozen))
+                check_tokens(frozen[:len(ar)], ar)
             check_tokens(holdout_frozen, holdout_ar)
-            results["frozen"] = dict(stream=summarize(frozen), holdout=summarize(holdout_frozen),
-                                     request_timeline=request_timeline(frozen))
             persist()
-            print("frozen", runner.head["step"], results["frozen"], flush=True)
 
             for stride in suite_strides:
                 trainer.pending_reset = True
+                if args.interleaved:
+                    trainer.pending_evaluation = "current"
                 issue(prompts[0], 1)
                 if trainer.version != trainer.initial_step:
                     raise RuntimeError("online case did not restore the shared initial step")
@@ -359,7 +392,26 @@ def main(*, guard=None):
                 busy_start = runner.spec_stats["busy_updates"]
                 feedback_skip_start = runner.spec_stats["feedback_skips"]
                 trainer.stride = stride
-                stream = measure(prompts, label=f"online_{runner.head['step']}_{stride}", frozen=frozen)
+                if args.interleaved:
+                    def checkpoint(rows, index):
+                        if index + 1 == len(prompts) or (index + 1) % 16:
+                            return
+                        fixed, current = summarize(rows["frozen"]), summarize(rows["online"])
+                        milestone = dict(requests=2 * (index + 1), fixed_tok_s=fixed["tok_s"],
+                                         tok_s=current["tok_s"], net_increment=current["tok_s"] / fixed["tok_s"] - 1,
+                                         accepted_per_round=current["accepted_per_round"],
+                                         updates=current["stats"]["updates"], publications=current["stats"]["publications"])
+                        summary.setdefault("progress", {}).setdefault(f"paired_{stride}", []).append(milestone)
+                        persist()
+                        print("paired", milestone, flush=True)
+                    frozen, stream = measure_interleaved(
+                        prompts, lambda pair, index: issue(pair, args.tokens, index), trainer, checkpoint)
+                    check_tokens(frozen[:len(ar)], ar)
+                    results["frozen"] = dict(stream=summarize(frozen), holdout=summarize(holdout_frozen),
+                                             request_timeline=request_timeline(frozen))
+                    trainer.pending_evaluation = "current"
+                else:
+                    stream = measure(prompts, label=f"online_{runner.head['step']}_{stride}", frozen=frozen)
                 trainer.stride = None
                 tail = None
                 if trainer.pending_update is not None:
@@ -407,6 +459,7 @@ def main(*, guard=None):
                     raise RuntimeError("continuous run reached an update limit")
                 result["net_increment"] = result["stream"]["tok_s"] / results["frozen"]["stream"]["tok_s"] - 1
                 results[str(stride)] = result
+                persist()
                 if args.replay_learned_head:
                     learned = measure(prompts, label=f"learned_{runner.head['step']}_{stride}", frozen=frozen)
                     check_tokens(learned, frozen)

@@ -76,3 +76,37 @@ def test_normal_shutdown_is_saved():
     summary, saved = {"completed": True}, []
     benchmark.finish_engine(engine, summary, lambda: saved.append(dict(summary)))
     assert saved == [{"completed": True, "clean_shutdown": True}]
+
+
+def test_interleaving_preserves_online_order_and_charges_each_group_once():
+    trainer = SimpleNamespace(background=False, pending_update=None, rounds=0, version=0,
+                              completed_version=0, published_version=0, update_limit_reached=lambda: False)
+    calls = []
+
+    def issue(pair, index):
+        online = trainer.pending_evaluation == "current"
+        if online:
+            trainer.rounds += 2
+            trainer.version += 1
+            trainer.completed_version = trainer.published_version = trainer.version
+        calls.append((index, trainer.pending_evaluation, trainer.version))
+        return dict(seconds=5.0 if online else 10.0, tokens=[[index], [index]],
+                    metrics=[dict(tpot_ms=1)],
+                    stats=dict(updates=int(online), publications=int(online), rounds=2, accepted=1))
+
+    frozen, online = benchmark.measure_interleaved([("a", "b"), ("c", "d"), ("e", "f")], issue, trainer)
+    assert [(i, view) for i, view, _ in calls] == [
+        (0, "initial"), (0, "current"), (1, "current"), (1, "initial"),
+        (2, "initial"), (2, "current")]
+    assert [row["learner"]["optimizer_version"] for row in online] == [1, 2, 3]
+    assert sum(row["stats"]["updates"] for row in frozen) == 0
+    assert sum(row["stats"]["updates"] for row in online) == 3
+    assert benchmark.summarize(frozen)["seconds"] == 30
+    assert benchmark.summarize(online)["seconds"] == 15
+
+
+@pytest.mark.parametrize("background,pending", [(True, None), (False, object())])
+def test_interleaving_cannot_borrow_free_learning_time_from_the_frozen_group(background, pending):
+    trainer = SimpleNamespace(background=background, pending_update=pending)
+    with pytest.raises(ValueError, match="synchronous"):
+        benchmark.measure_interleaved([("a", "b")], lambda *_: pytest.fail("must not generate"), trainer)

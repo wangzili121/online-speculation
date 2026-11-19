@@ -14,6 +14,49 @@ from blockspec.pypto_qwen38.oneserving_tp2 import check_sampled_chunk
 from blockspec.pypto_qwen38.oneserving_tp2_online import TP2Online
 
 
+def test_resident_evaluation_views_preserve_learning_state_and_never_publish_uninitialized_banks():
+    trainer = TP2Online(None, device=0, last_layers=1)
+    trainer.initial_step = 0
+    trainer.version = trainer.completed_version = trainer.published_version = 4
+    trainer.rounds = 128
+    trainer.original, trainer.updated = object(), object()
+    trainer.runner = SimpleNamespace(suffix=trainer.updated)
+    trainer.replay = [object()]
+    feedback, replay = trainer.feedback, list(trainer.replay)
+    trainer.collect_update = lambda **_: None
+    trainer.pending_evaluation = "initial"
+    trainer.prepare_batch()
+    assert trainer.evaluation_paused and trainer.runner.suffix is trainer.original
+    assert (trainer.rounds, trainer.version, trainer.published_version) == (128, 4, 4)
+    assert trainer.replay == replay and trainer.feedback is feedback
+    trainer.pending_evaluation = "current"
+    trainer.prepare_batch()
+    assert not trainer.evaluation_paused and trainer.runner.suffix is trainer.updated
+    trainer.published_version = trainer.initial_step
+    trainer.pending_evaluation = "current"
+    trainer.prepare_batch()
+    assert trainer.runner.suffix is trainer.original
+
+
+@pytest.mark.parametrize("background,pending", [(True, None), (False, object())])
+def test_view_switch_rejects_background_work_before_any_collection(background, pending):
+    trainer = TP2Online(None, device=0, last_layers=1, background=background)
+    trainer.pending_update, trainer.pending_evaluation = pending, "initial"
+    trainer.collect_update = lambda **_: pytest.fail("background work must not run during frozen evaluation")
+    with pytest.raises(RuntimeError, match="synchronous"):
+        trainer.prepare_batch()
+
+
+def test_frozen_view_does_not_send_native_rows_to_the_learner(monkeypatch):
+    from blockspec.pypto_qwen38.oneserving_tp2 import OrthrusTP2Runner, TensorParallelRunner
+    runner = object.__new__(OrthrusTP2Runner)
+    runner.online = SimpleNamespace(evaluation_paused=True,
+                                   observe_native=lambda *_: pytest.fail("frozen feedback"))
+    expected = object()
+    monkeypatch.setattr(TensorParallelRunner, "run_batch", lambda *_: expected)
+    assert runner._native_batch([]) is expected
+
+
 @pytest.mark.parametrize("layers,indices", [(1, {12, 13}), (4, {8, 12, 13})])
 def test_norm_scope_only_packs_changed_norm_banks(layers, indices):
     from math import prod

@@ -1,0 +1,85 @@
+{
+  "completed": true,
+  "tp": 2,
+  "physical_card_count": 2,
+  "settings_equal": {
+    "head_payload_sha256": true,
+    "visible_devices": true,
+    "kv_pages": true,
+    "learner_device": true,
+    "last_layers": true,
+    "parameter_scope": true,
+    "learning_rate": true,
+    "background": true,
+    "warmup_updates": true,
+    "objective": true,
+    "teacher_temperature": true,
+    "max_updates": true,
+    "feedback_mode": true,
+    "temperature": true,
+    "seed": true,
+    "sampler": true,
+    "replay_blocks": true,
+    "publish_every": true,
+    "stop_on_eos": true,
+    "candidates": true,
+    "requests": true,
+    "prompts_sha256": true,
+    "holdout_sha256": true
+  },
+  "update_fields_identical": {
+    "version": true,
+    "round": true,
+    "loss": true,
+    "gradient_norm": true,
+    "clip_scale": true,
+    "learning_rate": true,
+    "supervised": true,
+    "interval": true,
+    "supervision_weight": true
+  },
+  "final_published_head_identical": true,
+  "final_head_sha256": [
+    "99d9221e9c0b53e2daef6028524294e9ccf342c27abce48e00ac84180ac0ec16",
+    "99d9221e9c0b53e2daef6028524294e9ccf342c27abce48e00ac84180ac0ec16"
+  ],
+  "timings": {
+    "old_cpu_publication": {
+      "fixed_tok_s": 9.415365199027526,
+      "fixed_seconds": 870.0671537250746,
+      "online_tok_s": 9.830440333583455,
+      "online_seconds": 833.329914227128,
+      "net_increment": 0.044084868274551825,
+      "fixed_rounds": 3609,
+      "fixed_accepted": 4338,
+      "accepted": 4377,
+      "rounds": 3567,
+      "seconds_components": {
+        "draft_sampling": 372.556499955,
+        "stochastic_verify": 173.045298433,
+        "update": 5.742452933,
+        "publish_pack": 1.80883034,
+        "publish_upload": 0.588807223
+      }
+    },
+    "new_device_publication": {
+      "fixed_tok_s": 10.006375470155149,
+      "fixed_seconds": 818.6780542498454,
+      "online_tok_s": 9.952062416917851,
+      "online_seconds": 823.1459627980366,
+      "net_increment": -0.005427844817465721,
+      "fixed_rounds": 3609,
+      "fixed_accepted": 4338,
+      "accepted": 4377,
+      "rounds": 3567,
+      "seconds_components": {
+        "draft_sampling": 364.096349223,
+        "stochastic_verify": 171.294743332,
+        "update": 3.953219434,
+        "publish_pack": 0.015099038,
+        "publish_upload": 0.478048311
+      }
+    }
+  },
+  "interpretation": "Two separate matched-pair trials; identical learning trajectory and final head, different timings. Neither is a reserved confirmation. Single-run net gain is not yet stable."
+}

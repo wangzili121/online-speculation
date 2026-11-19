@@ -47,6 +47,22 @@ def begin(trainer, *, width=32, maximum=64, prompt=(10,), stops=()):
     return request
 
 
+def test_frozen_view_keeps_a_delayed_window_and_replay_untouched(learner):
+    request = begin(learner)
+    request.finish_reason = "length"
+    window, feedback = learner.window, learner.feedback
+    learner.replay = [object()]
+    replay = list(learner.replay)
+    learner.initial_step = 0
+    learner.original, learner.updated = object(), object()
+    learner.collect_update = lambda **_: None
+    learner.pending_evaluation = "initial"
+    learner.prepare_batch()
+    assert learner.evaluation_paused
+    assert learner.window is window and learner.feedback is feedback
+    assert not window.ready and learner.replay == replay
+
+
 def observe(trainer, request, inputs, emitted, previous=()):
     position = len(request.prompt_ids) + len(request.generated) + len(previous) - 1
     trainer.observe_teacher(Slot(request, position, tuple(inputs)), 0, emitted, previous, 0,

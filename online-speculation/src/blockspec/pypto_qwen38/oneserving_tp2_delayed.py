@@ -26,6 +26,8 @@ class TP2DelayedOnline(TP2Online):
 
     def prepare_batch(self):
         super().prepare_batch()
+        if self.evaluation_paused:
+            return  # 固定组不消费反馈；在线组的窗口与 replay 跨题保留。
         if self.stride is None:
             # Unfinished feedback must not leak into a frozen evaluation or reset.
             self.window = self.request = self.feedback = None
