@@ -30,5 +30,31 @@
   },
   "update_seconds": 3.340363604,
   "wait_and_commit_seconds": 1.179535735,
-  "note": "Optional last1 colocated training uses CPU lazy-sampling windows, serialized with all device operations. Reached feedback real27B audit passed; delayed feedback audit and complete flow timing are still pending. Frequent replay-audit updates do not establish an end-to-end gain; update cadence can differ while a replay is queued."
+  "note": "Optional last1 colocated learning during CPU lazy sampling, serialized with all device operations. Reached and delayed feedback passed real27B2card mixed math/EOS replay and export checks. Complete Pseudo serial/overlap timing is running separately; no end-to-end gain is inferred from these frequent-update diagnostic runs.",
+  "reached_and_delayed_real_npu_passed": true,
+  "delayed_case": {
+    "case": "c61-v33-overlap-delayed-t1-audit-r1",
+    "feedback_mode": "delayed",
+    "physical_cards": 2,
+    "tp": 2,
+    "learner_device": 0,
+    "last_layers": 1,
+    "temperature": 1,
+    "block_size": 32,
+    "candidates": 31,
+    "requests": 6,
+    "output_tokens": 272,
+    "updates": 18,
+    "launch_stages": {
+      "sampling": 16,
+      "boundary": 2
+    },
+    "max_replay_tv": 4.071485761869553e-07,
+    "max_replay_l2": 0.002962730824947357,
+    "export_banks_exact": true,
+    "frozen_feedback_updates_publications_zero": true,
+    "no_pending_or_queued_update_at_each_pair_completion": true,
+    "update_seconds": 2.301880255,
+    "wait_and_commit_seconds": 1.462655717
+  }
 }
