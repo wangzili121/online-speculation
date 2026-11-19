@@ -1,0 +1,178 @@
+{
+  "completed": true,
+  "cpu_tests": 176,
+  "fix": "Stop verifier at the first delivered EOS/budget boundary; align feedback, acceptance statistics, existing C4 restore and cache commit to that same prefix.",
+  "cases": [
+    {
+      "tag": "b167-v18-eos-greedy-audit-r1",
+      "temperature": 0.0,
+      "requests": 6,
+      "tokens": 44,
+      "physical_cards": 2,
+      "candidates": 31,
+      "updates": 8,
+      "exact_greedy": true,
+      "replay_audits": [
+        {
+          "rows": 2,
+          "max_abs": 0.09375,
+          "relative_l2": 0.002632382558658719,
+          "served_replay_tv": 3.268258524258272e-06,
+          "top1_agreement": 1.0,
+          "teacher_tv_before": 0.49967798590660095,
+          "teacher_tv_after": 0.49904558062553406,
+          "batch_loss_before": 0.49967727065086365,
+          "batch_loss_after": 0.49904441833496094
+        }
+      ],
+      "export_banks_exact": true,
+      "diagnostic_only": false,
+      "eos_feedback_checks": null,
+      "device_bank_readback": null,
+      "sampler": "device_greedy"
+    },
+    {
+      "tag": "b167-v18-eos-oracle-audit-r1",
+      "temperature": 0.0,
+      "requests": 6,
+      "tokens": 44,
+      "physical_cards": 2,
+      "candidates": 31,
+      "updates": 3,
+      "exact_greedy": true,
+      "replay_audits": [
+        {
+          "rows": 3,
+          "max_abs": 0.09375,
+          "relative_l2": 0.002718389965593815,
+          "served_replay_tv": 2.064159889414441e-05,
+          "top1_agreement": 1.0,
+          "teacher_tv_before": 0.3354417085647583,
+          "teacher_tv_after": 0.334140807390213,
+          "batch_loss_before": 0.3354414999485016,
+          "batch_loss_after": 0.3341403901576996
+        }
+      ],
+      "export_banks_exact": true,
+      "diagnostic_only": true,
+      "eos_feedback_checks": [
+        {
+          "delivered": 3,
+          "supervised": 3
+        },
+        {
+          "delivered": 3,
+          "supervised": 3
+        },
+        {
+          "delivered": 3,
+          "supervised": 3
+        }
+      ],
+      "device_bank_readback": [
+        {
+          "rank": 0,
+          "bank": 9,
+          "initial_unchanged": true,
+          "published_matches_host": true
+        },
+        {
+          "rank": 0,
+          "bank": 10,
+          "initial_unchanged": true,
+          "published_matches_host": true
+        },
+        {
+          "rank": 0,
+          "bank": 11,
+          "initial_unchanged": true,
+          "published_matches_host": true
+        },
+        {
+          "rank": 0,
+          "bank": 12,
+          "initial_unchanged": true,
+          "published_matches_host": true
+        },
+        {
+          "rank": 0,
+          "bank": 13,
+          "initial_unchanged": true,
+          "published_matches_host": true
+        },
+        {
+          "rank": 0,
+          "bank": 14,
+          "initial_unchanged": true,
+          "published_matches_host": true
+        },
+        {
+          "rank": 1,
+          "bank": 9,
+          "initial_unchanged": true,
+          "published_matches_host": true
+        },
+        {
+          "rank": 1,
+          "bank": 10,
+          "initial_unchanged": true,
+          "published_matches_host": true
+        },
+        {
+          "rank": 1,
+          "bank": 11,
+          "initial_unchanged": true,
+          "published_matches_host": true
+        },
+        {
+          "rank": 1,
+          "bank": 12,
+          "initial_unchanged": true,
+          "published_matches_host": true
+        },
+        {
+          "rank": 1,
+          "bank": 13,
+          "initial_unchanged": true,
+          "published_matches_host": true
+        },
+        {
+          "rank": 1,
+          "bank": 14,
+          "initial_unchanged": true,
+          "published_matches_host": true
+        }
+      ],
+      "sampler": "device_greedy"
+    },
+    {
+      "tag": "b167-v18-eos-t1-audit-r1",
+      "temperature": 1.0,
+      "requests": 6,
+      "tokens": 44,
+      "physical_cards": 2,
+      "candidates": 31,
+      "updates": 8,
+      "exact_greedy": null,
+      "replay_audits": [
+        {
+          "rows": 2,
+          "max_abs": 0.09375,
+          "relative_l2": 0.002632382558658719,
+          "served_replay_tv": 3.268258524258272e-06,
+          "top1_agreement": 1.0,
+          "teacher_tv_before": 0.49967798590660095,
+          "teacher_tv_after": 0.49904558062553406,
+          "batch_loss_before": 0.49967727065086365,
+          "batch_loss_after": 0.49904441833496094
+        }
+      ],
+      "export_banks_exact": true,
+      "diagnostic_only": false,
+      "eos_feedback_checks": null,
+      "device_bank_readback": null,
+      "sampler": "host_full_vocab_lazy"
+    }
+  ],
+  "note": "Short correctness probes, not throughput claims. Oracle probe performs actual draft forward but replaces candidates by the AR reference solely to force accepted EOS. Temperature1 remains host full-vocabulary lazy sampling; model/training are PyPTO."
+}

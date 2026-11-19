@@ -128,7 +128,7 @@ def check_chunk(sequence, offset, selected):
     return selected, len(selected), len(selected), False
 
 
-def check_sampled_chunk(sequence, offset, size, target, proposal, generator):
+def check_sampled_chunk(sequence, offset, size, target, proposal, generator, *, stop_tokens=()):
     """Verify the reached portion of one target chunk with full-vocabulary sampling."""
     emitted = []
     for row in range(size):
@@ -141,12 +141,26 @@ def check_sampled_chunk(sequence, offset, size, target, proposal, generator):
         q = proposal[candidate]
         if torch.rand((), generator=generator) * q[token] < p[token]:
             emitted.append(token)
+            if token in stop_tokens:
+                return emitted, row + 1, row + 1, True
             continue
         replacement, mass = residual(p, q)
         if mass <= 0:
             raise RuntimeError("a rejected draft requires positive residual probability")
         return emitted + [int(draw(replacement, generator))], row + 1, row, True
     return emitted, size, size, False
+
+
+def served_prefix(request, previous_count, emitted):
+    """只提交并监督实际交付的前缀，包含首个 EOS，排除其后 token。"""
+    remaining = request.max_tokens - len(request.generated) - previous_count
+    if remaining < 1:
+        raise ValueError("verification has no remaining output budget")
+    served = emitted[:remaining]
+    for index, token in enumerate(served):
+        if token in getattr(request, "stop_token_ids", ()):
+            return served[:index + 1], True
+    return served, len(served) == remaining
 
 
 class OrthrusTP2Runner(TensorParallelRunner):
@@ -490,18 +504,24 @@ class OrthrusTP2Runner(TensorParallelRunner):
                         emitted, count, accepted, done = check_sampled_chunk(
                             proposed[i], offsets[i], len(chunk),
                             lambda row: self._distribution(batch, j, row, slot.request),
-                            proposals.get(slot.request.request_id), slot.request.generator)
+                            proposals.get(slot.request.request_id), slot.request.generator,
+                            stop_tokens=getattr(slot.request, "stop_token_ids", ()))
                         self.spec_stats["stochastic_verify_ns"] += time.monotonic_ns() - sampling_started
                     else:
                         target = [self._distribution(batch, j, row, slot.request) for row in range(len(chunk))]
                         emitted, count, accepted, done = check_chunk(proposed[i], offsets[i], target)
+                    # EOS 后的验证行已经算出，但不属于本请求的输出或训练样本。
+                    rejected = done and offsets[i] + count != len(proposed[i])
+                    emitted, stopped = served_prefix(slot.request, len(results[i]), emitted)
+                    rejected = rejected and accepted < len(emitted)
+                    if stopped:
+                        count, accepted, done = len(emitted), min(accepted, len(emitted)), True
                     if online is not None:
                         online.observe_teacher(slot, j, emitted, results[i], offsets[i],
                                                count, final=done, selected=i == feedback_slot)
                     results[i].extend(emitted)
                     self.spec_stats["accepted"] += accepted
-                    bonus = offsets[i] + count == len(proposed[i])
-                    self.spec_stats["rejected_rounds"] += int(done and not bonus)
+                    self.spec_stats["rejected_rounds"] += int(rejected)
                     if not done:
                         unfinished.append(i)
                 record = self.requests[slot.request.request_id]

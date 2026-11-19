@@ -22,7 +22,7 @@ from .online_feedback_programs import make_loss_sum, make_tp2_history
 from .online_suffix_checkpoint import restore
 from .online_suffix_optimizer import SuffixOptimizer, SuffixOptimizerPrograms
 from .oneserving_tp2 import (BLOCK, HIDDEN, LAYERS, SHAPES, TP_VOCAB, checkpoint_manifest,
-                             rank_weights)
+                             rank_weights, served_prefix)
 from .training_executor import TrainingPrograms, TrainingWorkspace
 from .training_memory import require_suffix_memory
 from .training_suffix_graph import SuffixGraph
@@ -525,8 +525,9 @@ class TP2Online:
         pass
 
     def observe_teacher(self, slot, batch_slot, emitted, previous, offset, count, *, final, selected):
-        if selected:
-            self.capture_teacher(batch_slot, offset, count, final=final)
+        if selected and self.feedback is not None and not self.feedback["complete"]:
+            delivered, stopped = served_prefix(slot.request, len(previous), emitted)
+            self.capture_teacher(batch_slot, offset, min(count, len(delivered)), final=final or stopped)
 
     def capture_teacher(self, batch_slot, offset, count, *, final, source_row=0):
         started = time.monotonic_ns()
