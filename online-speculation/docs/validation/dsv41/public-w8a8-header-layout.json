@@ -1,0 +1,68 @@
+{
+  "repository": "Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8",
+  "revision": "master",
+  "fetched_on": "2026-11-19",
+  "source": "ModelScope repository files, bounded HTTP Range reads of safetensors headers",
+  "config_quantization": {
+    "quant_method": "ascend"
+  },
+  "description_model_quant_type": "W8A8_DYNAMIC",
+  "tensors": [
+    {
+      "tensor": "layers.0.attn.wq_a.weight",
+      "shard": "quant_model_weights-00001-of-00138.safetensors",
+      "dtype": "BF16",
+      "shape": [
+        1280,
+        5120
+      ]
+    },
+    {
+      "tensor": "layers.0.attn.wq_b.weight",
+      "shard": "quant_model_weights-00001-of-00138.safetensors",
+      "dtype": "I8",
+      "shape": [
+        32768,
+        1280
+      ]
+    },
+    {
+      "tensor": "layers.0.attn.wkv.weight",
+      "shard": "quant_model_weights-00020-of-00138.safetensors",
+      "dtype": "BF16",
+      "shape": [
+        512,
+        5120
+      ]
+    },
+    {
+      "tensor": "layers.1.engram.embed.weight",
+      "shard": "quant_model_weights-engram-1.safetensors",
+      "dtype": "I8",
+      "shape": [
+        384006168,
+        256
+      ]
+    },
+    {
+      "tensor": "layers.1.engram.embed.scale",
+      "shard": "quant_model_weights-engram-1.safetensors",
+      "dtype": "F8_E8M0",
+      "shape": [
+        384006168,
+        8
+      ]
+    },
+    {
+      "tensor": "layers.14.engram.embed.scale",
+      "shard": "quant_model_weights-engram-14.safetensors",
+      "dtype": "F8_E8M0",
+      "shape": [
+        384016682,
+        8
+      ]
+    }
+  ],
+  "inspected_pypto_lib_commit": "3d9311e",
+  "validation": "Metadata and selected real headers only; no NPU or whole-model execution"
+}

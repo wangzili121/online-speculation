@@ -22,7 +22,26 @@ Serving 校验 Lib 的工作树状态和 Git tree。可通过 `--speculative-con
 
 ## 内网权重预检
 
-默认权重目录为 `/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8`。把两份补丁应用到 PyPTO Lib 和 Serving 后，在 Serving 的 Python 环境下执行。脚本读取配置、索引及 safetensors header，可在两台机器分别运行，无需 NPU。若有 head，可追加 `--head "$DRAFT_HEAD"` 校验其与目标权重的身份是否一致。两台使用本地盘时，对照输出的 `identity` 确认配置、索引和 tokenizer 相同。
+默认权重目录为 `/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8`。在任意 Python 3.10+ 环境下执行下列检查，只读取本地配置、索引和实际 safetensors header，无需安装 PyPTO，也无需 NPU。报告列出当前 A3 loader 所需的投影和 Engram 格式，以及每个不匹配的实际张量。此命令收集布局，成功退出表示报告生成完成。
+
+```bash
+python3 "$ORTHRUS_ROOT/online-speculation/scripts/preflight_dsv41_pypto.py" \
+  --inspect --output checkpoint-layout.json
+```
+
+公开 W8A8 包把 `W8A8_DYNAMIC` 声明放在 `quant_model_description.json`。预检接收该声明。实读公开文件的结果如下。 [实际张量头记录](validation/dsv41/public-w8a8-header-layout.json)
+
+| 项目 | 公开 1017 W8A8 权重 | 当前 A3 PyPTO 路径 |
+| --- | --- | --- |
+| Q-A、KV 投影 | BF16，无 INT8 scale/offset | INT8 GEMM，读取 scale/offset |
+| Q-B 投影 | INT8 | INT8 |
+| Engram 表 | INT8 | INT8 |
+| Engram scale | F8_E8M0 | FP32 |
+| 量化声明 | description 文件 | Serving loader 从 config 读取 |
+
+公开权重需要在加载器中识别量化声明和混合精度，并在 Q-A/KV 计算处选择 BF16 投影。CPU Engram 查表需要按 E8M0 格式读取并解码命中的 scale 行，同时保留原导出已有的 FP32 路径。只修改 config 无法改变这些张量格式。现有 A3 适配针对同事特定导出验证过，公开包的整模加载和执行还待完成。
+
+把两份补丁应用到配套 PyPTO Lib 和 Serving 后，可在其 Python 环境下执行完整预检。若有 head，追加 `--head "$DRAFT_HEAD"`，验证它与目标权重的配置、索引和 tokenizer 哈希。两台使用本地盘时，对照报告的 `identity` 可以检查这些元数据是否相同，权重 payload 的完整性另行校验。
 
 ```bash
 export TARGET_WEIGHTS="${TARGET_WEIGHTS:-/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8}"
@@ -30,7 +49,8 @@ PYTHONPATH="$ORTHRUS_ROOT/online-speculation/src${PYTHONPATH:+:$PYTHONPATH}" \
   python3 "$ORTHRUS_ROOT/online-speculation/scripts/preflight_dsv41_pypto.py" --model "$TARGET_WEIGHTS"
 ```
 
-公开 W8A8 包和按 A3 loader 格式导出的版本可能用相同目录名。预检按实际文件识别。当前 A3 服务入口使用单机设备上下文。两台各 8 张卡的内网部署还需实现跨机 rank 和 collective，预检用来提前确认权重这一项。
+当前 A3 服务入口使用单机设备上下文。两台各 8 张卡的内网部署还需实现跨机 rank 和 collective。
+
 
 ## K32 SWA
 
