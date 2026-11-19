@@ -1,0 +1,20 @@
+{
+  "completed": true,
+  "classification": "HEAP_RING_DEADLOCK in frozen stage before online updates; capacity or stalled consumer still needs a higher-budget reproduction",
+  "source_log": "/home/wangzili/ascend/log/debug/device-2/device-321997_20261119181932449.log",
+  "source_log_sha256": "4a09e2b12a52e5e375f7364e3110bd8a23b16a143e5d367ab8a8ede0f0ec38c4",
+  "trial": "v7-gsm128-last4-norms-kl1e2-r1",
+  "evidence": [
+    "[ERROR] AICPU(15199,aicpu_scheduler):2026-11-19-18:29:50.426.971 [device_log.cpp:96]15215 report_deadlock \"[ring_buffer.h:426] FATAL: Task Allocator Deadlock - Heap Exhausted! ring=2\"",
+    "[ERROR] AICPU(15199,aicpu_scheduler):2026-11-19-18:29:50.426.986 [device_log.cpp:96]15215 report_deadlock \"[ring_buffer.h:439] No reclaim progress for ~500 ms (25000000 cycles wall clock).\"",
+    "[ERROR] AICPU(15199,aicpu_scheduler):2026-11-19-18:29:50.427.001 [device_log.cpp:96]15215 report_deadlock \"[ring_buffer.h:444]   Task ring 2: current=1337, last_alive=17, active=1320/16384 (8.1%)\"",
+    "[ERROR] AICPU(15199,aicpu_scheduler):2026-11-19-18:29:50.427.012 [device_log.cpp:96]15215 report_deadlock \"[ring_buffer.h:448]   Heap ring 2: top=264765440, tail=1081344, size=268435456, used=263684096, available=3670016\"",
+    "[ERROR] AICPU(15199,aicpu_scheduler):2026-11-19-18:29:50.427.020 [device_log.cpp:96]15215 report_deadlock \"[ring_buffer.h:450]   Requested:  6291456 bytes\"",
+    "[ERROR] AICPU(15199,aicpu_scheduler):2026-11-19-18:29:50.427.029 [device_log.cpp:96]15215 report_deadlock \"[ring_buffer.h:461]   Head task 17: state=1, consumers=0/1, scope_released=1\"",
+    "[ERROR] AICPU(15199,aicpu_scheduler):2026-11-19-18:29:50.427.047 [device_log.cpp:96]15215 report_deadlock \"[ring_buffer.h:472]   Increase heap (current: 268435456); CallConfig.runtime_env.ring_heap=<bytes> (e.g. 536870912)\"",
+    "[ERROR] AICPU(15199,aicpu_scheduler):2026-11-19-18:29:50.427.055 [device_log.cpp:96]15215 report_deadlock \"[ring_buffer.h:475]   If one increase completes, it was under-provisioned; otherwise debug the stuck head consumer.\"",
+    "[ERROR] AICPU(15199,aicpu_scheduler):2026-11-19-18:29:50.427.170 [device_log.cpp:96]15214 aicpu_execute \"[aicpu_executor.cpp:1252] aicpu_execute: simpler runtime failed with rc=-2\"",
+    "[ERROR] AICPU(15199,aicpu_scheduler):2026-11-19-18:29:50.427.803 [device_log.cpp:96]15213 aicpu_execute \"[aicpu_executor.cpp:1252] aicpu_execute: simpler runtime failed with rc=-2\"",
+    "[ERROR] AICPU(15199,aicpu_scheduler):2026-11-19-18:29:50.581.717 [device_log.cpp:96]15212 aicpu_execute \"[aicpu_executor.cpp:1252] aicpu_execute: simpler runtime failed with rc=-2\""
+  ]
+}

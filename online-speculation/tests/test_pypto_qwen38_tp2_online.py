@@ -151,11 +151,11 @@ def test_serving_can_advance_while_one_update_is_pending(monkeypatch):
         assert [state["valid"] for state in replay] == [1]
         started.set()
         assert release.wait(10)
-        return round_number
+        return dict(round=round_number)
 
-    def publish(round_number):
+    def publish(result):
         assert get_ident() == scheduler
-        published.append(round_number)
+        published.append(result["round"])
 
     monkeypatch.setattr(trainer, "train", train)
     monkeypatch.setattr(trainer, "commit_update", publish)
@@ -253,3 +253,67 @@ def test_unlimited_learning_continues_past_64_updates(monkeypatch):
     assert trainer.completed_version == trainer.published_version == 240
     assert trainer.runner.spec_stats["updates"] == 80
     assert not trainer.update_limit_reached()
+
+
+def test_two_stage_cadence_keeps_learning_after_the_switch(monkeypatch):
+    trainer = TP2Online(None, device=0, last_layers=1, warm_update_stride=2, warm_update_steps=4)
+    trainer.runner = SimpleNamespace(spec_stats=Counter(), suffix="start")
+    trainer.initial_step = 160
+    trainer.version = trainer.completed_version = trainer.published_version = 160
+    trainer.stride = 8
+    trainer.updated, trainer.packed = [], []
+    observed = []
+
+    def train(replay, round_number):
+        observed.append((round_number, trainer.update_interval()))
+        trainer.version += 1
+        return dict(version=trainer.version, round=round_number, update_ns=1,
+                    publish_read_ns=0, publish_pack_ns=0)
+
+    monkeypatch.setattr(trainer, "train", train)
+    for _ in range(16):
+        if trainer.feedback_index(2) is not None:
+            trainer.feedback = dict(valid=1, candidates=1, complete=True)
+        trainer.finish_batch(2)
+    assert observed == [(2, 2), (4, 2), (6, 2), (8, 2), (16, 8), (24, 8), (32, 8)]
+    assert trainer.scheduled_updates == trainer.runner.spec_stats["updates"] == 7
+    assert trainer.completed_version == trainer.published_version == 167
+    assert not trainer.update_limit_reached()
+
+
+def test_two_stage_async_switch_waits_for_commit_and_records_submitted_interval(monkeypatch):
+    trainer = TP2Online(None, device=2, last_layers=1, warm_update_stride=2, warm_update_steps=1)
+    trainer.runner = SimpleNamespace(spec_stats=Counter(), suffix="start")
+    trainer.initial_step = 0
+    trainer.stride, trainer.updated, trainer.packed = 8, [], []
+    entered, release = Event(), Event()
+
+    def train(replay, round_number):
+        entered.set()
+        assert release.wait(5)
+        trainer.version += 1
+        return dict(version=trainer.version, round=round_number, update_ns=1,
+                    publish_read_ns=0, publish_pack_ns=0)
+
+    monkeypatch.setattr(trainer, "train", train)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        trainer.executor = executor
+        trainer.feedback = dict(valid=1, candidates=1, complete=True)
+        trainer.finish_batch(2)
+        assert entered.wait(5)
+        assert trainer.update_interval() == 2
+        trainer.finish_batch(2)
+        assert trainer.runner.spec_stats["busy_updates"] == 1
+        trainer.stride = None  # 模拟流结束，异步更新仍需完成并记录原来的间隔。
+        release.set()
+        trainer.collect_update(wait=True)
+    trainer.stride = 8
+    assert trainer.update_interval() == 8
+    assert trainer.records[0]["interval"] == 2
+    assert trainer.scheduled_updates == 2
+
+
+@pytest.mark.parametrize("stride,steps", [(None, 1), (2, 0), (1, 4), (True, 4), (2, -1), (2, True)])
+def test_two_stage_cadence_requires_an_explicit_valid_pair(stride, steps):
+    with pytest.raises(ValueError, match="two-stage cadence"):
+        TP2Online(None, device=0, warm_update_stride=stride, warm_update_steps=steps)

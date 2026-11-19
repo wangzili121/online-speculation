@@ -35,6 +35,8 @@ class TrainingPrograms:
                     self.chunks.append((compiled, arguments))
                 return
             entry, self.arguments = make_pipeline(graph, accumulate=accumulate_gradients)
+            if len(self.arguments)+4 > 256:
+                raise ValueError("suffix entry exceeds the runtime argument limit; use bounded chunks")
             self.programs["suffix"] = entry.compile(*map(meta, self.arguments), 0, 32, 31, 31, config=config)
             return
         for node in graph.nodes:

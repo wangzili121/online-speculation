@@ -1,0 +1,2498 @@
+{
+  "completed": false,
+  "head_step": 160,
+  "device_ids": [
+    0,
+    1
+  ],
+  "head_payload_sha256": "bb02eeffcf9e23b84ad2f8694bbe3fd9ab7e9406ee4c51d3f8eac6f99f565f82",
+  "head_shard_sha256": [
+    "99e68812f0588ffb7cfced35af03e4afe2b47937c0cbffa04bef7f1026bf77dc",
+    "972814751cb6f156cace79441f7e7fa649db895b416b80f16ea01c3f9e2b90c1"
+  ],
+  "visible_devices": "2,3",
+  "learner_device": 0,
+  "last_layers": 1,
+  "parameter_scope": "output_norms",
+  "physical_device_count": 2,
+  "kv_pages": 32,
+  "learning_rate": 1e-05,
+  "background": false,
+  "warmup_updates": 0,
+  "lr_schedule": "constant",
+  "objective": "tv",
+  "max_updates": null,
+  "focus_weight": 1,
+  "feedback_mode": "delayed",
+  "teacher_tokens": 7,
+  "teacher_temperature": 1.0,
+  "audit_replay": false,
+  "online_update_policy": "continuous_periodic",
+  "temperature": 0.0,
+  "seed": 743,
+  "sampler": "device_greedy",
+  "replay_blocks": 1,
+  "publish_every": 2,
+  "stop_on_eos": true,
+  "candidates": 7,
+  "requests": 96,
+  "ar_checked_requests": 16,
+  "output_tokens_per_request": 64,
+  "prompts_sha256": "26af9db894c8332925efa45f8115af8f81b93927a63bb65022d9f8ab3f42d8a4",
+  "holdout_sha256": "689e64376a99cca728382b81a067603d934fcfc98a35aafe285e94b9df127e1d",
+  "gather_feedback": true,
+  "optimizer_init": "fresh",
+  "results": {
+    "ar": {
+      "stream": {
+        "tokens": 1024,
+        "seconds": 70.16511888010427,
+        "tail_seconds": 0.0,
+        "tok_s": 14.594146156151687,
+        "tpot_median_ms": 54.297143920634916,
+        "accepted_per_round": null,
+        "stats": {
+          "proposed": 0,
+          "accepted": 0,
+          "rejected_rounds": 0,
+          "draft_ns": 0,
+          "verify_ns": 67331227078,
+          "rounds": 0,
+          "verify_calls": 0,
+          "restore_ns": 0,
+          "draft_batches": 0,
+          "draft_pair_batches": 0,
+          "feedback_ns": 0,
+          "update_ns": 0,
+          "publish_ns": 0,
+          "updates": 0,
+          "publications": 0,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "publish_upload_ns": 0,
+          "busy_updates": 0,
+          "feedback_skips": 0
+        }
+      },
+      "holdout": {
+        "tokens": 510,
+        "seconds": 32.06925477995537,
+        "tail_seconds": 0.0,
+        "tok_s": 15.903082360328852,
+        "tpot_median_ms": 54.27130910018215,
+        "accepted_per_round": null,
+        "stats": {
+          "proposed": 0,
+          "accepted": 0,
+          "rejected_rounds": 0,
+          "draft_ns": 0,
+          "verify_ns": 30835797849,
+          "rounds": 0,
+          "verify_calls": 0,
+          "restore_ns": 0,
+          "draft_batches": 0,
+          "draft_pair_batches": 0,
+          "feedback_ns": 0,
+          "update_ns": 0,
+          "publish_ns": 0,
+          "updates": 0,
+          "publications": 0,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "publish_upload_ns": 0,
+          "busy_updates": 0,
+          "feedback_skips": 0
+        }
+      },
+      "request_timeline": [
+        {
+          "requests": [
+            1,
+            2
+          ],
+          "seconds": 9.107759892940521,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 8795897819,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            3,
+            4
+          ],
+          "seconds": 9.004531243117526,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 8609251318,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            5,
+            6
+          ],
+          "seconds": 9.164847034960985,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 8829445260,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            7,
+            8
+          ],
+          "seconds": 8.961323115043342,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 8534484984,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            9,
+            10
+          ],
+          "seconds": 7.690045214025304,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 7377261268,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            11,
+            12
+          ],
+          "seconds": 9.062643273966387,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 8677246950,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            13,
+            14
+          ],
+          "seconds": 8.258323153946549,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 7966628378,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            15,
+            16
+          ],
+          "seconds": 8.91564595210366,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 8541011101,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        }
+      ]
+    },
+    "frozen": {
+      "stream": {
+        "tokens": 6075,
+        "seconds": 396.1897276979871,
+        "tail_seconds": 0.0,
+        "tok_s": 15.333562622378068,
+        "tpot_median_ms": 48.984063563492064,
+        "accepted_per_round": 1.7664387164650184,
+        "stats": {
+          "proposed": 12638,
+          "accepted": 3358,
+          "rejected_rounds": 1858,
+          "draft_ns": 77523204519,
+          "verify_ns": 306140383046,
+          "rounds": 1901,
+          "verify_calls": 1099,
+          "restore_ns": 2314841326,
+          "draft_batches": 1078,
+          "draft_pair_batches": 823,
+          "feedback_ns": 0,
+          "update_ns": 0,
+          "publish_ns": 0,
+          "updates": 0,
+          "publications": 0,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "publish_upload_ns": 0,
+          "busy_updates": 0,
+          "feedback_skips": 0
+        }
+      },
+      "holdout": {
+        "tokens": 510,
+        "seconds": 30.518738402053714,
+        "tail_seconds": 0.0,
+        "tok_s": 16.711044646776102,
+        "tpot_median_ms": 47.72066904761905,
+        "accepted_per_round": 1.8060606060606061,
+        "stats": {
+          "proposed": 1100,
+          "accepted": 298,
+          "rejected_rounds": 161,
+          "draft_ns": 6602963509,
+          "verify_ns": 22957811157,
+          "rounds": 165,
+          "verify_calls": 93,
+          "restore_ns": 195914189,
+          "draft_batches": 91,
+          "draft_pair_batches": 74,
+          "feedback_ns": 0,
+          "update_ns": 0,
+          "publish_ns": 0,
+          "updates": 0,
+          "publications": 0,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "publish_upload_ns": 0,
+          "busy_updates": 0,
+          "feedback_skips": 0
+        }
+      },
+      "request_timeline": [
+        {
+          "requests": [
+            1,
+            2
+          ],
+          "seconds": 8.620192263042554,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 274,
+            "accepted": 82,
+            "rejected_rounds": 41,
+            "draft_ns": 1557024369,
+            "verify_ns": 6846106495,
+            "rounds": 41,
+            "verify_calls": 22,
+            "restore_ns": 44601640,
+            "draft_batches": 21,
+            "draft_pair_batches": 20,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            3,
+            4
+          ],
+          "seconds": 8.554992997087538,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 237,
+            "accepted": 62,
+            "rejected_rounds": 35,
+            "draft_ns": 1584834046,
+            "verify_ns": 6685088454,
+            "rounds": 36,
+            "verify_calls": 24,
+            "restore_ns": 46980625,
+            "draft_batches": 23,
+            "draft_pair_batches": 13,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            5,
+            6
+          ],
+          "seconds": 8.998558840947226,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 284,
+            "accepted": 69,
+            "rejected_rounds": 42,
+            "draft_ns": 1774719884,
+            "verify_ns": 6966088384,
+            "rounds": 43,
+            "verify_calls": 25,
+            "restore_ns": 50111831,
+            "draft_batches": 25,
+            "draft_pair_batches": 18,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            7,
+            8
+          ],
+          "seconds": 8.582033036043867,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 233,
+            "accepted": 59,
+            "rejected_rounds": 35,
+            "draft_ns": 1545532616,
+            "verify_ns": 6708736470,
+            "rounds": 36,
+            "verify_calls": 23,
+            "restore_ns": 49287312,
+            "draft_batches": 22,
+            "draft_pair_batches": 14,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            9,
+            10
+          ],
+          "seconds": 7.3904558890499175,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 287,
+            "accepted": 75,
+            "rejected_rounds": 42,
+            "draft_ns": 1681865906,
+            "verify_ns": 5476309466,
+            "rounds": 43,
+            "verify_calls": 23,
+            "restore_ns": 48750920,
+            "draft_batches": 23,
+            "draft_pair_batches": 20,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            11,
+            12
+          ],
+          "seconds": 8.840373350773007,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 218,
+            "accepted": 55,
+            "rejected_rounds": 32,
+            "draft_ns": 1582777304,
+            "verify_ns": 6902381510,
+            "rounds": 33,
+            "verify_calls": 23,
+            "restore_ns": 51060924,
+            "draft_batches": 23,
+            "draft_pair_batches": 10,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            13,
+            14
+          ],
+          "seconds": 8.218885683221743,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 318,
+            "accepted": 75,
+            "rejected_rounds": 47,
+            "draft_ns": 1802723496,
+            "verify_ns": 6178186430,
+            "rounds": 47,
+            "verify_calls": 25,
+            "restore_ns": 58620576,
+            "draft_batches": 24,
+            "draft_pair_batches": 23,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            15,
+            16
+          ],
+          "seconds": 8.44777774089016,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 240,
+            "accepted": 64,
+            "rejected_rounds": 35,
+            "draft_ns": 1547547811,
+            "verify_ns": 6599893710,
+            "rounds": 36,
+            "verify_calls": 22,
+            "restore_ns": 48509592,
+            "draft_batches": 22,
+            "draft_pair_batches": 14,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            17,
+            18
+          ],
+          "seconds": 7.637702435953543,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 282,
+            "accepted": 77,
+            "rejected_rounds": 41,
+            "draft_ns": 1630061591,
+            "verify_ns": 5771708733,
+            "rounds": 42,
+            "verify_calls": 23,
+            "restore_ns": 48275352,
+            "draft_batches": 22,
+            "draft_pair_batches": 20,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            19,
+            20
+          ],
+          "seconds": 8.689035600982606,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 198,
+            "accepted": 56,
+            "rejected_rounds": 29,
+            "draft_ns": 1427282237,
+            "verify_ns": 6902641628,
+            "rounds": 30,
+            "verify_calls": 22,
+            "restore_ns": 45812144,
+            "draft_batches": 21,
+            "draft_pair_batches": 9,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            21,
+            22
+          ],
+          "seconds": 7.130867259111255,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 277,
+            "accepted": 79,
+            "rejected_rounds": 40,
+            "draft_ns": 1546895431,
+            "verify_ns": 5384104974,
+            "rounds": 41,
+            "verify_calls": 21,
+            "restore_ns": 41756929,
+            "draft_batches": 21,
+            "draft_pair_batches": 20,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            23,
+            24
+          ],
+          "seconds": 7.763049088884145,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 296,
+            "accepted": 77,
+            "rejected_rounds": 43,
+            "draft_ns": 1644385035,
+            "verify_ns": 5898806215,
+            "rounds": 44,
+            "verify_calls": 23,
+            "restore_ns": 50585759,
+            "draft_batches": 22,
+            "draft_pair_batches": 22,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            25,
+            26
+          ],
+          "seconds": 8.843283905182034,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 259,
+            "accepted": 64,
+            "rejected_rounds": 39,
+            "draft_ns": 1590190517,
+            "verify_ns": 6969478622,
+            "rounds": 39,
+            "verify_calls": 22,
+            "restore_ns": 50212363,
+            "draft_batches": 22,
+            "draft_pair_batches": 17,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            27,
+            28
+          ],
+          "seconds": 7.848224653862417,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 296,
+            "accepted": 79,
+            "rejected_rounds": 43,
+            "draft_ns": 1687945733,
+            "verify_ns": 5949791062,
+            "rounds": 44,
+            "verify_calls": 23,
+            "restore_ns": 49632856,
+            "draft_batches": 23,
+            "draft_pair_batches": 21,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            29,
+            30
+          ],
+          "seconds": 8.79706316604279,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 207,
+            "accepted": 54,
+            "rejected_rounds": 31,
+            "draft_ns": 1531176324,
+            "verify_ns": 6936564329,
+            "rounds": 31,
+            "verify_calls": 23,
+            "restore_ns": 47494607,
+            "draft_batches": 23,
+            "draft_pair_batches": 8,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            31,
+            32
+          ],
+          "seconds": 8.560025695012882,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 223,
+            "accepted": 64,
+            "rejected_rounds": 33,
+            "draft_ns": 1418229008,
+            "verify_ns": 6847761205,
+            "rounds": 34,
+            "verify_calls": 22,
+            "restore_ns": 47914588,
+            "draft_batches": 20,
+            "draft_pair_batches": 14,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            33,
+            34
+          ],
+          "seconds": 7.072722683893517,
+          "output_tokens": [
+            57,
+            64
+          ],
+          "stats": {
+            "proposed": 266,
+            "accepted": 67,
+            "rejected_rounds": 39,
+            "draft_ns": 1577645373,
+            "verify_ns": 5267137068,
+            "rounds": 39,
+            "verify_calls": 22,
+            "restore_ns": 47496672,
+            "draft_batches": 22,
+            "draft_pair_batches": 17,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            35,
+            36
+          ],
+          "seconds": 7.98507320904173,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 260,
+            "accepted": 71,
+            "rejected_rounds": 38,
+            "draft_ns": 1580585277,
+            "verify_ns": 6163823628,
+            "rounds": 39,
+            "verify_calls": 22,
+            "restore_ns": 45411509,
+            "draft_batches": 22,
+            "draft_pair_batches": 17,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            37,
+            38
+          ],
+          "seconds": 8.45415847399272,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 296,
+            "accepted": 80,
+            "rejected_rounds": 43,
+            "draft_ns": 1637193803,
+            "verify_ns": 6608896013,
+            "rounds": 44,
+            "verify_calls": 22,
+            "restore_ns": 45500743,
+            "draft_batches": 22,
+            "draft_pair_batches": 22,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            39,
+            40
+          ],
+          "seconds": 8.148112152004614,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 266,
+            "accepted": 71,
+            "rejected_rounds": 40,
+            "draft_ns": 1643331968,
+            "verify_ns": 6252783411,
+            "rounds": 40,
+            "verify_calls": 24,
+            "restore_ns": 49782456,
+            "draft_batches": 23,
+            "draft_pair_batches": 17,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            41,
+            42
+          ],
+          "seconds": 8.889913937076926,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 230,
+            "accepted": 57,
+            "rejected_rounds": 34,
+            "draft_ns": 1580742811,
+            "verify_ns": 6981191689,
+            "rounds": 35,
+            "verify_calls": 23,
+            "restore_ns": 45291670,
+            "draft_batches": 23,
+            "draft_pair_batches": 12,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            43,
+            44
+          ],
+          "seconds": 8.0734848738648,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 277,
+            "accepted": 74,
+            "rejected_rounds": 41,
+            "draft_ns": 1676607467,
+            "verify_ns": 6137846780,
+            "rounds": 42,
+            "verify_calls": 24,
+            "restore_ns": 53495642,
+            "draft_batches": 23,
+            "draft_pair_batches": 19,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            45,
+            46
+          ],
+          "seconds": 8.389225423103198,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 286,
+            "accepted": 75,
+            "rejected_rounds": 41,
+            "draft_ns": 1687087574,
+            "verify_ns": 6448727870,
+            "rounds": 43,
+            "verify_calls": 24,
+            "restore_ns": 50677880,
+            "draft_batches": 23,
+            "draft_pair_batches": 20,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            47,
+            48
+          ],
+          "seconds": 7.405270026065409,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 300,
+            "accepted": 80,
+            "rejected_rounds": 44,
+            "draft_ns": 1766544922,
+            "verify_ns": 5416616500,
+            "rounds": 45,
+            "verify_calls": 24,
+            "restore_ns": 53475220,
+            "draft_batches": 24,
+            "draft_pair_batches": 21,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            49,
+            50
+          ],
+          "seconds": 7.482050963910297,
+          "output_tokens": [
+            64,
+            51
+          ],
+          "stats": {
+            "proposed": 235,
+            "accepted": 62,
+            "rejected_rounds": 34,
+            "draft_ns": 1583835485,
+            "verify_ns": 5634524204,
+            "rounds": 35,
+            "verify_calls": 23,
+            "restore_ns": 46235901,
+            "draft_batches": 23,
+            "draft_pair_batches": 12,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            51,
+            52
+          ],
+          "seconds": 8.489609061041847,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 298,
+            "accepted": 78,
+            "rejected_rounds": 44,
+            "draft_ns": 1695317019,
+            "verify_ns": 6582980475,
+            "rounds": 45,
+            "verify_calls": 23,
+            "restore_ns": 44078676,
+            "draft_batches": 23,
+            "draft_pair_batches": 22,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            53,
+            54
+          ],
+          "seconds": 8.143131640041247,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 223,
+            "accepted": 60,
+            "rejected_rounds": 33,
+            "draft_ns": 1567349763,
+            "verify_ns": 6289600872,
+            "rounds": 35,
+            "verify_calls": 23,
+            "restore_ns": 41984012,
+            "draft_batches": 23,
+            "draft_pair_batches": 12,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            55,
+            56
+          ],
+          "seconds": 8.579242415959015,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 277,
+            "accepted": 75,
+            "rejected_rounds": 41,
+            "draft_ns": 1613782307,
+            "verify_ns": 6731750640,
+            "rounds": 42,
+            "verify_calls": 22,
+            "restore_ns": 44527839,
+            "draft_batches": 22,
+            "draft_pair_batches": 20,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            57,
+            58
+          ],
+          "seconds": 8.600506558082998,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 285,
+            "accepted": 73,
+            "rejected_rounds": 42,
+            "draft_ns": 1768185523,
+            "verify_ns": 6579530341,
+            "rounds": 43,
+            "verify_calls": 25,
+            "restore_ns": 50662972,
+            "draft_batches": 25,
+            "draft_pair_batches": 18,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            59,
+            60
+          ],
+          "seconds": 7.906270952895284,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 284,
+            "accepted": 76,
+            "rejected_rounds": 41,
+            "draft_ns": 1626822844,
+            "verify_ns": 6055091384,
+            "rounds": 42,
+            "verify_calls": 22,
+            "restore_ns": 46527471,
+            "draft_batches": 22,
+            "draft_pair_batches": 20,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            61,
+            62
+          ],
+          "seconds": 8.588055765954778,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 284,
+            "accepted": 72,
+            "rejected_rounds": 42,
+            "draft_ns": 1694371321,
+            "verify_ns": 6629624053,
+            "rounds": 42,
+            "verify_calls": 23,
+            "restore_ns": 53620704,
+            "draft_batches": 23,
+            "draft_pair_batches": 19,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            63,
+            64
+          ],
+          "seconds": 8.457309731049463,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 272,
+            "accepted": 75,
+            "rejected_rounds": 40,
+            "draft_ns": 1583703092,
+            "verify_ns": 6608780714,
+            "rounds": 41,
+            "verify_calls": 22,
+            "restore_ns": 52097978,
+            "draft_batches": 21,
+            "draft_pair_batches": 20,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            65,
+            66
+          ],
+          "seconds": 8.8566190560814,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 225,
+            "accepted": 65,
+            "rejected_rounds": 33,
+            "draft_ns": 1551798641,
+            "verify_ns": 6987494465,
+            "rounds": 35,
+            "verify_calls": 23,
+            "restore_ns": 44197146,
+            "draft_batches": 22,
+            "draft_pair_batches": 13,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            67,
+            68
+          ],
+          "seconds": 9.085594353964552,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 261,
+            "accepted": 68,
+            "rejected_rounds": 38,
+            "draft_ns": 1669990007,
+            "verify_ns": 7111994402,
+            "rounds": 40,
+            "verify_calls": 23,
+            "restore_ns": 52403092,
+            "draft_batches": 23,
+            "draft_pair_batches": 17,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            69,
+            70
+          ],
+          "seconds": 8.747535208938643,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 304,
+            "accepted": 79,
+            "rejected_rounds": 44,
+            "draft_ns": 1802487515,
+            "verify_ns": 6693456376,
+            "rounds": 46,
+            "verify_calls": 24,
+            "restore_ns": 55615465,
+            "draft_batches": 24,
+            "draft_pair_batches": 22,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            71,
+            72
+          ],
+          "seconds": 8.153514778940007,
+          "output_tokens": [
+            39,
+            64
+          ],
+          "stats": {
+            "proposed": 176,
+            "accepted": 44,
+            "rejected_rounds": 25,
+            "draft_ns": 1497176574,
+            "verify_ns": 6322734494,
+            "rounds": 26,
+            "verify_calls": 23,
+            "restore_ns": 46557531,
+            "draft_batches": 23,
+            "draft_pair_batches": 3,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            73,
+            74
+          ],
+          "seconds": 7.7293581501580775,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 280,
+            "accepted": 71,
+            "rejected_rounds": 41,
+            "draft_ns": 1671604290,
+            "verify_ns": 5800199787,
+            "rounds": 42,
+            "verify_calls": 23,
+            "restore_ns": 47486692,
+            "draft_batches": 23,
+            "draft_pair_batches": 19,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            75,
+            76
+          ],
+          "seconds": 8.530981943942606,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 257,
+            "accepted": 72,
+            "rejected_rounds": 39,
+            "draft_ns": 1581416364,
+            "verify_ns": 6681270540,
+            "rounds": 39,
+            "verify_calls": 23,
+            "restore_ns": 50167115,
+            "draft_batches": 22,
+            "draft_pair_batches": 17,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            77,
+            78
+          ],
+          "seconds": 8.407477892003953,
+          "output_tokens": [
+            64,
+            40
+          ],
+          "stats": {
+            "proposed": 175,
+            "accepted": 39,
+            "rejected_rounds": 25,
+            "draft_ns": 1561466600,
+            "verify_ns": 6511897812,
+            "rounds": 26,
+            "verify_calls": 25,
+            "restore_ns": 48355950,
+            "draft_batches": 25,
+            "draft_pair_batches": 1,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            79,
+            80
+          ],
+          "seconds": 8.274558781879023,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 274,
+            "accepted": 82,
+            "rejected_rounds": 40,
+            "draft_ns": 1552365262,
+            "verify_ns": 6504972494,
+            "rounds": 41,
+            "verify_calls": 23,
+            "restore_ns": 47668856,
+            "draft_batches": 21,
+            "draft_pair_batches": 20,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            81,
+            82
+          ],
+          "seconds": 7.975900819059461,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 283,
+            "accepted": 82,
+            "rejected_rounds": 41,
+            "draft_ns": 1563842435,
+            "verify_ns": 6203238073,
+            "rounds": 42,
+            "verify_calls": 22,
+            "restore_ns": 45600542,
+            "draft_batches": 21,
+            "draft_pair_batches": 21,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            83,
+            84
+          ],
+          "seconds": 8.059240522095934,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 271,
+            "accepted": 73,
+            "rejected_rounds": 40,
+            "draft_ns": 1608689888,
+            "verify_ns": 6197540635,
+            "rounds": 41,
+            "verify_calls": 23,
+            "restore_ns": 49430153,
+            "draft_batches": 22,
+            "draft_pair_batches": 19,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            85,
+            86
+          ],
+          "seconds": 7.8406337320338935,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 277,
+            "accepted": 75,
+            "rejected_rounds": 41,
+            "draft_ns": 1563376560,
+            "verify_ns": 6042441321,
+            "rounds": 42,
+            "verify_calls": 22,
+            "restore_ns": 47190322,
+            "draft_batches": 21,
+            "draft_pair_batches": 21,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            87,
+            88
+          ],
+          "seconds": 8.092605392914265,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 265,
+            "accepted": 69,
+            "rejected_rounds": 39,
+            "draft_ns": 1588972904,
+            "verify_ns": 6239722038,
+            "rounds": 40,
+            "verify_calls": 23,
+            "restore_ns": 44590439,
+            "draft_batches": 22,
+            "draft_pair_batches": 18,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            89,
+            90
+          ],
+          "seconds": 7.812827544985339,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 264,
+            "accepted": 72,
+            "rejected_rounds": 39,
+            "draft_ns": 1589271207,
+            "verify_ns": 5969528677,
+            "rounds": 40,
+            "verify_calls": 22,
+            "restore_ns": 46423593,
+            "draft_batches": 22,
+            "draft_pair_batches": 18,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            91,
+            92
+          ],
+          "seconds": 8.826468650950119,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 295,
+            "accepted": 78,
+            "rejected_rounds": 44,
+            "draft_ns": 1638772253,
+            "verify_ns": 6956850366,
+            "rounds": 44,
+            "verify_calls": 22,
+            "restore_ns": 46891497,
+            "draft_batches": 22,
+            "draft_pair_batches": 22,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            93,
+            94
+          ],
+          "seconds": 7.947103190002963,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 276,
+            "accepted": 78,
+            "rejected_rounds": 41,
+            "draft_ns": 1621244811,
+            "verify_ns": 6095156369,
+            "rounds": 42,
+            "verify_calls": 22,
+            "restore_ns": 47055149,
+            "draft_batches": 22,
+            "draft_pair_batches": 20,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        },
+        {
+          "requests": [
+            95,
+            96
+          ],
+          "seconds": 8.262648205971345,
+          "output_tokens": [
+            64,
+            64
+          ],
+          "stats": {
+            "proposed": 287,
+            "accepted": 74,
+            "rejected_rounds": 43,
+            "draft_ns": 1624431351,
+            "verify_ns": 6409331868,
+            "rounds": 43,
+            "verify_calls": 22,
+            "restore_ns": 44732421,
+            "draft_batches": 22,
+            "draft_pair_batches": 21,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false
+          }
+        }
+      ]
+    }
+  },
+  "stage": "measuring",
+  "startup_seconds": 325.2411705038976,
+  "trainable_parameters": 31457792,
+  "progress": {
+    "frozen_160": [
+      {
+        "requests": 32,
+        "tokens": 2048,
+        "seconds": 132.92252160608768,
+        "tok_s": 15.407471775694964,
+        "accepted_per_round": 1.7596774193548388,
+        "updates": 0,
+        "publications": 0
+      },
+      {
+        "requests": 64,
+        "tokens": 4076,
+        "seconds": 263.5866594740655,
+        "tok_s": 15.463605055479071,
+        "accepted_per_round": 1.7586477987421383,
+        "updates": 0,
+        "publications": 0
+      }
+    ]
+  },
+  "error": "RuntimeError('online_160_16 pair 1 failed: LocalMailboxEndpoint child failed (worker_id=0, code=1): chip_process dev=0: chip run: RuntimeError: chip run lane is poisoned: finalize_native_run failed with code 507018 (run_id=11258 slot=0 generation=11258 dispatch_id=22396 run_epoch=22396)')",
+  "clean_shutdown": true
+}

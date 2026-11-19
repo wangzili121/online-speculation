@@ -129,10 +129,18 @@ class TP2Online:
     def __init__(self, checkpoint, *, device, last_layers=4, learning_rate=1e-5, background=False,
                  replay_blocks=1, publish_every=1, gather_feedback=False, objective="tv", max_updates=None,
                  focus_weight=1, audit_replay=False, teacher_temperature=1.0, warmup_updates=0,
-                 lr_schedule="constant", parameter_scope="full"):
+                 lr_schedule="constant", parameter_scope="full", warm_update_stride=None,
+                 warm_update_steps=0):
         if parameter_scope not in {"full", "norms", "output_norms"} or parameter_scope != "full" and checkpoint is not None:
             raise ValueError("partial parameter scopes use fresh Adam; expected full, norms or output_norms")
         self.parameter_scope = parameter_scope
+        if (type(warm_update_steps) is not int or warm_update_steps < 0
+                or bool(warm_update_steps) != (warm_update_stride is not None)
+                or warm_update_stride is not None and
+                (type(warm_update_stride) is not int or warm_update_stride < 2)):
+            raise ValueError("two-stage cadence requires a stride >= 2 and positive warm update count")
+        self.warm_update_stride, self.warm_update_steps = warm_update_stride, warm_update_steps
+        self.scheduled_updates = 0
         if type(device) is not int or device < 0 or not isfinite(learning_rate) or learning_rate <= 0:
             raise ValueError("a learner device and positive finite learning rate are required")
         if last_layers not in (1, 4) or (last_layers == 1 and checkpoint is not None):
@@ -222,7 +230,8 @@ class TP2Online:
             config.distributed_config, device_ids=[self.device]))
         self.graph = SuffixGraph(len(self.layers), objective=self.objective, focus_weight=self.focus_weight,
                                  parameter_scope=self.parameter_scope)
-        self.training = TrainingPrograms(self.graph, self.config, combined=True, chunk_size=24,
+        self.training = TrainingPrograms(self.graph, self.config, combined=True,
+                                         chunk_size=None if len(self.layers) == 1 else 24,
                                          external_gradients=True)
         self.optimization = SuffixOptimizerPrograms(self.graph, self.config, clip_norm=1.0)
         partial = torch.empty((BLOCK, 8), dtype=torch.float32, device="meta")
@@ -346,6 +355,7 @@ class TP2Online:
         self.feedback = None
         self.replay.clear()
         self.rounds = 0
+        self.scheduled_updates = 0
         self._audit_claimed = False
         self.completed_version = self.published_version = self.version
 
@@ -385,15 +395,24 @@ class TP2Online:
     def update_limit_reached(self):
         return self.max_updates is not None and self.completed_version - self.initial_step >= self.max_updates
 
+    def update_interval(self):
+        if self.stride is None:
+            return None
+        if (self.warm_update_steps
+                and self.completed_version - self.initial_step < self.warm_update_steps):
+            return self.warm_update_stride
+        return self.stride
+
     def feedback_index(self, active):
         if self.stride is None or self.pending_update is not None or self.update_limit_reached():
             return None
-        if self.stride < self.replay_blocks * active:
+        interval = self.update_interval()
+        if interval < self.replay_blocks * active:
             raise ValueError("space replay blocks at least one draft batch apart")
-        start = self.rounds % self.stride
+        start = self.rounds % interval
         # Capture at most one verified block from each batch, spread over the stride.
         for block in range(1, self.replay_blocks + 1):
-            index = block * self.stride // self.replay_blocks - 1 - start
+            index = block * interval // self.replay_blocks - 1 - start
             if 0 <= index < active:
                 return index
         return None
@@ -524,9 +543,11 @@ class TP2Online:
         if state is not None:
             self.replay.append(state)
         previous = self.rounds
+        interval = self.update_interval()
         self.rounds += active
-        if previous // self.stride == self.rounds // self.stride:
+        if previous // interval == self.rounds // interval:
             return
+        self.scheduled_updates += 1
         if self.pending_update is not None:
             self.runner.spec_stats["busy_updates"] += 1
             return
@@ -535,9 +556,14 @@ class TP2Online:
             return
         replay, self.replay = self.replay, []
         if self.executor is None:
-            self.commit_update(self.train(replay, self.rounds))
+            self.commit_update(self.train_scheduled(replay, self.rounds, interval))
         else:
-            self.pending_update = self.executor.submit(self.train, replay, self.rounds)
+            self.pending_update = self.executor.submit(self.train_scheduled, replay, self.rounds, interval)
+
+    def train_scheduled(self, replay, round_number, interval):
+        result = self.train(replay, round_number)
+        result["interval"] = interval
+        return result
 
     def train(self, replay, round_number):
         started = time.monotonic_ns()

@@ -18,6 +18,7 @@ from ..sampling import SamplingConfig, draw, probabilities, residual
 from .head import POLICY, tensor_schema
 from .oneserving_tp2_programs import GROUP_LAYERS, make_draft_program
 from .lazy_proposals import LazyProposals
+from .oneserving_resources import bounded_ring_policy
 
 
 BLOCK = 32
@@ -151,7 +152,7 @@ def check_sampled_chunk(sequence, offset, size, target, proposal, generator):
 class OrthrusTP2Runner(TensorParallelRunner):
     def __init__(self, config, head_directory, *, output_candidates=31, group_layers=GROUP_LAYERS,
                  attention_backend="paged", draft_batch_size=1, online=None, kv_pages=None, stochastic=False,
-                 lazy_sampling=False, on_cache_event=None):
+                 lazy_sampling=False, ring_heap_min_mib=256, on_cache_event=None):
         if (config.speculative_tokens or config.prefix_cache or config.max_model_len != 512
                 or config.long_prefill_token_threshold != VERIFY_ROWS
                 or config.max_num_batched_tokens < config.max_num_seqs * VERIFY_ROWS):
@@ -171,6 +172,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
         self.online = online
         self.stochastic = stochastic
         self.lazy_sampling = lazy_sampling
+        self.ring_heap_min_mib = ring_heap_min_mib
         if online is not None:
             online.bind_devices(config.devices)
         super().__init__(config, on_cache_event=on_cache_event)
@@ -195,6 +197,9 @@ class OrthrusTP2Runner(TensorParallelRunner):
             self.spec_stats.update(feedback_ns=0, update_ns=0, publish_ns=0, updates=0, publications=0,
                                    publish_read_ns=0, publish_pack_ns=0, publish_upload_ns=0, busy_updates=0)
             self.spec_stats["feedback_skips"] = 0
+
+    def _resource_policy(self):
+        return bounded_ring_policy(super()._resource_policy(), self.ring_heap_min_mib)
 
     def compile_programs(self):
         entries = super().compile_programs()
