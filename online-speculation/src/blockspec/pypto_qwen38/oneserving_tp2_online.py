@@ -26,6 +26,7 @@ from .oneserving_tp2 import (BLOCK, HIDDEN, LAYERS, SHAPES, TP_VOCAB, checkpoint
 from .training_executor import TrainingPrograms, TrainingWorkspace
 from .training_memory import require_suffix_memory
 from .training_suffix_graph import SuffixGraph
+from .training_programs import tv_supervision_weight
 
 
 FULL_BANK_START = 9
@@ -115,7 +116,8 @@ def master_from_shards(layout, directory):
 
 class TP2Online:
     def __init__(self, checkpoint, *, device, last_layers=4, learning_rate=1e-5, background=False,
-                 replay_blocks=1, publish_every=1, gather_feedback=False, objective="tv", max_updates=None):
+                 replay_blocks=1, publish_every=1, gather_feedback=False, objective="tv", max_updates=None,
+                 focus_weight=1):
         if type(device) is not int or device < 0 or not isfinite(learning_rate) or learning_rate <= 0:
             raise ValueError("a learner device and positive finite learning rate are required")
         if last_layers not in (1, 4) or (last_layers == 1 and checkpoint is not None):
@@ -126,6 +128,10 @@ class TP2Online:
         if (objective not in ("tv", "kl")
                 or max_updates is not None and (type(max_updates) is not int or max_updates < 1)):
             raise ValueError("expected TV or KL with an optional positive update limit")
+        if (type(focus_weight) is not int or focus_weight < 1
+                or focus_weight != 1 and objective != "tv"):
+            raise ValueError("positive TV focus weight required; KL uses weight one")
+        self.focus_weight = focus_weight
         self.replay_blocks = replay_blocks
         self.publish_every = publish_every
         self.gather_feedback = gather_feedback
@@ -184,7 +190,7 @@ class TP2Online:
     def compile(self, config):
         self.config = config if self.colocated else replace(config, distributed_config=replace(
             config.distributed_config, device_ids=[self.device]))
-        self.graph = SuffixGraph(len(self.layers), objective=self.objective)
+        self.graph = SuffixGraph(len(self.layers), objective=self.objective, focus_weight=self.focus_weight)
         self.training = TrainingPrograms(self.graph, self.config, combined=True, chunk_size=24,
                                          external_gradients=True)
         self.optimization = SuffixOptimizerPrograms(self.graph, self.config, clip_norm=1.0)
@@ -445,11 +451,12 @@ class TP2Online:
         started = time.monotonic_ns()
         self.optimizer.zero_grad()
         supervised = sum(item["valid"] for item in replay)
+        normalizer = sum(tv_supervision_weight(item["valid"], self.focus_weight) for item in replay)
         loss = 0.0
         common = self.shared | self.optimizer.tensors()
         for item in replay:
             self.workspace.run(common | item["inputs"], past=item["position"], width=item["width"],
-                               valid=item["valid"], normalizer=supervised, gradients=self.optimizer.gradients)
+                               valid=item["valid"], normalizer=normalizer, gradients=self.optimizer.gradients)
             self.optimizer.accumulate()
             self.worker.run(self.loss_program, self.workspace.values[self.graph.losses.name],
                             self.loss, config=self.config)
@@ -460,7 +467,7 @@ class TP2Online:
         result = self.optimizer.step(self, self.learning_rate)
         elapsed = time.monotonic_ns() - started
         return dict(round=round_number, loss=loss, supervised=supervised, feedback_blocks=len(replay),
-                    update_ns=elapsed, **result, **self.pack_stats)
+                    supervision_weight=normalizer, update_ns=elapsed, **result, **self.pack_stats)
 
     def publish_flat(self, layout, buffers, *, expected_version):
         # The optimizer calls this before advancing its master. Leave the

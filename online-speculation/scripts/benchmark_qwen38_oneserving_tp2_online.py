@@ -98,6 +98,8 @@ def main(*, guard=None):
     p.add_argument("--last-layers", default=4, type=int, choices=(1, 4))
     p.add_argument("--learning-rate", default=1e-5, type=float)
     p.add_argument("--objective", default="tv", choices=("tv", "kl"))
+    p.add_argument("--focus-weight", default=1, type=int,
+                   help="TV weight on reached candidate offsets 2 and 3; one keeps the ordinary objective")
     p.add_argument("--max-updates", type=int, help="cap Adam steps during the measured online stream")
     p.add_argument("--continuous-updates", action="store_true",
                    help="require periodic learning through the entire stream; reject a step cap")
@@ -141,7 +143,8 @@ def main(*, guard=None):
     trainer = TP2Online(args.checkpoint, device=args.learner_device, last_layers=args.last_layers,
                         learning_rate=args.learning_rate, background=args.background,
                         replay_blocks=args.replay_blocks, publish_every=args.publish_every,
-                        gather_feedback=args.gather_feedback, objective=args.objective, max_updates=args.max_updates)
+                        gather_feedback=args.gather_feedback, objective=args.objective, max_updates=args.max_updates,
+                        focus_weight=args.focus_weight)
     config = ServingConfig(args.model, (0, 1), max_model_len=512, max_num_batched_tokens=128,
                            max_num_seqs=2, speculative_tokens=0, prefix_cache=False,
                            long_prefill_token_threshold=4)
@@ -158,6 +161,7 @@ def main(*, guard=None):
                    physical_device_count=2 if trainer.colocated else 3, kv_pages=runner.pool_blocks,
                    learning_rate=args.learning_rate, background=args.background,
                    objective=args.objective, max_updates=args.max_updates,
+                   focus_weight=args.focus_weight,
                    online_update_policy=policy,
                    temperature=args.temperature, seed=args.seed,
                    sampler="host_full_vocab" if args.temperature else "device_greedy",

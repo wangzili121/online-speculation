@@ -20,6 +20,28 @@ def test_colocated_background_is_rejected_before_worker_start():
         trainer.bind_devices((0, 1))
 
 
+@pytest.mark.parametrize("weight,objective", [(0, "tv"), (True, "tv"), (2, "kl")])
+def test_focus_requires_a_positive_tv_weight(weight, objective):
+    with pytest.raises(ValueError, match="TV focus"):
+        TP2Online(None, device=0, last_layers=1, objective=objective, focus_weight=weight)
+
+
+def test_focused_replay_uses_weighted_not_raw_position_count():
+    trainer = TP2Online(None, device=0, last_layers=1, focus_weight=4)
+    calls = []
+    trainer.shared, trainer.pack_stats = {}, {}
+    trainer.optimizer = SimpleNamespace(zero_grad=lambda: None, tensors=lambda: {}, gradients={},
+                                        accumulate=lambda: None, step=lambda *args: {})
+    trainer.workspace = SimpleNamespace(run=lambda *args, **kw: calls.append(kw), values={"loss": None})
+    trainer.graph = SimpleNamespace(losses=SimpleNamespace(name="loss"))
+    trainer.worker = SimpleNamespace(run=lambda *args, **kw: None, copy_from=lambda *args: None)
+    trainer.loss_host = torch.zeros((1, 8))
+    trainer.loss, trainer.loss_program, trainer.config = SimpleNamespace(data_ptr=0), None, None
+    result = trainer.train([dict(valid=n, position=0, width=32, inputs={}) for n in (1, 3, 5)], 64)
+    assert [call["normalizer"] for call in calls] == [18, 18, 18]
+    assert result["supervised"] == 9 and result["supervision_weight"] == 18
+
+
 def test_serving_can_advance_while_one_update_is_pending(monkeypatch):
     trainer = TP2Online(None, device=1, last_layers=1, background=True)
     trainer.runner = SimpleNamespace(spec_stats=Counter())
