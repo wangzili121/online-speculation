@@ -35,6 +35,61 @@
     "results": {}
   },
   {
+    "file": "gsm128-step160-tv-1e4-continuous-2card-r1.json",
+    "sha256": "f0f26b2c8a036de375f628e2b4aaa386ed30eda072bfe5f181982ed555899518",
+    "completed": true,
+    "error": null,
+    "head_step": 160,
+    "physical_devices": "2,3",
+    "temperature": 0,
+    "max_updates": null,
+    "requests": 128,
+    "results": {
+      "32": {
+        "frozen_tok_s": 35.21295561018567,
+        "online_tok_s": 31.338314514784265,
+        "net_increment": -0.11003453212773295,
+        "updates": 272,
+        "schedule": {
+          "policy": "continuous_periodic",
+          "stride": 32,
+          "max_updates": null,
+          "rounds": 8734,
+          "scheduled_updates": 272,
+          "completed_updates": 272,
+          "skipped_busy": 0,
+          "last_update_round": 8705,
+          "rounds_after_last_update": 29,
+          "update_limit_reached": false
+        },
+        "exact_greedy": true,
+        "final_seen_replay_tok_s": 34.38572849019703,
+        "final_holdout_tok_s": 35.14140423367469
+      },
+      "64": {
+        "frozen_tok_s": 35.21295561018567,
+        "online_tok_s": 31.600547863764255,
+        "net_increment": -0.10258746202424696,
+        "updates": 139,
+        "schedule": {
+          "policy": "continuous_periodic",
+          "stride": 64,
+          "max_updates": null,
+          "rounds": 8926,
+          "scheduled_updates": 139,
+          "completed_updates": 139,
+          "skipped_busy": 0,
+          "last_update_round": 8896,
+          "rounds_after_last_update": 30,
+          "update_limit_reached": false
+        },
+        "exact_greedy": true,
+        "final_seen_replay_tok_s": 33.43056846812438,
+        "final_holdout_tok_s": 34.24195503741492
+      }
+    }
+  },
+  {
     "file": "gsm128-step160-tv-last1-2card-r1.json",
     "sha256": "bde2fc715a01ad1e52d9d3b8f10a798bd393b22b923cbc953976de642f9ec28f",
     "completed": true,
@@ -91,6 +146,116 @@
     "max_updates": 48,
     "requests": 56,
     "results": {}
+  },
+  {
+    "file": "pseudo56-step160-tv-1e4-continuous-2card-r1.json",
+    "sha256": "2f29739d9d489b68e9ffcd49a4dba7db04cc13fee927c35254d53e4b0ea4d32d",
+    "completed": true,
+    "error": null,
+    "head_step": 160,
+    "physical_devices": "0,1",
+    "temperature": 0,
+    "max_updates": null,
+    "requests": 56,
+    "results": {
+      "32": {
+        "frozen_tok_s": 20.509899043822315,
+        "online_tok_s": 17.90915487106266,
+        "net_increment": -0.12680433810048475,
+        "updates": 78,
+        "schedule": {
+          "policy": "continuous_periodic",
+          "stride": 32,
+          "max_updates": null,
+          "rounds": 2513,
+          "scheduled_updates": 78,
+          "completed_updates": 78,
+          "skipped_busy": 0,
+          "last_update_round": 2496,
+          "rounds_after_last_update": 17,
+          "update_limit_reached": false
+        },
+        "exact_greedy": true,
+        "final_seen_replay_tok_s": 19.363040323462318,
+        "final_holdout_tok_s": 19.101482424905868
+      },
+      "64": {
+        "frozen_tok_s": 20.509899043822315,
+        "online_tok_s": 19.466565317672043,
+        "net_increment": -0.05086976410371602,
+        "updates": 35,
+        "schedule": {
+          "policy": "continuous_periodic",
+          "stride": 64,
+          "max_updates": null,
+          "rounds": 2284,
+          "scheduled_updates": 35,
+          "completed_updates": 35,
+          "skipped_busy": 0,
+          "last_update_round": 2241,
+          "rounds_after_last_update": 43,
+          "update_limit_reached": false
+        },
+        "exact_greedy": true,
+        "final_seen_replay_tok_s": 20.328031153476665,
+        "final_holdout_tok_s": 20.107316836083516
+      }
+    }
+  },
+  {
+    "file": "pseudo56-step160-tv-1e4-continuous-3card-r1.json",
+    "sha256": "801f3522ee1a5e56e6f549dc1a436c6a5ef81b6a081bfbfd11d3419debbc1e8b",
+    "completed": true,
+    "error": null,
+    "head_step": 160,
+    "physical_devices": "0,1,4",
+    "temperature": 0,
+    "max_updates": null,
+    "requests": 56,
+    "results": {
+      "32": {
+        "frozen_tok_s": 21.42102405978228,
+        "online_tok_s": 21.010079781701478,
+        "net_increment": -0.01918415650596017,
+        "updates": 69,
+        "schedule": {
+          "policy": "continuous_periodic",
+          "stride": 32,
+          "max_updates": null,
+          "rounds": 2221,
+          "scheduled_updates": 69,
+          "completed_updates": 69,
+          "skipped_busy": 0,
+          "last_update_round": 2208,
+          "rounds_after_last_update": 13,
+          "update_limit_reached": false
+        },
+        "exact_greedy": true,
+        "final_seen_replay_tok_s": 21.572006027501235,
+        "final_holdout_tok_s": 21.47281482530572
+      },
+      "64": {
+        "frozen_tok_s": 21.42102405978228,
+        "online_tok_s": 20.29724492650504,
+        "net_increment": -0.05246150371434022,
+        "updates": 36,
+        "schedule": {
+          "policy": "continuous_periodic",
+          "stride": 64,
+          "max_updates": null,
+          "rounds": 2347,
+          "scheduled_updates": 36,
+          "completed_updates": 36,
+          "skipped_busy": 0,
+          "last_update_round": 2305,
+          "rounds_after_last_update": 42,
+          "update_limit_reached": false
+        },
+        "exact_greedy": true,
+        "final_seen_replay_tok_s": 20.26240677505053,
+        "final_holdout_tok_s": 19.718880684236417
+      }
+    }
   },
   {
     "file": "sql256-continuous-last1-2card-r1.json",
