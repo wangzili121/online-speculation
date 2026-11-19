@@ -55,6 +55,47 @@ def test_colocated_background_is_rejected_before_worker_start():
         trainer.bind_devices((0, 1))
 
 
+@pytest.mark.parametrize("layers,scope,device", [(1, "full", True), (1, "output_norms", True),
+                                                (1, "norms", False), (4, "full", False)])
+def test_publication_auto_uses_the_measured_path(layers, scope, device):
+    assert TP2Online(None, device=0, last_layers=layers, parameter_scope=scope).device_publication is device
+    assert not TP2Online(None, device=0, last_layers=layers, publication_backend="cpu").device_publication
+    with pytest.raises(ValueError, match="publication"):
+        TP2Online(None, device=0, last_layers=layers, publication_backend="unknown")
+
+
+def test_device_publication_copies_owned_bases_with_explicit_offsets(monkeypatch):
+    from blockspec.pypto_qwen38 import oneserving_tp2_online as module
+    trainer = TP2Online(None, device=0, last_layers=1, publication_backend="device")
+    trainer.initial_step = 0
+    copied, runs = [], []
+    trainer.worker = SimpleNamespace(copy_from=lambda *a, **kw: copied.append((a, kw)))
+    trainer.publication = SimpleNamespace(
+        run=lambda *args: runs.append(args),
+        sources=lambda *args: {9: (4096, 128), 14: (8192, 0)})
+    trainer.publication_buffers = {14: object()}
+    trainer.packed = [None] * 15
+    trainer.packed[9] = SimpleNamespace(data_ptr=lambda: 10000, nbytes=64)
+    trainer.packed[14] = SimpleNamespace(data_ptr=lambda: 20000, nbytes=32)
+    monkeypatch.setattr(module, "pack_execution", lambda *args: pytest.fail("CPU repacking was called"))
+    layout, buffers = object(), (object(), object())
+    trainer.publish_flat(layout, buffers, expected_version=0)
+    assert trainer.version == 1 and len(runs) == 1
+    assert copied == [((10000, 4096, 64), {"src_offset": 128}),
+                      ((20000, 8192, 32), {"src_offset": 0})]
+    assert all(value >= 0 for value in trainer.pack_stats.values())
+
+
+@pytest.mark.parametrize("backend", ["cpu", "device"])
+def test_dedicated_learner_inherits_its_dma_destinations(backend):
+    trainer = TP2Online(None, device=2, last_layers=1, publication_backend=backend)
+    trainer.ordinary, trainer.special = object(), object()
+    one, two = object(), object()
+    trainer.packed = [None, one, None, two]
+    assert trainer.learner_host_tensors() == [trainer.ordinary, trainer.special, *(
+        [one, two] if backend == "device" else [])]
+
+
 @pytest.mark.parametrize("weight,objective", [(0, "tv"), (True, "tv"), (2, "kl")])
 def test_focus_requires_a_positive_tv_weight(weight, objective):
     with pytest.raises(ValueError, match="TV focus"):

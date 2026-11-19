@@ -127,6 +127,7 @@ def main(*, guard=None):
                    help="maximum proposed tokens from the unchanged K32 draft block")
     p.add_argument("--last-layers", default=4, type=int, choices=(1, 4))
     p.add_argument("--parameter-scope", choices=("full", "norms", "output_norms"), default="full")
+    p.add_argument("--publication-backend", choices=("auto", "cpu", "device"), default="auto")
     p.add_argument("--learning-rate", default=1e-5, type=float)
     p.add_argument("--warmup-updates", default=0, type=int)
     p.add_argument("--warm-update-stride", type=int,
@@ -203,7 +204,8 @@ def main(*, guard=None):
                         focus_weight=args.focus_weight, audit_replay=args.audit_replay,
                         teacher_temperature=args.teacher_temperature, warmup_updates=args.warmup_updates,
                         lr_schedule=args.lr_schedule, parameter_scope=args.parameter_scope,
-                        warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps, **extra)
+                        warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
+                        publication_backend=args.publication_backend, **extra)
     config = ServingConfig(args.model, (0, 1), max_model_len=512, max_num_batched_tokens=128,
                            max_num_seqs=2, speculative_tokens=0, prefix_cache=False,
                            long_prefill_token_threshold=4)
@@ -220,6 +222,7 @@ def main(*, guard=None):
                    visible_devices=os.environ.get("ASCEND_RT_VISIBLE_DEVICES"),
                    learner_device=args.learner_device, last_layers=args.last_layers,
                    parameter_scope=args.parameter_scope,
+                   publication_backend="device" if trainer.device_publication else "cpu",
                    physical_device_count=2 if trainer.colocated else 3, kv_pages=runner.pool_blocks,
                    resource_policy=runner.resource_policy,
                    learning_rate=args.learning_rate, background=args.background,

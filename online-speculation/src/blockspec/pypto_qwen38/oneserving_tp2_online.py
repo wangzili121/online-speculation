@@ -130,10 +130,17 @@ class TP2Online:
                  replay_blocks=1, publish_every=1, gather_feedback=False, objective="tv", max_updates=None,
                  focus_weight=1, audit_replay=False, teacher_temperature=1.0, warmup_updates=0,
                  lr_schedule="constant", parameter_scope="full", warm_update_stride=None,
-                 warm_update_steps=0):
+                 warm_update_steps=0, publication_backend="auto"):
         if parameter_scope not in {"full", "norms", "output_norms"} or parameter_scope != "full" and checkpoint is not None:
             raise ValueError("partial parameter scopes use fresh Adam; expected full, norms or output_norms")
         self.parameter_scope = parameter_scope
+        if publication_backend not in {"auto", "cpu", "device"}:
+            raise ValueError("publication backend must be auto, cpu or device")
+        if publication_backend == "device" and last_layers != 1:
+            raise ValueError("device publication currently requires last-1")
+        self.device_publication = publication_backend == "device" or (
+            publication_backend == "auto" and last_layers == 1 and parameter_scope != "norms")
+        self.publication = None
         if (type(warm_update_steps) is not int or warm_update_steps < 0
                 or bool(warm_update_steps) != (warm_update_stride is not None)
                 or warm_update_stride is not None and
@@ -234,14 +241,23 @@ class TP2Online:
                                          chunk_size=None if len(self.layers) == 1 else 24,
                                          external_gradients=True)
         self.optimization = SuffixOptimizerPrograms(self.graph, self.config, clip_norm=1.0)
+        if self.device_publication:
+            from .tp2_publication import PublicationPrograms
+            self.publication = PublicationPrograms(self.optimization.layout, self.publish_banks, self.config)
         partial = torch.empty((BLOCK, 8), dtype=torch.float32, device="meta")
         total = torch.empty((1, 8), dtype=torch.float32, device="meta")
         self.loss_program = make_loss_sum().compile(partial, total, config=self.config)
-        return [*self.training.programs.values(), *self.optimization.programs(), self.loss_program]
+        return [*self.training.programs.values(), *self.optimization.programs(), self.loss_program,
+                *([self.publication.program] if self.publication is not None else [])]
 
     def allocate_execution_host(self):
         return (torch.empty(self.optimization.layout.shape, dtype=torch.bfloat16).share_memory_(),
                 torch.empty(self.optimization.layout.special_shape, dtype=torch.float32).share_memory_())
+
+    def learner_host_tensors(self):
+        # 独立学习器也要在 fork 前登记 DMA 目的缓冲，不能只登记 serving worker。
+        return [self.ordinary, self.special, *(
+            [host for host in self.packed if host is not None] if self.device_publication else [])]
 
     def compile_colocated(self, runner):
         programs = self.compile(runner.runconfig)
@@ -270,13 +286,17 @@ class TP2Online:
             programs = self.compile(runner.runconfig)
             self.ordinary, self.special = self.allocate_execution_host()
             self.worker = DistributedWorker(programs, config=self.config,
-                                            inherited_host_tensors=[self.ordinary, self.special])
+                                            inherited_host_tensors=self.learner_host_tensors())
+        publication_bytes = (sum(prod(target) * (4 if dtype == "fp32" else 2)
+                                 for _, _, _, target, dtype, _ in self.publication.materialized)
+                             if self.publication is not None else 0)
         require_suffix_memory(self.graph, self.optimization.layout, self.replay_blocks, 1 << 60,
-                              self.worker.device_memory_info()[0])
+                              self.worker.device_memory_info()[0] - publication_bytes)
         self.optimizer = SuffixOptimizer(self.optimization, self.worker)
         if self.checkpoint is None:
             self.initial_master = master_from_shards(self.optimizer.layout, runner.head_directory)
         self.workspace = TrainingWorkspace(self.training, self.worker)
+        self.publication_buffers = self.publication.allocate(self.worker) if self.publication is not None else {}
         self.loss = self.worker.alloc_tensor((1, 8), torch.float32)
         self.loss_host = torch.empty((1, 8), dtype=torch.float32)
         self.original = runner.suffix
@@ -653,14 +673,23 @@ class TP2Online:
             self.version = next_version
             return
         started = time.monotonic_ns()
-        for host, device in zip((self.ordinary, self.special), buffers, strict=True):
-            self.worker.copy_from(host.data_ptr(), device.data_ptr, host.nbytes)
-        read_done = time.monotonic_ns()
         # SuffixOptimizer checked the candidate FP32 master's norm before
         # rendering, so BF16 conversion cannot overflow a checked parameter.
-        pack_execution(layout, self.ordinary, self.special, self.packed)
-        self.pack_stats = dict(publish_read_ns=read_done - started,
-                               publish_pack_ns=time.monotonic_ns() - read_done)
+        if self.publication is not None:
+            self.publication.run(self.worker, layout, *buffers, self.publication_buffers)
+            packed_done = time.monotonic_ns()
+            for bank, (base, offset) in self.publication.sources(layout, buffers[0], self.publication_buffers).items():
+                host = self.packed[bank]
+                self.worker.copy_from(host.data_ptr(), base, host.nbytes, src_offset=offset)
+            self.pack_stats = dict(publish_read_ns=time.monotonic_ns() - packed_done,
+                                   publish_pack_ns=packed_done - started)
+        else:
+            for host, device in zip((self.ordinary, self.special), buffers, strict=True):
+                self.worker.copy_from(host.data_ptr(), device.data_ptr, host.nbytes)
+            read_done = time.monotonic_ns()
+            pack_execution(layout, self.ordinary, self.special, self.packed)
+            self.pack_stats = dict(publish_read_ns=read_done - started,
+                                   publish_pack_ns=time.monotonic_ns() - read_done)
         self.version = next_version
 
     def collect_update(self, *, wait=False):
