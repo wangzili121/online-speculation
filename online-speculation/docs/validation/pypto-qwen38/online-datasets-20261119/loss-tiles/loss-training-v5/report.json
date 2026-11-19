@@ -1,0 +1,130 @@
+{
+  "completed": true,
+  "stage": "completed",
+  "scope": "real last1 weights and production shapes; synthetic hidden/history/teacher, complete forward/backward only; no optimizer or publication timing",
+  "physical_card": 5,
+  "results": {
+    "tv": {
+      "gradient_differences": {
+        "l63_o_weight": {
+          "relative_l2": 0.0005404024268500507,
+          "max_abs": 3.0517578125e-05
+        },
+        "l63_q_gamma": {
+          "relative_l2": 0.001979605993255973,
+          "max_abs": 3.0517578125e-05
+        },
+        "l63_k_gamma": {
+          "relative_l2": 0.0013267117319628596,
+          "max_abs": 1.52587890625e-05
+        },
+        "l63_q_weight": {
+          "relative_l2": 0.0013883807696402073,
+          "max_abs": 0.0001220703125
+        },
+        "l63_k_weight": {
+          "relative_l2": 0.0017543976427987218,
+          "max_abs": 0.0001220703125
+        },
+        "l63_v_weight": {
+          "relative_l2": 0.0009987896773964167,
+          "max_abs": 0.0001220703125
+        }
+      },
+      "forward_logits_bitwise_equal": true,
+      "losses_close": true,
+      "timing_ms": {
+        "512": {
+          "samples": [
+            37.331047,
+            37.476477,
+            37.414347,
+            37.145686,
+            37.208947,
+            37.358077,
+            37.302737,
+            37.147256
+          ],
+          "median": 37.316891999999996
+        },
+        "2560": {
+          "samples": [
+            34.340912,
+            34.307502,
+            34.124361,
+            33.887241,
+            34.191691,
+            34.07936,
+            34.073841,
+            33.924751
+          ],
+          "median": 34.1018605
+        }
+      }
+    },
+    "kl": {
+      "gradient_differences": {
+        "l63_o_weight": {
+          "relative_l2": 0.0003142673522233963,
+          "max_abs": 0.0009765625
+        },
+        "l63_q_gamma": {
+          "relative_l2": 0.0010436398442834616,
+          "max_abs": 0.00048828125
+        },
+        "l63_k_gamma": {
+          "relative_l2": 0.0008989530033431947,
+          "max_abs": 0.00048828125
+        },
+        "l63_q_weight": {
+          "relative_l2": 0.0005423719994723797,
+          "max_abs": 0.0009765625
+        },
+        "l63_k_weight": {
+          "relative_l2": 0.001038484973832965,
+          "max_abs": 0.001953125
+        },
+        "l63_v_weight": {
+          "relative_l2": 0.0006233759340830147,
+          "max_abs": 0.00390625
+        }
+      },
+      "forward_logits_bitwise_equal": true,
+      "losses_close": true,
+      "timing_ms": {
+        "512": {
+          "samples": [
+            36.461725,
+            35.956694,
+            36.001195,
+            35.934585,
+            35.853664,
+            36.041625,
+            35.739614,
+            35.891215
+          ],
+          "median": 35.9456395
+        },
+        "2560": {
+          "samples": [
+            33.80756,
+            33.907151,
+            33.369629,
+            33.70602,
+            33.54452,
+            33.818551,
+            33.85112,
+            33.63142
+          ],
+          "median": 33.75679
+        }
+      }
+    }
+  },
+  "loss_factory_calls": {
+    "tv:512": 1,
+    "kl:512": 1,
+    "tv:2560": 1,
+    "kl:2560": 1
+  }
+}

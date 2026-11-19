@@ -5,16 +5,24 @@ def tv_supervision_weight(valid, focus_weight):
     return valid + (focus_weight - 1) * max(0, min(valid, 4) - 2)
 
 
+def loss_vocabulary_tile(vocabulary):
+    """大词表使用较宽向量块；不整除的规格保留原分块及校验。"""
+    if type(vocabulary) is not int or vocabulary < 64 or vocabulary % 64:
+        raise ValueError("a positive 64-aligned vocabulary required")
+    tile = 2560 if vocabulary % 2560 == 0 else min(512, vocabulary)
+    if vocabulary % tile:
+        raise ValueError("complete vocabulary tiles required")
+    return tile
+
+
 def make_tv(rows, vocabulary, *, inline=False, focus_weight=1):
     """完整词表 TV 及 d(logits)，只监督 verifier 真正走到的行。"""
     if rows < 1 or vocabulary % 64:
         raise ValueError("positive rows and a 64-aligned vocabulary required")
     if type(focus_weight) is not int or focus_weight < 1:
         raise ValueError("TV candidate weights must be positive integers")
+    T = loss_vocabulary_tile(vocabulary)
     import pypto.language as pl
-    T = min(512, vocabulary)
-    if vocabulary % T:
-        raise ValueError("complete vocabulary tiles required")
 
     focus_reciprocal = 1.0 / focus_weight
     kernel = pl.jit.inline if inline else pl.jit
@@ -97,10 +105,8 @@ def make_kl(rows, vocabulary, *, inline=False):
     """完整词表 KL(teacher || draft) 及 d(logits)，用于干净序列的全块监督。"""
     if rows < 1 or vocabulary % 64:
         raise ValueError("positive rows and a 64-aligned vocabulary required")
+    T = loss_vocabulary_tile(vocabulary)
     import pypto.language as pl
-    T = min(512, vocabulary)
-    if vocabulary % T:
-        raise ValueError("complete vocabulary tiles required")
 
     kernel = pl.jit.inline if inline else pl.jit
     @kernel

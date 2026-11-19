@@ -1,0 +1,40 @@
+{
+  "completed": true,
+  "scope": "loss kernels and complete last1 forward/backward only; not online whole-stream throughput",
+  "physical_cards": 1,
+  "vocabulary": 248320,
+  "block": 32,
+  "supervised": 7,
+  "production_mathematics_ast_equal_to_measured_candidate": true,
+  "production_sha256": "b2e26388c5e0b5a7b88a921831890a0b75c8fc813aeabd307750a4a0f78ad1fb",
+  "cpu": {
+    "completed": true,
+    "returncode": 0,
+    "log": "........................................................................ [ 80%]\n..................                                                       [100%]\n90 passed in 18.66s\n"
+  },
+  "full_last1": {
+    "tv": {
+      "baseline_ms": 37.316891999999996,
+      "candidate_ms": 34.1018605,
+      "time_reduction": 0.08615485716227378,
+      "logits_bitwise_equal": true,
+      "losses_close": true,
+      "max_gradient_relative_l2": 0.001979605993255973
+    },
+    "kl": {
+      "baseline_ms": 35.9456395,
+      "candidate_ms": 33.75679,
+      "time_reduction": 0.0608933247661374,
+      "logits_bitwise_equal": true,
+      "losses_close": true,
+      "max_gradient_relative_l2": 0.0010436398442834616
+    }
+  },
+  "files_sha256": {
+    "loss_2560.py": "9b1f6b5c0194bc82e7a858f16dec0ad24f402e217bc727b4d46a33cf1eab5a0c",
+    "loss_512.py": "2ea13c438cf38addd0920c52a648d749ab2d24abb79037c89b716f91636adc3b",
+    "loss_1280.py": "d98338eb63779c085b4d47291c51b8b1364a728ddc207dd3b0217b4d234bc2df",
+    "isolated_micro.py": "de5e9d64df6250009dd5857e344574c0bb1122c965287389e3ec37a2e60c8590",
+    "last1_micro.py": "fb5d49f5d9f88857fc4544cf818f3cc2cab13e36a726452c7a6c67872cdc0f29"
+  }
+}

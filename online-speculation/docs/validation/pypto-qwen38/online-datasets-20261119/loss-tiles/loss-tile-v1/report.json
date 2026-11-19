@@ -1,0 +1,50 @@
+{
+  "completed": false,
+  "stage": "running",
+  "physical_card": 5,
+  "rows": 32,
+  "vocabulary": 248320,
+  "timings_include_host_dispatch": true,
+  "variants": {
+    "tv:512": {
+      "compiled": true,
+      "correctness": {
+        "1": {
+          "passed": true,
+          "relative_l2": 0.0009775155922397971,
+          "max_abs_gradient": 2.384185791015625e-07,
+          "max_abs_loss": 2.1696090698242188e-05
+        }
+      }
+    },
+    "kl:512": {
+      "compiled": true,
+      "correctness": {
+        "1": {
+          "passed": false,
+          "relative_l2": 0.004923313856124878,
+          "max_abs_gradient": 0.001953125,
+          "max_abs_loss": 0.00020837783813476562
+        }
+      }
+    },
+    "tv:1280": {
+      "compiled": true
+    },
+    "kl:1280": {
+      "compiled": true
+    },
+    "tv:2560": {
+      "compiled": true
+    },
+    "kl:2560": {
+      "compiled": true
+    }
+  },
+  "source_sha256": {
+    "loss_512.py": "2ea13c438cf38addd0920c52a648d749ab2d24abb79037c89b716f91636adc3b",
+    "loss_1280.py": "d98338eb63779c085b4d47291c51b8b1364a728ddc207dd3b0217b4d234bc2df",
+    "loss_2560.py": "9b1f6b5c0194bc82e7a858f16dec0ad24f402e217bc727b4d46a33cf1eab5a0c"
+  },
+  "error": "AssertionError(('kl:512', 1, {'compiled': True, 'correctness': {'1': {'passed': False, 'relative_l2': 0.004923313856124878, 'max_abs_gradient': 0.001953125, 'max_abs_loss': 0.00020837783813476562}}}))"
+}
