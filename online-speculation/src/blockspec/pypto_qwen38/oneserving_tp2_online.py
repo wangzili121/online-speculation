@@ -130,7 +130,7 @@ class TP2Online:
                  replay_blocks=1, publish_every=1, gather_feedback=False, objective="tv", max_updates=None,
                  focus_weight=1, audit_replay=False, teacher_temperature=1.0, warmup_updates=0,
                  lr_schedule="constant", parameter_scope="full", warm_update_stride=None,
-                 warm_update_steps=0, publication_backend="auto"):
+                 warm_update_steps=0, publication_backend="auto", inner_steps=1):
         if parameter_scope not in {"full", "norms", "output_norms"} or parameter_scope != "full" and checkpoint is not None:
             raise ValueError("partial parameter scopes use fresh Adam; expected full, norms or output_norms")
         self.parameter_scope = parameter_scope
@@ -158,6 +158,10 @@ class TP2Online:
         if (objective not in ("tv", "kl")
                 or max_updates is not None and (type(max_updates) is not int or max_updates < 1)):
             raise ValueError("expected TV or KL with an optional positive update limit")
+        if (type(inner_steps) is not int or inner_steps < 1 or publish_every % inner_steps
+                or max_updates is not None and max_updates % inner_steps):
+            raise ValueError("inner_steps must divide the publication interval and optional update limit")
+        self.inner_steps = inner_steps
         if (type(focus_weight) is not int or focus_weight < 1
                 or focus_weight != 1 and objective != "tv"):
             raise ValueError("positive TV focus weight required; KL uses weight one")
@@ -590,14 +594,23 @@ class TP2Online:
             return
         replay, self.replay = self.replay, []
         if self.executor is None:
-            self.commit_update(self.train_scheduled(replay, self.rounds, interval))
+            self.commit_scheduled(self.train_scheduled(replay, self.rounds, interval))
         else:
             self.pending_update = self.executor.submit(self.train_scheduled, replay, self.rounds, interval)
 
     def train_scheduled(self, replay, round_number, interval):
-        result = self.train(replay, round_number)
-        result["interval"] = interval
-        return result
+        results = []
+        for step in range(self.inner_steps):
+            # 固定已验证的 teacher/history，每一步用新的参数重新前向、反向。
+            # served logits 只对应首次重放，后续步骤不能拿旧 logits 校验新 head。
+            inputs = replay if step == 0 else [{k: v for k, v in item.items() if k != "served_logits"}
+                                               for item in replay]
+            result = self.train(inputs, round_number)
+            result.update(interval=interval)
+            if self.inner_steps > 1:
+                result.update(inner_step=step + 1, inner_steps=self.inner_steps)
+            results.append(result)
+        return results[0] if self.inner_steps == 1 else results
 
     def train(self, replay, round_number):
         started = time.monotonic_ns()
@@ -710,7 +723,17 @@ class TP2Online:
         future = self.pending_update
         if future is not None and (wait or future.done()):
             self.pending_update = None
-            self.commit_update(future.result())
+            self.commit_scheduled(future.result())
+
+    def commit_scheduled(self, result):
+        if isinstance(result, list):
+            expected = list(range(self.completed_version + 1, self.completed_version + len(result) + 1))
+            if len(result) != self.inner_steps or [step["version"] for step in result] != expected:
+                raise RuntimeError("incomplete or out-of-order TP2 update group")
+            for step in result:
+                self.commit_update(step)
+        else:
+            self.commit_update(result)
 
     def commit_update(self, result):
         if result["version"] != self.completed_version + 1:

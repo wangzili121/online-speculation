@@ -1,0 +1,6 @@
+{
+  "completed": false,
+  "error": "Audit configuration selected last-1-only device publication for last-4; use auto in r2. Failed before model initialization.",
+  "model_started": false,
+  "log": "guard {'ok': True, 'reserved_gib': 16, 'devices': [0, 1, 2]}\nguard {'ok': True, 'released': [0, 1, 2]}\nTraceback (most recent call last):\n  File \"<string>\", line 2, in <module>\n  File \"/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/orthrus_bench_dense_v18.py\", line 230, in main\n    trainer = trainer_type(args.checkpoint, device=args.learner_device, last_layers=args.last_layers,\n  File \"/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/src-dense-v18/blockspec/pypto_qwen38/oneserving_tp2_online.py\", line 140, in __init__\n    raise ValueError(\"device publication currently requires last-1\")\nValueError: device publication currently requires last-1\n"
+}

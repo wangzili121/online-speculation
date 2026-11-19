@@ -1,0 +1,59 @@
+{
+  "completed": true,
+  "cpu_tests": 188,
+  "cases": [
+    {
+      "tag": "b167-v19-inner2-greedy-audit-r1",
+      "inner_steps": 2,
+      "actual_steps": 14,
+      "feedback_events": 7,
+      "publications": 7,
+      "distinct_feedback_positions": 15,
+      "gradient_position_exposures": 30,
+      "greedy_exact": true,
+      "replay_audits": [
+        {
+          "rows": 2,
+          "max_abs": 0.09375,
+          "relative_l2": 0.002632382558658719,
+          "served_replay_tv": 3.268258524258272e-06,
+          "top1_agreement": 1.0,
+          "teacher_tv_before": 0.49967798590660095,
+          "teacher_tv_after": 0.49904558062553406,
+          "batch_loss_before": 0.49967727065086365,
+          "batch_loss_after": 0.49904441833496094
+        }
+      ],
+      "export_banks_exact": true,
+      "temperature": 0.0,
+      "sampler": "device_greedy"
+    },
+    {
+      "tag": "b167-v19-inner4-t1-audit-r1",
+      "inner_steps": 4,
+      "actual_steps": 24,
+      "feedback_events": 6,
+      "publications": 6,
+      "distinct_feedback_positions": 15,
+      "gradient_position_exposures": 60,
+      "greedy_exact": null,
+      "replay_audits": [
+        {
+          "rows": 2,
+          "max_abs": 0.09375,
+          "relative_l2": 0.002632382558658719,
+          "served_replay_tv": 3.268258524258272e-06,
+          "top1_agreement": 1.0,
+          "teacher_tv_before": 0.49967798590660095,
+          "teacher_tv_after": 0.49904558062553406,
+          "batch_loss_before": 0.49967727065086365,
+          "batch_loss_after": 0.49904441833496094
+        }
+      ],
+      "export_banks_exact": true,
+      "temperature": 1.0,
+      "sampler": "host_full_vocab_lazy"
+    }
+  ],
+  "note": "Real27B TP2 correctness probes, not throughput-gain claims. Inner steps recompute forward/backward at new parameters; verified teacher/history remain fixed. Default one step unchanged. Temperature1 sampler remains CPU full-vocabulary lazy."
+}

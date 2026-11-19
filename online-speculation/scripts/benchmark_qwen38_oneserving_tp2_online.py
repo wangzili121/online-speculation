@@ -174,6 +174,8 @@ def main(*, guard=None):
                    help="require periodic learning through the entire stream; reject a step cap")
     p.add_argument("--replay-blocks", default=1, type=int)
     p.add_argument("--publish-every", default=1, type=int)
+    p.add_argument("--inner-steps", default=1, type=int,
+                   help="Adam steps per verified replay event; must divide the publication interval")
     p.add_argument("--ar-check-requests", type=int,
                    help="limit the AR correctness sample; online and frozen are still matched in full")
     p.add_argument("--replay-learned-head", action="store_true",
@@ -235,7 +237,7 @@ def main(*, guard=None):
                         teacher_temperature=args.teacher_temperature, warmup_updates=args.warmup_updates,
                         lr_schedule=args.lr_schedule, parameter_scope=args.parameter_scope,
                         warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
-                        publication_backend=args.publication_backend, **extra)
+                        publication_backend=args.publication_backend, inner_steps=args.inner_steps, **extra)
     config = ServingConfig(args.model, (0, 1), max_model_len=512, max_num_batched_tokens=128,
                            max_num_seqs=2, speculative_tokens=0, prefix_cache=False,
                            long_prefill_token_threshold=4)
@@ -271,7 +273,7 @@ def main(*, guard=None):
                    temperature=args.temperature, seed=args.seed,
                    sampler=("host_full_vocab_lazy" if args.lazy_sampling else "host_full_vocab")
                            if args.temperature else "device_greedy",
-                   replay_blocks=args.replay_blocks, publish_every=args.publish_every,
+                   replay_blocks=args.replay_blocks, publish_every=args.publish_every, inner_steps=args.inner_steps,
                    stop_on_eos=args.stop_on_eos, candidates=args.candidates,
                    requests=2 * len(prompts), ar_checked_requests=ar_requests, output_tokens_per_request=args.tokens,
                    prompts_sha256=hashlib.sha256(args.prompts.read_bytes()).hexdigest(),
@@ -420,7 +422,9 @@ def main(*, guard=None):
                 updates = trainer.records[first:]
                 skipped = runner.spec_stats["busy_updates"] - busy_start
                 feedback_skips = runner.spec_stats["feedback_skips"] - feedback_skip_start
-                if len(updates) + skipped + feedback_skips != trainer.scheduled_updates or not updates:
+                completed_events, incomplete_steps = divmod(len(updates), args.inner_steps)
+                if (incomplete_steps or completed_events + skipped + feedback_skips != trainer.scheduled_updates
+                        or not updates):
                     raise RuntimeError("online case submitted an unexpected number of updates")
                 if [update["version"] for update in updates] != list(
                         range(trainer.initial_step + 1, trainer.version + 1)):
@@ -440,7 +444,9 @@ def main(*, guard=None):
                               holdout=summarize(learned_holdout), exact_greedy=True if not args.temperature else None,
                               updates=updates, skipped_busy=skipped,
                               skipped_feedback=feedback_skips,
-                              supervised_positions=sum(step["supervised"] for step in updates),
+                              supervised_positions=sum(step["supervised"] for step in updates
+                                                       if step.get("inner_step", 1) == 1),
+                              training_position_exposures=sum(step["supervised"] for step in updates),
                               paired_seconds=[[base["seconds"], trial["seconds"]]
                                               for base, trial in zip(frozen, stream, strict=True)],
                               published_version=final_version, optimizer_version=optimizer_version)
@@ -449,6 +455,7 @@ def main(*, guard=None):
                     rounds=trainer.rounds, scheduled_updates=trainer.scheduled_updates,
                     warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
                     completed_updates=len(updates), skipped_busy=skipped,
+                    completed_update_events=completed_events, inner_steps=args.inner_steps,
                     skipped_feedback=feedback_skips,
                     last_update_round=updates[-1]["round"],
                     rounds_after_last_update=trainer.rounds - updates[-1]["round"],
