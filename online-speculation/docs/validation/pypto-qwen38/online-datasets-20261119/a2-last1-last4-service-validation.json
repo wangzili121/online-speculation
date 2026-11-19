@@ -1,0 +1,54 @@
+{
+  "completed": true,
+  "cases": [
+    {
+      "tag": "a111-v28-two-card-greedy-audit-r1",
+      "last_layers": 1,
+      "temperature": 0.0,
+      "cards": "0,1",
+      "actual_card_count": 2,
+      "learner_device": 0,
+      "trainable_parameters": 104858112,
+      "requests": 6,
+      "output_tokens": 384,
+      "updates": 23,
+      "max_replay_tv": 4.3212321543251164e-06,
+      "max_replay_l2": 0.00285071088001132,
+      "exact_greedy": true,
+      "export_banks_exact": true
+    },
+    {
+      "tag": "a111-v28-two-card-t1-audit-r1",
+      "last_layers": 1,
+      "temperature": 1.0,
+      "cards": "0,1",
+      "actual_card_count": 2,
+      "learner_device": 0,
+      "trainable_parameters": 104858112,
+      "requests": 6,
+      "output_tokens": 272,
+      "updates": 21,
+      "max_replay_tv": 4.3212321543251164e-06,
+      "max_replay_l2": 0.00285071088001132,
+      "exact_greedy": null,
+      "export_banks_exact": true
+    },
+    {
+      "tag": "a111-v28-two-card-last4-t1-audit-r1",
+      "last_layers": 4,
+      "temperature": 1.0,
+      "cards": "0,1",
+      "actual_card_count": 2,
+      "learner_device": 0,
+      "trainable_parameters": 454944000,
+      "requests": 6,
+      "output_tokens": 272,
+      "updates": 11,
+      "max_replay_tv": 0.0007677077664993703,
+      "max_replay_l2": 0.005134089384227991,
+      "exact_greedy": null,
+      "export_banks_exact": true
+    }
+  ],
+  "note": "Pinned private A-node CANN9.1.1 runtime. Last1 and last4 execute inside the same two serving cards; last4 does not require a dedicated learner card. Short frequent replay-audit cases validate memory/loading/feedback/backward/publication/export; not performance acceptance. Full two-card last4 flow is running separately; sampling-overlap last4 still needs separate validation."
+}
