@@ -1,0 +1,48 @@
+en3.8-27B/serving/model.py:506:13
+2026-11-20 05:30:57.207 I | [perf_hint] 39 hints across 39 sites; see build_output/_jit_suffix_host_20261120_053056_58ylfu3l/report/perf_hints.log
+2026-11-20 05:31:00.642 I | [perf_hint] 39 hints across 39 sites; see build_output/_jit_suffix_host_20261120_053059_pj2967s9/report/perf_hints.log
+2026-11-20 05:31:03.416 I | [perf_hint] 17 hints across 16 sites; see build_output/_jit_suffix_host_20261120_053102_xu7cqu__/report/perf_hints.log
+2026-11-20 05:31:05.864 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_suffix_host_20261120_053105_0uwo6b7o/report/perf_hints.log
+2026-11-20 05:31:06.028 I | [perf_hint] 13 hints across 11 sites; see build_output/_jit_suffix_host_20261120_053105_0uwo6b7o/report/perf_hints.log
+2026-11-20 05:31:09.090 I | [perf_hint] 25 hints across 22 sites; see build_output/_jit_suffix_host_20261120_053108_gkojhliv/report/perf_hints.log
+2026-11-20 05:31:12.266 I | [perf_hint] 21 hints across 21 sites; see build_output/_jit_suffix_host_20261120_053111_ambcsod_/report/perf_hints.log
+2026-11-20 05:31:15.466 I | [perf_hint] 60 hints across 60 sites; see build_output/_jit_suffix_host_20261120_053114_y37n7o9f/report/perf_hints.log
+2026-11-20 05:31:19.278 I | [perf_hint] 72 hints across 72 sites; see build_output/_jit_suffix_host_20261120_053118_czs_4ggb/report/perf_hints.log
+2026-11-20 05:31:23.280 I | [perf_hint] 72 hints across 72 sites; see build_output/_jit_suffix_host_20261120_053122_many2sp_/report/perf_hints.log
+2026-11-20 05:31:24.025 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_053124_lpbl8asv/report/perf_hints.log
+2026-11-20 05:31:24.525 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_053124_g6s1z08h/report/perf_hints.log
+2026-11-20 05:31:27.335 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_053127_z_y00oa8/report/perf_hints.log
+2026-11-20 05:31:27.836 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_053127_haf2yxyy/report/perf_hints.log
+2026-11-20 05:31:28.319 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_053128_4kw31ui8/report/perf_hints.log
+2026-11-20 05:31:28.821 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_053128_2wc4aqv6/report/perf_hints.log
+2026-11-20 05:31:29.319 I | [perf_hint] 5 hints across 5 sites; see build_output/_jit_entry_20261120_053129_w38499xw/report/perf_hints.log
+2026-11-20 05:31:29.795 I | [perf_hint] 1 hint across 1 site; see build_output/_jit_entry_20261120_053129_c8nvpwcu/report/perf_hints.log
+2026-11-20 05:31:32.401 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_publish_host_20261120_053131_m0cihf6n/report/perf_hints.log
+2026-11-20 05:31:33.038 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_entry_20261120_053133_qurqrryz/report/perf_hints.log
+[chip_process pid=2215374 dev=1] ready
+[chip_process pid=2215372 dev=0] ready
+guard {'ok': True, 'released': [0]}
+guard {'ok': True, 'released': [1]}
+guard {'ok': True, 'released': [0, 1]}
+Traceback (most recent call last):
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/schedule.py", line 399, in _run
+    self.runner.start()
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/src-dense-v60/blockspec/pypto_qwen38/oneserving_tp2.py", line 318, in start
+    self.online.start(self)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/src-dense-v60/blockspec/pypto_qwen38/oneserving_tp2_online.py", line 305, in start
+    require_suffix_memory(self.graph, self.optimization.layout, self.replay_blocks, 1 << 60,
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/src-dense-v60/blockspec/pypto_qwen38/training_memory.py", line 32, in require_suffix_memory
+    raise RuntimeError(f"last-{graph.last_layers} {role} needs at least {required[role]+reserve} "
+RuntimeError: last-4 learner needs at least 20038291680 additional free bytes (including reserve); available 19962251776; reduce last-layers or use a deployment with more free device memory
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<string>", line 2, in <module>
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/orthrus_bench_dense_v60.py", line 368, in main
+    engine.start()
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/engine.py", line 74, in start
+    self.scheduler.start()
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/schedule.py", line 123, in start
+    raise RuntimeError("Batch runner failed to start") from self.error
+RuntimeError: Batch runner failed to start
