@@ -117,7 +117,8 @@ def master_from_shards(layout, directory):
 class TP2Online:
     def __init__(self, checkpoint, *, device, last_layers=4, learning_rate=1e-5, background=False,
                  replay_blocks=1, publish_every=1, gather_feedback=False, objective="tv", max_updates=None,
-                 focus_weight=1):
+                 focus_weight=1, audit_replay=False, teacher_temperature=1.0, warmup_updates=0,
+                 lr_schedule="constant"):
         if type(device) is not int or device < 0 or not isfinite(learning_rate) or learning_rate <= 0:
             raise ValueError("a learner device and positive finite learning rate are required")
         if last_layers not in (1, 4) or (last_layers == 1 and checkpoint is not None):
@@ -132,6 +133,17 @@ class TP2Online:
                 or focus_weight != 1 and objective != "tv"):
             raise ValueError("positive TV focus weight required; KL uses weight one")
         self.focus_weight = focus_weight
+        if not isfinite(teacher_temperature) or teacher_temperature <= 0:
+            raise ValueError("positive finite training teacher temperature required")
+        self.teacher_temperature = teacher_temperature
+        if type(warmup_updates) is not int or warmup_updates < 0:
+            raise ValueError("warmup_updates must be a nonnegative integer")
+        self.warmup_updates = warmup_updates
+        if lr_schedule not in ("constant", "inverse_sqrt"):
+            raise ValueError("expected constant or inverse_sqrt learning-rate schedule")
+        self.lr_schedule = lr_schedule
+        self.audit_replay = audit_replay
+        self._audit_claimed = False
         self.replay_blocks = replay_blocks
         self.publish_every = publish_every
         self.gather_feedback = gather_feedback
@@ -300,6 +312,7 @@ class TP2Online:
         self.feedback = None
         self.replay.clear()
         self.rounds = 0
+        self._audit_claimed = False
         self.completed_version = self.published_version = self.version
 
     def prepare_batch(self):
@@ -407,7 +420,28 @@ class TP2Online:
         self.upload("hidden", hidden)
         self.runner.spec_stats["feedback_ns"] += time.monotonic_ns() - started
 
-    def capture_teacher(self, batch_slot, offset, count, *, final):
+    def capture_request(self, slot):
+        pass
+
+    def capture_logits(self, logits, first_row):
+        if not self.audit_replay or self._audit_claimed:
+            return
+        if self.version != self.initial_step:
+            raise RuntimeError("the replay audit must capture the unchanged initial head")
+        parts = [torch.empty((BLOCK, TP_VOCAB), dtype=torch.bfloat16) for _ in range(2)]
+        for rank, part in enumerate(parts):
+            self.read(rank, logits, part, first_row * TP_VOCAB * 2)
+        self.feedback["served_logits"] = torch.cat(parts, dim=-1)
+        self._audit_claimed = True
+
+    def observe_native(self, slots, outputs):
+        pass
+
+    def observe_teacher(self, slot, batch_slot, emitted, previous, offset, count, *, final, selected):
+        if selected:
+            self.capture_teacher(batch_slot, offset, count, final=final)
+
+    def capture_teacher(self, batch_slot, offset, count, *, final, source_row=0):
         started = time.monotonic_ns()
         state = self.feedback
         if offset < state["candidates"]:
@@ -415,22 +449,44 @@ class TP2Online:
                 raise RuntimeError("feedback teacher rows must be a fresh contiguous verified prefix")
             count = min(count, state["candidates"] - offset)
             source = self.runner.outputs[self.runner._last_layout["output_key"]][1]
-            local = torch.empty((count, TP_VOCAB), dtype=torch.bfloat16)
+            parts = [torch.empty((count, TP_VOCAB), dtype=torch.bfloat16) for _ in range(2)]
             for rank in range(2):
-                self.read(rank, source, local, 4 * batch_slot * TP_VOCAB * 2)
-                for i, row in enumerate(local):
-                    self.upload("teacher", row, ((offset + i) * 2 + rank) * row.nbytes)
+                self.read(rank, source, parts[rank], (4 * batch_slot + source_row) * TP_VOCAB * 2)
+            # Pack both vocabulary shards by row, then upload the entire
+            # verified chunk in one transfer instead of two calls per row.
+            teacher = self.training_teacher(torch.cat(parts, dim=-1))
+            self.upload("teacher", teacher, offset * 2 * TP_VOCAB * teacher.element_size())
             state["valid"] += count
         state["complete"] = final
         self.runner.spec_stats["feedback_ns"] += time.monotonic_ns() - started
 
-    def finish_batch(self, active):
-        if self.stride is None or self.update_limit_reached():
-            return
+    def training_teacher(self, logits):
+        # Only the learner's targets change. Verification continues to use the
+        # original target logits and the request's generation temperature.
+        if self.teacher_temperature == 1:
+            return logits
+        result = (logits.float() / self.teacher_temperature).to(logits.dtype)
+        if not bool(torch.isfinite(result).all()):
+            raise FloatingPointError("nonfinite sharpened teacher logits")
+        return result
+
+    def take_feedback(self):
         if self.feedback is not None:
             state, self.feedback = self.feedback, None
             if not state["complete"] or not 1 <= state["valid"] <= state["candidates"]:
                 raise RuntimeError("an update requires verified feedback")
+            return state
+
+    def ready_for_update(self):
+        if not self.replay:
+            raise RuntimeError("no verified feedback for the update")
+        return True
+
+    def finish_batch(self, active):
+        if self.stride is None or self.update_limit_reached():
+            return
+        state = self.take_feedback()
+        if state is not None:
             self.replay.append(state)
         previous = self.rounds
         self.rounds += active
@@ -439,9 +495,10 @@ class TP2Online:
         if self.pending_update is not None:
             self.runner.spec_stats["busy_updates"] += 1
             return
+        if not self.ready_for_update():
+            self.runner.spec_stats["feedback_skips"] += 1
+            return
         replay, self.replay = self.replay, []
-        if not replay:
-            raise RuntimeError("no verified feedback for the update")
         if self.executor is None:
             self.commit_update(self.train(replay, self.rounds))
         else:
@@ -453,10 +510,24 @@ class TP2Online:
         supervised = sum(item["valid"] for item in replay)
         normalizer = sum(tv_supervision_weight(item["valid"], self.focus_weight) for item in replay)
         loss = 0.0
+        audits = []
         common = self.shared | self.optimizer.tensors()
         for item in replay:
             self.workspace.run(common | item["inputs"], past=item["position"], width=item["width"],
                                valid=item["valid"], normalizer=normalizer, gradients=self.optimizer.gradients)
+            if "served_logits" in item:
+                valid = item["valid"]
+                served = item["served_logits"][:valid].float()
+                replayed = self.read_training_rows(self.workspace.values[self.graph.logits.name], valid)
+                teacher = self.read_training_rows(item["inputs"]["teacher"], valid)
+                p = teacher.softmax(-1)
+                q = replayed.softmax(-1)
+                audits.append(dict(
+                    rows=valid, max_abs=(served - replayed).abs().max().item(),
+                    relative_l2=((served - replayed).norm() / served.norm().clamp_min(1e-12)).item(),
+                    served_replay_tv=(served.softmax(-1) - q).abs().sum(-1).mul(.5).mean().item(),
+                    top1_agreement=(served.argmax(-1) == replayed.argmax(-1)).float().mean().item(),
+                    teacher_tv_before=(p - q).abs().sum(-1).mul(.5).mean().item()))
             self.optimizer.accumulate()
             self.worker.run(self.loss_program, self.workspace.values[self.graph.losses.name],
                             self.loss, config=self.config)
@@ -464,10 +535,51 @@ class TP2Online:
             loss += self.loss_host[0, 0].item()
         if not isfinite(loss):
             raise FloatingPointError("nonfinite TP2 online loss")
-        result = self.optimizer.step(self, self.learning_rate)
+        learning_rate = self.step_learning_rate()
+        result = self.optimizer.step(self, learning_rate)
+        if audits:
+            # Diagnostic only: a second replay reads the updated execution bank.
+            # It does not accumulate gradients or advance Adam a second time.
+            after = 0.0
+            common = self.shared | self.optimizer.tensors()
+            audit_index = 0
+            for item in replay:
+                self.workspace.run(common | item["inputs"], past=item["position"], width=item["width"],
+                                   valid=item["valid"], normalizer=normalizer, gradients=self.optimizer.gradients)
+                self.worker.run(self.loss_program, self.workspace.values[self.graph.losses.name],
+                                self.loss, config=self.config)
+                self.worker.copy_from(self.loss_host.data_ptr(), self.loss.data_ptr, self.loss_host.nbytes)
+                after += self.loss_host[0, 0].item()
+                if "served_logits" in item:
+                    valid = item["valid"]
+                    teacher = self.read_training_rows(item["inputs"]["teacher"], valid).softmax(-1)
+                    learned = self.read_training_rows(self.workspace.values[self.graph.logits.name], valid).softmax(-1)
+                    audits[audit_index]["teacher_tv_after"] = (teacher - learned).abs().sum(-1).mul(.5).mean().item()
+                    audit_index += 1
+            for audit in audits:
+                audit.update(batch_loss_before=loss, batch_loss_after=after)
         elapsed = time.monotonic_ns() - started
         return dict(round=round_number, loss=loss, supervised=supervised, feedback_blocks=len(replay),
-                    supervision_weight=normalizer, update_ns=elapsed, **result, **self.pack_stats)
+                    full_feedback_blocks=sum(item.get("full_feedback", False) for item in replay),
+                    supervision_weight=normalizer, replay_audits=audits, learning_rate=learning_rate,
+                    update_ns=elapsed, **result, **self.pack_stats)
+
+    def step_learning_rate(self):
+        if not self.warmup_updates and self.lr_schedule == "constant":
+            return self.learning_rate
+        step, warmup = self.optimizer.steps + 1, max(1, self.warmup_updates)
+        if step <= warmup:
+            return self.learning_rate * step / warmup
+        factor = (warmup / step)**.5 if self.lr_schedule == "inverse_sqrt" else 1.
+        return self.learning_rate * factor
+
+    def read_training_rows(self, source, valid):
+        host = torch.empty((valid, 2 * TP_VOCAB), dtype=torch.bfloat16)
+        self.worker.copy_from(host.data_ptr(), source.data_ptr, host.nbytes)
+        result = host.float()
+        if not bool(torch.isfinite(result).all()):
+            raise FloatingPointError("nonfinite diagnostic replay rows")
+        return result
 
     def publish_flat(self, layout, buffers, *, expected_version):
         # The optimizer calls this before advancing its master. Leave the

@@ -17,6 +17,7 @@ from serving.weight import TP_BANK_SPECS, TextWeights
 from ..sampling import SamplingConfig, draw, probabilities, residual
 from .head import POLICY, tensor_schema
 from .oneserving_tp2_programs import GROUP_LAYERS, make_draft_program
+from .lazy_proposals import LazyProposals
 
 
 BLOCK = 32
@@ -149,7 +150,8 @@ def check_sampled_chunk(sequence, offset, size, target, proposal, generator):
 
 class OrthrusTP2Runner(TensorParallelRunner):
     def __init__(self, config, head_directory, *, output_candidates=31, group_layers=GROUP_LAYERS,
-                 attention_backend="paged", draft_batch_size=1, online=None, kv_pages=None, stochastic=False, on_cache_event=None):
+                 attention_backend="paged", draft_batch_size=1, online=None, kv_pages=None, stochastic=False,
+                 lazy_sampling=False, on_cache_event=None):
         if (config.speculative_tokens or config.prefix_cache or config.max_model_len != 512
                 or config.long_prefill_token_threshold != VERIFY_ROWS
                 or config.max_num_batched_tokens < config.max_num_seqs * VERIFY_ROWS):
@@ -164,8 +166,11 @@ class OrthrusTP2Runner(TensorParallelRunner):
         if draft_batch_size not in (1, 2):
             raise ValueError("draft batch must contain one or two requests")
         self.draft_batch_size = draft_batch_size
+        if lazy_sampling and not stochastic:
+            raise ValueError("lazy proposal sampling requires the stochastic path")
         self.online = online
         self.stochastic = stochastic
+        self.lazy_sampling = lazy_sampling
         if online is not None:
             online.bind_devices(config.devices)
         super().__init__(config, on_cache_event=on_cache_event)
@@ -184,10 +189,12 @@ class OrthrusTP2Runner(TensorParallelRunner):
             vocab_host = (2, self.draft_batch_size * BLOCK, TP_VOCAB)
             self._host_slabs["orthrus_sample_logits"] = shared(vocab_host, torch.bfloat16)
             self.spec_stats.update(draft_sampling_ns=0, stochastic_verify_ns=0)
+            self.spec_stats["proposed_budget"] = 0
         if self.online is not None:
             self.online.prepare_host_buffers(self)
             self.spec_stats.update(feedback_ns=0, update_ns=0, publish_ns=0, updates=0, publications=0,
                                    publish_read_ns=0, publish_pack_ns=0, publish_upload_ns=0, busy_updates=0)
+            self.spec_stats["feedback_skips"] = 0
 
     def compile_programs(self):
         entries = super().compile_programs()
@@ -291,7 +298,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
     def propose(self, slot, candidates):
         return self.propose_many([(slot, candidates)])[0]
 
-    def propose_many(self, requests, feedback_index=None, proposals=None):
+    def propose_many(self, requests, feedback_index=None, proposals=None, *, retain_logits=False):
         """Prepare one or two independent K32 proposals in a single device call."""
         start = time.monotonic_ns()
         size = len(requests)
@@ -328,6 +335,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
             if index == feedback_index:
                 self.online.capture_history(record["slot"], position, width, candidates,
                                             table[0, index], cos[0, first:first + BLOCK], sin[0, first:first + BLOCK])
+                self.online.capture_request(slot)
         if size == 1:
             metadata.extend(metadata)
         feedback_row = -1 if feedback_index is None else feedback_index * BLOCK
@@ -337,6 +345,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
                               valid, decisions, self.feedback_hidden, feedback_row, *metadata, begin, config=self.runconfig)
         if feedback_index is not None:
             self.online.capture_hidden(self.feedback_hidden)
+            self.online.capture_logits(logits, feedback_index * BLOCK)
         count = size * BLOCK
         if proposals is None:
             host = self.host_decisions[:, :count]
@@ -346,6 +355,21 @@ class OrthrusTP2Runner(TensorParallelRunner):
             selected = self._merge_packed_decisions(host, valid_indices, count)
             sampled = [[selected[index * BLOCK + row] for row in range(budget)]
                        for index, (_, budget) in enumerate(requests)]
+        elif self.lazy_sampling:
+            sampled = []
+            for index, (slot, budget) in enumerate(requests):
+                def read_rows(first, count, start=index * BLOCK, source=logits):
+                    parts = [torch.empty((count, TP_VOCAB), dtype=torch.bfloat16) for _ in range(2)]
+                    for rank, part in enumerate(parts):
+                        self._worker_call("copy_from", part.data_ptr(), source.shards[rank].data_ptr,
+                                          part.nbytes, src_offset=(start + first) * TP_VOCAB * 2,
+                                          worker_id=rank)
+                    return torch.cat(parts, dim=-1)
+                params = slot.request.sampling
+                proposals[slot.request.request_id] = LazyProposals(
+                    budget, read_rows, SamplingConfig(params.temperature, params.top_k or 0, params.top_p),
+                    slot.request.generator, retain_logits=retain_logits)
+                sampled.append([])
         else:
             sampling_started = time.monotonic_ns()
             host = self._host_slabs["orthrus_sample_logits"][:, :count]
@@ -367,10 +391,19 @@ class OrthrusTP2Runner(TensorParallelRunner):
             self.spec_stats["draft_sampling_ns"] += time.monotonic_ns() - sampling_started
         self.spec_stats["draft_ns"] += time.monotonic_ns() - start
         self.spec_stats["rounds"] += size
-        self.spec_stats["proposed"] += len(valid_indices)
+        if proposals is not None:
+            self.spec_stats["proposed_budget"] += len(valid_indices)
+        if proposals is None or not self.lazy_sampling:
+            self.spec_stats["proposed"] += len(valid_indices)
         self.spec_stats["draft_batches"] += 1
         self.spec_stats["draft_pair_batches"] += int(size == 2)
         return sampled
+
+    def _native_batch(self, slots):
+        outputs = super().run_batch(slots)
+        if self.online is not None:
+            self.online.observe_native(slots, outputs)
+        return outputs
 
     def run_batch(self, slots):
         if self.online is not None:
@@ -383,10 +416,10 @@ class OrthrusTP2Runner(TensorParallelRunner):
         budgets = [min(self.output_candidates, slot.request.max_tokens - len(slot.request.generated) - 1)
                    if slot.phase == "decode" else 0 for slot in slots]
         if not any(budgets):
-            return super().run_batch(slots)
+            return self._native_batch(slots)
         if self.draft_batch_size == 2 and any(slot.phase == "prefill" for slot in slots):
             # Advancing both requests through native decode lets their drafts amortize a later dispatch.
-            return super().run_batch(slots)
+            return self._native_batch(slots)
 
         proposed = [list(slot.token_ids) for slot in slots]
         proposals = {} if stochastic else None
@@ -402,12 +435,25 @@ class OrthrusTP2Runner(TensorParallelRunner):
                 index, args = group[0]
                 proposed[index].extend(self.propose(*args))
             else:
-                for (index, _), guesses in zip(group, self.propose_many([args for _, args in group], capture, proposals), strict=True):
+                for (index, _), guesses in zip(group, self.propose_many(
+                        [args for _, args in group], capture, proposals,
+                        retain_logits=len(active) > self.draft_batch_size), strict=True):
                     proposed[index].extend(guesses)
         results = [None if slot.phase == "prefill" and not slot.completes_prefill else [] for slot in slots]
         offsets = [0] * len(slots)
         pending = list(range(len(slots)))
         while pending:
+            if stochastic and self.lazy_sampling:
+                for i in pending:
+                    proposal = proposals.get(slots[i].request.request_id)
+                    if proposal is not None:
+                        started = time.monotonic_ns()
+                        tokens = proposal.ensure(offsets[i] + VERIFY_ROWS)
+                        elapsed = time.monotonic_ns() - started
+                        proposed[i].extend(tokens)
+                        self.spec_stats["proposed"] += len(tokens)
+                        self.spec_stats["draft_sampling_ns"] += elapsed
+                        self.spec_stats["draft_ns"] += elapsed
             chunks = [proposed[i][offsets[i]:offsets[i] + VERIFY_ROWS] for i in pending]
             batch_slots = [replace(slots[i], token_ids=tuple(chunk), position=slots[i].position + offsets[i])
                            for i, chunk in zip(pending, chunks, strict=True)]
@@ -443,8 +489,9 @@ class OrthrusTP2Runner(TensorParallelRunner):
                     else:
                         target = [self._distribution(batch, j, row, slot.request) for row in range(len(chunk))]
                         emitted, count, accepted, done = check_chunk(proposed[i], offsets[i], target)
-                    if i == feedback_slot:
-                        self.online.capture_teacher(j, offsets[i], count, final=done)
+                    if self.online is not None:
+                        self.online.observe_teacher(slot, j, emitted, results[i], offsets[i],
+                                                    count, final=done, selected=i == feedback_slot)
                     results[i].extend(emitted)
                     self.spec_stats["accepted"] += accepted
                     bonus = offsets[i] + count == len(proposed[i])

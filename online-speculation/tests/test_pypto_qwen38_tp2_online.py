@@ -26,6 +26,66 @@ def test_focus_requires_a_positive_tv_weight(weight, objective):
         TP2Online(None, device=0, last_layers=1, objective=objective, focus_weight=weight)
 
 
+def test_training_teacher_temperature_does_not_mutate_verifier_logits():
+    raw = torch.tensor([[-2., 2.]], dtype=torch.bfloat16)
+    original = raw.clone()
+    trainer = TP2Online(None, device=0, last_layers=1, teacher_temperature=.25)
+    assert torch.equal(trainer.training_teacher(raw), raw * 4)
+    assert torch.equal(raw, original)
+    ordinary = TP2Online(None, device=0, last_layers=1)
+    assert ordinary.training_teacher(raw) is raw
+
+
+def test_warmup_uses_actual_optimizer_steps_including_checkpoint_resume():
+    trainer = TP2Online(None, device=0, last_layers=1, learning_rate=1e-4, warmup_updates=4)
+    trainer.optimizer = SimpleNamespace(steps=0)
+    assert trainer.step_learning_rate() == 2.5e-5
+    trainer.optimizer.steps = 3
+    assert trainer.step_learning_rate() == 1e-4
+    trainer.optimizer.steps = 160
+    assert trainer.step_learning_rate() == 1e-4
+
+
+def test_inverse_sqrt_decays_after_warmup_without_stopping_updates():
+    trainer = TP2Online(None, device=0, last_layers=1, learning_rate=1e-4,
+                        warmup_updates=4, lr_schedule="inverse_sqrt")
+    trainer.optimizer = SimpleNamespace(steps=3)
+    assert trainer.step_learning_rate() == 1e-4
+    trainer.optimizer.steps = 15
+    assert trainer.step_learning_rate() == 5e-5
+    trainer.optimizer.steps = 160
+    assert 0 < trainer.step_learning_rate() < 5e-5
+    assert trainer.max_updates is None
+
+
+def test_teacher_shards_are_interleaved_by_row_in_one_upload(monkeypatch):
+    from blockspec.pypto_qwen38 import oneserving_tp2_online as module
+    monkeypatch.setattr(module, "TP_VOCAB", 4)
+    trainer = TP2Online(None, device=0, last_layers=1)
+    trainer.feedback = dict(candidates=7, valid=2, complete=False)
+    trainer.runner = SimpleNamespace(outputs={"target": (None, "logits")},
+                                    _last_layout={"output_key": "target"}, spec_stats=Counter())
+    reads, uploads = [], []
+    def read(rank, source, destination, offset):
+        reads.append((rank, offset))
+        destination.copy_(torch.arange(12).reshape(3, 4) + rank * 100)
+    monkeypatch.setattr(trainer, "read", read)
+    monkeypatch.setattr(trainer, "upload", lambda key, data, offset: uploads.append((key, data.clone(), offset)))
+    trainer.capture_teacher(1, 2, 3, final=True, source_row=1)
+    assert reads == [(0, 40), (1, 40)]
+    assert len(uploads) == 1 and uploads[0][2] == 32
+    assert uploads[0][1].tolist() == [[0,1,2,3,100,101,102,103],
+                                      [4,5,6,7,104,105,106,107],
+                                      [8,9,10,11,108,109,110,111]]
+    assert trainer.feedback["valid"] == 5 and trainer.feedback["complete"]
+
+
+@pytest.mark.parametrize("temperature", [0., -1., float("inf"), float("nan")])
+def test_invalid_training_teacher_temperatures_are_rejected(temperature):
+    with pytest.raises(ValueError, match="teacher temperature"):
+        TP2Online(None, device=0, last_layers=1, teacher_temperature=temperature)
+
+
 def test_focused_replay_uses_weighted_not_raw_position_count():
     trainer = TP2Online(None, device=0, last_layers=1, focus_weight=4)
     calls = []

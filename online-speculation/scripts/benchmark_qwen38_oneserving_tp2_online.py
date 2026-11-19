@@ -97,9 +97,17 @@ def main(*, guard=None):
                    help="maximum proposed tokens from the unchanged K32 draft block")
     p.add_argument("--last-layers", default=4, type=int, choices=(1, 4))
     p.add_argument("--learning-rate", default=1e-5, type=float)
+    p.add_argument("--warmup-updates", default=0, type=int)
+    p.add_argument("--lr-schedule", choices=("constant", "inverse_sqrt"), default="constant")
     p.add_argument("--objective", default="tv", choices=("tv", "kl"))
     p.add_argument("--focus-weight", default=1, type=int,
                    help="TV weight on reached candidate offsets 2 and 3; one keeps the ordinary objective")
+    p.add_argument("--feedback-mode", choices=("reached", "delayed"), default="reached")
+    p.add_argument("--teacher-tokens", type=int, choices=range(1, 32), default=31)
+    p.add_argument("--teacher-temperature", type=float, default=1.0,
+                   help="temperature of the learner's teacher distribution; does not change generation")
+    p.add_argument("--audit-replay", action="store_true",
+                   help="diagnose the first feedback replay against actual draft logits; include its cost")
     p.add_argument("--max-updates", type=int, help="cap Adam steps during the measured online stream")
     p.add_argument("--continuous-updates", action="store_true",
                    help="require periodic learning through the entire stream; reject a step cap")
@@ -111,6 +119,7 @@ def main(*, guard=None):
                    help="replay the full request stream with the final published head and updates disabled")
     p.add_argument("--gather-feedback", action="store_true", help="pack paged training history on the NPU")
     p.add_argument("--temperature", default=0, type=float, choices=(0, 1))
+    p.add_argument("--lazy-sampling", action="store_true")
     p.add_argument("--seed", default=743, type=int)
     p.add_argument("--background", action="store_true", help="train on the learner while serving")
     p.add_argument("--compile-only", action="store_true")
@@ -140,18 +149,26 @@ def main(*, guard=None):
     from blockspec.pypto_qwen38.oneserving_tp2_online import TP2Online
 
     configure_log("warn")
-    trainer = TP2Online(args.checkpoint, device=args.learner_device, last_layers=args.last_layers,
+    trainer_type = TP2Online
+    if args.feedback_mode == "delayed":
+        from blockspec.pypto_qwen38.oneserving_tp2_delayed import TP2DelayedOnline
+        trainer_type = TP2DelayedOnline
+    extra = dict(teacher_tokens=args.teacher_tokens) if args.feedback_mode == "delayed" else {}
+    trainer = trainer_type(args.checkpoint, device=args.learner_device, last_layers=args.last_layers,
                         learning_rate=args.learning_rate, background=args.background,
                         replay_blocks=args.replay_blocks, publish_every=args.publish_every,
                         gather_feedback=args.gather_feedback, objective=args.objective, max_updates=args.max_updates,
-                        focus_weight=args.focus_weight)
+                        focus_weight=args.focus_weight, audit_replay=args.audit_replay,
+                        teacher_temperature=args.teacher_temperature, warmup_updates=args.warmup_updates,
+                        lr_schedule=args.lr_schedule, **extra)
     config = ServingConfig(args.model, (0, 1), max_model_len=512, max_num_batched_tokens=128,
                            max_num_seqs=2, speculative_tokens=0, prefix_cache=False,
                            long_prefill_token_threshold=4)
     engine = InferenceEngine(config)
     runner = engine.runner = OrthrusTP2Runner(config, args.head, draft_batch_size=2,
                                               online=trainer, kv_pages=args.kv_pages,
-                                              stochastic=bool(args.temperature), on_cache_event=engine._on_cache)
+                                              stochastic=bool(args.temperature), lazy_sampling=args.lazy_sampling,
+                                              on_cache_event=engine._on_cache)
     engine.scheduler.runner = runner
     summary = dict(completed=False, head_step=runner.head["step"], device_ids=list(config.devices),
                    head_payload_sha256=runner.head["source_payload_sha256"],
@@ -160,11 +177,18 @@ def main(*, guard=None):
                    learner_device=args.learner_device, last_layers=args.last_layers,
                    physical_device_count=2 if trainer.colocated else 3, kv_pages=runner.pool_blocks,
                    learning_rate=args.learning_rate, background=args.background,
+                   warmup_updates=args.warmup_updates,
+                   lr_schedule=args.lr_schedule,
                    objective=args.objective, max_updates=args.max_updates,
                    focus_weight=args.focus_weight,
+                   feedback_mode=args.feedback_mode,
+                   teacher_tokens=args.teacher_tokens if args.feedback_mode == "delayed" else None,
+                   teacher_temperature=args.teacher_temperature,
+                   audit_replay=args.audit_replay,
                    online_update_policy=policy,
                    temperature=args.temperature, seed=args.seed,
-                   sampler="host_full_vocab" if args.temperature else "device_greedy",
+                   sampler=("host_full_vocab_lazy" if args.lazy_sampling else "host_full_vocab")
+                           if args.temperature else "device_greedy",
                    replay_blocks=args.replay_blocks, publish_every=args.publish_every,
                    stop_on_eos=args.stop_on_eos, candidates=args.candidates,
                    requests=2 * len(prompts), ar_checked_requests=ar_requests, output_tokens_per_request=args.tokens,
@@ -277,6 +301,7 @@ def main(*, guard=None):
                     raise RuntimeError("online case did not restore the shared initial step")
                 first = len(trainer.records)
                 busy_start = runner.spec_stats["busy_updates"]
+                feedback_skip_start = runner.spec_stats["feedback_skips"]
                 trainer.stride = stride
                 stream = measure(prompts, label=f"online_{runner.head['step']}_{stride}", frozen=frozen)
                 trainer.stride = None
@@ -286,7 +311,8 @@ def main(*, guard=None):
                     tail = issue(prompts[0], 1)
                 updates = trainer.records[first:]
                 skipped = runner.spec_stats["busy_updates"] - busy_start
-                if len(updates) + skipped != trainer.rounds // stride or not updates:
+                feedback_skips = runner.spec_stats["feedback_skips"] - feedback_skip_start
+                if len(updates) + skipped + feedback_skips != trainer.rounds // stride or not updates:
                     raise RuntimeError("online case submitted an unexpected number of updates")
                 if [update["version"] for update in updates] != list(
                         range(trainer.initial_step + 1, trainer.version + 1)):
@@ -305,6 +331,7 @@ def main(*, guard=None):
                                                tail_stats=tail["stats"] if tail else None),
                               holdout=summarize(learned_holdout), exact_greedy=True if not args.temperature else None,
                               updates=updates, skipped_busy=skipped,
+                              skipped_feedback=feedback_skips,
                               supervised_positions=sum(step["supervised"] for step in updates),
                               paired_seconds=[[base["seconds"], trial["seconds"]]
                                               for base, trial in zip(frozen, stream, strict=True)],
@@ -313,6 +340,7 @@ def main(*, guard=None):
                     policy=policy, stride=stride, max_updates=args.max_updates,
                     rounds=trainer.rounds, scheduled_updates=trainer.rounds // stride,
                     completed_updates=len(updates), skipped_busy=skipped,
+                    skipped_feedback=feedback_skips,
                     last_update_round=updates[-1]["round"],
                     rounds_after_last_update=trainer.rounds - updates[-1]["round"],
                     update_limit_reached=trainer.update_limit_reached(),
