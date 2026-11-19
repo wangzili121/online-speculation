@@ -1,0 +1,33 @@
+{
+  "completed": true,
+  "tag": "a111-v28-eos-last4-background-audit-r1",
+  "source_model": "Source28 Python model code verified identical to EOS-corrected18 before launch; only reservation helper/module paths changed.",
+  "physical_cards": 3,
+  "last_layers": 4,
+  "background": true,
+  "updates": 2,
+  "greedy_exact": true,
+  "published_banks_exact": true,
+  "initialization_and_guard_log": [
+    "guard {'ok': True, 'reserved_gib': 16, 'devices': [0, 1, 2]}",
+    "guard {'ok': True, 'released': [0]}",
+    "guard {'ok': True, 'released': [1]}",
+    "guard {'ok': True, 'released': [2]}",
+    "guard {'ok': True, 'released': [0, 1, 2]}",
+    "ready TP2 + learner 430.0869211049285"
+  ],
+  "replay_audits": [
+    {
+      "rows": 2,
+      "max_abs": 0.109375,
+      "relative_l2": 0.004552906844764948,
+      "served_replay_tv": 3.678032044263091e-06,
+      "top1_agreement": 1.0,
+      "teacher_tv_before": 0.4996781349182129,
+      "teacher_tv_after": 0.49416637420654297,
+      "batch_loss_before": 0.49967721104621887,
+      "batch_loss_after": 0.4941643178462982
+    }
+  ],
+  "note": "Short correctness audit, not performance evidence. Prior failed initializations retained; no driver/device reset or other user task termination. Guard cleanup only reaps its own Popen reservation child after release acknowledgement."
+}
