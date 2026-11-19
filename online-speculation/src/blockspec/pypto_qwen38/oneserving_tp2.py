@@ -10,9 +10,11 @@ from safetensors import safe_open
 import torch
 from torch.nn.functional import pad
 
+from serving.kv_cache import KVCache
 from serving.runtime import BLOCK_SIZE, HIDDEN, TensorParallelRunner, TP_VOCAB, shared
 from serving.weight import TP_BANK_SPECS, TextWeights
 
+from ..sampling import SamplingConfig, draw, probabilities, residual
 from .head import POLICY, tensor_schema
 from .oneserving_tp2_programs import GROUP_LAYERS, make_draft_program
 
@@ -124,9 +126,30 @@ def check_chunk(sequence, offset, selected):
     return selected, len(selected), len(selected), False
 
 
+def check_sampled_chunk(sequence, offset, size, target, proposal, generator):
+    """Verify the reached portion of one target chunk with full-vocabulary sampling."""
+    emitted = []
+    for row in range(size):
+        p = target(row)
+        p = p / p.sum()
+        candidate = offset + row
+        if candidate + 1 == len(sequence):
+            return emitted + [int(draw(p, generator))], row + 1, row, True
+        token = sequence[candidate + 1]
+        q = proposal[candidate]
+        if torch.rand((), generator=generator) * q[token] < p[token]:
+            emitted.append(token)
+            continue
+        replacement, mass = residual(p, q)
+        if mass <= 0:
+            raise RuntimeError("a rejected draft requires positive residual probability")
+        return emitted + [int(draw(replacement, generator))], row + 1, row, True
+    return emitted, size, size, False
+
+
 class OrthrusTP2Runner(TensorParallelRunner):
     def __init__(self, config, head_directory, *, output_candidates=31, group_layers=GROUP_LAYERS,
-                 attention_backend="paged", draft_batch_size=1, on_cache_event=None):
+                 attention_backend="paged", draft_batch_size=1, online=None, kv_pages=None, stochastic=False, on_cache_event=None):
         if (config.speculative_tokens or config.prefix_cache or config.max_model_len != 512
                 or config.long_prefill_token_threshold != VERIFY_ROWS
                 or config.max_num_batched_tokens < config.max_num_seqs * VERIFY_ROWS):
@@ -141,11 +164,30 @@ class OrthrusTP2Runner(TensorParallelRunner):
         if draft_batch_size not in (1, 2):
             raise ValueError("draft batch must contain one or two requests")
         self.draft_batch_size = draft_batch_size
+        self.online = online
+        self.stochastic = stochastic
+        if online is not None:
+            online.bind_devices(config.devices)
         super().__init__(config, on_cache_event=on_cache_event)
+        if kv_pages is not None:
+            minimum = 1 + config.max_num_seqs * (self.table_blocks + 1)
+            if type(kv_pages) is not int or kv_pages < minimum:
+                raise ValueError(f"expected at least {minimum} KV pages for this capacity")
+            self.pool_blocks = kv_pages
+            self.cache = KVCache(self.cache.namespace, kv_pages, config.max_model_len,
+                                 BLOCK_SIZE, on_event=on_cache_event)
         for size in range(1, self.draft_batch_size + 1):
             self._host_slabs.update({f"orthrus_{size}_{name}": shared((2, *shape), dtype)
                                      for name, shape, dtype in draft_inputs(size)})
         self.spec_stats.update(rounds=0, verify_calls=0, restore_ns=0, draft_batches=0, draft_pair_batches=0)
+        if stochastic:
+            vocab_host = (2, self.draft_batch_size * BLOCK, TP_VOCAB)
+            self._host_slabs["orthrus_sample_logits"] = shared(vocab_host, torch.bfloat16)
+            self.spec_stats.update(draft_sampling_ns=0, stochastic_verify_ns=0)
+        if self.online is not None:
+            self.online.prepare_host_buffers(self)
+            self.spec_stats.update(feedback_ns=0, update_ns=0, publish_ns=0, updates=0, publications=0,
+                                   publish_read_ns=0, publish_pack_ns=0, publish_upload_ns=0, busy_updates=0)
 
     def compile_programs(self):
         entries = super().compile_programs()
@@ -154,6 +196,11 @@ class OrthrusTP2Runner(TensorParallelRunner):
         if self.draft_batch_size == 2:
             self.orthrus_pair = self.compile_draft(2)
             entries.append(self.orthrus_pair)
+        if self.online is not None:
+            if self.online.gather_feedback:
+                entries.append(self.online.compile_history(self))
+            if self.online.colocated:
+                entries.extend(self.online.compile_colocated(self))
         return entries
 
     def _target_decode_row_limit(self):
@@ -173,12 +220,14 @@ class OrthrusTP2Runner(TensorParallelRunner):
         state = [meta(shape, dtype) for shape, dtype in self.state_specs[:4]]
         draft = make_draft_program(pool_pages=self.pool_blocks, group_layers=self.group_layers,
                                    attention_backend=self.attention_backend, batch_size=batch_size,
-                                   compact_tp=self.draft_batch_size == 2)
+                                   compact_tp=self.draft_batch_size == 2,
+                                   capture_layer=None if self.online is None else self.online.layers[0])
         return draft.compile(sample_inputs["ids"], sample_inputs["rows"], *banks, *suffix, *state,
                              *(sample_inputs[name] for name, _, _ in inputs[2:-1]),
                              meta((rows, HIDDEN), torch.bfloat16),
                              meta((rows, TP_VOCAB), torch.bfloat16), sample_inputs["valid"],
-                             meta((rows, 16), torch.float32), 0, 64, BLOCK, 1, 70, BLOCK, 0,
+                             meta((rows, 16), torch.float32), meta((BLOCK, HIDDEN), torch.bfloat16), -1,
+                             0, 64, BLOCK, 1, 70, BLOCK, 0,
                              config=self.runconfig)
 
     def _check_memory_admission(self):
@@ -190,6 +239,12 @@ class OrthrusTP2Runner(TensorParallelRunner):
             extra += rows * ((HIDDEN + TP_VOCAB) * 2 + 16 * 4)
             window_rows = rows if self.draft_batch_size == 2 else 16384
             extra += window_rows * HIDDEN * 4 + 32
+        extra += BLOCK * HIDDEN * 2
+        if self.online is not None:
+            extra += sum(torch.empty(shape, dtype=dtype, device="meta").nbytes
+                         for shape, dtype in SHAPES[self.online.first_bank:])
+        if self.online is not None and self.online.gather_feedback:
+            extra += 2 * 2 * 512 * 256 * 2
         for rank in self.admission:
             rank["orthrus_extra_bytes"] = extra
             if rank["headroom_bytes"] < extra:
@@ -204,6 +259,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
                 if any(value.shape != shape or value.dtype != dtype for value in (first, second)):
                     raise ValueError("Incorrect resident suffix shape or dtype")
                 self.suffix.append(self._allocate(shape, dtype, (first, second)))
+            self.feedback_hidden = self._allocate((BLOCK, HIDDEN), torch.bfloat16)
             self.draft_buffers = {}
             for size in range(1, self.draft_batch_size + 1):
                 rows = size * BLOCK
@@ -219,14 +275,23 @@ class OrthrusTP2Runner(TensorParallelRunner):
             decay = [pad(value.bfloat16().float(), (0, 8)).contiguous() for value in decay.chunk(2, dim=1)]
             self.draft_banks = self.banks[:23]
             self.draft_banks[DECAY_BANK] = self._allocate(decay_shape, torch.float32, decay)
+            if self.online is not None:
+                self.online.start(self)
         except BaseException:
             self.close()
             raise
 
+    def close(self):
+        try:
+            if self.online is not None:
+                self.online.close()
+        finally:
+            super().close()
+
     def propose(self, slot, candidates):
         return self.propose_many([(slot, candidates)])[0]
 
-    def propose_many(self, requests):
+    def propose_many(self, requests, feedback_index=None, proposals=None):
         """Prepare one or two independent K32 proposals in a single device call."""
         start = time.monotonic_ns()
         size = len(requests)
@@ -260,29 +325,60 @@ class OrthrusTP2Runner(TensorParallelRunner):
             valid[:, first:first + candidates] = 1
             valid_indices.extend(range(first, first + candidates))
             metadata.extend((record["slot"], position, width))
+            if index == feedback_index:
+                self.online.capture_history(record["slot"], position, width, candidates,
+                                            table[0, index], cos[0, first:first + BLOCK], sin[0, first:first + BLOCK])
         if size == 1:
             metadata.extend(metadata)
+        feedback_row = -1 if feedback_index is None else feedback_index * BLOCK
         for begin in range(0, 64, self.group_layers):
             self._worker_call("run", program, ids, rows, *self.draft_banks, *self.suffix,
                               *self.resident[:4], cos, sin, table, mask, hidden, logits,
-                              valid, decisions, *metadata, begin, config=self.runconfig)
+                              valid, decisions, self.feedback_hidden, feedback_row, *metadata, begin, config=self.runconfig)
+        if feedback_index is not None:
+            self.online.capture_hidden(self.feedback_hidden)
         count = size * BLOCK
-        host = self.host_decisions[:, :count]
-        for rank, shard in enumerate(decisions.shards):
-            value = host[rank]
-            self._worker_call("copy_from", value.data_ptr(), shard.data_ptr, value.nbytes, worker_id=rank)
-        selected = self._merge_packed_decisions(host, valid_indices, count)
+        if proposals is None:
+            host = self.host_decisions[:, :count]
+            for rank, shard in enumerate(decisions.shards):
+                value = host[rank]
+                self._worker_call("copy_from", value.data_ptr(), shard.data_ptr, value.nbytes, worker_id=rank)
+            selected = self._merge_packed_decisions(host, valid_indices, count)
+            sampled = [[selected[index * BLOCK + row] for row in range(budget)]
+                       for index, (_, budget) in enumerate(requests)]
+        else:
+            sampling_started = time.monotonic_ns()
+            host = self._host_slabs["orthrus_sample_logits"][:, :count]
+            for rank, shard in enumerate(logits.shards):
+                dst = host[rank]
+                self._worker_call("copy_from", dst.data_ptr(), shard.data_ptr, dst.nbytes, worker_id=rank)
+            sampled = []
+            for index, (slot, budget) in enumerate(requests):
+                start_row = index * BLOCK
+                request = slot.request
+                params = request.sampling
+                local = host[:, start_row:start_row + budget]
+                full_logits = torch.cat(tuple(local), dim=-1)
+                q = probabilities(full_logits, SamplingConfig(params.temperature, params.top_k or 0, params.top_p))
+                # Keep the same normalized law for proposal and rejection at full vocabulary size.
+                q.div_(q.sum(-1, keepdim=True))
+                proposals[request.request_id] = q
+                sampled.append(draw(q, request.generator).tolist())
+            self.spec_stats["draft_sampling_ns"] += time.monotonic_ns() - sampling_started
         self.spec_stats["draft_ns"] += time.monotonic_ns() - start
         self.spec_stats["rounds"] += size
         self.spec_stats["proposed"] += len(valid_indices)
         self.spec_stats["draft_batches"] += 1
         self.spec_stats["draft_pair_batches"] += int(size == 2)
-        return [[selected[index * BLOCK + row] for row in range(budget)]
-                for index, (_, budget) in enumerate(requests)]
+        return sampled
 
     def run_batch(self, slots):
-        if any(slot.request.sampling.temperature != 0 for slot in slots):
-            raise ValueError("Orthrus TP2 currently supports greedy requests")
+        if self.online is not None:
+            self.online.prepare_batch()
+        sampling_modes = {bool(slot.request.sampling.temperature) for slot in slots}
+        stochastic = True in sampling_modes
+        if stochastic and (not self.stochastic or False in sampling_modes):
+            raise ValueError("enable full-vocabulary sampling and use the same mode across the batch")
         # Reuse native prefill and single-token fallback when the draft has no work.
         budgets = [min(self.output_candidates, slot.request.max_tokens - len(slot.request.generated) - 1)
                    if slot.phase == "decode" else 0 for slot in slots]
@@ -293,15 +389,20 @@ class OrthrusTP2Runner(TensorParallelRunner):
             return super().run_batch(slots)
 
         proposed = [list(slot.token_ids) for slot in slots]
+        proposals = {} if stochastic else None
         active = [(index, (slot, budget))
                   for index, (slot, budget) in enumerate(zip(slots, budgets, strict=True)) if budget]
+        feedback_index = None if self.online is None else self.online.feedback_index(len(active))
+        feedback_slot = None if feedback_index is None else active[feedback_index][0]
         for offset in range(0, len(active), self.draft_batch_size):
             group = active[offset:offset + self.draft_batch_size]
-            if len(group) == 1:
+            capture = (feedback_index - offset if feedback_index is not None
+                       and offset <= feedback_index < offset + len(group) else None)
+            if len(group) == 1 and capture is None and not stochastic:
                 index, args = group[0]
                 proposed[index].extend(self.propose(*args))
             else:
-                for (index, _), guesses in zip(group, self.propose_many([args for _, args in group]), strict=True):
+                for (index, _), guesses in zip(group, self.propose_many([args for _, args in group], capture, proposals), strict=True):
                     proposed[index].extend(guesses)
         results = [None if slot.phase == "prefill" and not slot.completes_prefill else [] for slot in slots]
         offsets = [0] * len(slots)
@@ -326,10 +427,24 @@ class OrthrusTP2Runner(TensorParallelRunner):
                 if slot.phase == "prefill":
                     count = len(chunk)
                     if slot.completes_prefill:
-                        results[i].append(self._distribution(batch, j, count - 1, slot.request))
+                        if stochastic:
+                            results[i].append(self._sample(self._distribution(batch, j, count - 1, slot.request),
+                                                           slot.request))
+                        else:
+                            results[i].append(self._distribution(batch, j, count - 1, slot.request))
                 else:
-                    target = [self._distribution(batch, j, row, slot.request) for row in range(len(chunk))]
-                    emitted, count, accepted, done = check_chunk(proposed[i], offsets[i], target)
+                    if stochastic:
+                        sampling_started = time.monotonic_ns()
+                        emitted, count, accepted, done = check_sampled_chunk(
+                            proposed[i], offsets[i], len(chunk),
+                            lambda row: self._distribution(batch, j, row, slot.request),
+                            proposals.get(slot.request.request_id), slot.request.generator)
+                        self.spec_stats["stochastic_verify_ns"] += time.monotonic_ns() - sampling_started
+                    else:
+                        target = [self._distribution(batch, j, row, slot.request) for row in range(len(chunk))]
+                        emitted, count, accepted, done = check_chunk(proposed[i], offsets[i], target)
+                    if i == feedback_slot:
+                        self.online.capture_teacher(j, offsets[i], count, final=done)
                     results[i].extend(emitted)
                     self.spec_stats["accepted"] += accepted
                     bonus = offsets[i] + count == len(proposed[i])
@@ -351,4 +466,6 @@ class OrthrusTP2Runner(TensorParallelRunner):
             for pages, end in committed:
                 self.cache.commit(pages, end)
             pending = unfinished
+        if self.online is not None:
+            self.online.finish_batch(len(active))
         return results

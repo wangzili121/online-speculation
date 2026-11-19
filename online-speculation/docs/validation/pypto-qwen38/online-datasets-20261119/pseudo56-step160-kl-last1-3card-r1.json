@@ -1,0 +1,53 @@
+{
+  "completed": false,
+  "head_step": 160,
+  "device_ids": [
+    0,
+    1
+  ],
+  "head_payload_sha256": "bb02eeffcf9e23b84ad2f8694bbe3fd9ab7e9406ee4c51d3f8eac6f99f565f82",
+  "head_shard_sha256": [
+    "99e68812f0588ffb7cfced35af03e4afe2b47937c0cbffa04bef7f1026bf77dc",
+    "972814751cb6f156cace79441f7e7fa649db895b416b80f16ea01c3f9e2b90c1"
+  ],
+  "visible_devices": "4,5,6",
+  "learner_device": 2,
+  "last_layers": 1,
+  "physical_device_count": 3,
+  "kv_pages": 32,
+  "learning_rate": 0.0001,
+  "background": true,
+  "objective": "kl",
+  "max_updates": 48,
+  "temperature": 0,
+  "seed": 743,
+  "sampler": "device_greedy",
+  "replay_blocks": 2,
+  "publish_every": 2,
+  "stop_on_eos": true,
+  "candidates": 7,
+  "requests": 56,
+  "ar_checked_requests": 56,
+  "output_tokens_per_request": 128,
+  "prompts_sha256": "a0219fb9a8371b9bd91d975d4057223cfc48d763e5371dc56601722c2e1f03dc",
+  "holdout_sha256": "689e64376a99cca728382b81a067603d934fcfc98a35aafe285e94b9df127e1d",
+  "gather_feedback": true,
+  "optimizer_init": "fresh",
+  "results": {},
+  "startup_seconds": 337.8134172190912,
+  "progress": {
+    "ar": [
+      {
+        "requests": 32,
+        "tokens": 3577,
+        "seconds": 180.50945036718622,
+        "tok_s": 19.816137009579208,
+        "accepted_per_round": null,
+        "updates": 0,
+        "publications": 0
+      }
+    ]
+  },
+  "error": "RuntimeError('ar pair 26 failed: LocalMailboxEndpoint child failed (worker_id=0, code=1): chip_process dev=0: chip run: RuntimeError: chip run lane is poisoned: finalize_native_run failed with code 507018 (run_id=5593 slot=0 generation=5593 dispatch_id=11131 run_epoch=11131)')",
+  "clean_shutdown": true
+}

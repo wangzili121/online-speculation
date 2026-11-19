@@ -23,8 +23,8 @@ class Parameter:
 class SuffixGraph(GraphBuilder):
     def __init__(self, last_layers, shape=SuffixShape(), gdn_shape=GDNShape(), *, objective="tv", focus_weight=1):
         self.objective, self.focus_weight = objective, focus_weight
-        if type(last_layers) is not int or not 2 <= last_layers <= 64 or shape.block != gdn_shape.rows:
-            raise ValueError("last-2..64 and a common K32 block required")
+        if type(last_layers) is not int or not 1 <= last_layers <= 64 or shape.block != gdn_shape.rows:
+            raise ValueError("last-1..64 and a common K32 block required")
         self.last_layers, self.capture_layer = last_layers, 64-last_layers
         self.shape, self.gdn_shape = shape, gdn_shape
         self.inputs, self.nodes, self.gradients = {}, [], {}
@@ -35,7 +35,7 @@ class SuffixGraph(GraphBuilder):
             block = FullAttentionLayer(self, layer, hidden) if layer%4 == 3 else GDNLayer(self, layer, hidden)
             layers.append(block)
             hidden = block.output
-        full = LastLayerGraph(shape, backprop_input=True, objective=objective, focus_weight=focus_weight)
+        full = LastLayerGraph(shape, backprop_input=bool(layers), objective=objective, focus_weight=focus_weight)
         values = {}
         shared = {"teacher", "cos", "sin", "final_gamma", "lm_head"}
         for name, value in full.inputs.items():
@@ -59,7 +59,7 @@ class SuffixGraph(GraphBuilder):
             values.update({v.name:clone for v,clone in zip(node.outputs,mapped,strict=True)})
         self.logits, self.losses = values[full.logits.name], values[full.losses.name]
         self.gradients.update({"l63_"+name:values[v.name] for name,v in full.gradients.items()})
-        gradient = values[full.input_gradient.name]
+        gradient = values[full.input_gradient.name] if layers else None
         for block in reversed(layers):
             gradient = block.backward(gradient, propagate=block.layer != self.capture_layer)
         self.input_gradient = None

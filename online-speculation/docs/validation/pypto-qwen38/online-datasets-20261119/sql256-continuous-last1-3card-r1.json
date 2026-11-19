@@ -1,0 +1,99 @@
+{
+  "completed": false,
+  "head_step": 160,
+  "device_ids": [
+    0,
+    1
+  ],
+  "head_payload_sha256": "bb02eeffcf9e23b84ad2f8694bbe3fd9ab7e9406ee4c51d3f8eac6f99f565f82",
+  "head_shard_sha256": [
+    "99e68812f0588ffb7cfced35af03e4afe2b47937c0cbffa04bef7f1026bf77dc",
+    "972814751cb6f156cace79441f7e7fa649db895b416b80f16ea01c3f9e2b90c1"
+  ],
+  "visible_devices": "4,5,6",
+  "learner_device": 2,
+  "last_layers": 1,
+  "physical_device_count": 3,
+  "kv_pages": 32,
+  "learning_rate": 0.0001,
+  "background": true,
+  "objective": "kl",
+  "max_updates": null,
+  "online_update_policy": "continuous_periodic",
+  "temperature": 0,
+  "seed": 743,
+  "sampler": "device_greedy",
+  "replay_blocks": 2,
+  "publish_every": 2,
+  "stop_on_eos": true,
+  "candidates": 7,
+  "requests": 256,
+  "ar_checked_requests": 256,
+  "output_tokens_per_request": 192,
+  "prompts_sha256": "f218ee2cbc24e064bfc148ac8087517cceb1ca5009f2260eb175914581a7b797",
+  "holdout_sha256": "5427eb99c873bf1d1ca8833c7367fda80a1ad55cc69215369490f5a86f1f7e73",
+  "gather_feedback": true,
+  "optimizer_init": "fresh",
+  "results": {},
+  "startup_seconds": 348.53526491997764,
+  "progress": {
+    "ar": [
+      {
+        "requests": 32,
+        "tokens": 2233,
+        "seconds": 96.4969063049648,
+        "tok_s": 23.140638239146444,
+        "accepted_per_round": null,
+        "updates": 0,
+        "publications": 0
+      },
+      {
+        "requests": 64,
+        "tokens": 4485,
+        "seconds": 192.3844105429016,
+        "tok_s": 23.312699752248626,
+        "accepted_per_round": null,
+        "updates": 0,
+        "publications": 0
+      },
+      {
+        "requests": 96,
+        "tokens": 6857,
+        "seconds": 293.9780418779701,
+        "tok_s": 23.324871327792337,
+        "accepted_per_round": null,
+        "updates": 0,
+        "publications": 0
+      },
+      {
+        "requests": 128,
+        "tokens": 9168,
+        "seconds": 391.25112476293,
+        "tok_s": 23.432520495768923,
+        "accepted_per_round": null,
+        "updates": 0,
+        "publications": 0
+      },
+      {
+        "requests": 160,
+        "tokens": 11345,
+        "seconds": 482.3764960828703,
+        "tok_s": 23.518973441133365,
+        "accepted_per_round": null,
+        "updates": 0,
+        "publications": 0
+      },
+      {
+        "requests": 192,
+        "tokens": 13598,
+        "seconds": 576.4298253450543,
+        "tok_s": 23.590035425145043,
+        "accepted_per_round": null,
+        "updates": 0,
+        "publications": 0
+      }
+    ]
+  },
+  "error": "RuntimeError('ar pair 109 failed: LocalMailboxEndpoint child failed (worker_id=1, code=1): chip_process dev=1: chip run: RuntimeError: chip run lane is poisoned: finalize_native_run failed with code 507901 (run_id=12247 slot=0 generation=12247 dispatch_id=24273 run_epoch=24273)')",
+  "clean_shutdown": true
+}

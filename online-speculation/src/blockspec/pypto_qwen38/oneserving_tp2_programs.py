@@ -10,11 +10,12 @@ GROUP_LAYERS = 64
 
 
 def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backend="paged",
-                       batch_size=1, compact_tp=False):
+                       batch_size=1, compact_tp=False, capture_layer=None):
     if group_layers not in (4, 8, 16, 32, 64):
         raise ValueError("draft layer groups must divide the 64-layer backbone and end on full attention")
     if batch_size not in (1, 2) or batch_size == 2 and not compact_tp:
         raise ValueError("a paired draft requires compact TP")
+    capture_feedback = capture_layer is not None
     fused_residual = batch_size == 2
     rows_per_dispatch = 32 * batch_size
     window_rows = rows_per_dispatch if compact_tp else 16384
@@ -277,6 +278,8 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
         cos: pl.Tensor, sin: pl.Tensor, table: pl.Tensor, bias: pl.Tensor,
         hidden: pl.InOut[pl.Tensor[[rows_per_dispatch, 5120], pl.BF16]],
         logits: pl.Out[pl.Tensor[[rows_per_dispatch, 124160], pl.BF16]],
+        feedback: pl.InOut[pl.Tensor[[32, 5120], pl.BF16]],
+        feedback_row: pl.Scalar[pl.INT32],
         slot: pl.Scalar[pl.INT32], past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32],
         slot_second: pl.Scalar[pl.INT32], past_second: pl.Scalar[pl.INT32],
         width_second: pl.Scalar[pl.INT32], begin: pl.Scalar[pl.INT32],
@@ -292,6 +295,16 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
             middle = pl.create_tensor([rows_per_dispatch, 8704], dtype=pl.BF16)
             for offset in pl.range(group_layers):
                 layer = begin + offset
+                if capture_feedback:
+                    if layer == capture_layer:
+                        if feedback_row >= 0:
+                            if rank == 0:
+                                with pl.spmd(20, name_hint="orthrus_online_suffix_input"):
+                                    tile = pl.tile.get_block_idx()
+                                    row = tile // 10 * 16
+                                    col = tile % 10 * 512
+                                    feedback[row:row + 16, col:col + 512] = pl.slice(
+                                        hidden, [16, 512], [feedback_row + row, col])
                 with pl.scope():
                     gamma = pl.slice(input_gamma, [1, 5120], [layer, 0])
                     rms_norm(hidden, gamma, normalized)
@@ -370,6 +383,7 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
         cos: pl.Tensor, sin: pl.Tensor, table: pl.Tensor, bias: pl.Tensor,
         hidden: pl.InOut[pl.Tensor], logits: pl.Out[pl.Tensor],
         valid: pl.Tensor, decisions: pl.Out[pl.Tensor],
+        feedback: pl.InOut[pl.Tensor], feedback_row: pl.Scalar[pl.INT32],
         slot: pl.Scalar[pl.INT32], past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32],
         slot_second: pl.Scalar[pl.INT32], past_second: pl.Scalar[pl.INT32],
         width_second: pl.Scalar[pl.INT32], begin: pl.Scalar[pl.INT32],
@@ -392,6 +406,7 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
                 head_v[rank], head_q_gamma[rank], head_k_gamma[rank], head_o[rank],
                 conv_state[rank], recurrent_state[rank], key_pool[rank], value_pool[rank],
                 cos[rank], sin[rank], table[rank], bias[rank], hidden[rank], logits[rank],
+                feedback[rank], feedback_row,
                 slot, past, width, slot_second, past_second, width_second, begin,
                 window, signal, rank, device=rank)
             if begin == 64 - group_layers:

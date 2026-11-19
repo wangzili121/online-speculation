@@ -1,0 +1,162 @@
+[
+  {
+    "file": "gsm128-step160-kl-last1-2card-r2.json",
+    "sha256": "185ca269f210098c9baf6cdf307e68434589b0851791b36bdf191093e1511071",
+    "completed": true,
+    "error": null,
+    "head_step": 160,
+    "physical_devices": "4,5",
+    "temperature": 0,
+    "max_updates": 64,
+    "requests": 128,
+    "results": {
+      "16": {
+        "frozen_tok_s": 34.59245284483483,
+        "online_tok_s": 32.15722771668746,
+        "net_increment": -0.07039758467173829,
+        "updates": 64,
+        "schedule": null,
+        "exact_greedy": true,
+        "final_seen_replay_tok_s": 32.94556997106556,
+        "final_holdout_tok_s": 33.5843787227346
+      }
+    }
+  },
+  {
+    "file": "gsm128-step160-kl-last1-3card-r1.json",
+    "sha256": "7bc2b3c2b1be0505d4cb2726b685927ec5e8398d5c40689267dfc121c98e92c0",
+    "completed": false,
+    "error": "RuntimeError('ar pair 1 failed: LocalMailboxEndpoint child failed (worker_id=0, code=1): chip_process dev=0: chip run: RuntimeError: chip run lane is poisoned: finalize_native_run failed with code 507018 (run_id=363 slot=0 generation=363 dispatch_id=721 run_epoch=721)')",
+    "head_step": 160,
+    "physical_devices": "4,5,6",
+    "temperature": 0,
+    "max_updates": 64,
+    "requests": 128,
+    "results": {}
+  },
+  {
+    "file": "gsm128-step160-tv-last1-2card-r1.json",
+    "sha256": "bde2fc715a01ad1e52d9d3b8f10a798bd393b22b923cbc953976de642f9ec28f",
+    "completed": true,
+    "error": null,
+    "head_step": 160,
+    "physical_devices": "0,1",
+    "temperature": 0,
+    "max_updates": 128,
+    "requests": 128,
+    "results": {
+      "16": {
+        "frozen_tok_s": 34.622836240640886,
+        "online_tok_s": 33.159368667539674,
+        "net_increment": -0.04226885293075355,
+        "updates": 128,
+        "schedule": null,
+        "exact_greedy": true,
+        "final_seen_replay_tok_s": 35.12586388803033,
+        "final_holdout_tok_s": 35.77958764222816
+      }
+    }
+  },
+  {
+    "file": "pseudo56-step160-kl-last1-2card-r1.json",
+    "sha256": "7fea78ef928b501276b97ca2bdf179e8e77ab8f370f49512a9637d60aa2fb394",
+    "completed": true,
+    "error": null,
+    "head_step": 160,
+    "physical_devices": "2,3",
+    "temperature": 0,
+    "max_updates": 48,
+    "requests": 56,
+    "results": {
+      "16": {
+        "frozen_tok_s": 21.076973658009482,
+        "online_tok_s": 20.57243318406839,
+        "net_increment": -0.023937994236158278,
+        "updates": 48,
+        "schedule": null,
+        "exact_greedy": true,
+        "final_seen_replay_tok_s": 21.303792104280724,
+        "final_holdout_tok_s": 21.380785448155294
+      }
+    }
+  },
+  {
+    "file": "pseudo56-step160-kl-last1-3card-r1.json",
+    "sha256": "784bf66bd98d7606ecf89d39a5fd3cff8bac0a9f39fd66adb5839c26e2fd9baa",
+    "completed": false,
+    "error": "RuntimeError('ar pair 26 failed: LocalMailboxEndpoint child failed (worker_id=0, code=1): chip_process dev=0: chip run: RuntimeError: chip run lane is poisoned: finalize_native_run failed with code 507018 (run_id=5593 slot=0 generation=5593 dispatch_id=11131 run_epoch=11131)')",
+    "head_step": 160,
+    "physical_devices": "4,5,6",
+    "temperature": 0,
+    "max_updates": 48,
+    "requests": 56,
+    "results": {}
+  },
+  {
+    "file": "sql256-continuous-last1-2card-r1.json",
+    "sha256": "7089d0622c76128e4fb6d2d11f5dc016bfd26c28d4de02af1105b4f0c6543fde",
+    "completed": true,
+    "error": null,
+    "head_step": 160,
+    "physical_devices": "2,3",
+    "temperature": 0,
+    "max_updates": null,
+    "requests": 256,
+    "results": {
+      "16": {
+        "frozen_tok_s": 23.444249722948264,
+        "online_tok_s": 23.772189357872854,
+        "net_increment": 0.01398806269341124,
+        "updates": 338,
+        "schedule": {
+          "policy": "continuous_periodic",
+          "stride": 16,
+          "max_updates": null,
+          "rounds": 5409,
+          "scheduled_updates": 338,
+          "completed_updates": 338,
+          "skipped_busy": 0,
+          "last_update_round": 5408,
+          "rounds_after_last_update": 1,
+          "update_limit_reached": false
+        },
+        "exact_greedy": true,
+        "final_seen_replay_tok_s": 27.316725692826108,
+        "final_holdout_tok_s": 26.357163459269522
+      },
+      "64": {
+        "frozen_tok_s": 23.444249722948264,
+        "online_tok_s": 24.858918251164546,
+        "net_increment": 0.060341812808432094,
+        "updates": 96,
+        "schedule": {
+          "policy": "continuous_periodic",
+          "stride": 64,
+          "max_updates": null,
+          "rounds": 6181,
+          "scheduled_updates": 96,
+          "completed_updates": 96,
+          "skipped_busy": 0,
+          "last_update_round": 6145,
+          "rounds_after_last_update": 36,
+          "update_limit_reached": false
+        },
+        "exact_greedy": true,
+        "final_seen_replay_tok_s": 26.483203329810753,
+        "final_holdout_tok_s": 25.178753077207794
+      }
+    }
+  },
+  {
+    "file": "sql256-continuous-last1-3card-r1.json",
+    "sha256": "1c62927e7e7ea126c7133e6f3c034f55f12a6f90706812c1b3104c3a29697515",
+    "completed": false,
+    "error": "RuntimeError('ar pair 109 failed: LocalMailboxEndpoint child failed (worker_id=1, code=1): chip_process dev=1: chip run: RuntimeError: chip run lane is poisoned: finalize_native_run failed with code 507901 (run_id=12247 slot=0 generation=12247 dispatch_id=24273 run_epoch=24273)')",
+    "head_step": 160,
+    "physical_devices": "4,5,6",
+    "temperature": 0,
+    "max_updates": null,
+    "requests": 256,
+    "results": {}
+  }
+]

@@ -34,6 +34,43 @@ def make_history(pages, layer=63):
     return entry
 
 
+def make_tp2_history(layers, pages, page_size):
+    """Gather layer 63 into two contiguous rank-local histories before DMA."""
+    import pypto.language as pl
+
+    if page_size % 16 or 512 % page_size or layers <= 15:
+        raise ValueError("expected layer 63 and a 16-aligned page size")
+    rows = layers * 2 * pages * page_size
+
+    @pl.jit
+    def gather(key: pl.Tensor, value: pl.Tensor, table: pl.Tensor,
+               out_key: pl.Out[pl.Tensor], out_value: pl.Out[pl.Tensor], past: pl.Scalar[pl.INT32]):
+        k = pl.reshape(key, [rows, 256])
+        v = pl.reshape(value, [rows, 256])
+        dst_k = pl.reshape(out_key, [1024, 256])
+        dst_v = pl.reshape(out_value, [1024, 256])
+        with pl.spmd(64, name_hint="orthrus_tp2_gather_history"):
+            tile = pl.tile.get_block_idx()
+            logical = (tile % 32) * 16
+            dest = tile * 16
+            if logical < past:
+                physical = pl.read(table, [logical // page_size])
+                src = ((30 + tile // 32) * pages + physical) * page_size + logical % page_size
+                dst_k[dest:dest + 16, 0:256] = pl.slice(k, [16, 256], [src, 0])
+                dst_v[dest:dest + 16, 0:256] = pl.slice(v, [16, 256], [src, 0])
+            else:
+                dst_k[dest:dest + 16, 0:256] = pl.full([16, 256], dtype=pl.BF16, value=0.)
+                dst_v[dest:dest + 16, 0:256] = pl.full([16, 256], dtype=pl.BF16, value=0.)
+        return out_key, out_value
+
+    @pl.jit.host
+    def entry(key: pl.Tensor, value: pl.Tensor, table: pl.Tensor,
+              out_key: pl.Out[pl.Tensor], out_value: pl.Out[pl.Tensor], past: pl.Scalar[pl.INT32]):
+        for rank in pl.range(2):
+            gather(key[rank], value[rank], table[rank], out_key[rank], out_value[rank], past, device=rank)
+    return entry
+
+
 def make_teacher():
     import pypto.language as pl
 

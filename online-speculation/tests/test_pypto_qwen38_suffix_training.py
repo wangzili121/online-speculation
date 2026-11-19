@@ -33,7 +33,7 @@ def sample(graph,fp32):
     return inputs,masters
 
 
-@pytest.mark.parametrize("n", (2,3,4,5,8))
+@pytest.mark.parametrize("n", (1,2,3,4,5,8))
 @pytest.mark.parametrize("fp32", (True,False))
 def test_suffix_vjp_matches_independent_autograd(n,fp32):
     torch.set_num_threads(4)
@@ -58,7 +58,7 @@ def test_suffix_vjp_matches_independent_autograd(n,fp32):
 
 
 def test_suffix_rejects_layers_outside_model():
-    for n in (0,1,65):
+    for n in (0,65):
         with pytest.raises(ValueError):
             small_suffix(n)
 
