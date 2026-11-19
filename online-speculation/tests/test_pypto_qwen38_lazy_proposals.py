@@ -11,7 +11,8 @@ from blockspec.pypto_qwen38.oneserving_tp2 import check_sampled_chunk
 
 @pytest.mark.parametrize("budget", [1, 3, 4, 7, 31])
 @pytest.mark.parametrize("reject", [None, 0, 2, 4, 30])
-def test_eager_and_lazy_reach_the_same_rejection_or_bonus(budget, reject):
+@pytest.mark.parametrize("chunk_size", [1, 2, 4])
+def test_eager_and_lazy_reach_the_same_rejection_or_bonus(budget, reject, chunk_size):
     reads = []
     def read(first, count):
         reads.append((first, count))
@@ -26,8 +27,8 @@ def test_eager_and_lazy_reach_the_same_rejection_or_bonus(budget, reject):
         offset, result = 0, []
         while True:
             if delayed:
-                sequence.extend(proposal.ensure(offset + 4))
-            count = min(4, len(sequence) - offset)
+                sequence.extend(proposal.ensure(offset + chunk_size))
+            count = min(chunk_size, len(sequence) - offset)
             def target(row):
                 return (1 - point if offset + row == budget or offset + row == reject else point)
             emitted, reached, accepted, done = check_sampled_chunk(
@@ -39,7 +40,7 @@ def test_eager_and_lazy_reach_the_same_rejection_or_bonus(budget, reject):
 
     assert verify(lazy, True) == verify(eager, False)
     if reject == 0:
-        assert reads == [(0, min(4, budget))]
+        assert reads == [(0, min(chunk_size, budget))]
     assert sum(count for _, count in reads) <= budget
 
 
@@ -68,7 +69,8 @@ def test_several_draft_groups_cannot_overwrite_each_others_logits():
     assert lazy.ensure(4) == [1, 1, 1, 1]
 
 
-def test_randomized_lazy_correction_keeps_the_target_first_token_law():
+@pytest.mark.parametrize("chunk_size", [1, 2, 4])
+def test_randomized_lazy_correction_keeps_the_target_first_token_law(chunk_size):
     # Unequal p/q exercise both acceptance and residual replacement. This test
     # checks the observable output distribution, not equality of RNG traces.
     p = torch.tensor([.7, .3])
@@ -77,7 +79,7 @@ def test_randomized_lazy_correction_keeps_the_target_first_token_law():
     zeros = 0
     for _ in range(2000):
         proposal = LazyProposals(7, lambda first, count: q_logits.repeat(count, 1), SamplingConfig(1), rng)
-        tokens = proposal.ensure(4)
-        emitted, *_ = check_sampled_chunk([99, *tokens], 0, 4, lambda row: p, proposal, rng)
+        tokens = proposal.ensure(chunk_size)
+        emitted, *_ = check_sampled_chunk([99, *tokens], 0, chunk_size, lambda row: p, proposal, rng)
         zeros += emitted[0] == 0
     assert .66 < zeros / 2000 < .74

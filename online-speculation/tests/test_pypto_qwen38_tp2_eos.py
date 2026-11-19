@@ -20,6 +20,14 @@ class Slot:
     token_ids: tuple
 
 
+@pytest.mark.parametrize("rows", [0, 3, 8, True])
+def test_verification_chunks_stay_within_native_snapshot_capacity(rows):
+    config = SimpleNamespace(speculative_tokens=0, prefix_cache=False, max_model_len=512,
+                             long_prefill_token_threshold=4, max_num_batched_tokens=128, max_num_seqs=2)
+    with pytest.raises(ValueError, match="verification chunk"):
+        OrthrusTP2Runner(config, "unused", verify_chunk_size=rows)
+
+
 @pytest.mark.parametrize("stops,previous,emitted,expected,finished", [
     ((12,), 0, [11, 12, 55, 66], [11, 12], True),
     ((), 0, [11, 12, 55, 66], [11, 12, 55, 66], False),
@@ -63,17 +71,19 @@ def test_sampling_does_not_read_target_rows_after_an_accepted_eos():
 
 
 @pytest.mark.parametrize("stochastic", [False, True])
+@pytest.mark.parametrize("chunk_size", [1, 2, 4])
 @pytest.mark.parametrize("guesses,selected,accepted,rejected", [
     ([11, 12, 55, 66], [11, 12, 55, 66], 2, 0),  # EOS is accepted; no later chunk is needed.
     ([11, 12, 55, 66], [11, 12, 99, 66], 2, 0),  # A rejection after EOS is not a real rejection.
     ([11, 55, 55, 66], [11, 12, 55, 66], 1, 1),  # Rejection correction itself emits EOS.
 ])
 def test_real_runner_stops_verification_and_restores_the_eos_prefix(
-        stochastic, guesses, selected, accepted, rejected):
+        stochastic, chunk_size, guesses, selected, accepted, rejected):
     runner = object.__new__(OrthrusTP2Runner)
     runner.online = None
     runner.stochastic, runner.lazy_sampling = stochastic, False
     runner.output_candidates, runner.draft_batch_size = 31, 1
+    runner.verify_chunk_size = chunk_size
     runner.spec_stats = Counter()
     runner.control_ids = torch.empty((2, 32), dtype=torch.int32)
     runner.control_values = torch.empty_like(runner.control_ids)
@@ -87,7 +97,12 @@ def test_real_runner_stops_verification_and_restores_the_eos_prefix(
     committed, restored, executions = [], [], []
     runner.cache = SimpleNamespace(commit=lambda page, end: committed.append((page, end)))
     runner._reserve = lambda *_: None
-    runner._execute = lambda *a, **kw: (executions.append(a[2]) or (1, None))
+    cursor = [0]
+    def execute(*args, **kwargs):
+        executions.append(args[2])
+        cursor[0] = args[3][0] - 10
+        return 1, None
+    runner._execute = execute
 
     def proposals(items, capture=None, saved=None, **kwargs):
         result = [(guesses + [77] * 31)[:budget] for _, budget in items]
@@ -99,13 +114,13 @@ def test_real_runner_stops_verification_and_restores_the_eos_prefix(
     runner.propose_many = proposals
     runner.propose = lambda item, budget: proposals([(item, budget)])[0]
     runner._distribution = lambda batch, index, row, req: (
-        torch.nn.functional.one_hot(torch.tensor(selected[row]), 128).float()
-        if stochastic else selected[row])
+        torch.nn.functional.one_hot(torch.tensor(selected[cursor[0] + row]), 128).float()
+        if stochastic else selected[cursor[0] + row])
     runner._worker_call = lambda *_a, **_kw: restored.append(runner.control_values[:, 0].tolist())
 
     assert runner.run_batch([slot]) == [[11, 12]]
-    assert len(executions) == 1
-    assert restored == [[2, 2]]
-    assert committed == [(pages, 12)]  # The final EOS stays the unprocessed output anchor.
+    assert len(executions) == (2 if chunk_size == 1 else 1)
+    assert restored == ([[2, 2]] if chunk_size == 4 else [])
+    assert committed == ([(pages, 11), (pages, 12)] if chunk_size == 1 else [(pages, 12)])
     assert runner.spec_stats["accepted"] == accepted
     assert runner.spec_stats["rejected_rounds"] == rejected

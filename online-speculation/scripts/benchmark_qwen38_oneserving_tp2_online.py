@@ -151,6 +151,8 @@ def main(*, guard=None):
     p.add_argument("--stop-on-eos", action="store_true", help="use natural EOS within the token budget")
     p.add_argument("--candidates", default=31, type=int, choices=range(1, 32),
                    help="maximum proposed tokens from the unchanged K32 draft block")
+    p.add_argument("--verify-chunk-size", default=4, type=int, choices=(1, 2, 4),
+                   help="rows per verification dispatch within the unchanged native C4 snapshot capacity")
     p.add_argument("--last-layers", default=4, type=int, choices=(1, 4))
     p.add_argument("--parameter-scope", choices=("full", "norms", "output_norms"), default="full")
     p.add_argument("--publication-backend", choices=("auto", "cpu", "device"), default="auto")
@@ -245,6 +247,7 @@ def main(*, guard=None):
     runner = engine.runner = OrthrusTP2Runner(config, args.head, draft_batch_size=2,
                                               online=trainer, kv_pages=args.kv_pages,
                                               stochastic=bool(args.temperature), lazy_sampling=args.lazy_sampling,
+                                              verify_chunk_size=args.verify_chunk_size,
                                               ring_heap_min_mib=args.ring_heap_mib,
                                               on_cache_event=engine._on_cache)
     engine.scheduler.runner = runner
@@ -275,6 +278,7 @@ def main(*, guard=None):
                            if args.temperature else "device_greedy",
                    replay_blocks=args.replay_blocks, publish_every=args.publish_every, inner_steps=args.inner_steps,
                    stop_on_eos=args.stop_on_eos, candidates=args.candidates,
+                   verify_chunk_size=args.verify_chunk_size,
                    requests=2 * len(prompts), ar_checked_requests=ar_requests, output_tokens_per_request=args.tokens,
                    prompts_sha256=hashlib.sha256(args.prompts.read_bytes()).hexdigest(),
                    holdout_sha256=hashlib.sha256(args.holdout.read_bytes()).hexdigest(),

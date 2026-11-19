@@ -164,15 +164,20 @@ def served_prefix(request, previous_count, emitted):
 
 
 class OrthrusTP2Runner(TensorParallelRunner):
+    verify_chunk_size = VERIFY_ROWS
+
     def __init__(self, config, head_directory, *, output_candidates=31, group_layers=GROUP_LAYERS,
                  attention_backend="paged", draft_batch_size=1, online=None, kv_pages=None, stochastic=False,
-                 lazy_sampling=False, ring_heap_min_mib=256, on_cache_event=None):
+                 lazy_sampling=False, ring_heap_min_mib=256, verify_chunk_size=VERIFY_ROWS, on_cache_event=None):
         if (config.speculative_tokens or config.prefix_cache or config.max_model_len != 512
                 or config.long_prefill_token_threshold != VERIFY_ROWS
                 or config.max_num_batched_tokens < config.max_num_seqs * VERIFY_ROWS):
             raise ValueError("Orthrus TP2 requires capped prefill, 512 context, and native MTP/prefix cache off")
         if not 1 <= output_candidates < BLOCK:
             raise ValueError("candidate budget must be in [1, 31]")
+        if type(verify_chunk_size) is not int or verify_chunk_size not in (1, 2, VERIFY_ROWS):
+            raise ValueError("verification chunk must contain one, two or four rows")
+        self.verify_chunk_size = verify_chunk_size
         self.head_directory = Path(head_directory)
         self.head = checkpoint_manifest(self.head_directory, config.model_root)
         self.output_candidates = output_candidates
@@ -468,13 +473,14 @@ class OrthrusTP2Runner(TensorParallelRunner):
                     proposal = proposals.get(slots[i].request.request_id)
                     if proposal is not None:
                         started = time.monotonic_ns()
-                        tokens = proposal.ensure(offsets[i] + VERIFY_ROWS)
+                        tokens = proposal.ensure(offsets[i] + self.verify_chunk_size)
                         elapsed = time.monotonic_ns() - started
                         proposed[i].extend(tokens)
                         self.spec_stats["proposed"] += len(tokens)
                         self.spec_stats["draft_sampling_ns"] += elapsed
                         self.spec_stats["draft_ns"] += elapsed
-            chunks = [proposed[i][offsets[i]:offsets[i] + VERIFY_ROWS] for i in pending]
+            # C4 的快照容量和 prefill 配置不变；允许更小的验证提交，减少拒绝后的浪费。
+            chunks = [proposed[i][offsets[i]:offsets[i] + self.verify_chunk_size] for i in pending]
             batch_slots = [replace(slots[i], token_ids=tuple(chunk), position=slots[i].position + offsets[i])
                            for i, chunk in zip(pending, chunks, strict=True)]
             for slot, chunk in zip(batch_slots, chunks, strict=True):

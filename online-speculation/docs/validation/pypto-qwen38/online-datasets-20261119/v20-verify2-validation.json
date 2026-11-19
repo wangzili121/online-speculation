@@ -1,0 +1,61 @@
+{
+  "completed": true,
+  "cpu_tests": 256,
+  "cases": [
+    {
+      "tag": "c61-v20-verify2-greedy-audit-r1",
+      "temperature": 0.0,
+      "physical_cards": 2,
+      "block_size": 32,
+      "candidates": 31,
+      "verification_rows": 2,
+      "requests": 6,
+      "tokens": 384,
+      "updates": 23,
+      "exact_greedy": true,
+      "replay_audits": [
+        {
+          "rows": 7,
+          "max_abs": 0.125,
+          "relative_l2": 0.00285071088001132,
+          "served_replay_tv": 4.3212321543251164e-06,
+          "top1_agreement": 1.0,
+          "teacher_tv_before": 0.7083034515380859,
+          "teacher_tv_after": 0.7081940770149231,
+          "batch_loss_before": 0.7083030939102173,
+          "batch_loss_after": 0.7081937789916992
+        }
+      ],
+      "export_banks_exact": true,
+      "sampler": "device_greedy"
+    },
+    {
+      "tag": "c61-v20-verify2-t1-audit-r1",
+      "temperature": 1.0,
+      "physical_cards": 2,
+      "block_size": 32,
+      "candidates": 31,
+      "verification_rows": 2,
+      "requests": 6,
+      "tokens": 272,
+      "updates": 45,
+      "exact_greedy": null,
+      "replay_audits": [
+        {
+          "rows": 3,
+          "max_abs": 0.125,
+          "relative_l2": 0.0025437797885388136,
+          "served_replay_tv": 8.981149335340888e-08,
+          "top1_agreement": 1.0,
+          "teacher_tv_before": 0.3491404354572296,
+          "teacher_tv_after": 0.33932700753211975,
+          "batch_loss_before": 0.3491404056549072,
+          "batch_loss_after": 0.3393270671367645
+        }
+      ],
+      "export_banks_exact": true,
+      "sampler": "host_full_vocab_lazy"
+    }
+  ],
+  "note": "Two-row verifier tested; native prefill4 and C4 snapshot capacity unchanged. Short correctness audits, not an inference-speed comparison. Default remains4. One-row option has CPU verification only; NPU tests queued after current Pseudo trial. Temperature1 sampler remains CPU full vocabulary lazy."
+}
