@@ -1,0 +1,89 @@
+{
+  "cases": [
+    {
+      "tag": "v7-norms-last1-audit-r1",
+      "launcher": "run_dense_v7.py",
+      "args": [
+        "--learner-device",
+        "0",
+        "--last-layers",
+        "1",
+        "--parameter-scope",
+        "norms",
+        "--tokens",
+        "64",
+        "--strides",
+        "16",
+        "--replay-blocks",
+        "1",
+        "--publish-every",
+        "1",
+        "--learning-rate",
+        "0.001",
+        "--objective",
+        "tv",
+        "--candidates",
+        "7",
+        "--request-file",
+        "dense-smoke.json",
+        "--holdout-file",
+        "dense-smoke-holdout.json",
+        "--ar-check-requests",
+        "2",
+        "--feedback-mode",
+        "delayed",
+        "--teacher-tokens",
+        "7",
+        "--audit-replay",
+        "--wait",
+        "14400"
+      ]
+    },
+    {
+      "tag": "v7-norms-last4-audit-r1",
+      "launcher": "run_dense_v7.py",
+      "args": [
+        "--learner-device",
+        "0",
+        "--last-layers",
+        "4",
+        "--parameter-scope",
+        "norms",
+        "--tokens",
+        "64",
+        "--strides",
+        "16",
+        "--replay-blocks",
+        "1",
+        "--publish-every",
+        "1",
+        "--learning-rate",
+        "0.001",
+        "--objective",
+        "tv",
+        "--candidates",
+        "7",
+        "--request-file",
+        "dense-smoke.json",
+        "--holdout-file",
+        "dense-smoke-holdout.json",
+        "--ar-check-requests",
+        "2",
+        "--feedback-mode",
+        "delayed",
+        "--teacher-tokens",
+        "7",
+        "--audit-replay",
+        "--wait",
+        "14400"
+      ],
+      "requires": [
+        {
+          "file": "v7-norms-last1-audit-r1.json",
+          "audit": true,
+          "greedy": true
+        }
+      ]
+    }
+  ]
+}

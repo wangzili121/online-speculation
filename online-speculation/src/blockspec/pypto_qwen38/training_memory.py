@@ -12,6 +12,7 @@ def suffix_memory(graph, layout, replay_blocks):
     gradients = {value.name for value in graph.gradients.values()}
     workspace = sum(size(value) for node in graph.nodes for value in node.outputs if value.name not in gradients)
     frozen = sum(size(graph.inputs[name]) for name in graph.frozen)
+    frozen += sum(size(graph.inputs[p.name]) for p in getattr(graph, "frozen_attention", ()))
     rows,statistics = layout.elements//min(4096,layout.elements),0
     while True:
         statistics += rows*64

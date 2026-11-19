@@ -72,25 +72,44 @@ def pack_execution(layout, ordinary, special, packed):
                 continue
             params = banks[layer]
             rows = slice(i * 5120, (i + 1) * 5120)
-            copy_qkv(params["in_proj_qkv.weight"], qkv[rows], rank, 0)
-            copy_qkv(params["conv1d.weight"], conv[i * 4:(i + 1) * 4], rank, 1)
-            np.copyto(z[i * 3072:(i + 1) * 3072], params["in_proj_z.weight"][value_rows])
-            np.copyto(out[rows], params["out_proj.weight"][:, value_rows])
-            for target, name in ((a, "in_proj_a.weight"), (b, "in_proj_b.weight")):
-                local = target[i * 128:(i + 1) * 128]
-                np.copyto(local[:24], params[name][heads])
-                local[24:].fill(0)
-            for target, name in ((decay, "A_log"), (dt, "dt_bias")):
-                np.copyto(target[i, :24], params[name].reshape(-1)[heads])
-                target[i, 24:].fill(0)
-            np.copyto(norm[i], params["norm.weight"].reshape(-1))
+            if qkv is not None:
+                copy_qkv(params["in_proj_qkv.weight"], qkv[rows], rank, 0)
+                copy_qkv(params["conv1d.weight"], conv[i * 4:(i + 1) * 4], rank, 1)
+                np.copyto(z[i * 3072:(i + 1) * 3072], params["in_proj_z.weight"][value_rows])
+                for target, name in ((a, "in_proj_a.weight"), (b, "in_proj_b.weight")):
+                    local = target[i * 128:(i + 1) * 128]
+                    np.copyto(local[:24], params[name][heads])
+                    local[24:].fill(0)
+                for target, name in ((decay, "A_log"), (dt, "dt_bias")):
+                    np.copyto(target[i, :24], params[name].reshape(-1)[heads])
+                    target[i, 24:].fill(0)
+            if out is not None:
+                np.copyto(out[rows], params["out_proj.weight"][:, value_rows])
+            if norm is not None:
+                np.copyto(norm[i], params["norm.weight"].reshape(-1))
         params = banks[LAYERS[-1]]
         for target, name in ((q, "q_proj.weight"), (k, "k_proj.weight"), (v, "v_proj.weight")):
-            width = target.shape[0]
-            np.copyto(target, params[name][rank * width:(rank + 1) * width])
-        np.copyto(o, params["o_proj.weight"][:, value_rows])
-        np.copyto(q_norm, params["q_norm.weight"].reshape(q_norm.shape))
-        np.copyto(k_norm, params["k_norm.weight"].reshape(k_norm.shape))
+            if target is not None:
+                width = target.shape[0]
+                np.copyto(target, params[name][rank * width:(rank + 1) * width])
+        if o is not None:
+            np.copyto(o, params["o_proj.weight"][:, value_rows])
+        for target, name in ((q_norm, "q_norm.weight"), (k_norm, "k_norm.weight")):
+            if target is not None:
+                np.copyto(target, params[name].reshape(target.shape))
+
+
+def read_raw_parameter(parameter, sources):
+    name = bank_specs(parameter.layer)[parameter.bank][0]
+    key = f"layers.{parameter.layer}.attention.draft.{name}"
+    raw = merge_parameter(parameter.layer, name, [source.get_tensor(key) for source in sources])
+    if name in {"in_proj_a.weight", "in_proj_b.weight"}:
+        raw = pad(raw, (0, 0, 0, 128 - raw.shape[0]))
+    elif name in {"A_log", "dt_bias"}:
+        raw = pad(raw, (0, 64 - raw.numel()))
+    elif name == "conv1d.weight":
+        raw = raw.squeeze(1).T
+    return raw.reshape(parameter.shape).contiguous()
 
 
 def master_from_shards(layout, directory):
@@ -100,15 +119,7 @@ def master_from_shards(layout, directory):
             directory / "rank1.safetensors", framework="pt", device="cpu") as right:
         for entry in layout.entries:
             parameter = entry.parameter
-            name = bank_specs(parameter.layer)[parameter.bank][0]
-            key = f"layers.{parameter.layer}.attention.draft.{name}"
-            raw = merge_parameter(parameter.layer, name, [source.get_tensor(key) for source in (left, right)])
-            if name in {"in_proj_a.weight", "in_proj_b.weight"}:
-                raw = pad(raw, (0, 0, 0, 128 - raw.shape[0]))
-            elif name in {"A_log", "dt_bias"}:
-                raw = pad(raw, (0, 64 - raw.numel()))
-            elif name == "conv1d.weight":
-                raw = raw.squeeze(1).T
+            raw = read_raw_parameter(parameter, (left, right))
             value = raw.reshape(-1)
             master[0, entry.offset:entry.offset + value.numel()].copy_(value)
     return master
@@ -118,7 +129,10 @@ class TP2Online:
     def __init__(self, checkpoint, *, device, last_layers=4, learning_rate=1e-5, background=False,
                  replay_blocks=1, publish_every=1, gather_feedback=False, objective="tv", max_updates=None,
                  focus_weight=1, audit_replay=False, teacher_temperature=1.0, warmup_updates=0,
-                 lr_schedule="constant"):
+                 lr_schedule="constant", parameter_scope="full"):
+        if parameter_scope not in {"full", "norms", "output_norms"} or parameter_scope != "full" and checkpoint is not None:
+            raise ValueError("partial parameter scopes use fresh Adam; expected full, norms or output_norms")
+        self.parameter_scope = parameter_scope
         if type(device) is not int or device < 0 or not isfinite(learning_rate) or learning_rate <= 0:
             raise ValueError("a learner device and positive finite learning rate are required")
         if last_layers not in (1, 4) or (last_layers == 1 and checkpoint is not None):
@@ -152,6 +166,11 @@ class TP2Online:
         self.replay = []
         self.layers = LAYERS[-last_layers:]
         self.first_bank = FULL_BANK_START if last_layers == 1 else 0
+        self.publish_banks = frozenset(range(self.first_bank, len(SHAPES)))
+        if parameter_scope != "full":
+            self.publish_banks = frozenset((12, 13) if last_layers == 1 else (8, 12, 13))
+            if parameter_scope == "output_norms":
+                self.publish_banks |= frozenset((14,) if last_layers == 1 else (2, 14))
         self.checkpoint = Path(checkpoint) if checkpoint is not None else None
         self.device, self.learning_rate = device, learning_rate
         self.worker = None
@@ -177,9 +196,8 @@ class TP2Online:
     def prepare_host_buffers(self, runner):
         # Register shared mappings before the serving worker forks. Publication
         # can then DMA the packed shards without creating temporary IPC buffers.
-        self.packed = [None] * self.first_bank + [
-            torch.empty((2, *shape), dtype=dtype).share_memory_() for shape, dtype in SHAPES[self.first_bank:]
-        ]
+        self.packed = [torch.empty((2, *shape), dtype=dtype).share_memory_() if index in self.publish_banks else None
+                       for index, (shape, dtype) in enumerate(SHAPES)]
         runner._host_slabs.update({f"orthrus_publish_{i}": value
                                    for i, value in enumerate(self.packed) if value is not None})
         if self.gather_feedback:
@@ -202,7 +220,8 @@ class TP2Online:
     def compile(self, config):
         self.config = config if self.colocated else replace(config, distributed_config=replace(
             config.distributed_config, device_ids=[self.device]))
-        self.graph = SuffixGraph(len(self.layers), objective=self.objective, focus_weight=self.focus_weight)
+        self.graph = SuffixGraph(len(self.layers), objective=self.objective, focus_weight=self.focus_weight,
+                                 parameter_scope=self.parameter_scope)
         self.training = TrainingPrograms(self.graph, self.config, combined=True, chunk_size=24,
                                          external_gradients=True)
         self.optimization = SuffixOptimizerPrograms(self.graph, self.config, clip_norm=1.0)
@@ -252,8 +271,8 @@ class TP2Online:
         self.loss = self.worker.alloc_tensor((1, 8), torch.float32)
         self.loss_host = torch.empty((1, 8), dtype=torch.float32)
         self.original = runner.suffix
-        self.updated = [*self.original[:self.first_bank],
-                        *(runner._allocate(shape, dtype) for shape, dtype in SHAPES[self.first_bank:])]
+        self.updated = [runner._allocate(shape, dtype) if index in self.publish_banks else self.original[index]
+                        for index, (shape, dtype) in enumerate(SHAPES)]
         weights = TextWeights(runner.settings.model_root)
         gamma = lambda value: (1 + value.float()).reshape(1, HIDDEN)
         self.shared = {
@@ -268,6 +287,7 @@ class TP2Online:
             ):
                 tensor = weights.layer(layer, path)
                 self.shared[f"l{layer}_{name}"] = self.upload_new(gamma(tensor) if "gamma" in name else tensor)
+        self.load_frozen_attention(runner.head_directory)
         names = {"hidden", "cos", "sin", "teacher"} | {
             value.name for history in self.graph.histories.values() for value in history.values()
         }
@@ -285,6 +305,20 @@ class TP2Online:
 
     def upload_new(self, value):
         return self.worker.alloc_tensor(tuple(value.shape), value.dtype, init=value.contiguous())
+
+    def load_frozen_attention(self, directory):
+        if not getattr(self.graph, "frozen_attention", ()):
+            return
+        with safe_open(directory / "rank0.safetensors", framework="pt", device="cpu") as left, safe_open(
+                directory / "rank1.safetensors", framework="pt", device="cpu") as right:
+            for parameter in self.graph.frozen_attention:
+                value = read_raw_parameter(parameter, (left, right))
+                if parameter.offset_norm:
+                    value = 1 + value.float()
+                if parameter.name in self.shared:
+                    self.worker.copy_to(self.shared[parameter.name].data_ptr, value.data_ptr(), value.nbytes)
+                else:
+                    self.shared[parameter.name] = self.upload_new(value)
 
     def upload(self, key, value, offset=0):
         value = value.contiguous()
@@ -345,6 +379,7 @@ class TP2Online:
         self.runner.head_directory = directory
         self.runner.head = head
         self.initial_master = master_from_shards(self.optimizer.layout, directory)
+        self.load_frozen_attention(directory)
         self.restore()
 
     def update_limit_reached(self):

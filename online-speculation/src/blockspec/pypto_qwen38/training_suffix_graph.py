@@ -21,7 +21,10 @@ class Parameter:
 
 
 class SuffixGraph(GraphBuilder):
-    def __init__(self, last_layers, shape=SuffixShape(), gdn_shape=GDNShape(), *, objective="tv", focus_weight=1):
+    def __init__(self, last_layers, shape=SuffixShape(), gdn_shape=GDNShape(), *, objective="tv", focus_weight=1,
+                 parameter_scope="full"):
+        if parameter_scope not in {"full", "norms", "output_norms"}:
+            raise ValueError("expected full, norms or output_norms attention parameter scope")
         self.objective, self.focus_weight = objective, focus_weight
         if type(last_layers) is not int or not 1 <= last_layers <= 64 or shape.block != gdn_shape.rows:
             raise ValueError("last-1..64 and a common K32 block required")
@@ -65,6 +68,24 @@ class SuffixGraph(GraphBuilder):
         self.input_gradient = None
         self.parameters.sort(key=lambda p:(p.layer,p.bank))
         assert set(self.gradients) == {p.name for p in self.parameters}
+        self.frozen_attention = []
+        if parameter_scope != "full":
+            endings = ("_q_gamma", "_k_gamma", "_norm_weight")
+            if parameter_scope == "output_norms":
+                endings += ("_o_weight", "_out_weight")
+            selected = [p for p in self.parameters if p.name.endswith(endings)]
+            self.frozen_attention = [p for p in self.parameters if p not in selected]
+            self.parameters = selected
+            self.gradients = {p.name: self.gradients[p.name] for p in selected}
+            # 沿所选梯度反向追溯依赖，移除无用的投影 dW 等节点。
+            # 前向与损失保留，冻结参数仍作为常量参与必要的 dX 计算。
+            needed = {self.logits.name, self.losses.name, *(v.name for v in self.gradients.values())}
+            kept = []
+            for node in reversed(self.nodes):
+                if any(value.name in needed for value in node.outputs):
+                    kept.append(node)
+                    needed.update(value.name for value in node.inputs)
+            self.nodes = list(reversed(kept))
 
     def input(self, name, shape, dtype="bf16"):
         value = Value(name,tuple(shape),dtype)

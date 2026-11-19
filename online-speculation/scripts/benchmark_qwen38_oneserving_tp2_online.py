@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+from math import prod
 from pathlib import Path
 from queue import Empty
 from statistics import median
@@ -96,6 +97,7 @@ def main(*, guard=None):
     p.add_argument("--candidates", default=31, type=int, choices=range(1, 32),
                    help="maximum proposed tokens from the unchanged K32 draft block")
     p.add_argument("--last-layers", default=4, type=int, choices=(1, 4))
+    p.add_argument("--parameter-scope", choices=("full", "norms", "output_norms"), default="full")
     p.add_argument("--learning-rate", default=1e-5, type=float)
     p.add_argument("--warmup-updates", default=0, type=int)
     p.add_argument("--lr-schedule", choices=("constant", "inverse_sqrt"), default="constant")
@@ -164,7 +166,7 @@ def main(*, guard=None):
                         gather_feedback=args.gather_feedback, objective=args.objective, max_updates=args.max_updates,
                         focus_weight=args.focus_weight, audit_replay=args.audit_replay,
                         teacher_temperature=args.teacher_temperature, warmup_updates=args.warmup_updates,
-                        lr_schedule=args.lr_schedule, **extra)
+                        lr_schedule=args.lr_schedule, parameter_scope=args.parameter_scope, **extra)
     config = ServingConfig(args.model, (0, 1), max_model_len=512, max_num_batched_tokens=128,
                            max_num_seqs=2, speculative_tokens=0, prefix_cache=False,
                            long_prefill_token_threshold=4)
@@ -179,6 +181,7 @@ def main(*, guard=None):
                    head_shard_sha256=[shard["sha256"] for shard in runner.head["rank_files"]],
                    visible_devices=os.environ.get("ASCEND_RT_VISIBLE_DEVICES"),
                    learner_device=args.learner_device, last_layers=args.last_layers,
+                   parameter_scope=args.parameter_scope,
                    physical_device_count=2 if trainer.colocated else 3, kv_pages=runner.pool_blocks,
                    learning_rate=args.learning_rate, background=args.background,
                    warmup_updates=args.warmup_updates,
@@ -282,6 +285,7 @@ def main(*, guard=None):
         print("starting TP2 + learner", flush=True)
         engine.start()
         summary["startup_seconds"] = time.monotonic() - start
+        summary["trainable_parameters"] = sum(prod(p.shape) for p in trainer.graph.parameters)
         summary["stage"] = "measuring"
         persist()
         print("ready TP2 + learner", summary["startup_seconds"], flush=True)

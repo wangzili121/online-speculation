@@ -14,6 +14,41 @@ from blockspec.pypto_qwen38.oneserving_tp2 import check_sampled_chunk
 from blockspec.pypto_qwen38.oneserving_tp2_online import TP2Online
 
 
+@pytest.mark.parametrize("layers,indices", [(1, {12, 13}), (4, {8, 12, 13})])
+def test_norm_scope_only_packs_changed_norm_banks(layers, indices):
+    from math import prod
+    from blockspec.pypto_qwen38.oneserving_tp2 import SHAPES
+    from blockspec.pypto_qwen38.oneserving_tp2_online import pack_execution
+    from blockspec.pypto_qwen38.training_suffix_graph import SuffixGraph
+    from blockspec.pypto_qwen38.training_flat import FlatLayout
+    trainer = TP2Online(None, device=0, last_layers=layers, parameter_scope="norms")
+    assert trainer.publish_banks == indices
+    graph = SuffixGraph(layers, parameter_scope="norms")
+    layout = FlatLayout(graph.parameters)
+    master = torch.arange(layout.elements, dtype=torch.float32).reshape(layout.shape) / 1024
+    ordinary = master.bfloat16()
+    special = torch.zeros(layout.special_shape, dtype=torch.float32)
+    for entry in layout.entries:
+        if entry.special is not None:
+            size = prod(entry.parameter.shape)
+            special[0, entry.special:entry.special + size] = ordinary[0, entry.offset:entry.offset + size].float() + 1
+    packed = [torch.empty((2, *shape), dtype=dtype) if i in indices else None
+              for i, (shape, dtype) in enumerate(SHAPES)]
+    pack_execution(layout, ordinary, special, packed)
+    for bank in indices:
+        assert torch.equal(packed[bank][0], packed[bank][1])
+        assert torch.isfinite(packed[bank]).all()
+    assert sum(x.nbytes for x in packed if x is not None) < 8192
+
+
+@pytest.mark.parametrize("layers,banks", [(1, {12, 13, 14}), (4, {2, 8, 12, 13, 14})])
+def test_output_norm_scope_publishes_only_selected_banks(layers, banks):
+    trainer = TP2Online(None, device=0, last_layers=layers, parameter_scope="output_norms")
+    assert trainer.publish_banks == banks
+    with pytest.raises(ValueError, match="fresh Adam"):
+        TP2Online("optimizer-checkpoint", device=0, last_layers=layers, parameter_scope="output_norms")
+
+
 def test_colocated_background_is_rejected_before_worker_start():
     trainer = TP2Online(None, device=0, last_layers=1, background=True)
     with pytest.raises(ValueError, match="colocated training requires synchronous updates"):

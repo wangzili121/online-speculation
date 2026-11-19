@@ -119,6 +119,55 @@
       ]
     },
     {
+      "tag": "v5-last4-dense7-replay-audit-r1",
+      "launcher": "run_dense_v5.py",
+      "args": [
+        "--head",
+        "step160-suffix-tp2",
+        "--learner-device",
+        "2",
+        "--last-layers",
+        "4",
+        "--tokens",
+        "64",
+        "--strides",
+        "16",
+        "--replay-blocks",
+        "1",
+        "--publish-every",
+        "1",
+        "--learning-rate",
+        "1e-05",
+        "--objective",
+        "kl",
+        "--candidates",
+        "7",
+        "--stop-on-eos",
+        "--request-file",
+        "dense-smoke.json",
+        "--holdout-file",
+        "dense-smoke-holdout.json",
+        "--ar-check-requests",
+        "2",
+        "--wait",
+        "14400",
+        "--feedback-mode",
+        "delayed",
+        "--teacher-tokens",
+        "7",
+        "--teacher-temperature",
+        ".5",
+        "--warmup-updates",
+        "0",
+        "--lr-schedule",
+        "inverse_sqrt",
+        "--temperature",
+        "0",
+        "--background",
+        "--audit-replay"
+      ]
+    },
+    {
       "tag": "v5-pseudo56-step160-last4-kl-dense7-r1",
       "launcher": "run_dense_v5.py",
       "args": [
@@ -174,6 +223,11 @@
         {
           "file": "dense31-gsm2-replay-audit-61-r1.json",
           "audit": true
+        },
+        {
+          "file": "v5-last4-dense7-replay-audit-r1.json",
+          "audit": true,
+          "greedy": true
         }
       ]
     },

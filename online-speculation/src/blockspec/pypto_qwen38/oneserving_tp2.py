@@ -249,7 +249,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
         extra += BLOCK * HIDDEN * 2
         if self.online is not None:
             extra += sum(torch.empty(shape, dtype=dtype, device="meta").nbytes
-                         for shape, dtype in SHAPES[self.online.first_bank:])
+                         for index, (shape, dtype) in enumerate(SHAPES) if index in self.online.publish_banks)
         if self.online is not None and self.online.gather_feedback:
             extra += 2 * 2 * 512 * 256 * 2
         for rank in self.admission:

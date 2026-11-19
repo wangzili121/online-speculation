@@ -1,0 +1,105 @@
+{
+  "cases": [
+    {
+      "tag": "v8-pseudo56-arcopy-tv1e5-dense31-r1",
+      "launcher": "run_dense_v8.py",
+      "args": [
+        "--head",
+        "step0-suffix-tp2",
+        "--learner-device",
+        "0",
+        "--last-layers",
+        "1",
+        "--parameter-scope",
+        "full",
+        "--tokens",
+        "128",
+        "--strides",
+        "64",
+        "--replay-blocks",
+        "1",
+        "--publish-every",
+        "2",
+        "--learning-rate",
+        "0.00001",
+        "--objective",
+        "tv",
+        "--candidates",
+        "7",
+        "--stop-on-eos",
+        "--request-file",
+        "pseudo-explore.json",
+        "--holdout-file",
+        "pseudo-holdout.json",
+        "--ar-check-requests",
+        "16",
+        "--wait",
+        "14400",
+        "--feedback-mode",
+        "delayed",
+        "--teacher-tokens",
+        "31"
+      ],
+      "confirm": {
+        "requests": "pseudo-confirm.json",
+        "holdout": "pseudo-confirm-holdout.json"
+      }
+    },
+    {
+      "tag": "v7-gsm128-last4-norms-kl1e2-r1",
+      "launcher": "run_dense_v7.py",
+      "args": [
+        "--head",
+        "step160-suffix-tp2",
+        "--learner-device",
+        "0",
+        "--last-layers",
+        "4",
+        "--parameter-scope",
+        "norms",
+        "--tokens",
+        "192",
+        "--strides",
+        "32",
+        "--replay-blocks",
+        "1",
+        "--publish-every",
+        "1",
+        "--learning-rate",
+        "0.01",
+        "--objective",
+        "kl",
+        "--candidates",
+        "7",
+        "--stop-on-eos",
+        "--request-file",
+        "gsm8k-explore.json",
+        "--holdout-file",
+        "gsm8k-holdout.json",
+        "--ar-check-requests",
+        "16",
+        "--wait",
+        "14400",
+        "--feedback-mode",
+        "delayed",
+        "--teacher-tokens",
+        "7",
+        "--teacher-temperature",
+        "0.5",
+        "--warmup-updates",
+        "8"
+      ],
+      "requires": [
+        {
+          "file": "v7-norms-last4-audit-r1.json",
+          "audit": true,
+          "greedy": true
+        }
+      ],
+      "confirm": {
+        "requests": "gsm8k-confirm.json",
+        "holdout": "gsm8k-confirm-holdout.json"
+      }
+    }
+  ]
+}

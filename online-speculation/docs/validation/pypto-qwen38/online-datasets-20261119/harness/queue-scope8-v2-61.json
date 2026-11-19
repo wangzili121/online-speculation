@@ -1,0 +1,196 @@
+{
+  "cases": [
+    {
+      "tag": "v8-outputnorm-last1-audit-r1",
+      "launcher": "run_dense_v8.py",
+      "args": [
+        "--learner-device",
+        "0",
+        "--last-layers",
+        "1",
+        "--parameter-scope",
+        "output_norms",
+        "--replay-blocks",
+        "1",
+        "--publish-every",
+        "2",
+        "--objective",
+        "tv",
+        "--candidates",
+        "7",
+        "--feedback-mode",
+        "delayed",
+        "--teacher-tokens",
+        "7",
+        "--wait",
+        "14400",
+        "--tokens",
+        "64",
+        "--strides",
+        "16",
+        "--learning-rate",
+        "0.0001",
+        "--request-file",
+        "dense-smoke.json",
+        "--holdout-file",
+        "dense-smoke-holdout.json",
+        "--ar-check-requests",
+        "2",
+        "--audit-replay"
+      ]
+    },
+    {
+      "tag": "v8-gsm128-outputnorm-tv1e4-2card-r1",
+      "launcher": "run_dense_v8.py",
+      "args": [
+        "--learner-device",
+        "0",
+        "--last-layers",
+        "1",
+        "--parameter-scope",
+        "output_norms",
+        "--replay-blocks",
+        "1",
+        "--publish-every",
+        "2",
+        "--objective",
+        "tv",
+        "--candidates",
+        "7",
+        "--feedback-mode",
+        "delayed",
+        "--teacher-tokens",
+        "7",
+        "--wait",
+        "14400",
+        "--tokens",
+        "192",
+        "--strides",
+        "16,32",
+        "--learning-rate",
+        "0.0001",
+        "--request-file",
+        "gsm8k-explore.json",
+        "--holdout-file",
+        "gsm8k-holdout.json",
+        "--ar-check-requests",
+        "16",
+        "--stop-on-eos",
+        "--skip-seen-replay"
+      ],
+      "requires": [
+        {
+          "file": "v8-outputnorm-last1-audit-r1.json",
+          "audit": true,
+          "greedy": true
+        }
+      ],
+      "confirm": {
+        "requests": "gsm8k-confirm.json",
+        "holdout": "gsm8k-confirm-holdout.json"
+      }
+    },
+    {
+      "tag": "v8-gsm128-outputnorm-tv1e5-2card-r1",
+      "launcher": "run_dense_v8.py",
+      "args": [
+        "--learner-device",
+        "0",
+        "--last-layers",
+        "1",
+        "--parameter-scope",
+        "output_norms",
+        "--replay-blocks",
+        "1",
+        "--publish-every",
+        "2",
+        "--objective",
+        "tv",
+        "--candidates",
+        "7",
+        "--feedback-mode",
+        "delayed",
+        "--teacher-tokens",
+        "7",
+        "--wait",
+        "14400",
+        "--tokens",
+        "192",
+        "--strides",
+        "16,32",
+        "--learning-rate",
+        "0.00001",
+        "--request-file",
+        "gsm8k-explore.json",
+        "--holdout-file",
+        "gsm8k-holdout.json",
+        "--ar-check-requests",
+        "16",
+        "--stop-on-eos",
+        "--skip-seen-replay"
+      ],
+      "requires": [
+        {
+          "file": "v8-outputnorm-last1-audit-r1.json",
+          "audit": true,
+          "greedy": true
+        }
+      ],
+      "confirm": {
+        "requests": "gsm8k-confirm.json",
+        "holdout": "gsm8k-confirm-holdout.json"
+      }
+    },
+    {
+      "tag": "v8-pseudo96-outputnorm-tv1e5-2card-r1",
+      "launcher": "run_dense_v8.py",
+      "args": [
+        "--learner-device",
+        "0",
+        "--last-layers",
+        "1",
+        "--parameter-scope",
+        "output_norms",
+        "--replay-blocks",
+        "1",
+        "--publish-every",
+        "2",
+        "--objective",
+        "tv",
+        "--candidates",
+        "7",
+        "--feedback-mode",
+        "delayed",
+        "--teacher-tokens",
+        "7",
+        "--wait",
+        "14400",
+        "--tokens",
+        "64",
+        "--strides",
+        "16,32",
+        "--learning-rate",
+        "0.00001",
+        "--request-file",
+        "pseudo-prefix64-explore.json",
+        "--holdout-file",
+        "pseudo-holdout.json",
+        "--ar-check-requests",
+        "16",
+        "--stop-on-eos",
+        "--skip-seen-replay"
+      ],
+      "requires": [
+        {
+          "file": "v8-outputnorm-last1-audit-r1.json",
+          "audit": true,
+          "greedy": true
+        }
+      ],
+      "confirm": {
+        "requests": "pseudo-confirm.json",
+        "holdout": "pseudo-confirm-holdout.json"
+      }
+    }
+  ]
+}

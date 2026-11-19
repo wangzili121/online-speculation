@@ -78,6 +78,7 @@ def export_served_head(trainer, directory):
                         published_updates=trainer.published_version - trainer.initial_step,
                         export_kind="bf16_training_exchange", norm_rounding_max_abs=rounding,
                         published_banks_exact=True,
+                        online_parameter_scope=getattr(trainer, "parameter_scope", "full"),
                         source_payload_sha256=hashlib.sha256("".join(s["sha256"] for s in shards).encode()).hexdigest())
         (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         checkpoint_manifest(directory, runner.settings.model_root)
