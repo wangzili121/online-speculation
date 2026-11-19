@@ -1,0 +1,60 @@
+{
+  "scope": "Completed actual2card Pseudo56 exploratory cost and feedback-coverage analysis, not new performance measurements",
+  "cases": [
+    {
+      "case": "c61-v33-paired-pseudo56-t1-arcopy-tv3e5-overlap-warm4x32-r1",
+      "net_increment": 0.034379240687684165,
+      "accepted_per_round": [
+        1.1377840909090908,
+        1.2584522915101428
+      ],
+      "holdout_accepted_per_round": [
+        1.1538461538461537,
+        1.2926829268292683
+      ],
+      "updates": 111,
+      "direct_supervised_positions": 251,
+      "mean_supervised_per_update": 2.2612612612612613,
+      "clipped_updates": 32,
+      "direct_cost_seconds": 13.714828189,
+      "full_online_seconds": 756.5951317392755
+    },
+    {
+      "case": "c67-v33-paired-pseudo56-t1-arcopy-kl3e5-overlap-warm4x32-r1",
+      "net_increment": 0.037857876603820007,
+      "accepted_per_round": [
+        1.1378820184790335,
+        1.2564874012786762
+      ],
+      "holdout_accepted_per_round": [
+        1.1538461538461537,
+        1.36056338028169
+      ],
+      "updates": 111,
+      "direct_supervised_positions": 246,
+      "mean_supervised_per_update": 2.2162162162162162,
+      "clipped_updates": 108,
+      "direct_cost_seconds": 18.117315123,
+      "full_online_seconds": 755.5675187970046
+    },
+    {
+      "case": "c67-v33-paired-pseudo56-t1-arcopy-kl1e4-decay-overlap-warm4x32-r1",
+      "net_increment": 0.030776158958573552,
+      "accepted_per_round": [
+        1.1378820184790335,
+        1.242277633048009
+      ],
+      "holdout_accepted_per_round": [
+        1.1538461538461537,
+        1.3407821229050279
+      ],
+      "updates": 111,
+      "direct_supervised_positions": 237,
+      "mean_supervised_per_update": 2.135135135135135,
+      "clipped_updates": 110,
+      "direct_cost_seconds": 14.391432235,
+      "full_online_seconds": 732.7835231488571
+    }
+  ],
+  "interpretation": "Only ~2.1..2.3 supervised positions/update despite physicalK32. 31rowdelayed and last4 experiments target learning signal/capacity. Clipping frequency is diagnostic, not proof of a faulty optimizer. Overlap and costs mean subtracting direct times is not a measured throughput estimate."
+}
