@@ -10,14 +10,18 @@
 | KL 独立损失及 logits 梯度，3 个监督位置 | 3.431 ms | 1.366 ms |
 | last-1 完整前反向，TV、7 个监督位置 | 37.317 ms | 34.102 ms |
 | last-1 完整前反向，KL、7 个监督位置 | 35.946 ms | 33.757 ms |
+| last-4 完整前反向，TV、7 个监督位置，复测 | 102.932 ms | 100.853 ms |
+| last-4 完整前反向，KL、7 个监督位置，复测 | 102.309 ms | 100.637 ms |
 
 使用单张空闲 A2、同一 worker 和输入进行交错重复计时。表内为同步调用的中位数，包含主机提交开销，不是 profiler 的纯设备时间。完整前反向使用真实 step160 的末层参数及真实共享 MLP/LM head，隐藏状态、历史和教师 logits 为合成输入；未计 Adam、反馈及权重发布。因此不能将 6%～9% 的前反向耗时改善直接写成在线请求流加速。
 
 独立损失对照覆盖 1、3、7、31 个有效位置，另外检查无效位置梯度为零。对照 Torch FP32 参考，BF16 梯度的相对 L2 均小于 0.01，loss 满足 `rtol=1e-4, atol=1e-6`。完整前反向的 logits 逐位相同；全部可训练参数梯度相对 L2 最大为 TV 0.001980、KL 0.001044，loss 同样通过上述误差检查。分块改变了浮点归约顺序，不能声称训练轨迹逐位相同。
 
+last-4 覆盖第 60～62 层 GDN 和第 63 层 Full Attention，按生产路径使用 24 节点分段入口。复测额外记录了所有参数的梯度幅值：两个目标下的 33 组参数全部非零，因而不是用零梯度对零梯度得到的相等结果；该输入的 logits 和梯度均逐位相同。首次测量 v7 的 TV/KL 耗时为 101.187 → 98.601 ms、99.658 → 96.921 ms；表中使用记录梯度幅值后的 v8 复测，原始两次记录均保留。这些输入使用真实权重，但历史、隐藏状态和教师 logits 为合成值，不代替真实请求的在线验收。
+
 ## 源码与记录
 
-`isolated_micro.py` 对照独立损失，`last1_micro.py` 对照完整前反向；`loss_512.py`、`loss_1280.py`、`loss_2560.py` 为本轮固定的 kernel 快照。脚本中的路径指向当次固定环境，复跑时需替换实验根目录、模型/head 路径及设备环境；模型参数不随仓库分发。运行依赖与服务相同的 PyPTO/Simpler/PTOAS 环境，完整前反向使用已有 `TrainingPrograms(..., combined=True)` 编排。
+`isolated_micro.py` 对照独立损失，`last1_micro.py` 和 `last4_micro.py` 对照完整前反向；`loss_512.py`、`loss_1280.py`、`loss_2560.py` 为本轮固定的 kernel 快照。脚本中的路径指向当次固定环境，复跑时需替换实验根目录、模型/head 路径及设备环境；模型参数不随仓库分发。运行依赖与服务相同的 PyPTO/Simpler/PTOAS 环境，完整前反向使用已有 `TrainingPrograms(..., combined=True)` 编排。
 
 `loss-tile-v2/report.json`、`loss-training-v5/report.json` 保存所有误差和计时样本；`summary.json` 记录源码哈希及生产数学主体与已测候选的 AST 比对结果。生产实现的 `training_programs.loss_vocabulary_tile` 为可整除的词表选择 2560，其余规格保留原有较小分块及整除校验。90 项相关 CPU 回归通过；真实 27B 两卡服务的 greedy、TV/KL 回放和导出检查另行执行。已锁定的 GSM8K 确认实验继续使用原源码快照。
 

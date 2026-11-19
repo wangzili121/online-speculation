@@ -1,0 +1,80 @@
+{
+  "completed": true,
+  "case": "c61-v33-paired-pseudo56-t1-arcopy-tv3e5-overlap-warm4x32-r1",
+  "physical_cards": 2,
+  "head_step": 0,
+  "temperature": 1.0,
+  "requests": 56,
+  "last_layers": 1,
+  "overlap_sampling": true,
+  "fixed_tok_s": 8.047469100477521,
+  "online_tok_s": 8.324134977609539,
+  "net_increment": 0.034379240687684165,
+  "update_schedule": {
+    "policy": "continuous_two_stage",
+    "stride": 32,
+    "max_updates": null,
+    "rounds": 2662,
+    "scheduled_updates": 111,
+    "warm_update_stride": 4,
+    "warm_update_steps": 32,
+    "completed_updates": 111,
+    "skipped_busy": 0,
+    "completed_update_events": 111,
+    "inner_steps": 1,
+    "skipped_feedback": 0,
+    "last_update_round": 2656,
+    "rounds_after_last_update": 6,
+    "update_limit_reached": false
+  },
+  "exported_head": {
+    "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/c61-v33-paired-pseudo56-t1-arcopy-tv3e5-overlap-warm4x32-r1-heads/head0-stride32",
+    "manifest": {
+      "step": 111,
+      "block_size": 32,
+      "tp": 2,
+      "layers": [
+        60,
+        61,
+        62,
+        63
+      ],
+      "source_payload_sha256": "6591bf6633efd272c9ae86b864cf6c41f5e570d7616f6f526d2de9e7a9a10f8e",
+      "source_head_contract": {
+        "format": "orthrus-qwen38-native-tp-v1",
+        "base_config_sha256": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+        "base_index_sha256": "77042094076611b69791a610065f28b7013b8c621795fa86ddccc8bac7d1b9df",
+        "tp_size": 1,
+        "block_size": 32,
+        "mask_token_id": 1,
+        "hybrid_policy": "orthrus_qwen35_reference"
+      },
+      "rank_files": [
+        {
+          "name": "rank0.safetensors",
+          "sha256": "5ce0fa438693bba423520ae8c16f298260df50f0c736e7babe804e2885860515"
+        },
+        {
+          "name": "rank1.safetensors",
+          "sha256": "5cebd2c33992fa9ec7ad49243272fd235ed71a9d6dc22a3ae46f0b0830410317"
+        }
+      ],
+      "initialization": "AR-copy; no draft optimization",
+      "parent_payload_sha256": "281b72abb55df0638a872cccafdedc4110e37282271ad5f6f55b63185e3e5b7a",
+      "published_updates": 111,
+      "export_kind": "bf16_training_exchange",
+      "norm_rounding_max_abs": [
+        0.0,
+        0.0
+      ],
+      "published_banks_exact": true,
+      "online_parameter_scope": "full"
+    },
+    "seconds": 6.874729176051915
+  },
+  "launch_stages": {
+    "sampling": 110,
+    "boundary": 1
+  },
+  "note": "Complete two-card source33 overlap exploration below5%;111steps, compared serial110 steps so not bitwise-equivalent scheduling. Conditional-prefetch source51 will compare against this exact run, not serial. No reserved prompts consumed."
+}
