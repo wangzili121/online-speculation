@@ -88,12 +88,13 @@ def learner_snapshot(trainer):
     return dict(rounds=trainer.rounds, optimizer_version=trainer.version,
                 completed_version=trainer.completed_version, published_version=trainer.published_version,
                 update_limit_reached=trainer.update_limit_reached(),
-                pending_update=trainer.pending_update is not None)
+                pending_update=trainer.pending_update is not None,
+                queued_update=getattr(trainer, "queued_update", None) is not None)
 
 
 def measure_interleaved(pairs, issue, trainer, checkpoint=None):
     """逐对请求交错测量；固定 bank 和在线 bank 常驻，学习状态仅随在线组前进。"""
-    if trainer.background or trainer.pending_update is not None:
+    if trainer.background or trainer.pending_update is not None or getattr(trainer, "queued_update", None) is not None:
         raise ValueError("interleaved measurement requires synchronous learning")
     rows = {"frozen": [], "online": []}
     for index, pair in enumerate(pairs):
@@ -189,6 +190,8 @@ def main(*, guard=None):
     p.add_argument("--lazy-sampling", action="store_true")
     p.add_argument("--seed", default=743, type=int)
     p.add_argument("--background", action="store_true", help="train on the learner while serving")
+    p.add_argument("--overlap-sampling", action="store_true",
+                   help="run colocated last-1 updates during CPU lazy sampling; drain before GPU work and request completion")
     p.add_argument("--interleaved", action="store_true",
                    help="alternate frozen/online request pairs using resident banks; synchronous learning only")
     p.add_argument("--compile-only", action="store_true")
@@ -239,7 +242,8 @@ def main(*, guard=None):
                         teacher_temperature=args.teacher_temperature, warmup_updates=args.warmup_updates,
                         lr_schedule=args.lr_schedule, parameter_scope=args.parameter_scope,
                         warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
-                        publication_backend=args.publication_backend, inner_steps=args.inner_steps, **extra)
+                        publication_backend=args.publication_backend, inner_steps=args.inner_steps,
+                        overlap_sampling=args.overlap_sampling, **extra)
     config = ServingConfig(args.model, (0, 1), max_model_len=512, max_num_batched_tokens=128,
                            max_num_seqs=2, speculative_tokens=0, prefix_cache=False,
                            long_prefill_token_threshold=4)
@@ -261,6 +265,7 @@ def main(*, guard=None):
                    physical_device_count=2 if trainer.colocated else 3, kv_pages=runner.pool_blocks,
                    resource_policy=runner.resource_policy,
                    learning_rate=args.learning_rate, background=args.background,
+                   overlap_sampling=args.overlap_sampling,
                    benchmark_layout="interleaved_pairs" if args.interleaved else "separate_streams",
                    interleaved_order="alternating_within_pair" if args.interleaved else None,
                    warmup_updates=args.warmup_updates,

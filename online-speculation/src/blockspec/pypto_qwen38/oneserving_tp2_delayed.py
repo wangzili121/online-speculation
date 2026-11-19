@@ -42,6 +42,7 @@ class TP2DelayedOnline(TP2Online):
 
     def feedback_index(self, active):
         if (self.stride is None or self.update_limit_reached() or self.pending_update is not None
+                or self.queued_update is not None
                 or self.window is not None or len(self.replay) >= self.replay_blocks):
             return None
         index = self.captures % active

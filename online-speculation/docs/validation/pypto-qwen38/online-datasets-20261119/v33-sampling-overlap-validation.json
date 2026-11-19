@@ -1,0 +1,34 @@
+{
+  "completed": true,
+  "cpu_tests": 266,
+  "case": "c61-v33-overlap-reached-t1-audit-r1",
+  "physical_cards": 2,
+  "tp": 2,
+  "learner_device": 0,
+  "last_layers": 1,
+  "temperature": 1,
+  "block_size": 32,
+  "candidates": 31,
+  "requests": 6,
+  "output_tokens": 272,
+  "updates": 33,
+  "launch_stages": {
+    "sampling": 31,
+    "boundary": 2
+  },
+  "max_replay_tv": 8.981149335340888e-08,
+  "max_replay_l2": 0.0025437797885388136,
+  "export_banks_exact": true,
+  "frozen_feedback_updates_publications_zero": true,
+  "no_pending_or_queued_update_at_each_pair_completion": true,
+  "source_matches": {
+    "oneserving_tp2.py": "17627e942799fb0264eb5cbe78ad3dfe6024f53c8d00978ea35ad289086502f5",
+    "oneserving_tp2_online.py": "668f5565fa2e6df25a07c1f9486c8f1cd23931f5b88283eb5b5468be0aa4ec50",
+    "oneserving_tp2_delayed.py": "b146b8a4cc45d724e8bc1cf0d8c9aca3aa8fcc683d7ef29051d1dd26aae909b7",
+    "lazy_proposals.py": "8acd600a29b07487431d0c424742ba04322926b665000f20a29395891955d5d1",
+    "benchmark_qwen38_oneserving_tp2_online.py": "892ccb5f3876d491527c55159d21dc28cff23467e66a82b79fec98f86b6545ab"
+  },
+  "update_seconds": 3.340363604,
+  "wait_and_commit_seconds": 1.179535735,
+  "note": "Optional last1 colocated training uses CPU lazy-sampling windows, serialized with all device operations. Reached feedback real27B audit passed; delayed feedback audit and complete flow timing are still pending. Frequent replay-audit updates do not establish an end-to-end gain; update cadence can differ while a replay is queued."
+}

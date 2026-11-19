@@ -130,7 +130,11 @@ class TP2Online:
                  replay_blocks=1, publish_every=1, gather_feedback=False, objective="tv", max_updates=None,
                  focus_weight=1, audit_replay=False, teacher_temperature=1.0, warmup_updates=0,
                  lr_schedule="constant", parameter_scope="full", warm_update_stride=None,
-                 warm_update_steps=0, publication_backend="auto", inner_steps=1):
+                 warm_update_steps=0, publication_backend="auto", inner_steps=1, overlap_sampling=False):
+        if type(overlap_sampling) is not bool or overlap_sampling and (background or last_layers != 1):
+            raise ValueError("sampling overlap requires last-1 and no dedicated background learner")
+        self.overlap_sampling = overlap_sampling
+        self.queued_update = None
         if parameter_scope not in {"full", "norms", "output_norms"} or parameter_scope != "full" and checkpoint is not None:
             raise ValueError("partial parameter scopes use fresh Adam; expected full, norms or output_norms")
         self.parameter_scope = parameter_scope
@@ -208,6 +212,8 @@ class TP2Online:
 
     def bind_devices(self, devices):
         self.colocated = self.device in devices
+        if self.overlap_sampling and not self.colocated:
+            raise ValueError("sampling overlap requires a colocated learner")
         if self.colocated and self.device != devices[0]:
             raise ValueError("colocated training uses the first rank in the serving worker")
         if self.colocated and self.background:
@@ -335,7 +341,7 @@ class TP2Online:
                 inputs[name] = self.worker.alloc_tensor(value.shape, dtype)
             self.pool.append(inputs)
         self.restore()
-        if self.background:
+        if self.background or self.overlap_sampling:
             self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="orthrus-learner")
 
     def upload_new(self, value):
@@ -364,6 +370,8 @@ class TP2Online:
                                  dest.nbytes, src_offset=offset, worker_id=rank)
 
     def restore(self):
+        if self.queued_update is not None or self.pending_update is not None:
+            raise RuntimeError("restore requires an idle learner")
         self.runner.suffix = self.original
         self.optimizer.steps = self.version = 0
         if self.checkpoint is not None:
@@ -389,8 +397,10 @@ class TP2Online:
         if self.pending_evaluation is not None:
             if self.pending_evaluation not in {"initial", "current"}:
                 raise ValueError("evaluation view must be initial or current")
-            if self.background or self.pending_update is not None:
+            if self.background or self.pending_update is not None or self.queued_update is not None:
                 raise RuntimeError("interleaved evaluation requires synchronous learning")
+        if self.overlap_sampling and (self.pending_drain or self.pending_reset or self.pending_head is not None):
+            self.flush_updates()
         self.collect_update(wait=self.pending_drain or self.pending_reset or self.pending_head is not None)
         self.pending_drain = False
         if self.pending_head is not None:
@@ -441,7 +451,8 @@ class TP2Online:
         return self.stride
 
     def feedback_index(self, active):
-        if self.stride is None or self.pending_update is not None or self.update_limit_reached():
+        if (self.stride is None or self.pending_update is not None or self.queued_update is not None
+                or self.update_limit_reached()):
             return None
         interval = self.update_interval()
         if interval < self.replay_blocks * active:
@@ -571,6 +582,8 @@ class TP2Online:
 
     def ready_for_update(self):
         if not self.replay:
+            if self.overlap_sampling:
+                return False
             raise RuntimeError("no verified feedback for the update")
         return True
 
@@ -586,17 +599,44 @@ class TP2Online:
         if previous // interval == self.rounds // interval:
             return
         self.scheduled_updates += 1
-        if self.pending_update is not None:
+        if self.pending_update is not None or self.queued_update is not None:
             self.runner.spec_stats["busy_updates"] += 1
             return
         if not self.ready_for_update():
             self.runner.spec_stats["feedback_skips"] += 1
             return
         replay, self.replay = self.replay, []
-        if self.executor is None:
+        if self.overlap_sampling:
+            self.queued_update = (replay, self.rounds, interval)
+        elif self.executor is None:
             self.commit_scheduled(self.train_scheduled(replay, self.rounds, interval))
         else:
             self.pending_update = self.executor.submit(self.train_scheduled, replay, self.rounds, interval)
+
+    def launch_sampling_update(self, *, stage="sampling"):
+        if self.queued_update is not None:
+            if self.pending_update is not None or self.executor is None:
+                raise RuntimeError("invalid colocated update handoff")
+            args, self.queued_update = self.queued_update, None
+            self.pending_update = self.executor.submit(self.train_queued, args, stage, self.rounds)
+
+    def train_queued(self, args, stage, launch_round):
+        result = self.train_scheduled(*args)
+        for step in result if isinstance(result, list) else [result]:
+            step.update(launch_stage=stage, launch_round=launch_round)
+        return result
+
+    def before_device(self):
+        # 主线程只在 CPU 采样期间让出设备；所有后续设备调用都先等待学习结束。
+        if self.overlap_sampling:
+            started = time.monotonic_ns() if self.pending_update is not None else None
+            self.collect_update(wait=True)
+            if started is not None:
+                self.runner.spec_stats["sampling_update_wait_ns"] += time.monotonic_ns() - started
+
+    def flush_updates(self):
+        self.launch_sampling_update(stage="boundary")
+        self.collect_update(wait=True)
 
     def train_scheduled(self, replay, round_number, interval):
         results = []
@@ -723,7 +763,12 @@ class TP2Online:
         future = self.pending_update
         if future is not None and (wait or future.done()):
             self.pending_update = None
-            self.commit_scheduled(future.result())
+            try:
+                result = future.result()
+            except BaseException as error:
+                self.runner._terminal_device_error = repr(error)
+                raise
+            self.commit_scheduled(result)
 
     def commit_scheduled(self, result):
         if isinstance(result, list):
@@ -765,6 +810,7 @@ class TP2Online:
         if self.executor is not None:
             self.executor.shutdown(wait=True)
             self.executor = None
+        self.queued_update = None
         if self.worker is not None:
             if not self.colocated:
                 self.worker.close()

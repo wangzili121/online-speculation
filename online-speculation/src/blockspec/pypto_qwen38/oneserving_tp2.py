@@ -189,6 +189,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
         if lazy_sampling and not stochastic:
             raise ValueError("lazy proposal sampling requires the stochastic path")
         self.online = online
+        if getattr(online, "overlap_sampling", False) and not (stochastic and lazy_sampling):
+            raise ValueError("sampling overlap requires lazy stochastic proposals")
         self.stochastic = stochastic
         self.lazy_sampling = lazy_sampling
         self.ring_heap_min_mib = ring_heap_min_mib
@@ -216,9 +218,15 @@ class OrthrusTP2Runner(TensorParallelRunner):
             self.spec_stats.update(feedback_ns=0, update_ns=0, publish_ns=0, updates=0, publications=0,
                                    publish_read_ns=0, publish_pack_ns=0, publish_upload_ns=0, busy_updates=0)
             self.spec_stats["feedback_skips"] = 0
+            self.spec_stats["sampling_update_wait_ns"] = 0
 
     def _resource_policy(self):
         return bounded_ring_policy(super()._resource_policy(), self.ring_heap_min_mib)
+
+    def _worker_call(self, method, *args, **kwargs):
+        if getattr(getattr(self, "online", None), "overlap_sampling", False):
+            self.online.before_device()
+        return super()._worker_call(method, *args, **kwargs)
 
     def compile_programs(self):
         entries = super().compile_programs()
@@ -427,7 +435,17 @@ class OrthrusTP2Runner(TensorParallelRunner):
         outputs = super().run_batch(slots)
         if self.online is not None and not getattr(self.online, "evaluation_paused", False):
             self.online.observe_native(slots, outputs)
+            if getattr(self.online, "overlap_sampling", False):
+                self.online.flush_updates()
         return outputs
+
+    def _finish_sampling_updates(self, slots, results):
+        if not getattr(self.online, "overlap_sampling", False):
+            return
+        if all(tokens is not None and served_prefix(slot.request, 0, tokens)[1]
+               for slot, tokens in zip(slots, results, strict=True)):
+            # 在请求完成事件发出前结清，固定组期间不允许免费完成训练。
+            self.online.flush_updates()
 
     def run_batch(self, slots):
         if self.online is not None:
@@ -469,6 +487,16 @@ class OrthrusTP2Runner(TensorParallelRunner):
         pending = list(range(len(slots)))
         while pending:
             if stochastic and self.lazy_sampling:
+                if getattr(online, "overlap_sampling", False):
+                    prefetch_started = time.monotonic_ns()
+                    for i in pending:
+                        proposal = proposals.get(slots[i].request.request_id)
+                        if proposal is not None:
+                            proposal.prefetch(offsets[i] + self.verify_chunk_size)
+                    prefetch_ns = time.monotonic_ns() - prefetch_started
+                    self.spec_stats["draft_sampling_ns"] += prefetch_ns
+                    self.spec_stats["draft_ns"] += prefetch_ns
+                    online.launch_sampling_update()
                 for i in pending:
                     proposal = proposals.get(slots[i].request.request_id)
                     if proposal is not None:
@@ -547,4 +575,5 @@ class OrthrusTP2Runner(TensorParallelRunner):
             pending = unfinished
         if online is not None:
             online.finish_batch(len(active))
+            self._finish_sampling_updates(slots, results)
         return results
