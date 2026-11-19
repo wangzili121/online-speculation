@@ -1,0 +1,39 @@
+{
+  "completed": true,
+  "cpu_tests": 256,
+  "cases": [
+    {
+      "tag": "c61-v20-verify1-greedy-audit-r1",
+      "temperature": 0.0,
+      "physical_cards": 2,
+      "block_size": 32,
+      "candidates": 31,
+      "verification_rows": 1,
+      "requests": 6,
+      "tokens": 384,
+      "updates": 23,
+      "exact_greedy": true,
+      "max_replay_tv": 4.3212321543251164e-06,
+      "max_replay_l2": 0.00285071088001132,
+      "export_banks_exact": true,
+      "sampler": "device_greedy"
+    },
+    {
+      "tag": "c61-v20-verify1-t1-audit-r1",
+      "temperature": 1.0,
+      "physical_cards": 2,
+      "block_size": 32,
+      "candidates": 31,
+      "verification_rows": 1,
+      "requests": 6,
+      "tokens": 272,
+      "updates": 43,
+      "exact_greedy": null,
+      "max_replay_tv": 8.981149335340888e-08,
+      "max_replay_l2": 0.0025437797885388136,
+      "export_banks_exact": true,
+      "sampler": "host_full_vocab_lazy"
+    }
+  ],
+  "note": "Verification chunk sizes1/2/4 now have real27B service validation. Native prefill4/C4 snapshot unchanged; default remains4. These frequent-update replay-audit runs do not measure net performance. Temperature1 remains CPU lazy full-vocabulary sampling."
+}
