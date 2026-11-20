@@ -1,0 +1,40 @@
+{
+  "completed": true,
+  "cpu_only": true,
+  "root": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies",
+  "plan": "queue-wave130-111.json",
+  "recorded_at": 1795171003.7411485,
+  "model_access_path": "/data/disk/models/Qwen3.8-27B",
+  "resolved_model": "/data/disk/models/Qwen3.8-27B",
+  "is_symlink": false,
+  "hashes": {
+    "config.json": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+    "model.safetensors.index.json": "77042094076611b69791a610065f28b7013b8c621795fa86ddccc8bac7d1b9df"
+  },
+  "readable_weight_shards": 18,
+  "pending": [
+    {
+      "tag": "a111-v95-last1-tv-t0-uniform-audit-r1",
+      "error": "RuntimeError('Batch runner failed to start')",
+      "stage": "starting",
+      "has_source": true
+    },
+    {
+      "tag": "a111-v112-triplet-pseudo56-step160-kl-rejection-decay-stride64-r1",
+      "error": null,
+      "stage": null,
+      "has_source": false
+    },
+    {
+      "tag": "a111-v112-triplet-gsm128-step160-kl1e5-teacher025-k31-r1",
+      "error": null,
+      "stage": null,
+      "has_source": false
+    }
+  ],
+  "heads": {
+    "step160-suffix-tp2": 160,
+    "kl-prewarm-suffix-tp2": 128
+  },
+  "controllers": []
+}

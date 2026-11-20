@@ -1,0 +1,77 @@
+{
+  "completed": true,
+  "cpu_only": true,
+  "root": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background",
+  "plan": "queue-wave131-167.json",
+  "recorded_at": 1795171003.837602,
+  "model_access_path": "/data/disk/wangzili/models/Qwen3.8-27B",
+  "resolved_model": "/data/disk/models/Qwen3.8-27B",
+  "is_symlink": true,
+  "hashes": {
+    "config.json": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+    "model.safetensors.index.json": "77042094076611b69791a610065f28b7013b8c621795fa86ddccc8bac7d1b9df"
+  },
+  "readable_weight_shards": 18,
+  "pending": [
+    {
+      "tag": "b167-v114-convolution-last1-greedy-audit-r1",
+      "error": "Launcher terminated without a complete clean result; inspect b167-v114-convolution-last1-greedy-audit-r1.log and .launch.log",
+      "stage": null,
+      "has_source": true
+    },
+    {
+      "tag": "b167-v84-triplet-gsm128-step160-tv1e5-k31-ar96-r1",
+      "error": "RuntimeError('Batch runner failed to start')",
+      "stage": "starting",
+      "has_source": true
+    },
+    {
+      "tag": "b167-v114-convolution-last1-greedy-audit-r1-startupfix1",
+      "error": null,
+      "stage": null,
+      "has_source": false
+    },
+    {
+      "tag": "b167-v114-dense31-last1-kl025-audit-r1",
+      "error": null,
+      "stage": null,
+      "has_source": false
+    },
+    {
+      "tag": "b167-v114-long384-head128-audit-early131-r1",
+      "error": null,
+      "stage": null,
+      "has_source": false
+    },
+    {
+      "tag": "b167-v114-triplet-gsm128-long384-head128-kl025-early131-r1",
+      "error": null,
+      "stage": null,
+      "has_source": false
+    },
+    {
+      "tag": "b167-v114-triplet-gsm128-long384-head0-kl025-early131-r1",
+      "error": null,
+      "stage": null,
+      "has_source": false
+    },
+    {
+      "tag": "b167-v114-triplet-gsm384-step572-tv1e5-k3-parallel128-r1-startupfix1",
+      "error": null,
+      "stage": null,
+      "has_source": false
+    },
+    {
+      "tag": "b167-v114-triplet-gsm384-step572-kl025-dense31-stride64-r1",
+      "error": null,
+      "stage": null,
+      "has_source": false
+    }
+  ],
+  "heads": {
+    "step0-suffix-tp2": 0,
+    "step160-suffix-tp2": 160,
+    "kl-prewarm-suffix-tp2": 128
+  },
+  "controllers": []
+}
