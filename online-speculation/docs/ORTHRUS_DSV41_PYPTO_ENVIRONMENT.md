@@ -14,13 +14,15 @@
 bash online-speculation/scripts/dsv41_pypto_env.sh build
 bash online-speculation/scripts/dsv41_pypto_env.sh doctor
 bash online-speculation/scripts/dsv41_pypto_env.sh compile-probe
-bash online-speculation/scripts/dsv41_pypto_env.sh save /path/to/orthrus-dsv41-pypto.tar
+bash online-speculation/scripts/dsv41_pypto_env.sh save /path/to/orthrus-dsv41-pypto.tar.gz
 ```
 
 将同一份 tar、其相邻的 `.sha256` 文件以及本代码仓复制到两台内网机器。Docker 镜像包含配对源码和已安装的 `pypto_serving_a3`，内网运行时无需联网安装 Python 包。
 
+两台机器都需能访问完整权重目录，可以各自保存一份，也可以使用共享挂载。容器执行镜像内的固定代码；更新实现时需重新构建并传入镜像。
+
 ```bash
-bash online-speculation/scripts/dsv41_pypto_env.sh load /path/to/orthrus-dsv41-pypto.tar
+bash online-speculation/scripts/dsv41_pypto_env.sh load /path/to/orthrus-dsv41-pypto.tar.gz
 bash online-speculation/scripts/dsv41_pypto_env.sh host-info
 bash online-speculation/scripts/dsv41_pypto_env.sh doctor
 bash online-speculation/scripts/dsv41_pypto_env.sh preflight
@@ -44,4 +46,6 @@ NPU_DEVICE=0 bash online-speculation/scripts/dsv41_pypto_env.sh probe
 
 镜像使用官方 ARM A2/A3 开发镜像的固定 digest，其用户态 CANN 为 9.0.0。官方对该基础镜像给出的已验证驱动为 26.0.rc1。现有机器报告的 `npu-smi 25.5.1` 仍需结合 `host-info` 中的实际 driver/version.info 和设备探针判断兼容性。Docker 镜像提供用户态软件，驱动由宿主机提供。 [基础镜像说明](https://github.com/hw-native-sys/pypto/blob/72a62d13efabbb25d240e35944f68ba5bcc22b7f/docs/en/user/04-dev-container.md)
 
-当前 Docker 构建配方正在整套构建验证。已有的算子实机验证使用另一套已配置好的环境，因此还需要对本镜像单独验收构建、导入和设备执行。环境检查通过后，双机进程启动、跨机 HCCL 分组及完整模型执行另行验收。
+已完成从固定基础镜像构建、正常容器启动导入、设备代码编译和 75 项 Serving CPU 测试。环境验证不等于模型验收：本镜像的 NPU 探针、真实权重完整模型执行和双机通信仍需分别验收，跨机运行时尚待适配。
+
+扩展 Lib 回归有 15 项通过，另有一项 Prefill 编译条目数断言失败。未应用 Orthrus 补丁的 `e32726b` 基线也复现同一失败：测试预期一个条目，原生实现另外包含有限值检查条目。该问题单独记录，未修改主模型或测试断言。

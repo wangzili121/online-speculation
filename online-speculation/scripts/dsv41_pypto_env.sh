@@ -15,7 +15,11 @@ case "$action" in
     ;;
   save)
     destination="${1:?Usage: dsv41_pypto_env.sh save /path/to/image.tar}"
-    docker save -o "$destination" "$image"
+    if [[ "$destination" == *.tar.gz || "$destination" == *.tgz ]]; then
+      docker save "$image" | gzip -1 > "$destination"
+    else
+      docker save -o "$destination" "$image"
+    fi
     (cd "$(dirname "$destination")" && sha256sum "$(basename "$destination")") > "$destination.sha256"
     ;;
   load)
