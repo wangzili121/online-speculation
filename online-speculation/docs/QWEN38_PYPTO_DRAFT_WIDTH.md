@@ -25,6 +25,6 @@ GDN 从各请求的主模型历史状态开始，在局部状态上递推。启�
 
 独立 GDN 检查覆盖八组单/双请求宽度，包括 8/6、16/2 和 2/32；使用非零历史状态、真实每 rank 的 24 个 head 与 128 维状态。所有有效前缀逐位一致，无效输出行全零，历史状态逐位未修改。与独立 Torch 参考比较，相对 L2 最大为 7.62e-5，最大绝对差为 0.000244。双请求 8/8 的配对同步调用中，补齐/有效模式中位耗时为 1.199/1.077 ms；这包含 worker 开销，不等于完整 draft 或服务吞吐的改善。
 
-`tp2_gdn_rows.py` 提供公共 `make_recurrence` 和独立 `make_entry`；推理编排与独立检查共用递推核心。`scripts/validate_qwen38_pypto_gdn_rows.py` 包含 Torch 参考、编译、逐位前缀对照、历史只读检查和配对计时，可在配套环境中运行 `python scripts/validate_qwen38_pypto_gdn_rows.py --output /tmp/gdn-rows.json`，也可加 `--compile-only`。共享入口的整模型源码回归单独执行，不将独立核检查扩大为所有服务配置的验收。证据分别位于 `validation/pypto-qwen38/online-datasets-20261119/width180/` 和 `gdn185/`。
+`tp2_gdn_rows.py` 提供公共 `make_recurrence` 和独立 `make_entry`；推理编排与独立检查共用递推核心。`scripts/validate_qwen38_pypto_gdn_rows.py` 包含 Torch 参考、编译、逐位前缀对照、历史只读检查和配对计时，可在配套环境中运行 `python scripts/validate_qwen38_pypto_gdn_rows.py --output /tmp/gdn-rows.json`，也可加 `--compile-only`。共享入口的真实 27B 双卡回归也已完成：八位置有效行模式七步、默认 32 位置补齐模式六步，全部更新轨迹和发布 shard 均与各自参考逐位相同，greedy 与 AR 一致，导出精确对应服务权重。证据分别位于 `validation/pypto-qwen38/online-datasets-20261119/width180/`、`gdn185/` 和 `gdn185/service190/`。
 
 服务检查通过后，在注册探索题上比较同两张 A2、TP2 的 AR、同起点固定起草、全程持续更新、最终已发布 head 原题冻结重跑及独立留出。反馈、训练与发布成本全部计入。块长配置先在探索集选择，预留确认题不用于调参。
