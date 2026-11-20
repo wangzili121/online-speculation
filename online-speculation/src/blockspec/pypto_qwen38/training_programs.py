@@ -250,7 +250,7 @@ def reduction_tile(k, limit):
 
 
 def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradient_weight=False,
-                batches=1, b_repeats=1, inline=False, accumulate=False, reduction_limit=None):
+                batches=1, b_repeats=1, inline=False, accumulate=False, reduction_limit=None, task_group=16):
     """前向与显式线性 VJP 共用矩阵乘；激活/参数梯度按 BF16 执行语义舍入。"""
     import pypto.language as pl
     kernel = pl.jit.inline if inline else pl.jit
@@ -260,6 +260,8 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
         raise ValueError("aligned M/N/K required")
     if batches < 1 or b_repeats < 1 or batches % b_repeats:
         raise ValueError("whole GQA groups required")
+    if type(task_group) is not int or not 1 <= task_group <= 16 or not gradient_weight and task_group != 16:
+        raise ValueError("gradient task group must be an integer in 1..16")
     # 真实词表的 dLogits 行步长很大；先重排，避免长行二维读取错误。
     if (not gradient_weight and not transpose_a and not transpose_b and batches==1
             and K>=65536 and K%512==0):
@@ -278,9 +280,9 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
         @kernel
         def linear(a: pl.Tensor, b: pl.Tensor, output: pl.InOut[pl.Tensor]):
             # 多个输出 tile 复用同一组 Cube→Vector 缓冲，避免临时量随整张 dW 矩阵放大。
-            with pl.spmd((tasks + 15) // 16, name_hint="orthrus_training_linear"):
-                base = pl.tile.get_block_idx() * 16
-                for part in pl.range(16):
+            with pl.spmd((tasks + task_group - 1) // task_group, name_hint="orthrus_training_linear"):
+                base = pl.tile.get_block_idx() * task_group
+                for part in pl.range(task_group):
                     task = base + part
                     if task < tasks:
                         head = task // ((M // MT) * (N // NT))
@@ -338,45 +340,68 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
     return entry
 
 
-def make_element(shape, kind, *, scale=1., inline=False):
+def make_fp32_row(tile, *, input_fp32):
+    """在 Python 构造阶段选精度，避免前端检查不可达分支中的同类型 cast。"""
+    import pypto.language as pl
+    if input_fp32:
+        @pl.jit.inline
+        def load(value: pl.Tensor, row: pl.Scalar[pl.INT32]):
+            return pl.slice(value, [1, tile], [row, 0])
+    else:
+        @pl.jit.inline
+        def load(value: pl.Tensor, row: pl.Scalar[pl.INT32]):
+            return pl.cast(pl.slice(value, [1, tile], [row, 0]), pl.FP32)
+    return load
+
+
+def make_element(shape, kind, *, scale=1., inline=False, tile=128, task_group=1,
+                 input_fp32=(False, False)):
     """BF16 激活的逐元素前向/VJP，保持运算边界的舍入。"""
     names = ("add", "mul", "silu", "sigmoid", "silu_grad", "sigmoid_grad", "scale", "copy")
     op = names.index(kind)
     from math import prod
     N = prod(shape)
-    if N % 128:
+    if (type(tile) is not int or tile not in (64, 128, 256, 512, 1024, 2048, 4096)
+            or N % tile or type(task_group) is not int or not 1 <= task_group <= 16):
         raise ValueError("aligned elementwise tensor required")
+    if (len(input_fp32) != 2 or any(type(flag) is not bool for flag in input_fp32)):
+        raise ValueError("two input precision flags required")
     import pypto.language as pl
     kernel = pl.jit.inline if inline else pl.jit
+    load_a = make_fp32_row(tile, input_fp32=input_fp32[0])
+    load_b = make_fp32_row(tile, input_fp32=input_fp32[1])
 
     @kernel
     def element(a: pl.Tensor, b: pl.Tensor, output: pl.Out[pl.Tensor]):
-        x = pl.reshape(a, [N // 128, 128])
-        y = pl.reshape(b, [N // 128, 128])
-        out = pl.reshape(output, [N // 128, 128])
-        with pl.spmd(N // 128, name_hint="orthrus_training_element"):
-            row = pl.tile.get_block_idx()
-            u = pl.cast(pl.slice(x, [1, 128], [row, 0]), pl.FP32)
-            v = pl.cast(pl.slice(y, [1, 128], [row, 0]), pl.FP32)
-            if op == 0:
-                value = pl.add(u, v)
-            elif op == 1:
-                value = pl.mul(u, v)
-            elif op == 2:
-                value = pl.div(u, pl.add(pl.exp(pl.neg(u)), 1.))
-            elif op == 3:
-                value = pl.recip(pl.add(pl.exp(pl.neg(u)), 1.))
-            elif op == 4:
-                s = pl.recip(pl.add(pl.exp(pl.neg(u)), 1.))
-                value = pl.mul(v, pl.mul(s, pl.add(pl.mul(u, pl.add(pl.neg(s), 1.)), 1.)))
-            elif op == 5:
-                s = pl.recip(pl.add(pl.exp(pl.neg(u)), 1.))
-                value = pl.mul(v, pl.mul(s, pl.add(pl.neg(s), 1.)))
-            elif op == 6:
-                value = pl.mul(u, scale)
-            else:
-                value = u
-            out[row:row + 1, 0:128] = pl.cast(value, pl.BF16, mode="rint")
+        x = pl.reshape(a, [N // tile, tile])
+        y = pl.reshape(b, [N // tile, tile])
+        out = pl.reshape(output, [N // tile, tile])
+        with pl.spmd((N // tile + task_group - 1) // task_group, name_hint="orthrus_training_element"):
+            first = pl.tile.get_block_idx() * task_group
+            for part in pl.range(task_group):
+                row = first + part
+                if row < N // tile:
+                    u = load_a(x, row)
+                    v = load_b(y, row)
+                    if op == 0:
+                        value = pl.add(u, v)
+                    elif op == 1:
+                        value = pl.mul(u, v)
+                    elif op == 2:
+                        value = pl.div(u, pl.add(pl.exp(pl.neg(u)), 1.))
+                    elif op == 3:
+                        value = pl.recip(pl.add(pl.exp(pl.neg(u)), 1.))
+                    elif op == 4:
+                        s = pl.recip(pl.add(pl.exp(pl.neg(u)), 1.))
+                        value = pl.mul(v, pl.mul(s, pl.add(pl.mul(u, pl.add(pl.neg(s), 1.)), 1.)))
+                    elif op == 5:
+                        s = pl.recip(pl.add(pl.exp(pl.neg(u)), 1.))
+                        value = pl.mul(v, pl.mul(s, pl.add(pl.neg(s), 1.)))
+                    elif op == 6:
+                        value = pl.mul(u, scale)
+                    else:
+                        value = u
+                    out[row:row + 1, 0:tile] = pl.cast(value, pl.BF16, mode="rint")
         return output
 
     @pl.jit.host

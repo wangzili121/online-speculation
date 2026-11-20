@@ -45,18 +45,23 @@ class GraphBuilder:
         self.nodes.append(Node(operation, tuple(inputs), values, options))
         return values
 
-    def mm(self, a, b, *, transpose_a=False, transpose_b=True, gradient_weight=False, batches=1, b_repeats=1):
+    def mm(self, a, b, *, transpose_a=False, transpose_b=True, gradient_weight=False, batches=1, b_repeats=1,
+           task_group=None):
         ar = a.shape[0] // batches
         br = b.shape[0] // (batches // b_repeats)
         m, k = (a.shape[1], ar) if transpose_a else (ar, a.shape[1])
         kb, n = (b.shape[1], br) if transpose_b else (br, b.shape[1])
         if k != kb:
             raise ValueError((a, b, transpose_a, transpose_b))
+        scheduling = {} if task_group is None else {"task_group": task_group}
         return self.op("linear", (a, b), ((((batches * m, n)), "fp32" if gradient_weight else "bf16"),),
                        a_shape=(ar, a.shape[1]), b_shape=(br, b.shape[1]), transpose_a=transpose_a,
-                       transpose_b=transpose_b, gradient_weight=gradient_weight, batches=batches, b_repeats=b_repeats)[0]
+                       transpose_b=transpose_b, gradient_weight=gradient_weight, batches=batches, b_repeats=b_repeats,
+                       **scheduling)[0]
 
     def element(self, a, b, kind, **options):
+        if a.dtype == "fp32" or b.dtype == "fp32":
+            options["input_fp32"] = (a.dtype == "fp32", b.dtype == "fp32")
         return self.op("element", (a, b), ((a.shape, "bf16"),), kind=kind, **options)[0]
 
     def norm(self, x, gamma):

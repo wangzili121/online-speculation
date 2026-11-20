@@ -9,6 +9,9 @@ from .training_programs import make_element, make_linear, make_rms, make_tv, mak
 
 def stage(graph, node, *, accumulate=False):
     shape, options = node.inputs[0].shape, {**node.options, "inline": True}
+    if node.kind == "parameter_copy":
+        from .tp2_publication import make_copy
+        return make_copy(shape, node.outputs[0].shape, "rows")
     if node.kind.startswith("gdn_"):
         from .training_gdn_aux_programs import make_convolution, make_gates, make_gate_reduce, make_tail, make_tail_weight
         from .training_gdn_programs import make_recurrence, make_recurrence_vjp, make_recurrence_reduce

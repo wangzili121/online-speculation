@@ -26,6 +26,8 @@ def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False, 
 
     def execute(node, args):
         op, cfg = node.kind, node.options
+        if op == "parameter_copy":
+            return (args[0].clone(),)
         if op.startswith("gdn_"):
             return gdn_execute(op,args,graph.gdn_shape,width,cast)
         if op == "linear":

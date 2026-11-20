@@ -1,0 +1,12 @@
+Error: pl operation 'cast': tensor.cast: target_type fp32 equals input dtype; same-dtype cast is not a valid operation. Remove the cast or use a different target_type.
+  --> /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/src-dense-v156/blockspec/pypto_qwen38/training_programs.py:365:21
+    |
+363 |                 row = first + part
+364 |                 if row < N // tile:
+365 |                     u = pl.cast(pl.slice(x, [1, tile], [row, 0]), pl.FP32)
+    |                     ^
+366 |                     v = pl.cast(pl.slice(y, [1, tile], [row, 0]), pl.FP32)
+367 |                     if op == 0:
+    |
+
+note: run with `PTO_BACKTRACE=1` environment variable to display a backtrace.

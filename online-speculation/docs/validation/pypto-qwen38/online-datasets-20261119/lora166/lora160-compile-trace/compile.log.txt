@@ -1,0 +1,13 @@
+compiling 0 l63_q_weight vjp
+Error: pl operation 'cast': tensor.cast: target_type fp32 equals input dtype; same-dtype cast is not a valid operation. Remove the cast or use a different target_type.
+  --> /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/src-dense-v158/blockspec/pypto_qwen38/training_programs.py:372:25
+    |
+370 |                     v = pl.slice(y, [1, tile], [row, 0])
+371 |                     if not A_FP32:
+372 |                         u = pl.cast(u, pl.FP32)
+    |                         ^
+373 |                     if not B_FP32:
+374 |                         v = pl.cast(v, pl.FP32)
+    |
+
+note: run with `PTO_BACKTRACE=1` environment variable to display a backtrace.

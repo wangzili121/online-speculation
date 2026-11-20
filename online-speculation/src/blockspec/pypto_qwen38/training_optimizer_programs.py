@@ -1,13 +1,15 @@
 """梯度有限性、全局裁剪与执行参数发布；状态候选确认后才切换版本。"""
 
 
-def make_stats(shape):
+def make_stats(shape, *, input_bf16=False):
     from math import prod
     import pypto.language as pl
     N = prod(shape)
     T = min(4096, N)
     if N % T:
         raise ValueError("aligned gradient tensor required")
+    from .training_programs import make_fp32_row
+    load = make_fp32_row(T, input_fp32=not input_bf16)
 
     @pl.jit
     def stats(value: pl.Tensor, sums: pl.Out[pl.Tensor], flags: pl.Out[pl.Tensor]):
@@ -17,7 +19,8 @@ def make_stats(shape):
             for part in pl.range(16):
                 row = base + part
                 if row < N // T:
-                    block = pl.reshape(pl.slice(x, [1, T], [row, 0]), [8, T // 8])
+                    values = load(x, row)
+                    block = pl.reshape(values, [8, T // 8])
                     sums[row:row + 1, 0:8] = pl.reshape(pl.row_sum(pl.mul(block, block)), [1, 8])
                     flags[row:row + 1, 0:8] = pl.reshape(pl.row_min(pl.cmp(pl.abs(block), 3.4028234663852886e38, cmp_type=3)), [1, 8])
         return sums, flags

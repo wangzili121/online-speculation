@@ -1,0 +1,572 @@
+{
+  "completed": true,
+  "passed": true,
+  "clean_shutdown": true,
+  "scope": "Single-card projection primitives from actual LoRA graphs; not online serving or throughput acceptance",
+  "compile_only": false,
+  "projections": [
+    {
+      "name": "l63_q_weight",
+      "shape": [
+        12288,
+        5120
+      ],
+      "tail_case": false,
+      "zero_b": true,
+      "gradient_relative_errors": [
+        0.0,
+        7.345966150751337e-05
+      ],
+      "merge_relative_error": 0.0,
+      "zero_b_initial_W_exact": true,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true
+    },
+    {
+      "name": "l63_q_weight",
+      "shape": [
+        12288,
+        5120
+      ],
+      "tail_case": false,
+      "zero_b": false,
+      "gradient_relative_errors": [
+        7.375026325462386e-05,
+        7.345966150751337e-05
+      ],
+      "merge_relative_error": 2.3304539809032576e-07,
+      "zero_b_initial_W_exact": false,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true,
+      "adaptive_vjp": {
+        "synchronous_call_ns": [
+          3351586,
+          3249966,
+          3342256,
+          3305766,
+          3187565,
+          3362616,
+          3130846,
+          3241495,
+          3376096,
+          3209865
+        ],
+        "median_ns": 3277866.0
+      },
+      "legacy_vjp": {
+        "synchronous_call_ns": [
+          3231205,
+          3221395,
+          3229776,
+          3223025,
+          3153565,
+          3259536,
+          3172075,
+          3204366,
+          3202405,
+          3184466
+        ],
+        "median_ns": 3212880.5
+      }
+    },
+    {
+      "name": "l63_k_weight",
+      "shape": [
+        1024,
+        5120
+      ],
+      "tail_case": false,
+      "zero_b": true,
+      "gradient_relative_errors": [
+        0.0,
+        9.211114956997335e-05
+      ],
+      "merge_relative_error": 0.0,
+      "zero_b_initial_W_exact": true,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true
+    },
+    {
+      "name": "l63_k_weight",
+      "shape": [
+        1024,
+        5120
+      ],
+      "tail_case": false,
+      "zero_b": false,
+      "gradient_relative_errors": [
+        4.639289909391664e-05,
+        9.211114956997335e-05
+      ],
+      "merge_relative_error": 6.66613232169766e-07,
+      "zero_b_initial_W_exact": false,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true,
+      "adaptive_vjp": {
+        "synchronous_call_ns": [
+          1383307,
+          1360377,
+          1392186,
+          1398177,
+          1357447,
+          1376476,
+          1379157,
+          1344886,
+          1362617,
+          1346657
+        ],
+        "median_ns": 1369546.5
+      },
+      "legacy_vjp": {
+        "synchronous_call_ns": [
+          1887619,
+          1855949,
+          1916849,
+          1867430,
+          1885349,
+          1860969,
+          1921629,
+          1872299,
+          1865709,
+          1884809
+        ],
+        "median_ns": 1878554.0
+      }
+    },
+    {
+      "name": "l63_o_weight",
+      "shape": [
+        5120,
+        6144
+      ],
+      "tail_case": false,
+      "zero_b": true,
+      "gradient_relative_errors": [
+        0.0,
+        8.098954276647419e-05
+      ],
+      "merge_relative_error": 0.0,
+      "zero_b_initial_W_exact": true,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true
+    },
+    {
+      "name": "l63_o_weight",
+      "shape": [
+        5120,
+        6144
+      ],
+      "tail_case": false,
+      "zero_b": false,
+      "gradient_relative_errors": [
+        6.373305950546637e-05,
+        8.098954276647419e-05
+      ],
+      "merge_relative_error": 1.8414134217437095e-07,
+      "zero_b_initial_W_exact": false,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true,
+      "adaptive_vjp": {
+        "synchronous_call_ns": [
+          2068290,
+          1954990,
+          2073280,
+          2048080,
+          2071520,
+          2088920,
+          2094680,
+          3926899,
+          2275981,
+          2109240
+        ],
+        "median_ns": 2081100.0
+      },
+      "legacy_vjp": {
+        "synchronous_call_ns": [
+          2428591,
+          2461192,
+          2388402,
+          2385811,
+          2420292,
+          2421922,
+          2427551,
+          2434472,
+          2427762,
+          2471902
+        ],
+        "median_ns": 2427656.5
+      }
+    },
+    {
+      "name": "l60_qkv_weight",
+      "shape": [
+        10240,
+        5120
+      ],
+      "tail_case": false,
+      "zero_b": true,
+      "gradient_relative_errors": [
+        0.0,
+        8.721116319065914e-05
+      ],
+      "merge_relative_error": 0.0,
+      "zero_b_initial_W_exact": true,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true
+    },
+    {
+      "name": "l60_qkv_weight",
+      "shape": [
+        10240,
+        5120
+      ],
+      "tail_case": false,
+      "zero_b": false,
+      "gradient_relative_errors": [
+        6.582611968042329e-05,
+        8.721116319065914e-05
+      ],
+      "merge_relative_error": 4.3070764377262094e-07,
+      "zero_b_initial_W_exact": false,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true,
+      "adaptive_vjp": {
+        "synchronous_call_ns": [
+          3012834,
+          2947254,
+          3027555,
+          2903764,
+          3013725,
+          2958344,
+          3008254,
+          2804404,
+          2959354,
+          2952224
+        ],
+        "median_ns": 2958849.0
+      },
+      "legacy_vjp": {
+        "synchronous_call_ns": [
+          2920204,
+          2960224,
+          2964294,
+          2976765,
+          2930624,
+          3024914,
+          2907714,
+          2964495,
+          2952334,
+          2896164
+        ],
+        "median_ns": 2956279.0
+      }
+    },
+    {
+      "name": "l60_z_weight",
+      "shape": [
+        6144,
+        5120
+      ],
+      "tail_case": false,
+      "zero_b": true,
+      "gradient_relative_errors": [
+        0.0,
+        7.332902896450832e-05
+      ],
+      "merge_relative_error": 0.0,
+      "zero_b_initial_W_exact": true,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true
+    },
+    {
+      "name": "l60_z_weight",
+      "shape": [
+        6144,
+        5120
+      ],
+      "tail_case": false,
+      "zero_b": false,
+      "gradient_relative_errors": [
+        6.66637351969257e-05,
+        7.332902896450832e-05
+      ],
+      "merge_relative_error": 3.0634737413492985e-07,
+      "zero_b_initial_W_exact": false,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true,
+      "adaptive_vjp": {
+        "synchronous_call_ns": [
+          2076030,
+          1986950,
+          1996609,
+          2009560,
+          2082430,
+          1969950,
+          2042559,
+          2008740,
+          1927639,
+          2007550
+        ],
+        "median_ns": 2008145.0
+      },
+      "legacy_vjp": {
+        "synchronous_call_ns": [
+          2255941,
+          2314501,
+          2290301,
+          2259451,
+          2222821,
+          2226331,
+          2263621,
+          2235350,
+          2280151,
+          2255501
+        ],
+        "median_ns": 2257696.0
+      }
+    },
+    {
+      "name": "l60_a_weight",
+      "shape": [
+        128,
+        5120
+      ],
+      "tail_case": false,
+      "zero_b": true,
+      "gradient_relative_errors": [
+        0.0,
+        3.063916301471181e-05
+      ],
+      "merge_relative_error": 0.0,
+      "zero_b_initial_W_exact": true,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true
+    },
+    {
+      "name": "l60_a_weight",
+      "shape": [
+        128,
+        5120
+      ],
+      "tail_case": false,
+      "zero_b": false,
+      "gradient_relative_errors": [
+        1.1513765457493719e-05,
+        3.063916301471181e-05
+      ],
+      "merge_relative_error": 7.5319512689020485e-06,
+      "zero_b_initial_W_exact": false,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true,
+      "adaptive_vjp": {
+        "synchronous_call_ns": [
+          1185026,
+          1138985,
+          1159396,
+          1174215,
+          1185656,
+          1136966,
+          1189815,
+          1178026,
+          1147396,
+          1161935
+        ],
+        "median_ns": 1168075.0
+      },
+      "legacy_vjp": {
+        "synchronous_call_ns": [
+          1213865,
+          1180816,
+          1189456,
+          1226436,
+          1216196,
+          1292046,
+          1328376,
+          1298877,
+          1327136,
+          1343146
+        ],
+        "median_ns": 1259241.0
+      }
+    },
+    {
+      "name": "l63_k_weight",
+      "shape": [
+        128,
+        128
+      ],
+      "tail_case": true,
+      "zero_b": true,
+      "gradient_relative_errors": [
+        0.0,
+        0.0
+      ],
+      "merge_relative_error": 0.0,
+      "zero_b_initial_W_exact": true,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true
+    },
+    {
+      "name": "l63_k_weight",
+      "shape": [
+        128,
+        128
+      ],
+      "tail_case": true,
+      "zero_b": false,
+      "gradient_relative_errors": [
+        2.651230168737584e-08,
+        0.0
+      ],
+      "merge_relative_error": 0.0,
+      "zero_b_initial_W_exact": false,
+      "base_unchanged": true,
+      "adaptive_legacy_gradients_bitwise": true,
+      "default_dense_DW_bitwise": true,
+      "adaptive_vjp": {
+        "synchronous_call_ns": [
+          1166456,
+          1132635,
+          1161166,
+          1210326,
+          1110415,
+          1111745,
+          1099776,
+          1166745,
+          1114056,
+          1108865
+        ],
+        "median_ns": 1123345.5
+      },
+      "legacy_vjp": {
+        "synchronous_call_ns": [
+          1177446,
+          1169956,
+          1131245,
+          1162636,
+          1168755,
+          1123876,
+          1152165,
+          1171386,
+          1148676,
+          1140165
+        ],
+        "median_ns": 1157400.5
+      },
+      "nonfinite_private_candidates_detected": [
+        "nan",
+        "inf",
+        "-inf"
+      ]
+    }
+  ],
+  "element_regressions": [
+    {
+      "kind": "add",
+      "input_dtype": "torch.bfloat16",
+      "default_bitwise": true,
+      "independent_formula": false
+    },
+    {
+      "kind": "mul",
+      "input_dtype": "torch.bfloat16",
+      "default_bitwise": true,
+      "independent_formula": false
+    },
+    {
+      "kind": "silu",
+      "input_dtype": "torch.bfloat16",
+      "default_bitwise": true,
+      "independent_formula": false
+    },
+    {
+      "kind": "sigmoid",
+      "input_dtype": "torch.bfloat16",
+      "default_bitwise": true,
+      "independent_formula": false
+    },
+    {
+      "kind": "silu_grad",
+      "input_dtype": "torch.bfloat16",
+      "default_bitwise": true,
+      "independent_formula": false
+    },
+    {
+      "kind": "sigmoid_grad",
+      "input_dtype": "torch.bfloat16",
+      "default_bitwise": true,
+      "independent_formula": false
+    },
+    {
+      "kind": "scale",
+      "input_dtype": "torch.bfloat16",
+      "default_bitwise": true,
+      "independent_formula": false
+    },
+    {
+      "kind": "copy",
+      "input_dtype": "torch.bfloat16",
+      "default_bitwise": true,
+      "independent_formula": false
+    },
+    {
+      "kind": "add",
+      "input_dtype": "torch.float32",
+      "default_bitwise": false,
+      "independent_formula": true
+    },
+    {
+      "kind": "scale",
+      "input_dtype": "torch.float32",
+      "default_bitwise": false,
+      "independent_formula": true
+    }
+  ],
+  "fp32_stat_regressions": [
+    {
+      "value": "None",
+      "default_bitwise": true
+    },
+    {
+      "value": "nan",
+      "default_bitwise": true
+    },
+    {
+      "value": "inf",
+      "default_bitwise": true
+    },
+    {
+      "value": "-inf",
+      "default_bitwise": true
+    }
+  ],
+  "copies": [
+    {
+      "shape": [
+        1,
+        64
+      ],
+      "exact": true
+    },
+    {
+      "shape": [
+        1,
+        128
+      ],
+      "exact": true
+    }
+  ]
+}
