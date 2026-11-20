@@ -1,0 +1,35 @@
+guard {'ok': True, 'reserved_gib': 16, 'devices': [0]}
+/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/pub-suffix-arena-v74/micro.py:25: DeprecationWarning: RunConfig(platform=...) is deprecated; use backend_type and execution_mode instead.
+  config=RunConfig(platform='a2a3',distributed_config=DistributedConfig(device_ids=[0],num_sub_workers=0),ring_heap=(512<<20,)*4)
+2026-11-20 08:50:00.690 I | [perf_hint] 39 hints across 39 sites; see build_output/_jit_suffix_host_20261120_084959_juwwqmhi/report/perf_hints.log
+2026-11-20 08:50:04.176 I | [perf_hint] 39 hints across 39 sites; see build_output/_jit_suffix_host_20261120_085003_ah144fj9/report/perf_hints.log
+2026-11-20 08:50:06.585 I | [perf_hint] 17 hints across 16 sites; see build_output/_jit_suffix_host_20261120_085005_ac6ouc3a/report/perf_hints.log
+2026-11-20 08:50:09.195 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_suffix_host_20261120_085008_3cmekdfq/report/perf_hints.log
+2026-11-20 08:50:09.354 I | [perf_hint] 13 hints across 11 sites; see build_output/_jit_suffix_host_20261120_085008_3cmekdfq/report/perf_hints.log
+2026-11-20 08:50:11.926 I | [perf_hint] 25 hints across 22 sites; see build_output/_jit_suffix_host_20261120_085011_9_96chsa/report/perf_hints.log
+2026-11-20 08:50:14.313 I | [perf_hint] 21 hints across 21 sites; see build_output/_jit_suffix_host_20261120_085013_eh6rrd_m/report/perf_hints.log
+2026-11-20 08:50:17.890 I | [perf_hint] 60 hints across 60 sites; see build_output/_jit_suffix_host_20261120_085016_w_s3sxeg/report/perf_hints.log
+2026-11-20 08:50:21.623 I | [perf_hint] 72 hints across 72 sites; see build_output/_jit_suffix_host_20261120_085020_065nrurr/report/perf_hints.log
+2026-11-20 08:50:25.292 I | [perf_hint] 72 hints across 72 sites; see build_output/_jit_suffix_host_20261120_085024_1sag6ajs/report/perf_hints.log
+2026-11-20 08:50:25.968 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_085025_9o8avhxf/report/perf_hints.log
+2026-11-20 08:50:26.335 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_085026_5u93822h/report/perf_hints.log
+2026-11-20 08:50:28.451 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_085028_mxvwrd_i/report/perf_hints.log
+2026-11-20 08:50:28.834 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_085028_ra8v5qba/report/perf_hints.log
+2026-11-20 08:50:29.236 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_085029_px4qj8hq/report/perf_hints.log
+2026-11-20 08:50:29.649 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_085029_vnhonngo/report/perf_hints.log
+2026-11-20 08:50:30.030 I | [perf_hint] 5 hints across 5 sites; see build_output/_jit_entry_20261120_085030__d727lny/report/perf_hints.log
+2026-11-20 08:50:30.365 I | [perf_hint] 1 hint across 1 site; see build_output/_jit_entry_20261120_085030_tut8o6vi/report/perf_hints.log
+2026-11-20 08:50:32.533 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_publish_host_20261120_085032_ega87uzs/report/perf_hints.log
+guard {'ok': True, 'released': [0]}
+Traceback (most recent call last):
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/pub-suffix-arena-v74/micro.py", line 27, in <module>
+    head=S/'step160-suffix-tp2';master=master_from_shards(optim.layout,head).share_memory_();weights=TextWeights(Path('/data/disk/wangzili/models/Qwen3.8-27B'));names={p.name for p in graph.parameters};inputs={};paths={}
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/weight.py", line 51, in __init__
+    verify_model_identity(root)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/weight.py", line 40, in verify_model_identity
+    if metadata.read_text().splitlines()[0] != EXPECTED_REVISION:
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/pathlib.py", line 1134, in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/pathlib.py", line 1119, in open
+    return self._accessor.open(self, mode, buffering, encoding, errors,
+FileNotFoundError: [Errno 2] No such file or directory: '/data/disk/wangzili/models/Qwen3.8-27B/.cache/huggingface/download/config.json.metadata'

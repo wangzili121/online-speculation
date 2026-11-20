@@ -47,6 +47,7 @@ class SuffixOptimizer:
         self.programs,self.worker,self.handles = programs,worker,[]
         self.layout = programs.layout
         self.steps = self.index = 0
+        self.scratch_dirty = False
         try:
             self.state = [self.alloc(self.layout.shape,torch.float32) for _ in range(3)]
             self.candidate = [self.alloc(self.layout.shape,torch.float32) for _ in range(3)]
@@ -124,6 +125,10 @@ class SuffixOptimizer:
         return self.layout.views(*self.execution[self.index])
 
     def zero_grad(self):
+        # 发布后复用的梯度空间包含其他 dtype 的数据，先清空，含未被图覆盖的 padding。
+        if self.scratch_dirty:
+            self.run(self.programs.zero,self.scratch)
+            self.scratch_dirty = False
         self.run(self.programs.zero,self.candidate[0])
 
     def accumulate(self):

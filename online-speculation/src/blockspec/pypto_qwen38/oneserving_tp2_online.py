@@ -140,8 +140,8 @@ class TP2Online:
         self.parameter_scope = parameter_scope
         if publication_backend not in {"auto", "cpu", "device"}:
             raise ValueError("publication backend must be auto, cpu or device")
-        if publication_backend == "device" and last_layers != 1:
-            raise ValueError("device publication currently requires last-1")
+        if publication_backend == "device" and last_layers not in (1, 4):
+            raise ValueError("device publication requires last-1 or last-4")
         self.device_publication = publication_backend == "device" or (
             publication_backend == "auto" and last_layers == 1 and parameter_scope != "norms")
         self.publication = None
@@ -255,7 +255,9 @@ class TP2Online:
         self.optimization = SuffixOptimizerPrograms(self.graph, self.config, clip_norm=1.0)
         if self.device_publication:
             from .tp2_publication import PublicationPrograms
-            self.publication = PublicationPrograms(self.optimization.layout, self.publish_banks, self.config)
+            from .tp2_suffix_publication import SuffixPublicationPrograms
+            publication = PublicationPrograms if len(self.layers) == 1 else SuffixPublicationPrograms
+            self.publication = publication(self.optimization.layout, self.publish_banks, self.config)
         partial = torch.empty((BLOCK, 8), dtype=torch.float32, device="meta")
         total = torch.empty((1, 8), dtype=torch.float32, device="meta")
         self.loss_program = make_loss_sum().compile(partial, total, config=self.config)
@@ -299,16 +301,23 @@ class TP2Online:
             self.ordinary, self.special = self.allocate_execution_host()
             self.worker = DistributedWorker(programs, config=self.config,
                                             inherited_host_tensors=self.learner_host_tensors())
-        publication_bytes = (sum(prod(target) * (4 if dtype == "fp32" else 2)
-                                 for _, _, _, target, dtype, _ in self.publication.materialized)
-                             if self.publication is not None else 0)
+        self.publication_reuses_scratch = self.publication is not None and self.colocated and len(self.layers) == 4
+        publication_bytes = (self.publication.allocation_bytes
+                             if self.publication is not None and not self.publication_reuses_scratch else 0)
+        # 共卡学习器也持有下一版 serving shard；不能只预算优化器和训练工作区。
+        mirror_bytes = sum(prod(shape) * dtype.itemsize for index, (shape, dtype) in enumerate(SHAPES)
+                           if index in self.publish_banks) if self.colocated else 0
         require_suffix_memory(self.graph, self.optimization.layout, self.replay_blocks, 1 << 60,
-                              self.worker.device_memory_info()[0] - publication_bytes)
+                              self.worker.device_memory_info()[0] - publication_bytes - mirror_bytes)
         self.optimizer = SuffixOptimizer(self.optimization, self.worker)
         if self.checkpoint is None:
             self.initial_master = master_from_shards(self.optimizer.layout, runner.head_directory)
         self.workspace = TrainingWorkspace(self.training, self.worker)
-        self.publication_buffers = self.publication.allocate(self.worker) if self.publication is not None else {}
+        if self.publication_reuses_scratch:
+            # Adam 和 render 已结束时梯度已无用途；发布只借用 scratch，不碰 master/moments。
+            self.publication_buffers = self.publication.allocate(self.worker, scratch=self.optimizer.scratch)
+        else:
+            self.publication_buffers = self.publication.allocate(self.worker) if self.publication is not None else {}
         self.loss = self.worker.alloc_tensor((1, 8), torch.float32)
         self.loss_host = torch.empty((1, 8), dtype=torch.float32)
         self.original = runner.suffix
@@ -743,11 +752,12 @@ class TP2Online:
         # SuffixOptimizer checked the candidate FP32 master's norm before
         # rendering, so BF16 conversion cannot overflow a checked parameter.
         if self.publication is not None:
+            if getattr(self, "publication_reuses_scratch", False):
+                self.optimizer.scratch_dirty = True
             self.publication.run(self.worker, layout, *buffers, self.publication_buffers)
             packed_done = time.monotonic_ns()
-            for bank, (base, offset) in self.publication.sources(layout, buffers[0], self.publication_buffers).items():
-                host = self.packed[bank]
-                self.worker.copy_from(host.data_ptr(), base, host.nbytes, src_offset=offset)
+            self.publication.readback(self.worker, layout, buffers, self.publication_buffers,
+                                      self.packed, (self.ordinary, self.special))
             self.pack_stats = dict(publish_read_ns=time.monotonic_ns() - packed_done,
                                    publish_pack_ns=packed_done - started)
         else:

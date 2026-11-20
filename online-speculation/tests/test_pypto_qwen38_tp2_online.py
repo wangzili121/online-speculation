@@ -109,14 +109,16 @@ def test_publication_auto_uses_the_measured_path(layers, scope, device):
 
 def test_device_publication_copies_owned_bases_with_explicit_offsets(monkeypatch):
     from blockspec.pypto_qwen38 import oneserving_tp2_online as module
+    from blockspec.pypto_qwen38.tp2_publication import PublicationPrograms
     trainer = TP2Online(None, device=0, last_layers=1, publication_backend="device")
     trainer.initial_step = 0
     copied, runs = [], []
     trainer.worker = SimpleNamespace(copy_from=lambda *a, **kw: copied.append((a, kw)))
-    trainer.publication = SimpleNamespace(
-        run=lambda *args: runs.append(args),
-        sources=lambda *args: {9: (4096, 128), 14: (8192, 0)})
+    trainer.publication = object.__new__(PublicationPrograms)
+    trainer.publication.run = lambda *args: runs.append(args)
+    trainer.publication.sources = lambda *args: {9: (4096, 128), 14: (8192, 0)}
     trainer.publication_buffers = {14: object()}
+    trainer.ordinary, trainer.special = object(), object()
     trainer.packed = [None] * 15
     trainer.packed[9] = SimpleNamespace(data_ptr=lambda: 10000, nbytes=64)
     trainer.packed[14] = SimpleNamespace(data_ptr=lambda: 20000, nbytes=32)

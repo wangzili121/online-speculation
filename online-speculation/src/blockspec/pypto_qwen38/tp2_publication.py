@@ -112,3 +112,14 @@ class PublicationPrograms:
         return {bank: ((ordinary.data_ptr, entries[name].offset * 2) if mode == "rows"
                        else (destinations[bank].data_ptr, 0))
                 for bank, name, _, _, _, mode in self.plan}
+
+    @property
+    def allocation_bytes(self):
+        from math import prod
+        return sum(prod(target) * (4 if dtype == "fp32" else 2)
+                   for _, _, _, target, dtype, _ in self.materialized)
+
+    def readback(self, worker, layout, buffers, destinations, packed, host_buffers):
+        for bank, (base, offset) in self.sources(layout, buffers[0], destinations).items():
+            host = packed[bank]
+            worker.copy_from(host.data_ptr(), base, host.nbytes, src_offset=offset)
