@@ -21,7 +21,7 @@ from .head_loading import bank_specs
 from .online_feedback_programs import make_loss_sum, make_tp2_history
 from .online_suffix_checkpoint import restore
 from .online_suffix_optimizer import SuffixOptimizer, SuffixOptimizerPrograms
-from .oneserving_tp2 import (BLOCK, HIDDEN, LAYERS, SHAPES, TP_VOCAB, checkpoint_manifest,
+from .oneserving_tp2 import (BLOCK, HIDDEN, LAYERS, SHAPES, TP_VOCAB, VERIFY_ROWS, checkpoint_manifest,
                              rank_weights, served_prefix)
 from .training_executor import TrainingPrograms, TrainingWorkspace
 from .training_memory import require_suffix_memory
@@ -232,6 +232,12 @@ class TP2Online:
                        for index, (shape, dtype) in enumerate(SHAPES)]
         runner._host_slabs.update({f"orthrus_publish_{i}": value
                                    for i, value in enumerate(self.packed) if value is not None})
+        # fork 前登记；运行时直接 DMA 到共享缓冲，避免每次重新映射临时中转区。
+        self.feedback_hidden = torch.empty((BLOCK, HIDDEN), dtype=torch.bfloat16).share_memory_()
+        self.feedback_teacher_parts = torch.empty((2, VERIFY_ROWS, TP_VOCAB), dtype=torch.bfloat16).share_memory_()
+        self.feedback_teacher = torch.empty((VERIFY_ROWS, 2 * TP_VOCAB), dtype=torch.bfloat16).share_memory_()
+        runner._host_slabs.update(zip(("orthrus_feedback_hidden", "orthrus_feedback_teacher_parts",
+                                      "orthrus_feedback_teacher"), self.feedback_host_tensors(), strict=True))
         if self.gather_feedback:
             page_size = runner.state_specs[2][0][-2]
             self.history_table = torch.empty((2, 512 // page_size), dtype=torch.int32).share_memory_()
@@ -276,8 +282,11 @@ class TP2Online:
 
     def learner_host_tensors(self):
         # 独立学习器也要在 fork 前登记 DMA 目的缓冲，不能只登记 serving worker。
-        return [self.ordinary, self.special, *(
+        return [self.ordinary, self.special, *self.feedback_host_tensors(), *(
             [host for host in self.packed if host is not None] if self.device_publication else [])]
+
+    def feedback_host_tensors(self):
+        return [self.feedback_hidden, self.feedback_teacher_parts, self.feedback_teacher]
 
     def compile_colocated(self, runner):
         programs = self.compile(runner.runconfig)
@@ -542,7 +551,7 @@ class TP2Online:
 
     def capture_hidden(self, buffer):
         started = time.monotonic_ns()
-        hidden = torch.empty((BLOCK, HIDDEN), dtype=torch.bfloat16)
+        hidden = self.feedback_hidden
         self.read(0, buffer, hidden)
         self.upload("hidden", hidden)
         self.runner.spec_stats["feedback_ns"] += time.monotonic_ns() - started
@@ -586,12 +595,16 @@ class TP2Online:
                 raise RuntimeError("feedback teacher rows must be a fresh contiguous verified prefix")
             count = min(count, state["candidates"] - offset)
             source = self.runner.outputs[self.runner._last_layout["output_key"]][1]
-            parts = [torch.empty((count, TP_VOCAB), dtype=torch.bfloat16) for _ in range(2)]
+            parts = [self.feedback_teacher_parts[rank, :count] for rank in range(2)]
             for rank in range(2):
                 self.read(rank, source, parts[rank], (4 * batch_slot + source_row) * TP_VOCAB * 2)
             # Pack both vocabulary shards by row, then upload the entire
             # verified chunk in one transfer instead of two calls per row.
-            teacher = self.training_teacher(torch.cat(parts, dim=-1))
+            teacher = self.feedback_teacher[:count]
+            torch.cat(parts, dim=-1, out=teacher)
+            if self.teacher_temperature != 1:
+                # 保留原 FP32 缩放/BF16 舍入，并放回已登记的上传缓冲。
+                teacher.copy_(self.training_teacher(teacher))
             self.upload("teacher", teacher, offset * 2 * TP_VOCAB * teacher.element_size())
             state["valid"] += count
         state["complete"] = final

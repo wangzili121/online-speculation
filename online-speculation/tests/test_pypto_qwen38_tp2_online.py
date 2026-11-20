@@ -137,7 +137,8 @@ def test_dedicated_learner_inherits_its_dma_destinations(backend):
     trainer.ordinary, trainer.special = object(), object()
     one, two = object(), object()
     trainer.packed = [None, one, None, two]
-    assert trainer.learner_host_tensors() == [trainer.ordinary, trainer.special, *(
+    trainer.feedback_hidden, trainer.feedback_teacher_parts, trainer.feedback_teacher = object(), object(), object()
+    assert trainer.learner_host_tensors() == [trainer.ordinary, trainer.special, *trainer.feedback_host_tensors(), *(
         [one, two] if backend == "device" else [])]
 
 
@@ -183,6 +184,8 @@ def test_teacher_shards_are_interleaved_by_row_in_one_upload(monkeypatch):
     from blockspec.pypto_qwen38 import oneserving_tp2_online as module
     monkeypatch.setattr(module, "TP_VOCAB", 4)
     trainer = TP2Online(None, device=0, last_layers=1)
+    trainer.feedback_teacher_parts = torch.empty(2, 4, 4, dtype=torch.bfloat16).share_memory_()
+    trainer.feedback_teacher = torch.empty(4, 8, dtype=torch.bfloat16).share_memory_()
     trainer.feedback = dict(candidates=7, valid=2, complete=False)
     trainer.runner = SimpleNamespace(outputs={"target": (None, "logits")},
                                     _last_layout={"output_key": "target"}, spec_stats=Counter())
@@ -199,6 +202,66 @@ def test_teacher_shards_are_interleaved_by_row_in_one_upload(monkeypatch):
                                       [4,5,6,7,104,105,106,107],
                                       [8,9,10,11,108,109,110,111]]
     assert trainer.feedback["valid"] == 5 and trainer.feedback["complete"]
+
+
+@pytest.mark.parametrize("temperature", [1., .25, .0625])
+def test_registered_feedback_preserves_partial_rows_and_teacher_rounding(monkeypatch, temperature):
+    from blockspec.pypto_qwen38 import oneserving_tp2_online as module
+    monkeypatch.setattr(module, "TP_VOCAB", 4)
+    monkeypatch.setattr(module, "HIDDEN", 8)
+    monkeypatch.setattr(module, "SHAPES", ())
+    trainer = TP2Online(None, device=0, last_layers=1, teacher_temperature=temperature)
+    runner = SimpleNamespace(_host_slabs={}, outputs={"target": (None, "logits")},
+                             _last_layout={"output_key": "target"}, spec_stats=Counter())
+    trainer.prepare_host_buffers(runner)
+    trainer.runner = runner
+    registered = list(runner._host_slabs.values())
+    assert all(x.is_shared() and any(x is y for y in registered) for x in trainer.feedback_host_tensors())
+    native = torch.arange(2 * 8 * 4, dtype=torch.bfloat16).reshape(2, 8, 4).div_(8)
+    captured = torch.full((32, 8), -999., dtype=torch.bfloat16)
+    uploads = []
+    def read(rank, source, destination, offset=0):
+        start = offset // (4 * 2)
+        assert any(x.data_ptr() <= destination.data_ptr() and destination.data_ptr() + destination.nbytes
+                   <= x.data_ptr() + x.nbytes for x in registered)
+        destination.copy_(native[rank, start:start + destination.shape[0]])
+    def upload(key, value, offset=0):
+        assert value.is_contiguous()
+        assert value.data_ptr() == trainer.feedback_teacher.data_ptr()
+        start = offset // (8 * 2)
+        captured[start:start + len(value)].copy_(value)
+        uploads.append(value.data_ptr())
+    trainer.read, trainer.upload = read, upload
+    trainer.feedback = dict(candidates=7, valid=0, complete=False)
+    trainer.capture_teacher(0, 0, 4, final=False)
+    expected = torch.cat(list(native[:, :4]), dim=-1)
+    expected = (expected.float() / temperature).to(torch.bfloat16)
+    assert torch.equal(captured[:4], expected)
+    # 第二个 batch slot、非零 source_row 和尾部单行复用缓冲，不覆盖先前设备反馈。
+    trainer.capture_teacher(1, 4, 1, final=True, source_row=2)
+    expected_tail = torch.cat(list(native[:, 6:7]), dim=-1)
+    expected_tail = (expected_tail.float() / temperature).to(torch.bfloat16)
+    assert torch.equal(captured[:4], expected)
+    assert torch.equal(captured[4:5], expected_tail)
+    assert (captured[5:] == -999).all()
+    assert len(set(uploads)) == 1 and trainer.feedback["valid"] == 5
+
+
+def test_hidden_snapshot_reuses_registered_buffer_and_finishes_upload_before_reuse():
+    trainer = TP2Online(None, device=0, last_layers=1)
+    trainer.feedback_hidden = torch.empty((32, 8), dtype=torch.bfloat16).share_memory_()
+    trainer.runner = SimpleNamespace(spec_stats=Counter())
+    uploads = []
+    def read(rank, source, destination):
+        assert rank == 0 and destination is trainer.feedback_hidden
+        destination.fill_(source)
+    trainer.read = read
+    trainer.upload = lambda name, value: uploads.append((name, value.clone()))
+    trainer.capture_hidden(3.)
+    trainer.capture_hidden(-2.)
+    assert [key for key, _ in uploads] == ["hidden", "hidden"]
+    assert (uploads[0][1] == 3.).all() and (uploads[1][1] == -2.).all()
+    assert trainer.runner.spec_stats["feedback_ns"] > 0
 
 
 @pytest.mark.parametrize("temperature", [0., -1., float("inf"), float("nan")])
