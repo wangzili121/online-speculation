@@ -264,6 +264,60 @@ def test_hidden_snapshot_reuses_registered_buffer_and_finishes_upload_before_reu
     assert trainer.runner.spec_stats["feedback_ns"] > 0
 
 
+@pytest.mark.parametrize("temperature", [.0625, .25, 1., 4.])
+def test_device_teacher_scaling_accepts_exact_power_of_two_temperatures(temperature):
+    trainer = TP2Online(None, device=0, last_layers=1, teacher_temperature=temperature,
+                        teacher_scaling="device")
+    assert trainer.device_teacher_scaling == (temperature != 1.)
+
+
+@pytest.mark.parametrize("temperature,backend", [(.3, "device"), (2**-17, "device"),
+                                              (2**17, "device"), (1., "unknown")])
+def test_unvalidated_teacher_device_scalings_are_rejected(temperature, backend):
+    with pytest.raises(ValueError, match="power-of-two"):
+        TP2Online(None, device=0, last_layers=1, teacher_temperature=temperature,
+                  teacher_scaling=backend)
+
+
+def test_device_scaling_only_updates_the_fresh_private_teacher_rows(monkeypatch):
+    from blockspec.pypto_qwen38 import oneserving_tp2_online as module
+    monkeypatch.setattr(module, "TP_VOCAB", 4)
+    trainer = TP2Online(None, device=0, last_layers=1, teacher_temperature=.25, teacher_scaling="device")
+    trainer.feedback_teacher_parts = torch.empty(2, 4, 4, dtype=torch.bfloat16)
+    trainer.feedback_teacher = torch.empty(4, 8, dtype=torch.bfloat16)
+    trainer.feedback = dict(candidates=7, valid=2, complete=False)
+    trainer.runner = SimpleNamespace(outputs={"target": (None, "logits")},
+                                    _last_layout={"output_key": "target"}, spec_stats=Counter())
+    private = torch.full((32, 8), -999., dtype=torch.bfloat16)
+    native = torch.arange(64, dtype=torch.bfloat16).reshape(2, 8, 4).div_(8)
+    def read(rank, source, destination, offset):
+        first = offset // 8
+        destination.copy_(native[rank, first:first + len(destination)])
+    def upload(key, value, offset):
+        # 未经 CPU 缩放的真实教师行先上传私有快照。
+        assert torch.equal(value, torch.cat(list(native[:, 5:7]), dim=-1))
+        private[offset // 16:offset // 16 + len(value)].copy_(value)
+    views, runs = [], []
+    def view(shape, dtype, *, byte_offset):
+        views.append((shape, byte_offset))
+        return private[byte_offset // 16:byte_offset // 16 + shape[0]]
+    def run(program, x, y, out, *, config):
+        assert x is y and x is out
+        runs.append(program)
+        out.copy_((x.float() * 4).to(x.dtype))
+    trainer.read, trainer.upload = read, upload
+    trainer.inputs = {"teacher": SimpleNamespace(buffer=SimpleNamespace(tensor=view))}
+    trainer.worker, trainer.config = SimpleNamespace(run=run), object()
+    trainer.teacher_scale_programs = {2: "existing_scale_kernel"}
+    trainer.training_teacher = lambda _: pytest.fail("CPU temperature scaling was used")
+    trainer.capture_teacher(1, 2, 2, final=True, source_row=1)
+    assert views == [((2, 8), 32)] and runs == ["existing_scale_kernel"]
+    expected = (torch.cat(list(native[:, 5:7]), dim=-1).float() * 4).to(torch.bfloat16)
+    assert torch.equal(private[2:4], expected)
+    assert (private[:2] == -999).all() and (private[4:] == -999).all()
+    assert trainer.feedback["valid"] == 4 and trainer.feedback["complete"]
+
+
 @pytest.mark.parametrize("temperature", [0., -1., float("inf"), float("nan")])
 def test_invalid_training_teacher_temperatures_are_rejected(temperature):
     with pytest.raises(ValueError, match="teacher temperature"):

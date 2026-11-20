@@ -185,6 +185,8 @@ def main(*, guard=None):
     p.add_argument("--teacher-tokens", type=int, choices=range(1, 32), default=31)
     p.add_argument("--teacher-temperature", type=float, default=1.0,
                    help="temperature of the learner's teacher distribution; does not change generation")
+    p.add_argument("--teacher-scaling", choices=("host", "device"), default="host",
+                   help="device scaling uses the existing PyPTO elementwise kernel at power-of-two temperatures")
     p.add_argument("--audit-replay", action="store_true",
                    help="diagnose the first feedback replay against actual draft logits; include its cost")
     p.add_argument("--max-updates", type=int, help="cap Adam steps during the measured online stream")
@@ -260,7 +262,8 @@ def main(*, guard=None):
                         replay_blocks=args.replay_blocks, publish_every=args.publish_every,
                         gather_feedback=args.gather_feedback, objective=args.objective, max_updates=args.max_updates,
                         focus_weight=args.focus_weight, audit_replay=args.audit_replay,
-                        teacher_temperature=args.teacher_temperature, warmup_updates=args.warmup_updates,
+                        teacher_temperature=args.teacher_temperature, teacher_scaling=args.teacher_scaling,
+                        warmup_updates=args.warmup_updates,
                         lr_schedule=args.lr_schedule, parameter_scope=args.parameter_scope,
                         warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
                         publication_backend=args.publication_backend, inner_steps=args.inner_steps,
@@ -304,6 +307,7 @@ def main(*, guard=None):
                    feedback_mode=args.feedback_mode,
                    teacher_tokens=args.teacher_tokens if args.feedback_mode == "delayed" else None,
                    teacher_temperature=args.teacher_temperature,
+                   teacher_scaling=args.teacher_scaling,
                    audit_replay=args.audit_replay,
                    online_update_policy=policy,
                    temperature=args.temperature, seed=args.seed,

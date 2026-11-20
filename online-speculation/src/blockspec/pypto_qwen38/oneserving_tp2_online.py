@@ -7,7 +7,7 @@ rank zero on the same worker or a separate device. Both shards publish together.
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import json
-from math import isfinite, prod
+from math import frexp, isfinite, prod
 from pathlib import Path
 import time
 
@@ -26,7 +26,7 @@ from .oneserving_tp2 import (BLOCK, HIDDEN, LAYERS, SHAPES, TP_VOCAB, VERIFY_ROW
 from .training_executor import TrainingPrograms, TrainingWorkspace
 from .training_memory import require_suffix_memory
 from .training_suffix_graph import SuffixGraph
-from .training_programs import tv_supervision_weight
+from .training_programs import make_element, tv_supervision_weight
 
 
 FULL_BANK_START = 9
@@ -131,7 +131,7 @@ class TP2Online:
                  focus_weight=1, audit_replay=False, teacher_temperature=1.0, warmup_updates=0,
                  lr_schedule="constant", parameter_scope="full", warm_update_stride=None,
                  warm_update_steps=0, publication_backend="auto", inner_steps=1, overlap_sampling=False,
-                 position_weighting="uniform"):
+                 position_weighting="uniform", teacher_scaling="host"):
         if type(overlap_sampling) is not bool or overlap_sampling and (background or last_layers not in (1, 4)):
             raise ValueError("sampling overlap requires last-1 or last-4 and no dedicated background learner")
         self.overlap_sampling = overlap_sampling
@@ -178,6 +178,11 @@ class TP2Online:
         if not isfinite(teacher_temperature) or teacher_temperature <= 0:
             raise ValueError("positive finite training teacher temperature required")
         self.teacher_temperature = teacher_temperature
+        if (teacher_scaling not in {"host", "device"} or teacher_scaling == "device" and
+                (frexp(teacher_temperature)[0] != .5 or not 2**-16 <= teacher_temperature <= 2**16)):
+            raise ValueError("device teacher scaling requires a power-of-two temperature in [2^-16,2^16]")
+        self.teacher_scaling = teacher_scaling
+        self.device_teacher_scaling = teacher_scaling == "device" and teacher_temperature != 1
         if type(warmup_updates) is not int or warmup_updates < 0:
             raise ValueError("warmup_updates must be a nonnegative integer")
         self.warmup_updates = warmup_updates
@@ -273,7 +278,15 @@ class TP2Online:
         partial = torch.empty((BLOCK, 8), dtype=torch.float32, device="meta")
         total = torch.empty((1, 8), dtype=torch.float32, device="meta")
         self.loss_program = make_loss_sum().compile(partial, total, config=self.config)
+        self.teacher_scale_programs = {}
+        if self.device_teacher_scaling:
+            for count in range(1, VERIFY_ROWS + 1):
+                shape = (count, 2 * TP_VOCAB)
+                row = torch.empty(shape, dtype=torch.bfloat16, device="meta")
+                self.teacher_scale_programs[count] = make_element(
+                    shape, "scale", scale=1 / self.teacher_temperature).compile(row, row, row, config=self.config)
         return [*self.training.programs.values(), *self.optimization.programs(), self.loss_program,
+                *self.teacher_scale_programs.values(),
                 *([self.publication.program] if self.publication is not None else [])]
 
     def allocate_execution_host(self):
@@ -602,10 +615,17 @@ class TP2Online:
             # verified chunk in one transfer instead of two calls per row.
             teacher = self.feedback_teacher[:count]
             torch.cat(parts, dim=-1, out=teacher)
-            if self.teacher_temperature != 1:
+            if self.teacher_temperature != 1 and not self.device_teacher_scaling:
                 # 保留原 FP32 缩放/BF16 舍入，并放回已登记的上传缓冲。
                 teacher.copy_(self.training_teacher(teacher))
             self.upload("teacher", teacher, offset * 2 * TP_VOCAB * teacher.element_size())
+            if self.device_teacher_scaling:
+                from pypto.runtime.task_interface import DataType
+                # 只缩放刚上传的私有行，旧反馈和 target logits 不变。
+                # 非有限值仍由训练 loss/梯度检查在 Adam 和发布前拒绝。
+                view = self.inputs["teacher"].buffer.tensor((count, 2 * TP_VOCAB), DataType.BFLOAT16,
+                    byte_offset=offset * 2 * TP_VOCAB * teacher.element_size())
+                self.worker.run(self.teacher_scale_programs[count], view, view, view, config=self.config)
             state["valid"] += count
         state["complete"] = final
         self.runner.spec_stats["feedback_ns"] += time.monotonic_ns() - started
