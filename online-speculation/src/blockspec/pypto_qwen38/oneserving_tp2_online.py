@@ -267,9 +267,7 @@ class TP2Online:
     def compile(self, config):
         self.config = config if self.colocated else replace(config, distributed_config=replace(
             config.distributed_config, device_ids=[self.device]))
-        self.graph = SuffixGraph(len(self.layers), objective=self.objective, focus_weight=self.focus_weight,
-                                 parameter_scope=self.parameter_scope,
-                                 position_weighted=self.position_weighting != "uniform")
+        self.graph = self.build_training_graph()
         self.training = TrainingPrograms(self.graph, self.config, combined=True,
                                          chunk_size=None if len(self.layers) == 1 else 24,
                                          external_gradients=True)
@@ -278,7 +276,7 @@ class TP2Online:
             from .tp2_publication import PublicationPrograms
             from .tp2_suffix_publication import SuffixPublicationPrograms
             publication = PublicationPrograms if len(self.layers) == 1 else SuffixPublicationPrograms
-            self.publication = publication(self.optimization.layout, self.publish_banks, self.config)
+            self.publication = publication(self.publication_layout(), self.publish_banks, self.config)
         partial = torch.empty((BLOCK, 8), dtype=torch.float32, device="meta")
         total = torch.empty((1, 8), dtype=torch.float32, device="meta")
         self.loss_program = make_loss_sum().compile(partial, total, config=self.config)
@@ -290,12 +288,46 @@ class TP2Online:
                 self.teacher_scale_programs[count] = make_element(
                     shape, "scale", scale=1 / self.teacher_temperature).compile(row, row, row, config=self.config)
         return [*self.training.programs.values(), *self.optimization.programs(), self.loss_program,
+                *self.compile_training_views(),
                 *self.teacher_scale_programs.values(),
                 *([self.publication.program] if self.publication is not None else [])]
 
+    def build_training_graph(self):
+        return SuffixGraph(len(self.layers), objective=self.objective, focus_weight=self.focus_weight,
+                           parameter_scope=self.parameter_scope,
+                           position_weighted=self.position_weighting != "uniform")
+
+    def publication_layout(self):
+        return self.optimization.layout
+
+    def compile_training_views(self):
+        return []
+
+    def training_view_bytes(self):
+        return 0
+
+    def initialize_training_views(self):
+        pass
+
+    def restore_training_views(self):
+        pass
+
+    def training_tensors(self):
+        return self.optimizer.tensors()
+
+    def initial_parameters(self, directory):
+        return master_from_shards(self.optimizer.layout, directory)
+
+    def publication_inputs(self, layout, buffers):
+        return layout, buffers
+
+    def can_reuse_publication_execution(self, compact):
+        return compact
+
     def allocate_execution_host(self):
-        return (torch.empty(self.optimization.layout.shape, dtype=torch.bfloat16).share_memory_(),
-                torch.empty(self.optimization.layout.special_shape, dtype=torch.float32).share_memory_())
+        layout = self.publication_layout()
+        return (torch.empty(layout.shape, dtype=torch.bfloat16).share_memory_(),
+                torch.empty(layout.special_shape, dtype=torch.float32).share_memory_())
 
     def learner_host_tensors(self):
         # 独立学习器也要在 fork 前登记 DMA 目的缓冲，不能只登记 serving worker。
@@ -334,7 +366,7 @@ class TP2Online:
             self.worker = DistributedWorker(programs, config=self.config,
                                             inherited_host_tensors=self.learner_host_tensors())
         compact = self.colocated and len(self.layers) == 4
-        self.publication_reuses_execution = self.publication is not None and compact
+        self.publication_reuses_execution = self.publication is not None and self.can_reuse_publication_execution(compact)
         publication_bytes = (self.publication.allocation_bytes
                              if self.publication is not None and not self.publication_reuses_execution else 0)
         # 共卡学习器也持有下一版 serving shard；不能只预算优化器和训练工作区。
@@ -342,16 +374,19 @@ class TP2Online:
                            if index in self.publish_banks) if self.colocated else 0
         native_future = runner.resource_policy["future_bytes_after_prepare"] if self.colocated else 0
         free = self.worker.device_memory_info()[0]
+        view_bytes = self.training_view_bytes()
         required = require_suffix_memory(
             self.graph, self.optimization.layout, self.replay_blocks, 1 << 60,
-            free - publication_bytes - mirror_bytes - native_future, compact_optimizer=compact)
+            free - publication_bytes - mirror_bytes - native_future - view_bytes, compact_optimizer=compact)
         self.memory_plan = dict(free_before_learner=free, publication_bytes=publication_bytes,
                                 serving_mirror_bytes=mirror_bytes, native_future_reserved_bytes=native_future,
+                                training_view_bytes=view_bytes,
                                 compact_optimizer=compact, required=required)
         self.optimizer = SuffixOptimizer(self.optimization, self.worker, compact=compact)
         if self.checkpoint is None:
-            self.initial_master = master_from_shards(self.optimizer.layout, runner.head_directory)
+            self.initial_master = self.initial_parameters(runner.head_directory)
         self.workspace = TrainingWorkspace(self.training, self.worker)
+        self.initialize_training_views()
         if self.publication_reuses_execution:
             # render 新版本后，旧执行视图已无读者；发布借用它，不碰 FP32 master/moments。
             self.publication_buffers = [self.publication.allocate(self.worker, scratch=buffer[0])
@@ -434,6 +469,7 @@ class TP2Online:
             for tensor in (*self.optimizer.state[1:], *self.optimizer.candidate):
                 self.optimizer.run(self.optimizer.programs.zero, tensor)
             self.optimizer.render(0, self.optimizer.state[0])
+        self.restore_training_views()
         # Each experiment starts from the original inference banks. The optimizer
         # either restores the corresponding checkpoint or uses their exact values.
         self.runner.suffix = self.original
@@ -749,7 +785,7 @@ class TP2Online:
                          for item in replay)
         loss = 0.0
         audits = []
-        common = self.shared | self.optimizer.tensors()
+        common = self.shared | self.training_tensors()
         for item in replay:
             self.workspace.run(common | item["inputs"], past=item["position"], width=item["width"],
                                valid=item["valid"], normalizer=normalizer, gradients=self.optimizer.gradients)
@@ -779,7 +815,7 @@ class TP2Online:
             # Diagnostic only: a second replay reads the updated execution bank.
             # It does not accumulate gradients or advance Adam a second time.
             after = 0.0
-            common = self.shared | self.optimizer.tensors()
+            common = self.shared | self.training_tensors()
             audit_index = 0
             for item in replay:
                 self.workspace.run(common | item["inputs"], past=item["position"], width=item["width"],
@@ -826,6 +862,7 @@ class TP2Online:
         # serving workers alone here, including during background training.
         if self.version != expected_version:
             raise RuntimeError("stale TP2 head update")
+        layout, buffers = self.publication_inputs(layout, buffers)
         next_version = expected_version + 1
         if (next_version - self.initial_step) % self.publish_every:
             self.pack_stats = dict(publish_read_ns=0, publish_pack_ns=0)

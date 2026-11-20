@@ -1,0 +1,5593 @@
+{
+  "completed": true,
+  "head_step": 160,
+  "device_ids": [
+    0,
+    1
+  ],
+  "head_payload_sha256": "bb02eeffcf9e23b84ad2f8694bbe3fd9ab7e9406ee4c51d3f8eac6f99f565f82",
+  "head_shard_sha256": [
+    "99e68812f0588ffb7cfced35af03e4afe2b47937c0cbffa04bef7f1026bf77dc",
+    "972814751cb6f156cace79441f7e7fa649db895b416b80f16ea01c3f9e2b90c1"
+  ],
+  "visible_devices": "0,1",
+  "learner_device": 0,
+  "last_layers": 1,
+  "parameter_scope": "full",
+  "publication_backend": "device",
+  "physical_device_count": 2,
+  "kv_pages": 32,
+  "resource_policy": {
+    "version": "teacher-safe-gather-tail-packet-source2",
+    "ring_heap_bytes": [
+      536870912,
+      536870912,
+      536870912,
+      536870912
+    ],
+    "max_rows": 128,
+    "scope_payload_bounds_bytes": {
+      "draft_root": 92798976,
+      "target_root_with_pipe": 36536320,
+      "target_root_with_c16": 62420100,
+      "gdn_c16_declared_workspace": 25883780,
+      "root_bound": 95988416,
+      "baseline_root_bound": 92798976,
+      "packed_sampler_workspace": 3178944,
+      "teacher_packet_workspace": 10496,
+      "layer": 44957696,
+      "legacy_branch_with_wrap": 415203328,
+      "generated_ring3_payload": 0
+    },
+    "registered_model_programs": 1,
+    "all_visited_windows_bytes": 335544352,
+    "persistent_l3_domains": true,
+    "reset_persistent_windows": false,
+    "communication_epoch_policy": "program-owned-128-target-3-draft-retirement",
+    "domain_policy": "retain-all",
+    "retention_budget_bytes": 1073741824,
+    "communication_live_bytes": 335544352,
+    "maximum_window_bytes": 335544352,
+    "teacher_packet_bytes_per_rank": 10304,
+    "teacher_packet_host_bytes": 20608,
+    "scratch_bytes": 34787392,
+    "host_argument_staging_bytes": 1364800,
+    "reset_staging_reserve_bytes": 335544352,
+    "native_future_margin_bytes": 1073741824,
+    "future_bytes_after_prepare": 1780982720,
+    "orthrus_ring_floor_mib": 512,
+    "native_ring_heap_bytes": [
+      268435456,
+      268435456,
+      268435456,
+      268435456
+    ]
+  },
+  "learning_rate": 3e-05,
+  "background": false,
+  "overlap_sampling": false,
+  "benchmark_layout": "interleaved_ar_frozen_online",
+  "interleaved_order": "six_permutations_within_pair",
+  "primary_metric": "continuous_online_vs_target_only_AR",
+  "warmup_updates": 8,
+  "warm_update_stride": 16,
+  "warm_update_steps": 32,
+  "lr_schedule": "constant",
+  "objective": "kl",
+  "max_updates": null,
+  "focus_weight": 1,
+  "position_weighting": "uniform",
+  "draft_convolution": "parallel128",
+  "diagnostic_only": false,
+  "feedback_mode": "delayed",
+  "teacher_tokens": 7,
+  "teacher_temperature": 1.0,
+  "teacher_scaling": "host",
+  "teacher_targets": "greedy",
+  "audit_replay": false,
+  "online_update_policy": "continuous_two_stage",
+  "temperature": 0.0,
+  "seed": 743,
+  "sampler": "device_greedy",
+  "replay_blocks": 1,
+  "publish_every": 4,
+  "inner_steps": 1,
+  "stop_on_eos": true,
+  "candidates": 31,
+  "verify_chunk_size": 4,
+  "requests": 56,
+  "ar_checked_requests": 56,
+  "output_tokens_per_request": 128,
+  "prompts_sha256": "a0219fb9a8371b9bd91d975d4057223cfc48d763e5371dc56601722c2e1f03dc",
+  "holdout_sha256": "689e64376a99cca728382b81a067603d934fcfc98a35aafe285e94b9df127e1d",
+  "gather_feedback": true,
+  "optimizer_init": "fresh",
+  "results": {
+    "ar": {
+      "stream": {
+        "tokens": 6260,
+        "seconds": 315.73505644965917,
+        "tail_seconds": 0.0,
+        "tok_s": 19.82674990351632,
+        "tpot_median_ms": 54.65401832110621,
+        "accepted_per_round": null,
+        "stats": {
+          "proposed": 0,
+          "accepted": 0,
+          "rejected_rounds": 0,
+          "draft_ns": 0,
+          "verify_ns": 299674511181,
+          "rounds": 0,
+          "verify_calls": 0,
+          "restore_ns": 0,
+          "draft_batches": 0,
+          "draft_pair_batches": 0,
+          "feedback_ns": 0,
+          "update_ns": 0,
+          "publish_ns": 0,
+          "updates": 0,
+          "publications": 0,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "publish_upload_ns": 0,
+          "busy_updates": 0,
+          "feedback_skips": 0,
+          "sampling_update_wait_ns": 0
+        }
+      },
+      "holdout": {
+        "tokens": 883,
+        "seconds": 45.07891580904834,
+        "tail_seconds": 0.0,
+        "tok_s": 19.587871273132134,
+        "tpot_median_ms": 53.94459521111341,
+        "accepted_per_round": null,
+        "stats": {
+          "proposed": 0,
+          "accepted": 0,
+          "rejected_rounds": 0,
+          "draft_ns": 0,
+          "verify_ns": 42896040921,
+          "rounds": 0,
+          "verify_calls": 0,
+          "restore_ns": 0,
+          "draft_batches": 0,
+          "draft_pair_batches": 0,
+          "feedback_ns": 0,
+          "update_ns": 0,
+          "publish_ns": 0,
+          "updates": 0,
+          "publications": 0,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "publish_upload_ns": 0,
+          "busy_updates": 0,
+          "feedback_skips": 0,
+          "sampling_update_wait_ns": 0
+        }
+      },
+      "request_timeline": [
+        {
+          "requests": [
+            1,
+            2
+          ],
+          "seconds": 11.916714430088177,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11291082684,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            3,
+            4
+          ],
+          "seconds": 11.806277110939845,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11248036493,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 185,
+            "optimizer_version": 11,
+            "completed_version": 11,
+            "published_version": 8,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            5,
+            6
+          ],
+          "seconds": 11.572717058006674,
+          "output_tokens": [
+            128,
+            110
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11025193202,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 265,
+            "optimizer_version": 16,
+            "completed_version": 16,
+            "published_version": 16,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            7,
+            8
+          ],
+          "seconds": 11.877686124993488,
+          "output_tokens": [
+            120,
+            128
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11318755646,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 265,
+            "optimizer_version": 16,
+            "completed_version": 16,
+            "published_version": 16,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            9,
+            10
+          ],
+          "seconds": 9.811653734883294,
+          "output_tokens": [
+            40,
+            109
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 9332803379,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 393,
+            "optimizer_version": 24,
+            "completed_version": 24,
+            "published_version": 24,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            11,
+            12
+          ],
+          "seconds": 8.335841045947745,
+          "output_tokens": [
+            73,
+            86
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 7977768146,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 393,
+            "optimizer_version": 24,
+            "completed_version": 24,
+            "published_version": 24,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            13,
+            14
+          ],
+          "seconds": 11.904015554813668,
+          "output_tokens": [
+            128,
+            122
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11353492228,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 452,
+            "optimizer_version": 28,
+            "completed_version": 28,
+            "published_version": 28,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            15,
+            16
+          ],
+          "seconds": 11.692504063015804,
+          "output_tokens": [
+            128,
+            57
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11090559569,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 590,
+            "optimizer_version": 33,
+            "completed_version": 33,
+            "published_version": 32,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            17,
+            18
+          ],
+          "seconds": 11.07228379114531,
+          "output_tokens": [
+            120,
+            105
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 10473562273,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 666,
+            "optimizer_version": 34,
+            "completed_version": 34,
+            "published_version": 32,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            19,
+            20
+          ],
+          "seconds": 11.620461001992226,
+          "output_tokens": [
+            128,
+            98
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11018256501,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 666,
+            "optimizer_version": 34,
+            "completed_version": 34,
+            "published_version": 32,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            21,
+            22
+          ],
+          "seconds": 9.989337710896507,
+          "output_tokens": [
+            102,
+            106
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 9474597685,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 812,
+            "optimizer_version": 36,
+            "completed_version": 36,
+            "published_version": 36,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            23,
+            24
+          ],
+          "seconds": 12.033751564100385,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11471588415,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 812,
+            "optimizer_version": 36,
+            "completed_version": 36,
+            "published_version": 36,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            25,
+            26
+          ],
+          "seconds": 11.369774913182482,
+          "output_tokens": [
+            128,
+            90
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 10777015508,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 895,
+            "optimizer_version": 37,
+            "completed_version": 37,
+            "published_version": 36,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            27,
+            28
+          ],
+          "seconds": 11.755688223987818,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11181345306,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1053,
+            "optimizer_version": 40,
+            "completed_version": 40,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            29,
+            30
+          ],
+          "seconds": 11.897375379921868,
+          "output_tokens": [
+            101,
+            128
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11223028783,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1126,
+            "optimizer_version": 41,
+            "completed_version": 41,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            31,
+            32
+          ],
+          "seconds": 12.084382731933147,
+          "output_tokens": [
+            128,
+            90
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11384452097,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1126,
+            "optimizer_version": 41,
+            "completed_version": 41,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            33,
+            34
+          ],
+          "seconds": 7.7346717400942,
+          "output_tokens": [
+            73,
+            39
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 7399435186,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1236,
+            "optimizer_version": 43,
+            "completed_version": 43,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            35,
+            36
+          ],
+          "seconds": 12.199331593001261,
+          "output_tokens": [
+            128,
+            118
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11485533336,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1236,
+            "optimizer_version": 43,
+            "completed_version": 43,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            37,
+            38
+          ],
+          "seconds": 12.160508739994839,
+          "output_tokens": [
+            51,
+            128
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11403412929,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1315,
+            "optimizer_version": 44,
+            "completed_version": 44,
+            "published_version": 44,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            39,
+            40
+          ],
+          "seconds": 11.176799203036353,
+          "output_tokens": [
+            117,
+            114
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 10561159017,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1446,
+            "optimizer_version": 46,
+            "completed_version": 46,
+            "published_version": 44,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            41,
+            42
+          ],
+          "seconds": 11.93749957694672,
+          "output_tokens": [
+            124,
+            128
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11311927612,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1533,
+            "optimizer_version": 47,
+            "completed_version": 47,
+            "published_version": 44,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            43,
+            44
+          ],
+          "seconds": 11.088056290056556,
+          "output_tokens": [
+            120,
+            127
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 10502487623,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1533,
+            "optimizer_version": 47,
+            "completed_version": 47,
+            "published_version": 44,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            45,
+            46
+          ],
+          "seconds": 11.845380466198549,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11295485002,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1705,
+            "optimizer_version": 50,
+            "completed_version": 50,
+            "published_version": 48,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            47,
+            48
+          ],
+          "seconds": 11.757177961058915,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11213861124,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1705,
+            "optimizer_version": 50,
+            "completed_version": 50,
+            "published_version": 48,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            49,
+            50
+          ],
+          "seconds": 11.356838716194034,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 10803870280,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1791,
+            "optimizer_version": 51,
+            "completed_version": 51,
+            "published_version": 48,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            51,
+            52
+          ],
+          "seconds": 12.316130195045844,
+          "output_tokens": [
+            121,
+            128
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11646990780,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1956,
+            "optimizer_version": 54,
+            "completed_version": 54,
+            "published_version": 52,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            53,
+            54
+          ],
+          "seconds": 9.645902032032609,
+          "output_tokens": [
+            69,
+            101
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 9208836213,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 2008,
+            "optimizer_version": 55,
+            "completed_version": 55,
+            "published_version": 52,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            55,
+            56
+          ],
+          "seconds": 11.776295496150851,
+          "output_tokens": [
+            101,
+            128
+          ],
+          "stats": {
+            "proposed": 0,
+            "accepted": 0,
+            "rejected_rounds": 0,
+            "draft_ns": 0,
+            "verify_ns": 11199974164,
+            "rounds": 0,
+            "verify_calls": 0,
+            "restore_ns": 0,
+            "draft_batches": 0,
+            "draft_pair_batches": 0,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 2008,
+            "optimizer_version": 55,
+            "completed_version": 55,
+            "published_version": 52,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        }
+      ]
+    },
+    "frozen": {
+      "stream": {
+        "tokens": 6260,
+        "seconds": 295.10688600083813,
+        "tail_seconds": 0.0,
+        "tok_s": 21.212653099467904,
+        "tpot_median_ms": 49.793666487139106,
+        "accepted_per_round": 1.7267335766423357,
+        "stats": {
+          "proposed": 61976,
+          "accepted": 3785,
+          "rejected_rounds": 2147,
+          "draft_ns": 88971851979,
+          "verify_ns": 195274491140,
+          "rounds": 2192,
+          "verify_calls": 1250,
+          "restore_ns": 2718013361,
+          "draft_batches": 1235,
+          "draft_pair_batches": 957,
+          "feedback_ns": 0,
+          "update_ns": 0,
+          "publish_ns": 0,
+          "updates": 0,
+          "publications": 0,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "publish_upload_ns": 0,
+          "busy_updates": 0,
+          "feedback_skips": 0,
+          "sampling_update_wait_ns": 0
+        }
+      },
+      "holdout": {
+        "tokens": 883,
+        "seconds": 41.5083719920367,
+        "tail_seconds": 0.0,
+        "tok_s": 21.272816967367493,
+        "tpot_median_ms": 48.713356144034435,
+        "accepted_per_round": 1.8093645484949832,
+        "stats": {
+          "proposed": 8569,
+          "accepted": 541,
+          "rejected_rounds": 294,
+          "draft_ns": 12367232100,
+          "verify_ns": 27567307335,
+          "rounds": 299,
+          "verify_calls": 176,
+          "restore_ns": 384592544,
+          "draft_batches": 173,
+          "draft_pair_batches": 126,
+          "feedback_ns": 0,
+          "update_ns": 0,
+          "publish_ns": 0,
+          "updates": 0,
+          "publications": 0,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "publish_upload_ns": 0,
+          "busy_updates": 0,
+          "feedback_skips": 0,
+          "sampling_update_wait_ns": 0
+        }
+      },
+      "request_timeline": [
+        {
+          "requests": [
+            1,
+            2
+          ],
+          "seconds": 10.960311953909695,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2470,
+            "accepted": 162,
+            "rejected_rounds": 89,
+            "draft_ns": 3392997013,
+            "verify_ns": 7211476368,
+            "rounds": 91,
+            "verify_calls": 46,
+            "restore_ns": 93795269,
+            "draft_batches": 46,
+            "draft_pair_batches": 45,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 0,
+            "optimizer_version": 0,
+            "completed_version": 0,
+            "published_version": 0,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            3,
+            4
+          ],
+          "seconds": 11.339649718953297,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2557,
+            "accepted": 160,
+            "rejected_rounds": 92,
+            "draft_ns": 3528530121,
+            "verify_ns": 7403436565,
+            "rounds": 94,
+            "verify_calls": 48,
+            "restore_ns": 110429166,
+            "draft_batches": 47,
+            "draft_pair_batches": 47,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 185,
+            "optimizer_version": 11,
+            "completed_version": 11,
+            "published_version": 8,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            5,
+            6
+          ],
+          "seconds": 10.593719293130562,
+          "output_tokens": [
+            128,
+            110
+          ],
+          "stats": {
+            "proposed": 2287,
+            "accepted": 149,
+            "rejected_rounds": 79,
+            "draft_ns": 3233334999,
+            "verify_ns": 6986622551,
+            "rounds": 81,
+            "verify_calls": 45,
+            "restore_ns": 98557366,
+            "draft_batches": 45,
+            "draft_pair_batches": 36,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 185,
+            "optimizer_version": 11,
+            "completed_version": 11,
+            "published_version": 8,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            7,
+            8
+          ],
+          "seconds": 11.318366986932233,
+          "output_tokens": [
+            120,
+            128
+          ],
+          "stats": {
+            "proposed": 2387,
+            "accepted": 146,
+            "rejected_rounds": 84,
+            "draft_ns": 3447329441,
+            "verify_ns": 7456793687,
+            "rounds": 85,
+            "verify_calls": 48,
+            "restore_ns": 101579890,
+            "draft_batches": 48,
+            "draft_pair_batches": 37,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 346,
+            "optimizer_version": 21,
+            "completed_version": 21,
+            "published_version": 20,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            9,
+            10
+          ],
+          "seconds": 8.888650659937412,
+          "output_tokens": [
+            40,
+            109
+          ],
+          "stats": {
+            "proposed": 1487,
+            "accepted": 87,
+            "rejected_rounds": 47,
+            "draft_ns": 2548034715,
+            "verify_ns": 6011426368,
+            "rounds": 49,
+            "verify_calls": 39,
+            "restore_ns": 75993071,
+            "draft_batches": 39,
+            "draft_pair_batches": 10,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 393,
+            "optimizer_version": 24,
+            "completed_version": 24,
+            "published_version": 24,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            11,
+            12
+          ],
+          "seconds": 7.848920533899218,
+          "output_tokens": [
+            73,
+            86
+          ],
+          "stats": {
+            "proposed": 1767,
+            "accepted": 101,
+            "rejected_rounds": 55,
+            "draft_ns": 2249355596,
+            "verify_ns": 5349326908,
+            "rounds": 57,
+            "verify_calls": 31,
+            "restore_ns": 65366335,
+            "draft_batches": 31,
+            "draft_pair_batches": 26,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 393,
+            "optimizer_version": 24,
+            "completed_version": 24,
+            "published_version": 24,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            13,
+            14
+          ],
+          "seconds": 11.193322910927236,
+          "output_tokens": [
+            128,
+            122
+          ],
+          "stats": {
+            "proposed": 2410,
+            "accepted": 153,
+            "rejected_rounds": 86,
+            "draft_ns": 3397066468,
+            "verify_ns": 7398855607,
+            "rounds": 88,
+            "verify_calls": 46,
+            "restore_ns": 102892190,
+            "draft_batches": 46,
+            "draft_pair_batches": 42,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 452,
+            "optimizer_version": 28,
+            "completed_version": 28,
+            "published_version": 28,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            15,
+            16
+          ],
+          "seconds": 10.535291027044877,
+          "output_tokens": [
+            128,
+            57
+          ],
+          "stats": {
+            "proposed": 1564,
+            "accepted": 99,
+            "rejected_rounds": 55,
+            "draft_ns": 2910305785,
+            "verify_ns": 7208654647,
+            "rounds": 56,
+            "verify_calls": 46,
+            "restore_ns": 88631227,
+            "draft_batches": 45,
+            "draft_pair_batches": 11,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 590,
+            "optimizer_version": 33,
+            "completed_version": 33,
+            "published_version": 32,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            17,
+            18
+          ],
+          "seconds": 10.686497321119532,
+          "output_tokens": [
+            120,
+            105
+          ],
+          "stats": {
+            "proposed": 2477,
+            "accepted": 135,
+            "rejected_rounds": 82,
+            "draft_ns": 3373173520,
+            "verify_ns": 6913256635,
+            "rounds": 84,
+            "verify_calls": 48,
+            "restore_ns": 102794505,
+            "draft_batches": 47,
+            "draft_pair_batches": 37,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 590,
+            "optimizer_version": 33,
+            "completed_version": 33,
+            "published_version": 32,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            19,
+            20
+          ],
+          "seconds": 10.452664385084063,
+          "output_tokens": [
+            128,
+            98
+          ],
+          "stats": {
+            "proposed": 2246,
+            "accepted": 141,
+            "rejected_rounds": 76,
+            "draft_ns": 3211792460,
+            "verify_ns": 6872483195,
+            "rounds": 78,
+            "verify_calls": 45,
+            "restore_ns": 94047496,
+            "draft_batches": 45,
+            "draft_pair_batches": 33,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 742,
+            "optimizer_version": 35,
+            "completed_version": 35,
+            "published_version": 32,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            21,
+            22
+          ],
+          "seconds": 9.502952085109428,
+          "output_tokens": [
+            102,
+            106
+          ],
+          "stats": {
+            "proposed": 2330,
+            "accepted": 129,
+            "rejected_rounds": 74,
+            "draft_ns": 2909787888,
+            "verify_ns": 6233091375,
+            "rounds": 76,
+            "verify_calls": 39,
+            "restore_ns": 93158668,
+            "draft_batches": 39,
+            "draft_pair_batches": 37,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 812,
+            "optimizer_version": 36,
+            "completed_version": 36,
+            "published_version": 36,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            23,
+            24
+          ],
+          "seconds": 11.131248321849853,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2434,
+            "accepted": 160,
+            "rejected_rounds": 88,
+            "draft_ns": 3335591699,
+            "verify_ns": 7424882750,
+            "rounds": 89,
+            "verify_calls": 46,
+            "restore_ns": 98269801,
+            "draft_batches": 45,
+            "draft_pair_batches": 44,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 812,
+            "optimizer_version": 36,
+            "completed_version": 36,
+            "published_version": 36,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            25,
+            26
+          ],
+          "seconds": 10.252575733000413,
+          "output_tokens": [
+            128,
+            90
+          ],
+          "stats": {
+            "proposed": 2182,
+            "accepted": 136,
+            "rejected_rounds": 75,
+            "draft_ns": 3138733836,
+            "verify_ns": 6762787839,
+            "rounds": 76,
+            "verify_calls": 45,
+            "restore_ns": 96543972,
+            "draft_batches": 44,
+            "draft_pair_batches": 32,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 895,
+            "optimizer_version": 37,
+            "completed_version": 37,
+            "published_version": 36,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            27,
+            28
+          ],
+          "seconds": 11.508787967963144,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2526,
+            "accepted": 158,
+            "rejected_rounds": 92,
+            "draft_ns": 3635674816,
+            "verify_ns": 7426330666,
+            "rounds": 93,
+            "verify_calls": 50,
+            "restore_ns": 121415982,
+            "draft_batches": 49,
+            "draft_pair_batches": 44,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1053,
+            "optimizer_version": 40,
+            "completed_version": 40,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            29,
+            30
+          ],
+          "seconds": 11.10903141903691,
+          "output_tokens": [
+            101,
+            128
+          ],
+          "stats": {
+            "proposed": 2279,
+            "accepted": 138,
+            "rejected_rounds": 77,
+            "draft_ns": 3344676648,
+            "verify_ns": 7333970278,
+            "rounds": 79,
+            "verify_calls": 49,
+            "restore_ns": 108975770,
+            "draft_batches": 47,
+            "draft_pair_batches": 32,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1053,
+            "optimizer_version": 40,
+            "completed_version": 40,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            31,
+            32
+          ],
+          "seconds": 11.494777767919004,
+          "output_tokens": [
+            128,
+            90
+          ],
+          "stats": {
+            "proposed": 2145,
+            "accepted": 122,
+            "rejected_rounds": 76,
+            "draft_ns": 3461115418,
+            "verify_ns": 7557131253,
+            "rounds": 76,
+            "verify_calls": 51,
+            "restore_ns": 108137345,
+            "draft_batches": 50,
+            "draft_pair_batches": 26,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1198,
+            "optimizer_version": 42,
+            "completed_version": 42,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            33,
+            34
+          ],
+          "seconds": 7.36205110209994,
+          "output_tokens": [
+            73,
+            39
+          ],
+          "stats": {
+            "proposed": 1209,
+            "accepted": 67,
+            "rejected_rounds": 37,
+            "draft_ns": 1870086713,
+            "verify_ns": 5247303355,
+            "rounds": 39,
+            "verify_calls": 27,
+            "restore_ns": 58000503,
+            "draft_batches": 27,
+            "draft_pair_batches": 12,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1236,
+            "optimizer_version": 43,
+            "completed_version": 43,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            35,
+            36
+          ],
+          "seconds": 11.176851543132216,
+          "output_tokens": [
+            128,
+            118
+          ],
+          "stats": {
+            "proposed": 2323,
+            "accepted": 147,
+            "rejected_rounds": 81,
+            "draft_ns": 3268597147,
+            "verify_ns": 7425799256,
+            "rounds": 82,
+            "verify_calls": 44,
+            "restore_ns": 107043903,
+            "draft_batches": 44,
+            "draft_pair_batches": 38,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1236,
+            "optimizer_version": 43,
+            "completed_version": 43,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            37,
+            38
+          ],
+          "seconds": 10.747365195071325,
+          "output_tokens": [
+            51,
+            128
+          ],
+          "stats": {
+            "proposed": 1535,
+            "accepted": 98,
+            "rejected_rounds": 53,
+            "draft_ns": 2984146652,
+            "verify_ns": 7281608821,
+            "rounds": 55,
+            "verify_calls": 46,
+            "restore_ns": 92928683,
+            "draft_batches": 45,
+            "draft_pair_batches": 10,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1315,
+            "optimizer_version": 44,
+            "completed_version": 44,
+            "published_version": 44,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            39,
+            40
+          ],
+          "seconds": 10.286036313977093,
+          "output_tokens": [
+            117,
+            114
+          ],
+          "stats": {
+            "proposed": 2398,
+            "accepted": 142,
+            "rejected_rounds": 80,
+            "draft_ns": 3175508146,
+            "verify_ns": 6728623304,
+            "rounds": 82,
+            "verify_calls": 42,
+            "restore_ns": 101423189,
+            "draft_batches": 42,
+            "draft_pair_batches": 40,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1446,
+            "optimizer_version": 46,
+            "completed_version": 46,
+            "published_version": 44,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            41,
+            42
+          ],
+          "seconds": 11.458306202897802,
+          "output_tokens": [
+            124,
+            128
+          ],
+          "stats": {
+            "proposed": 2483,
+            "accepted": 147,
+            "rejected_rounds": 89,
+            "draft_ns": 3534859795,
+            "verify_ns": 7487946776,
+            "rounds": 91,
+            "verify_calls": 48,
+            "restore_ns": 106406743,
+            "draft_batches": 48,
+            "draft_pair_batches": 43,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1446,
+            "optimizer_version": 46,
+            "completed_version": 46,
+            "published_version": 44,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            43,
+            44
+          ],
+          "seconds": 10.908570993924513,
+          "output_tokens": [
+            120,
+            127
+          ],
+          "stats": {
+            "proposed": 2504,
+            "accepted": 151,
+            "rejected_rounds": 88,
+            "draft_ns": 3472080195,
+            "verify_ns": 6969731121,
+            "rounds": 90,
+            "verify_calls": 46,
+            "restore_ns": 124681101,
+            "draft_batches": 46,
+            "draft_pair_batches": 44,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1616,
+            "optimizer_version": 49,
+            "completed_version": 49,
+            "published_version": 48,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            45,
+            46
+          ],
+          "seconds": 11.321580993011594,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2609,
+            "accepted": 154,
+            "rejected_rounds": 94,
+            "draft_ns": 3583410965,
+            "verify_ns": 7386444817,
+            "rounds": 96,
+            "verify_calls": 49,
+            "restore_ns": 93935849,
+            "draft_batches": 49,
+            "draft_pair_batches": 47,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1705,
+            "optimizer_version": 50,
+            "completed_version": 50,
+            "published_version": 48,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            47,
+            48
+          ],
+          "seconds": 11.10554358898662,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2452,
+            "accepted": 156,
+            "rejected_rounds": 90,
+            "draft_ns": 3375198416,
+            "verify_ns": 7369379201,
+            "rounds": 91,
+            "verify_calls": 48,
+            "restore_ns": 96984914,
+            "draft_batches": 46,
+            "draft_pair_batches": 45,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1705,
+            "optimizer_version": 50,
+            "completed_version": 50,
+            "published_version": 48,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            49,
+            50
+          ],
+          "seconds": 10.749306218000129,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2411,
+            "accepted": 161,
+            "rejected_rounds": 87,
+            "draft_ns": 3373563891,
+            "verify_ns": 6987004354,
+            "rounds": 88,
+            "verify_calls": 48,
+            "restore_ns": 101456236,
+            "draft_batches": 46,
+            "draft_pair_batches": 42,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1791,
+            "optimizer_version": 51,
+            "completed_version": 51,
+            "published_version": 48,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            51,
+            52
+          ],
+          "seconds": 11.01723270304501,
+          "output_tokens": [
+            121,
+            128
+          ],
+          "stats": {
+            "proposed": 2424,
+            "accepted": 148,
+            "rejected_rounds": 86,
+            "draft_ns": 3350275144,
+            "verify_ns": 7248417949,
+            "rounds": 88,
+            "verify_calls": 45,
+            "restore_ns": 102072707,
+            "draft_batches": 45,
+            "draft_pair_batches": 43,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1956,
+            "optimizer_version": 54,
+            "completed_version": 54,
+            "published_version": 52,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            53,
+            54
+          ],
+          "seconds": 8.958399044815451,
+          "output_tokens": [
+            69,
+            101
+          ],
+          "stats": {
+            "proposed": 1731,
+            "accepted": 100,
+            "rejected_rounds": 54,
+            "draft_ns": 2470256306,
+            "verify_ns": 6175694343,
+            "rounds": 56,
+            "verify_calls": 37,
+            "restore_ns": 71085148,
+            "draft_batches": 36,
+            "draft_pair_batches": 20,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1956,
+            "optimizer_version": 54,
+            "completed_version": 54,
+            "published_version": 52,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            55,
+            56
+          ],
+          "seconds": 11.198874016059563,
+          "output_tokens": [
+            101,
+            128
+          ],
+          "stats": {
+            "proposed": 2349,
+            "accepted": 138,
+            "rejected_rounds": 81,
+            "draft_ns": 3396368186,
+            "verify_ns": 7416011151,
+            "rounds": 82,
+            "verify_calls": 48,
+            "restore_ns": 101406332,
+            "draft_batches": 48,
+            "draft_pair_batches": 34,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 2090,
+            "optimizer_version": 56,
+            "completed_version": 56,
+            "published_version": 56,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        }
+      ]
+    },
+    "64": {
+      "stream": {
+        "tokens": 6260,
+        "seconds": 292.3504693119321,
+        "tail_seconds": 0.0,
+        "tok_s": 21.41265589459583,
+        "tpot_median_ms": 48.7827940890748,
+        "accepted_per_round": 1.8559808612440192,
+        "stats": {
+          "proposed": 59264,
+          "accepted": 3879,
+          "rejected_rounds": 2053,
+          "draft_ns": 85160711795,
+          "verify_ns": 192514851078,
+          "rounds": 2090,
+          "verify_calls": 1197,
+          "restore_ns": 2562283389,
+          "draft_batches": 1178,
+          "draft_pair_batches": 912,
+          "feedback_ns": 398486827,
+          "update_ns": 3637763321,
+          "publish_ns": 666353038,
+          "updates": 56,
+          "publications": 14,
+          "publish_read_ns": 316310376,
+          "publish_pack_ns": 15640289,
+          "publish_upload_ns": 334402373,
+          "busy_updates": 0,
+          "feedback_skips": 0,
+          "sampling_update_wait_ns": 0
+        }
+      },
+      "holdout": {
+        "tokens": 883,
+        "seconds": 40.74872444407083,
+        "tail_seconds": 0.0,
+        "tok_s": 21.669389951382428,
+        "tpot_median_ms": 46.051541288397146,
+        "accepted_per_round": 1.9065743944636677,
+        "stats": {
+          "proposed": 8320,
+          "accepted": 551,
+          "rejected_rounds": 284,
+          "draft_ns": 12023965717,
+          "verify_ns": 27247727414,
+          "rounds": 289,
+          "verify_calls": 172,
+          "restore_ns": 360061054,
+          "draft_batches": 169,
+          "draft_pair_batches": 120,
+          "feedback_ns": 0,
+          "update_ns": 0,
+          "publish_ns": 0,
+          "updates": 0,
+          "publications": 0,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "publish_upload_ns": 0,
+          "busy_updates": 0,
+          "feedback_skips": 0,
+          "sampling_update_wait_ns": 0
+        }
+      },
+      "exact_greedy": true,
+      "updates": [
+        {
+          "round": 16,
+          "loss": 7.57123327255249,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3.75e-06,
+          "update_ns": 64750359,
+          "version": 1,
+          "gradient_norm": 43.76654815673828,
+          "clip_scale": 0.022848499938845634,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 32,
+          "loss": 3.294318199157715,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 7.5e-06,
+          "update_ns": 61243739,
+          "version": 2,
+          "gradient_norm": 17.792224884033203,
+          "clip_scale": 0.05620431900024414,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 48,
+          "loss": 4.399608612060547,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 1.125e-05,
+          "update_ns": 59887373,
+          "version": 3,
+          "gradient_norm": 30.312355041503906,
+          "clip_scale": 0.03298984840512276,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 64,
+          "loss": 4.94911003112793,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 1.5e-05,
+          "update_ns": 93771009,
+          "version": 4,
+          "gradient_norm": 27.89933967590332,
+          "clip_scale": 0.0358431413769722,
+          "publish_read_ns": 32200947,
+          "publish_pack_ns": 1389366,
+          "interval": 16,
+          "publish_upload_ns": 31557090,
+          "published_at_round": 64,
+          "publish_ns": 65147403
+        },
+        {
+          "round": 80,
+          "loss": 3.7575414180755615,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 1.8750000000000002e-05,
+          "update_ns": 61445861,
+          "version": 5,
+          "gradient_norm": 28.889915466308594,
+          "clip_scale": 0.03461415320634842,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 97,
+          "loss": 4.962334156036377,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 2.25e-05,
+          "update_ns": 58563018,
+          "version": 6,
+          "gradient_norm": 20.991085052490234,
+          "clip_scale": 0.04763926938176155,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 113,
+          "loss": 4.142879009246826,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 2.625e-05,
+          "update_ns": 58335016,
+          "version": 7,
+          "gradient_norm": 31.88624382019043,
+          "clip_scale": 0.03136148303747177,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 129,
+          "loss": 3.1437268257141113,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 81524740,
+          "version": 8,
+          "gradient_norm": 21.587661743164062,
+          "clip_scale": 0.04632275179028511,
+          "publish_read_ns": 21826999,
+          "publish_pack_ns": 1056192,
+          "interval": 16,
+          "publish_upload_ns": 22377485,
+          "published_at_round": 129,
+          "publish_ns": 45260676
+        },
+        {
+          "round": 145,
+          "loss": 4.254424571990967,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 59092894,
+          "version": 9,
+          "gradient_norm": 23.781614303588867,
+          "clip_scale": 0.042049288749694824,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 161,
+          "loss": 2.4827494621276855,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 57622067,
+          "version": 10,
+          "gradient_norm": 14.440397262573242,
+          "clip_scale": 0.06925016641616821,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 177,
+          "loss": 2.7674190998077393,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 58058162,
+          "version": 11,
+          "gradient_norm": 11.791552543640137,
+          "clip_scale": 0.08480646461248398,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 193,
+          "loss": 3.6473870277404785,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 78251042,
+          "version": 12,
+          "gradient_norm": 14.765874862670898,
+          "clip_scale": 0.06772371381521225,
+          "publish_read_ns": 20299971,
+          "publish_pack_ns": 992851,
+          "interval": 16,
+          "publish_upload_ns": 28769698,
+          "published_at_round": 193,
+          "publish_ns": 50062520
+        },
+        {
+          "round": 209,
+          "loss": 3.5510482788085938,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 56205301,
+          "version": 13,
+          "gradient_norm": 14.683978080749512,
+          "clip_scale": 0.0681014358997345,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 225,
+          "loss": 5.38020658493042,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 56130690,
+          "version": 14,
+          "gradient_norm": 17.619441986083984,
+          "clip_scale": 0.05675547942519188,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 241,
+          "loss": 3.9521825313568115,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 56628826,
+          "version": 15,
+          "gradient_norm": 16.081790924072266,
+          "clip_scale": 0.062182120978832245,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 256,
+          "loss": 3.354644775390625,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 82430260,
+          "version": 16,
+          "gradient_norm": 15.015125274658203,
+          "clip_scale": 0.06659950315952301,
+          "publish_read_ns": 24370028,
+          "publish_pack_ns": 1015902,
+          "interval": 16,
+          "publish_upload_ns": 21018460,
+          "published_at_round": 256,
+          "publish_ns": 46404390
+        },
+        {
+          "round": 273,
+          "loss": 2.830935001373291,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 60641731,
+          "version": 17,
+          "gradient_norm": 14.604924201965332,
+          "clip_scale": 0.0684700533747673,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 289,
+          "loss": 3.395670175552368,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 57728878,
+          "version": 18,
+          "gradient_norm": 19.91097068786621,
+          "clip_scale": 0.050223562866449356,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 305,
+          "loss": 4.324746608734131,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 57874090,
+          "version": 19,
+          "gradient_norm": 15.645416259765625,
+          "clip_scale": 0.06391648203134537,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 321,
+          "loss": 3.4511165618896484,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 84752916,
+          "version": 20,
+          "gradient_norm": 14.323158264160156,
+          "clip_scale": 0.06981699913740158,
+          "publish_read_ns": 25378079,
+          "publish_pack_ns": 1094863,
+          "interval": 16,
+          "publish_upload_ns": 22682388,
+          "published_at_round": 321,
+          "publish_ns": 49155330
+        },
+        {
+          "round": 336,
+          "loss": 2.362001895904541,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 60444029,
+          "version": 21,
+          "gradient_norm": 9.246734619140625,
+          "clip_scale": 0.10814627259969711,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 352,
+          "loss": 3.3881824016571045,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 56551645,
+          "version": 22,
+          "gradient_norm": 13.58649730682373,
+          "clip_scale": 0.07360248267650604,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 368,
+          "loss": 3.1514108180999756,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 56123540,
+          "version": 23,
+          "gradient_norm": 8.495366096496582,
+          "clip_scale": 0.11771121621131897,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 384,
+          "loss": 3.381930351257324,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 81400748,
+          "version": 24,
+          "gradient_norm": 12.485855102539062,
+          "clip_scale": 0.08009062707424164,
+          "publish_read_ns": 24212366,
+          "publish_pack_ns": 982241,
+          "interval": 16,
+          "publish_upload_ns": 24003024,
+          "published_at_round": 384,
+          "publish_ns": 49197631
+        },
+        {
+          "round": 401,
+          "loss": 1.9994562864303589,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 60034065,
+          "version": 25,
+          "gradient_norm": 8.799351692199707,
+          "clip_scale": 0.11364471912384033,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 417,
+          "loss": 2.3500375747680664,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 61520051,
+          "version": 26,
+          "gradient_norm": 14.86933422088623,
+          "clip_scale": 0.0672525018453598,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 433,
+          "loss": 3.5683200359344482,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 61184587,
+          "version": 27,
+          "gradient_norm": 13.03768539428711,
+          "clip_scale": 0.07670072466135025,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 448,
+          "loss": 2.715510606765747,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 81869714,
+          "version": 28,
+          "gradient_norm": 10.511317253112793,
+          "clip_scale": 0.09513554722070694,
+          "publish_read_ns": 21024899,
+          "publish_pack_ns": 1176834,
+          "interval": 16,
+          "publish_upload_ns": 21923820,
+          "published_at_round": 448,
+          "publish_ns": 44125553
+        },
+        {
+          "round": 464,
+          "loss": 1.8615336418151855,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 58149103,
+          "version": 29,
+          "gradient_norm": 8.35754680633545,
+          "clip_scale": 0.11965232342481613,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 480,
+          "loss": 2.7342610359191895,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 57276163,
+          "version": 30,
+          "gradient_norm": 10.765497207641602,
+          "clip_scale": 0.09288933873176575,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 496,
+          "loss": 3.906440496444702,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 57987132,
+          "version": 31,
+          "gradient_norm": 10.075368881225586,
+          "clip_scale": 0.09925194084644318,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 16,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 512,
+          "loss": 2.7003955841064453,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 83809786,
+          "version": 32,
+          "gradient_norm": 11.062055587768555,
+          "clip_scale": 0.09039910137653351,
+          "publish_read_ns": 25239318,
+          "publish_pack_ns": 1037342,
+          "interval": 16,
+          "publish_upload_ns": 21220072,
+          "published_at_round": 512,
+          "publish_ns": 47496732
+        },
+        {
+          "round": 576,
+          "loss": 2.1906683444976807,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 58589898,
+          "version": 33,
+          "gradient_norm": 10.009220123291016,
+          "clip_scale": 0.09990787506103516,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 640,
+          "loss": 5.260323524475098,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 58354366,
+          "version": 34,
+          "gradient_norm": 20.09242820739746,
+          "clip_scale": 0.04976998642086983,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 704,
+          "loss": 5.291598796844482,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 57574817,
+          "version": 35,
+          "gradient_norm": 21.444416046142578,
+          "clip_scale": 0.046632181853055954,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 768,
+          "loss": 2.3542540073394775,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 83930707,
+          "version": 36,
+          "gradient_norm": 13.382950782775879,
+          "clip_scale": 0.07472193241119385,
+          "publish_read_ns": 20198821,
+          "publish_pack_ns": 1300504,
+          "interval": 64,
+          "publish_upload_ns": 24749892,
+          "published_at_round": 768,
+          "publish_ns": 46249217
+        },
+        {
+          "round": 832,
+          "loss": 3.8391194343566895,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 58331395,
+          "version": 37,
+          "gradient_norm": 12.943826675415039,
+          "clip_scale": 0.07725690305233002,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 897,
+          "loss": 3.343414306640625,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 59284396,
+          "version": 38,
+          "gradient_norm": 10.037223815917969,
+          "clip_scale": 0.09962913393974304,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 960,
+          "loss": 2.0861120223999023,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 56986400,
+          "version": 39,
+          "gradient_norm": 8.650697708129883,
+          "clip_scale": 0.11559759825468063,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 1024,
+          "loss": 3.2815308570861816,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 75144697,
+          "version": 40,
+          "gradient_norm": 10.817642211914062,
+          "clip_scale": 0.09244158118963242,
+          "publish_read_ns": 17275887,
+          "publish_pack_ns": 996191,
+          "interval": 64,
+          "publish_upload_ns": 21924380,
+          "published_at_round": 1024,
+          "publish_ns": 40196458
+        },
+        {
+          "round": 1089,
+          "loss": 3.7306408882141113,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 58373075,
+          "version": 41,
+          "gradient_norm": 14.410577774047852,
+          "clip_scale": 0.06939346343278885,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 1152,
+          "loss": 2.4264917373657227,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 62963507,
+          "version": 42,
+          "gradient_norm": 12.014450073242188,
+          "clip_scale": 0.08323310315608978,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 1216,
+          "loss": 4.152369499206543,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 57215932,
+          "version": 43,
+          "gradient_norm": 12.194177627563477,
+          "clip_scale": 0.08200634270906448,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 1280,
+          "loss": 3.8506059646606445,
+          "supervised": 6,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 0,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 6,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 84302722,
+          "version": 44,
+          "gradient_norm": 14.161628723144531,
+          "clip_scale": 0.07061333954334259,
+          "publish_read_ns": 21305082,
+          "publish_pack_ns": 1238105,
+          "interval": 64,
+          "publish_upload_ns": 22475396,
+          "published_at_round": 1280,
+          "publish_ns": 45018583
+        },
+        {
+          "round": 1344,
+          "loss": 4.009980201721191,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 65899341,
+          "version": 45,
+          "gradient_norm": 18.096975326538086,
+          "clip_scale": 0.05525784566998482,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 1409,
+          "loss": 3.8116137981414795,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 59615559,
+          "version": 46,
+          "gradient_norm": 17.43366241455078,
+          "clip_scale": 0.05736028775572777,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 1472,
+          "loss": 2.9731109142303467,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 58103142,
+          "version": 47,
+          "gradient_norm": 8.042224884033203,
+          "clip_scale": 0.12434368580579758,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 1537,
+          "loss": 3.2633025646209717,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 75764644,
+          "version": 48,
+          "gradient_norm": 11.607137680053711,
+          "clip_scale": 0.08615387976169586,
+          "publish_read_ns": 16684811,
+          "publish_pack_ns": 1072682,
+          "interval": 64,
+          "publish_upload_ns": 14487585,
+          "published_at_round": 1537,
+          "publish_ns": 32245078
+        },
+        {
+          "round": 1601,
+          "loss": 3.1573917865753174,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 59518298,
+          "version": 49,
+          "gradient_norm": 16.528400421142578,
+          "clip_scale": 0.06050191819667816,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 1664,
+          "loss": 1.7695951461791992,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 61891466,
+          "version": 50,
+          "gradient_norm": 7.674561977386475,
+          "clip_scale": 0.1303005814552307,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 1729,
+          "loss": 2.0082662105560303,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 57641967,
+          "version": 51,
+          "gradient_norm": 8.695080757141113,
+          "clip_scale": 0.11500754952430725,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 1793,
+          "loss": 3.0147557258605957,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 84101149,
+          "version": 52,
+          "gradient_norm": 10.807689666748047,
+          "clip_scale": 0.09252670407295227,
+          "publish_read_ns": 24440469,
+          "publish_pack_ns": 1102132,
+          "interval": 64,
+          "publish_upload_ns": 29332145,
+          "published_at_round": 1793,
+          "publish_ns": 54874746
+        },
+        {
+          "round": 1857,
+          "loss": 2.6679611206054688,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 61271359,
+          "version": 53,
+          "gradient_norm": 18.078432083129883,
+          "clip_scale": 0.055314525961875916,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 1921,
+          "loss": 3.121429920196533,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 58396726,
+          "version": 54,
+          "gradient_norm": 10.701068878173828,
+          "clip_scale": 0.09344860166311264,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 1984,
+          "loss": 2.9444470405578613,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 58195314,
+          "version": 55,
+          "gradient_norm": 12.03159236907959,
+          "clip_scale": 0.08311451226472855,
+          "publish_read_ns": 0,
+          "publish_pack_ns": 0,
+          "interval": 64,
+          "publish_upload_ns": 0,
+          "published_at_round": null,
+          "publish_ns": 0
+        },
+        {
+          "round": 2048,
+          "loss": 2.454289436340332,
+          "supervised": 7,
+          "feedback_blocks": 1,
+          "full_feedback_blocks": 1,
+          "first_rejections": [
+            null
+          ],
+          "supervision_weight": 7,
+          "replay_audits": [],
+          "learning_rate": 3e-05,
+          "update_ns": 85023909,
+          "version": 56,
+          "gradient_norm": 10.601086616516113,
+          "clip_scale": 0.09432994574308395,
+          "publish_read_ns": 21852699,
+          "publish_pack_ns": 1185084,
+          "interval": 64,
+          "publish_upload_ns": 27880938,
+          "published_at_round": 2048,
+          "publish_ns": 50918721
+        }
+      ],
+      "skipped_busy": 0,
+      "skipped_feedback": 0,
+      "supervised_positions": 391,
+      "training_position_exposures": 391,
+      "paired_seconds": [
+        [
+          10.960311953909695,
+          11.454932973952964
+        ],
+        [
+          11.339649718953297,
+          11.757252561161295
+        ],
+        [
+          10.593719293130562,
+          11.140351267065853
+        ],
+        [
+          11.318366986932233,
+          11.501345044001937
+        ],
+        [
+          8.888650659937412,
+          8.792813576990739
+        ],
+        [
+          7.848920533899218,
+          8.321519862860441
+        ],
+        [
+          11.193322910927236,
+          11.243081058142707
+        ],
+        [
+          10.535291027044877,
+          10.36934930505231
+        ],
+        [
+          10.686497321119532,
+          10.258818584028631
+        ],
+        [
+          10.452664385084063,
+          10.270128084113821
+        ],
+        [
+          9.502952085109428,
+          9.010850813938305
+        ],
+        [
+          11.131248321849853,
+          11.112088494002819
+        ],
+        [
+          10.252575733000413,
+          10.103591034887359
+        ],
+        [
+          11.508787967963144,
+          10.596446923911572
+        ],
+        [
+          11.10903141903691,
+          10.667499393923208
+        ],
+        [
+          11.494777767919004,
+          11.242925786180422
+        ],
+        [
+          7.36205110209994,
+          7.08961475500837
+        ],
+        [
+          11.176851543132216,
+          11.162957414984703
+        ],
+        [
+          10.747365195071325,
+          10.562202782835811
+        ],
+        [
+          10.286036313977093,
+          10.279034605016932
+        ],
+        [
+          11.458306202897802,
+          11.190242335898802
+        ],
+        [
+          10.908570993924513,
+          10.336463490035385
+        ],
+        [
+          11.321580993011594,
+          11.15280588902533
+        ],
+        [
+          11.10554358898662,
+          10.909684255952016
+        ],
+        [
+          10.749306218000129,
+          10.758314409991726
+        ],
+        [
+          11.01723270304501,
+          10.91873435000889
+        ],
+        [
+          8.958399044815451,
+          8.888805811991915
+        ],
+        [
+          11.198874016059563,
+          11.25861444696784
+        ]
+      ],
+      "published_version": 56,
+      "optimizer_version": 56,
+      "update_schedule": {
+        "policy": "continuous_two_stage",
+        "stride": 64,
+        "max_updates": null,
+        "rounds": 2090,
+        "scheduled_updates": 56,
+        "warm_update_stride": 16,
+        "warm_update_steps": 32,
+        "completed_updates": 56,
+        "skipped_busy": 0,
+        "completed_update_events": 56,
+        "inner_steps": 1,
+        "skipped_feedback": 0,
+        "last_update_round": 2048,
+        "rounds_after_last_update": 42,
+        "update_limit_reached": false
+      },
+      "request_timeline": [
+        {
+          "requests": [
+            1,
+            2
+          ],
+          "seconds": 11.454932973952964,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2470,
+            "accepted": 162,
+            "rejected_rounds": 89,
+            "draft_ns": 3461387036,
+            "verify_ns": 7216547752,
+            "rounds": 91,
+            "verify_calls": 46,
+            "restore_ns": 101329921,
+            "draft_batches": 46,
+            "draft_pair_batches": 45,
+            "feedback_ns": 46304327,
+            "update_ns": 341098341,
+            "publish_ns": 65147403,
+            "updates": 5,
+            "publications": 1,
+            "publish_read_ns": 32200947,
+            "publish_pack_ns": 1389366,
+            "publish_upload_ns": 31557090,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 91,
+            "optimizer_version": 5,
+            "completed_version": 5,
+            "published_version": 4,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            3,
+            4
+          ],
+          "seconds": 11.757252561161295,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2540,
+            "accepted": 160,
+            "rejected_rounds": 92,
+            "draft_ns": 3565753912,
+            "verify_ns": 7394970651,
+            "rounds": 94,
+            "verify_calls": 48,
+            "restore_ns": 103302648,
+            "draft_batches": 48,
+            "draft_pair_batches": 46,
+            "feedback_ns": 40599761,
+            "update_ns": 373195897,
+            "publish_ns": 45260676,
+            "updates": 6,
+            "publications": 1,
+            "publish_read_ns": 21826999,
+            "publish_pack_ns": 1056192,
+            "publish_upload_ns": 22377485,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 185,
+            "optimizer_version": 11,
+            "completed_version": 11,
+            "published_version": 8,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            5,
+            6
+          ],
+          "seconds": 11.140351267065853,
+          "output_tokens": [
+            128,
+            110
+          ],
+          "stats": {
+            "proposed": 2265,
+            "accepted": 149,
+            "rejected_rounds": 79,
+            "draft_ns": 3270581182,
+            "verify_ns": 7121276299,
+            "rounds": 80,
+            "verify_calls": 48,
+            "restore_ns": 93591711,
+            "draft_batches": 46,
+            "draft_pair_batches": 34,
+            "feedback_ns": 32929433,
+            "update_ns": 329646119,
+            "publish_ns": 96466910,
+            "updates": 5,
+            "publications": 2,
+            "publish_read_ns": 44669999,
+            "publish_pack_ns": 2008753,
+            "publish_upload_ns": 49788158,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 265,
+            "optimizer_version": 16,
+            "completed_version": 16,
+            "published_version": 16,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            7,
+            8
+          ],
+          "seconds": 11.501345044001937,
+          "output_tokens": [
+            120,
+            128
+          ],
+          "stats": {
+            "proposed": 2265,
+            "accepted": 150,
+            "rejected_rounds": 80,
+            "draft_ns": 3300945044,
+            "verify_ns": 7438556346,
+            "rounds": 81,
+            "verify_calls": 48,
+            "restore_ns": 95828993,
+            "draft_batches": 46,
+            "draft_pair_batches": 35,
+            "feedback_ns": 34546160,
+            "update_ns": 321441644,
+            "publish_ns": 49155330,
+            "updates": 5,
+            "publications": 1,
+            "publish_read_ns": 25378079,
+            "publish_pack_ns": 1094863,
+            "publish_upload_ns": 22682388,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 346,
+            "optimizer_version": 21,
+            "completed_version": 21,
+            "published_version": 20,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            9,
+            10
+          ],
+          "seconds": 8.792813576990739,
+          "output_tokens": [
+            40,
+            109
+          ],
+          "stats": {
+            "proposed": 1427,
+            "accepted": 89,
+            "rejected_rounds": 45,
+            "draft_ns": 2407391141,
+            "verify_ns": 5870669165,
+            "rounds": 47,
+            "verify_calls": 37,
+            "restore_ns": 60927589,
+            "draft_batches": 37,
+            "draft_pair_batches": 10,
+            "feedback_ns": 19229510,
+            "update_ns": 194075933,
+            "publish_ns": 49197631,
+            "updates": 3,
+            "publications": 1,
+            "publish_read_ns": 24212366,
+            "publish_pack_ns": 982241,
+            "publish_upload_ns": 24003024,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 393,
+            "optimizer_version": 24,
+            "completed_version": 24,
+            "published_version": 24,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            11,
+            12
+          ],
+          "seconds": 8.321519862860441,
+          "output_tokens": [
+            73,
+            86
+          ],
+          "stats": {
+            "proposed": 1829,
+            "accepted": 99,
+            "rejected_rounds": 57,
+            "draft_ns": 2341793997,
+            "verify_ns": 5414511910,
+            "rounds": 59,
+            "verify_calls": 32,
+            "restore_ns": 68410115,
+            "draft_batches": 32,
+            "draft_pair_batches": 27,
+            "feedback_ns": 27991319,
+            "update_ns": 264608417,
+            "publish_ns": 44125553,
+            "updates": 4,
+            "publications": 1,
+            "publish_read_ns": 21024899,
+            "publish_pack_ns": 1176834,
+            "publish_upload_ns": 21923820,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 452,
+            "optimizer_version": 28,
+            "completed_version": 28,
+            "published_version": 28,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            13,
+            14
+          ],
+          "seconds": 11.243081058142707,
+          "output_tokens": [
+            128,
+            122
+          ],
+          "stats": {
+            "proposed": 2364,
+            "accepted": 155,
+            "rejected_rounds": 84,
+            "draft_ns": 3266939202,
+            "verify_ns": 7309502139,
+            "rounds": 86,
+            "verify_calls": 44,
+            "restore_ns": 94014530,
+            "draft_batches": 44,
+            "draft_pair_batches": 42,
+            "feedback_ns": 27737605,
+            "update_ns": 257222184,
+            "publish_ns": 47496732,
+            "updates": 4,
+            "publications": 1,
+            "publish_read_ns": 25239318,
+            "publish_pack_ns": 1037342,
+            "publish_upload_ns": 21220072,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 538,
+            "optimizer_version": 32,
+            "completed_version": 32,
+            "published_version": 32,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            15,
+            16
+          ],
+          "seconds": 10.36934930505231,
+          "output_tokens": [
+            128,
+            57
+          ],
+          "stats": {
+            "proposed": 1463,
+            "accepted": 103,
+            "rejected_rounds": 51,
+            "draft_ns": 2784416287,
+            "verify_ns": 7113690006,
+            "rounds": 52,
+            "verify_calls": 44,
+            "restore_ns": 76758463,
+            "draft_batches": 43,
+            "draft_pair_batches": 9,
+            "feedback_ns": 7300173,
+            "update_ns": 58589898,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 590,
+            "optimizer_version": 33,
+            "completed_version": 33,
+            "published_version": 32,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            17,
+            18
+          ],
+          "seconds": 10.258818584028631,
+          "output_tokens": [
+            120,
+            105
+          ],
+          "stats": {
+            "proposed": 2248,
+            "accepted": 143,
+            "rejected_rounds": 74,
+            "draft_ns": 3072124701,
+            "verify_ns": 6724950912,
+            "rounds": 76,
+            "verify_calls": 44,
+            "restore_ns": 98951444,
+            "draft_batches": 42,
+            "draft_pair_batches": 34,
+            "feedback_ns": 7352364,
+            "update_ns": 58354366,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 666,
+            "optimizer_version": 34,
+            "completed_version": 34,
+            "published_version": 32,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            19,
+            20
+          ],
+          "seconds": 10.270128084113821,
+          "output_tokens": [
+            128,
+            98
+          ],
+          "stats": {
+            "proposed": 2188,
+            "accepted": 143,
+            "rejected_rounds": 74,
+            "draft_ns": 3019487875,
+            "verify_ns": 6845066774,
+            "rounds": 76,
+            "verify_calls": 43,
+            "restore_ns": 85761294,
+            "draft_batches": 42,
+            "draft_pair_batches": 34,
+            "feedback_ns": 6489414,
+            "update_ns": 57574817,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 742,
+            "optimizer_version": 35,
+            "completed_version": 35,
+            "published_version": 32,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            21,
+            22
+          ],
+          "seconds": 9.010850813938305,
+          "output_tokens": [
+            102,
+            106
+          ],
+          "stats": {
+            "proposed": 2151,
+            "accepted": 135,
+            "rejected_rounds": 68,
+            "draft_ns": 2615866502,
+            "verify_ns": 5983380625,
+            "rounds": 70,
+            "verify_calls": 36,
+            "restore_ns": 77325712,
+            "draft_batches": 35,
+            "draft_pair_batches": 35,
+            "feedback_ns": 7530724,
+            "update_ns": 83930707,
+            "publish_ns": 46249217,
+            "updates": 1,
+            "publications": 1,
+            "publish_read_ns": 20198821,
+            "publish_pack_ns": 1300504,
+            "publish_upload_ns": 24749892,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 812,
+            "optimizer_version": 36,
+            "completed_version": 36,
+            "published_version": 36,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            23,
+            24
+          ],
+          "seconds": 11.112088494002819,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2286,
+            "accepted": 166,
+            "rejected_rounds": 82,
+            "draft_ns": 3194859365,
+            "verify_ns": 7467336565,
+            "rounds": 83,
+            "verify_calls": 45,
+            "restore_ns": 106963916,
+            "draft_batches": 43,
+            "draft_pair_batches": 40,
+            "feedback_ns": 7018000,
+            "update_ns": 58331395,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 895,
+            "optimizer_version": 37,
+            "completed_version": 37,
+            "published_version": 36,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            25,
+            26
+          ],
+          "seconds": 10.103591034887359,
+          "output_tokens": [
+            128,
+            90
+          ],
+          "stats": {
+            "proposed": 2102,
+            "accepted": 139,
+            "rejected_rounds": 72,
+            "draft_ns": 3037253894,
+            "verify_ns": 6620205804,
+            "rounds": 73,
+            "verify_calls": 43,
+            "restore_ns": 82152788,
+            "draft_batches": 43,
+            "draft_pair_batches": 30,
+            "feedback_ns": 12550804,
+            "update_ns": 116270796,
+            "publish_ns": 0,
+            "updates": 2,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 968,
+            "optimizer_version": 39,
+            "completed_version": 39,
+            "published_version": 36,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            27,
+            28
+          ],
+          "seconds": 10.596446923911572,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2320,
+            "accepted": 166,
+            "rejected_rounds": 84,
+            "draft_ns": 3194404793,
+            "verify_ns": 6961708861,
+            "rounds": 85,
+            "verify_calls": 43,
+            "restore_ns": 93289033,
+            "draft_batches": 43,
+            "draft_pair_batches": 42,
+            "feedback_ns": 7121139,
+            "update_ns": 75144697,
+            "publish_ns": 40196458,
+            "updates": 1,
+            "publications": 1,
+            "publish_read_ns": 17275887,
+            "publish_pack_ns": 996191,
+            "publish_upload_ns": 21924380,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1053,
+            "optimizer_version": 40,
+            "completed_version": 40,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            29,
+            30
+          ],
+          "seconds": 10.667499393923208,
+          "output_tokens": [
+            101,
+            128
+          ],
+          "stats": {
+            "proposed": 2098,
+            "accepted": 144,
+            "rejected_rounds": 71,
+            "draft_ns": 3112808791,
+            "verify_ns": 7092853178,
+            "rounds": 73,
+            "verify_calls": 45,
+            "restore_ns": 91340288,
+            "draft_batches": 44,
+            "draft_pair_batches": 29,
+            "feedback_ns": 6777897,
+            "update_ns": 58373075,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1126,
+            "optimizer_version": 41,
+            "completed_version": 41,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            31,
+            32
+          ],
+          "seconds": 11.242925786180422,
+          "output_tokens": [
+            128,
+            90
+          ],
+          "stats": {
+            "proposed": 2022,
+            "accepted": 127,
+            "rejected_rounds": 71,
+            "draft_ns": 3315428223,
+            "verify_ns": 7374579454,
+            "rounds": 72,
+            "verify_calls": 46,
+            "restore_ns": 118761950,
+            "draft_batches": 46,
+            "draft_pair_batches": 26,
+            "feedback_ns": 8057174,
+            "update_ns": 62963507,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1198,
+            "optimizer_version": 42,
+            "completed_version": 42,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            33,
+            34
+          ],
+          "seconds": 7.08961475500837,
+          "output_tokens": [
+            73,
+            39
+          ],
+          "stats": {
+            "proposed": 1178,
+            "accepted": 68,
+            "rejected_rounds": 36,
+            "draft_ns": 1774176631,
+            "verify_ns": 5010033321,
+            "rounds": 38,
+            "verify_calls": 26,
+            "restore_ns": 53609207,
+            "draft_batches": 26,
+            "draft_pair_batches": 12,
+            "feedback_ns": 6602746,
+            "update_ns": 57215932,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1236,
+            "optimizer_version": 43,
+            "completed_version": 43,
+            "published_version": 40,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            35,
+            36
+          ],
+          "seconds": 11.162957414984703,
+          "output_tokens": [
+            128,
+            118
+          ],
+          "stats": {
+            "proposed": 2189,
+            "accepted": 151,
+            "rejected_rounds": 77,
+            "draft_ns": 3204339380,
+            "verify_ns": 7392143172,
+            "rounds": 79,
+            "verify_calls": 43,
+            "restore_ns": 101368005,
+            "draft_batches": 43,
+            "draft_pair_batches": 36,
+            "feedback_ns": 7839769,
+            "update_ns": 84302722,
+            "publish_ns": 45018583,
+            "updates": 1,
+            "publications": 1,
+            "publish_read_ns": 21305082,
+            "publish_pack_ns": 1238105,
+            "publish_upload_ns": 22475396,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1315,
+            "optimizer_version": 44,
+            "completed_version": 44,
+            "published_version": 44,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            37,
+            38
+          ],
+          "seconds": 10.562202782835811,
+          "output_tokens": [
+            51,
+            128
+          ],
+          "stats": {
+            "proposed": 1465,
+            "accepted": 100,
+            "rejected_rounds": 51,
+            "draft_ns": 2853623469,
+            "verify_ns": 7181899429,
+            "rounds": 52,
+            "verify_calls": 44,
+            "restore_ns": 93716267,
+            "draft_batches": 43,
+            "draft_pair_batches": 9,
+            "feedback_ns": 7311943,
+            "update_ns": 65899341,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1367,
+            "optimizer_version": 45,
+            "completed_version": 45,
+            "published_version": 44,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            39,
+            40
+          ],
+          "seconds": 10.279034605016932,
+          "output_tokens": [
+            117,
+            114
+          ],
+          "stats": {
+            "proposed": 2332,
+            "accepted": 143,
+            "rejected_rounds": 79,
+            "draft_ns": 3065500584,
+            "verify_ns": 6742784155,
+            "rounds": 79,
+            "verify_calls": 42,
+            "restore_ns": 100620435,
+            "draft_batches": 41,
+            "draft_pair_batches": 38,
+            "feedback_ns": 7464784,
+            "update_ns": 59615559,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1446,
+            "optimizer_version": 46,
+            "completed_version": 46,
+            "published_version": 44,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            41,
+            42
+          ],
+          "seconds": 11.190242335898802,
+          "output_tokens": [
+            124,
+            128
+          ],
+          "stats": {
+            "proposed": 2419,
+            "accepted": 149,
+            "rejected_rounds": 87,
+            "draft_ns": 3318306230,
+            "verify_ns": 7374946853,
+            "rounds": 87,
+            "verify_calls": 45,
+            "restore_ns": 99920010,
+            "draft_batches": 45,
+            "draft_pair_batches": 42,
+            "feedback_ns": 6114299,
+            "update_ns": 58103142,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1533,
+            "optimizer_version": 47,
+            "completed_version": 47,
+            "published_version": 44,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            43,
+            44
+          ],
+          "seconds": 10.336463490035385,
+          "output_tokens": [
+            120,
+            127
+          ],
+          "stats": {
+            "proposed": 2331,
+            "accepted": 156,
+            "rejected_rounds": 83,
+            "draft_ns": 3173340810,
+            "verify_ns": 6619989951,
+            "rounds": 83,
+            "verify_calls": 42,
+            "restore_ns": 108213865,
+            "draft_batches": 42,
+            "draft_pair_batches": 41,
+            "feedback_ns": 13860219,
+            "update_ns": 135282942,
+            "publish_ns": 32245078,
+            "updates": 2,
+            "publications": 1,
+            "publish_read_ns": 16684811,
+            "publish_pack_ns": 1072682,
+            "publish_upload_ns": 14487585,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1616,
+            "optimizer_version": 49,
+            "completed_version": 49,
+            "published_version": 48,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            45,
+            46
+          ],
+          "seconds": 11.15280588902533,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2447,
+            "accepted": 159,
+            "rejected_rounds": 89,
+            "draft_ns": 3354702667,
+            "verify_ns": 7350375178,
+            "rounds": 89,
+            "verify_calls": 45,
+            "restore_ns": 100073415,
+            "draft_batches": 45,
+            "draft_pair_batches": 44,
+            "feedback_ns": 6917129,
+            "update_ns": 61891466,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1705,
+            "optimizer_version": 50,
+            "completed_version": 50,
+            "published_version": 48,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            47,
+            48
+          ],
+          "seconds": 10.909684255952016,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2361,
+            "accepted": 162,
+            "rejected_rounds": 84,
+            "draft_ns": 3240804206,
+            "verify_ns": 7239175455,
+            "rounds": 86,
+            "verify_calls": 45,
+            "restore_ns": 92512298,
+            "draft_batches": 44,
+            "draft_pair_batches": 42,
+            "feedback_ns": 6809308,
+            "update_ns": 57641967,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1791,
+            "optimizer_version": 51,
+            "completed_version": 51,
+            "published_version": 48,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            49,
+            50
+          ],
+          "seconds": 10.758314409991726,
+          "output_tokens": [
+            128,
+            128
+          ],
+          "stats": {
+            "proposed": 2312,
+            "accepted": 166,
+            "rejected_rounds": 82,
+            "draft_ns": 3225546453,
+            "verify_ns": 6940417690,
+            "rounds": 84,
+            "verify_calls": 46,
+            "restore_ns": 101777191,
+            "draft_batches": 43,
+            "draft_pair_batches": 41,
+            "feedback_ns": 15634456,
+            "update_ns": 145372508,
+            "publish_ns": 54874746,
+            "updates": 2,
+            "publications": 1,
+            "publish_read_ns": 24440469,
+            "publish_pack_ns": 1102132,
+            "publish_upload_ns": 29332145,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1875,
+            "optimizer_version": 53,
+            "completed_version": 53,
+            "published_version": 52,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            51,
+            52
+          ],
+          "seconds": 10.91873435000889,
+          "output_tokens": [
+            121,
+            128
+          ],
+          "stats": {
+            "proposed": 2258,
+            "accepted": 153,
+            "rejected_rounds": 81,
+            "draft_ns": 3186867273,
+            "verify_ns": 7236191555,
+            "rounds": 81,
+            "verify_calls": 43,
+            "restore_ns": 99354170,
+            "draft_batches": 43,
+            "draft_pair_batches": 38,
+            "feedback_ns": 6984298,
+            "update_ns": 58396726,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 1956,
+            "optimizer_version": 54,
+            "completed_version": 54,
+            "published_version": 52,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            53,
+            54
+          ],
+          "seconds": 8.888805811991915,
+          "output_tokens": [
+            69,
+            101
+          ],
+          "stats": {
+            "proposed": 1609,
+            "accepted": 103,
+            "rejected_rounds": 51,
+            "draft_ns": 2377772395,
+            "verify_ns": 6145092746,
+            "rounds": 52,
+            "verify_calls": 36,
+            "restore_ns": 65967532,
+            "draft_batches": 35,
+            "draft_pair_batches": 17,
+            "feedback_ns": 6330422,
+            "update_ns": 58195314,
+            "publish_ns": 0,
+            "updates": 1,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 2008,
+            "optimizer_version": 55,
+            "completed_version": 55,
+            "published_version": 52,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        },
+        {
+          "requests": [
+            55,
+            56
+          ],
+          "seconds": 11.25861444696784,
+          "output_tokens": [
+            101,
+            128
+          ],
+          "stats": {
+            "proposed": 2325,
+            "accepted": 139,
+            "rejected_rounds": 80,
+            "draft_ns": 3424289752,
+            "verify_ns": 7331995132,
+            "rounds": 82,
+            "verify_calls": 48,
+            "restore_ns": 96440599,
+            "draft_batches": 48,
+            "draft_pair_batches": 34,
+            "feedback_ns": 7081650,
+            "update_ns": 85023909,
+            "publish_ns": 50918721,
+            "updates": 1,
+            "publications": 1,
+            "publish_read_ns": 21852699,
+            "publish_pack_ns": 1185084,
+            "publish_upload_ns": 27880938,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          },
+          "learner": {
+            "rounds": 2090,
+            "optimizer_version": 56,
+            "completed_version": 56,
+            "published_version": 56,
+            "update_limit_reached": false,
+            "pending_update": false,
+            "queued_update": false
+          }
+        }
+      ],
+      "net_increment": 0.00942846678301379,
+      "net_increment_vs_ar": 0.0799881977024508,
+      "learned_replay": {
+        "stream": {
+          "tokens": 6260,
+          "seconds": 284.6075025610626,
+          "tail_seconds": 0.0,
+          "tok_s": 21.99520372326417,
+          "tpot_median_ms": 46.362018203037124,
+          "accepted_per_round": 1.9311701081612587,
+          "stats": {
+            "proposed": 57818,
+            "accepted": 3928,
+            "rejected_rounds": 2005,
+            "draft_ns": 82931549888,
+            "verify_ns": 191849940127,
+            "rounds": 2034,
+            "verify_calls": 1172,
+            "restore_ns": 2405809015,
+            "draft_batches": 1149,
+            "draft_pair_batches": 885,
+            "feedback_ns": 0,
+            "update_ns": 0,
+            "publish_ns": 0,
+            "updates": 0,
+            "publications": 0,
+            "publish_read_ns": 0,
+            "publish_pack_ns": 0,
+            "publish_upload_ns": 0,
+            "busy_updates": 0,
+            "feedback_skips": 0,
+            "sampling_update_wait_ns": 0
+          }
+        },
+        "exact_greedy": true,
+        "paired_seconds": [
+          [
+            10.960311953909695,
+            11.342547053005546
+          ],
+          [
+            11.339649718953297,
+            11.362881855107844
+          ],
+          [
+            10.593719293130562,
+            10.628831268986687
+          ],
+          [
+            11.318366986932233,
+            11.175758972996846
+          ],
+          [
+            8.888650659937412,
+            8.68186288094148
+          ],
+          [
+            7.848920533899218,
+            7.518253060057759
+          ],
+          [
+            11.193322910927236,
+            10.664172411896288
+          ],
+          [
+            10.535291027044877,
+            10.160959167173132
+          ],
+          [
+            10.686497321119532,
+            10.139889936894178
+          ],
+          [
+            10.452664385084063,
+            10.21498407307081
+          ],
+          [
+            9.502952085109428,
+            9.027071855962276
+          ],
+          [
+            11.131248321849853,
+            10.820428811945021
+          ],
+          [
+            10.252575733000413,
+            10.066634092945606
+          ],
+          [
+            11.508787967963144,
+            10.641787177184597
+          ],
+          [
+            11.10903141903691,
+            10.284208331024274
+          ],
+          [
+            11.494777767919004,
+            10.507296344963834
+          ],
+          [
+            7.36205110209994,
+            6.808202497893944
+          ],
+          [
+            11.176851543132216,
+            10.769830576144159
+          ],
+          [
+            10.747365195071325,
+            10.57540132990107
+          ],
+          [
+            10.286036313977093,
+            9.775239161914214
+          ],
+          [
+            11.458306202897802,
+            11.14680179208517
+          ],
+          [
+            10.908570993924513,
+            10.203308189986274
+          ],
+          [
+            11.321580993011594,
+            10.869761324953288
+          ],
+          [
+            11.10554358898662,
+            10.627396903000772
+          ],
+          [
+            10.749306218000129,
+            10.296122258063406
+          ],
+          [
+            11.01723270304501,
+            10.5260219569318
+          ],
+          [
+            8.958399044815451,
+            8.783337478060275
+          ],
+          [
+            11.198874016059563,
+            10.988511797972023
+          ]
+        ]
+      },
+      "exported_head": {
+        "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/c23-v147-triplet-pseudo56-greedyteacher7-lr3e5-r1-heads/head160-stride64",
+        "manifest": {
+          "step": 216,
+          "block_size": 32,
+          "tp": 2,
+          "layers": [
+            60,
+            61,
+            62,
+            63
+          ],
+          "source_payload_sha256": "03831f39a931d47f76e9191820efe8a295f56de5ee8722da8d1dbe92f3feab95",
+          "source_head_contract": {
+            "format": "orthrus-qwen38-native-tp-v1",
+            "base_config_sha256": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+            "base_index_sha256": "77042094076611b69791a610065f28b7013b8c621795fa86ddccc8bac7d1b9df",
+            "tp_size": 1,
+            "block_size": 32,
+            "mask_token_id": 1,
+            "hybrid_policy": "orthrus_qwen35_reference"
+          },
+          "rank_files": [
+            {
+              "name": "rank0.safetensors",
+              "sha256": "3582d4ca5087ab3720647805629cba77de39986a257c83d2baf266b90f936841"
+            },
+            {
+              "name": "rank1.safetensors",
+              "sha256": "6a5f96c827831891136be2f1014bf15e2304e9f039a05c431a4a0aab0e1112c1"
+            }
+          ],
+          "parent_payload_sha256": "bb02eeffcf9e23b84ad2f8694bbe3fd9ab7e9406ee4c51d3f8eac6f99f565f82",
+          "published_updates": 56,
+          "export_kind": "bf16_training_exchange",
+          "norm_rounding_max_abs": [
+            0.0,
+            0.0
+          ],
+          "published_banks_exact": true,
+          "online_parameter_scope": "full"
+        },
+        "seconds": 4.769319033017382
+      }
+    }
+  },
+  "stage": "completed",
+  "convolution_audits": [],
+  "startup_seconds": 345.46723876707256,
+  "learner_memory_plan": {
+    "free_before_learner": 20759752704,
+    "publication_bytes": 62918656,
+    "serving_mirror_bytes": 104859648,
+    "native_future_reserved_bytes": 1780982720,
+    "compact_optimizer": false,
+    "required": {
+      "serving": 437776384,
+      "learner": 6528141312
+    }
+  },
+  "trainable_parameters": 104858112,
+  "training_dispatches": 1,
+  "device_memory_after_ar_warmup": [
+    [
+      13682659328,
+      65452113920
+    ],
+    [
+      20293259264,
+      65452113920
+    ]
+  ],
+  "progress": {
+    "paired_64": [
+      {
+        "requests": 32,
+        "fixed_tok_s": 21.18865347654124,
+        "tok_s": 21.311583513062104,
+        "net_increment": 0.005801691771351258,
+        "accepted_per_round": 1.8614357262103507,
+        "updates": 42,
+        "publications": 10,
+        "ar_tok_s": 19.79080894301037,
+        "net_increment_vs_ar": 0.07684246634035818
+      }
+    ],
+    "learned_160_64": [
+      {
+        "requests": 32,
+        "tokens": 3577,
+        "seconds": 163.23756729415618,
+        "tok_s": 21.91284799995947,
+        "accepted_per_round": 1.941530524505589,
+        "updates": 0,
+        "publications": 0,
+        "net_increment": 0.03417841177213132
+      }
+    ]
+  },
+  "clean_shutdown": true
+}

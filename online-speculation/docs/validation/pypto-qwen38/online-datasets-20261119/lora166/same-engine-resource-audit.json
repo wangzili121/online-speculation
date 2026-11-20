@@ -1,0 +1,56 @@
+{
+  "completed": true,
+  "scope": "Same configured engine AR/frozen/online fairness and residency; not a claim about other native AR configurations.",
+  "physical_cards": 2,
+  "tp": 2,
+  "learner_rank": 0,
+  "model_settings": {
+    "max_model_len": 512,
+    "max_num_seqs": 2,
+    "max_num_batched_tokens": 128,
+    "long_prefill_token_threshold": 4,
+    "prefix_cache": false,
+    "native_MTP": false
+  },
+  "model_residency": "serving/runtime.py start306-346 uploads every TP_BANK_SPECS bank into self.banks before timed requests; packed target dispatch reuses those bank handles. Insufficient memory is rejected instead of enabling CPU weight offload.",
+  "model_weights_upload_before_timed_stream": true,
+  "AR_and_frozen_learning_costs_zero": true,
+  "remaining_device_bytes_after_AR_warmup": [
+    8853790720,
+    19956531200
+  ],
+  "native_source_files": [
+    {
+      "file": "pypto-serving-qwen3.8-27B/serving/api.py",
+      "sha256": "bddec8f6d7510a7a316744abf9703c5d7969ed14c57af3d92a5a55f7a0b0d72b"
+    },
+    {
+      "file": "pypto-serving-qwen3.8-27B/serving/distributed.py",
+      "sha256": "df4bb80f535e73aee658d41a4b3da73a6cc64700f4a5fcf87494be00bede78f4"
+    },
+    {
+      "file": "pypto-serving-qwen3.8-27B/serving/engine.py",
+      "sha256": "48fddd837fdcbbcf56bacb368565d98c52dbc9ba041afbe8289db12c8ca69e68"
+    },
+    {
+      "file": "pypto-serving-qwen3.8-27B/serving/kv_cache.py",
+      "sha256": "d807227d97fabf2c846f2642d811f4738dae15aa1cb4ca1a7c3dc44b892338f8"
+    },
+    {
+      "file": "pypto-serving-qwen3.8-27B/serving/model.py",
+      "sha256": "46de8fd5eaec092aed766a910402462dc5362cbfbbf15c64cf4bc4dbabda8356"
+    },
+    {
+      "file": "pypto-serving-qwen3.8-27B/serving/runtime.py",
+      "sha256": "cb2c4ae3229786ea498df6b92dc2784c8d1ab7f90dda1b455827268c9ae563b6"
+    },
+    {
+      "file": "pypto-serving-qwen3.8-27B/serving/schedule.py",
+      "sha256": "919ac09ed022a3391013681067f5c0564114b8b8d469205c485cb34b08676502"
+    },
+    {
+      "file": "pypto-serving-qwen3.8-27B/serving/weight.py",
+      "sha256": "32084b169dd635c7e9324fdd52ab18fa4af3ba5ef0f5c0d3221b11726d816158"
+    }
+  ]
+}

@@ -1,0 +1,130 @@
+{
+  "completed": true,
+  "scope": "Real27B actualsame2card correctness; six updates with publication every step. Not full-flow speed or arbitrary cadence acceptance.",
+  "CPU_exact_gitindex": 421,
+  "NPU_projection_cases": 14,
+  "cases": [
+    {
+      "tag": "b167-v164-dense-regression-replay2-audit-r1",
+      "mode": "dense",
+      "raw_sha256": "83e9c39f206ce631b01a11625a3dc29322c244555071bf2e1340184281111072",
+      "physical_cards": 2,
+      "tp": 2,
+      "learner_rank": 0,
+      "head_step": 160,
+      "initial_shards": [
+        "99e68812f0588ffb7cfced35af03e4afe2b47937c0cbffa04bef7f1026bf77dc",
+        "972814751cb6f156cace79441f7e7fa649db895b416b80f16ea01c3f9e2b90c1"
+      ],
+      "published_shards": [
+        "1753239962840ddd91937a33f552d3f85a1ae22605db97b49aac84702cde74b6",
+        "93e25b1e52362aa0c3bebbc3cac99222738c071b49b93e0803eceb74dc519998"
+      ],
+      "published_banks_exact": true,
+      "both_ranks_changed": true,
+      "greedy_AR_exact": true,
+      "updates": 6,
+      "publish_every": 1,
+      "trainable_parameters": 104858112,
+      "max_replay_TV": 4.071485761869553e-07,
+      "max_replay_L2": 0.002962730824947357,
+      "memory_plan": {
+        "free_before_learner": 20785254400,
+        "publication_bytes": 62918656,
+        "serving_mirror_bytes": 104859648,
+        "native_future_reserved_bytes": 1780982720,
+        "training_view_bytes": 0,
+        "compact_optimizer": false,
+        "required": {
+          "serving": 456101888,
+          "learner": 6546466816
+        }
+      },
+      "clean_shutdown": true,
+      "publication_backend_requested": "device",
+      "effective_publication": "device"
+    },
+    {
+      "tag": "b167-v164-lora64-last1-replay2-audit-r1",
+      "mode": "last1",
+      "raw_sha256": "3bda90d170d2dd547c808bd4f663dfe095ed293773adb5bb638680e3501f4215",
+      "physical_cards": 2,
+      "tp": 2,
+      "learner_rank": 0,
+      "head_step": 160,
+      "initial_shards": [
+        "99e68812f0588ffb7cfced35af03e4afe2b47937c0cbffa04bef7f1026bf77dc",
+        "972814751cb6f156cace79441f7e7fa649db895b416b80f16ea01c3f9e2b90c1"
+      ],
+      "published_shards": [
+        "8f937dae2035e60eea19c20df213e052c6722f5654df88187ad634ea94682dc9",
+        "075dd228a9a57ee4f897b0eb93c39a2cdc4a6678b06cad8ddbd03ee7036102c8"
+      ],
+      "published_banks_exact": true,
+      "both_ranks_changed": true,
+      "greedy_AR_exact": true,
+      "updates": 6,
+      "publish_every": 1,
+      "trainable_parameters": 2621952,
+      "max_replay_TV": 4.071485761869553e-07,
+      "max_replay_L2": 0.002962730824947357,
+      "memory_plan": {
+        "free_before_learner": 20780658688,
+        "publication_bytes": 62918656,
+        "serving_mirror_bytes": 104859648,
+        "native_future_reserved_bytes": 1780982720,
+        "training_view_bytes": 630834816,
+        "compact_optimizer": false,
+        "required": {
+          "serving": 47157248,
+          "learner": 3902432448
+        }
+      },
+      "clean_shutdown": true,
+      "publication_backend_requested": "device",
+      "effective_publication": "device"
+    },
+    {
+      "tag": "b167-v164-lora64-last4-replay2-audit-r1",
+      "mode": "last4",
+      "raw_sha256": "8cdff75209ce10a604c2da1c211a13a85291942c99dc4a4df71f49aed3024e05",
+      "physical_cards": 2,
+      "tp": 2,
+      "learner_rank": 0,
+      "head_step": 160,
+      "initial_shards": [
+        "99e68812f0588ffb7cfced35af03e4afe2b47937c0cbffa04bef7f1026bf77dc",
+        "972814751cb6f156cace79441f7e7fa649db895b416b80f16ea01c3f9e2b90c1"
+      ],
+      "published_shards": [
+        "ebcc51cb89fead2731319fdb133cea9bbe71e88db6daec2965ccc896f5e3ba99",
+        "739dec889c4d23a30bde553c36e197f1985d6cac7e9048562d2f919f558dc4a3"
+      ],
+      "published_banks_exact": true,
+      "both_ranks_changed": true,
+      "greedy_AR_exact": true,
+      "updates": 6,
+      "publish_every": 1,
+      "trainable_parameters": 12035328,
+      "max_replay_TV": 1.2576402923514252e-06,
+      "max_replay_L2": 0.005510672926902771,
+      "memory_plan": {
+        "free_before_learner": 20762234880,
+        "publication_bytes": 0,
+        "serving_mirror_bytes": 458878272,
+        "native_future_reserved_bytes": 1780982720,
+        "training_view_bytes": 2736902400,
+        "compact_optimizer": true,
+        "required": {
+          "serving": 104175104,
+          "learner": 8298523232
+        }
+      },
+      "clean_shutdown": true,
+      "publication_backend_requested": "cpu",
+      "effective_publication": "cpu"
+    }
+  ],
+  "dense_full_update_trajectory_and_final_manifest_exact_vs147": true,
+  "next": "Full exploratory flows use publication every4 and allcost controls; optimizer/master may advance beyond lastpublished version, so validate export against actualserving banks."
+}
