@@ -18,6 +18,7 @@ ARG BUILD_JOBS=4
 WORKDIR /opt/orthrus
 COPY online-speculation/runtime/pypto_dsv41_a3/lib-serving.patch /opt/orthrus/integration/lib-serving.patch
 COPY online-speculation/runtime/pypto_dsv41_a3/serving-pair.patch /opt/orthrus/integration/serving-pair.patch
+COPY online-speculation/runtime/pypto_dsv41_a3/runtime-release.patch /opt/orthrus/integration/runtime-release.patch
 
 # The runtime submodule is the revision checked by PyPTO at import time.
 RUN set -e; \
@@ -25,7 +26,9 @@ RUN set -e; \
     git -C pypto fetch --depth 1 https://github.com/hw-native-sys/pypto.git 72a62d13efabbb25d240e35944f68ba5bcc22b7f; \
     git -C pypto checkout --detach FETCH_HEAD; \
     git -C pypto submodule update --init --recursive --depth 1; \
-    test "$(git -C pypto/runtime rev-parse HEAD)" = 6b6b88f2353cca12cfafe809750b50b59931b0d1
+    test "$(git -C pypto/runtime rev-parse HEAD)" = 6b6b88f2353cca12cfafe809750b50b59931b0d1; \
+    git -C pypto/runtime apply --check /opt/orthrus/integration/runtime-release.patch; \
+    git -C pypto/runtime apply /opt/orthrus/integration/runtime-release.patch
 
 RUN set -e; \
     git init pypto-lib; \
@@ -56,12 +59,14 @@ RUN set -e; \
         -e "$PYPTO_SERVING_ROOT"
 
 COPY online-speculation /opt/orthrus/online-speculation
-RUN source /opt/pypto/bin/pypto-activate.sh && \
+RUN cp "$PYPTO_SRC/docker/scripts/pypto-activate.sh" /opt/pypto/bin/pypto-activate.sh && \
+    source /opt/pypto/bin/pypto-activate.sh && \
     uv pip install --python /opt/pypto/venv/bin/python --no-deps --no-build-isolation \
     -e /opt/orthrus/online-speculation
 
 COPY online-speculation/runtime/pypto_dsv41_a3/docker/entrypoint.sh /opt/orthrus/entrypoint.sh
 RUN chmod +x /opt/orthrus/entrypoint.sh
+ENV PYPTO_MOTD_SHOWN=1
 ENTRYPOINT ["/opt/orthrus/entrypoint.sh"]
 CMD ["doctor"]
 RUN /opt/orthrus/entrypoint.sh doctor > /opt/orthrus/environment-build.json

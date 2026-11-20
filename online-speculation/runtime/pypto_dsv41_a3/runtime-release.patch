@@ -1,0 +1,17 @@
+Release builds compile out debug_assert. Keep its input explicitly used so
+the pinned runtime builds under -Werror without changing the assertion or math.
+
+diff --git a/src/common/host_build_graph/tensor.h b/src/common/host_build_graph/tensor.h
+--- a/src/common/host_build_graph/tensor.h
++++ b/src/common/host_build_graph/tensor.h
+@@ -553,2 +553,3 @@
+         const uint64_t buffer_elems = buffer.size / elem_size;
++        (void)buffer_elems; // debug_assert may compile out in Release.
+         debug_assert(start_offset + extent_elem_cache <= buffer_elems);
+diff --git a/src/common/tensormap_and_ringbuffer/tensor.h b/src/common/tensormap_and_ringbuffer/tensor.h
+--- a/src/common/tensormap_and_ringbuffer/tensor.h
++++ b/src/common/tensormap_and_ringbuffer/tensor.h
+@@ -508,2 +508,3 @@
+         const uint64_t buffer_elems = buffer.size / elem_size;
++        (void)buffer_elems; // debug_assert may compile out in Release.
+         debug_assert(start_offset + extent_elem_cache <= buffer_elems);

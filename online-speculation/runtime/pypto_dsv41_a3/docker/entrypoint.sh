@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -eo pipefail
 source /opt/pypto/bin/pypto-activate.sh
+export PATH="/opt/pypto/venv/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PIP_NO_INDEX=1
 export TARGET_WEIGHTS="${TARGET_WEIGHTS:-/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8}"
@@ -17,6 +18,10 @@ case "${1:-doctor}" in
   probe)
     shift
     exec python "$root/scripts/check_dsv41_pypto_environment.py" --device-probe "$@"
+    ;;
+  compile-probe)
+    shift
+    exec python "$root/scripts/check_dsv41_pypto_environment.py" --compile-probe "$@"
     ;;
   *) exec "$@" ;;
 esac

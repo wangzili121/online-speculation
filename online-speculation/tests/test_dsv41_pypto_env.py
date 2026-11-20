@@ -46,3 +46,10 @@ def test_probe_requires_a_device_and_maps_only_that_device(tmp_path):
     assert "/dev/davinci6:/dev/davinci6" in args
     assert "ASCEND_RT_VISIBLE_DEVICES=6" in args
     assert args[-1] == "probe"
+
+
+def test_compilation_probe_does_not_map_npu_devices(tmp_path):
+    result = subprocess.check_output(["bash", str(SCRIPT), "compile-probe"], text=True, env=environment(tmp_path))
+    args = json.loads(result)
+    assert "--device" not in args
+    assert args[-1] == "compile-probe"

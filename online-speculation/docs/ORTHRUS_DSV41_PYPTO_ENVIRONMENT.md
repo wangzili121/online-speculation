@@ -4,6 +4,8 @@
 
 环境固定为 PyPTO `72a62d13`、Simpler `6b6b88f`、PTOAS 0.70、Lib `e32726b` 加本仓补丁、Serving `cd81894` 加本仓补丁，Python 3.10 和 CPU Torch 2.10。所用 Lib/Serving 配对覆盖现有测试记录，较新的上游优化提交需要重新配对验证。
 
+固定版 Simpler 在 Release 模式下有两处仅供调试断言使用的变量，会触发 `-Werror`。镜像应用 `runtime-release.patch` 显式标记其用途，不改计算和断言；环境报告记录该补丁的 SHA256。
+
 ## 构建并传入内网
 
 在可以访问 GitHub、PyPI、PyTorch wheel 站点和镜像仓库的 ARM64 Linux 机器上，从本仓库根目录执行。
@@ -11,6 +13,7 @@
 ```bash
 bash online-speculation/scripts/dsv41_pypto_env.sh build
 bash online-speculation/scripts/dsv41_pypto_env.sh doctor
+bash online-speculation/scripts/dsv41_pypto_env.sh compile-probe
 bash online-speculation/scripts/dsv41_pypto_env.sh save /path/to/orthrus-dsv41-pypto.tar
 ```
 
@@ -23,7 +26,7 @@ bash online-speculation/scripts/dsv41_pypto_env.sh doctor
 bash online-speculation/scripts/dsv41_pypto_env.sh preflight
 ```
 
-`doctor` 检查包导入、源码配对和版本，输出容器内能看到的驱动/CANN信息。`preflight` 使用默认的 `/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8`；可用 `TARGET_WEIGHTS=/your/path` 覆盖。这两项无需映射 NPU。若只需检查已下载权重的张量头，在任意 Python 3.10+ 环境中执行下面的命令即可。
+`doctor` 检查包导入、源码配对和版本，输出容器内能看到的驱动/CANN 信息。`compile-probe` 进一步验证 PyPTO 到设备代码的编译，但不执行 NPU 计算。`preflight` 使用默认的 `/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8`；可用 `TARGET_WEIGHTS=/your/path` 覆盖。这三项无需映射 NPU。若只需检查已下载权重的张量头，在任意 Python 3.10+ 环境中执行下面的命令即可。
 
 ```bash
 python3 online-speculation/scripts/preflight_dsv41_pypto.py --inspect --output checkpoint-layout.json
