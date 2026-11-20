@@ -1,0 +1,34 @@
+{
+  "completed": true,
+  "scope": "Arithmetic diagnostic only: retain exactly the observed learned trajectory, output and generation time, but pretend feedback/train/upload took zero time. Not measured throughput, not an achievable bound when changing learning or inference.",
+  "formula": "tokens / (seconds - (feedback_ns + update_ns + publish_upload_ns) / 1e9); publication packing/readback already belongs to update_ns and must not be subtracted twice.",
+  "cases": [
+    {
+      "tag": "a111-v147-triplet-gsm128-greedyteacher7-lr3e5-r1",
+      "measured_online_tok_s": 31.242293539422924,
+      "unique_feedback_train_upload_seconds": 13.066406948,
+      "measured_online_seconds": 766.8131012779195,
+      "hypothetical_zero_feedback_train_upload_tok_s": 31.783887319463158,
+      "hypothetical_vs_fixed": -0.05433721442956185,
+      "needs_more_learning_than_cost_elimination": true
+    },
+    {
+      "tag": "c23-v180-triplet-width8-pseudo56-dense-last1-lr1e-05-r1",
+      "measured_online_tok_s": 21.974091135289992,
+      "unique_feedback_train_upload_seconds": 4.783518033,
+      "measured_online_seconds": 284.8809519109782,
+      "hypothetical_zero_feedback_train_upload_tok_s": 22.349365766510772,
+      "hypothetical_vs_fixed": 0.013505961090043428,
+      "needs_more_learning_than_cost_elimination": true
+    },
+    {
+      "tag": "b167-v164-triplet-lora64-pseudo56-last1-lr3e4-r1",
+      "measured_online_tok_s": 20.932826157521887,
+      "unique_feedback_train_upload_seconds": 5.274662893,
+      "measured_online_seconds": 299.05183145805495,
+      "hypothetical_zero_feedback_train_upload_tok_s": 21.30866748623376,
+      "hypothetical_vs_fixed": 0.007774461174319791,
+      "needs_more_learning_than_cost_elimination": true
+    }
+  ]
+}

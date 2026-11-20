@@ -14,6 +14,8 @@
 
 这些配方均未同时达到两个 +5% 门槛，不启动预留确认。完整记录与源码哈希见 `validation/pypto-qwen38/online-datasets-20261119/closed196-exploration-summary.json` 及对应 `greedy147/fullflow/`、`width180/fullflow/`、`lora166/fullflow/`。
 
+这几组还需要更强的学习收益。以短块 Pseudo2code 为例，完整在线耗时 284.881 秒，反馈、训练和发布上传合计 4.784 秒。保留实际学习轨迹与生成耗时，假设这部分开销为零，算得 22.349 tok/s，相对固定组也只有 +1.35%。这是算术诊断，不是实测加速；打包和回读已经包含在训练计时内，计算时没有重复扣除。详见 `closed197-cost-diagnosis.json`。
+
 后续探索改用历史 step128 起点，比较 TV 分布蒸馏与硬标签 KL，并改为每次更新立即发布。已核对真实两个 shard 的 SHA256，确认它就是历史 step128，而非文件名带有 128 的后续 checkpoint；当前探索、开发题均与其预热及评测记录无交集。来源审计见 `start194/start194-head128-cohort-audit.json`。短诊断另采集[更新分阶段耗时](QWEN38_PYPTO_UPDATE_PROFILE.md)，正式对照不安装该计时器。
 
 ## 全程持续更新的验收口径
