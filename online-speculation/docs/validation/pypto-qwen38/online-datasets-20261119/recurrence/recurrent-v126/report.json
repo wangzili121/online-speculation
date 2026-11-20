@@ -1,0 +1,18 @@
+{
+  "variants": [
+    "sequential64",
+    "decay64"
+  ],
+  "passed": false,
+  "clean_shutdown": false,
+  "scope": "isolated recurrence, not model throughput",
+  "compilation_errors": [
+    {
+      "batch": 1,
+      "variant": "sequential64",
+      "error": "InvalidOperationError(\"pl operation 'cmp': Scalar operand has dtype `index`, which tile/tensor scalar instructions do not accept. Convert it explicitly, e.g. pl.cast(<value>, pl.INT32).\")"
+    }
+  ],
+  "cases": [],
+  "error": "InvalidOperationError(\"pl operation 'cmp': Scalar operand has dtype `index`, which tile/tensor scalar instructions do not accept. Convert it explicitly, e.g. pl.cast(<value>, pl.INT32).\")"
+}

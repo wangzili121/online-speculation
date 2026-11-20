@@ -51,8 +51,9 @@ def main():
     torch.manual_seed(115)
     config = RunConfig(backend_type=BackendType.Ascend910B, execution_mode=ExecutionMode.ONBOARD,
                        distributed_config=DistributedConfig(device_ids=[args.device], num_sub_workers=0))
-    variants = {'sequential64': (False, 64), 'prefetch64': (True, 64),
-                'sequential128': (False, 128), 'prefetch128': (True, 128)}
+    variants = {'sequential64': (False, 64, False), 'prefetch64': (True, 64, False),
+                'sequential128': (False, 128, False), 'prefetch128': (True, 128, False),
+                'decay64': (False, 64, True)}
     selected = args.variants.split(',')
     if not selected or selected[0] != 'sequential64' or len(set(selected)) != len(selected) or any(name not in variants for name in selected):
         parser.error('unique known variants with sequential64 first required')
@@ -69,9 +70,9 @@ def main():
         programs = {}
         for batch in [1, 2]:
             meta = lambda shape, dtype=torch.float32: torch.empty(shape, dtype=dtype, device='meta')
-            for name, (prefetch, tile) in variants.items():
+            for name, (prefetch, tile, gates) in variants.items():
                 try:
-                    programs[batch, name] = make_entry(batch, prefetch=prefetch, state_tile=tile).compile(
+                    programs[batch, name] = make_entry(batch, prefetch=prefetch, state_tile=tile, precompute_decay=gates).compile(
                         meta((batch * 32, 3072)), meta((batch * 32, 3072)),
                         meta((batch * 32, 5120), torch.bfloat16), meta((batch * 32, 32)), meta((batch * 32, 32)),
                         meta(history.shape), meta((batch * 32, 3072), torch.bfloat16), 11, 3, 47, config=config)

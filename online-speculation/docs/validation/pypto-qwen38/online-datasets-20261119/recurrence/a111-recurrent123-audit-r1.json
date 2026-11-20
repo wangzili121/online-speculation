@@ -1,0 +1,272 @@
+{
+  "completed": false,
+  "returncode": 1,
+  "physical_card": 5,
+  "scope": "isolated recurrence, not model throughput",
+  "variants": [
+    "sequential64",
+    "gates64"
+  ],
+  "passed": false,
+  "clean_shutdown": true,
+  "compilation_errors": [
+    {
+      "batch": 1,
+      "variant": "gates64",
+      "error": "PartialCodegenError('1 function(s) failed to compile:\\n\\n  Function               | Error\\n  -----------------------+--------------------------------------------------------------\\n  orthrus_tp2_recurrent  | ptoas compilation failed: (exit code 1)\\n                         | loc(\"/data/disk1/wangzili/orthrus-\\n                         | qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies\\n                         | /recurrent-\\n                         | v123/src/blockspec/pypto_qwen38/tp2_gdn_recurrence.py\":40:25\\n                         | ): error: \\'pto.alloc_tile\\' op expects result row-major\\n                         | none_box tile row byte size (cols * sizeof(dtype)) to be\\n                         | 32-byte aligned, but got 4 bytes\\n  -----------------------+--------------------------------------------------------------\\n\\n  Full details: build_output/_jit_entry_20261120_074838_hlbeokka/next_levels/kernel/report/codegen_errors.txt')"
+    },
+    {
+      "batch": 2,
+      "variant": "gates64",
+      "error": "PartialCodegenError('1 function(s) failed to compile:\\n\\n  Function               | Error\\n  -----------------------+--------------------------------------------------------------\\n  orthrus_tp2_recurrent  | ptoas compilation failed: (exit code 1)\\n                         | loc(\"/data/disk1/wangzili/orthrus-\\n                         | qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies\\n                         | /recurrent-\\n                         | v123/src/blockspec/pypto_qwen38/tp2_gdn_recurrence.py\":40:25\\n                         | ): error: \\'pto.alloc_tile\\' op expects result row-major\\n                         | none_box tile row byte size (cols * sizeof(dtype)) to be\\n                         | 32-byte aligned, but got 4 bytes\\n  -----------------------+--------------------------------------------------------------\\n\\n  Full details: build_output/_jit_entry_20261120_074839_fen2w2zy/next_levels/kernel/report/codegen_errors.txt')"
+    }
+  ],
+  "cases": [
+    {
+      "batch": 1,
+      "variant": "sequential64",
+      "slots": [
+        0
+      ],
+      "layer": 0,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 3.0517578125e-05,
+      "call_median_ns": 1111782.0,
+      "call_samples_ns": [
+        1292482,
+        1136732,
+        1104582,
+        1143642,
+        1113302,
+        1104592,
+        1126442,
+        1110262,
+        1098802,
+        1091322
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 1,
+      "variant": "sequential64",
+      "slots": [
+        11
+      ],
+      "layer": 47,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1103107.0,
+      "call_samples_ns": [
+        1172942,
+        1134882,
+        1101572,
+        1098532,
+        1095352,
+        1134682,
+        1153902,
+        1096342,
+        1104642,
+        1077952
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v123/profiles/b1-sequential64-0.json",
+          "sha256": "4d6b162f657302210e1619f469318d38798d3bdbc230ebcd3703da49c6f3842a",
+          "device_task_window_us": 127.14,
+          "run_epoch": 26,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 59.82000000000001,
+              "median_us": 62.540000000000006,
+              "max_us": 63.22
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v123/profiles/b1-sequential64-1.json",
+          "sha256": "61191fd2b3fcd3b86d3b61aba7aefb501b33d37c4859df960674d2fe25608852",
+          "device_task_window_us": 127.38000000000001,
+          "run_epoch": 28,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 59.68,
+              "median_us": 65.08,
+              "max_us": 66.42
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v123/profiles/b1-sequential64-2.json",
+          "sha256": "03fe2bddcf2a6804c45c164ebc361701e0852b69b404888f7a8834f347c98cb2",
+          "device_task_window_us": 126.7,
+          "run_epoch": 30,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 59.68000000000001,
+              "median_us": 64.96000000000001,
+              "max_us": 65.94
+            }
+          }
+        }
+      ]
+    },
+    {
+      "batch": 1,
+      "variant": "sequential64",
+      "slots": [
+        7
+      ],
+      "layer": 12,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1197142.0,
+      "call_samples_ns": [
+        1378813,
+        1233132,
+        1211462,
+        1194742,
+        1195082,
+        1199202,
+        1200102,
+        1172592,
+        1175882,
+        1175352
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 2,
+      "variant": "sequential64",
+      "slots": [
+        0,
+        31
+      ],
+      "layer": 0,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1172407.0,
+      "call_samples_ns": [
+        1286012,
+        1182592,
+        1200152,
+        1162112,
+        1140172,
+        1165772,
+        1151782,
+        1173362,
+        1171452,
+        1212922
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 2,
+      "variant": "sequential64",
+      "slots": [
+        11,
+        3
+      ],
+      "layer": 47,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1205427.5,
+      "call_samples_ns": [
+        1742413,
+        1279222,
+        1209262,
+        1204182,
+        1216502,
+        1195422,
+        1206673,
+        1156902,
+        1189092,
+        1168782
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v123/profiles/b2-sequential64-0.json",
+          "sha256": "e299eb85b7245a3e75d9d4ce6f3cdcefac3418e0799a534546296d2625e1d7ec",
+          "device_task_window_us": 186.82,
+          "run_epoch": 68,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.8,
+              "median_us": 92.36,
+              "max_us": 124.84
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v123/profiles/b2-sequential64-1.json",
+          "sha256": "9f7986842316398581700fc82677002b185e7529cb50017412d3031d424a08f7",
+          "device_task_window_us": 185.88,
+          "run_epoch": 70,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.72,
+              "median_us": 92.56,
+              "max_us": 123.98
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v123/profiles/b2-sequential64-2.json",
+          "sha256": "86fab75a038ddd6c6b620fa548369de9536a10211b7ee6c0e205be67594b0f37",
+          "device_task_window_us": 186.4,
+          "run_epoch": 72,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.620000000000005,
+              "median_us": 93.02000000000001,
+              "max_us": 125.32000000000001
+            }
+          }
+        }
+      ]
+    },
+    {
+      "batch": 2,
+      "variant": "sequential64",
+      "slots": [
+        7,
+        7
+      ],
+      "layer": 12,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 3.0517578125e-05,
+      "call_median_ns": 1208342.0,
+      "call_samples_ns": [
+        1264042,
+        1210262,
+        1196522,
+        1234893,
+        1182432,
+        1185492,
+        1206422,
+        2260104,
+        1236392,
+        1189022
+      ],
+      "device_profiles": []
+    }
+  ],
+  "error": "RuntimeError('Some requested variants did not compile; numeric cases remain diagnostic evidence')"
+}

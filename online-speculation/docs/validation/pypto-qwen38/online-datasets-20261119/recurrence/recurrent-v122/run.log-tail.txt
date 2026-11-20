@@ -1,0 +1,14 @@
+{"batch": 1, "variant": "sequential64", "error": "ParserTypeError(\"Cannot reassign 'strength' with a different type: was pl.Tensor[[1, 1], pl.FP32], got pl.Scalar[pl.FP32]\")"}
+Error: Cannot reassign 'strength' with a different type: was pl.Tensor[[1, 1], pl.FP32], got pl.Scalar[pl.FP32]
+  --> /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v122/src/blockspec/pypto_qwen38/tp2_gdn_recurrence.py:58:25
+   |
+56 |                         value = pl.slice(values, [1, T], [token, 0])
+57 |                         decay_value = pl.read(decay, [first + token, head])
+58 |                         strength = pl.read(beta, [first + token, head])
+   |                         ^^^^^^^^
+59 |                         factor = pl.exp(pl.mul(pl.full([1, 128], pl.FP32, value=1.), decay_value))
+60 |                         faded = pl.col_expand_mul(state, factor)
+   |
+   = help: Use a different variable name for tensors with different shapes or dtypes
+
+note: run with `PTO_BACKTRACE=1` environment variable to display a backtrace.

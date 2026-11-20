@@ -1,0 +1,53 @@
+{
+  "completed": true,
+  "cpu_only": true,
+  "source_checkpoint": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/online-study-20261111/tp1-colocated-step0-last1-64-gsm8k-r3.checkpoint",
+  "output": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/step64-last1-suffix-tp2-cpu131",
+  "source_script_sha256": "aaa4d9f6247e08c74bf923a18684477aa37b93ba738fcd4ef6f72af1347c4fdc",
+  "checkpoint_sha256": "6b43bd5536ef6561002a727b192d64bc279eda9b1626b245428fb01986bc4919",
+  "manifest": {
+    "step": 64,
+    "block_size": 32,
+    "tp": 2,
+    "layers": [
+      60,
+      61,
+      62,
+      63
+    ],
+    "source_payload_sha256": "681e2f00b9d122ab458bca182ecd033e1ecdef1bb9b0c2d3cd395bc9cb36fe58",
+    "source_head_contract": {
+      "format": "orthrus-qwen38-native-tp-v1",
+      "base_config_sha256": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+      "base_index_sha256": "77042094076611b69791a610065f28b7013b8c621795fa86ddccc8bac7d1b9df",
+      "tp_size": 1,
+      "block_size": 32,
+      "mask_token_id": 1,
+      "hybrid_policy": "orthrus_qwen35_reference"
+    },
+    "rank_files": [
+      {
+        "name": "rank0.safetensors",
+        "sha256": "61f5398bbf0a9d37e8764fd0fa1119fb72b7909a3c30e031b506388e35787c36",
+        "tensors": 33
+      },
+      {
+        "name": "rank1.safetensors",
+        "sha256": "63add59bbf3e8a4f7a22487e793d5f121d868abdb0ec57fdcd38306931c91ffc",
+        "tensors": 33
+      }
+    ],
+    "initialization": "AR-copy plus 64 prior last-1 updates; fresh Adam required",
+    "parent_payload_sha256": "281b72abb55df0638a872cccafdedc4110e37282271ad5f6f55b63185e3e5b7a",
+    "source_optimizer_checkpoint_sha256": "6b43bd5536ef6561002a727b192d64bc279eda9b1626b245428fb01986bc4919",
+    "source_initial_payload_sha256": "159646bde490fd63636557838b05440e676be6ab60420f4e3a753382a8c00def",
+    "export_kind": "last1_optimizer_weights_only",
+    "optimizer_reset_required": true
+  },
+  "schema_and_payload_validated": true,
+  "frozen_layers_exact": true,
+  "all_six_rendered_parameters_exact": true,
+  "optimizer_moments_imported": false,
+  "device_replay_gate_still_required": true
+}
+

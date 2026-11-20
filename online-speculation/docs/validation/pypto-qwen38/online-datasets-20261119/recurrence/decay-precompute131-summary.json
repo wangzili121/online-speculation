@@ -1,0 +1,36 @@
+{
+  "scope": "Independent device recurrence experiment; not enabled in serving",
+  "completed": true,
+  "source": 127,
+  "cases": 12,
+  "enabled_in_serving": false,
+  "measurements": [
+    {
+      "batch": 1,
+      "variant": "sequential64",
+      "device_median_us": 126.38000000000001
+    },
+    {
+      "batch": 1,
+      "variant": "decay64",
+      "device_median_us": 129.36
+    },
+    {
+      "batch": 2,
+      "variant": "sequential64",
+      "device_median_us": 185.62
+    },
+    {
+      "batch": 2,
+      "variant": "decay64",
+      "device_median_us": 191.72
+    }
+  ],
+  "failures_preserved": [
+    122,
+    123,
+    124,
+    126
+  ],
+  "decision": "Precomputing decay factors preserves rounded results and history, but measured slower on both batch sizes. Retain original serving recurrence."
+}

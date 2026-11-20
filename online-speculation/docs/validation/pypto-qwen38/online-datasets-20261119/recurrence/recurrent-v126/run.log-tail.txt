@@ -1,0 +1,14 @@
+{"batch": 1, "variant": "sequential64", "error": "InvalidOperationError(\"pl operation 'cmp': Scalar operand has dtype `index`, which tile/tensor scalar instructions do not accept. Convert it explicitly, e.g. pl.cast(<value>, pl.INT32).\")"}
+Error: pl operation 'cmp': Scalar operand has dtype `index`, which tile/tensor scalar instructions do not accept. Convert it explicitly, e.g. pl.cast(<value>, pl.INT32).
+  --> /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v126/src/blockspec/pypto_qwen38/tp2_gdn_recurrence.py:33:21
+   |
+31 |                     logs = pl.slice(decay, [32, 32], [first, 0])
+32 |                     columns = pl.arange(0, [1, 32], dtype=pl.INT32)
+33 |                     head_mask = pl.cast(pl.cmp(columns, head, cmp_type=0), pl.FP32)
+   |                     ^^^^^^^^^
+34 |                     decay_column = pl.row_sum(pl.col_expand_mul(logs, head_mask))
+35 |                     factors = pl.exp(pl.row_expand_mul(pl.full([32, 128], pl.FP32, value=1.), decay_column))
+   |
+   = help: For scalar arithmetic / comparison, use Python operators directly (e.g. `s1 + s2`, `s1 % s2`, `s1 == s2`).
+
+note: run with `PTO_BACKTRACE=1` environment variable to display a backtrace.

@@ -1,0 +1,42 @@
+{
+  "scope": "One same-host sequential/parallel full exploration pair, not repeated performance acceptance",
+  "cases": [
+    "c23-v114-triplet-pseudo56-step160-kl025-sequential-uniform-allcards-r2-startupfix1",
+    "c23-v114-triplet-pseudo56-step160-kl025-parallel128-uniform-allcards-r2-startupfix1"
+  ],
+  "shared_configuration_exact": true,
+  "updates_equal": true,
+  "published_head_sha_equal": true,
+  "each_greedy_matches_AR": true,
+  "measurements": [
+    {
+      "case": "c23-v114-triplet-pseudo56-step160-kl025-sequential-uniform-allcards-r2-startupfix1",
+      "rates": {
+        "ar": 20.033830866165044,
+        "frozen": 21.26673341704752,
+        "128": 21.30571716578128
+      },
+      "accepted": {
+        "ar": 0,
+        "frozen": 3785,
+        "128": 3827
+      },
+      "online_draft_seconds": 87.704802556
+    },
+    {
+      "case": "c23-v114-triplet-pseudo56-step160-kl025-parallel128-uniform-allcards-r2-startupfix1",
+      "rates": {
+        "ar": 19.68434894628834,
+        "frozen": 21.082152991841934,
+        "128": 21.056652469350258
+      },
+      "accepted": {
+        "ar": 0,
+        "frozen": 3785,
+        "128": 3827
+      },
+      "online_draft_seconds": 87.678045202
+    }
+  ],
+  "interpretation": "Learning trace and exported head comparison are explicit; standalone convolution was faster, but this single full pair does not establish end-to-end gain. Both runs remain below online-vs-frozen5%; retain optional backend."
+}
