@@ -111,13 +111,16 @@ class LoRASuffixGraph(SuffixGraph):
 
 
 class LoRAMergeGraph(GraphBuilder):
-    """用已有矩阵乘、加法和 copy 将增量合并为普通 BF16 head。
+    """将增量合并为普通 BF16 head，可选融合 BA 与 W0 相加。
 
-    scratch 对应已完成反向的 dense dW，可在 Adam 之后借用；FP32 norm
+    分开执行时 scratch 借用已完成反向的 dense dW；融合路径不输出 delta。
+    FP32 norm
     等参数与适配器优化器共享 special buffer，保持原来的发布精度和布局。
     """
 
-    def __init__(self, graph):
+    def __init__(self, graph, *, fused=False):
+        if type(fused) is not bool:
+            raise ValueError("fused must be a boolean")
         self.shape = graph.shape
         self.inputs, self.nodes, self.gradients = {}, [], {}
         self.targets, self.scratch = {}, {}
@@ -137,9 +140,14 @@ class LoRAMergeGraph(GraphBuilder):
                 av = self.input(adapter.a.name, adapter.a.shape)
                 bv = self.input(adapter.b.name, adapter.b.shape)
                 self.optimizer_inputs.update({av.name: av.name, bv.name: bv.name})
-                delta = self.mm(bv, av, transpose_b=False, gradient_weight=True)
-                self.scratch[name] = delta
-                self.targets[name] = weight_element(self, base, delta, "add")
+                if fused:
+                    self.targets[name] = self.op("lora_merge", (base, bv, av),
+                        ((parameter.shape, "bf16"),), rows=parameter.shape[0], columns=parameter.shape[1],
+                        rank=graph.adapter_rank)[0]
+                else:
+                    delta = self.mm(bv, av, transpose_b=False, gradient_weight=True)
+                    self.scratch[name] = delta
+                    self.targets[name] = weight_element(self, base, delta, "add")
             elif parameter.execution_dtype != "fp32":
                 current = self.input("current_" + name, parameter.shape)
                 self.optimizer_inputs[current.name] = name

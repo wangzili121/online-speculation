@@ -9,6 +9,9 @@ from .training_programs import make_element, make_linear, make_rms, make_tv, mak
 
 def stage(graph, node, *, accumulate=False):
     shape, options = node.inputs[0].shape, {**node.options, "inline": True}
+    if node.kind == "lora_merge":
+        from .training_lora_programs import make_weight_merge
+        return make_weight_merge(**options)
     if node.kind == "parameter_copy":
         from .tp2_publication import make_copy
         return make_copy(shape, node.outputs[0].shape, "rows")

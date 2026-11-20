@@ -153,10 +153,11 @@ def test_fp32_weight_intermediates_keep_explicit_input_precision():
 @pytest.mark.parametrize("layers", [1, 4])
 @pytest.mark.parametrize("fp32", [True, False])
 @pytest.mark.parametrize("zero_b", [True, False])
-def test_merge_graph_matches_independent_weight_formula_and_preserves_base(layers, fp32, zero_b):
+@pytest.mark.parametrize("fused", [False, True])
+def test_merge_graph_matches_independent_weight_formula_and_preserves_base(layers, fp32, zero_b, fused):
     g = graph(layers)
     tensors, _, bases = inputs(g, fp32=fp32, zero_b=zero_b)
-    merge = LoRAMergeGraph(g)
+    merge = LoRAMergeGraph(g, fused=fused)
     original = {name: value.clone() for name, value in bases.items()}
     bound = {alias: bases[name] for alias, name in merge.base_inputs.items()}
     bound.update({alias: tensors[name] for alias, name in merge.optimizer_inputs.items()})
@@ -170,6 +171,37 @@ def test_merge_graph_matches_independent_weight_formula_and_preserves_base(layer
             expected = tensors[name]
         assert torch.equal(result[value.name], expected), name
     assert all(torch.equal(original[name], bases[name]) for name in bases)
-    assert set(merge.scratch) == set(g.adapters)
+    assert set(merge.scratch) == (set() if fused else set(g.adapters))
     assert all(value.shape == g.dense_gradients[name].shape and value.dtype == "fp32"
                for name, value in merge.scratch.items())
+
+
+def test_fused_merge_keeps_the_same_external_contract_without_dense_delta_outputs():
+    g = LoRASuffixGraph(4)
+    old, new = LoRAMergeGraph(g), LoRAMergeGraph(g, fused=True)
+    assert old.inputs == new.inputs and old.layout.schema() == new.layout.schema()
+    assert set(old.targets) == set(new.targets)
+    assert sum(n.kind == "lora_merge" for n in new.nodes) == len(g.adapters)
+    assert not new.scratch and all(v.dtype == "bf16" for n in new.nodes for v in n.outputs)
+
+
+@pytest.mark.parametrize("shape", [(128, 128, 32), (0, 128, 64), (True, 128, 64), (128, 129, 64)])
+def test_fused_merge_rejects_unaligned_or_invalid_dimensions_before_compilation(shape):
+    from blockspec.pypto_qwen38.training_lora_programs import make_weight_merge
+    with pytest.raises(ValueError, match="64-aligned"):
+        make_weight_merge(*shape)
+
+
+@pytest.mark.parametrize("fp32", [False, True])
+def test_fused_merge_rank128_keeps_the_two_rounding_boundaries(fp32):
+    g = graph(1, rank=128)
+    values, _, bases = inputs(g, fp32=fp32, zero_b=False)
+    results = []
+    for fused in (False, True):
+        merge = LoRAMergeGraph(g, fused=fused)
+        bound = {alias: bases[name] for alias, name in merge.base_inputs.items()}
+        bound.update({alias: values[name] for alias, name in merge.optimizer_inputs.items()})
+        result = evaluate(merge, bound, past=0, width=32, valid=7, fp32=fp32)
+        results.append({name: result[value.name] for name, value in merge.targets.items()})
+    assert results[0].keys() == results[1].keys()
+    assert all(torch.equal(results[0][name], results[1][name]) for name in results[0])

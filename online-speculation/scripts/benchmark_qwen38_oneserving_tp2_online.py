@@ -172,6 +172,7 @@ def main(*, guard=None):
     p.add_argument("--parameterization", choices=("dense", "lora_merged"), default="dense")
     p.add_argument("--adapter-rank", type=int, default=64)
     p.add_argument("--adapter-seed", type=int, default=743)
+    p.add_argument("--adapter-merge-backend", choices=("chained", "fused"), default="chained")
     p.add_argument("--publication-backend", choices=("auto", "cpu", "device"), default="auto")
     p.add_argument("--learning-rate", default=1e-5, type=float)
     p.add_argument("--warmup-updates", default=0, type=int)
@@ -236,6 +237,8 @@ def main(*, guard=None):
     if args.parameterization == "lora_merged" and (args.feedback_mode != "delayed"
             or args.checkpoint is not None or args.cold_head is not None or args.parameter_scope != "full"):
         p.error("merged LoRA requires delayed feedback, a single served head, full scope and fresh Adam")
+    if args.parameterization != "lora_merged" and args.adapter_merge_backend != "chained":
+        p.error("adapter merge backend applies only to merged LoRA")
     if args.teacher_targets == "greedy" and (args.temperature != 0 or args.objective != "kl"
             or args.teacher_temperature != 1 or args.teacher_scaling != "host"):
         p.error("greedy teacher targets require greedy generation, KL, teacher temperature one and host preparation")
@@ -276,7 +279,8 @@ def main(*, guard=None):
     if args.parameterization == "lora_merged":
         from blockspec.pypto_qwen38.oneserving_tp2_lora import TP2LoRAOnline
         trainer_type = TP2LoRAOnline
-        extra.update(adapter_rank=args.adapter_rank, adapter_seed=args.adapter_seed)
+        extra.update(adapter_rank=args.adapter_rank, adapter_seed=args.adapter_seed,
+                     adapter_merge_backend=args.adapter_merge_backend)
     trainer = trainer_type(args.checkpoint, device=args.learner_device, last_layers=args.last_layers,
                         learning_rate=args.learning_rate, background=args.background,
                         replay_blocks=args.replay_blocks, publish_every=args.publish_every,
@@ -311,6 +315,8 @@ def main(*, guard=None):
                    parameterization=args.parameterization,
                    adapter_rank=args.adapter_rank if args.parameterization == "lora_merged" else None,
                    adapter_seed=args.adapter_seed if args.parameterization == "lora_merged" else None,
+                   adapter_merge_backend=(args.adapter_merge_backend
+                                          if args.parameterization == "lora_merged" else None),
                    publication_backend="device" if trainer.device_publication else "cpu",
                    physical_device_count=2 if trainer.colocated else 3, kv_pages=runner.pool_blocks,
                    resource_policy=runner.resource_policy,

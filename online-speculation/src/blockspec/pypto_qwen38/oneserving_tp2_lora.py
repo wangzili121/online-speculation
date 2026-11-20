@@ -14,14 +14,18 @@ from .training_optimizer_programs import make_reduce, make_stats
 
 
 class TP2LoRAOnline(TP2DelayedOnline):
-    def __init__(self, checkpoint, *args, adapter_rank=64, adapter_seed=743, **kwargs):
+    def __init__(self, checkpoint, *args, adapter_rank=64, adapter_seed=743,
+                 adapter_merge_backend="chained", **kwargs):
         if checkpoint is not None or kwargs.get("parameter_scope", "full") != "full":
             raise ValueError("merged LoRA currently requires a full parameter scope and fresh Adam")
         if type(adapter_rank) is not int or adapter_rank < 64 or adapter_rank % 64:
             raise ValueError("adapter rank must be a positive multiple of 64")
         if type(adapter_seed) is not int or adapter_seed < 0:
             raise ValueError("adapter seed must be a nonnegative integer")
+        if adapter_merge_backend not in ("chained", "fused"):
+            raise ValueError("adapter merge backend must be chained or fused")
         self.adapter_rank, self.adapter_seed = adapter_rank, adapter_seed
+        self.adapter_merge_backend = adapter_merge_backend
         super().__init__(checkpoint, *args, **kwargs)
 
     def build_training_graph(self):
@@ -37,7 +41,7 @@ class TP2LoRAOnline(TP2DelayedOnline):
         raise ValueError("merged LoRA requires a new learner to replace its immutable starting head")
 
     def compile_training_views(self):
-        self.merge_graph = LoRAMergeGraph(self.graph)
+        self.merge_graph = LoRAMergeGraph(self.graph, fused=self.adapter_merge_backend == "fused")
         self.merge_programs = TrainingPrograms(self.merge_graph, self.config, combined=True)
         meta = lambda shape: torch.empty(shape, dtype=torch.float32, device="meta")
         entry, rows = make_stats(self.full_layout.shape, input_bf16=True)

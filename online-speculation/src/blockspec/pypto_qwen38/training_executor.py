@@ -46,6 +46,9 @@ class TrainingPrograms:
                 shape = node.inputs[0].shape
                 if node.kind == "linear":
                     entry = make_linear(**node.options)
+                elif node.kind == "lora_merge":
+                    from .training_lora_programs import make_weight_merge
+                    entry = make_weight_merge(**node.options)
                 elif node.kind == "element":
                     entry = make_element(shape, **node.options)
                 elif node.kind in {"norm", "norm_dx", "norm_dw"}:

@@ -1,0 +1,1549 @@
+{
+  "completed": true,
+  "clean_shutdown": true,
+  "passed": true,
+  "cases": [
+    {
+      "name": "l63_q_weight",
+      "shape": [
+        12288,
+        5120
+      ],
+      "rank": 64,
+      "zero_b": true,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 0.0
+    },
+    {
+      "name": "l63_q_weight",
+      "shape": [
+        12288,
+        5120
+      ],
+      "rank": 64,
+      "zero_b": false,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 1.043353421437132e-07,
+      "chained_call_ns": [
+        2487791,
+        2472921,
+        2459541,
+        2462671,
+        2451372,
+        2434371,
+        2433522,
+        2415961,
+        2451151,
+        2491171,
+        2482992,
+        2454962,
+        2430091,
+        2401511,
+        2408461,
+        2425401
+      ],
+      "fused_call_ns": [
+        1904749,
+        1874339,
+        1903419,
+        1890429,
+        1872948,
+        1888879,
+        1888428,
+        1875229,
+        1896809,
+        1900939,
+        1887029,
+        1857328,
+        1875668,
+        1913249,
+        1882079,
+        1854379
+      ],
+      "chained_median_ns": 2451261.5,
+      "fused_median_ns": 1887728.5,
+      "chronological_calls": [
+        {
+          "fused": false,
+          "ns": 2487791
+        },
+        {
+          "fused": true,
+          "ns": 1904749
+        },
+        {
+          "fused": true,
+          "ns": 1874339
+        },
+        {
+          "fused": false,
+          "ns": 2472921
+        },
+        {
+          "fused": false,
+          "ns": 2459541
+        },
+        {
+          "fused": true,
+          "ns": 1903419
+        },
+        {
+          "fused": true,
+          "ns": 1890429
+        },
+        {
+          "fused": false,
+          "ns": 2462671
+        },
+        {
+          "fused": false,
+          "ns": 2451372
+        },
+        {
+          "fused": true,
+          "ns": 1872948
+        },
+        {
+          "fused": true,
+          "ns": 1888879
+        },
+        {
+          "fused": false,
+          "ns": 2434371
+        },
+        {
+          "fused": false,
+          "ns": 2433522
+        },
+        {
+          "fused": true,
+          "ns": 1888428
+        },
+        {
+          "fused": true,
+          "ns": 1875229
+        },
+        {
+          "fused": false,
+          "ns": 2415961
+        },
+        {
+          "fused": false,
+          "ns": 2451151
+        },
+        {
+          "fused": true,
+          "ns": 1896809
+        },
+        {
+          "fused": true,
+          "ns": 1900939
+        },
+        {
+          "fused": false,
+          "ns": 2491171
+        },
+        {
+          "fused": false,
+          "ns": 2482992
+        },
+        {
+          "fused": true,
+          "ns": 1887029
+        },
+        {
+          "fused": true,
+          "ns": 1857328
+        },
+        {
+          "fused": false,
+          "ns": 2454962
+        },
+        {
+          "fused": false,
+          "ns": 2430091
+        },
+        {
+          "fused": true,
+          "ns": 1875668
+        },
+        {
+          "fused": true,
+          "ns": 1913249
+        },
+        {
+          "fused": false,
+          "ns": 2401511
+        },
+        {
+          "fused": false,
+          "ns": 2408461
+        },
+        {
+          "fused": true,
+          "ns": 1882079
+        },
+        {
+          "fused": true,
+          "ns": 1854379
+        },
+        {
+          "fused": false,
+          "ns": 2425401
+        }
+      ]
+    },
+    {
+      "name": "l63_k_weight",
+      "shape": [
+        1024,
+        5120
+      ],
+      "rank": 64,
+      "zero_b": true,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 0.0
+    },
+    {
+      "name": "l63_k_weight",
+      "shape": [
+        1024,
+        5120
+      ],
+      "rank": 64,
+      "zero_b": false,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 0.0,
+      "chained_call_ns": [
+        1016364,
+        1009115,
+        995024,
+        1006255,
+        999215,
+        1056285,
+        1004684,
+        1009595,
+        998325,
+        999844,
+        1000865,
+        1003414,
+        980265,
+        999754,
+        989085,
+        999994
+      ],
+      "fused_call_ns": [
+        977815,
+        972844,
+        960414,
+        965584,
+        964734,
+        994795,
+        961335,
+        1003884,
+        966454,
+        957435,
+        959434,
+        963295,
+        955344,
+        967225,
+        959404,
+        972935
+      ],
+      "chained_median_ns": 1000429.5,
+      "fused_median_ns": 965159.0,
+      "chronological_calls": [
+        {
+          "fused": false,
+          "ns": 1016364
+        },
+        {
+          "fused": true,
+          "ns": 977815
+        },
+        {
+          "fused": true,
+          "ns": 972844
+        },
+        {
+          "fused": false,
+          "ns": 1009115
+        },
+        {
+          "fused": false,
+          "ns": 995024
+        },
+        {
+          "fused": true,
+          "ns": 960414
+        },
+        {
+          "fused": true,
+          "ns": 965584
+        },
+        {
+          "fused": false,
+          "ns": 1006255
+        },
+        {
+          "fused": false,
+          "ns": 999215
+        },
+        {
+          "fused": true,
+          "ns": 964734
+        },
+        {
+          "fused": true,
+          "ns": 994795
+        },
+        {
+          "fused": false,
+          "ns": 1056285
+        },
+        {
+          "fused": false,
+          "ns": 1004684
+        },
+        {
+          "fused": true,
+          "ns": 961335
+        },
+        {
+          "fused": true,
+          "ns": 1003884
+        },
+        {
+          "fused": false,
+          "ns": 1009595
+        },
+        {
+          "fused": false,
+          "ns": 998325
+        },
+        {
+          "fused": true,
+          "ns": 966454
+        },
+        {
+          "fused": true,
+          "ns": 957435
+        },
+        {
+          "fused": false,
+          "ns": 999844
+        },
+        {
+          "fused": false,
+          "ns": 1000865
+        },
+        {
+          "fused": true,
+          "ns": 959434
+        },
+        {
+          "fused": true,
+          "ns": 963295
+        },
+        {
+          "fused": false,
+          "ns": 1003414
+        },
+        {
+          "fused": false,
+          "ns": 980265
+        },
+        {
+          "fused": true,
+          "ns": 955344
+        },
+        {
+          "fused": true,
+          "ns": 967225
+        },
+        {
+          "fused": false,
+          "ns": 999754
+        },
+        {
+          "fused": false,
+          "ns": 989085
+        },
+        {
+          "fused": true,
+          "ns": 959404
+        },
+        {
+          "fused": true,
+          "ns": 972935
+        },
+        {
+          "fused": false,
+          "ns": 999994
+        }
+      ]
+    },
+    {
+      "name": "l63_o_weight",
+      "shape": [
+        5120,
+        6144
+      ],
+      "rank": 64,
+      "zero_b": true,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 0.0
+    },
+    {
+      "name": "l63_o_weight",
+      "shape": [
+        5120,
+        6144
+      ],
+      "rank": 64,
+      "zero_b": false,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 1.121758373301418e-06,
+      "chained_call_ns": [
+        1580147,
+        1558207,
+        1512267,
+        1557077,
+        1573057,
+        1560057,
+        1558857,
+        1560597,
+        1574957,
+        1608367,
+        1533927,
+        1546827,
+        1530787,
+        1563747,
+        1523787,
+        1543327
+      ],
+      "fused_call_ns": [
+        1356366,
+        1351827,
+        1427016,
+        1357837,
+        1365586,
+        1374577,
+        1377826,
+        1355997,
+        1359247,
+        1348906,
+        1353527,
+        1352766,
+        1371116,
+        1367217,
+        1370326,
+        1376767
+      ],
+      "chained_median_ns": 1558532.0,
+      "fused_median_ns": 1362416.5,
+      "chronological_calls": [
+        {
+          "fused": false,
+          "ns": 1580147
+        },
+        {
+          "fused": true,
+          "ns": 1356366
+        },
+        {
+          "fused": true,
+          "ns": 1351827
+        },
+        {
+          "fused": false,
+          "ns": 1558207
+        },
+        {
+          "fused": false,
+          "ns": 1512267
+        },
+        {
+          "fused": true,
+          "ns": 1427016
+        },
+        {
+          "fused": true,
+          "ns": 1357837
+        },
+        {
+          "fused": false,
+          "ns": 1557077
+        },
+        {
+          "fused": false,
+          "ns": 1573057
+        },
+        {
+          "fused": true,
+          "ns": 1365586
+        },
+        {
+          "fused": true,
+          "ns": 1374577
+        },
+        {
+          "fused": false,
+          "ns": 1560057
+        },
+        {
+          "fused": false,
+          "ns": 1558857
+        },
+        {
+          "fused": true,
+          "ns": 1377826
+        },
+        {
+          "fused": true,
+          "ns": 1355997
+        },
+        {
+          "fused": false,
+          "ns": 1560597
+        },
+        {
+          "fused": false,
+          "ns": 1574957
+        },
+        {
+          "fused": true,
+          "ns": 1359247
+        },
+        {
+          "fused": true,
+          "ns": 1348906
+        },
+        {
+          "fused": false,
+          "ns": 1608367
+        },
+        {
+          "fused": false,
+          "ns": 1533927
+        },
+        {
+          "fused": true,
+          "ns": 1353527
+        },
+        {
+          "fused": true,
+          "ns": 1352766
+        },
+        {
+          "fused": false,
+          "ns": 1546827
+        },
+        {
+          "fused": false,
+          "ns": 1530787
+        },
+        {
+          "fused": true,
+          "ns": 1371116
+        },
+        {
+          "fused": true,
+          "ns": 1367217
+        },
+        {
+          "fused": false,
+          "ns": 1563747
+        },
+        {
+          "fused": false,
+          "ns": 1523787
+        },
+        {
+          "fused": true,
+          "ns": 1370326
+        },
+        {
+          "fused": true,
+          "ns": 1376767
+        },
+        {
+          "fused": false,
+          "ns": 1543327
+        }
+      ]
+    },
+    {
+      "name": "l60_qkv_weight",
+      "shape": [
+        10240,
+        5120
+      ],
+      "rank": 64,
+      "zero_b": true,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 0.0
+    },
+    {
+      "name": "l60_qkv_weight",
+      "shape": [
+        10240,
+        5120
+      ],
+      "rank": 64,
+      "zero_b": false,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 1.238177276263741e-07,
+      "chained_call_ns": [
+        2205951,
+        2181490,
+        2149800,
+        2204420,
+        2163570,
+        2175350,
+        2169610,
+        2175970,
+        2709182,
+        2178960,
+        2146929,
+        2170780,
+        2135650,
+        2179110,
+        2149320,
+        2186130
+      ],
+      "fused_call_ns": [
+        1716148,
+        1731538,
+        1689017,
+        1689078,
+        1698258,
+        1686678,
+        1712988,
+        1680658,
+        1797759,
+        1703248,
+        1708408,
+        1687338,
+        1673298,
+        1698488,
+        1697977,
+        1689358
+      ],
+      "chained_median_ns": 2175660.0,
+      "fused_median_ns": 1698117.5,
+      "chronological_calls": [
+        {
+          "fused": false,
+          "ns": 2205951
+        },
+        {
+          "fused": true,
+          "ns": 1716148
+        },
+        {
+          "fused": true,
+          "ns": 1731538
+        },
+        {
+          "fused": false,
+          "ns": 2181490
+        },
+        {
+          "fused": false,
+          "ns": 2149800
+        },
+        {
+          "fused": true,
+          "ns": 1689017
+        },
+        {
+          "fused": true,
+          "ns": 1689078
+        },
+        {
+          "fused": false,
+          "ns": 2204420
+        },
+        {
+          "fused": false,
+          "ns": 2163570
+        },
+        {
+          "fused": true,
+          "ns": 1698258
+        },
+        {
+          "fused": true,
+          "ns": 1686678
+        },
+        {
+          "fused": false,
+          "ns": 2175350
+        },
+        {
+          "fused": false,
+          "ns": 2169610
+        },
+        {
+          "fused": true,
+          "ns": 1712988
+        },
+        {
+          "fused": true,
+          "ns": 1680658
+        },
+        {
+          "fused": false,
+          "ns": 2175970
+        },
+        {
+          "fused": false,
+          "ns": 2709182
+        },
+        {
+          "fused": true,
+          "ns": 1797759
+        },
+        {
+          "fused": true,
+          "ns": 1703248
+        },
+        {
+          "fused": false,
+          "ns": 2178960
+        },
+        {
+          "fused": false,
+          "ns": 2146929
+        },
+        {
+          "fused": true,
+          "ns": 1708408
+        },
+        {
+          "fused": true,
+          "ns": 1687338
+        },
+        {
+          "fused": false,
+          "ns": 2170780
+        },
+        {
+          "fused": false,
+          "ns": 2135650
+        },
+        {
+          "fused": true,
+          "ns": 1673298
+        },
+        {
+          "fused": true,
+          "ns": 1698488
+        },
+        {
+          "fused": false,
+          "ns": 2179110
+        },
+        {
+          "fused": false,
+          "ns": 2149320
+        },
+        {
+          "fused": true,
+          "ns": 1697977
+        },
+        {
+          "fused": true,
+          "ns": 1689358
+        },
+        {
+          "fused": false,
+          "ns": 2186130
+        }
+      ]
+    },
+    {
+      "name": "l60_z_weight",
+      "shape": [
+        6144,
+        5120
+      ],
+      "rank": 64,
+      "zero_b": true,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 0.0
+    },
+    {
+      "name": "l60_z_weight",
+      "shape": [
+        6144,
+        5120
+      ],
+      "rank": 64,
+      "zero_b": false,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 1.381160785740576e-07,
+      "chained_call_ns": [
+        1552087,
+        1542577,
+        1522217,
+        1549588,
+        1525807,
+        1556337,
+        1521977,
+        1543987,
+        1521927,
+        1546618,
+        1550947,
+        1559617,
+        1538478,
+        1539847,
+        1545857,
+        1544927
+      ],
+      "fused_call_ns": [
+        1354446,
+        1353477,
+        1382566,
+        1360016,
+        1361006,
+        1348736,
+        1359537,
+        1342666,
+        1359616,
+        1321706,
+        1342446,
+        1343626,
+        1390616,
+        1337296,
+        1360217,
+        1336556
+      ],
+      "chained_median_ns": 1544457.0,
+      "fused_median_ns": 1353961.5,
+      "chronological_calls": [
+        {
+          "fused": false,
+          "ns": 1552087
+        },
+        {
+          "fused": true,
+          "ns": 1354446
+        },
+        {
+          "fused": true,
+          "ns": 1353477
+        },
+        {
+          "fused": false,
+          "ns": 1542577
+        },
+        {
+          "fused": false,
+          "ns": 1522217
+        },
+        {
+          "fused": true,
+          "ns": 1382566
+        },
+        {
+          "fused": true,
+          "ns": 1360016
+        },
+        {
+          "fused": false,
+          "ns": 1549588
+        },
+        {
+          "fused": false,
+          "ns": 1525807
+        },
+        {
+          "fused": true,
+          "ns": 1361006
+        },
+        {
+          "fused": true,
+          "ns": 1348736
+        },
+        {
+          "fused": false,
+          "ns": 1556337
+        },
+        {
+          "fused": false,
+          "ns": 1521977
+        },
+        {
+          "fused": true,
+          "ns": 1359537
+        },
+        {
+          "fused": true,
+          "ns": 1342666
+        },
+        {
+          "fused": false,
+          "ns": 1543987
+        },
+        {
+          "fused": false,
+          "ns": 1521927
+        },
+        {
+          "fused": true,
+          "ns": 1359616
+        },
+        {
+          "fused": true,
+          "ns": 1321706
+        },
+        {
+          "fused": false,
+          "ns": 1546618
+        },
+        {
+          "fused": false,
+          "ns": 1550947
+        },
+        {
+          "fused": true,
+          "ns": 1342446
+        },
+        {
+          "fused": true,
+          "ns": 1343626
+        },
+        {
+          "fused": false,
+          "ns": 1559617
+        },
+        {
+          "fused": false,
+          "ns": 1538478
+        },
+        {
+          "fused": true,
+          "ns": 1390616
+        },
+        {
+          "fused": true,
+          "ns": 1337296
+        },
+        {
+          "fused": false,
+          "ns": 1539847
+        },
+        {
+          "fused": false,
+          "ns": 1545857
+        },
+        {
+          "fused": true,
+          "ns": 1360217
+        },
+        {
+          "fused": true,
+          "ns": 1336556
+        },
+        {
+          "fused": false,
+          "ns": 1544927
+        }
+      ]
+    },
+    {
+      "name": "l60_a_weight",
+      "shape": [
+        128,
+        5120
+      ],
+      "rank": 64,
+      "zero_b": true,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 0.0
+    },
+    {
+      "name": "l60_a_weight",
+      "shape": [
+        128,
+        5120
+      ],
+      "rank": 64,
+      "zero_b": false,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 0.0,
+      "chained_call_ns": [
+        976455,
+        976085,
+        967004,
+        990045,
+        952604,
+        973334,
+        966085,
+        1003365,
+        972214,
+        976594,
+        961585,
+        968594,
+        966065,
+        956514,
+        950424,
+        965325
+      ],
+      "fused_call_ns": [
+        942094,
+        940254,
+        951455,
+        944674,
+        939904,
+        947785,
+        946184,
+        2094630,
+        966974,
+        945234,
+        1001444,
+        935375,
+        954234,
+        940125,
+        986935,
+        928894
+      ],
+      "chained_median_ns": 967799.0,
+      "fused_median_ns": 945709.0,
+      "chronological_calls": [
+        {
+          "fused": false,
+          "ns": 976455
+        },
+        {
+          "fused": true,
+          "ns": 942094
+        },
+        {
+          "fused": true,
+          "ns": 940254
+        },
+        {
+          "fused": false,
+          "ns": 976085
+        },
+        {
+          "fused": false,
+          "ns": 967004
+        },
+        {
+          "fused": true,
+          "ns": 951455
+        },
+        {
+          "fused": true,
+          "ns": 944674
+        },
+        {
+          "fused": false,
+          "ns": 990045
+        },
+        {
+          "fused": false,
+          "ns": 952604
+        },
+        {
+          "fused": true,
+          "ns": 939904
+        },
+        {
+          "fused": true,
+          "ns": 947785
+        },
+        {
+          "fused": false,
+          "ns": 973334
+        },
+        {
+          "fused": false,
+          "ns": 966085
+        },
+        {
+          "fused": true,
+          "ns": 946184
+        },
+        {
+          "fused": true,
+          "ns": 2094630
+        },
+        {
+          "fused": false,
+          "ns": 1003365
+        },
+        {
+          "fused": false,
+          "ns": 972214
+        },
+        {
+          "fused": true,
+          "ns": 966974
+        },
+        {
+          "fused": true,
+          "ns": 945234
+        },
+        {
+          "fused": false,
+          "ns": 976594
+        },
+        {
+          "fused": false,
+          "ns": 961585
+        },
+        {
+          "fused": true,
+          "ns": 1001444
+        },
+        {
+          "fused": true,
+          "ns": 935375
+        },
+        {
+          "fused": false,
+          "ns": 968594
+        },
+        {
+          "fused": false,
+          "ns": 966065
+        },
+        {
+          "fused": true,
+          "ns": 954234
+        },
+        {
+          "fused": true,
+          "ns": 940125
+        },
+        {
+          "fused": false,
+          "ns": 956514
+        },
+        {
+          "fused": false,
+          "ns": 950424
+        },
+        {
+          "fused": true,
+          "ns": 986935
+        },
+        {
+          "fused": true,
+          "ns": 928894
+        },
+        {
+          "fused": false,
+          "ns": 965325
+        }
+      ]
+    },
+    {
+      "name": "l63_k_weight",
+      "shape": [
+        128,
+        128
+      ],
+      "rank": 64,
+      "zero_b": true,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 0.0
+    },
+    {
+      "name": "l63_k_weight",
+      "shape": [
+        128,
+        128
+      ],
+      "rank": 64,
+      "zero_b": false,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 0.0,
+      "chained_call_ns": [
+        964134,
+        949504,
+        938064,
+        952615,
+        934454,
+        970274,
+        941544,
+        959644,
+        932485,
+        944755,
+        932994,
+        949755,
+        962004,
+        960194,
+        930014,
+        947814
+      ],
+      "fused_call_ns": [
+        930275,
+        909194,
+        952284,
+        921004,
+        946444,
+        919475,
+        945385,
+        917214,
+        929254,
+        916404,
+        902464,
+        920404,
+        909764,
+        922825,
+        926855,
+        939544
+      ],
+      "chained_median_ns": 948659.0,
+      "fused_median_ns": 921914.5,
+      "chronological_calls": [
+        {
+          "fused": false,
+          "ns": 964134
+        },
+        {
+          "fused": true,
+          "ns": 930275
+        },
+        {
+          "fused": true,
+          "ns": 909194
+        },
+        {
+          "fused": false,
+          "ns": 949504
+        },
+        {
+          "fused": false,
+          "ns": 938064
+        },
+        {
+          "fused": true,
+          "ns": 952284
+        },
+        {
+          "fused": true,
+          "ns": 921004
+        },
+        {
+          "fused": false,
+          "ns": 952615
+        },
+        {
+          "fused": false,
+          "ns": 934454
+        },
+        {
+          "fused": true,
+          "ns": 946444
+        },
+        {
+          "fused": true,
+          "ns": 919475
+        },
+        {
+          "fused": false,
+          "ns": 970274
+        },
+        {
+          "fused": false,
+          "ns": 941544
+        },
+        {
+          "fused": true,
+          "ns": 945385
+        },
+        {
+          "fused": true,
+          "ns": 917214
+        },
+        {
+          "fused": false,
+          "ns": 959644
+        },
+        {
+          "fused": false,
+          "ns": 932485
+        },
+        {
+          "fused": true,
+          "ns": 929254
+        },
+        {
+          "fused": true,
+          "ns": 916404
+        },
+        {
+          "fused": false,
+          "ns": 944755
+        },
+        {
+          "fused": false,
+          "ns": 932994
+        },
+        {
+          "fused": true,
+          "ns": 902464
+        },
+        {
+          "fused": true,
+          "ns": 920404
+        },
+        {
+          "fused": false,
+          "ns": 949755
+        },
+        {
+          "fused": false,
+          "ns": 962004
+        },
+        {
+          "fused": true,
+          "ns": 909764
+        },
+        {
+          "fused": true,
+          "ns": 922825
+        },
+        {
+          "fused": false,
+          "ns": 960194
+        },
+        {
+          "fused": false,
+          "ns": 930014
+        },
+        {
+          "fused": true,
+          "ns": 926855
+        },
+        {
+          "fused": true,
+          "ns": 939544
+        },
+        {
+          "fused": false,
+          "ns": 947814
+        }
+      ],
+      "nonfinite": [
+        "nan",
+        "inf",
+        "-inf"
+      ]
+    },
+    {
+      "name": "l63_k_weight",
+      "shape": [
+        128,
+        128
+      ],
+      "rank": 128,
+      "zero_b": true,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 0.0
+    },
+    {
+      "name": "l63_k_weight",
+      "shape": [
+        128,
+        128
+      ],
+      "rank": 128,
+      "zero_b": false,
+      "chained_fused_bitwise": true,
+      "base_unchanged": true,
+      "CPU_relative_L2": 0.0,
+      "chained_call_ns": [
+        990014,
+        952544,
+        964535,
+        952595,
+        975444,
+        966584,
+        934065,
+        955925,
+        949984,
+        935625,
+        937934,
+        955254,
+        934154,
+        941964,
+        941275,
+        951904
+      ],
+      "fused_call_ns": [
+        922355,
+        910044,
+        923114,
+        923414,
+        942425,
+        908544,
+        919514,
+        920624,
+        938054,
+        910624,
+        942484,
+        906594,
+        929395,
+        918644,
+        1022354,
+        903585
+      ],
+      "chained_median_ns": 952224.0,
+      "fused_median_ns": 921489.5,
+      "chronological_calls": [
+        {
+          "fused": false,
+          "ns": 990014
+        },
+        {
+          "fused": true,
+          "ns": 922355
+        },
+        {
+          "fused": true,
+          "ns": 910044
+        },
+        {
+          "fused": false,
+          "ns": 952544
+        },
+        {
+          "fused": false,
+          "ns": 964535
+        },
+        {
+          "fused": true,
+          "ns": 923114
+        },
+        {
+          "fused": true,
+          "ns": 923414
+        },
+        {
+          "fused": false,
+          "ns": 952595
+        },
+        {
+          "fused": false,
+          "ns": 975444
+        },
+        {
+          "fused": true,
+          "ns": 942425
+        },
+        {
+          "fused": true,
+          "ns": 908544
+        },
+        {
+          "fused": false,
+          "ns": 966584
+        },
+        {
+          "fused": false,
+          "ns": 934065
+        },
+        {
+          "fused": true,
+          "ns": 919514
+        },
+        {
+          "fused": true,
+          "ns": 920624
+        },
+        {
+          "fused": false,
+          "ns": 955925
+        },
+        {
+          "fused": false,
+          "ns": 949984
+        },
+        {
+          "fused": true,
+          "ns": 938054
+        },
+        {
+          "fused": true,
+          "ns": 910624
+        },
+        {
+          "fused": false,
+          "ns": 935625
+        },
+        {
+          "fused": false,
+          "ns": 937934
+        },
+        {
+          "fused": true,
+          "ns": 942484
+        },
+        {
+          "fused": true,
+          "ns": 906594
+        },
+        {
+          "fused": false,
+          "ns": 955254
+        },
+        {
+          "fused": false,
+          "ns": 934154
+        },
+        {
+          "fused": true,
+          "ns": 929395
+        },
+        {
+          "fused": true,
+          "ns": 918644
+        },
+        {
+          "fused": false,
+          "ns": 941964
+        },
+        {
+          "fused": false,
+          "ns": 941275
+        },
+        {
+          "fused": true,
+          "ns": 1022354
+        },
+        {
+          "fused": true,
+          "ns": 903585
+        },
+        {
+          "fused": false,
+          "ns": 951904
+        }
+      ]
+    }
+  ],
+  "scope": "Independent single-card real projection geometry; synchronous call timings, not whole model speed"
+}

@@ -11,10 +11,31 @@ from blockspec.pypto_qwen38.online_suffix_optimizer import SuffixOptimizer
 
 
 @pytest.mark.parametrize("kwargs", [dict(adapter_rank=32), dict(adapter_rank=True),
-    dict(adapter_seed=-1), dict(parameter_scope="norms")])
+    dict(adapter_seed=-1), dict(parameter_scope="norms"), dict(adapter_merge_backend="unknown")])
 def test_incompatible_adapter_configuration_is_rejected(kwargs):
     with pytest.raises(ValueError):
         TP2LoRAOnline(None, device=0, last_layers=1, **kwargs)
+
+
+@pytest.mark.parametrize("backend", ["chained", "fused"])
+def test_merge_choice_reaches_compiler_without_changing_optimizer(backend, monkeypatch):
+    from blockspec.pypto_qwen38 import oneserving_tp2_lora as module
+
+    trainer = TP2LoRAOnline(None, device=0, last_layers=4, adapter_merge_backend=backend)
+    trainer.graph = trainer.build_training_graph()
+    trainer.config = object()
+    class Captured(Exception):
+        pass
+    def compile_graph(graph, config, *, combined):
+        assert config is trainer.config and combined
+        assert graph.layout.schema() == trainer.full_layout.schema()
+        assert bool(graph.scratch) == (backend == "chained")
+        assert any(n.kind == "lora_merge" for n in graph.nodes) == (backend == "fused")
+        raise Captured
+    monkeypatch.setattr(module, "TrainingPrograms", compile_graph)
+    with pytest.raises(Captured):
+        trainer.compile_training_views()
+    assert trainer.graph.trainable_parameter_count == 12035328
 
 
 def test_optimizer_checkpoint_is_not_mistaken_for_adapter_state():

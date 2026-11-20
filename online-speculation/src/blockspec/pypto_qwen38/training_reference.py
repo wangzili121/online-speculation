@@ -26,6 +26,10 @@ def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False, 
 
     def execute(node, args):
         op, cfg = node.kind, node.options
+        if op == "lora_merge":
+            base, b, a = args
+            delta = cast(b @ a)
+            return (cast(base.float() + delta.float()),)
         if op == "parameter_copy":
             return (args[0].clone(),)
         if op.startswith("gdn_"):

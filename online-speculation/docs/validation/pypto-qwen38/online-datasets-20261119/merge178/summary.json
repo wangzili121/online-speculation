@@ -1,0 +1,98 @@
+{
+  "completed": true,
+  "passed": true,
+  "clean_shutdown": true,
+  "case_count": 16,
+  "bitwise": true,
+  "timings": [
+    {
+      "name": "l63_q_weight",
+      "shape": [
+        12288,
+        5120
+      ],
+      "rank": 64,
+      "chained_ms": 2.4512615,
+      "fused_ms": 1.8877285,
+      "speedup": 1.2985243905572226
+    },
+    {
+      "name": "l63_k_weight",
+      "shape": [
+        1024,
+        5120
+      ],
+      "rank": 64,
+      "chained_ms": 1.0004295,
+      "fused_ms": 0.965159,
+      "speedup": 1.0365437197394418
+    },
+    {
+      "name": "l63_o_weight",
+      "shape": [
+        5120,
+        6144
+      ],
+      "rank": 64,
+      "chained_ms": 1.558532,
+      "fused_ms": 1.3624165,
+      "speedup": 1.1439468033453792
+    },
+    {
+      "name": "l60_qkv_weight",
+      "shape": [
+        10240,
+        5120
+      ],
+      "rank": 64,
+      "chained_ms": 2.17566,
+      "fused_ms": 1.6981175,
+      "speedup": 1.2812187613636865
+    },
+    {
+      "name": "l60_z_weight",
+      "shape": [
+        6144,
+        5120
+      ],
+      "rank": 64,
+      "chained_ms": 1.544457,
+      "fused_ms": 1.3539615,
+      "speedup": 1.1406949163620974
+    },
+    {
+      "name": "l60_a_weight",
+      "shape": [
+        128,
+        5120
+      ],
+      "rank": 64,
+      "chained_ms": 0.967799,
+      "fused_ms": 0.945709,
+      "speedup": 1.0233581365938147
+    },
+    {
+      "name": "l63_k_weight",
+      "shape": [
+        128,
+        128
+      ],
+      "rank": 64,
+      "chained_ms": 0.948659,
+      "fused_ms": 0.9219145,
+      "speedup": 1.0290097400572396
+    },
+    {
+      "name": "l63_k_weight",
+      "shape": [
+        128,
+        128
+      ],
+      "rank": 128,
+      "chained_ms": 0.952224,
+      "fused_ms": 0.9214895,
+      "speedup": 1.0333530658786672
+    }
+  ],
+  "scope": "Paired synchronous NPU calls including worker overhead; not isolated kernel or whole-stream throughput"
+}

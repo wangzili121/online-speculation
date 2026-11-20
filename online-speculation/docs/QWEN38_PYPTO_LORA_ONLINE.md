@@ -8,7 +8,7 @@
 
 前向、输入梯度和服务推理读取合并后的完整 $W$，没有在每轮起草中额外执行 LoRA 分支。当前反向复用已有 $dW$，计算 $dA=B^T dW$、$dB=dW A^T$。该路径仍计算 dense $dW$，不能仅由参数减少推断反向加速。投影梯度与合并遵守既有 BF16 运算边界。
 
-每次 Adam 更新先渲染候选适配器，复用已完成反向的 $dW$ 工作区计算 $BA$，与只读 $W_0$ 相加，写入非活跃完整权重视图。通过有限性检查后才切换优化器状态；即使本次没有到服务发布周期，也要更新 learner 的完整权重。到达发布周期时沿用现有 TP2 打包、DMA 和安全边界，两个 rank 一起切换。推理 head 导出为普通合并权重，不要求调用方支持 LoRA。
+每次 Adam 更新先渲染候选适配器，计算 $BA$，与只读 $W_0$ 相加，写入非活跃完整权重视图。默认分开执行，借用已完成反向的 $dW$ 工作区；可选融合路径在同一 kernel 内计算增量并相加，不再写回完整 FP32 delta，两次 BF16 舍入边界保持一致。通过有限性检查后才切换优化器状态；即使本次没有到服务发布周期，也要更新 learner 的完整权重。到达发布周期时沿用现有 TP2 打包、DMA 和安全边界，两个 rank 一起切换。推理 head 导出为普通合并权重，不要求调用方支持 LoRA。
 
 显存预检额外计入一份 $W_0$、两个完整执行视图和统计缓冲；小适配器执行缓冲不能借给完整 head 打包。当前仅支持 fresh Adam 和单一起始 head，不接受 dense optimizer checkpoint 或中途更换 $W_0$。
 
@@ -18,7 +18,13 @@
 
 编译阶段曾因同类型 FP32 cast 失败；改为在构造程序时选择精度分支后通过。失败日志、源码哈希、CPU 记录和后续设备结果保留在 `validation/pypto-qwen38/online-datasets-20261119/lora166/`。
 
+每四步使用设备打包发布的 last-4 短检查也已通过：六次优化器更新，服务只发布至第四步，最后两步未发布；导出精确对应服务第四步，greedy 与 AR 一致，回放 TV/L2 与逐次发布检查一致。证据见 `lora166/cadence175/`。这验证了未发布学习版本与实际服务版本的区分。
+
+融合合并的 439 项 CPU 回归及 16 组独立 NPU 检查通过，覆盖真实投影形状、rank 64/128、零/非零增量及 NaN/Inf。融合与分开执行的输出逐位相同，基础权重未修改。配对同步调用中，12288×5120 的 Q 投影合并为 2.451 → 1.888 ms，10240×5120 的 GDN QKV 为 2.176 → 1.698 ms；这些时间包含 worker 调用成本，不能解释为整个模型的加速。默认仍为分开执行，完整服务的融合回归单独记录。源码哈希、原始样本及日志见 `merge178/`。
+
+完整 Pseudo2code 56 题探索中，last-4/rank64、硬标签 KL、学习率 1e-4、全程持续更新 56 步的 AR/固定/在线吞吐分别为 19.507/20.879/20.358 tok/s，在线相对 AR 为 +4.36%，相对固定为 −2.50%；最终 head 原题冻结重跑为 21.661 tok/s。接受数从固定组 1.727 提高至在线组 1.868，但未覆盖更新开销。该配方尚未达到双基线 +5% 门槛，不消耗预留确认题。
+
 
 ## 入口
 
-沿用 `scripts/benchmark_qwen38_oneserving_tp2_online.py` 的 TP2 参数和数据配置，增加 `--parameterization lora_merged --adapter-rank 64 --adapter-seed 743`。选择 `--last-layers 1` 或 `4`，并使用 `--feedback-mode delayed`。未指定 `parameterization` 时仍执行原来的 `dense` 更新。硬标签教师继续要求 greedy 生成及 KL；其他教师分布配置保留。
+沿用 `scripts/benchmark_qwen38_oneserving_tp2_online.py` 的 TP2 参数和数据配置，增加 `--parameterization lora_merged --adapter-rank 64 --adapter-seed 743`。选择 `--last-layers 1` 或 `4`，并使用 `--feedback-mode delayed`。`--adapter-merge-backend chained|fused` 选择合并实现，默认 `chained`。未指定 `parameterization` 时仍执行原来的 `dense` 更新。硬标签教师继续要求 greedy 生成及 KL；其他教师分布配置保留。
