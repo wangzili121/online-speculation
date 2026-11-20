@@ -131,7 +131,7 @@ class TP2Online:
                  focus_weight=1, audit_replay=False, teacher_temperature=1.0, warmup_updates=0,
                  lr_schedule="constant", parameter_scope="full", warm_update_stride=None,
                  warm_update_steps=0, publication_backend="auto", inner_steps=1, overlap_sampling=False,
-                 position_weighting="uniform", teacher_scaling="host"):
+                 position_weighting="uniform", teacher_scaling="host", teacher_targets="distribution"):
         if type(overlap_sampling) is not bool or overlap_sampling and (background or last_layers not in (1, 4)):
             raise ValueError("sampling overlap requires last-1 or last-4 and no dedicated background learner")
         self.overlap_sampling = overlap_sampling
@@ -183,6 +183,10 @@ class TP2Online:
             raise ValueError("device teacher scaling requires a power-of-two temperature in [2^-16,2^16]")
         self.teacher_scaling = teacher_scaling
         self.device_teacher_scaling = teacher_scaling == "device" and teacher_temperature != 1
+        if teacher_targets not in {"distribution", "greedy"} or teacher_targets == "greedy" and (
+                objective != "kl" or teacher_temperature != 1 or teacher_scaling != "host"):
+            raise ValueError("greedy teacher targets require KL, temperature one and host preparation")
+        self.teacher_targets = teacher_targets
         if type(warmup_updates) is not int or warmup_updates < 0:
             raise ValueError("warmup_updates must be a nonnegative integer")
         self.warmup_updates = warmup_updates
@@ -570,7 +574,8 @@ class TP2Online:
         self.runner.spec_stats["feedback_ns"] += time.monotonic_ns() - started
 
     def capture_request(self, slot):
-        pass
+        if self.teacher_targets == "greedy" and slot.request.sampling.temperature != 0:
+            raise ValueError("greedy teacher targets require deterministic target generation")
 
     def capture_logits(self, logits, first_row):
         if not self.audit_replay or self._audit_claimed:
@@ -598,26 +603,34 @@ class TP2Online:
     def observe_teacher(self, slot, batch_slot, emitted, previous, offset, count, *, final, selected):
         if selected and self.feedback is not None and not self.feedback["complete"]:
             delivered, stopped = served_prefix(slot.request, len(previous), emitted)
-            self.capture_teacher(batch_slot, offset, min(count, len(delivered)), final=final or stopped)
+            extra = {"target_ids": delivered} if self.teacher_targets == "greedy" else {}
+            self.capture_teacher(batch_slot, offset, min(count, len(delivered)), final=final or stopped, **extra)
 
-    def capture_teacher(self, batch_slot, offset, count, *, final, source_row=0):
+    def capture_teacher(self, batch_slot, offset, count, *, final, source_row=0, target_ids=None):
         started = time.monotonic_ns()
         state = self.feedback
         if offset < state["candidates"]:
             if offset != state["valid"] or state["complete"]:
                 raise RuntimeError("feedback teacher rows must be a fresh contiguous verified prefix")
             count = min(count, state["candidates"] - offset)
-            source = self.runner.outputs[self.runner._last_layout["output_key"]][1]
-            parts = [self.feedback_teacher_parts[rank, :count] for rank in range(2)]
-            for rank in range(2):
-                self.read(rank, source, parts[rank], (4 * batch_slot + source_row) * TP_VOCAB * 2)
-            # Pack both vocabulary shards by row, then upload the entire
-            # verified chunk in one transfer instead of two calls per row.
             teacher = self.feedback_teacher[:count]
-            torch.cat(parts, dim=-1, out=teacher)
-            if self.teacher_temperature != 1 and not self.device_teacher_scaling:
-                # 保留原 FP32 缩放/BF16 舍入，并放回已登记的上传缓冲。
-                teacher.copy_(self.training_teacher(teacher))
+            if self.teacher_targets == "greedy":
+                if (target_ids is None or len(target_ids) < count or not 1 <= count <= VERIFY_ROWS
+                        or any(type(t) is not int or not 0 <= t < 2 * TP_VOCAB for t in target_ids[:count])):
+                    raise ValueError("greedy feedback requires one verified vocabulary ID per fresh row")
+                # 用已提交的 AR greedy token 做硬监督；有限负值使现有 KL 核等价于交叉熵。
+                # 不读取全词表教师分片，也不修改验证 logits 或持久 cache。
+                teacher.fill_(-10000.)
+                teacher[torch.arange(count), list(target_ids[:count])] = 0.
+            else:
+                source = self.runner.outputs[self.runner._last_layout["output_key"]][1]
+                parts = [self.feedback_teacher_parts[rank, :count] for rank in range(2)]
+                for rank in range(2):
+                    self.read(rank, source, parts[rank], (4 * batch_slot + source_row) * TP_VOCAB * 2)
+                torch.cat(parts, dim=-1, out=teacher)
+                if self.teacher_temperature != 1 and not self.device_teacher_scaling:
+                    # 保留原 FP32 缩放/BF16 舍入，并放回已登记的上传缓冲。
+                    teacher.copy_(self.training_teacher(teacher))
             self.upload("teacher", teacher, offset * 2 * TP_VOCAB * teacher.element_size())
             if self.device_teacher_scaling:
                 from pypto.runtime.task_interface import DataType

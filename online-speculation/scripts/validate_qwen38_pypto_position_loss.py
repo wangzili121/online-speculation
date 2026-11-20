@@ -15,9 +15,12 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--weighting", choices=("rejection_decay", "first_rejection"), default="rejection_decay")
     parser.add_argument("--teacher-temperature", type=float, default=1.)
+    parser.add_argument("--teacher-targets", choices=("distribution", "greedy"), default="distribution")
     args = parser.parse_args()
     if args.output.exists() or not isfinite(args.teacher_temperature) or args.teacher_temperature <= 0:
         parser.error("fresh output and positive finite teacher temperature required")
+    if args.teacher_targets == "greedy" and args.teacher_temperature != 1:
+        parser.error("greedy targets do not use teacher temperature scaling")
     import torch
     from pypto.backend import BackendType
     from pypto.ir import DistributedConfig
@@ -30,11 +33,16 @@ def main():
     config = RunConfig(backend_type=BackendType.Ascend910B, execution_mode=ExecutionMode.ONBOARD,
                        distributed_config=DistributedConfig(device_ids=[args.device], num_sub_workers=0))
     report = dict(passed=False, clean_shutdown=False, vocabulary=args.vocabulary,
-                  weighting=args.weighting, teacher_temperature=args.teacher_temperature, cases=[], timings=[])
+                  weighting=args.weighting, teacher_temperature=args.teacher_temperature,
+                  teacher_targets=args.teacher_targets, cases=[], timings=[])
     worker, handles = None, []
     try:
         student = torch.randn(32, args.vocabulary, dtype=torch.bfloat16).requires_grad_()
         teacher = (torch.randn_like(student).float() / args.teacher_temperature).to(student.dtype)
+        labels = torch.randint(args.vocabulary, (32,))
+        if args.teacher_targets == "greedy":
+            teacher.fill_(-10000.)
+            teacher[torch.arange(32), labels] = 0.
         weights = torch.ones(32, 8)
         gradient, losses = torch.zeros_like(student), torch.zeros(32, 8)
         programs = {}
@@ -68,6 +76,10 @@ def main():
                 per_row = (.5 * (log_q.exp() - log_p.exp()).abs().sum(-1) if objective == "tv" else
                            (log_p.exp() * (log_p - log_q)).sum(-1))
                 expected = (per_row * weights[:, 0]).sum() / normalizer
+                if args.teacher_targets == "greedy" and objective == "kl" and not tied:
+                    # 独立标签交叉熵，不用 KL 的相同表达式作为参考。
+                    expected = (torch.nn.functional.cross_entropy(student.float(), labels, reduction="none")
+                                * weights[:, 0]).sum() / normalizer
                 expected_gradient, = torch.autograd.grad(expected, student)
                 actual, actual_loss = read(dg, gradient), read(dl, losses)
                 torch.testing.assert_close(actual, expected_gradient, atol=2e-7, rtol=.03)

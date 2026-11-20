@@ -187,6 +187,8 @@ def main(*, guard=None):
                    help="temperature of the learner's teacher distribution; does not change generation")
     p.add_argument("--teacher-scaling", choices=("host", "device"), default="host",
                    help="device scaling uses the existing PyPTO elementwise kernel at power-of-two temperatures")
+    p.add_argument("--teacher-targets", choices=("distribution", "greedy"), default="distribution",
+                   help="greedy learns emitted deterministic target IDs with the existing KL kernel")
     p.add_argument("--audit-replay", action="store_true",
                    help="diagnose the first feedback replay against actual draft logits; include its cost")
     p.add_argument("--max-updates", type=int, help="cap Adam steps during the measured online stream")
@@ -224,6 +226,9 @@ def main(*, guard=None):
         p.error(str(error))
     if args.cold_head is not None and args.checkpoint is not None:
         p.error("cold fallback uses fresh Adam for both starts")
+    if args.teacher_targets == "greedy" and (args.temperature != 0 or args.objective != "kl"
+            or args.teacher_temperature != 1 or args.teacher_scaling != "host"):
+        p.error("greedy teacher targets require greedy generation, KL, teacher temperature one and host preparation")
     strides = [int(value) for value in args.strides.split(",")]
     if args.interleaved and (args.background or len(strides) != 1):
         p.error("interleaved evaluation requires one stride and synchronous updates")
@@ -263,6 +268,7 @@ def main(*, guard=None):
                         gather_feedback=args.gather_feedback, objective=args.objective, max_updates=args.max_updates,
                         focus_weight=args.focus_weight, audit_replay=args.audit_replay,
                         teacher_temperature=args.teacher_temperature, teacher_scaling=args.teacher_scaling,
+                        teacher_targets=args.teacher_targets,
                         warmup_updates=args.warmup_updates,
                         lr_schedule=args.lr_schedule, parameter_scope=args.parameter_scope,
                         warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
@@ -308,6 +314,7 @@ def main(*, guard=None):
                    teacher_tokens=args.teacher_tokens if args.feedback_mode == "delayed" else None,
                    teacher_temperature=args.teacher_temperature,
                    teacher_scaling=args.teacher_scaling,
+                   teacher_targets=args.teacher_targets,
                    audit_replay=args.audit_replay,
                    online_update_policy=policy,
                    temperature=args.temperature, seed=args.seed,

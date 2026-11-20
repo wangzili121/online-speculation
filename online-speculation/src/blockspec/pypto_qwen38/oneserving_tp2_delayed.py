@@ -50,6 +50,7 @@ class TP2DelayedOnline(TP2Online):
         return index
 
     def capture_request(self, slot):
+        super().capture_request(slot)
         request = slot.request
         if request.stop_strings:
             raise ValueError("delayed teacher feedback currently requires token-based stopping")
@@ -89,7 +90,8 @@ class TP2DelayedOnline(TP2Online):
         # the emitted correction before any of their distributions are uploaded.
         self.window.append_verified(request.request_id, prefix, slot.token_ids[:len(delivered)],
                                     delivered, list(range(slot.position, slot.position + len(delivered))))
-        super().capture_teacher(batch_slot, first, len(delivered), final=False, source_row=source_row)
+        extra = {"target_ids": delivered} if self.teacher_targets == "greedy" else {}
+        super().capture_teacher(batch_slot, first, len(delivered), final=False, source_row=source_row, **extra)
         if stopped or len(delivered) == remaining:
             self.window.finish()
         self.feedback["full_feedback"] = self.window.full
