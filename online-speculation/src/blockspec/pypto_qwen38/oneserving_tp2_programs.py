@@ -10,13 +10,16 @@ GROUP_LAYERS = 64
 
 
 def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backend="paged",
-                       batch_size=1, compact_tp=False, capture_layer=None, draft_convolution="sequential"):
+                       batch_size=1, compact_tp=False, capture_layer=None, draft_convolution="sequential",
+                       gdn_valid_rows=False):
     if group_layers not in (4, 8, 16, 32, 64):
         raise ValueError("draft layer groups must divide the 64-layer backbone and end on full attention")
     if batch_size not in (1, 2) or batch_size == 2 and not compact_tp:
         raise ValueError("a paired draft requires compact TP")
     if draft_convolution not in ("sequential", "parallel64", "parallel128"):
         raise ValueError("unsupported draft convolution backend")
+    if type(gdn_valid_rows) is not bool:
+        raise ValueError("gdn_valid_rows must be a boolean")
     capture_feedback = capture_layer is not None
     # JIT 会解析条件分支；关闭反馈时也须保持层号比较为数值类型。
     capture_index = capture_layer if capture_feedback else -1
@@ -126,7 +129,8 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
     @pl.jit.inline
     def recurrent(q: pl.Tensor, k: pl.Tensor, v: pl.Tensor, decay: pl.Tensor, beta: pl.Tensor,
                   history: pl.Tensor, out: pl.Tensor, slot: pl.Scalar[pl.INT32],
-                  slot_second: pl.Scalar[pl.INT32], layer: pl.Scalar[pl.INT32]):
+                  slot_second: pl.Scalar[pl.INT32], layer: pl.Scalar[pl.INT32],
+                  width: pl.Scalar[pl.INT32], width_second: pl.Scalar[pl.INT32]):
         states = pl.reshape(history, [32 * 48 * 24 * 128, 128])
         with pl.spmd(recurrence_blocks, name_hint="orthrus_tp2_recurrent"):
             for task in pl.range(pl.tile.get_block_idx(), 48 * batch_size, recurrence_blocks):
@@ -137,7 +141,10 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
                 request_slot = slot + seq * (slot_second - slot)
                 start = ((request_slot * 48 + layer) * 24 + head) * 128 + col
                 state = pl.slice(states, [64, 128], [start, 0])
-                for token in pl.range(32):
+                count = width + seq * (width_second - width)
+                if not gdn_valid_rows:
+                    count = 32
+                for token in pl.range(count):
                     query = pl.slice(q, [1, 128], [first + token, head * 128])
                     key = pl.slice(k, [1, 128], [first + token, head * 128])
                     decay_value = pl.read(decay, [first + token, head])
@@ -152,6 +159,11 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
                     y = pl.reshape(pl.row_sum(pl.col_expand_mul(state, query)), [1, 64])
                     out[first + token:first + token + 1, head * 128 + col:head * 128 + col + 64] = pl.cast(
                         y, pl.BF16, mode="rint")
+                if gdn_valid_rows:
+                    # 无效行仍初始化，后续向量/矩阵核不会读取未定义的工作区。
+                    for token in pl.range(count, 32):
+                        out[first + token:first + token + 1, head * 128 + col:head * 128 + col + 64] = pl.full(
+                            [1, 64], pl.BF16, value=0.)
         return out
 
     @pl.jit.inline(auto_scope=False)
@@ -159,7 +171,7 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
             bw: pl.Tensor, cw: pl.Tensor, al: pl.Tensor[[1, 32], pl.FP32], dt: pl.Tensor, norm: pl.Tensor,
             conv_state: pl.Tensor, recurrent_state: pl.Tensor, partial: pl.Tensor,
             slot: pl.Scalar[pl.INT32], slot_second: pl.Scalar[pl.INT32],
-            layer: pl.Scalar[pl.INT32]):
+            layer: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32], width_second: pl.Scalar[pl.INT32]):
         with pl.scope():
             projected = pl.create_tensor([rows_per_dispatch, 5120], dtype=pl.BF16)
             z = pl.create_tensor([rows_per_dispatch, 3072], dtype=pl.BF16)
@@ -179,7 +191,8 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
             convolution(projected, cw, conv_state, conv, slot, slot_second, layer)
             parameters(a, b, al, dt, decay, beta)
             delta_normalize(conv, qn, kn)
-            recurrent(qn, kn, conv, decay, beta, recurrent_state, core, slot, slot_second, layer)
+            recurrent(qn, kn, conv, decay, beta, recurrent_state, core, slot, slot_second, layer,
+                      width, width_second)
             delta_gate(core, z, norm, gated)
             row_projection(gated, ow, partial)
         return partial
@@ -296,7 +309,7 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
                             dt = pl.slice(delta_dt_bias, [1, 32], [linear, 0])
                             norm = pl.slice(delta_norm, [1, 128], [linear, 0])
                             gdn(normalized, qw, zw, ow, aw, bw, cw, al, dt, norm,
-                                conv_state, recurrent_state, partial, slot, slot_second, linear)
+                                conv_state, recurrent_state, partial, slot, slot_second, linear, width, width_second)
                         else:
                             tail = layer - 60
                             tqw = pl.slice(head_qkv, [5120, 5120], [tail * 5120, 0])
@@ -309,7 +322,7 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
                             tdt = pl.slice(head_dt_bias, [1, 32], [tail, 0])
                             tnorm = pl.slice(head_norm, [1, 128], [tail, 0])
                             gdn(normalized, tqw, tzw, tow, taw, tbw, tcw, tal, tdt, tnorm,
-                                conv_state, recurrent_state, partial, slot, slot_second, linear)
+                                conv_state, recurrent_state, partial, slot, slot_second, linear, width, width_second)
                     else:
                         index = layer // 4
                         if layer < 63:

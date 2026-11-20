@@ -162,6 +162,10 @@ def main(*, guard=None):
     p.add_argument("--stop-on-eos", action="store_true", help="use natural EOS within the token budget")
     p.add_argument("--candidates", default=31, type=int, choices=range(1, 32),
                    help="maximum proposed tokens from the unchanged K32 draft block")
+    p.add_argument("--draft-width", default=32, type=int, choices=range(2, 33),
+                   help="logical anchor+MASK positions within the unchanged 32-row storage")
+    p.add_argument("--gdn-valid-rows", action="store_true",
+                   help="skip causal GDN recurrence after each draft block's valid boundary")
     p.add_argument("--verify-chunk-size", default=4, type=int, choices=(1, 2, 4),
                    help="rows per verification dispatch within the unchanged native C4 snapshot capacity")
     p.add_argument("--draft-convolution", choices=("sequential", "parallel64", "parallel128"), default="sequential")
@@ -234,6 +238,9 @@ def main(*, guard=None):
         p.error("cold fallback uses fresh Adam for both starts")
     if args.feedback_timing != "early" and args.feedback_mode != "delayed":
         p.error("near_update timing requires delayed feedback")
+    if args.candidates >= args.draft_width or (args.feedback_mode == "delayed"
+                                              and args.teacher_tokens >= args.draft_width):
+        p.error("candidates and delayed teacher horizon must fit within draft width minus anchor")
     if args.parameterization == "lora_merged" and (args.feedback_mode != "delayed"
             or args.checkpoint is not None or args.cold_head is not None or args.parameter_scope != "full"):
         p.error("merged LoRA requires delayed feedback, a single served head, full scope and fresh Adam")
@@ -298,6 +305,8 @@ def main(*, guard=None):
                            long_prefill_token_threshold=4)
     engine = InferenceEngine(config)
     runner = engine.runner = OrthrusTP2Runner(config, args.head, draft_batch_size=2,
+                                              output_candidates=args.candidates, draft_width=args.draft_width,
+                                              gdn_valid_rows=args.gdn_valid_rows,
                                               online=trainer, kv_pages=args.kv_pages,
                                               stochastic=bool(args.temperature), lazy_sampling=args.lazy_sampling,
                                               verify_chunk_size=args.verify_chunk_size,
@@ -347,6 +356,7 @@ def main(*, guard=None):
                            if args.temperature else "device_greedy",
                    replay_blocks=args.replay_blocks, publish_every=args.publish_every, inner_steps=args.inner_steps,
                    stop_on_eos=args.stop_on_eos, candidates=args.candidates,
+                   draft_width=args.draft_width, gdn_valid_rows=args.gdn_valid_rows,
                    verify_chunk_size=args.verify_chunk_size,
                    requests=2 * len(prompts), ar_checked_requests=ar_requests, output_tokens_per_request=args.tokens,
                    prompts_sha256=hashlib.sha256(args.prompts.read_bytes()).hexdigest(),

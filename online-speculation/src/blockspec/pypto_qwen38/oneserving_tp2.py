@@ -169,13 +169,19 @@ class OrthrusTP2Runner(TensorParallelRunner):
     def __init__(self, config, head_directory, *, output_candidates=31, group_layers=GROUP_LAYERS,
                  attention_backend="paged", draft_batch_size=1, online=None, kv_pages=None, stochastic=False,
                  lazy_sampling=False, ring_heap_min_mib=256, verify_chunk_size=VERIFY_ROWS, on_cache_event=None,
-                 draft_convolution="sequential", audit_convolution=False):
+                 draft_convolution="sequential", audit_convolution=False, draft_width=BLOCK,
+                 gdn_valid_rows=False):
         if (config.speculative_tokens or config.prefix_cache or config.max_model_len != 512
                 or config.long_prefill_token_threshold != VERIFY_ROWS
                 or config.max_num_batched_tokens < config.max_num_seqs * VERIFY_ROWS):
             raise ValueError("Orthrus TP2 requires capped prefill, 512 context, and native MTP/prefix cache off")
-        if not 1 <= output_candidates < BLOCK:
-            raise ValueError("candidate budget must be in [1, 31]")
+        if type(draft_width) is not int or not 2 <= draft_width <= BLOCK:
+            raise ValueError("draft width must be in [2, 32]")
+        if not 1 <= output_candidates < draft_width:
+            raise ValueError("candidate budget must fit within the draft width")
+        if type(gdn_valid_rows) is not bool:
+            raise ValueError("gdn_valid_rows must be a boolean")
+        self.draft_width, self.gdn_valid_rows = draft_width, gdn_valid_rows
         if type(verify_chunk_size) is not int or verify_chunk_size not in (1, 2, VERIFY_ROWS):
             raise ValueError("verification chunk must contain one, two or four rows")
         self.verify_chunk_size = verify_chunk_size
@@ -274,7 +280,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
                                    attention_backend=self.attention_backend, batch_size=batch_size,
                                    compact_tp=self.draft_batch_size == 2,
                                    capture_layer=None if self.online is None else self.online.layers[0],
-                                   draft_convolution=convolution or self.draft_convolution)
+                                   draft_convolution=convolution or self.draft_convolution,
+                                   gdn_valid_rows=self.gdn_valid_rows)
         return draft.compile(sample_inputs["ids"], sample_inputs["rows"], *banks, *suffix, *state,
                              *(sample_inputs[name] for name, _, _ in inputs[2:-1]),
                              meta((rows, HIDDEN), torch.bfloat16),
@@ -367,7 +374,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
             position = slot.position
             if record["pages"].length != position:
                 raise RuntimeError("Draft anchor must follow the committed history")
-            width = min(BLOCK, self.settings.max_model_len - position)
+            # 保持 K32 存储与权重格式；Attention 和训练只使用该轮的有效位置。
+            width = min(self.draft_width, self.settings.max_model_len - position)
             if not 0 < candidates < width:
                 raise RuntimeError("Draft prediction budget exceeds block width")
             first = index * BLOCK
@@ -495,7 +503,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
         if stochastic and (not self.stochastic or False in sampling_modes):
             raise ValueError("enable full-vocabulary sampling and use the same mode across the batch")
         # Reuse native prefill and single-token fallback when the draft has no work.
-        budgets = [min(self.output_candidates, slot.request.max_tokens - len(slot.request.generated) - 1)
+        budgets = [min(self.output_candidates, getattr(self, "draft_width", BLOCK) - 1,
+                       slot.request.max_tokens - len(slot.request.generated) - 1)
                    if slot.phase == "decode" else 0 for slot in slots]
         if not any(budgets):
             return self._native_batch(slots)
