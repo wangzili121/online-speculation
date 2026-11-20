@@ -171,9 +171,9 @@ class TP2Online:
                 or focus_weight != 1 and objective != "tv"):
             raise ValueError("positive TV focus weight required; KL uses weight one")
         self.focus_weight = focus_weight
-        if position_weighting not in ("uniform", "rejection_decay") or (
+        if position_weighting not in ("uniform", "rejection_decay", "first_rejection") or (
                 position_weighting != "uniform" and focus_weight != 1):
-            raise ValueError("position weighting requires uniform or rejection_decay and focus_weight=1")
+            raise ValueError("unknown position weighting or nonunit focus_weight")
         self.position_weighting = position_weighting
         if not isfinite(teacher_temperature) or teacher_temperature <= 0:
             raise ValueError("positive finite training teacher temperature required")
@@ -612,10 +612,11 @@ class TP2Online:
             state, self.feedback = self.feedback, None
             if not state["complete"] or not 1 <= state["valid"] <= state["candidates"]:
                 raise RuntimeError("an update requires verified feedback")
-            if getattr(self, "position_weighting", "uniform") == "rejection_decay":
+            if getattr(self, "position_weighting", "uniform") != "uniform":
                 from .verification_weights import rejection_weights
                 started = time.monotonic_ns()
-                weights, total = rejection_weights(state["valid"], state.get("first_rejection"))
+                weights, total = rejection_weights(state["valid"], state.get("first_rejection"),
+                                                    mode=self.position_weighting)
                 self.inputs = state["inputs"]
                 self.upload("position_weights", torch.tensor(weights, dtype=torch.float32)[:, None].repeat(1, 8))
                 state["supervision_weight"] = total

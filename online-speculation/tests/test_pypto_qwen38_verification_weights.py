@@ -42,16 +42,41 @@ def test_mixed_replay_preserves_common_weight_scale():
     torch.testing.assert_close(actual, expected / expected.sum(), atol=0, rtol=0)
 
 
+@pytest.mark.parametrize("valid,rejection,prefix", [
+    (7, 2, [1, 1, 16, 1, 1, 1, 1]),
+    (3, 0, [16, 1, 1]), (3, 7, [1, 1, 1]), (3, None, [1, 1, 1]),
+])
+def test_first_rejection_focus_uses_only_an_observed_valid_position(valid, rejection, prefix):
+    weights, total = rejection_weights(valid, rejection, mode="first_rejection")
+    assert weights == prefix + [0] * (32 - valid)
+    assert total == sum(prefix)
+
+
+def test_unknown_weighting_mode_is_rejected():
+    with pytest.raises(ValueError):
+        rejection_weights(7, 2, mode="unknown")
+
+
+def test_first_rejection_mixed_replay_keeps_common_unit_weight():
+    left, lt = rejection_weights(7, None, mode="first_rejection")
+    right, rt = rejection_weights(7, 2, mode="first_rejection")
+    actual = torch.tensor(left[:7] + right[:7], dtype=torch.float64) / (lt + rt)
+    expected = torch.ones(14, dtype=torch.float64)
+    expected[9] = 16
+    torch.testing.assert_close(actual, expected / expected.sum(), atol=0, rtol=0)
+
+
 @pytest.mark.parametrize("objective", ["tv", "kl"])
 @pytest.mark.parametrize("last_layers", [1, 4])
-def test_weighted_manual_chain_matches_independent_autograd(objective, last_layers):
+@pytest.mark.parametrize("weighting", ["rejection_decay", "first_rejection"])
+def test_weighted_manual_chain_matches_independent_autograd(objective, last_layers, weighting):
     shape = SuffixShape(hidden=128, intermediate=256, vocabulary=128, q_heads=4, kv_heads=2,
                         dimension=64, context=64, rotary=32)
     graph = (LastLayerGraph(shape, objective=objective, position_weighted=True) if last_layers == 1 else
              SuffixGraph(4, shape, GDNShape(heads=8, query_heads=4, dimension=64),
                          objective=objective, position_weighted=True))
     inputs, masters = sample_inputs(graph, fp32=True) if last_layers == 1 else sample(graph, True)
-    weights, normalizer = rejection_weights(7, 2)
+    weights, normalizer = rejection_weights(7, 2, mode=weighting)
     inputs["position_weights"] = torch.tensor(weights, dtype=torch.float32)[:, None].repeat(1, 8)
     reference = AutogradReference(graph, {k: v for k, v in inputs.items() if k not in masters},
                                   masters, quantize=False)
@@ -81,21 +106,33 @@ def test_capture_ignores_other_drafts_and_keeps_first_original_rejection():
         trainer.observe_verification(SimpleNamespace(position=12), 2, 1, True, selected=True)
 
 
-def test_feedback_owns_weights_and_counts_their_transfer():
+@pytest.mark.parametrize("weighting", ["rejection_decay", "first_rejection"])
+def test_feedback_owns_weights_and_counts_their_transfer(weighting):
     trainer = object.__new__(TP2Online)
-    trainer.position_weighting = "rejection_decay"
+    trainer.position_weighting = weighting
     trainer.runner = SimpleNamespace(spec_stats={"feedback_ns": 0})
     trainer.feedback = dict(complete=True, valid=7, candidates=31, first_rejection=2, inputs={})
     uploaded = {}
     trainer.upload = lambda key, value: uploaded.update({key: value.clone()})
     feedback = trainer.take_feedback()
-    assert feedback["supervision_weight"] == 63
-    assert torch.equal(uploaded["position_weights"][:, 0], torch.tensor([16, 16, 16, 8, 4, 2, 1] + [0] * 25))
+    weights, total = rejection_weights(7, 2, mode=weighting)
+    assert feedback["supervision_weight"] == total
+    assert torch.equal(uploaded["position_weights"][:, 0], torch.tensor(weights))
     assert trainer.feedback is None and trainer.runner.spec_stats["feedback_ns"] > 0
 
 
-def test_dynamic_and_static_position_weights_cannot_be_mixed():
+@pytest.mark.parametrize("mode", ["rejection_decay", "first_rejection"])
+def test_dynamic_and_static_position_weights_cannot_be_mixed(mode):
     with pytest.raises(ValueError):
         LastLayerGraph(position_weighted=True, focus_weight=4)
     with pytest.raises(ValueError):
-        TP2Online(None, device=0, last_layers=1, position_weighting="rejection_decay", focus_weight=4)
+        TP2Online(None, device=0, last_layers=1, position_weighting=mode, focus_weight=4)
+
+
+def test_power_of_two_teacher_temperature_preserves_bf16_greedy_labels():
+    trainer = object.__new__(TP2Online)
+    trainer.teacher_temperature = .0625
+    logits = torch.tensor([[12.8125, 12.875, 12.75], [-31.0, -30.875, -31.25]], dtype=torch.bfloat16)
+    sharpened = trainer.training_teacher(logits)
+    assert torch.equal(sharpened.float(), logits.float() * 16)
+    assert torch.equal(sharpened.argmax(-1), logits.argmax(-1))

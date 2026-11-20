@@ -3,6 +3,7 @@
 
 import argparse
 import json
+from math import isfinite
 from pathlib import Path
 import time
 
@@ -12,9 +13,11 @@ def main():
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--vocabulary", type=int, default=248320)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--weighting", choices=("rejection_decay", "first_rejection"), default="rejection_decay")
+    parser.add_argument("--teacher-temperature", type=float, default=1.)
     args = parser.parse_args()
-    if args.output.exists():
-        parser.error("use a fresh output path")
+    if args.output.exists() or not isfinite(args.teacher_temperature) or args.teacher_temperature <= 0:
+        parser.error("fresh output and positive finite teacher temperature required")
     import torch
     from pypto.backend import BackendType
     from pypto.ir import DistributedConfig
@@ -26,11 +29,12 @@ def main():
     torch.manual_seed(95)
     config = RunConfig(backend_type=BackendType.Ascend910B, execution_mode=ExecutionMode.ONBOARD,
                        distributed_config=DistributedConfig(device_ids=[args.device], num_sub_workers=0))
-    report = dict(passed=False, clean_shutdown=False, vocabulary=args.vocabulary, cases=[], timings=[])
+    report = dict(passed=False, clean_shutdown=False, vocabulary=args.vocabulary,
+                  weighting=args.weighting, teacher_temperature=args.teacher_temperature, cases=[], timings=[])
     worker, handles = None, []
     try:
         student = torch.randn(32, args.vocabulary, dtype=torch.bfloat16).requires_grad_()
-        teacher = torch.randn_like(student)
+        teacher = (torch.randn_like(student).float() / args.teacher_temperature).to(student.dtype)
         weights = torch.ones(32, 8)
         gradient, losses = torch.zeros_like(student), torch.zeros(32, 8)
         programs = {}
@@ -50,7 +54,7 @@ def main():
             return target
         for (objective, weighted), program in programs.items():
             for valid, rejection, tied in [(1, 0, False), (7, 2, False), (17, None, False), (31, 0, False), (7, 2, True)]:
-                row_weights, total = rejection_weights(valid, rejection)
+                row_weights, total = rejection_weights(valid, rejection, mode=args.weighting)
                 if not weighted:
                     row_weights, total = [1] * valid + [0] * (32 - valid), valid
                 weights.copy_(torch.tensor(row_weights)[:, None].expand(-1, 8))

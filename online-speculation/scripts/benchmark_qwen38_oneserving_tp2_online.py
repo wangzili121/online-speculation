@@ -179,8 +179,8 @@ def main(*, guard=None):
     p.add_argument("--objective", default="tv", choices=("tv", "kl"))
     p.add_argument("--focus-weight", default=1, type=int,
                    help="TV weight on reached candidate offsets 2 and 3; one keeps the ordinary objective")
-    p.add_argument("--position-weighting", choices=("uniform", "rejection_decay"), default="uniform",
-                   help="keep full training weight through the captured first rejection, then decay to 1/16")
+    p.add_argument("--position-weighting", choices=("uniform", "rejection_decay", "first_rejection"), default="uniform",
+                   help="uniform, decay after first rejection, or boost only its verified row16x")
     p.add_argument("--feedback-mode", choices=("reached", "delayed"), default="reached")
     p.add_argument("--teacher-tokens", type=int, choices=range(1, 32), default=31)
     p.add_argument("--teacher-temperature", type=float, default=1.0,
