@@ -39,7 +39,6 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
     projection = linear_bf16_m64 if batch_size == 2 else linear_bf16_m32
     row_projection = linear_partial_m64 if batch_size == 2 else linear_partial_m32
     mlp_gate_up = ffn_gate_up_nz_m64 if batch_size == 2 else ffn_gate_up_nz_m32
-    recurrence_blocks = min(48 * batch_size, 64)
 
     @pl.jit.inline(auto_scope=False)
     def reduce_draft(partial: pl.Tensor,
@@ -126,45 +125,8 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
     convolution = make_convolution(batch_size, backend="sequential" if draft_convolution == "sequential" else "parallel",
                                    channel_tile=64 if draft_convolution == "parallel64" else 128)
 
-    @pl.jit.inline
-    def recurrent(q: pl.Tensor, k: pl.Tensor, v: pl.Tensor, decay: pl.Tensor, beta: pl.Tensor,
-                  history: pl.Tensor, out: pl.Tensor, slot: pl.Scalar[pl.INT32],
-                  slot_second: pl.Scalar[pl.INT32], layer: pl.Scalar[pl.INT32],
-                  width: pl.Scalar[pl.INT32], width_second: pl.Scalar[pl.INT32]):
-        states = pl.reshape(history, [32 * 48 * 24 * 128, 128])
-        with pl.spmd(recurrence_blocks, name_hint="orthrus_tp2_recurrent"):
-            for task in pl.range(pl.tile.get_block_idx(), 48 * batch_size, recurrence_blocks):
-                seq = task // 48
-                head = task % 48 // 2
-                first = seq * 32
-                col = task % 2 * 64
-                request_slot = slot + seq * (slot_second - slot)
-                start = ((request_slot * 48 + layer) * 24 + head) * 128 + col
-                state = pl.slice(states, [64, 128], [start, 0])
-                count = width + seq * (width_second - width)
-                if not gdn_valid_rows:
-                    count = 32
-                for token in pl.range(count):
-                    query = pl.slice(q, [1, 128], [first + token, head * 128])
-                    key = pl.slice(k, [1, 128], [first + token, head * 128])
-                    decay_value = pl.read(decay, [first + token, head])
-                    strength = pl.read(beta, [first + token, head])
-                    factor = pl.exp(pl.mul(pl.full([1, 128], pl.FP32, value=1.), decay_value))
-                    faded = pl.col_expand_mul(state, factor)
-                    remembered = pl.row_sum(pl.col_expand_mul(faded, key))
-                    value = pl.cast(pl.slice(v, [1, 64], [first + token, 2048 + head * 128 + col]), pl.FP32)
-                    delta = pl.mul(pl.sub(pl.reshape(value, [64, 1]), remembered), strength)
-                    state = pl.add(faded, pl.col_expand_mul(
-                        pl.row_expand_mul(pl.full([64, 128], pl.FP32, value=1.), delta), key))
-                    y = pl.reshape(pl.row_sum(pl.col_expand_mul(state, query)), [1, 64])
-                    out[first + token:first + token + 1, head * 128 + col:head * 128 + col + 64] = pl.cast(
-                        y, pl.BF16, mode="rint")
-                if gdn_valid_rows:
-                    # 无效行仍初始化，后续向量/矩阵核不会读取未定义的工作区。
-                    for token in pl.range(count, 32):
-                        out[first + token:first + token + 1, head * 128 + col:head * 128 + col + 64] = pl.full(
-                            [1, 64], pl.BF16, value=0.)
-        return out
+    from .tp2_gdn_rows import make_recurrence
+    recurrent = make_recurrence(batch_size, valid_rows=gdn_valid_rows)
 
     @pl.jit.inline(auto_scope=False)
     def gdn(x: pl.Tensor, qw: pl.Tensor, zw: pl.Tensor, ow: pl.Tensor, aw: pl.Tensor,
