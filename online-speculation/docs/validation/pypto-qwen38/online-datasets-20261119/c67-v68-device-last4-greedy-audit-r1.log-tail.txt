@@ -1,0 +1,51 @@
+055325_fohhaxp4/report/perf_hints.log
+2026-11-20 05:53:25.612 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_055325_63wlcw9g/report/perf_hints.log
+2026-11-20 05:53:26.122 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_055326_g2wcuv7l/report/perf_hints.log
+2026-11-20 05:53:26.654 I | [perf_hint] 5 hints across 5 sites; see build_output/_jit_entry_20261120_055326_8j2l_i4z/report/perf_hints.log
+2026-11-20 05:53:27.131 I | [perf_hint] 1 hint across 1 site; see build_output/_jit_entry_20261120_055327_vi6k30vm/report/perf_hints.log
+2026-11-20 05:53:29.537 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_publish_host_20261120_055329_w3r9ycpv/report/perf_hints.log
+2026-11-20 05:53:30.063 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_entry_20261120_055330_upm3gg9i/report/perf_hints.log
+[chip_process pid=2422038 dev=0] ready
+[chip_process pid=2422044 dev=1] ready
+guard {'ok': True, 'released': [0]}
+guard {'ok': True, 'released': [1]}
+guard {'ok': True, 'released': [0, 1]}
+[mono_ns=1957400591036917][T0xffff6e3ff120][ERROR] alloc: [memory_allocator.cpp:31] rtMalloc failed: 207001 (size=178257920)
+[mono_ns=1957400591060857][T0xffff6e3ff120][ERROR] alloc: [memory_allocator.cpp:32] ACL error detail: 207001 ACL_ERROR_RT_MEMORY_ALLOCATION - device memory allocation failed (out of memory)
+[mono_ns=1957400591063867][T0xffff6e3ff120][ERROR] alloc: [memory_allocator.cpp:32] ACL error hint: reduce the workload's device memory footprint, or check whether another process is holding memory on this device. See docs/troubleshooting/device-error-codes.md
+[mono_ns=1957400591277270][T0xffff6e3ff120][ERROR] alloc: [memory_allocator.cpp:32] ACL recent error message: [PID: 2422038] 2026-11-20-06:00:01.743.088 Resource_Error_Insufficient_Device_Memory(EL0019): Failed to allocate 178257920 bytes device memory requested by the UNKNOWN module.
+        Possible Cause: Allocation failed due to insufficient device memory.
+        Solution: Ensure that the required memory is available. Take measures such as stopping unnecessary processes to free memory.
+TraceBack (mos~
+Traceback (most recent call last):
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/schedule.py", line 399, in _run
+    self.runner.start()
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/src-dense-v68/blockspec/pypto_qwen38/oneserving_tp2.py", line 318, in start
+    self.online.start(self)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/src-dense-v68/blockspec/pypto_qwen38/oneserving_tp2_online.py", line 330, in start
+    self.shared[f"l{layer}_{name}"] = self.upload_new(gamma(tensor) if "gamma" in name else tensor)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/src-dense-v68/blockspec/pypto_qwen38/oneserving_tp2_online.py", line 348, in upload_new
+    return self.worker.alloc_tensor(tuple(value.shape), value.dtype, init=value.contiguous())
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/runtime_base.py", line 277, in alloc_tensor
+    t = alloc_device_tensor(
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/device_tensor.py", line 317, in alloc_device_tensor
+    ptr = malloc(nbytes)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/runtime_base.py", line 278, in <lambda>
+    malloc=lambda nbytes: self.malloc(nbytes, worker_id=worker_id),
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/distributed_runner.py", line 2543, in malloc
+    handle = self._w.alloc_child_tensor(worker_id, (nbytes,), DataType.UINT8)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/runtime/python/simpler/worker.py", line 11574, in alloc_child_tensor
+    ptr = int(self._worker.malloc(int(worker_id), int(nbytes)))
+RuntimeError: control_malloc failed on child: chip_process dev=0 ctrl=0: RuntimeError: malloc failed
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<string>", line 2, in <module>
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/orthrus_bench_dense_v68.py", line 368, in main
+    engine.start()
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/engine.py", line 74, in start
+    self.scheduler.start()
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/schedule.py", line 123, in start
+    raise RuntimeError("Batch runner failed to start") from self.error
+RuntimeError: Batch runner failed to start

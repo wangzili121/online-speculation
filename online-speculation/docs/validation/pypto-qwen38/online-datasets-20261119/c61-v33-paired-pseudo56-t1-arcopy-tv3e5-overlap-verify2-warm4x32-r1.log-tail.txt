@@ -1,0 +1,28 @@
+plements the high-precision algorithm only on a5, so pto.tdiv runs the default algorithm and the result is bit-identical to high_precision=False. at /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/model.py:506:13
+2026-11-20 05:36:26.665 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_suffix_host_20261120_053624_9md5p1qb/report/perf_hints.log
+2026-11-20 05:36:27.049 I | [perf_hint] 32 hints across 27 sites; see build_output/_jit_suffix_host_20261120_053624_9md5p1qb/report/perf_hints.log
+2026-11-20 05:36:28.830 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_053628_dy1ou8c4/report/perf_hints.log
+2026-11-20 05:36:29.374 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_053629_puc5_wek/report/perf_hints.log
+2026-11-20 05:36:32.358 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_053632_qo9zpqmf/report/perf_hints.log
+2026-11-20 05:36:32.889 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_053632_38_ir2qg/report/perf_hints.log
+2026-11-20 05:36:33.452 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_053633_dtg6gj07/report/perf_hints.log
+2026-11-20 05:36:34.005 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_053633_v75n6wdq/report/perf_hints.log
+2026-11-20 05:36:34.564 I | [perf_hint] 5 hints across 5 sites; see build_output/_jit_entry_20261120_053634_1v45_5_g/report/perf_hints.log
+2026-11-20 05:36:35.074 I | [perf_hint] 1 hint across 1 site; see build_output/_jit_entry_20261120_053635_2ybds9cz/report/perf_hints.log
+2026-11-20 05:36:36.150 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_entry_20261120_053636_nhiq9swe/report/perf_hints.log
+[chip_process pid=2253111 dev=1] ready
+[chip_process pid=2253109 dev=0] ready
+guard {'ok': True, 'released': [0]}
+guard {'ok': True, 'released': [1]}
+guard {'ok': True, 'released': [0, 1]}
+ready TP2 + learner 371.85016819508746
+[mono_ns=1956319881213452][T0xffff71fff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 1] ipc: P2P status unconfirmed peer=0 peer_dev=0
+[mono_ns=1956319981113181][T0xffff71fff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 0] ipc: P2P status unconfirmed peer=1 peer_dev=1
+[mono_ns=1956535012296081][T0xffff71fff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 1] ipc: P2P status unconfirmed peer=0 peer_dev=0
+[mono_ns=1956535107616367][T0xffff71fff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 0] ipc: P2P status unconfirmed peer=1 peer_dev=1
+[mono_ns=1956558896830834][T0xffff71fff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 1] ipc: P2P status unconfirmed peer=0 peer_dev=0
+[mono_ns=1956558997130527][T0xffff71fff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 0] ipc: P2P status unconfirmed peer=1 peer_dev=1
+paired {'requests': 32, 'fixed_tok_s': 9.592147250618488, 'tok_s': 9.43701821146848, 'net_increment': -0.016172503934403837, 'accepted_per_round': 1.1880559085133418, 'updates': 77, 'publications': 77}
+stride 0 32 {'tokens': 6298, 'seconds': 662.2107928059995, 'tail_seconds': 0.0, 'tok_s': 9.51056682920155, 'tpot_median_ms': 161.56894542093136, 'accepted_per_round': 1.2215236686390532, 'stats': {'proposed': 6650, 'accepted': 3303, 'rejected_rounds': 2664, 'draft_ns': 274029206135, 'verify_ns': 244314119932, 'rounds': 2704, 'verify_calls': 2081, 'restore_ns': 1615279314, 'draft_batches': 1517, 'draft_pair_batches': 1187, 'draft_sampling_ns': 169277911065, 'stochastic_verify_ns': 130311779554, 'proposed_budget': 76511, 'feedback_ns': 1828468665, 'update_ns': 10607472884, 'publish_ns': 6749829887, 'updates': 112, 'publications': 112, 'publish_read_ns': 3275486453, 'publish_pack_ns': 125791464, 'publish_upload_ns': 3348551970, 'busy_updates': 0, 'feedback_skips': 0, 'sampling_update_wait_ns': 4067145138}} {'tokens': 891, 'seconds': 92.14957931893878, 'tail_seconds': 0.0, 'tok_s': 9.66906204656845, 'tpot_median_ms': 155.6853010541817, 'accepted_per_round': 1.2849462365591398, 'stats': {'proposed': 950, 'accepted': 478, 'rejected_rounds': 365, 'draft_ns': 38479283952, 'verify_ns': 34129390658, 'rounds': 372, 'verify_calls': 306, 'restore_ns': 223979669, 'draft_batches': 217, 'draft_pair_batches': 155, 'draft_sampling_ns': 23888288761, 'stochastic_verify_ns': 17784413239, 'proposed_budget': 10537, 'feedback_ns': 0, 'update_ns': 0, 'publish_ns': 0, 'updates': 0, 'publications': 0, 'publish_read_ns': 0, 'publish_pack_ns': 0, 'publish_upload_ns': 0, 'busy_updates': 0, 'feedback_skips': 0, 'sampling_update_wait_ns': 0}}
+/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/multiprocessing/resource_tracker.py:224: UserWarning: resource_tracker: There appear to be 2 leaked shared_memory objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '

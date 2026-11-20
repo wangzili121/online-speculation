@@ -1,0 +1,27 @@
+False. at /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/model.py:506:13
+2026-11-20 06:00:59.676 W | [warning] [HighPrecisionIgnored] (pto_codegen) tile.div(high_precision=True) is not supported on the 'a2a3' backend: PTO-ISA implements the high-precision algorithm only on a5, so pto.tdiv runs the default algorithm and the result is bit-identical to high_precision=False. at /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/model.py:506:13
+2026-11-20 06:01:07.494 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_suffix_host_20261120_060105_t6gtgi_s/report/perf_hints.log
+2026-11-20 06:01:07.870 I | [perf_hint] 32 hints across 27 sites; see build_output/_jit_suffix_host_20261120_060105_t6gtgi_s/report/perf_hints.log
+2026-11-20 06:01:09.565 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_060109_0x3mp_9o/report/perf_hints.log
+2026-11-20 06:01:10.056 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_060110_p7vh9ob4/report/perf_hints.log
+2026-11-20 06:01:12.800 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_060112_sm0oqs_m/report/perf_hints.log
+2026-11-20 06:01:13.297 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_060113_nqfonisy/report/perf_hints.log
+2026-11-20 06:01:13.782 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_060113_qfmaczqx/report/perf_hints.log
+2026-11-20 06:01:14.261 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_060114_jw49txxr/report/perf_hints.log
+2026-11-20 06:01:14.766 I | [perf_hint] 5 hints across 5 sites; see build_output/_jit_entry_20261120_060114_r8x1q5ea/report/perf_hints.log
+2026-11-20 06:01:15.207 I | [perf_hint] 1 hint across 1 site; see build_output/_jit_entry_20261120_060115_j4ry5qo7/report/perf_hints.log
+2026-11-20 06:01:16.176 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_entry_20261120_060116_dc5vug12/report/perf_hints.log
+[chip_process pid=2492085 dev=1] ready
+[chip_process pid=2492072 dev=0] ready
+guard {'ok': True, 'released': [0]}
+guard {'ok': True, 'released': [1]}
+guard {'ok': True, 'released': [0, 1]}
+ready TP2 + learner 389.9093797719106
+[mono_ns=1957823029383653][T0xffff815ff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 1] ipc: P2P status unconfirmed peer=0 peer_dev=0
+[mono_ns=1957823128704586][T0xffff815ff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 0] ipc: P2P status unconfirmed peer=1 peer_dev=1
+[mono_ns=1958038312890209][T0xffff815ff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 0] ipc: P2P status unconfirmed peer=1 peer_dev=1
+[mono_ns=1958038412380664][T0xffff815ff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 1] ipc: P2P status unconfirmed peer=0 peer_dev=0
+[mono_ns=1958066051701531][T0xffff815ff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 0] ipc: P2P status unconfirmed peer=1 peer_dev=1
+[mono_ns=1958066151529249][T0xffff815ff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 1] ipc: P2P status unconfirmed peer=0 peer_dev=0
+paired {'requests': 32, 'fixed_tok_s': 8.210307838396298, 'tok_s': 8.18270951222825, 'net_increment': -0.003361424042955141, 'accepted_per_round': 1.157465495608532, 'updates': 77, 'publications': 77}
+stride 0 32 {'tokens': 6302, 'seconds': 777.2022968516685, 'tail_seconds': 0.0, 'tok_s': 8.10857099307152, 'tpot_median_ms': 194.29151083070866, 'accepted_per_round': 1.1076815152578043, 'stats': {'proposed': 11328, 'accepted': 3158, 'rejected_rounds': 2813, 'draft_ns': 406170549985, 'verify_ns': 220507331906, 'rounds': 2851, 'verify_calls': 1609, 'restore_ns': 4414170443, 'draft_batches': 1607, 'draft_pair_batches': 1244, 'draft_sampling_ns': 295542210224, 'stochastic_verify_ns': 133622208414, 'proposed_budget': 80240, 'feedback_ns': 1839572359, 'update_ns': 11615565122, 'publish_ns': 8296691715, 'updates': 117, 'publications': 117, 'publish_read_ns': 3913635476, 'publish_pack_ns': 135011543, 'publish_upload_ns': 4248044696, 'busy_updates': 0, 'feedback_skips': 0, 'sampling_update_wait_ns': 4375987316}} {'tokens': 881, 'seconds': 112.18674391810782, 'tail_seconds': 0.0, 'tok_s': 7.8529777158261895, 'tpot_median_ms': 195.6776188489738, 'accepted_per_round': 1.0047846889952152, 'stats': {'proposed': 1664, 'accepted': 420, 'rejected_rounds': 413, 'draft_ns': 59635894972, 'verify_ns': 31236304348, 'rounds': 418, 'verify_calls': 242, 'restore_ns': 661870896, 'draft_batches': 242, 'draft_pair_batches': 176, 'draft_sampling_ns': 43282967279, 'stochastic_verify_ns': 18971583725, 'proposed_budget': 11978, 'feedback_ns': 0, 'update_ns': 0, 'publish_ns': 0, 'updates': 0, 'publications': 0, 'publish_read_ns': 0, 'publish_pack_ns': 0, 'publish_upload_ns': 0, 'busy_updates': 0, 'feedback_skips': 0, 'sampling_update_wait_ns': 0}}

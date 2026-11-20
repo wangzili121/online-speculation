@@ -1,0 +1,26 @@
+guard {'ok': True, 'reserved_gib': 16, 'devices': [0, 1]}
+usage: -c [-h] --model MODEL --head HEAD --prompts PROMPTS --holdout HOLDOUT
+          --output OUTPUT [--checkpoint CHECKPOINT] [--cold-head COLD_HEAD]
+          [--learner-device {0,2}] [--kv-pages KV_PAGES]
+          [--ring-heap-mib RING_HEAP_MIB] [--strides STRIDES]
+          [--tokens TOKENS] [--stop-on-eos]
+          [--candidates {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31}]
+          [--verify-chunk-size {1,2,4}] [--last-layers {1,4}]
+          [--parameter-scope {full,norms,output_norms}]
+          [--publication-backend {auto,cpu,device}]
+          [--learning-rate LEARNING_RATE] [--warmup-updates WARMUP_UPDATES]
+          [--warm-update-stride WARM_UPDATE_STRIDE]
+          [--warm-update-steps WARM_UPDATE_STEPS]
+          [--lr-schedule {constant,inverse_sqrt}] [--objective {tv,kl}]
+          [--focus-weight FOCUS_WEIGHT] [--feedback-mode {reached,delayed}]
+          [--teacher-tokens {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31}]
+          [--teacher-temperature TEACHER_TEMPERATURE] [--audit-replay]
+          [--max-updates MAX_UPDATES] [--continuous-updates]
+          [--replay-blocks REPLAY_BLOCKS] [--publish-every PUBLISH_EVERY]
+          [--inner-steps INNER_STEPS] [--ar-check-requests AR_CHECK_REQUESTS]
+          [--replay-learned-head] [--export-heads EXPORT_HEADS]
+          [--gather-feedback] [--temperature {0,1}] [--lazy-sampling]
+          [--seed SEED] [--background] [--overlap-sampling] [--interleaved]
+          [--compile-only]
+-c: error: use distinct strides >= twice replay-blocks, positive counts and a fresh result path
+guard {'ok': True, 'released': [0, 1]}
