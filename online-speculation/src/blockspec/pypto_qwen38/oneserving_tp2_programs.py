@@ -10,11 +10,13 @@ GROUP_LAYERS = 64
 
 
 def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backend="paged",
-                       batch_size=1, compact_tp=False, capture_layer=None):
+                       batch_size=1, compact_tp=False, capture_layer=None, draft_convolution="sequential"):
     if group_layers not in (4, 8, 16, 32, 64):
         raise ValueError("draft layer groups must divide the 64-layer backbone and end on full attention")
     if batch_size not in (1, 2) or batch_size == 2 and not compact_tp:
         raise ValueError("a paired draft requires compact TP")
+    if draft_convolution not in ("sequential", "parallel64", "parallel128"):
+        raise ValueError("unsupported draft convolution backend")
     capture_feedback = capture_layer is not None
     # JIT 会解析条件分支；关闭反馈时也须保持层号比较为数值类型。
     capture_index = capture_layer if capture_feedback else -1
@@ -34,7 +36,6 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
     projection = linear_bf16_m64 if batch_size == 2 else linear_bf16_m32
     row_projection = linear_partial_m64 if batch_size == 2 else linear_partial_m32
     mlp_gate_up = ffn_gate_up_nz_m64 if batch_size == 2 else ffn_gate_up_nz_m32
-    convolution_blocks = min(40 * batch_size, 60)
     recurrence_blocks = min(48 * batch_size, 64)
 
     @pl.jit.inline(auto_scope=False)
@@ -118,37 +119,9 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
     else:
         attention, _ = make_attention(shape, backend=attention_backend, physical_pages=pool_pages, pool_layers=17)
 
-    @pl.jit.inline
-    def convolution(projected: pl.Tensor, weight: pl.Tensor, history: pl.Tensor,
-                    out: pl.Tensor, slot: pl.Scalar[pl.INT32], slot_second: pl.Scalar[pl.INT32],
-                    layer: pl.Scalar[pl.INT32]):
-        rows = pl.reshape(history, [32 * 48 * 4, 5120])
-        with pl.spmd(convolution_blocks, name_hint="orthrus_tp2_conv"):
-            for task in pl.range(pl.tile.get_block_idx(), 40 * batch_size, convolution_blocks):
-                seq = task // 40
-                col = task % 40 * 128
-                first = seq * 32
-                request_slot = slot + seq * (slot_second - slot)
-                base = (request_slot * 48 + layer) * 4
-                p1 = pl.cast(pl.slice(rows, [1, 128], [base + 1, col]), pl.FP32)
-                p2 = pl.cast(pl.slice(rows, [1, 128], [base + 2, col]), pl.FP32)
-                p3 = pl.cast(pl.slice(rows, [1, 128], [base + 3, col]), pl.FP32)
-                w0 = pl.cast(pl.slice(weight, [1, 128], [0, col]), pl.FP32)
-                w1 = pl.cast(pl.slice(weight, [1, 128], [1, col]), pl.FP32)
-                w2 = pl.cast(pl.slice(weight, [1, 128], [2, col]), pl.FP32)
-                w3 = pl.cast(pl.slice(weight, [1, 128], [3, col]), pl.FP32)
-                for token in pl.range(32):
-                    current = pl.cast(pl.slice(projected, [1, 128], [first + token, col]), pl.FP32)
-                    x = pl.add(pl.add(pl.mul(p1, w0), pl.mul(p2, w1)),
-                               pl.add(pl.mul(p3, w2), pl.mul(current, w3)))
-                    x = pl.cast(pl.cast(x, pl.BF16, mode="rint"), pl.FP32)
-                    out[first + token:first + token + 1, col:col + 128] = pl.cast(
-                        pl.div(x, pl.add(pl.exp(pl.neg(x)), 1.), high_precision=True),
-                        pl.BF16, mode="rint")
-                    p1 = p2
-                    p2 = p3
-                    p3 = current
-        return out
+    from .tp2_gdn_convolution import make_convolution
+    convolution = make_convolution(batch_size, backend="sequential" if draft_convolution == "sequential" else "parallel",
+                                   channel_tile=64 if draft_convolution == "parallel64" else 128)
 
     @pl.jit.inline
     def recurrent(q: pl.Tensor, k: pl.Tensor, v: pl.Tensor, decay: pl.Tensor, beta: pl.Tensor,

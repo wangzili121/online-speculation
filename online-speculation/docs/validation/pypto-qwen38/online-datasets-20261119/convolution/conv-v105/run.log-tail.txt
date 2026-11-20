@@ -1,0 +1,13 @@
+Error: Unsupported constant type: <class 'str'>
+  --> /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/conv-v105/src/blockspec/pypto_qwen38/tp2_gdn_convolution.py:45:17
+   |
+43 |                     p2 = p3
+44 |                     p3 = current
+45 |                 if backend == "parallel":
+   |                 ^^ Unsupported constant type: <class 'str'>
+46 |                     a = pl.cast(pl.slice(projected, [29, T], [first, col]), pl.FP32)
+47 |                     b = pl.cast(pl.slice(projected, [29, T], [first + 1, col]), pl.FP32)
+   |
+   = help: Use int, float, bool, or None (TaskId sentinel) constants
+
+note: run with `PTO_BACKTRACE=1` environment variable to display a backtrace.

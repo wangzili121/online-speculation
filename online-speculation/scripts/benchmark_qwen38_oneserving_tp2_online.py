@@ -164,6 +164,9 @@ def main(*, guard=None):
                    help="maximum proposed tokens from the unchanged K32 draft block")
     p.add_argument("--verify-chunk-size", default=4, type=int, choices=(1, 2, 4),
                    help="rows per verification dispatch within the unchanged native C4 snapshot capacity")
+    p.add_argument("--draft-convolution", choices=("sequential", "parallel64", "parallel128"), default="sequential")
+    p.add_argument("--audit-convolution", action="store_true",
+                   help="diagnostic: compare complete real draft logits against sequential convolution")
     p.add_argument("--last-layers", default=4, type=int, choices=(1, 4))
     p.add_argument("--parameter-scope", choices=("full", "norms", "output_norms"), default="full")
     p.add_argument("--publication-backend", choices=("auto", "cpu", "device"), default="auto")
@@ -271,7 +274,9 @@ def main(*, guard=None):
                                               stochastic=bool(args.temperature), lazy_sampling=args.lazy_sampling,
                                               verify_chunk_size=args.verify_chunk_size,
                                               ring_heap_min_mib=args.ring_heap_mib,
-                                              on_cache_event=engine._on_cache)
+                                              on_cache_event=engine._on_cache,
+                                              draft_convolution=args.draft_convolution,
+                                              audit_convolution=args.audit_convolution)
     engine.scheduler.runner = runner
     summary = dict(completed=False, head_step=runner.head["step"], device_ids=list(config.devices),
                    head_payload_sha256=runner.head["source_payload_sha256"],
@@ -295,6 +300,7 @@ def main(*, guard=None):
                    objective=args.objective, max_updates=args.max_updates,
                    focus_weight=args.focus_weight,
                    position_weighting=args.position_weighting,
+                   draft_convolution=args.draft_convolution, diagnostic_only=args.audit_convolution,
                    feedback_mode=args.feedback_mode,
                    teacher_tokens=args.teacher_tokens if args.feedback_mode == "delayed" else None,
                    teacher_temperature=args.teacher_temperature,
@@ -313,6 +319,7 @@ def main(*, guard=None):
                    optimizer_init="checkpoint" if args.checkpoint is not None else "fresh", results={})
 
     def persist():
+        summary["convolution_audits"] = list(runner.convolution_audits)
         tmp = args.output.with_suffix(".tmp")
         tmp.write_text(json.dumps(summary, indent=2) + "\n")
         tmp.replace(args.output)

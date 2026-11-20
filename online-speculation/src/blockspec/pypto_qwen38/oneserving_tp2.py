@@ -168,7 +168,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
 
     def __init__(self, config, head_directory, *, output_candidates=31, group_layers=GROUP_LAYERS,
                  attention_backend="paged", draft_batch_size=1, online=None, kv_pages=None, stochastic=False,
-                 lazy_sampling=False, ring_heap_min_mib=256, verify_chunk_size=VERIFY_ROWS, on_cache_event=None):
+                 lazy_sampling=False, ring_heap_min_mib=256, verify_chunk_size=VERIFY_ROWS, on_cache_event=None,
+                 draft_convolution="sequential", audit_convolution=False):
         if (config.speculative_tokens or config.prefix_cache or config.max_model_len != 512
                 or config.long_prefill_token_threshold != VERIFY_ROWS
                 or config.max_num_batched_tokens < config.max_num_seqs * VERIFY_ROWS):
@@ -178,6 +179,12 @@ class OrthrusTP2Runner(TensorParallelRunner):
         if type(verify_chunk_size) is not int or verify_chunk_size not in (1, 2, VERIFY_ROWS):
             raise ValueError("verification chunk must contain one, two or four rows")
         self.verify_chunk_size = verify_chunk_size
+        if draft_convolution not in ("sequential", "parallel64", "parallel128"):
+            raise ValueError("unsupported draft convolution backend")
+        if type(audit_convolution) is not bool or audit_convolution and draft_convolution == "sequential":
+            raise ValueError("convolution audit requires a parallel candidate")
+        self.draft_convolution, self.audit_convolution = draft_convolution, audit_convolution
+        self.convolution_audits = []
         self.head_directory = Path(head_directory)
         self.head = checkpoint_manifest(self.head_directory, config.model_root)
         self.output_candidates = output_candidates
@@ -235,6 +242,12 @@ class OrthrusTP2Runner(TensorParallelRunner):
         if self.draft_batch_size == 2:
             self.orthrus_pair = self.compile_draft(2)
             entries.append(self.orthrus_pair)
+        if self.audit_convolution:
+            self.reference_orthrus = self.compile_draft(convolution="sequential")
+            entries.append(self.reference_orthrus)
+            if self.draft_batch_size == 2:
+                self.reference_orthrus_pair = self.compile_draft(2, convolution="sequential")
+                entries.append(self.reference_orthrus_pair)
         if self.online is not None:
             if self.online.gather_feedback:
                 entries.append(self.online.compile_history(self))
@@ -246,7 +259,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
         # Keep native MTP disabled while authorizing short Orthrus verification calls.
         return VERIFY_ROWS if self.output_candidates else 1
 
-    def compile_draft(self, batch_size=1):
+    def compile_draft(self, batch_size=1, *, convolution=None):
         def meta(shape, dtype):
             return torch.empty((2, *shape), dtype=dtype, device="meta")
 
@@ -260,7 +273,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
         draft = make_draft_program(pool_pages=self.pool_blocks, group_layers=self.group_layers,
                                    attention_backend=self.attention_backend, batch_size=batch_size,
                                    compact_tp=self.draft_batch_size == 2,
-                                   capture_layer=None if self.online is None else self.online.layers[0])
+                                   capture_layer=None if self.online is None else self.online.layers[0],
+                                   draft_convolution=convolution or self.draft_convolution)
         return draft.compile(sample_inputs["ids"], sample_inputs["rows"], *banks, *suffix, *state,
                              *(sample_inputs[name] for name, _, _ in inputs[2:-1]),
                              meta((rows, HIDDEN), torch.bfloat16),
@@ -278,6 +292,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
             extra += rows * ((HIDDEN + TP_VOCAB) * 2 + 16 * 4)
             window_rows = rows if self.draft_batch_size == 2 else 16384
             extra += window_rows * HIDDEN * 4 + 32
+            if self.audit_convolution:
+                extra += window_rows * HIDDEN * 4 + 32
         extra += BLOCK * HIDDEN * 2
         if self.online is not None:
             extra += sum(torch.empty(shape, dtype=dtype, device="meta").nbytes
@@ -371,10 +387,33 @@ class OrthrusTP2Runner(TensorParallelRunner):
         if size == 1:
             metadata.extend(metadata)
         feedback_row = -1 if feedback_index is None else feedback_index * BLOCK
+        audit = (getattr(self, "audit_convolution", False)
+                 and not any(row["batch"] == size for row in self.convolution_audits))
+        if audit:
+            reference = self.reference_orthrus_pair if size == 2 else self.reference_orthrus
+            for begin in range(0, 64, self.group_layers):
+                self._worker_call("run", reference, ids, rows, *self.draft_banks, *self.suffix,
+                                  *self.resident[:4], cos, sin, table, mask, hidden, logits,
+                                  valid, decisions, self.feedback_hidden, -1, *metadata, begin, config=self.runconfig)
+            reference_logits = []
+            for rank in range(2):
+                host = torch.empty((size * BLOCK, TP_VOCAB), dtype=torch.bfloat16)
+                self._worker_call("copy_from", host.data_ptr(), logits.shards[rank].data_ptr, host.nbytes,
+                                  worker_id=rank)
+                reference_logits.append(host[valid_indices].clone())
         for begin in range(0, 64, self.group_layers):
             self._worker_call("run", program, ids, rows, *self.draft_banks, *self.suffix,
                               *self.resident[:4], cos, sin, table, mask, hidden, logits,
                               valid, decisions, self.feedback_hidden, feedback_row, *metadata, begin, config=self.runconfig)
+        if audit:
+            for rank in range(2):
+                host = torch.empty((size * BLOCK, TP_VOCAB), dtype=torch.bfloat16)
+                self._worker_call("copy_from", host.data_ptr(), logits.shards[rank].data_ptr, host.nbytes,
+                                  worker_id=rank)
+                if not torch.equal(host[valid_indices], reference_logits[rank]):
+                    raise RuntimeError("parallel convolution changed real draft logits")
+            self.convolution_audits.append(dict(batch=size, backend=self.draft_convolution,
+                                                candidate_rows=len(valid_indices), logits_bitwise_equal=True))
         if feedback_index is not None:
             self.online.capture_hidden(self.feedback_hidden)
             self.online.capture_logits(logits, feedback_index * BLOCK)
