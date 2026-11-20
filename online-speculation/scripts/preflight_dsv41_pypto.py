@@ -4,11 +4,12 @@
 import argparse
 import hashlib
 import json
+import os
 import struct
 from pathlib import Path
 
 
-DEFAULT_MODEL = Path("/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8")
+DEFAULT_MODEL = Path("/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8")
 
 
 def check_model_config(model):
@@ -127,7 +128,10 @@ def validate_engram(checkpoint):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--model", type=Path, default=Path(os.environ.get("TARGET_WEIGHTS") or DEFAULT_MODEL),
+        help=f"Checkpoint directory. Defaults to TARGET_WEIGHTS or {DEFAULT_MODEL}",
+    )
     parser.add_argument("--head", type=Path)
     parser.add_argument("--inspect", action="store_true", help="Inspect actual headers using the Python standard library")
     parser.add_argument("--output", type=Path, help="Save the layout report, including all mismatches")

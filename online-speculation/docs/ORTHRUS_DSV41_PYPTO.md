@@ -22,14 +22,14 @@ Serving 校验 Lib 的工作树状态和 Git tree。可通过 `--speculative-con
 
 ## 内网权重预检
 
-默认权重目录为 `/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8`。在任意 Python 3.10+ 环境下执行下列检查，只读取本地配置、索引和实际 safetensors header，无需安装 PyPTO，也无需 NPU。报告列出当前 A3 loader 所需的投影和 Engram 格式，以及每个不匹配的实际张量。此命令收集布局，成功退出表示报告生成完成。
+默认权重目录为 `/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8`，对应同事文档指向的公开版本。脚本优先使用 `--model` 指定的目录，其次读取环境变量 `TARGET_WEIGHTS`，最后使用默认目录。在任意 Python 3.10+ 环境下执行下列检查，只读取本地配置、索引和实际 safetensors header，无需安装 PyPTO，也无需 NPU。报告列出当前 A3 loader 所需的投影和 Engram 格式，以及每个不匹配的实际张量。此命令收集布局，成功退出表示报告生成完成。
 
 ```bash
 python3 "$ORTHRUS_ROOT/online-speculation/scripts/preflight_dsv41_pypto.py" \
   --inspect --output checkpoint-layout.json
 ```
 
-公开 W8A8 包把 `W8A8_DYNAMIC` 声明放在 `quant_model_description.json`。预检接收该声明。实读公开文件的结果如下。 [实际张量头记录](validation/dsv41/public-w8a8-header-layout.json)
+带 `1017` 的公开 W8A8 包把 `W8A8_DYNAMIC` 声明放在 `quant_model_description.json`。预检接收该声明。实读公开文件的结果如下。 [实际张量头记录](validation/dsv41/public-w8a8-header-layout.json)
 
 | 项目 | 公开 1017 W8A8 权重 | 当前 A3 PyPTO 路径 |
 | --- | --- | --- |
@@ -39,12 +39,12 @@ python3 "$ORTHRUS_ROOT/online-speculation/scripts/preflight_dsv41_pypto.py" \
 | Engram scale | F8_E8M0 | FP32 |
 | 量化声明 | description 文件 | Serving loader 从 config 读取 |
 
-公开权重需要在加载器中识别量化声明和混合精度，并在 Q-A/KV 计算处选择 BF16 投影。CPU Engram 查表需要按 E8M0 格式读取并解码命中的 scale 行，同时保留原导出已有的 FP32 路径。只修改 config 无法改变这些张量格式。现有 A3 适配针对同事特定导出验证过，公开包的整模加载和执行还待完成。
+带 `1017` 的公开权重需要在加载器中识别量化声明和混合精度，并在 Q-A/KV 计算处选择 BF16 投影。CPU Engram 查表需要按 E8M0 格式读取并解码命中的 scale 行，同时保留原导出已有的 FP32 路径。只修改 config 无法改变这些张量格式。现有 A3 适配与同事提供的模型路径配对；不带 `1017` 的公开包已抽查到 INT8 Q-A/KV 和 FP32 Engram scale，与该加载布局相符。完整权重校验和整模验收仍须执行。
 
 把两份补丁应用到配套 PyPTO Lib 和 Serving 后，可在其 Python 环境下执行完整预检。若有 head，追加 `--head "$DRAFT_HEAD"`，验证它与目标权重的配置、索引和 tokenizer 哈希。两台使用本地盘时，对照报告的 `identity` 可以检查这些元数据是否相同，权重 payload 的完整性另行校验。
 
 ```bash
-export TARGET_WEIGHTS="${TARGET_WEIGHTS:-/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8}"
+export TARGET_WEIGHTS="${TARGET_WEIGHTS:-/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8}"
 PYTHONPATH="$ORTHRUS_ROOT/online-speculation/src${PYTHONPATH:+:$PYTHONPATH}" \
   python3 "$ORTHRUS_ROOT/online-speculation/scripts/preflight_dsv41_pypto.py" --model "$TARGET_WEIGHTS"
 ```
@@ -109,7 +109,7 @@ CPU 测试覆盖完整 K32、部分接受、零接受、跨 128 行分页以及�
 
 ```bash
 export PYPTO_LIB_ROOT
-export TARGET_WEIGHTS="${TARGET_WEIGHTS:-/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8}"
+export TARGET_WEIGHTS="${TARGET_WEIGHTS:-/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8}"
 orthrus_config=$(python3 -c 'import json, sys; print(json.dumps(dict(method="orthrus", model=sys.argv[1], num_speculative_tokens=31)))' "$DRAFT_HEAD")
 common=(
   --model "$TARGET_WEIGHTS" --devices "$TASK_DEVICE" --platform a2a3
@@ -141,4 +141,4 @@ print("Greedy parity passed")
 PYCOMPARE
 ```
 
-`TARGET_WEIGHTS` 使用配套 A3 W8A8 导出，`DRAFT_HEAD` 使用与目标模型配置及权重索引哈希匹配的 BF16 head。Eco-Tech 公开的 1017 W8A8 包将部分 Q/KV 投影保留为浮点，Engram scale 为 E8M0；此 Lib 的基模加载器要求相应投影使用带 scale/offset 的 INT8，并读取 FP32 Engram scale。整模仍待用配套权重验证逐 token 一致性、分页与拒绝回滚、并发及性能。 [公开 checkpoint](https://www.modelscope.cn/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8)
+`TARGET_WEIGHTS` 使用配套 A3 W8A8 导出，`DRAFT_HEAD` 使用与目标模型配置及权重索引哈希匹配的 BF16 head。预期公开模型为 `Eco-Tech/DeepSeek-V4.1-Flash-w8a8`。带 `1017` 的包将部分 Q/KV 投影保留为浮点，Engram scale 为 E8M0；此 Lib 的基模加载器要求相应投影使用带 scale/offset 的 INT8，并读取 FP32 Engram scale。整模仍待用配套权重验证逐 token 一致性、分页与拒绝回滚、并发及性能。 [公开 checkpoint](https://www.modelscope.cn/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8)

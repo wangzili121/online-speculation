@@ -1,6 +1,9 @@
 """Check public W8A8 detection independently of the optional PyPTO environment."""
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 import runpy
 import struct
@@ -58,3 +61,14 @@ def test_expected_layout_passes_and_truncated_header_fails(tmp_path):
         assert "Truncated safetensors" in str(error)
     else:
         raise AssertionError("Truncated header accepted")
+
+
+def test_cli_uses_target_weights_and_explicit_model_takes_priority(tmp_path):
+    checkpoint_fixture(tmp_path, public=False)
+    env = dict(os.environ, TARGET_WEIGHTS=str(tmp_path))
+    base = [sys.executable, str(SCRIPT), "--inspect"]
+    output = subprocess.check_output(base, env=env, text=True)
+    assert json.loads(output)["model"] == str(tmp_path.resolve())
+    env["TARGET_WEIGHTS"] = str(tmp_path / "missing")
+    output = subprocess.check_output([*base, "--model", str(tmp_path)], env=env, text=True)
+    assert json.loads(output)["projection_and_engram_layout_matches"]
