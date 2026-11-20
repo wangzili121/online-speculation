@@ -15,7 +15,33 @@ def loss_vocabulary_tile(vocabulary):
     return tile
 
 
-def make_tv(rows, vocabulary, *, inline=False, focus_weight=1):
+def _loss_entry(compute, *, inline, position_weighted):
+    """保留普通损失的六参数 ABI；加权图额外传入每个反馈块自己的行权重。"""
+    import pypto.language as pl
+    if position_weighted:
+        if inline:
+            return compute
+        @pl.jit.host
+        def entry(student: pl.Tensor, teacher: pl.Tensor, weights: pl.Tensor,
+                  gradient: pl.Out[pl.Tensor], losses: pl.Out[pl.Tensor],
+                  valid: pl.Scalar[pl.INT32], normalizer: pl.Scalar[pl.INT32]):
+            compute(student, teacher, weights, gradient, losses, valid, normalizer, device=0)
+        return entry
+
+    @pl.jit.inline
+    def ordinary(student: pl.Tensor, teacher: pl.Tensor, gradient: pl.Out[pl.Tensor],
+                 losses: pl.Out[pl.Tensor], valid: pl.Scalar[pl.INT32], normalizer: pl.Scalar[pl.INT32]):
+        return compute(student, teacher, student, gradient, losses, valid, normalizer)
+    if inline:
+        return ordinary
+    @pl.jit.host
+    def entry(student: pl.Tensor, teacher: pl.Tensor, gradient: pl.Out[pl.Tensor],
+              losses: pl.Out[pl.Tensor], valid: pl.Scalar[pl.INT32], normalizer: pl.Scalar[pl.INT32]):
+        compute(student, teacher, student, gradient, losses, valid, normalizer, device=0)
+    return entry
+
+
+def make_tv(rows, vocabulary, *, inline=False, focus_weight=1, position_weighted=False):
     """完整词表 TV 及 d(logits)，只监督 verifier 真正走到的行。"""
     if rows < 1 or vocabulary % 64:
         raise ValueError("positive rows and a 64-aligned vocabulary required")
@@ -27,12 +53,15 @@ def make_tv(rows, vocabulary, *, inline=False, focus_weight=1):
     focus_reciprocal = 1.0 / focus_weight
     kernel = pl.jit.inline if inline else pl.jit
     @kernel
-    def tv(student: pl.Tensor, teacher: pl.Tensor, gradient: pl.Out[pl.Tensor],
+    def tv(student: pl.Tensor, teacher: pl.Tensor, position_weights: pl.Tensor,
+           gradient: pl.Out[pl.Tensor],
            losses: pl.Out[pl.Tensor], valid: pl.Scalar[pl.INT32], normalizer: pl.Scalar[pl.INT32]):
         with pl.spmd(rows, name_hint="orthrus_tv_backward"):
             row = pl.tile.get_block_idx()
             if row < valid:
                 denominator = pl.cast(normalizer, pl.FP32)
+                if position_weighted:
+                    denominator = denominator / pl.read(position_weights, [row, 0])
                 if focus_weight > 1:
                     if row >= 2 and row < 4:
                         denominator = denominator * focus_reciprocal
@@ -93,15 +122,10 @@ def make_tv(rows, vocabulary, *, inline=False, focus_weight=1):
                     gradient[row:row + 1, tile * T:tile * T + T] = pl.full([1, T], dtype=pl.BF16, value=0.)
         return gradient, losses
 
-    @pl.jit.host
-    def entry(student: pl.Tensor, teacher: pl.Tensor, gradient: pl.Out[pl.Tensor],
-              losses: pl.Out[pl.Tensor], valid: pl.Scalar[pl.INT32], normalizer: pl.Scalar[pl.INT32]):
-        tv(student, teacher, gradient, losses, valid, normalizer, device=0)
-
-    return tv if inline else entry
+    return _loss_entry(tv, inline=inline, position_weighted=position_weighted)
 
 
-def make_kl(rows, vocabulary, *, inline=False):
+def make_kl(rows, vocabulary, *, inline=False, position_weighted=False):
     """完整词表 KL(teacher || draft) 及 d(logits)，用于干净序列的全块监督。"""
     if rows < 1 or vocabulary % 64:
         raise ValueError("positive rows and a 64-aligned vocabulary required")
@@ -110,11 +134,15 @@ def make_kl(rows, vocabulary, *, inline=False):
 
     kernel = pl.jit.inline if inline else pl.jit
     @kernel
-    def kl(student: pl.Tensor, teacher: pl.Tensor, gradient: pl.Out[pl.Tensor],
+    def kl(student: pl.Tensor, teacher: pl.Tensor, position_weights: pl.Tensor,
+           gradient: pl.Out[pl.Tensor],
            losses: pl.Out[pl.Tensor], valid: pl.Scalar[pl.INT32], normalizer: pl.Scalar[pl.INT32]):
         with pl.spmd(rows, name_hint="orthrus_kl_backward"):
             row = pl.tile.get_block_idx()
             if row < valid:
+                denominator = pl.cast(normalizer, pl.FP32)
+                if position_weighted:
+                    denominator = denominator / pl.read(position_weights, [row, 0])
                 sm = pl.full([8, 8], dtype=pl.FP32, value=-3.4028234663852886e38)
                 tm = pl.full([8, 8], dtype=pl.FP32, value=-3.4028234663852886e38)
                 for tile in pl.range(vocabulary // T):
@@ -150,25 +178,20 @@ def make_kl(rows, vocabulary, *, inline=False):
                     log_teacher = pl.row_expand_sub(pl.row_expand_sub(t, pl.row_max(tm)), ltz)
                     p = pl.exp(log_student)
                     q = pl.exp(log_teacher)
-                    ds = pl.div(pl.sub(p, q), pl.cast(normalizer, pl.FP32))
+                    ds = pl.div(pl.sub(p, q), denominator)
                     gradient[row:row + 1, tile * T:tile * T + T] = pl.cast(pl.reshape(ds, [1, T]), pl.BF16, mode="rint")
                     term = pl.mul(q, pl.sub(log_teacher, log_student))
                     partial = pl.row_expand_mul(pl.full([8, 8], dtype=pl.FP32, value=1.), pl.row_sum(term))
                     total = pl.row_expand_mul(pl.full([8, 8], dtype=pl.FP32, value=1.), pl.row_sum(pl.transpose(partial, 0, 1)))
                     loss = pl.add(loss, total)
-                losses[row:row + 1, 0:8] = pl.div(pl.slice(loss, [1, 8], [0, 0]), pl.cast(normalizer, pl.FP32))
+                losses[row:row + 1, 0:8] = pl.div(pl.slice(loss, [1, 8], [0, 0]), denominator)
             else:
                 losses[row:row + 1, 0:8] = pl.full([1, 8], dtype=pl.FP32, value=0.)
                 for tile in pl.range(vocabulary // T):
                     gradient[row:row + 1, tile * T:tile * T + T] = pl.full([1, T], dtype=pl.BF16, value=0.)
         return gradient, losses
 
-    @pl.jit.host
-    def entry(student: pl.Tensor, teacher: pl.Tensor, gradient: pl.Out[pl.Tensor],
-              losses: pl.Out[pl.Tensor], valid: pl.Scalar[pl.INT32], normalizer: pl.Scalar[pl.INT32]):
-        kl(student, teacher, gradient, losses, valid, normalizer, device=0)
-
-    return kl if inline else entry
+    return _loss_entry(kl, inline=inline, position_weighted=position_weighted)
 
 
 def make_adam(shape, *, beta1=.9, beta2=.999, epsilon=1e-8, inline=False):

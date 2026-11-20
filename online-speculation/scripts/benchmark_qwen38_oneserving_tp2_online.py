@@ -176,6 +176,8 @@ def main(*, guard=None):
     p.add_argument("--objective", default="tv", choices=("tv", "kl"))
     p.add_argument("--focus-weight", default=1, type=int,
                    help="TV weight on reached candidate offsets 2 and 3; one keeps the ordinary objective")
+    p.add_argument("--position-weighting", choices=("uniform", "rejection_decay"), default="uniform",
+                   help="keep full training weight through the captured first rejection, then decay to 1/16")
     p.add_argument("--feedback-mode", choices=("reached", "delayed"), default="reached")
     p.add_argument("--teacher-tokens", type=int, choices=range(1, 32), default=31)
     p.add_argument("--teacher-temperature", type=float, default=1.0,
@@ -259,7 +261,7 @@ def main(*, guard=None):
                         lr_schedule=args.lr_schedule, parameter_scope=args.parameter_scope,
                         warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
                         publication_backend=args.publication_backend, inner_steps=args.inner_steps,
-                        overlap_sampling=args.overlap_sampling, **extra)
+                        overlap_sampling=args.overlap_sampling, position_weighting=args.position_weighting, **extra)
     config = ServingConfig(args.model, (0, 1), max_model_len=512, max_num_batched_tokens=128,
                            max_num_seqs=2, speculative_tokens=0, prefix_cache=False,
                            long_prefill_token_threshold=4)
@@ -292,6 +294,7 @@ def main(*, guard=None):
                    lr_schedule=args.lr_schedule,
                    objective=args.objective, max_updates=args.max_updates,
                    focus_weight=args.focus_weight,
+                   position_weighting=args.position_weighting,
                    feedback_mode=args.feedback_mode,
                    teacher_tokens=args.teacher_tokens if args.feedback_mode == "delayed" else None,
                    teacher_temperature=args.teacher_temperature,

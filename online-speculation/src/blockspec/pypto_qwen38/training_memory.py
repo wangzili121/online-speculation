@@ -7,6 +7,8 @@ def suffix_memory(graph, layout, replay_blocks, *, compact_optimizer=False):
     size = lambda value:prod(value.shape)*{"bf16":2,"fp32":4}[value.dtype]
     names = {"hidden","cos","sin","teacher"}|{
         value.name for history in graph.histories.values() for value in history.values()}
+    if getattr(graph, "position_weighted", False):
+        names.add("position_weights")
     feedback = replay_blocks*sum(size(graph.inputs[name]) for name in names)
     execution = 2*layout.elements+4*layout.special_elements
     gradients = {value.name for value in graph.gradients.values()}

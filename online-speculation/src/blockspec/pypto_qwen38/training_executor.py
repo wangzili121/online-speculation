@@ -93,6 +93,8 @@ class TrainingWorkspace:
         import torch
         s = self.programs.graph.shape
         block_weight = tv_supervision_weight(valid, getattr(self.programs.graph, "focus_weight", 1))
+        if getattr(self.programs.graph, "position_weighted", False) and normalizer is None:
+            raise ValueError("dynamic weights require the batch's explicit supervision normalizer")
         normalizer = block_weight if normalizer is None else normalizer
         if normalizer < block_weight:
             raise ValueError("normalizer must include all reached positions")

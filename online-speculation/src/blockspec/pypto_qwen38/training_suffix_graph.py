@@ -22,10 +22,11 @@ class Parameter:
 
 class SuffixGraph(GraphBuilder):
     def __init__(self, last_layers, shape=SuffixShape(), gdn_shape=GDNShape(), *, objective="tv", focus_weight=1,
-                 parameter_scope="full"):
+                 parameter_scope="full", position_weighted=False):
         if parameter_scope not in {"full", "norms", "output_norms"}:
             raise ValueError("expected full, norms or output_norms attention parameter scope")
         self.objective, self.focus_weight = objective, focus_weight
+        self.position_weighted = position_weighted
         if type(last_layers) is not int or not 1 <= last_layers <= 64 or shape.block != gdn_shape.rows:
             raise ValueError("last-1..64 and a common K32 block required")
         self.last_layers, self.capture_layer = last_layers, 64-last_layers
@@ -38,9 +39,10 @@ class SuffixGraph(GraphBuilder):
             block = FullAttentionLayer(self, layer, hidden) if layer%4 == 3 else GDNLayer(self, layer, hidden)
             layers.append(block)
             hidden = block.output
-        full = LastLayerGraph(shape, backprop_input=bool(layers), objective=objective, focus_weight=focus_weight)
+        full = LastLayerGraph(shape, backprop_input=bool(layers), objective=objective, focus_weight=focus_weight,
+                              position_weighted=position_weighted)
         values = {}
-        shared = {"teacher", "cos", "sin", "final_gamma", "lm_head"}
+        shared = {"teacher", "cos", "sin", "final_gamma", "lm_head", "position_weights"}
         for name, value in full.inputs.items():
             if name == "hidden":
                 values[name] = hidden

@@ -7,6 +7,11 @@ def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False, 
     from .training_programs import tv_supervision_weight
     s = graph.shape
     block_weight = tv_supervision_weight(valid, getattr(graph, "focus_weight", 1))
+    if getattr(graph, "position_weighted", False):
+        weights = inputs["position_weights"][:valid, 0]
+        if not bool(torch.isfinite(weights).all()) or not bool((weights >= 1).all()):
+            raise ValueError("positive finite position weights are required")
+        block_weight = int(weights.sum().item())
     normalizer = block_weight if normalizer is None else normalizer
     if normalizer < block_weight:
         raise ValueError("normalizer must include all reached positions")
@@ -113,19 +118,23 @@ def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False, 
             result = p * (dy.float() - (p * dy.float()).sum(-1, keepdim=True))
             return (cast(result),)
         if op == "tv":
-            x, teacher = args
+            x, teacher = args[:2]
             p, q = x.float().softmax(-1), teacher.float().softmax(-1)
             sign = .5 * (p - q).sign()
             gradient = p * (sign - (p * sign).sum(-1, keepdim=True)) / normalizer
             weights = (torch.arange(s.block) < valid)[:, None].float()
             weights[2:4] *= cfg.get("focus_weight", 1)
+            if cfg.get("position_weighted", False):
+                weights *= args[2][:, :1]
             losses = .5 * (p-q).abs().sum(-1, keepdim=True) * weights / normalizer
             return cast(gradient * weights), losses.expand(-1, 8)
         if op == "kl":
-            x, teacher = args
+            x, teacher = args[:2]
             log_q, log_p = x.float().log_softmax(-1), teacher.float().log_softmax(-1)
             q, p = log_q.exp(), log_p.exp()
-            mask = (torch.arange(s.block) < valid)[:, None]
+            mask = (torch.arange(s.block) < valid)[:, None].float()
+            if cfg.get("position_weighted", False):
+                mask *= args[2][:, :1]
             gradient = (q-p) * mask / normalizer
             losses = (p*(log_p-log_q)).sum(-1, keepdim=True) * mask / normalizer
             return cast(gradient), losses.expand(-1, 8)

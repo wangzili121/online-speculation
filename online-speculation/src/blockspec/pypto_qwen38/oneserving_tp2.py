@@ -553,6 +553,9 @@ class OrthrusTP2Runner(TensorParallelRunner):
                     if stopped:
                         count, accepted, done = len(emitted), min(accepted, len(emitted)), True
                     if online is not None:
+                        if getattr(online, "position_weighting", "uniform") != "uniform":
+                            online.observe_verification(slot, offsets[i], accepted, rejected,
+                                                        selected=i == feedback_slot)
                         online.observe_teacher(slot, j, emitted, results[i], offsets[i],
                                                count, final=done, selected=i == feedback_slot)
                     results[i].extend(emitted)

@@ -130,7 +130,8 @@ class TP2Online:
                  replay_blocks=1, publish_every=1, gather_feedback=False, objective="tv", max_updates=None,
                  focus_weight=1, audit_replay=False, teacher_temperature=1.0, warmup_updates=0,
                  lr_schedule="constant", parameter_scope="full", warm_update_stride=None,
-                 warm_update_steps=0, publication_backend="auto", inner_steps=1, overlap_sampling=False):
+                 warm_update_steps=0, publication_backend="auto", inner_steps=1, overlap_sampling=False,
+                 position_weighting="uniform"):
         if type(overlap_sampling) is not bool or overlap_sampling and (background or last_layers not in (1, 4)):
             raise ValueError("sampling overlap requires last-1 or last-4 and no dedicated background learner")
         self.overlap_sampling = overlap_sampling
@@ -170,6 +171,10 @@ class TP2Online:
                 or focus_weight != 1 and objective != "tv"):
             raise ValueError("positive TV focus weight required; KL uses weight one")
         self.focus_weight = focus_weight
+        if position_weighting not in ("uniform", "rejection_decay") or (
+                position_weighting != "uniform" and focus_weight != 1):
+            raise ValueError("position weighting requires uniform or rejection_decay and focus_weight=1")
+        self.position_weighting = position_weighting
         if not isfinite(teacher_temperature) or teacher_temperature <= 0:
             raise ValueError("positive finite training teacher temperature required")
         self.teacher_temperature = teacher_temperature
@@ -248,7 +253,8 @@ class TP2Online:
         self.config = config if self.colocated else replace(config, distributed_config=replace(
             config.distributed_config, device_ids=[self.device]))
         self.graph = SuffixGraph(len(self.layers), objective=self.objective, focus_weight=self.focus_weight,
-                                 parameter_scope=self.parameter_scope)
+                                 parameter_scope=self.parameter_scope,
+                                 position_weighted=self.position_weighting != "uniform")
         self.training = TrainingPrograms(self.graph, self.config, combined=True,
                                          chunk_size=None if len(self.layers) == 1 else 24,
                                          external_gradients=True)
@@ -349,6 +355,8 @@ class TP2Online:
         names = {"hidden", "cos", "sin", "teacher"} | {
             value.name for history in self.graph.histories.values() for value in history.values()
         }
+        if self.graph.position_weighted:
+            names.add("position_weights")
         self.pool = []
         for _ in range(self.replay_blocks):
             inputs = {}
@@ -488,7 +496,7 @@ class TP2Online:
         started = time.monotonic_ns()
         self.inputs = self.pool[len(self.replay)]
         self.feedback = dict(position=position, width=width, candidates=candidates, valid=0,
-                             complete=False, inputs=self.inputs)
+                             complete=False, inputs=self.inputs, first_rejection=None)
         self.upload("cos", cos)
         self.upload("sin", sin)
         conv, recurrent, key, value = self.runner.resident[:4]
@@ -556,6 +564,15 @@ class TP2Online:
     def observe_native(self, slots, outputs):
         pass
 
+    def observe_verification(self, slot, offset, accepted, rejected, *, selected):
+        # 只记录被采集的原始 draft 块。延迟 teacher 后续遇到的拒绝属于另一个块。
+        state = self.feedback
+        if not selected or state is None or not rejected:
+            return
+        if slot.position - offset != state["position"] or state.get("first_rejection") is not None:
+            raise RuntimeError("rejection metadata must belong to the captured draft block")
+        state["first_rejection"] = offset + accepted
+
     def observe_teacher(self, slot, batch_slot, emitted, previous, offset, count, *, final, selected):
         if selected and self.feedback is not None and not self.feedback["complete"]:
             delivered, stopped = served_prefix(slot.request, len(previous), emitted)
@@ -595,6 +612,14 @@ class TP2Online:
             state, self.feedback = self.feedback, None
             if not state["complete"] or not 1 <= state["valid"] <= state["candidates"]:
                 raise RuntimeError("an update requires verified feedback")
+            if getattr(self, "position_weighting", "uniform") == "rejection_decay":
+                from .verification_weights import rejection_weights
+                started = time.monotonic_ns()
+                weights, total = rejection_weights(state["valid"], state.get("first_rejection"))
+                self.inputs = state["inputs"]
+                self.upload("position_weights", torch.tensor(weights, dtype=torch.float32)[:, None].repeat(1, 8))
+                state["supervision_weight"] = total
+                self.runner.spec_stats["feedback_ns"] += time.monotonic_ns() - started
             return state
 
     def ready_for_update(self):
@@ -673,7 +698,8 @@ class TP2Online:
         started = time.monotonic_ns()
         self.optimizer.zero_grad()
         supervised = sum(item["valid"] for item in replay)
-        normalizer = sum(tv_supervision_weight(item["valid"], self.focus_weight) for item in replay)
+        normalizer = sum(item.get("supervision_weight", tv_supervision_weight(item["valid"], self.focus_weight))
+                         for item in replay)
         loss = 0.0
         audits = []
         common = self.shared | self.optimizer.tensors()
@@ -726,6 +752,7 @@ class TP2Online:
         elapsed = time.monotonic_ns() - started
         return dict(round=round_number, loss=loss, supervised=supervised, feedback_blocks=len(replay),
                     full_feedback_blocks=sum(item.get("full_feedback", False) for item in replay),
+                    first_rejections=[item.get("first_rejection") for item in replay],
                     supervision_weight=normalizer, replay_audits=audits, learning_rate=learning_rate,
                     update_ns=elapsed, **result, **self.pack_stats)
 
