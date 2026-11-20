@@ -580,7 +580,7 @@ GDN 递推另尝试整块预计算 decay。12 项 A2 检查与原递推逐位相
 
 ## 公共权重去重后的恢复与 teacher31 检查（2026-11-20）
 
-189 的旧路径通过软链接指向公共模型目录。读取 18 个 safetensors 文件头和全部索引项后，又按迁移前的文件清单完整核对了 18 个权重分片及八个加载文件的 SHA256，全部相同。固定 OneServing 加载器还要求 HF 下载元数据，因此在私有 `inference-tuning-20261116/model-view` 下建立文件软链接，并保留来自 C 机已验证视图的原始 config 下载记录；同时核对 config 的 Git blob 与该记录一致。没有改公共目录、复制权重或修改 native 模型代码。实际 `TextWeights`、BF16 norm 读取和 tokenizer 的 CPU 检查通过，真实 NPU 检查继续执行。
+189 的旧路径通过软链接指向公共模型目录。读取 18 个 safetensors 文件头和全部索引项后，又按迁移前的文件清单完整核对了 18 个权重分片及八个加载文件的 SHA256，全部相同。固定 OneServing 加载器还要求 HF 下载元数据，因此在私有 `inference-tuning-20261116/model-view` 下建立文件软链接，并保留来自 C 机已验证视图的原始 config 下载记录；同时核对 config 的 Git blob 与该记录一致。没有改公共目录、复制权重或修改 native 模型代码。实际 `TextWeights`、BF16 norm 读取和 tokenizer 的 CPU 检查通过。迁移后的真实 27B 两卡短检查也已完成 18 次更新和发布：greedy 与 AR 相同，更新后 head 精确导出；单块七个有效候选行及双块 62 行的卷积参考 logits 在两个 TP rank 均逐位相同。该短检查包含额外参考计算，不报告吞吐收益。
 
 首次启动缺少隐藏元数据的失败完整保留。首次 CPU 检查也保留：测试误设 tokenizer 默认返回 list，而当前版本默认返回 `BatchEncoding`；显式选择列表返回格式后重跑通过，服务本身已有两种返回格式的处理。
 
