@@ -1,0 +1,60 @@
+{
+  "user_requested_pause_after_current": true,
+  "recorded_at": 1795166516.2932715,
+  "root": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test",
+  "stopped_dispatchers": [],
+  "canceled_waiting_wrappers": [],
+  "draining_model_jobs": [
+    {
+      "pid": 3274658,
+      "ppid": 1,
+      "cmd": "python3 run_dense_v114.py --tag c23-v114-triplet-pseudo56-step160-kl025-parallel128-rejection-decay-allcards-r2-startupfix1 --devices 0,1,2,3,4,5,6,7 --head step160-suffix-tp2 --learner-device 0 --last-layers 1 --tokens 128 --strides 128 --replay-blocks 1 --publish-every 4 --learning-rate 0.00001 --objective kl --candidates 31 --stop-on-eos --request-file pseudo-explore.json --holdout-file pseudo-holdout.json --ar-check-requests 56 --wait 14400 --feedback-mode delayed --teacher-tokens 7 --warmup-updates 8 --temperature 0 --warm-update-stride 16 --warm-update-steps 16 --interleaved --publication-backend device --interleave-ar --teacher-temperature 0.25 --position-weighting rejection_decay --seed 743 --draft-convolution parallel128",
+      "tag": "c23-v114-triplet-pseudo56-step160-kl025-parallel128-rejection-decay-allcards-r2-startupfix1",
+      "stage": "measuring",
+      "children": [
+        {
+          "pid": 3274704,
+          "cmd": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10 -c from orthrus_bench_dense_v114 import main; from _guard_bootstrap import Guard;g=Guard(); try: main(guard=g) finally: g.close() --model /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/inference-tuning-20261116/model-view --head /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/step160-suffix-tp2 --prompts /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/assets/pseudo-explore.json --holdout /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/assets/pseudo-holdout.json --output /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/c23-v114-triplet-pseudo56-step160-kl025-parallel128-rejection-decay-allcards-r2-startupfix1.json --export-heads /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/c23-v114-triplet-pseudo56-step160-kl025-parallel128-rejection-decay-allcards-r2-startupfix1-heads --tokens 128 --strides 128 --last-layers 1 --learner-device 0 --verify-chunk-size 4 --inner-steps 1 --replay-blocks 1 --publish-every 4 --ar-check-requests 56 --parameter-scope full --ring-heap-mib 512 --publication-backend device --gather-feedback --kv-pages 32 --learning-rate 1e-05 --objective kl --candidates 31 --stop-on-eos --feedback-mode delayed --teacher-tokens 7 --warm-update-stride 16 --warm-update-steps 16 --draft-convolution parallel128 --position-weighting rejection_decay --replay-learned-head --lr-schedule constant --warmup-updates 8 --seed 743 --teacher-temperature 0.25 --continuous-updates --temperature 0.0 --focus-weight 1 --interleaved --interleave-ar"
+        }
+      ]
+    }
+  ],
+  "policy": "No new experiments. Let actual current computation finish; preserve outputs and release own devices. Resume only on explicit user instruction.",
+  "previous": {
+    "user_requested_pause_after_current": true,
+    "recorded_at": 1795166468.0611594,
+    "root": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test",
+    "stopped_dispatchers": [
+      {
+        "pid": 3311082,
+        "ppid": 1,
+        "cmd": "python3 study_queue_dual130.py --plan queue-wave131-c23.json"
+      }
+    ],
+    "canceled_waiting_wrappers": [
+      {
+        "pid": 3402619,
+        "ppid": 1,
+        "cmd": "python3 run_dense_v114.py --tag c23-v114-head64-last1-kl025-audit-early131-r1 --devices 0,1,2,3,4,5,6,7 --head step64-last1-suffix-tp2-cpu131 --learner-device 0 --last-layers 1 --tokens 64 --strides 32 --replay-blocks 1 --publish-every 1 --learning-rate 3e-05 --objective kl --candidates 31 --request-file v95-mixed-eos-smoke6.json --holdout-file v95-eos-smoke-holdout.json --ar-check-requests 6 --feedback-mode delayed --teacher-tokens 31 --wait 14400 --publication-backend device --interleaved --stop-on-eos --temperature 0 --verify-chunk-size 4 --audit-replay --interleave-ar --position-weighting uniform --draft-convolution parallel128 --teacher-temperature 0.25 --warm-update-stride 16 --warm-update-steps 4 --warmup-updates 4",
+        "tag": "c23-v114-head64-last1-kl025-audit-early131-r1",
+        "reason": "User requested drain; waiting wrapper had no model child"
+      }
+    ],
+    "draining_model_jobs": [
+      {
+        "pid": 3274658,
+        "ppid": 1,
+        "cmd": "python3 run_dense_v114.py --tag c23-v114-triplet-pseudo56-step160-kl025-parallel128-rejection-decay-allcards-r2-startupfix1 --devices 0,1,2,3,4,5,6,7 --head step160-suffix-tp2 --learner-device 0 --last-layers 1 --tokens 128 --strides 128 --replay-blocks 1 --publish-every 4 --learning-rate 0.00001 --objective kl --candidates 31 --stop-on-eos --request-file pseudo-explore.json --holdout-file pseudo-holdout.json --ar-check-requests 56 --wait 14400 --feedback-mode delayed --teacher-tokens 7 --warmup-updates 8 --temperature 0 --warm-update-stride 16 --warm-update-steps 16 --interleaved --publication-backend device --interleave-ar --teacher-temperature 0.25 --position-weighting rejection_decay --seed 743 --draft-convolution parallel128",
+        "tag": "c23-v114-triplet-pseudo56-step160-kl025-parallel128-rejection-decay-allcards-r2-startupfix1",
+        "stage": "measuring",
+        "children": [
+          {
+            "pid": 3274704,
+            "cmd": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10 -c from orthrus_bench_dense_v114 import main; from _guard_bootstrap import Guard;g=Guard(); try: main(guard=g) finally: g.close() --model /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/inference-tuning-20261116/model-view --head /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/step160-suffix-tp2 --prompts /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/assets/pseudo-explore.json --holdout /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/assets/pseudo-holdout.json --output /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/c23-v114-triplet-pseudo56-step160-kl025-parallel128-rejection-decay-allcards-r2-startupfix1.json --export-heads /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/c23-v114-triplet-pseudo56-step160-kl025-parallel128-rejection-decay-allcards-r2-startupfix1-heads --tokens 128 --strides 128 --last-layers 1 --learner-device 0 --verify-chunk-size 4 --inner-steps 1 --replay-blocks 1 --publish-every 4 --ar-check-requests 56 --parameter-scope full --ring-heap-mib 512 --publication-backend device --gather-feedback --kv-pages 32 --learning-rate 1e-05 --objective kl --candidates 31 --stop-on-eos --feedback-mode delayed --teacher-tokens 7 --warm-update-stride 16 --warm-update-steps 16 --draft-convolution parallel128 --position-weighting rejection_decay --replay-learned-head --lr-schedule constant --warmup-updates 8 --seed 743 --teacher-temperature 0.25 --continuous-updates --temperature 0.0 --focus-weight 1 --interleaved --interleave-ar"
+          }
+        ]
+      }
+    ],
+    "policy": "No new experiments. Let actual current computation finish; preserve outputs and release own devices. Resume only on explicit user instruction."
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "user_requested_pause_after_current": true,
+  "recorded_at": 1795166516.1855524,
+  "root": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies",
+  "stopped_dispatchers": [
+    {
+      "pid": 2743883,
+      "ppid": 1,
+      "cmd": "python3 study_queue_dual130.py --plan queue-wave130-111.json"
+    }
+  ],
+  "canceled_waiting_wrappers": [],
+  "draining_model_jobs": [
+    {
+      "pid": 1922676,
+      "ppid": 2743883,
+      "cmd": "python3 run_dense_v112_docker.py --tag a111-v112-triplet-pseudo56-step160-tv-rejection-decay-stride64-r1 --devices 0,1,4,6,7 --head step160-suffix-tp2 --learner-device 0 --last-layers 1 --tokens 128 --strides 64 --replay-blocks 1 --publish-every 4 --learning-rate 0.00001 --objective tv --candidates 31 --stop-on-eos --request-file pseudo-explore.json --holdout-file pseudo-holdout.json --ar-check-requests 56 --wait 14400 --feedback-mode delayed --teacher-tokens 7 --warmup-updates 8 --temperature 0 --warm-update-stride 16 --warm-update-steps 32 --interleaved --publication-backend device --interleave-ar --teacher-temperature 1 --position-weighting rejection_decay --seed 743 --draft-convolution parallel128",
+      "tag": "a111-v112-triplet-pseudo56-step160-tv-rejection-decay-stride64-r1",
+      "stage": "measuring",
+      "children": [
+        {
+          "pid": 1922772,
+          "cmd": "docker run --rm --name orthrus-online-111-a111-v112-triplet-pseudo56-step160-tv-rejection-decay-stride64-r1 --privileged --network host --shm-size 128g -e ASCEND_AICPU_PATH=/usr/local/Ascend/cann-9.1.1 -v /data/disk1/wangzili/orthrus-qwen38-pypto-20261105:/data/disk1/wangzili/orthrus-qwen38-pypto-20261105 -v /data/disk/models/Qwen3.8-27B:/data/disk/models/Qwen3.8-27B:ro -v /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/cann-9.1.1:/usr/local/Ascend/cann-9.1.1:ro -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro --entrypoint /usr/bin/python3 quay.io/ascend/vllm-ascend:nightly-releases-v0.32.0rc /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/docker_entry_v112.py 0,4 -c from orthrus_bench_dense_v112 import main; from guarded_entry_v28 import Guard;g=Guard(); try: main(guard=g) finally: g.close() --model /data/disk/models/Qwen3.8-27B --head /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/step160-suffix-tp2 --prompts /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/assets/pseudo-explore.json --holdout /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/assets/pseudo-holdout.json --output /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/a111-v112-triplet-pseudo56-step160-tv-rejection-decay-stride64-r1.json --export-heads /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/a111-v112-triplet-pseudo56-step160-tv-rejection-decay-stride64-r1-heads --tokens 128 --strides 64 --last-layers 1 --learner-device 0 --verify-chunk-size 4 --inner-steps 1 --replay-blocks 1 --publish-every 4 --ar-check-requests 56 --parameter-scope full --ring-heap-mib 512 --publication-backend device --gather-feedback --kv-pages 32 --learning-rate 1e-05 --objective tv --candidates 31 --stop-on-eos --feedback-mode delayed --teacher-tokens 7 --warm-update-stride 16 --warm-update-steps 32 --draft-convolution parallel128 --replay-learned-head --lr-schedule constant --warmup-updates 8 --seed 743 --teacher-temperature 1.0 --continuous-updates --temperature 0.0 --focus-weight 1 --position-weighting rejection_decay --interleave-ar --interleaved"
+        }
+      ]
+    }
+  ],
+  "policy": "No new experiments. Let actual current computation finish; preserve outputs and release own devices. Resume only on explicit user instruction."
+}

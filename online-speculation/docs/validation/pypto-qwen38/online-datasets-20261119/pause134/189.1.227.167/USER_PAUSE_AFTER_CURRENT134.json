@@ -1,0 +1,29 @@
+{
+  "user_requested_pause_after_current": true,
+  "recorded_at": 1795166522.5096934,
+  "root": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background",
+  "stopped_dispatchers": [
+    {
+      "pid": 2770486,
+      "ppid": 1,
+      "cmd": "python3 study_queue_dual130.py --plan queue-wave131-167.json"
+    }
+  ],
+  "canceled_waiting_wrappers": [],
+  "draining_model_jobs": [
+    {
+      "pid": 3107153,
+      "ppid": 1,
+      "cmd": "python3 run_dense_v84.py --tag b167-v84-triplet-gsm384-step572-tv1e5-k7-r1 --devices 0,1,2,3,4,5,6,7 --head online-background/b167-v18-paired-gsm384-prewarm-tv1e5-staged256-r1-heads/head128-stride128 --learner-device 0 --last-layers 1 --tokens 192 --strides 128 --warm-update-stride 16 --warm-update-steps 16 --replay-blocks 1 --publish-every 4 --learning-rate 0.00001 --warmup-updates 8 --objective tv --candidates 7 --stop-on-eos --feedback-mode delayed --teacher-tokens 7 --request-file gsm-train384-head572-explore.json --holdout-file gsm8k-holdout.json --ar-check-requests 384 --wait 14400 --interleaved --seed 743 --interleave-ar",
+      "tag": "b167-v84-triplet-gsm384-step572-tv1e5-k7-r1",
+      "stage": "measuring",
+      "children": [
+        {
+          "pid": 3107900,
+          "cmd": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10 -c from orthrus_bench_dense_v84 import main; from guarded_entry import Guard;g=Guard(); try: main(guard=g) finally: g.close() --model /data/disk/wangzili/models/Qwen3.8-27B --head /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/b167-v18-paired-gsm384-prewarm-tv1e5-staged256-r1-heads/head128-stride128 --prompts /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/assets/gsm-train384-head572-explore.json --holdout /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/assets/gsm8k-holdout.json --output /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/b167-v84-triplet-gsm384-step572-tv1e5-k7-r1.json --export-heads /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/b167-v84-triplet-gsm384-step572-tv1e5-k7-r1-heads --tokens 192 --strides 128 --last-layers 1 --learner-device 0 --verify-chunk-size 4 --inner-steps 1 --replay-blocks 1 --publish-every 4 --ar-check-requests 384 --parameter-scope full --ring-heap-mib 512 --publication-backend auto --gather-feedback --kv-pages 32 --learning-rate 1e-05 --objective tv --candidates 7 --stop-on-eos --feedback-mode delayed --teacher-tokens 7 --warm-update-stride 16 --warm-update-steps 16 --replay-learned-head --lr-schedule constant --warmup-updates 8 --seed 743 --teacher-temperature 1.0 --continuous-updates --temperature 0 --focus-weight 1 --interleaved --interleave-ar"
+        }
+      ]
+    }
+  ],
+  "policy": "No new experiments. Let actual current computation finish; preserve outputs and release own devices. Resume only on explicit user instruction."
+}
