@@ -1,0 +1,60 @@
+{
+  "architecture": "aarch64",
+  "python": "/opt/pypto/venv/bin/python",
+  "packages": {
+    "torch": "2.10.0+cpu",
+    "numpy": "2.2.6",
+    "transformers": "4.51.0",
+    "safetensors": "0.8.0",
+    "tokenizers": "0.21.4",
+    "pypto-serving": "0.1.0",
+    "online-speculation": "0.4.0"
+  },
+  "pypto": "72a62d13efabbb25d240e35944f68ba5bcc22b7f",
+  "simpler": "6b6b88f2353cca12cfafe809750b50b59931b0d1",
+  "runtime_compatibility_patch_sha256": "f281b6890f82ef930c270c2fa1961f477793d89512d36391440de74e1cb175b6",
+  "serving_lib": {
+    "commit": "01f6f8d5c52cf7a5148ca30981ac539dbad3822b",
+    "base_commit": "e32726b7edb31ee17e398a0431c0272ebd545974",
+    "kernel_directory": "/opt/orthrus/pypto-lib/models/deepseek_v4_1_flash_a3",
+    "prefill_entry": "prefill_fwd.prefill_fwd",
+    "state_continuation_entry": "network.GenerationSession.advance",
+    "decode_entry": "decode_network.DecodeNetwork.step(chunk=...)",
+    "release_entry": "network.GenerationSession.release_request",
+    "draft_history_entry": "network.GenerationSession.draft_history",
+    "proposer_entry": "network.GenerationSession.propose_candidates",
+    "verifier_entry": "network.GenerationSession.verify_candidates",
+    "generation_ready": true,
+    "supported_topology": {
+      "dp": 4,
+      "tp": 4,
+      "ep": 16,
+      "pp": 1,
+      "pcp": 1,
+      "dcp": 1
+    },
+    "context_limit": 16384,
+    "prefill_dispatch_tokens_per_dp": 16,
+    "numerical_accuracy": "not_run",
+    "resource_contract": "one service resident static bank; per-generation physical pages/history"
+  },
+  "kernel_compiled": true,
+  "kernel_executed": false,
+  "cann_home": "/usr/local/Ascend/cann-9.0.0",
+  "driver": "not exposed in this container",
+  "cann": "Version=9.0.0\nversion_dir=cann\nrequired_package_runtime_version=\"9.0\"\nrequired_package_ge-executor_version=\"9.0\"\nrequired_package_metadef_version=\"9.0\"\nrequired_package_opbase_version=\"9.0\"\nrequired_package_bisheng-compiler_version=\"9.0\"\nrequired_package_tbe-tik_version=\"9.0\"\ntimestamp=20260428_134817545\n",
+  "source_commit": "b3bc1cd",
+  "image_id": "sha256:64a89d6925a8cfeae54d791c9ce8e652bc989aef1af17f36124abb9ba6dcbf8b",
+  "checks": {
+    "clean_docker_build": true,
+    "isolated_network_compilation": true,
+    "environment_tests_passed": 7,
+    "serving_cpu_tests_passed": 75,
+    "lib_cpu_tests_passed": 15,
+    "lib_cpu_tests_failed": 1,
+    "lib_failure_reproduces_on_unmodified_base": true,
+    "npu_execution": "not_run",
+    "real_checkpoint_model_execution": "not_run",
+    "two_host_runtime": "not_implemented"
+  }
+}
