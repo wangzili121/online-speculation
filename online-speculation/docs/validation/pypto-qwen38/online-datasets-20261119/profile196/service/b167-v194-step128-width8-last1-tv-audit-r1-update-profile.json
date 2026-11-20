@@ -1,0 +1,960 @@
+{
+  "completed": true,
+  "scope": "Diagnostic synchronous host call windows, including worker and device waits; not isolated kernel durations or throughput qualification. Use exclusive spans when summing nested phases. Replay audits are labeled separately.",
+  "events": [
+    {
+      "id": 0,
+      "parent": null,
+      "label": "train",
+      "start_ns": 408357129670431,
+      "child_ns": 129361381,
+      "metadata": {
+        "feedback_blocks": 1,
+        "replay_audit": true,
+        "version": 1,
+        "round": 8,
+        "supervised": 7,
+        "loss": 0.818251371383667,
+        "publish_read_ns": 31134754,
+        "publish_pack_ns": 1244196
+      },
+      "inclusive_ns": 537834126,
+      "exclusive_ns": 408472745
+    },
+    {
+      "id": 1,
+      "parent": 0,
+      "label": "zero_grad",
+      "start_ns": 408357129743661,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1226676,
+      "exclusive_ns": 1226676
+    },
+    {
+      "id": 2,
+      "parent": 0,
+      "label": "forward_backward",
+      "start_ns": 408357131185378,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 37081542,
+      "exclusive_ns": 37081542
+    },
+    {
+      "id": 3,
+      "parent": 0,
+      "label": "gradient_accumulate",
+      "start_ns": 408357405460371,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 3344695,
+      "exclusive_ns": 3344695
+    },
+    {
+      "id": 4,
+      "parent": 0,
+      "label": "adam_and_publish",
+      "start_ns": 408357411455438,
+      "child_ns": 48843786,
+      "metadata": {},
+      "inclusive_ns": 53257928,
+      "exclusive_ns": 4414142
+    },
+    {
+      "id": 5,
+      "parent": 4,
+      "label": "finite_norm_checks",
+      "start_ns": 408357411524369,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 8206878,
+      "exclusive_ns": 8206878
+    },
+    {
+      "id": 6,
+      "parent": 4,
+      "label": "finite_norm_checks",
+      "start_ns": 408357424037827,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 6348889,
+      "exclusive_ns": 6348889
+    },
+    {
+      "id": 7,
+      "parent": 4,
+      "label": "execution_render",
+      "start_ns": 408357430401516,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1883899,
+      "exclusive_ns": 1883899
+    },
+    {
+      "id": 8,
+      "parent": 4,
+      "label": "publication_prepare",
+      "start_ns": 408357432300775,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 32404120,
+      "exclusive_ns": 32404120
+    },
+    {
+      "id": 9,
+      "parent": 0,
+      "label": "forward_backward",
+      "start_ns": 408357464791596,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 34450540,
+      "exclusive_ns": 34450540
+    },
+    {
+      "id": 10,
+      "parent": null,
+      "label": "commit",
+      "start_ns": 408357667548217,
+      "child_ns": 0,
+      "metadata": {
+        "version": 1,
+        "round": 8,
+        "supervised": 7,
+        "loss": 0.818251371383667,
+        "publish_read_ns": 31134754,
+        "publish_pack_ns": 1244196,
+        "publish_upload_ns": 26850584,
+        "published_at_round": 8
+      },
+      "inclusive_ns": 26932055,
+      "exclusive_ns": 26932055
+    },
+    {
+      "id": 11,
+      "parent": null,
+      "label": "train",
+      "start_ns": 408358619326884,
+      "child_ns": 76707577,
+      "metadata": {
+        "feedback_blocks": 1,
+        "replay_audit": false,
+        "version": 2,
+        "round": 16,
+        "supervised": 7,
+        "loss": 0.8027825355529785,
+        "publish_read_ns": 15199161,
+        "publish_pack_ns": 1006815
+      },
+      "inclusive_ns": 79325888,
+      "exclusive_ns": 2618311
+    },
+    {
+      "id": 12,
+      "parent": 11,
+      "label": "zero_grad",
+      "start_ns": 408358619349314,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 5800917,
+      "exclusive_ns": 5800917
+    },
+    {
+      "id": 13,
+      "parent": 11,
+      "label": "forward_backward",
+      "start_ns": 408358625267291,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 33782767,
+      "exclusive_ns": 33782767
+    },
+    {
+      "id": 14,
+      "parent": 11,
+      "label": "gradient_accumulate",
+      "start_ns": 408358659069478,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 2331271,
+      "exclusive_ns": 2331271
+    },
+    {
+      "id": 15,
+      "parent": 11,
+      "label": "adam_and_publish",
+      "start_ns": 408358663836450,
+      "child_ns": 30647783,
+      "metadata": {},
+      "inclusive_ns": 34792622,
+      "exclusive_ns": 4144839
+    },
+    {
+      "id": 16,
+      "parent": 15,
+      "label": "finite_norm_checks",
+      "start_ns": 408358663848440,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 6488990,
+      "exclusive_ns": 6488990
+    },
+    {
+      "id": 17,
+      "parent": 15,
+      "label": "finite_norm_checks",
+      "start_ns": 408358674432399,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 6248969,
+      "exclusive_ns": 6248969
+    },
+    {
+      "id": 18,
+      "parent": 15,
+      "label": "execution_render",
+      "start_ns": 408358680696538,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1688868,
+      "exclusive_ns": 1688868
+    },
+    {
+      "id": 19,
+      "parent": 15,
+      "label": "publication_prepare",
+      "start_ns": 408358682400516,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 16220956,
+      "exclusive_ns": 16220956
+    },
+    {
+      "id": 20,
+      "parent": null,
+      "label": "commit",
+      "start_ns": 408358698666752,
+      "child_ns": 0,
+      "metadata": {
+        "version": 2,
+        "round": 16,
+        "supervised": 7,
+        "loss": 0.8027825355529785,
+        "publish_read_ns": 15199161,
+        "publish_pack_ns": 1006815,
+        "publish_upload_ns": 15865053,
+        "published_at_round": 16
+      },
+      "inclusive_ns": 15891534,
+      "exclusive_ns": 15891534
+    },
+    {
+      "id": 21,
+      "parent": null,
+      "label": "train",
+      "start_ns": 408359641852089,
+      "child_ns": 81867609,
+      "metadata": {
+        "feedback_blocks": 1,
+        "replay_audit": false,
+        "version": 3,
+        "round": 24,
+        "supervised": 7,
+        "loss": 0.7960643172264099,
+        "publish_read_ns": 18111104,
+        "publish_pack_ns": 1143176
+      },
+      "inclusive_ns": 84290581,
+      "exclusive_ns": 2422972
+    },
+    {
+      "id": 22,
+      "parent": 21,
+      "label": "zero_grad",
+      "start_ns": 408359641869289,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1168715,
+      "exclusive_ns": 1168715
+    },
+    {
+      "id": 23,
+      "parent": 21,
+      "label": "forward_backward",
+      "start_ns": 408359643138995,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 33708646,
+      "exclusive_ns": 33708646
+    },
+    {
+      "id": 24,
+      "parent": 21,
+      "label": "gradient_accumulate",
+      "start_ns": 408359676870081,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 2576152,
+      "exclusive_ns": 2576152
+    },
+    {
+      "id": 25,
+      "parent": 21,
+      "label": "adam_and_publish",
+      "start_ns": 408359681687644,
+      "child_ns": 35462574,
+      "metadata": {},
+      "inclusive_ns": 44414096,
+      "exclusive_ns": 8951522
+    },
+    {
+      "id": 26,
+      "parent": 25,
+      "label": "finite_norm_checks",
+      "start_ns": 408359681700114,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 6592970,
+      "exclusive_ns": 6592970
+    },
+    {
+      "id": 27,
+      "parent": 25,
+      "label": "finite_norm_checks",
+      "start_ns": 408359697188066,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 7862556,
+      "exclusive_ns": 7862556
+    },
+    {
+      "id": 28,
+      "parent": 25,
+      "label": "execution_render",
+      "start_ns": 408359705066892,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1733688,
+      "exclusive_ns": 1733688
+    },
+    {
+      "id": 29,
+      "parent": 25,
+      "label": "publication_prepare",
+      "start_ns": 408359706818150,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 19273360,
+      "exclusive_ns": 19273360
+    },
+    {
+      "id": 30,
+      "parent": null,
+      "label": "commit",
+      "start_ns": 408359726162170,
+      "child_ns": 0,
+      "metadata": {
+        "version": 3,
+        "round": 24,
+        "supervised": 7,
+        "loss": 0.7960643172264099,
+        "publish_read_ns": 18111104,
+        "publish_pack_ns": 1143176,
+        "publish_upload_ns": 18062594,
+        "published_at_round": 24
+      },
+      "inclusive_ns": 18091174,
+      "exclusive_ns": 18091174
+    },
+    {
+      "id": 31,
+      "parent": null,
+      "label": "train",
+      "start_ns": 408361771916094,
+      "child_ns": 72938038,
+      "metadata": {
+        "feedback_blocks": 1,
+        "replay_audit": false,
+        "version": 4,
+        "round": 33,
+        "supervised": 7,
+        "loss": 0.7837839722633362,
+        "publish_read_ns": 15042019,
+        "publish_pack_ns": 1058015
+      },
+      "inclusive_ns": 75248969,
+      "exclusive_ns": 2310931
+    },
+    {
+      "id": 32,
+      "parent": 31,
+      "label": "zero_grad",
+      "start_ns": 408361771957224,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1227255,
+      "exclusive_ns": 1227255
+    },
+    {
+      "id": 33,
+      "parent": 31,
+      "label": "forward_backward",
+      "start_ns": 408361773327160,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 34060378,
+      "exclusive_ns": 34060378
+    },
+    {
+      "id": 34,
+      "parent": 31,
+      "label": "gradient_accumulate",
+      "start_ns": 408361807410988,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 2593632,
+      "exclusive_ns": 2593632
+    },
+    {
+      "id": 35,
+      "parent": 31,
+      "label": "adam_and_publish",
+      "start_ns": 408361812039810,
+      "child_ns": 30845583,
+      "metadata": {},
+      "inclusive_ns": 35056773,
+      "exclusive_ns": 4211190
+    },
+    {
+      "id": 36,
+      "parent": 35,
+      "label": "finite_norm_checks",
+      "start_ns": 408361812051960,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 6488810,
+      "exclusive_ns": 6488810
+    },
+    {
+      "id": 37,
+      "parent": 35,
+      "label": "finite_norm_checks",
+      "start_ns": 408361822698969,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 6547571,
+      "exclusive_ns": 6547571
+    },
+    {
+      "id": 38,
+      "parent": 35,
+      "label": "execution_render",
+      "start_ns": 408361829263220,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1693318,
+      "exclusive_ns": 1693318
+    },
+    {
+      "id": 39,
+      "parent": 35,
+      "label": "publication_prepare",
+      "start_ns": 408361830971908,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 16115884,
+      "exclusive_ns": 16115884
+    },
+    {
+      "id": 40,
+      "parent": null,
+      "label": "commit",
+      "start_ns": 408361847181453,
+      "child_ns": 0,
+      "metadata": {
+        "version": 4,
+        "round": 33,
+        "supervised": 7,
+        "loss": 0.7837839722633362,
+        "publish_read_ns": 15042019,
+        "publish_pack_ns": 1058015,
+        "publish_upload_ns": 15985604,
+        "published_at_round": 33
+      },
+      "inclusive_ns": 16018094,
+      "exclusive_ns": 16018094
+    },
+    {
+      "id": 41,
+      "parent": null,
+      "label": "train",
+      "start_ns": 408362903774796,
+      "child_ns": 71847114,
+      "metadata": {
+        "feedback_blocks": 1,
+        "replay_audit": false,
+        "version": 5,
+        "round": 49,
+        "supervised": 7,
+        "loss": 0.7411514520645142,
+        "publish_read_ns": 14725798,
+        "publish_pack_ns": 1005255
+      },
+      "inclusive_ns": 73952443,
+      "exclusive_ns": 2105329
+    },
+    {
+      "id": 42,
+      "parent": 41,
+      "label": "zero_grad",
+      "start_ns": 408362903790936,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1210896,
+      "exclusive_ns": 1210896
+    },
+    {
+      "id": 43,
+      "parent": 41,
+      "label": "forward_backward",
+      "start_ns": 408362905101202,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 33687097,
+      "exclusive_ns": 33687097
+    },
+    {
+      "id": 44,
+      "parent": 41,
+      "label": "gradient_accumulate",
+      "start_ns": 408362938805469,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 2436811,
+      "exclusive_ns": 2436811
+    },
+    {
+      "id": 45,
+      "parent": 41,
+      "label": "adam_and_publish",
+      "start_ns": 408362943191569,
+      "child_ns": 30353781,
+      "metadata": {},
+      "inclusive_ns": 34512310,
+      "exclusive_ns": 4158529
+    },
+    {
+      "id": 46,
+      "parent": 45,
+      "label": "finite_norm_checks",
+      "start_ns": 408362943202229,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 6600071,
+      "exclusive_ns": 6600071
+    },
+    {
+      "id": 47,
+      "parent": 45,
+      "label": "finite_norm_checks",
+      "start_ns": 408362953912429,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 6319169,
+      "exclusive_ns": 6319169
+    },
+    {
+      "id": 48,
+      "parent": 45,
+      "label": "execution_render",
+      "start_ns": 408362960247678,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1690998,
+      "exclusive_ns": 1690998
+    },
+    {
+      "id": 49,
+      "parent": 45,
+      "label": "publication_prepare",
+      "start_ns": 408362961953196,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 15743543,
+      "exclusive_ns": 15743543
+    },
+    {
+      "id": 50,
+      "parent": null,
+      "label": "commit",
+      "start_ns": 408362977740989,
+      "child_ns": 0,
+      "metadata": {
+        "version": 5,
+        "round": 49,
+        "supervised": 7,
+        "loss": 0.7411514520645142,
+        "publish_read_ns": 14725798,
+        "publish_pack_ns": 1005255,
+        "publish_upload_ns": 16012625,
+        "published_at_round": 49
+      },
+      "inclusive_ns": 16039005,
+      "exclusive_ns": 16039005
+    },
+    {
+      "id": 51,
+      "parent": null,
+      "label": "train",
+      "start_ns": 408364023699973,
+      "child_ns": 72876259,
+      "metadata": {
+        "feedback_blocks": 1,
+        "replay_audit": false,
+        "version": 6,
+        "round": 65,
+        "supervised": 7,
+        "loss": 0.7874033451080322,
+        "publish_read_ns": 14890209,
+        "publish_pack_ns": 1037605
+      },
+      "inclusive_ns": 75141569,
+      "exclusive_ns": 2265310
+    },
+    {
+      "id": 52,
+      "parent": 51,
+      "label": "zero_grad",
+      "start_ns": 408364023727473,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1271826,
+      "exclusive_ns": 1271826
+    },
+    {
+      "id": 53,
+      "parent": 51,
+      "label": "forward_backward",
+      "start_ns": 408364025149600,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 33953418,
+      "exclusive_ns": 33953418
+    },
+    {
+      "id": 54,
+      "parent": 51,
+      "label": "gradient_accumulate",
+      "start_ns": 408364059127598,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 2547112,
+      "exclusive_ns": 2547112
+    },
+    {
+      "id": 55,
+      "parent": 51,
+      "label": "adam_and_publish",
+      "start_ns": 408364063710669,
+      "child_ns": 30853724,
+      "metadata": {},
+      "inclusive_ns": 35103903,
+      "exclusive_ns": 4250179
+    },
+    {
+      "id": 56,
+      "parent": 55,
+      "label": "finite_norm_checks",
+      "start_ns": 408364063721419,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 6809112,
+      "exclusive_ns": 6809112
+    },
+    {
+      "id": 57,
+      "parent": 55,
+      "label": "finite_norm_checks",
+      "start_ns": 408364074732520,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 6396540,
+      "exclusive_ns": 6396540
+    },
+    {
+      "id": 58,
+      "parent": 55,
+      "label": "execution_render",
+      "start_ns": 408364081144740,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1703308,
+      "exclusive_ns": 1703308
+    },
+    {
+      "id": 59,
+      "parent": 55,
+      "label": "publication_prepare",
+      "start_ns": 408364082861778,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 15944764,
+      "exclusive_ns": 15944764
+    },
+    {
+      "id": 60,
+      "parent": null,
+      "label": "commit",
+      "start_ns": 408364098856242,
+      "child_ns": 0,
+      "metadata": {
+        "version": 6,
+        "round": 65,
+        "supervised": 7,
+        "loss": 0.7874033451080322,
+        "publish_read_ns": 14890209,
+        "publish_pack_ns": 1037605,
+        "publish_upload_ns": 15586742,
+        "published_at_round": 65
+      },
+      "inclusive_ns": 15617513,
+      "exclusive_ns": 15617513
+    },
+    {
+      "id": 61,
+      "parent": null,
+      "label": "train",
+      "start_ns": 408379677308226,
+      "child_ns": 73903962,
+      "metadata": {
+        "feedback_blocks": 1,
+        "replay_audit": false,
+        "version": 7,
+        "round": 80,
+        "supervised": 7,
+        "loss": 0.781825065612793,
+        "publish_read_ns": 15175620,
+        "publish_pack_ns": 1033675
+      },
+      "inclusive_ns": 76252804,
+      "exclusive_ns": 2348842
+    },
+    {
+      "id": 62,
+      "parent": 61,
+      "label": "zero_grad",
+      "start_ns": 408379677337046,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1210225,
+      "exclusive_ns": 1210225
+    },
+    {
+      "id": 63,
+      "parent": 61,
+      "label": "forward_backward",
+      "start_ns": 408379678712422,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 34314369,
+      "exclusive_ns": 34314369
+    },
+    {
+      "id": 64,
+      "parent": 61,
+      "label": "gradient_accumulate",
+      "start_ns": 408379713047472,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 2588362,
+      "exclusive_ns": 2588362
+    },
+    {
+      "id": 65,
+      "parent": 61,
+      "label": "adam_and_publish",
+      "start_ns": 408379717744333,
+      "child_ns": 31581966,
+      "metadata": {},
+      "inclusive_ns": 35791006,
+      "exclusive_ns": 4209040
+    },
+    {
+      "id": 66,
+      "parent": 65,
+      "label": "finite_norm_checks",
+      "start_ns": 408379717756093,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 7076123,
+      "exclusive_ns": 7076123
+    },
+    {
+      "id": 67,
+      "parent": 65,
+      "label": "finite_norm_checks",
+      "start_ns": 408379728991186,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 6547870,
+      "exclusive_ns": 6547870
+    },
+    {
+      "id": 68,
+      "parent": 65,
+      "label": "execution_render",
+      "start_ns": 408379735554636,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1730818,
+      "exclusive_ns": 1730818
+    },
+    {
+      "id": 69,
+      "parent": 65,
+      "label": "publication_prepare",
+      "start_ns": 408379737300364,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 16227155,
+      "exclusive_ns": 16227155
+    },
+    {
+      "id": 70,
+      "parent": null,
+      "label": "commit",
+      "start_ns": 408379753576590,
+      "child_ns": 0,
+      "metadata": {
+        "version": 7,
+        "round": 80,
+        "supervised": 7,
+        "loss": 0.781825065612793,
+        "publish_read_ns": 15175620,
+        "publish_pack_ns": 1033675,
+        "publish_upload_ns": 16145145,
+        "published_at_round": 80
+      },
+      "inclusive_ns": 16176385,
+      "exclusive_ns": 16176385
+    },
+    {
+      "id": 71,
+      "parent": null,
+      "label": "train",
+      "start_ns": 408381629029803,
+      "child_ns": 72634417,
+      "metadata": {
+        "feedback_blocks": 1,
+        "replay_audit": false,
+        "version": 8,
+        "round": 96,
+        "supervised": 7,
+        "loss": 0.7749375700950623,
+        "publish_read_ns": 14962019,
+        "publish_pack_ns": 1043185
+      },
+      "inclusive_ns": 75143629,
+      "exclusive_ns": 2509212
+    },
+    {
+      "id": 72,
+      "parent": 71,
+      "label": "zero_grad",
+      "start_ns": 408381629059703,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1187686,
+      "exclusive_ns": 1187686
+    },
+    {
+      "id": 73,
+      "parent": 71,
+      "label": "forward_backward",
+      "start_ns": 408381630439589,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 33989068,
+      "exclusive_ns": 33989068
+    },
+    {
+      "id": 74,
+      "parent": 71,
+      "label": "gradient_accumulate",
+      "start_ns": 408381664454187,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 2590432,
+      "exclusive_ns": 2590432
+    },
+    {
+      "id": 75,
+      "parent": 71,
+      "label": "adam_and_publish",
+      "start_ns": 408381669280120,
+      "child_ns": 30647882,
+      "metadata": {},
+      "inclusive_ns": 34867231,
+      "exclusive_ns": 4219349
+    },
+    {
+      "id": 76,
+      "parent": 75,
+      "label": "finite_norm_checks",
+      "start_ns": 408381669291400,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 6524160,
+      "exclusive_ns": 6524160
+    },
+    {
+      "id": 77,
+      "parent": 75,
+      "label": "finite_norm_checks",
+      "start_ns": 408381679985669,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 6380340,
+      "exclusive_ns": 6380340
+    },
+    {
+      "id": 78,
+      "parent": 75,
+      "label": "execution_render",
+      "start_ns": 408381686381539,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 1717908,
+      "exclusive_ns": 1717908
+    },
+    {
+      "id": 79,
+      "parent": 75,
+      "label": "publication_prepare",
+      "start_ns": 408381688113507,
+      "child_ns": 0,
+      "metadata": {},
+      "inclusive_ns": 16025474,
+      "exclusive_ns": 16025474
+    },
+    {
+      "id": 80,
+      "parent": null,
+      "label": "commit",
+      "start_ns": 408381704189372,
+      "child_ns": 0,
+      "metadata": {
+        "version": 8,
+        "round": 96,
+        "supervised": 7,
+        "loss": 0.7749375700950623,
+        "publish_read_ns": 14962019,
+        "publish_pack_ns": 1043185,
+        "publish_upload_ns": 16056424,
+        "published_at_round": 96
+      },
+      "inclusive_ns": 16090504,
+      "exclusive_ns": 16090504
+    }
+  ]
+}

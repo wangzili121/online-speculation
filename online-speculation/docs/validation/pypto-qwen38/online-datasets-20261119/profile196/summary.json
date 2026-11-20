@@ -1,0 +1,89 @@
+{
+  "completed": true,
+  "scope": "Real27B same2A2/rank0 dense last1 TV, step128 logical8 short diagnosis. Synchronoushostcallwindows including waits, not purekernels orperformancequalification. First auditedupdate excluded entirely. No nestedcostdoublecount.",
+  "validation": {
+    "completed": true,
+    "tag": "b167-v194-step128-width8-last1-tv-audit-r1",
+    "updates": 8,
+    "greedy_AR_exact": true,
+    "published_export_exact": true,
+    "head_step": 128,
+    "physical_cards": 2,
+    "logical_width": 8,
+    "objective": "tv",
+    "publish_every": 1,
+    "max_replay_TV": 0.0011447310680523515,
+    "max_replay_L2": 0.0025300022680312395,
+    "scope": "Short correctness of known historical step128 with dense last1 TV and variable width, not performance qualification"
+  },
+  "normal_updates": 7,
+  "excluded_audited_updates": 1,
+  "normal_root_total_ms": 653.280092,
+  "normal_train_median_ms": 75.248969,
+  "phases": [
+    {
+      "label": "train",
+      "calls": 7,
+      "total_exclusive_ms": 16.580907,
+      "median_exclusive_ms": 2.348842,
+      "median_inclusive_ms": 75.248969
+    },
+    {
+      "label": "zero_grad",
+      "calls": 7,
+      "total_exclusive_ms": 13.07752,
+      "median_exclusive_ms": 1.210896,
+      "median_inclusive_ms": 1.210896
+    },
+    {
+      "label": "forward_backward",
+      "calls": 7,
+      "total_exclusive_ms": 237.495743,
+      "median_exclusive_ms": 33.953418,
+      "median_inclusive_ms": 33.953418
+    },
+    {
+      "label": "gradient_accumulate",
+      "calls": 7,
+      "total_exclusive_ms": 17.663772,
+      "median_exclusive_ms": 2.576152,
+      "median_inclusive_ms": 2.576152
+    },
+    {
+      "label": "adam_and_publish",
+      "calls": 7,
+      "total_exclusive_ms": 34.144648,
+      "median_exclusive_ms": 4.21119,
+      "median_inclusive_ms": 35.056773
+    },
+    {
+      "label": "finite_norm_checks",
+      "calls": 14,
+      "total_exclusive_ms": 92.883251,
+      "median_exclusive_ms": 6.5358655,
+      "median_inclusive_ms": 6.5358655
+    },
+    {
+      "label": "execution_render",
+      "calls": 7,
+      "total_exclusive_ms": 11.958906,
+      "median_exclusive_ms": 1.703308,
+      "median_inclusive_ms": 1.703308
+    },
+    {
+      "label": "publication_prepare",
+      "calls": 7,
+      "total_exclusive_ms": 115.551136,
+      "median_exclusive_ms": 16.115884,
+      "median_inclusive_ms": 16.115884
+    },
+    {
+      "label": "commit",
+      "calls": 7,
+      "total_exclusive_ms": 113.924209,
+      "median_exclusive_ms": 16.039005,
+      "median_inclusive_ms": 16.039005
+    }
+  ],
+  "raw_profile_sha256": "ee25946b18e4c5440c9ca41fadebfbc36a5ccf667f0bb2ee9dc7545c67f12a3c"
+}
