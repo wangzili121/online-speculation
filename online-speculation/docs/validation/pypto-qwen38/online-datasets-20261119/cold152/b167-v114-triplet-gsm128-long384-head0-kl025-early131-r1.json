@@ -1,0 +1,153 @@
+{
+  "completed": false,
+  "head_step": 0,
+  "device_ids": [
+    0,
+    1
+  ],
+  "head_payload_sha256": "281b72abb55df0638a872cccafdedc4110e37282271ad5f6f55b63185e3e5b7a",
+  "head_shard_sha256": [
+    "dc1aced39afa3e9f26952f74e32903e234baa55a8f1972e4f5c279a3a350a2dd",
+    "d60a07f1cbbee6672d0437cf9f0569381e098db0388f14b62b6aad617ef38e31"
+  ],
+  "visible_devices": "2,3",
+  "learner_device": 0,
+  "last_layers": 1,
+  "parameter_scope": "full",
+  "publication_backend": "device",
+  "physical_device_count": 2,
+  "kv_pages": 32,
+  "resource_policy": {
+    "version": "teacher-safe-gather-tail-packet-source2",
+    "ring_heap_bytes": [
+      536870912,
+      536870912,
+      536870912,
+      536870912
+    ],
+    "max_rows": 128,
+    "scope_payload_bounds_bytes": {
+      "draft_root": 92798976,
+      "target_root_with_pipe": 36536320,
+      "target_root_with_c16": 62420100,
+      "gdn_c16_declared_workspace": 25883780,
+      "root_bound": 95988416,
+      "baseline_root_bound": 92798976,
+      "packed_sampler_workspace": 3178944,
+      "teacher_packet_workspace": 10496,
+      "layer": 44957696,
+      "legacy_branch_with_wrap": 415203328,
+      "generated_ring3_payload": 0
+    },
+    "registered_model_programs": 1,
+    "all_visited_windows_bytes": 335544352,
+    "persistent_l3_domains": true,
+    "reset_persistent_windows": false,
+    "communication_epoch_policy": "program-owned-128-target-3-draft-retirement",
+    "domain_policy": "retain-all",
+    "retention_budget_bytes": 1073741824,
+    "communication_live_bytes": 335544352,
+    "maximum_window_bytes": 335544352,
+    "teacher_packet_bytes_per_rank": 10304,
+    "teacher_packet_host_bytes": 20608,
+    "scratch_bytes": 34787392,
+    "host_argument_staging_bytes": 1364800,
+    "reset_staging_reserve_bytes": 335544352,
+    "native_future_margin_bytes": 1073741824,
+    "future_bytes_after_prepare": 1780982720,
+    "orthrus_ring_floor_mib": 512,
+    "native_ring_heap_bytes": [
+      268435456,
+      268435456,
+      268435456,
+      268435456
+    ]
+  },
+  "learning_rate": 0.0001,
+  "background": false,
+  "overlap_sampling": false,
+  "benchmark_layout": "interleaved_ar_frozen_online",
+  "interleaved_order": "six_permutations_within_pair",
+  "primary_metric": "continuous_online_vs_target_only_AR",
+  "warmup_updates": 8,
+  "warm_update_stride": 16,
+  "warm_update_steps": 128,
+  "lr_schedule": "constant",
+  "objective": "kl",
+  "max_updates": null,
+  "focus_weight": 1,
+  "position_weighting": "uniform",
+  "draft_convolution": "parallel128",
+  "diagnostic_only": false,
+  "feedback_mode": "delayed",
+  "teacher_tokens": 31,
+  "teacher_temperature": 0.25,
+  "audit_replay": false,
+  "online_update_policy": "continuous_two_stage",
+  "temperature": 0.0,
+  "seed": 743,
+  "sampler": "device_greedy",
+  "replay_blocks": 1,
+  "publish_every": 4,
+  "inner_steps": 1,
+  "stop_on_eos": true,
+  "candidates": 7,
+  "verify_chunk_size": 4,
+  "requests": 128,
+  "ar_checked_requests": 128,
+  "output_tokens_per_request": 384,
+  "prompts_sha256": "cd32d34ee50228210779bd0a3c3bd6f25e2492710241ffa4eb5c3cefb3049c91",
+  "holdout_sha256": "a1efa072172f1c45fe05430754f8680955f59342ce2b43d57c897519f09ab7b0",
+  "gather_feedback": true,
+  "optimizer_init": "fresh",
+  "results": {},
+  "stage": "measuring",
+  "convolution_audits": [],
+  "startup_seconds": 355.9158083869843,
+  "learner_memory_plan": {
+    "free_before_learner": 20787322880,
+    "publication_bytes": 62918656,
+    "serving_mirror_bytes": 104859648,
+    "native_future_reserved_bytes": 1780982720,
+    "compact_optimizer": false,
+    "required": {
+      "serving": 437776384,
+      "learner": 6528141312
+    }
+  },
+  "trainable_parameters": 104858112,
+  "training_dispatches": 1,
+  "device_memory_after_ar_warmup": [
+    [
+      13710544896,
+      65452113920
+    ],
+    [
+      20333531136,
+      65452113920
+    ]
+  ],
+  "progress": {
+    "paired_64": [
+      {
+        "requests": 32,
+        "fixed_tok_s": 27.119494358049142,
+        "tok_s": 24.67071254308498,
+        "net_increment": -0.09029599824516477,
+        "accepted_per_round": 1.1810968494749126,
+        "updates": 139,
+        "publications": 34,
+        "ar_tok_s": 30.075452467562325,
+        "net_increment_vs_ar": -0.1797060220559138
+      }
+    ]
+  },
+  "error": "KeyboardInterrupt()",
+  "error_chain": [
+    {
+      "type": "KeyboardInterrupt",
+      "message": ""
+    }
+  ],
+  "clean_shutdown": true
+}
