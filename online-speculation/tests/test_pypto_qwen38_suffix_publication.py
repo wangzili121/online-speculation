@@ -159,13 +159,16 @@ def test_publication_arena_uses_owned_base_with_nonoverlapping_aligned_views():
         size = prod(spec.target) * (4 if spec.dtype == 'fp32' else 2)
         offset += (size + 63) // 64 * 64
     assert offset == obj.allocation_bytes and len(views) == len(obj.outputs)
+    bf16_arena = SimpleNamespace(shape=(1, obj.allocation_bytes // 2), dtype=torch.bfloat16,
+                                 data_ptr=16384, buffer=scratch.buffer)
+    assert all(x.base == 16384 for x in obj.allocate(worker, scratch=bf16_arena).values())
     for bank, (base, offset) in obj.sources(layout, scratch, destinations).items():
         assert base == 8192
         if bank in destinations:
             assert offset == destinations[bank].offset
     for bad in [SimpleNamespace(shape=(1, 8), dtype=torch.float32),
-                SimpleNamespace(shape=scratch.shape, dtype=torch.bfloat16)]:
-        with pytest.raises(ValueError, match='sufficient FP32'):
+                SimpleNamespace(shape=scratch.shape, dtype=torch.float16)]:
+        with pytest.raises(ValueError, match='sufficient'):
             obj.allocate(worker, scratch=bad)
 
 

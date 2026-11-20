@@ -110,3 +110,51 @@ def test_interleaving_cannot_borrow_free_learning_time_from_the_frozen_group(bac
     trainer = SimpleNamespace(background=background, pending_update=pending)
     with pytest.raises(ValueError, match="synchronous"):
         benchmark.measure_interleaved([("a", "b")], lambda *_: pytest.fail("must not generate"), trainer)
+
+
+def test_ar_triplets_balance_all_six_orders_without_free_updates():
+    trainer = SimpleNamespace(background=False, pending_update=None, queued_update=None,
+                              rounds=0, version=0, completed_version=0, published_version=0,
+                              update_limit_reached=lambda: False)
+    calls = []
+    def issue(pair, index, ar=False):
+        mode = 'ar' if ar else 'online' if trainer.pending_evaluation == 'current' else 'frozen'
+        if mode == 'online':
+            trainer.rounds += 2
+            trainer.version += 1
+            trainer.completed_version = trainer.published_version = trainer.version
+        else:
+            assert trainer.pending_evaluation == 'initial'
+        calls.append((index, mode))
+        return dict(seconds={'ar': 2., 'frozen': 3., 'online': 1.}[mode], tokens=[[index], [index]],
+                    metrics=[dict(tpot_ms=1)],
+                    stats=dict(rounds=2, accepted=1, updates=int(mode == 'online'),
+                               publications=int(mode == 'online')))
+    frozen, online, ar = benchmark.measure_interleaved(
+        [('a', 'b')] * 6, issue, trainer, ar_issue=lambda p, i: issue(p, i, ar=True))
+    orders = [tuple(mode for _, mode in calls[3*i:3*i+3]) for i in range(6)]
+    assert len(set(orders)) == 6
+    for mode in ('ar', 'frozen', 'online'):
+        assert [sum(order[position] == mode for order in orders) for position in range(3)] == [2, 2, 2]
+    assert [r['learner']['optimizer_version'] for r in online] == list(range(1, 7))
+    assert benchmark.summarize(ar)['seconds'] == 12.
+    assert benchmark.summarize(frozen)['seconds'] == 18.
+    assert benchmark.summarize(online)['seconds'] == 6.
+    assert sum(r['stats']['updates'] for r in ar + frozen) == 0
+    assert trainer.rounds == 12 and trainer.version == 6
+
+
+@pytest.mark.parametrize('fault', ['hidden_update', 'feedback_cost', 'pending_work'])
+def test_ar_control_cannot_advance_or_hide_learning(fault):
+    trainer = SimpleNamespace(background=False, pending_update=None, queued_update=None,
+                              rounds=0, version=0, completed_version=0, published_version=0,
+                              update_limit_reached=lambda: False)
+    def ar_issue(pair, index):
+        stats = dict(updates=0, publications=0)
+        if fault == 'hidden_update': trainer.rounds += 1
+        elif fault == 'feedback_cost': stats['feedback_ns'] = 1
+        else: trainer.queued_update = object()
+        return dict(stats=stats)
+    with pytest.raises(RuntimeError, match='learning'):
+        benchmark.measure_interleaved([('a', 'b')], lambda *_: pytest.fail('AR should fail first'),
+                                      trainer, ar_issue=ar_issue)

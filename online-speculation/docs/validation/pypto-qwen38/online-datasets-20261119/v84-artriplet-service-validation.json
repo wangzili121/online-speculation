@@ -1,0 +1,115 @@
+{
+  "completed": true,
+  "scope": "Actual2card real27B AR/frozen/online triplet service, not performance acceptance",
+  "cases": [
+    {
+      "case": "c23-v84-device-last1-greedy-artriplet-audit-r1",
+      "physical_cards": "6,7",
+      "last_layers": 1,
+      "temperature": 0.0,
+      "trainable_parameters": 104858112,
+      "updates": 10,
+      "max_tv": 4.071485761869553e-07,
+      "max_l2": 0.002962730824947357,
+      "greedy_exact": true,
+      "export_exact": true,
+      "controls_learning_work_zero": true,
+      "pair_ends_clear": true,
+      "memory_plan": {
+        "free_before_learner": 20748697600,
+        "publication_bytes": 62918656,
+        "serving_mirror_bytes": 104859648,
+        "native_future_reserved_bytes": 1780982720,
+        "compact_optimizer": false,
+        "required": {
+          "serving": 437776384,
+          "learner": 6528141312
+        }
+      },
+      "device_memory_after_ar_warmup": [
+        [
+          13671268352,
+          65452113920
+        ],
+        [
+          20283494400,
+          65452113920
+        ]
+      ],
+      "sampler": "device_greedy"
+    },
+    {
+      "case": "c23-v84-device-last4-greedy-artriplet-audit-r1",
+      "physical_cards": "6,7",
+      "last_layers": 4,
+      "temperature": 0.0,
+      "trainable_parameters": 454944000,
+      "updates": 10,
+      "max_tv": 1.2576402923514252e-06,
+      "max_l2": 0.005510672926902771,
+      "greedy_exact": true,
+      "export_exact": true,
+      "controls_learning_work_zero": true,
+      "pair_ends_clear": true,
+      "memory_plan": {
+        "free_before_learner": 20733952000,
+        "publication_bytes": 0,
+        "serving_mirror_bytes": 458878272,
+        "native_future_reserved_bytes": 1780982720,
+        "compact_optimizer": true,
+        "required": {
+          "serving": 1847801344,
+          "learner": 17950068960
+        }
+      },
+      "device_memory_after_ar_warmup": [
+        [
+          1927081984,
+          65452113920
+        ],
+        [
+          19917246464,
+          65452113920
+        ]
+      ],
+      "sampler": "device_greedy"
+    },
+    {
+      "case": "c23-v84-device-last4-t1-artriplet-audit-r1",
+      "physical_cards": "6,7",
+      "last_layers": 4,
+      "temperature": 1.0,
+      "trainable_parameters": 454944000,
+      "updates": 9,
+      "max_tv": 1.2576402923514252e-06,
+      "max_l2": 0.005510672926902771,
+      "greedy_exact": null,
+      "export_exact": true,
+      "controls_learning_work_zero": true,
+      "pair_ends_clear": true,
+      "memory_plan": {
+        "free_before_learner": 20732760064,
+        "publication_bytes": 0,
+        "serving_mirror_bytes": 458878272,
+        "native_future_reserved_bytes": 1780982720,
+        "compact_optimizer": true,
+        "required": {
+          "serving": 1847801344,
+          "learner": 17950068960
+        }
+      },
+      "device_memory_after_ar_warmup": [
+        [
+          1926860800,
+          65452113920
+        ],
+        [
+          19915730944,
+          65452113920
+        ]
+      ],
+      "sampler": "host_full_vocab_lazy"
+    }
+  ],
+  "pending": []
+}

@@ -3,7 +3,7 @@
 from math import prod
 
 
-def suffix_memory(graph, layout, replay_blocks):
+def suffix_memory(graph, layout, replay_blocks, *, compact_optimizer=False):
     size = lambda value:prod(value.shape)*{"bf16":2,"fp32":4}[value.dtype]
     names = {"hidden","cos","sin","teacher"}|{
         value.name for history in graph.histories.values() for value in history.values()}
@@ -19,14 +19,15 @@ def suffix_memory(graph, layout, replay_blocks):
         if rows == 1:
             break
         rows = (rows+63)//64
-    optimizer = 28*layout.elements+2*execution+32*len(layout.table)+statistics+96
+    optimizer = (24 if compact_optimizer else 28)*layout.elements+2*execution+32*len(layout.table)+statistics+96
     initialize = 2*layout.elements+4*layout.special_elements+4*graph.shape.dimension+32
     return dict(serving=2*execution+feedback,
                 learner=optimizer+workspace+max(initialize,frozen+feedback)+32)
 
 
-def require_suffix_memory(graph, layout, replay_blocks, serving_free, learner_free, *, reserve=256<<20):
-    required = suffix_memory(graph,layout,replay_blocks)
+def require_suffix_memory(graph, layout, replay_blocks, serving_free, learner_free, *, reserve=256<<20,
+                          compact_optimizer=False):
+    required = suffix_memory(graph,layout,replay_blocks,compact_optimizer=compact_optimizer)
     for role,available in (("serving",serving_free),("learner",learner_free)):
         if required[role]+reserve > available:
             raise RuntimeError(f"last-{graph.last_layers} {role} needs at least {required[role]+reserve} "

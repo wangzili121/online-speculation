@@ -92,23 +92,33 @@ def learner_snapshot(trainer):
                 queued_update=getattr(trainer, "queued_update", None) is not None)
 
 
-def measure_interleaved(pairs, issue, trainer, checkpoint=None):
+def measure_interleaved(pairs, issue, trainer, checkpoint=None, *, ar_issue=None):
     """逐对请求交错测量；固定 bank 和在线 bank 常驻，学习状态仅随在线组前进。"""
     if trainer.background or trainer.pending_update is not None or getattr(trainer, "queued_update", None) is not None:
         raise ValueError("interleaved measurement requires synchronous learning")
-    rows = {"frozen": [], "online": []}
+    rows = {"frozen": [], "online": [], **({"ar": []} if ar_issue is not None else {})}
+    orders = (("ar", "frozen", "online"), ("online", "frozen", "ar"),
+              ("frozen", "online", "ar"), ("ar", "online", "frozen"),
+              ("online", "ar", "frozen"), ("frozen", "ar", "online"))
     for index, pair in enumerate(pairs):
-        order = ("frozen", "online") if index % 2 == 0 else ("online", "frozen")
+        order = (orders[index % len(orders)] if ar_issue is not None else
+                 ("frozen", "online") if index % 2 == 0 else ("online", "frozen"))
         for mode in order:
-            trainer.pending_evaluation = "initial" if mode == "frozen" else "current"
-            row = issue(pair, index)
+            before = learner_snapshot(trainer)
+            trainer.pending_evaluation = "current" if mode == "online" else "initial"
+            row = (ar_issue if mode == "ar" else issue)(pair, index)
             row["learner"] = learner_snapshot(trainer)
-            if mode == "frozen" and (row["stats"]["updates"] or row["stats"]["publications"]):
-                raise RuntimeError("frozen evaluation performed an update or publication")
+            if row["learner"]["pending_update"] or row["learner"]["queued_update"]:
+                raise RuntimeError("interleaved request pair left pending learning work")
+            if mode != "online" and (row["learner"] != before or any(
+                    row["stats"].get(key, 0) for key in
+                    ("feedback_ns", "update_ns", "publish_ns", "updates", "publications"))):
+                raise RuntimeError(f"{mode} evaluation performed learning work")
             rows[mode].append(row)
         if checkpoint is not None:
             checkpoint(rows, index)
-    return rows["frozen"], rows["online"]
+    result = (rows["frozen"], rows["online"])
+    return (*result, rows["ar"]) if ar_issue is not None else result
 
 
 def exception_chain(error):
@@ -194,6 +204,8 @@ def main(*, guard=None):
                    help="run colocated suffix updates during CPU lazy sampling; drain before GPU work and request completion")
     p.add_argument("--interleaved", action="store_true",
                    help="alternate frozen/online request pairs using resident banks; synchronous learning only")
+    p.add_argument("--interleave-ar", action="store_true",
+                   help="interleave full AR/frozen/online triplets in six balanced orders; requires --interleaved")
     p.add_argument("--compile-only", action="store_true")
     args = p.parse_args()
     if args.export_heads is not None and args.export_heads.exists():
@@ -208,6 +220,8 @@ def main(*, guard=None):
     strides = [int(value) for value in args.strides.split(",")]
     if args.interleaved and (args.background or len(strides) != 1):
         p.error("interleaved evaluation requires one stride and synchronous updates")
+    if args.interleave_ar and (not args.interleaved or args.cold_head is not None):
+        p.error("AR triplets require --interleaved and a single starting head")
     if (min(args.replay_blocks, args.publish_every) < 1 or len(set(strides)) != len(strides)
             or any(n < 2 * args.replay_blocks for n in strides) or args.tokens < 2 or args.output.exists()):
         p.error("use distinct strides >= twice replay-blocks, positive counts and a fresh result path")
@@ -218,6 +232,8 @@ def main(*, guard=None):
     ar_requests = 2 * len(prompts) if args.ar_check_requests is None else args.ar_check_requests
     if not 2 <= ar_requests <= 2 * len(prompts) or ar_requests % 2:
         p.error("AR sample must contain an even number of requests within the stream")
+    if args.interleave_ar and ar_requests != 2 * len(prompts):
+        p.error("AR triplets require the entire request stream, not an AR sample")
     if {q.strip() for pair in prompts for q in pair} & {q.strip() for pair in holdout for q in pair}:
         p.error("request stream and frozen holdout must have distinct questions")
 
@@ -266,8 +282,11 @@ def main(*, guard=None):
                    resource_policy=runner.resource_policy,
                    learning_rate=args.learning_rate, background=args.background,
                    overlap_sampling=args.overlap_sampling,
-                   benchmark_layout="interleaved_pairs" if args.interleaved else "separate_streams",
-                   interleaved_order="alternating_within_pair" if args.interleaved else None,
+                   benchmark_layout=("interleaved_ar_frozen_online" if args.interleave_ar else
+                                     "interleaved_pairs" if args.interleaved else "separate_streams"),
+                   interleaved_order=("six_permutations_within_pair" if args.interleave_ar else
+                                      "alternating_within_pair" if args.interleaved else None),
+                   primary_metric="continuous_online_vs_target_only_AR",
                    warmup_updates=args.warmup_updates,
                    warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
                    lr_schedule=args.lr_schedule,
@@ -367,6 +386,7 @@ def main(*, guard=None):
         print("starting TP2 + learner", flush=True)
         engine.start()
         summary["startup_seconds"] = time.monotonic() - start
+        summary["learner_memory_plan"] = trainer.memory_plan
         summary["trainable_parameters"] = sum(prod(p.shape) for p in trainer.graph.parameters)
         summary["training_dispatches"] = len(trainer.training.chunks) or 1
         summary["stage"] = "measuring"
@@ -374,13 +394,17 @@ def main(*, guard=None):
         print("ready TP2 + learner", summary["startup_seconds"], flush=True)
         runner.output_candidates = 0
         issue(prompts[0], args.tokens)
-        ar = measure(prompts[:ar_requests // 2], label="ar")
+        summary["device_memory_after_ar_warmup"] = [list(runner.worker.device_memory_info(rank))
+                                                     for rank in config.devices]
+        ar = [] if args.interleave_ar else measure(prompts[:ar_requests // 2], label="ar")
         holdout_ar = measure(holdout, label="ar_holdout")
-        summary["results"]["ar"] = dict(stream=summarize(ar), holdout=summarize(holdout_ar),
-                                         request_timeline=request_timeline(ar))
+        if ar:
+            summary["results"]["ar"] = dict(stream=summarize(ar), holdout=summarize(holdout_ar),
+                                             request_timeline=request_timeline(ar))
         persist()
 
         def suite(results, suite_strides):
+            nonlocal ar
             if args.interleaved:
                 trainer.pending_evaluation = "initial"
                 frozen, holdout_frozen = None, measure(holdout)
@@ -412,11 +436,26 @@ def main(*, guard=None):
                                          tok_s=current["tok_s"], net_increment=current["tok_s"] / fixed["tok_s"] - 1,
                                          accepted_per_round=current["accepted_per_round"],
                                          updates=current["stats"]["updates"], publications=current["stats"]["publications"])
+                        if args.interleave_ar:
+                            ar_tps = summarize(rows["ar"])["tok_s"]
+                            milestone.update(ar_tok_s=ar_tps, net_increment_vs_ar=current["tok_s"] / ar_tps - 1)
                         summary.setdefault("progress", {}).setdefault(f"paired_{stride}", []).append(milestone)
                         persist()
                         print("paired", milestone, flush=True)
-                    frozen, stream = measure_interleaved(
-                        prompts, lambda pair, index: issue(pair, args.tokens, index), trainer, checkpoint)
+                    def issue_ar(pair, index):
+                        runner.output_candidates = 0
+                        try:
+                            return issue(pair, args.tokens, index)
+                        finally:
+                            runner.output_candidates = args.candidates
+                    measured = measure_interleaved(
+                        prompts, lambda pair, index: issue(pair, args.tokens, index), trainer, checkpoint,
+                        ar_issue=issue_ar if args.interleave_ar else None)
+                    frozen, stream = measured[:2]
+                    if args.interleave_ar:
+                        ar = measured[2]
+                        results["ar"] = dict(stream=summarize(ar), holdout=summarize(holdout_ar),
+                                             request_timeline=request_timeline(ar))
                     check_tokens(frozen[:len(ar)], ar)
                     results["frozen"] = dict(stream=summarize(frozen), holdout=summarize(holdout_frozen),
                                              request_timeline=request_timeline(frozen))
@@ -474,6 +513,8 @@ def main(*, guard=None):
                 if args.continuous_updates and result["update_schedule"]["update_limit_reached"]:
                     raise RuntimeError("continuous run reached an update limit")
                 result["net_increment"] = result["stream"]["tok_s"] / results["frozen"]["stream"]["tok_s"] - 1
+                if ar_requests == 2 * len(prompts):
+                    result["net_increment_vs_ar"] = result["stream"]["tok_s"] / summarize(ar)["tok_s"] - 1
                 results[str(stride)] = result
                 persist()
                 if args.replay_learned_head:

@@ -165,8 +165,8 @@ class SuffixPublicationPrograms:
         if scratch is not None:
             from pypto.runtime.task_interface import DataType
             shape, dtype = tensor_layout(scratch)
-            if dtype != torch.float32 or prod(shape) * 4 < self.allocation_bytes:
-                raise ValueError("publication scratch must have sufficient FP32 storage")
+            if dtype not in (torch.float32, torch.bfloat16) or prod(shape) * dtype.itemsize < self.allocation_bytes:
+                raise ValueError("publication scratch must have sufficient BF16 or FP32 storage")
         destinations, offset = {}, 0
         for bank, spec in self.outputs.items():
             dtype = torch.float32 if spec.dtype == "fp32" else torch.bfloat16

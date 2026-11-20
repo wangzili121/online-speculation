@@ -119,3 +119,50 @@ def test_feedback_capture_follows_the_selected_layer_across_groups(n):
     # 截断点之后仍走整组快路径，无需把整个末段拆成逐层执行。
     grouped = [args[-4] for name,args in calls if name == "group"]
     assert grouped == [base for base in range(0,64,4) if (64-n)%4 == 0 or base != (64-n)//4*4]
+
+
+def test_compact_suffix_optimizer_rotates_scratch_outside_committed_state():
+    from types import SimpleNamespace
+    from blockspec.pypto_qwen38.online_suffix_optimizer import SuffixOptimizer
+    allocations = []
+    def allocate(shape, dtype, **kwargs):
+        value = SimpleNamespace(shape=shape, dtype=dtype, storage=object())
+        allocations.append(value)
+        return value
+    layout = SimpleNamespace(shape=(1,64), special_shape=(1,64), table=[[0]*8],
+                             gradients=lambda value: {'weight': value})
+    programs = SimpleNamespace(layout=layout, counts=[1], config=None, zero=object(), adam=object())
+    worker = SimpleNamespace(alloc_tensor=allocate, run=lambda *a, **kw: None,
+                             free_tensor=lambda value: None)
+    opt = SuffixOptimizer(programs, worker, compact=True)
+    flat = [x for x in allocations if x.shape == layout.shape and x.dtype == torch.float32]
+    # 六个 FP32 flat 加两份很小的执行 special，后者同形状仅为这个缩小用例的巧合。
+    assert len(flat) == 8
+    opt.statistics = lambda value: (1., 1.)
+    opt.render = lambda *args: None
+    for step in range(3):
+        assert opt.scratch is opt.candidate[2] and opt.gradients['weight'] is opt.scratch
+        assert all(opt.scratch is not x for x in opt.state)
+        before = list(opt.state)
+        candidate = list(opt.candidate)
+        def publish(layout, buffers, *, expected_version):
+            assert expected_version == step and opt.index == step % 2
+            assert all(a is b for a,b in zip(before,opt.state))
+            assert all(all(a is not b for b in opt.state) for a in opt.candidate)
+        opt.step(SimpleNamespace(publish_flat=publish), 1e-5)
+        assert all(a is b for a,b in zip(opt.state,candidate))
+        assert opt.scratch is before[2] and opt.gradients['weight'] is opt.scratch
+        assert opt.scratch_dirty
+        opt.zero_grad()
+        assert not opt.scratch_dirty
+
+
+def test_compact_memory_budget_reclaims_exactly_one_fp32_flat():
+    from blockspec.pypto_qwen38.training_flat import FlatLayout
+    from blockspec.pypto_qwen38.training_memory import suffix_memory
+    graph = small_suffix(4)
+    layout = FlatLayout(graph.parameters)
+    baseline = suffix_memory(graph,layout,2)
+    compact = suffix_memory(graph,layout,2,compact_optimizer=True)
+    assert baseline['serving'] == compact['serving']
+    assert baseline['learner'] - compact['learner'] == 4 * layout.elements

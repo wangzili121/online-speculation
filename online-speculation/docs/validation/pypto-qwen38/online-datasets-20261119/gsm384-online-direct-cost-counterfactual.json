@@ -1,0 +1,59 @@
+{
+  "kind": "counterfactual_accounting_not_a_measured_speedup",
+  "assumption": "Same generated tokens, learning trajectory, acceptance and uninstrumented runtime; subtract feedback_ns + update_ns + publish_upload_ns. update_ns already includes publish read/pack; publish_ns is not added again. GPU resource contention and indirect effects are not estimated.",
+  "rows": [
+    {
+      "seed": 743,
+      "tokens": 72086,
+      "online_seconds": 2254.9451334892656,
+      "ar_seconds": 2257.1565083909663,
+      "online_tok_s": 31.96796184945542,
+      "ar_tok_s": 31.936642289544704,
+      "feedback_seconds": 13.401174736,
+      "training_and_read_pack_seconds": 32.022117826,
+      "publish_upload_seconds": 4.347661881,
+      "direct_cost_seconds": 49.770954443,
+      "direct_cost_fraction": 0.022071913725894177,
+      "zero_recorded_cost_counterfactual_tok_s": 32.68948125956068,
+      "zero_recorded_cost_counterfactual_gain_vs_ar": 0.023572890449489625
+    },
+    {
+      "seed": 744,
+      "tokens": 72086,
+      "online_seconds": 2235.6213439683197,
+      "ar_seconds": 2237.5077244669665,
+      "online_tok_s": 32.24427973658741,
+      "ar_tok_s": 32.2170954816135,
+      "feedback_seconds": 12.804401313,
+      "training_and_read_pack_seconds": 33.251412781,
+      "publish_upload_seconds": 5.997263278,
+      "direct_cost_seconds": 52.053077372,
+      "direct_cost_fraction": 0.023283494547249064,
+      "zero_recorded_cost_counterfactual_tok_s": 33.01293625793779,
+      "zero_recorded_cost_counterfactual_gain_vs_ar": 0.02470243715106113
+    },
+    {
+      "seed": 745,
+      "tokens": 72086,
+      "online_seconds": 2220.022407177021,
+      "ar_seconds": 2197.43005207798,
+      "online_tok_s": 32.470843432460896,
+      "ar_tok_s": 32.8046846960305,
+      "feedback_seconds": 12.504238317,
+      "training_and_read_pack_seconds": 30.199561857,
+      "publish_upload_seconds": 2.770343869,
+      "direct_cost_seconds": 45.474144043,
+      "direct_cost_fraction": 0.020483641920004268,
+      "zero_recorded_cost_counterfactual_tok_s": 33.149873572411586,
+      "zero_recorded_cost_counterfactual_gain_vs_ar": 0.0105225482146718
+    }
+  ],
+  "pooled": {
+    "tokens": 216258,
+    "ar_tok_s": 32.31544428278643,
+    "online_tok_s": 32.22638187464755,
+    "direct_cost_fraction": 0.02195011173986118,
+    "zero_recorded_cost_tok_s": 32.94962993347439,
+    "zero_recorded_cost_gain_vs_ar": 0.019624847027889025
+  }
+}

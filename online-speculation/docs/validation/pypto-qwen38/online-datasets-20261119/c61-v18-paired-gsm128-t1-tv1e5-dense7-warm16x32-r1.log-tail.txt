@@ -1,0 +1,28 @@
+tdiv runs the default algorithm and the result is bit-identical to high_precision=False. at /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/model.py:506:13
+2026-11-20 07:59:14.841 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_suffix_host_20261120_075913_y56ya6o7/report/perf_hints.log
+2026-11-20 07:59:15.205 I | [perf_hint] 32 hints across 27 sites; see build_output/_jit_suffix_host_20261120_075913_y56ya6o7/report/perf_hints.log
+2026-11-20 07:59:16.878 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_075916_agop02or/report/perf_hints.log
+2026-11-20 07:59:17.408 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_075917_qr_7dhhq/report/perf_hints.log
+2026-11-20 07:59:20.034 I | [perf_hint] 2 hints across 2 sites; see build_output/_jit_entry_20261120_075920_mwdtyeg8/report/perf_hints.log
+2026-11-20 07:59:20.518 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_075920_m04ha2sx/report/perf_hints.log
+2026-11-20 07:59:21.031 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_075920_wuwzomei/report/perf_hints.log
+2026-11-20 07:59:21.521 I | [perf_hint] 10 hints across 6 sites; see build_output/_jit_entry_20261120_075921_on4v16ue/report/perf_hints.log
+2026-11-20 07:59:22.004 I | [perf_hint] 5 hints across 5 sites; see build_output/_jit_entry_20261120_075921_jkued7y5/report/perf_hints.log
+2026-11-20 07:59:22.415 I | [perf_hint] 1 hint across 1 site; see build_output/_jit_entry_20261120_075922_e86dily0/report/perf_hints.log
+2026-11-20 07:59:23.347 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_entry_20261120_075923_u5tbp63b/report/perf_hints.log
+[chip_process pid=3444327 dev=0] ready
+[chip_process pid=3444334 dev=1] ready
+guard {'ok': True, 'released': [0]}
+guard {'ok': True, 'released': [1]}
+guard {'ok': True, 'released': [0, 1]}
+ready TP2 + learner 369.5853563940618
+[mono_ns=1964888070018049][T0xffff49fff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 1] ipc: P2P status unconfirmed peer=0 peer_dev=0
+[mono_ns=1964888170253972][T0xffff49fff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 0] ipc: P2P status unconfirmed peer=1 peer_dev=1
+[mono_ns=1965116192569686][T0xffff49fff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 1] ipc: P2P status unconfirmed peer=0 peer_dev=0
+[mono_ns=1965116292917050][T0xffff49fff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 0] ipc: P2P status unconfirmed peer=1 peer_dev=1
+[mono_ns=1965142169211171][T0xffff49fff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 1] ipc: P2P status unconfirmed peer=0 peer_dev=0
+[mono_ns=1965142268336171][T0xffff49fff120][WARN] enable_ipc_peer_access: [comm_hccl.cpp:601] [comm rank 0] ipc: P2P status unconfirmed peer=1 peer_dev=1
+paired {'requests': 32, 'fixed_tok_s': 10.146678303329052, 'tok_s': 10.356856974023867, 'net_increment': 0.02071403708796571, 'accepted_per_round': 1.2723085780080599, 'updates': 51, 'publications': 12}
+paired {'requests': 64, 'fixed_tok_s': 10.261861822932962, 'tok_s': 10.552701255417468, 'net_increment': 0.02834178022496303, 'accepted_per_round': 1.3103651354534747, 'updates': 77, 'publications': 19}
+paired {'requests': 96, 'fixed_tok_s': 10.302064104032524, 'tok_s': 10.621316456056807, 'net_increment': 0.030989163802554565, 'accepted_per_round': 1.3145780051150895, 'updates': 103, 'publications': 25}
+stride 128 64 {'tokens': 16363, 'seconds': 1542.1710225215647, 'tail_seconds': 0.0, 'tok_s': 10.610366659104562, 'tpot_median_ms': 177.094268507874, 'accepted_per_round': 1.3167133795545065, 'stats': {'proposed': 26870, 'accepted': 8926, 'rejected_rounds': 6713, 'draft_ns': 909760494899, 'verify_ns': 269559715921, 'rounds': 6779, 'verify_calls': 3561, 'restore_ns': 9434496253, 'draft_batches': 3541, 'draft_pair_batches': 3238, 'draft_sampling_ns': 663355225687, 'stochastic_verify_ns': 319479175869, 'proposed_budget': 184725, 'feedback_ns': 4116321147, 'update_ns': 9058400902, 'publish_ns': 2168812124, 'updates': 129, 'publications': 32, 'publish_read_ns': 1021273824, 'publish_pack_ns': 34141942, 'publish_upload_ns': 1113396358, 'busy_updates': 0, 'feedback_skips': 0}} {'tokens': 2048, 'seconds': 200.3239246280864, 'tail_seconds': 0.0, 'tok_s': 10.223441876961212, 'tpot_median_ms': 186.69439443307084, 'accepted_per_round': 1.3605769230769231, 'stats': {'proposed': 3288, 'accepted': 1132, 'rejected_rounds': 822, 'draft_ns': 121327217195, 'verify_ns': 32077146203, 'rounds': 832, 'verify_calls': 434, 'restore_ns': 1215790134, 'draft_batches': 432, 'draft_pair_batches': 400, 'draft_sampling_ns': 91197314426, 'stochastic_verify_ns': 42959084221, 'proposed_budget': 22607, 'feedback_ns': 0, 'update_ns': 0, 'publish_ns': 0, 'updates': 0, 'publications': 0, 'publish_read_ns': 0, 'publish_pack_ns': 0, 'publish_upload_ns': 0, 'busy_updates': 0, 'feedback_skips': 0}}

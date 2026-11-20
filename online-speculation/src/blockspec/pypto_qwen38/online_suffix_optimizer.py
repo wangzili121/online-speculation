@@ -42,16 +42,20 @@ class SuffixOptimizerPrograms:
 
 
 class SuffixOptimizer:
-    def __init__(self, programs, worker):
+    def __init__(self, programs, worker, *, compact=False):
         import torch
         self.programs,self.worker,self.handles = programs,worker,[]
         self.layout = programs.layout
         self.steps = self.index = 0
         self.scratch_dirty = False
+        self.compact = compact
         try:
             self.state = [self.alloc(self.layout.shape,torch.float32) for _ in range(3)]
-            self.candidate = [self.alloc(self.layout.shape,torch.float32) for _ in range(3)]
+            self.candidate = [self.alloc(self.layout.shape,torch.float32) for _ in range(2 if compact else 3)]
             self.scratch = self.alloc(self.layout.shape,torch.float32)
+            if compact:
+                # 梯度已累加到 candidate[0] 后，scratch 可接收新二阶动量。
+                self.candidate.append(self.scratch)
             self.gradients = self.layout.gradients(self.scratch)
             self.execution = [(self.alloc(self.layout.shape,torch.bfloat16),
                                self.alloc(self.layout.special_shape,torch.float32)) for _ in range(2)]
@@ -155,6 +159,11 @@ class SuffixOptimizer:
         publisher.publish_flat(self.layout,self.execution[index],expected_version=self.steps)
         self.state,self.candidate = self.candidate,self.state
         self.steps,self.index = next_step,index
+        if getattr(self, "compact", False):
+            # 旧二阶动量已退出 state，下一步借它放梯度；已提交的三份状态保持独立。
+            self.scratch = self.candidate[2]
+            self.gradients = self.layout.gradients(self.scratch)
+            self.scratch_dirty = True
         return dict(version=self.steps,gradient_norm=norm,clip_scale=scale)
 
     def memory_bytes(self):

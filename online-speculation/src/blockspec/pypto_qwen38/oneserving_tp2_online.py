@@ -301,21 +301,29 @@ class TP2Online:
             self.ordinary, self.special = self.allocate_execution_host()
             self.worker = DistributedWorker(programs, config=self.config,
                                             inherited_host_tensors=self.learner_host_tensors())
-        self.publication_reuses_scratch = self.publication is not None and self.colocated and len(self.layers) == 4
+        compact = self.colocated and len(self.layers) == 4
+        self.publication_reuses_execution = self.publication is not None and compact
         publication_bytes = (self.publication.allocation_bytes
-                             if self.publication is not None and not self.publication_reuses_scratch else 0)
+                             if self.publication is not None and not self.publication_reuses_execution else 0)
         # 共卡学习器也持有下一版 serving shard；不能只预算优化器和训练工作区。
         mirror_bytes = sum(prod(shape) * dtype.itemsize for index, (shape, dtype) in enumerate(SHAPES)
                            if index in self.publish_banks) if self.colocated else 0
-        require_suffix_memory(self.graph, self.optimization.layout, self.replay_blocks, 1 << 60,
-                              self.worker.device_memory_info()[0] - publication_bytes - mirror_bytes)
-        self.optimizer = SuffixOptimizer(self.optimization, self.worker)
+        native_future = runner.resource_policy["future_bytes_after_prepare"] if self.colocated else 0
+        free = self.worker.device_memory_info()[0]
+        required = require_suffix_memory(
+            self.graph, self.optimization.layout, self.replay_blocks, 1 << 60,
+            free - publication_bytes - mirror_bytes - native_future, compact_optimizer=compact)
+        self.memory_plan = dict(free_before_learner=free, publication_bytes=publication_bytes,
+                                serving_mirror_bytes=mirror_bytes, native_future_reserved_bytes=native_future,
+                                compact_optimizer=compact, required=required)
+        self.optimizer = SuffixOptimizer(self.optimization, self.worker, compact=compact)
         if self.checkpoint is None:
             self.initial_master = master_from_shards(self.optimizer.layout, runner.head_directory)
         self.workspace = TrainingWorkspace(self.training, self.worker)
-        if self.publication_reuses_scratch:
-            # Adam 和 render 已结束时梯度已无用途；发布只借用 scratch，不碰 master/moments。
-            self.publication_buffers = self.publication.allocate(self.worker, scratch=self.optimizer.scratch)
+        if self.publication_reuses_execution:
+            # render 新版本后，旧执行视图已无读者；发布借用它，不碰 FP32 master/moments。
+            self.publication_buffers = [self.publication.allocate(self.worker, scratch=buffer[0])
+                                        for buffer in self.optimizer.execution]
         else:
             self.publication_buffers = self.publication.allocate(self.worker) if self.publication is not None else {}
         self.loss = self.worker.alloc_tensor((1, 8), torch.float32)
@@ -752,11 +760,11 @@ class TP2Online:
         # SuffixOptimizer checked the candidate FP32 master's norm before
         # rendering, so BF16 conversion cannot overflow a checked parameter.
         if self.publication is not None:
-            if getattr(self, "publication_reuses_scratch", False):
-                self.optimizer.scratch_dirty = True
-            self.publication.run(self.worker, layout, *buffers, self.publication_buffers)
+            destinations = (self.publication_buffers[self.optimizer.index]
+                            if getattr(self, "publication_reuses_execution", False) else self.publication_buffers)
+            self.publication.run(self.worker, layout, *buffers, destinations)
             packed_done = time.monotonic_ns()
-            self.publication.readback(self.worker, layout, buffers, self.publication_buffers,
+            self.publication.readback(self.worker, layout, buffers, destinations,
                                       self.packed, (self.ordinary, self.special))
             self.pack_stats = dict(publish_read_ns=time.monotonic_ns() - packed_done,
                                    publish_pack_ns=packed_done - started)
