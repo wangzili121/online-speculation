@@ -72,3 +72,15 @@ def test_cli_uses_target_weights_and_explicit_model_takes_priority(tmp_path):
     env["TARGET_WEIGHTS"] = str(tmp_path / "missing")
     output = subprocess.check_output([*base, "--model", str(tmp_path)], env=env, text=True)
     assert json.loads(output)["projection_and_engram_layout_matches"]
+
+
+
+def test_missing_serving_environment_has_installation_guidance(tmp_path):
+    checkpoint_fixture(tmp_path, public=False)
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    output = subprocess.run([sys.executable, "-S", str(SCRIPT), "--model", str(tmp_path)],
+                            env=env, text=True, capture_output=True)
+    assert output.returncode == 1
+    assert "Missing environment package: pypto_serving_a3" in output.stderr
+    assert "dsv41_pypto_env.sh preflight" in output.stderr
+    assert "--inspect" in output.stderr

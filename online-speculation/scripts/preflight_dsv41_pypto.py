@@ -170,6 +170,14 @@ def main():
             validated = validate_head(args.model, args.head, mask_token_id=manifest["mask_token_id"])
             result["head_artifact_role"] = validated["artifact_role"]
             result["head"] = str(args.head.resolve())
+    except ModuleNotFoundError as exc:
+        if exc.name in ("pypto_serving_a3", "torch", "pypto", "safetensors"):
+            parser.exit(
+                1, f"Missing environment package: {exc.name}. Run this check in the prepared "
+                "PyPTO container with: bash online-speculation/scripts/dsv41_pypto_env.sh preflight. "
+                "For a checkpoint-header report requiring only Python, use --inspect.\n"
+            )
+        parser.exit(1, f"PyPTO checkpoint preflight failed: {exc}\n")
     except (ImportError, KeyError, OSError, ValueError) as exc:
         parser.exit(1, f"PyPTO checkpoint preflight failed: {exc}\n")
     print(json.dumps(result, indent=2))

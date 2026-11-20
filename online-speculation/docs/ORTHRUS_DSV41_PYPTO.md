@@ -2,6 +2,8 @@
 
 DSV4.1 Flash 的 A3 路径使用 W8A8 权重和 DP4/TP4/EP16，Engram 大表在 CPU，按本轮 token 查表并传输查得的行。整模和请求缓存由同一个原生 session 管理。公开 A5 路径中的 DSpark 调度可作为 Orthrus 的接入参考。 [A3 Serving](https://github.com/Adelaide999/pypto-serving/tree/cd818945c3c4e5454b8c259306d4e6f9e865e05c/models/deepseek_v41_a3) · [V4.1 DSpark](https://github.com/hw-native-sys/pypto-serving/pull/324)
 
+全新机器先按 [Docker 环境准备](ORTHRUS_DSV41_PYPTO_ENVIRONMENT.md) 构建或导入配套镜像，然后在容器内执行完整预检。
+
 ## A3 Serving 基线
 
 Lib 基线为 `e32726b`，Serving 基线为 `cd81894`。Lib 提供 8192-token Prefill 分块和 16384-token 总上下文。原 Serving 固定了较早的 `cabe227`；新版 Lib 保留了原生优化，但需要移植请求池、按请求清理以及接收 Serving 所生成 Decode 元数据的入口。以下补丁将两边配对，并保持 Engram 的 HOST 加载路径。 [Lib 基线](https://github.com/Adelaide999/pypto-lib/commit/e32726b7edb31ee17e398a0431c0272ebd545974) · [Lib 补丁](../runtime/pypto_dsv41_a3/lib-serving.patch) · [Serving 补丁](../runtime/pypto_dsv41_a3/serving-pair.patch)
