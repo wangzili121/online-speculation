@@ -11,10 +11,13 @@ from .oneserving_tp2_online import TP2Online
 
 
 class TP2DelayedOnline(TP2Online):
-    def __init__(self, *args, teacher_tokens=31, **kwargs):
+    def __init__(self, *args, teacher_tokens=31, feedback_timing="early", **kwargs):
         if type(teacher_tokens) is not int or not 1 <= teacher_tokens <= 31:
             raise ValueError("teacher_tokens must be in 1..31")
         self.teacher_tokens = teacher_tokens
+        if feedback_timing not in {"early", "near_update"}:
+            raise ValueError("feedback timing must be early or near_update")
+        self.feedback_timing = feedback_timing
         self.window = self.request = None
         self.captures = 0
         super().__init__(*args, **kwargs)
@@ -45,6 +48,13 @@ class TP2DelayedOnline(TP2Online):
                 or self.queued_update is not None
                 or self.window is not None or len(self.replay) >= self.replay_blocks):
             return None
+        if self.feedback_timing == "near_update":
+            interval = self.update_interval()
+            # 最多两个活跃请求；为每个未填反馈块预留逐 token 验证的轮数。
+            # 只推迟采集起点，不补算教师、不缩短监督，也不跨过 EOS。
+            lead = min(interval, 2 * self.teacher_tokens * (self.replay_blocks - len(self.replay)) + 2)
+            if interval - self.rounds % interval > lead:
+                return None
         index = self.captures % active
         self.captures += 1
         return index

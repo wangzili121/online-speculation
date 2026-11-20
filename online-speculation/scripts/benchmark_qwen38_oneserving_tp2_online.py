@@ -182,6 +182,8 @@ def main(*, guard=None):
     p.add_argument("--position-weighting", choices=("uniform", "rejection_decay", "first_rejection"), default="uniform",
                    help="uniform, decay after first rejection, or boost only its verified row16x")
     p.add_argument("--feedback-mode", choices=("reached", "delayed"), default="reached")
+    p.add_argument("--feedback-timing", choices=("early", "near_update"), default="early",
+                   help="delayed feedback may be collected closer to the next scheduled update")
     p.add_argument("--teacher-tokens", type=int, choices=range(1, 32), default=31)
     p.add_argument("--teacher-temperature", type=float, default=1.0,
                    help="temperature of the learner's teacher distribution; does not change generation")
@@ -226,6 +228,8 @@ def main(*, guard=None):
         p.error(str(error))
     if args.cold_head is not None and args.checkpoint is not None:
         p.error("cold fallback uses fresh Adam for both starts")
+    if args.feedback_timing != "early" and args.feedback_mode != "delayed":
+        p.error("near_update timing requires delayed feedback")
     if args.teacher_targets == "greedy" and (args.temperature != 0 or args.objective != "kl"
             or args.teacher_temperature != 1 or args.teacher_scaling != "host"):
         p.error("greedy teacher targets require greedy generation, KL, teacher temperature one and host preparation")
@@ -261,7 +265,8 @@ def main(*, guard=None):
     if args.feedback_mode == "delayed":
         from blockspec.pypto_qwen38.oneserving_tp2_delayed import TP2DelayedOnline
         trainer_type = TP2DelayedOnline
-    extra = dict(teacher_tokens=args.teacher_tokens) if args.feedback_mode == "delayed" else {}
+    extra = (dict(teacher_tokens=args.teacher_tokens, feedback_timing=args.feedback_timing)
+             if args.feedback_mode == "delayed" else {})
     trainer = trainer_type(args.checkpoint, device=args.learner_device, last_layers=args.last_layers,
                         learning_rate=args.learning_rate, background=args.background,
                         replay_blocks=args.replay_blocks, publish_every=args.publish_every,
@@ -312,6 +317,7 @@ def main(*, guard=None):
                    draft_convolution=args.draft_convolution, diagnostic_only=args.audit_convolution,
                    feedback_mode=args.feedback_mode,
                    teacher_tokens=args.teacher_tokens if args.feedback_mode == "delayed" else None,
+                   feedback_timing=args.feedback_timing,
                    teacher_temperature=args.teacher_temperature,
                    teacher_scaling=args.teacher_scaling,
                    teacher_targets=args.teacher_targets,

@@ -522,7 +522,7 @@ class TP2Online:
         started = time.monotonic_ns()
         self.inputs = self.pool[len(self.replay)]
         self.feedback = dict(position=position, width=width, candidates=candidates, valid=0,
-                             complete=False, inputs=self.inputs, first_rejection=None)
+                             complete=False, inputs=self.inputs, first_rejection=None, capture_round=self.rounds)
         self.upload("cos", cos)
         self.upload("sin", sin)
         conv, recurrent, key, value = self.runner.resident[:4]
@@ -798,6 +798,7 @@ class TP2Online:
                 audit.update(batch_loss_before=loss, batch_loss_after=after)
         elapsed = time.monotonic_ns() - started
         return dict(round=round_number, loss=loss, supervised=supervised, feedback_blocks=len(replay),
+                    feedback_age_rounds=[round_number - item.get("capture_round", round_number) for item in replay],
                     full_feedback_blocks=sum(item.get("full_feedback", False) for item in replay),
                     first_rejections=[item.get("first_rejection") for item in replay],
                     supervision_weight=normalizer, replay_audits=audits, learning_rate=learning_rate,
