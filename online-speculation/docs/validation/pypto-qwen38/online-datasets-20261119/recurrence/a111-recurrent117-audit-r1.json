@@ -1,0 +1,529 @@
+{
+  "completed": false,
+  "returncode": 1,
+  "physical_card": 0,
+  "scope": "isolated recurrence, not model throughput",
+  "variants": [
+    "sequential64",
+    "prefetch64",
+    "sequential128",
+    "prefetch128"
+  ],
+  "passed": false,
+  "clean_shutdown": true,
+  "compilation_errors": [
+    {
+      "batch": 1,
+      "variant": "sequential128",
+      "error": "ValueError('Vec buffer usage (264192 bytes) exceeds platform limit (188416 bytes)\\nCheck failed: limit == 0 || used <= limit at /results/pypto-core/src/ir/transforms/allocate_memory_addr_pass.cpp:483')"
+    },
+    {
+      "batch": 1,
+      "variant": "prefetch128",
+      "error": "ValueError('Vec buffer usage (312832 bytes) exceeds platform limit (188416 bytes)\\nCheck failed: limit == 0 || used <= limit at /results/pypto-core/src/ir/transforms/allocate_memory_addr_pass.cpp:483')"
+    },
+    {
+      "batch": 2,
+      "variant": "sequential128",
+      "error": "ValueError('Vec buffer usage (264192 bytes) exceeds platform limit (188416 bytes)\\nCheck failed: limit == 0 || used <= limit at /results/pypto-core/src/ir/transforms/allocate_memory_addr_pass.cpp:483')"
+    },
+    {
+      "batch": 2,
+      "variant": "prefetch128",
+      "error": "ValueError('Vec buffer usage (312832 bytes) exceeds platform limit (188416 bytes)\\nCheck failed: limit == 0 || used <= limit at /results/pypto-core/src/ir/transforms/allocate_memory_addr_pass.cpp:483')"
+    }
+  ],
+  "cases": [
+    {
+      "batch": 1,
+      "variant": "sequential64",
+      "slots": [
+        0
+      ],
+      "layer": 0,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 3.0517578125e-05,
+      "call_median_ns": 1252492.5,
+      "call_samples_ns": [
+        1313143,
+        1267803,
+        1265652,
+        1272442,
+        1239333,
+        1204172,
+        2483305,
+        1216193,
+        1234892,
+        1238272
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 1,
+      "variant": "prefetch64",
+      "slots": [
+        0
+      ],
+      "layer": 0,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 3.0517578125e-05,
+      "call_median_ns": 1234847.0,
+      "call_samples_ns": [
+        1313742,
+        1281492,
+        1313573,
+        1232072,
+        1212532,
+        1194382,
+        1207982,
+        1192942,
+        1237622,
+        1245923
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 1,
+      "variant": "sequential64",
+      "slots": [
+        11
+      ],
+      "layer": 47,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1353778.0,
+      "call_samples_ns": [
+        1387982,
+        1340453,
+        1358662,
+        1326812,
+        1353383,
+        1377803,
+        1312322,
+        1354173,
+        1310642,
+        1356763
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v117/profiles/b1-sequential64-0.json",
+          "sha256": "31c4bcf06893509044c3f68e286d113b8af75aa1fe0894347b1e66593064dfa8",
+          "device_task_window_us": 127.52,
+          "run_epoch": 49,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 59.959999999999994,
+              "median_us": 64.68,
+              "max_us": 66.18
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v117/profiles/b1-sequential64-1.json",
+          "sha256": "df0f2c839a57f76884ce3f2725ec569fd131b889321988d7bcda1fdf914e3c1c",
+          "device_task_window_us": 127.56,
+          "run_epoch": 51,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 59.80000000000001,
+              "median_us": 65.9,
+              "max_us": 66.92
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v117/profiles/b1-sequential64-2.json",
+          "sha256": "a50778f4ceb457fcbb9d438e5ed944e598d1b3be2998163f677e0805d58823c2",
+          "device_task_window_us": 127.58,
+          "run_epoch": 53,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 59.92,
+              "median_us": 66.04,
+              "max_us": 66.68
+            }
+          }
+        }
+      ]
+    },
+    {
+      "batch": 1,
+      "variant": "prefetch64",
+      "slots": [
+        11
+      ],
+      "layer": 47,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1328763.0,
+      "call_samples_ns": [
+        1340353,
+        1371262,
+        1362003,
+        1348483,
+        1277172,
+        1277722,
+        1280773,
+        1367432,
+        1317173,
+        1314432
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v117/profiles/b1-prefetch64-0.json",
+          "sha256": "f9f83dc303b577d48bd1c554a340067940f6654038bab77361936e3c0465a795",
+          "device_task_window_us": 127.8,
+          "run_epoch": 56,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 59.94,
+              "median_us": 65.36000000000001,
+              "max_us": 66.54
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v117/profiles/b1-prefetch64-1.json",
+          "sha256": "8c64d15427af7fc67cb4b48a716e85585836de272574f2123742aed678edefaf",
+          "device_task_window_us": 126.44,
+          "run_epoch": 58,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 59.92,
+              "median_us": 64.80000000000001,
+              "max_us": 65.82000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v117/profiles/b1-prefetch64-2.json",
+          "sha256": "4b789435ed3e85b335a74d9925dbb342d2108d88740bb481aed0a0b063f7c02f",
+          "device_task_window_us": 127.44,
+          "run_epoch": 60,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 60.040000000000006,
+              "median_us": 65.04,
+              "max_us": 66.56
+            }
+          }
+        }
+      ]
+    },
+    {
+      "batch": 1,
+      "variant": "sequential64",
+      "slots": [
+        7
+      ],
+      "layer": 12,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1278668.0,
+      "call_samples_ns": [
+        1271993,
+        1230903,
+        1220802,
+        1306042,
+        1293452,
+        1285343,
+        1230742,
+        1223822,
+        1286772,
+        1290792
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 1,
+      "variant": "prefetch64",
+      "slots": [
+        7
+      ],
+      "layer": 12,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1279197.5,
+      "call_samples_ns": [
+        1216322,
+        1258802,
+        1245092,
+        1283513,
+        1291683,
+        1304522,
+        1283342,
+        1275053,
+        1293153,
+        1225832
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 2,
+      "variant": "sequential64",
+      "slots": [
+        0,
+        31
+      ],
+      "layer": 0,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1271792.5,
+      "call_samples_ns": [
+        1293482,
+        1286812,
+        1253143,
+        1281003,
+        1233982,
+        1211642,
+        1271352,
+        1272233,
+        1262392,
+        1285112
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 2,
+      "variant": "prefetch64",
+      "slots": [
+        0,
+        31
+      ],
+      "layer": 0,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1268372.5,
+      "call_samples_ns": [
+        1267483,
+        1280642,
+        1269262,
+        1227962,
+        1252602,
+        1283023,
+        1285393,
+        1251482,
+        1277522,
+        1248023
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 2,
+      "variant": "sequential64",
+      "slots": [
+        11,
+        3
+      ],
+      "layer": 47,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1256502.0,
+      "call_samples_ns": [
+        1268112,
+        1268782,
+        1237222,
+        1273882,
+        1223403,
+        1210593,
+        1234312,
+        1279992,
+        1257292,
+        1255712
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v117/profiles/b2-sequential64-0.json",
+          "sha256": "931d0791b561b0d6e55c6fe76466df27402c0638408f8076499a946ce63a8d1c",
+          "device_task_window_us": 187.1,
+          "run_epoch": 133,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.75999999999999,
+              "median_us": 93.19,
+              "max_us": 125.54
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v117/profiles/b2-sequential64-1.json",
+          "sha256": "7ee1f0b8592cd4df200019055c0a717430b43824adbe1d6e471a0324818cfe5a",
+          "device_task_window_us": 188.3,
+          "run_epoch": 135,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.75999999999999,
+              "median_us": 93.76,
+              "max_us": 126.08
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v117/profiles/b2-sequential64-2.json",
+          "sha256": "c64b2a078e7cd5bd125df7121b3ba83d6382e3643f4b42352cbf8f493554487c",
+          "device_task_window_us": 187.3,
+          "run_epoch": 137,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.760000000000005,
+              "median_us": 93.92,
+              "max_us": 125.62
+            }
+          }
+        }
+      ]
+    },
+    {
+      "batch": 2,
+      "variant": "prefetch64",
+      "slots": [
+        11,
+        3
+      ],
+      "layer": 47,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1246857.5,
+      "call_samples_ns": [
+        1287972,
+        1229603,
+        1246293,
+        1247422,
+        1262582,
+        1258532,
+        1243952,
+        1224963,
+        1281613,
+        1240142
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v117/profiles/b2-prefetch64-0.json",
+          "sha256": "43a23326e560499684eee36d4bd266faf18a915c049d5227529c38d08d124d35",
+          "device_task_window_us": 187.56,
+          "run_epoch": 140,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.66,
+              "median_us": 93.03999999999999,
+              "max_us": 126.28000000000002
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v117/profiles/b2-prefetch64-1.json",
+          "sha256": "5379e23de6445a107618f3734ff7a91cbfa932f00a07690cf2ec5bab0c0a3ffc",
+          "device_task_window_us": 187.16,
+          "run_epoch": 142,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.82000000000001,
+              "median_us": 93.68,
+              "max_us": 126.04
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v117/profiles/b2-prefetch64-2.json",
+          "sha256": "504034fe1f7c8645b83b6e71d66e1a1c51c0d801a423a61bb78becf4320f3c58",
+          "device_task_window_us": 187.5,
+          "run_epoch": 144,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.980000000000004,
+              "median_us": 93.82,
+              "max_us": 124.74000000000001
+            }
+          }
+        }
+      ]
+    },
+    {
+      "batch": 2,
+      "variant": "sequential64",
+      "slots": [
+        7,
+        7
+      ],
+      "layer": 12,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 3.0517578125e-05,
+      "call_median_ns": 1277758.0,
+      "call_samples_ns": [
+        1289493,
+        1275953,
+        1288862,
+        1275002,
+        1321263,
+        1325722,
+        1263292,
+        1269902,
+        1279563,
+        1247002
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 2,
+      "variant": "prefetch64",
+      "slots": [
+        7,
+        7
+      ],
+      "layer": 12,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 3.0517578125e-05,
+      "call_median_ns": 1283582.5,
+      "call_samples_ns": [
+        1317002,
+        1273902,
+        1312993,
+        1257012,
+        1259232,
+        1243753,
+        1223093,
+        1301762,
+        1304672,
+        1293263
+      ],
+      "device_profiles": []
+    }
+  ],
+  "error": "RuntimeError('Some requested variants did not compile; numeric cases remain diagnostic evidence')"
+}

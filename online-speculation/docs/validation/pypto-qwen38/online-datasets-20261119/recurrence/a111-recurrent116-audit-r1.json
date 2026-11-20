@@ -1,0 +1,504 @@
+{
+  "completed": true,
+  "returncode": 0,
+  "physical_card": 5,
+  "scope": "isolated recurrence, not model throughput",
+  "variants": [
+    "sequential64",
+    "prefetch64"
+  ],
+  "passed": true,
+  "clean_shutdown": true,
+  "cases": [
+    {
+      "batch": 1,
+      "variant": "sequential64",
+      "slots": [
+        0
+      ],
+      "layer": 0,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 3.0517578125e-05,
+      "call_median_ns": 1289687.5,
+      "call_samples_ns": [
+        1425082,
+        1274963,
+        1295452,
+        1337332,
+        1326523,
+        1301562,
+        1243923,
+        1283923,
+        1247342,
+        1243102
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 1,
+      "variant": "prefetch64",
+      "slots": [
+        0
+      ],
+      "layer": 0,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 3.0517578125e-05,
+      "call_median_ns": 1324992.0,
+      "call_samples_ns": [
+        1285163,
+        1325562,
+        1319892,
+        1346503,
+        1324422,
+        1260893,
+        2676285,
+        1419802,
+        1273682,
+        1358123
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 1,
+      "variant": "sequential64",
+      "slots": [
+        11
+      ],
+      "layer": 47,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1161777.0,
+      "call_samples_ns": [
+        1191672,
+        1202763,
+        1139052,
+        1145832,
+        1193492,
+        1146782,
+        1175412,
+        1200463,
+        1129562,
+        1148142
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v116/profiles/b1-sequential64-0.json",
+          "sha256": "692cf08374c74337d9f9aa6782e069d1480eb3f3e4dd016c28cd8892b7849856",
+          "device_task_window_us": 128.34,
+          "run_epoch": 49,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 59.78,
+              "median_us": 65.87,
+              "max_us": 67.0
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v116/profiles/b1-sequential64-1.json",
+          "sha256": "64116d8902107fa6b9a9b0f386b49d8bf1e1127e4f5a9ba2469aea68385c06a9",
+          "device_task_window_us": 125.84,
+          "run_epoch": 51,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 59.7,
+              "median_us": 64.84,
+              "max_us": 66.24000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v116/profiles/b1-sequential64-2.json",
+          "sha256": "53fe4e0fe76747462936280af0575fcbd7b258c9680cbfcd1c5ee04dd43998f1",
+          "device_task_window_us": 126.9,
+          "run_epoch": 53,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 59.84,
+              "median_us": 65.37,
+              "max_us": 66.42
+            }
+          }
+        }
+      ]
+    },
+    {
+      "batch": 1,
+      "variant": "prefetch64",
+      "slots": [
+        11
+      ],
+      "layer": 47,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1178867.0,
+      "call_samples_ns": [
+        1195632,
+        1177792,
+        1181112,
+        1189592,
+        1175213,
+        1168092,
+        1182272,
+        1128642,
+        1179942,
+        1164812
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v116/profiles/b1-prefetch64-0.json",
+          "sha256": "a3ab8f010e52b6809878b05cb15ec14ffa0261861ce12ec8a62c02e1c67c6124",
+          "device_task_window_us": 126.52,
+          "run_epoch": 56,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 60.0,
+              "median_us": 64.65,
+              "max_us": 66.12
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v116/profiles/b1-prefetch64-1.json",
+          "sha256": "abae0ef130f4902043681bf4b4caf83f4fc741202eeb6aad3e2a96bb017a7cf4",
+          "device_task_window_us": 127.78,
+          "run_epoch": 58,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 59.94,
+              "median_us": 64.85,
+              "max_us": 66.4
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v116/profiles/b1-prefetch64-2.json",
+          "sha256": "32ed33515a07b4969723ba088b4f7918b1dc4a7823ab02c5331ec6285f8df096",
+          "device_task_window_us": 126.48,
+          "run_epoch": 60,
+          "block_records": 48,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 48,
+              "min_us": 59.92000000000001,
+              "median_us": 64.67,
+              "max_us": 66.14
+            }
+          }
+        }
+      ]
+    },
+    {
+      "batch": 1,
+      "variant": "sequential64",
+      "slots": [
+        7
+      ],
+      "layer": 12,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1204323.0,
+      "call_samples_ns": [
+        1241712,
+        1191993,
+        1233142,
+        1216653,
+        1224012,
+        1233003,
+        1165312,
+        1189783,
+        1175422,
+        1172812
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 1,
+      "variant": "prefetch64",
+      "slots": [
+        7
+      ],
+      "layer": 12,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1190267.0,
+      "call_samples_ns": [
+        1226783,
+        1520472,
+        1212962,
+        1188382,
+        1192152,
+        1173002,
+        1207152,
+        1176852,
+        1187592,
+        1167942
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 2,
+      "variant": "sequential64",
+      "slots": [
+        0,
+        31
+      ],
+      "layer": 0,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1216373.0,
+      "call_samples_ns": [
+        1248903,
+        1237102,
+        1215863,
+        1218413,
+        1199932,
+        1205943,
+        1226382,
+        1216883,
+        1198782,
+        1211143
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 2,
+      "variant": "prefetch64",
+      "slots": [
+        0,
+        31
+      ],
+      "layer": 0,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1210882.0,
+      "call_samples_ns": [
+        1231122,
+        1217852,
+        1239832,
+        1213802,
+        1227402,
+        1185862,
+        1201162,
+        1184112,
+        1207962,
+        1195712
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 2,
+      "variant": "sequential64",
+      "slots": [
+        11,
+        3
+      ],
+      "layer": 47,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1209102.0,
+      "call_samples_ns": [
+        1258793,
+        1224512,
+        1217013,
+        1216802,
+        1191893,
+        1210382,
+        1191383,
+        1199432,
+        1182253,
+        1207822
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v116/profiles/b2-sequential64-0.json",
+          "sha256": "38ce3721476d9bcccfa363f1a8c91b4d1fce5834c3343383bd93117c78c64a09",
+          "device_task_window_us": 186.20000000000002,
+          "run_epoch": 133,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.69999999999999,
+              "median_us": 93.21000000000001,
+              "max_us": 125.34
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v116/profiles/b2-sequential64-1.json",
+          "sha256": "b7733ce5358c7cda5c9adc413a513f5699e451f4fc8f415d0997f49425b23ede",
+          "device_task_window_us": 186.84,
+          "run_epoch": 135,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.64,
+              "median_us": 92.23,
+              "max_us": 125.32000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v116/profiles/b2-sequential64-2.json",
+          "sha256": "49daabf8b0c3cd21733f20a0b79bf5d8ba74f514b7f51e41852c0c11fd8b7478",
+          "device_task_window_us": 186.12,
+          "run_epoch": 137,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.7,
+              "median_us": 92.53,
+              "max_us": 125.28
+            }
+          }
+        }
+      ]
+    },
+    {
+      "batch": 2,
+      "variant": "prefetch64",
+      "slots": [
+        11,
+        3
+      ],
+      "layer": 47,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 6.103515625e-05,
+      "call_median_ns": 1216787.0,
+      "call_samples_ns": [
+        1226822,
+        1221142,
+        1215702,
+        1200832,
+        1220462,
+        1217872,
+        1210092,
+        1213882,
+        1218142,
+        1201792
+      ],
+      "device_profiles": [
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v116/profiles/b2-prefetch64-0.json",
+          "sha256": "09f05ef4a17e366c9dcfc0c71e1f18832217326e203f50dd71f430106d67bb0b",
+          "device_task_window_us": 187.0,
+          "run_epoch": 140,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.72000000000001,
+              "median_us": 93.18,
+              "max_us": 124.88
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v116/profiles/b2-prefetch64-1.json",
+          "sha256": "6f3812e53daee46024a5cd95bbe3cf1bef6ff1a166347a9683fb1fd00058b7da",
+          "device_task_window_us": 185.94,
+          "run_epoch": 142,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.760000000000005,
+              "median_us": 92.69,
+              "max_us": 125.02000000000001
+            }
+          }
+        },
+        {
+          "path": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/recurrent-v116/profiles/b2-prefetch64-2.json",
+          "sha256": "4ff1a112ca06859af2b6613e77897b1b1b2859900733cac696f956d57d308e6b",
+          "device_task_window_us": 186.08,
+          "run_epoch": 144,
+          "block_records": 64,
+          "tasks": {
+            "orthrus_tp2_recurrent_spmd": {
+              "blocks": 64,
+              "min_us": 59.73999999999998,
+              "median_us": 92.99000000000001,
+              "max_us": 124.9
+            }
+          }
+        }
+      ]
+    },
+    {
+      "batch": 2,
+      "variant": "sequential64",
+      "slots": [
+        7,
+        7
+      ],
+      "layer": 12,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 3.0517578125e-05,
+      "call_median_ns": 1226537.5,
+      "call_samples_ns": [
+        1257233,
+        1233753,
+        1221422,
+        1230223,
+        1250462,
+        1217332,
+        1231172,
+        1216942,
+        1212912,
+        1222852
+      ],
+      "device_profiles": []
+    },
+    {
+      "batch": 2,
+      "variant": "prefetch64",
+      "slots": [
+        7,
+        7
+      ],
+      "layer": 12,
+      "bitwise_equal": true,
+      "history_unchanged": true,
+      "golden_max_abs": 3.0517578125e-05,
+      "call_median_ns": 1217292.5,
+      "call_samples_ns": [
+        1229352,
+        1215422,
+        1227862,
+        1215972,
+        1235422,
+        1201783,
+        1223612,
+        1203103,
+        1218613,
+        1211842
+      ],
+      "device_profiles": []
+    }
+  ]
+}

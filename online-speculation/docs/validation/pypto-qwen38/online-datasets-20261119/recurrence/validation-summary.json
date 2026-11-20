@@ -1,0 +1,79 @@
+{
+  "scope": "standalone read-only recurrence; not integrated or a model speedup",
+  "prefetch64_correct": true,
+  "prefetch64_enabled_in_serving": false,
+  "reason": "No measured device benefit; preserve original recurrence",
+  "variants_128_compiled": false,
+  "compile_errors": [
+    {
+      "batch": 1,
+      "variant": "sequential128",
+      "error": "ValueError('Vec buffer usage (264192 bytes) exceeds platform limit (188416 bytes)"
+    },
+    {
+      "batch": 1,
+      "variant": "prefetch128",
+      "error": "ValueError('Vec buffer usage (312832 bytes) exceeds platform limit (188416 bytes)"
+    },
+    {
+      "batch": 2,
+      "variant": "sequential128",
+      "error": "ValueError('Vec buffer usage (264192 bytes) exceeds platform limit (188416 bytes)"
+    },
+    {
+      "batch": 2,
+      "variant": "prefetch128",
+      "error": "ValueError('Vec buffer usage (312832 bytes) exceeds platform limit (188416 bytes)"
+    }
+  ],
+  "measurements": [
+    {
+      "version": 116,
+      "batch": 1,
+      "variant": "sequential64",
+      "device_median_us": 126.9
+    },
+    {
+      "version": 116,
+      "batch": 1,
+      "variant": "prefetch64",
+      "device_median_us": 126.52
+    },
+    {
+      "version": 116,
+      "batch": 2,
+      "variant": "sequential64",
+      "device_median_us": 186.20000000000002
+    },
+    {
+      "version": 116,
+      "batch": 2,
+      "variant": "prefetch64",
+      "device_median_us": 186.08
+    },
+    {
+      "version": 117,
+      "batch": 1,
+      "variant": "sequential64",
+      "device_median_us": 127.56
+    },
+    {
+      "version": 117,
+      "batch": 1,
+      "variant": "prefetch64",
+      "device_median_us": 127.44
+    },
+    {
+      "version": 117,
+      "batch": 2,
+      "variant": "sequential64",
+      "device_median_us": 187.3
+    },
+    {
+      "version": 117,
+      "batch": 2,
+      "variant": "prefetch64",
+      "device_median_us": 187.5
+    }
+  ]
+}
