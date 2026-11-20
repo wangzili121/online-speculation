@@ -127,12 +127,20 @@ def evaluate(graph, inputs, *, past, width, valid, normalizer=None, fp32=False, 
             x, teacher = args[:2]
             p, q = x.float().softmax(-1), teacher.float().softmax(-1)
             sign = .5 * (p - q).sign()
+            if cfg.get("log_overlap", False):
+                sign = sign - .5
             gradient = p * (sign - (p * sign).sum(-1, keepdim=True)) / normalizer
             weights = (torch.arange(s.block) < valid)[:, None].float()
             weights[2:4] *= cfg.get("focus_weight", 1)
             if cfg.get("position_weighted", False):
                 weights *= args[2][:, :1]
-            losses = .5 * (p-q).abs().sum(-1, keepdim=True) * weights / normalizer
+            if cfg.get("log_overlap", False):
+                overlap = torch.minimum(p, q).sum(-1, keepdim=True)
+                safe = overlap.clamp_min(1e-8)
+                gradient = gradient * (overlap >= 1e-8) / safe
+                losses = -safe.log() * weights / normalizer
+            else:
+                losses = .5 * (p-q).abs().sum(-1, keepdim=True) * weights / normalizer
             return cast(gradient * weights), losses.expand(-1, 8)
         if op == "kl":
             x, teacher = args[:2]

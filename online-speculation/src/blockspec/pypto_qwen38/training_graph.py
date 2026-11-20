@@ -93,8 +93,8 @@ class LastLayerGraph(GraphBuilder):
 
     def __init__(self, shape=SuffixShape(), *, backprop_input=False, objective="tv", focus_weight=1,
                  position_weighted=False):
-        if objective not in {"tv", "kl"}:
-            raise ValueError("objective must be tv or kl")
+        if objective not in {"tv", "kl", "log_overlap"}:
+            raise ValueError("objective must be tv, kl or log_overlap")
         if (type(focus_weight) is not int or focus_weight < 1
                 or focus_weight != 1 and objective != "tv"):
             raise ValueError("position weighting requires TV and a positive integer weight")
@@ -152,11 +152,13 @@ class LastLayerGraph(GraphBuilder):
         normalized, fi = self.norm(final, fg)
         self.logits = logits = self.mm(normalized, lm)
         loss_options = {"focus_weight": focus_weight} if focus_weight != 1 else {}
+        if objective == "log_overlap":
+            loss_options["log_overlap"] = True
         loss_inputs = (logits, teacher)
         if position_weighted:
             loss_inputs += (input("position_weights", K, 8, "fp32"),)
             loss_options["position_weighted"] = True
-        delta, self.losses = self.op(objective, loss_inputs,
+        delta, self.losses = self.op("tv" if objective == "log_overlap" else objective, loss_inputs,
             (((K, s.vocabulary), "bf16"), ((K, 8), "fp32")), **loss_options)
 
         # 手工链式求导。共享 MLP/LM head 只算 dX，不产生 dW。

@@ -184,7 +184,7 @@ def main(*, guard=None):
                    help="initial cadence before switching to the continuing --strides interval")
     p.add_argument("--warm-update-steps", type=int, default=0)
     p.add_argument("--lr-schedule", choices=("constant", "inverse_sqrt"), default="constant")
-    p.add_argument("--objective", default="tv", choices=("tv", "kl"))
+    p.add_argument("--objective", default="tv", choices=("tv", "kl", "log_overlap"))
     p.add_argument("--focus-weight", default=1, type=int,
                    help="TV weight on reached candidate offsets 2 and 3; one keeps the ordinary objective")
     p.add_argument("--position-weighting", choices=("uniform", "rejection_decay", "first_rejection"), default="uniform",

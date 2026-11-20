@@ -160,9 +160,9 @@ class TP2Online:
         if (type(replay_blocks) is not int or replay_blocks < 1
                 or type(publish_every) is not int or publish_every < 1):
             raise ValueError("replay_blocks and publish_every must be positive integers")
-        if (objective not in ("tv", "kl")
+        if (objective not in ("tv", "kl", "log_overlap")
                 or max_updates is not None and (type(max_updates) is not int or max_updates < 1)):
-            raise ValueError("expected TV or KL with an optional positive update limit")
+            raise ValueError("expected TV, KL or log_overlap with an optional positive update limit")
         if (type(inner_steps) is not int or inner_steps < 1 or publish_every % inner_steps
                 or max_updates is not None and max_updates % inner_steps):
             raise ValueError("inner_steps must divide the publication interval and optional update limit")

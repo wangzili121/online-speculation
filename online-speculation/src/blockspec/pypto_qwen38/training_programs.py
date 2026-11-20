@@ -41,12 +41,15 @@ def _loss_entry(compute, *, inline, position_weighted):
     return entry
 
 
-def make_tv(rows, vocabulary, *, inline=False, focus_weight=1, position_weighted=False):
+def make_tv(rows, vocabulary, *, inline=False, focus_weight=1, position_weighted=False,
+            log_overlap=False):
     """完整词表 TV 及 d(logits)，只监督 verifier 真正走到的行。"""
     if rows < 1 or vocabulary % 64:
         raise ValueError("positive rows and a 64-aligned vocabulary required")
     if type(focus_weight) is not int or focus_weight < 1:
         raise ValueError("TV candidate weights must be positive integers")
+    if type(log_overlap) is not bool:
+        raise ValueError("log_overlap must be a boolean")
     T = loss_vocabulary_tile(vocabulary)
     import pypto.language as pl
 
@@ -98,15 +101,28 @@ def make_tv(rows, vocabulary, *, inline=False, focus_weight=1, position_weighted
                     q = pl.row_expand_div(pl.exp(pl.row_expand_sub(t, pl.row_max(tm))), pl.mul(pl.row_sum(tz), .125))
                     diff = pl.sub(p, q)
                     sign = pl.mul(pl.sub(pl.cmp(diff, 0., cmp_type=4), pl.cmp(diff, 0., cmp_type=2)), .5)
+                    if log_overlap:
+                        # -d min(p,q)/dp；相等处使用与 Torch.minimum 一致的半梯度。
+                        sign = pl.sub(sign, .5)
                     weighted = pl.mul(p, sign)
-                    absolute = pl.mul(pl.abs(diff), .5)
+                    if log_overlap:
+                        absolute = pl.minimum(p, q)
+                    else:
+                        absolute = pl.mul(pl.abs(diff), .5)
                     sr = pl.row_expand_mul(pl.full([8, 8], dtype=pl.FP32, value=1.), pl.row_sum(weighted))
                     tr = pl.row_expand_mul(pl.full([8, 8], dtype=pl.FP32, value=1.), pl.row_sum(absolute))
                     sx = pl.row_expand_mul(pl.full([8, 8], dtype=pl.FP32, value=1.), pl.row_sum(pl.transpose(sr, 0, 1)))
                     tx = pl.row_expand_mul(pl.full([8, 8], dtype=pl.FP32, value=1.), pl.row_sum(pl.transpose(tr, 0, 1)))
                     dot = pl.add(dot, sx)
                     loss = pl.add(loss, tx)
-                losses[row:row + 1, 0:8] = pl.div(pl.slice(loss, [1, 8], [0, 0]), denominator)
+                inverse_overlap = pl.full([8, 8], dtype=pl.FP32, value=1.)
+                if log_overlap:
+                    overlap = pl.maximum(loss, 1e-8)
+                    loss_value = pl.mul(pl.log(overlap), -1.)
+                    inverse_overlap = pl.div(pl.cmp(loss, 1e-8, cmp_type=5), overlap)
+                else:
+                    loss_value = loss
+                losses[row:row + 1, 0:8] = pl.div(pl.slice(loss_value, [1, 8], [0, 0]), denominator)
                 for tile in pl.range(vocabulary // T):
                     s = pl.reshape(pl.cast(pl.slice(student, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
                     t = pl.reshape(pl.cast(pl.slice(teacher, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
@@ -114,7 +130,11 @@ def make_tv(rows, vocabulary, *, inline=False, focus_weight=1, position_weighted
                     q = pl.row_expand_div(pl.exp(pl.row_expand_sub(t, pl.row_max(tm))), pl.mul(pl.row_sum(tz), .125))
                     diff = pl.sub(p, q)
                     sign = pl.mul(pl.sub(pl.cmp(diff, 0., cmp_type=4), pl.cmp(diff, 0., cmp_type=2)), .5)
+                    if log_overlap:
+                        sign = pl.sub(sign, .5)
                     ds = pl.div(pl.mul(p, pl.row_expand_sub(sign, pl.mul(pl.row_sum(dot), .125))), denominator)
+                    if log_overlap:
+                        ds = pl.row_expand_mul(ds, pl.mul(pl.row_sum(inverse_overlap), .125))
                     gradient[row:row + 1, tile * T:tile * T + T] = pl.cast(pl.reshape(ds, [1, T]), pl.BF16, mode="rint")
             else:
                 losses[row:row + 1, 0:8] = pl.full([1, 8], dtype=pl.FP32, value=0.)
