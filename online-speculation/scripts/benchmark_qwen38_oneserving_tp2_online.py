@@ -484,7 +484,7 @@ def main(*, guard=None):
                 feedback_skip_start = runner.spec_stats["feedback_skips"]
                 trainer.stride = stride
                 if args.interleaved:
-                    def checkpoint(rows, index):
+                    def checkpoint(rows, index, *, stride=stride):
                         if index + 1 == len(prompts) or (index + 1) % 16:
                             return
                         fixed, current = summarize(rows["frozen"]), summarize(rows["online"])

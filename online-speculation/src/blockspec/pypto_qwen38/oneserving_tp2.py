@@ -587,7 +587,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
                         sampling_started = time.monotonic_ns()
                         emitted, count, accepted, done = check_sampled_chunk(
                             proposed[i], offsets[i], len(chunk),
-                            lambda row: self._distribution(batch, j, row, slot.request),
+                            lambda row, batch=batch, j=j, slot=slot: self._distribution(batch, j, row, slot.request),
                             proposals.get(slot.request.request_id), slot.request.generator,
                             stop_tokens=getattr(slot.request, "stop_token_ids", ()))
                         self.spec_stats["stochastic_verify_ns"] += time.monotonic_ns() - sampling_started

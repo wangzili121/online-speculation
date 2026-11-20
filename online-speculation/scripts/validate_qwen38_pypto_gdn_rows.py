@@ -73,7 +73,7 @@ def main():
             beta = torch.rand(count, 32)
             local = [worker.alloc_tensor(x.shape, x.dtype, init=x) for x in (q, k, v, decay, beta)]
             out = [worker.alloc_tensor((count, 3072), torch.bfloat16) for _ in range(2)]
-            def run(valid):
+            def run(valid, *, batch=batch, local=local, out=out, widths=widths):
                 worker.run(programs[batch, valid], *local, device_history, out[int(valid)],
                            0, 1, 47, widths[0], widths[-1], config=cfg)
             actual = []

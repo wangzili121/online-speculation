@@ -80,10 +80,10 @@ def main():
             for merge, part, entry in pair:
                 space = TrainingWorkspace(entry, worker); workspaces.append(space)
                 spaces.append((space, part.gradients[name]))
-            def run(index):
+            def run(index, *, spaces=spaces, inputs=inputs):
                 space, _ = spaces[index]
                 space.run(inputs, past=0, width=32, valid=31)
-            def result(index):
+            def result(index, *, spaces=spaces):
                 space, target = spaces[index]
                 return read(space.values[target.name], target.shape)
             for zero_b in (True, False):
