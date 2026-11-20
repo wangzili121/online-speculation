@@ -6,24 +6,17 @@
 
 固定版 Simpler 在 Release 模式下有两处仅供调试断言使用的变量，会触发 `-Werror`。镜像应用 `runtime-release.patch` 显式标记其用途，不改计算和断言；环境报告记录该补丁的 SHA256。
 
-## 构建并传入内网
+## 内网安装
 
-在可以访问 GitHub、PyPI、PyTorch wheel 站点和镜像仓库的 ARM64 Linux 机器上，从本仓库根目录执行。
-
-```bash
-bash online-speculation/scripts/dsv41_pypto_env.sh build
-bash online-speculation/scripts/dsv41_pypto_env.sh doctor
-bash online-speculation/scripts/dsv41_pypto_env.sh compile-probe
-bash online-speculation/scripts/dsv41_pypto_env.sh save /path/to/orthrus-dsv41-pypto.tar.gz
-```
-
-将同一份 tar、其相邻的 `.sha256` 文件以及本代码仓复制到两台内网机器。Docker 镜像包含配对源码和已安装的 `pypto_serving_a3`，内网运行时无需联网安装 Python 包。
+将镜像 `orthrus-dsv41-pypto.tar.gz`、代码包 `orthrus-dsv41-pypto-code.tar.gz` 及各自的 `.sha256` 文件复制到两台内网机器的工作目录。Docker 镜像包含配对源码和已安装的 `pypto_serving_a3`；内网无需联网安装 Python 包或克隆依赖仓库。
 
 两台机器都需能访问完整权重目录，可以各自保存一份，也可以使用共享挂载。容器执行镜像内的固定代码；更新实现时需重新构建并传入镜像。
 
 ```bash
-bash online-speculation/scripts/dsv41_pypto_env.sh load /path/to/orthrus-dsv41-pypto.tar.gz
+sha256sum -c orthrus-dsv41-pypto-code.tar.gz.sha256
+tar -xzf orthrus-dsv41-pypto-code.tar.gz
 bash online-speculation/scripts/dsv41_pypto_env.sh host-info
+bash online-speculation/scripts/dsv41_pypto_env.sh load ./orthrus-dsv41-pypto.tar.gz
 bash online-speculation/scripts/dsv41_pypto_env.sh doctor
 bash online-speculation/scripts/dsv41_pypto_env.sh preflight
 ```
@@ -49,3 +42,14 @@ NPU_DEVICE=0 bash online-speculation/scripts/dsv41_pypto_env.sh probe
 已完成从固定基础镜像构建、正常容器启动导入、设备代码编译和 75 项 Serving CPU 测试。环境验证不等于模型验收：本镜像的 NPU 探针、真实权重完整模型执行和双机通信仍需分别验收，跨机运行时尚待适配。
 
 扩展 Lib 回归有 15 项通过，另有一项 Prefill 编译条目数断言失败。未应用 Orthrus 补丁的 `e32726b` 基线也复现同一失败：测试预期一个条目，原生实现另外包含有限值检查条目。该问题单独记录，未修改主模型或测试断言。
+
+## 外网构建与导出
+
+需要重建镜像时，在可以访问 GitHub、PyPI、PyTorch wheel 站点和镜像仓库的 ARM64 Linux 机器上，从本仓库根目录执行。公司机器直接使用上面的离线导入流程。
+
+```bash
+bash online-speculation/scripts/dsv41_pypto_env.sh build
+bash online-speculation/scripts/dsv41_pypto_env.sh doctor
+bash online-speculation/scripts/dsv41_pypto_env.sh compile-probe
+bash online-speculation/scripts/dsv41_pypto_env.sh save /path/to/orthrus-dsv41-pypto.tar.gz
+```
