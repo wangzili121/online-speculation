@@ -1,0 +1,13 @@
+{
+  "completed": true,
+  "original_model_never_launched": true,
+  "quiesced_before_recheck": true,
+  "original_had_no_model_children_or_NPU_allocation": true,
+  "own_uid_checked": true,
+  "stopped_only_own_waiting_pids": {
+    "3406063": "python3 study_queue_windows209.py --plan queue-aux256-threecard.json ",
+    "3406068": "python3 run_dense_v233.py --tag c23-v256-aux3card-compact16-K8-KL-smoke --devices 0,1,2,3,4,5,6,7 --head kl-prewarm-suffix-tp2 --learner-device 2 --last-layers 1 --tokens 64 --strides 16 --warm-update-stride 8 --warm-update-steps 4 --replay-blocks 1 --publish-every 1 --learning-rate 3e-5 --warmup-updates 4 --objective kl --candidates 7 --stop-on-eos --feedback-mode delayed --teacher-tokens 7 --request-file v95-mixed-eos-smoke6.json --holdout-file v95-eos-smoke-holdout.json --ar-check-requests 6 --wait 28800 --seed 743 --draft-convolution parallel128 --audit-replay --teacher-temperature 1 --position-weighting uniform --teacher-scaling host --teacher-targets greedy --parameterization dense --draft-width 8 --publication-backend device --feedback-timing early --gdn-valid-rows --stream-window 2 --compact-paired-rows --background "
+  },
+  "source_plan_sha256": "fef621318e8fe427a076d77b031f80889bc0ff79316df1a4d84970795eb695c9",
+  "scope": "Operationalrelocation toB only. Brieflyquiesced owncontroller/waitinglauncher, thencheckednoreport/nolog/no modelchild; transient npu-smiinfo queryallowed. No performance measurement cancelled orretried, no otherusersprocess touched."
+}
