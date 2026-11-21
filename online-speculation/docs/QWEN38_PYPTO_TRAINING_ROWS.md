@@ -22,3 +22,12 @@
 完整请求流的开销对照仍待完成，服务默认值保持不变。实验选项 `--training-rows 16` 仅适用于 dense last-1、逻辑块长不超过 16；GDN / last-4 与默认训练保持 32 行。正在执行的 GSM8K 冻结配方确认不采用此改动。
 
 核心实现在 `training_long_linear.py`、`training_graph.py` 和 `training_programs.py`；独立入口为 `scripts/validate_qwen38_pypto_training_rows.py`。环境需提供固定版本 PyPTO 和 OneServing 的 `serving` 模块。原始采样、源码、矩阵分解及早期失败记录见 `validation/pypto-qwen38/online-datasets-20261119/rows257/`，双卡请求回放见其中 `service265/`。
+
+
+## 完整 54 题的两卡布局对照
+
+原探索题、实际 step135、fresh Adam、两张 A2、TP2、rank0 共卡；仅改变训练布局。两组均完成 83 次更新、20 次发布，更新轨迹与实际发布的两个权重分片逐位一致，greedy 与 AR 一致。
+
+包含优化器与发布准备的平均每次更新耗时由 57.43 降为 53.62 ms，减少约 6.64%；完整在线吞吐分别为 21.171 / 21.078 tok/s，未观察到整流提速。不能把独立前反向约 19% 的降时直接当作服务收益，也不为获得有利速度重复该流。
+
+两组在旧探索题上相对 AR 约 +7.49% / +7.61%、相对初始固定约 +5.45% / +5.39%。这不替代已保存的旧 24 题负面确认，也不当作新的预留题验收。原始数据及逐位对照见 `validation/pypto-qwen38/online-datasets-20261119/rows257/service300/`。

@@ -1,0 +1,57 @@
+Traceback (most recent call last):
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/utils/hub.py", line 438, in cached_files
+    hf_hub_download(
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/huggingface_hub/utils/_validators.py", line 85, in _inner_fn
+    validate_repo_id(arg_value)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/huggingface_hub/utils/_validators.py", line 133, in validate_repo_id
+    raise HFValidationError(
+huggingface_hub.errors.HFValidationError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': '/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/inference-tuning-20261116/model-view'. Use `repo_type` argument if needed.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/models/auto/tokenization_auto.py", line 785, in from_pretrained
+    config = AutoConfig.from_pretrained(
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/models/auto/configuration_auto.py", line 388, in from_pretrained
+    config_dict, unused_kwargs = PreTrainedConfig.get_config_dict(pretrained_model_name_or_path, **kwargs)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/configuration_utils.py", line 747, in get_config_dict
+    config_dict, kwargs = cls._get_config_dict(pretrained_model_name_or_path, **kwargs)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/configuration_utils.py", line 802, in _get_config_dict
+    resolved_config_file = cached_file(
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/utils/hub.py", line 294, in cached_file
+    file = cached_files(path_or_repo_id=path_or_repo_id, filenames=[filename], **kwargs)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/utils/hub.py", line 496, in cached_files
+    raise OSError(f"{e}") from e
+OSError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': '/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/inference-tuning-20261116/model-view'. Use `repo_type` argument if needed.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/utils/hub.py", line 438, in cached_files
+    hf_hub_download(
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/huggingface_hub/utils/_validators.py", line 85, in _inner_fn
+    validate_repo_id(arg_value)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/huggingface_hub/utils/_validators.py", line 133, in validate_repo_id
+    raise HFValidationError(
+huggingface_hub.errors.HFValidationError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': '/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/inference-tuning-20261116/model-view'. Use `repo_type` argument if needed.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<string>", line 4, in <module>
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/models/auto/tokenization_auto.py", line 789, in from_pretrained
+    config = PreTrainedConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/configuration_utils.py", line 706, in from_pretrained
+    config_dict, kwargs = cls.get_config_dict(pretrained_model_name_or_path, **kwargs)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/configuration_utils.py", line 747, in get_config_dict
+    config_dict, kwargs = cls._get_config_dict(pretrained_model_name_or_path, **kwargs)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/configuration_utils.py", line 802, in _get_config_dict
+    resolved_config_file = cached_file(
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/utils/hub.py", line 294, in cached_file
+    file = cached_files(path_or_repo_id=path_or_repo_id, filenames=[filename], **kwargs)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/utils/hub.py", line 496, in cached_files
+    raise OSError(f"{e}") from e
+OSError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': '/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/inference-tuning-20261116/model-view'. Use `repo_type` argument if needed.
+Traceback (most recent call last):
+  File "<stdin>", line 26, in <module>
+AssertionError

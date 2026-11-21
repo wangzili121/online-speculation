@@ -23,16 +23,40 @@ def load_pairs(path, *, window=2):
     return [tuple(texts[i:i + window]) for i in range(0, len(texts), window)]
 
 
-def run_pair(engine, pair, tokens, *, sampling=None, stop_on_eos=False):
+def context_output_budget(requested, prompt_tokens, context):
+    """保留完整输入，在相同上下文中尽量增加输出，不按 head 或生成结果选题。"""
+    if any(type(n) is not int or n < 1 for n in (requested, prompt_tokens, context)):
+        raise ValueError("positive integer output budget, prompt length and context required")
+    if prompt_tokens >= context:
+        raise ValueError("the complete prompt leaves no output capacity")
+    return min(requested, context - prompt_tokens)
+
+
+def chat_output_budgets(tokenizer, questions, requested, context):
+    budgets, lengths = {}, {}
+    for question in questions:
+        encoded = tokenizer.apply_chat_template(
+            [{"role": "user", "content": question}], tokenize=True,
+            add_generation_prompt=True, enable_thinking=False)
+        ids = encoded["input_ids"] if hasattr(encoded, "keys") else encoded
+        lengths[question] = len(ids)
+        budgets[question] = context_output_budget(requested, len(ids), context)
+    return budgets, lengths
+
+
+def run_pair(engine, pair, tokens, *, sampling=None, stop_on_eos=False, budgets=None):
     # 名称保留兼容；大于两题时先全部入队，执行并发仍由 engine 的上限控制。
     sampling_configs = sampling if sampling is not None else (None,) * len(pair)
     if len(sampling_configs) != len(pair):
         raise ValueError("one sampling configuration per queued request required")
+    limits = [tokens] * len(pair) if budgets is None else list(budgets)
+    if (len(limits) != len(pair) or any(type(n) is not int or not 0 < n <= tokens for n in limits)):
+        raise ValueError("one positive output budget per request, within the common token limit, required")
     before = dict(engine.runner.spec_stats)
     started = time.monotonic()
-    requests = [engine.submit_chat([{"role": "user", "content": question}], tokens,
+    requests = [engine.submit_chat([{"role": "user", "content": question}], limit,
                                    sampling=params, ignore_eos=not stop_on_eos)
-                for question, params in zip(pair, sampling_configs, strict=True)]
+                for question, params, limit in zip(pair, sampling_configs, limits, strict=True)]
     for req in requests:
         deadline = started + 300
         while time.monotonic() < deadline:
@@ -47,12 +71,16 @@ def run_pair(engine, pair, tokens, *, sampling=None, stop_on_eos=False):
         else:
             raise TimeoutError("paired request exceeded its timeout")
     elapsed = time.monotonic() - started
-    if any(not 0 < len(req.generated) <= tokens or
-           (not stop_on_eos and len(req.generated) != tokens) for req in requests):
+    if any(not 0 < len(req.generated) <= limit or
+           (not stop_on_eos and len(req.generated) != limit)
+           for req, limit in zip(requests, limits, strict=True)):
         raise ValueError("response violates the generation budget")
     stats = {key: value - before[key] for key, value in engine.runner.spec_stats.items()}
-    return dict(seconds=elapsed, tokens=[list(req.generated) for req in requests],
-                metrics=[req.metrics() for req in requests], stats=stats)
+    result = dict(seconds=elapsed, tokens=[list(req.generated) for req in requests],
+                  metrics=[req.metrics() for req in requests], stats=stats)
+    if budgets is not None:
+        result["output_budgets"] = limits
+    return result
 
 
 def compare(rows, reference):
@@ -90,6 +118,8 @@ def request_timeline(rows):
         result.append(dict(requests=list(range(first, first + count)), seconds=row["seconds"],
                            output_tokens=[len(tokens) for tokens in row["tokens"]],
                            stats=row["stats"], learner=row["learner"]))
+        if "output_budgets" in row:
+            result[-1]["output_budgets"] = row["output_budgets"]
         first += count
     return result
 
@@ -192,6 +222,8 @@ def main(*, guard=None):
                    help="minimum temporary heap per ring; identical for AR, frozen and online")
     p.add_argument("--strides", default="16,32,64")
     p.add_argument("--tokens", default=128, type=int)
+    p.add_argument("--clip-output-to-context", action="store_true",
+                   help="keep every complete prompt and cap its output equally in all arms at remaining context")
     p.add_argument("--stop-on-eos", action="store_true", help="use natural EOS within the token budget")
     p.add_argument("--candidates", default=31, type=int, choices=range(1, 32),
                    help="maximum proposed tokens from the unchanged K32 draft block")
@@ -357,6 +389,11 @@ def main(*, guard=None):
                            max_num_seqs=2, speculative_tokens=0, prefix_cache=False,
                            long_prefill_token_threshold=4)
     engine = InferenceEngine(config)
+    output_budgets = prompt_lengths = None
+    if args.clip_output_to_context:
+        questions = [q for groups in (prompts, holdout) for group in groups for q in group]
+        output_budgets, prompt_lengths = chat_output_budgets(
+            engine.tokenizer, questions, args.tokens, args.max_model_len)
     runner = engine.runner = OrthrusTP2Runner(config, args.head, draft_batch_size=2,
                                               output_candidates=args.candidates, draft_width=args.draft_width,
                                               gdn_valid_rows=args.gdn_valid_rows,
@@ -431,6 +468,12 @@ def main(*, guard=None):
                    holdout_sha256=hashlib.sha256(args.holdout.read_bytes()).hexdigest(),
                    gather_feedback=args.gather_feedback,
                    optimizer_init="checkpoint" if args.checkpoint is not None else "fresh", results={})
+    if output_budgets is not None:
+        summary.update(output_budget_mode="context_clipped", output_budget_limit=args.tokens,
+                       request_output_budgets=[output_budgets[q] for group in prompts for q in group],
+                       holdout_output_budgets=[output_budgets[q] for group in holdout for q in group],
+                       request_prompt_tokens=[prompt_lengths[q] for group in prompts for q in group],
+                       holdout_prompt_tokens=[prompt_lengths[q] for group in holdout for q in group])
 
     def persist():
         summary["convolution_audits"] = list(runner.convolution_audits)
@@ -447,7 +490,8 @@ def main(*, guard=None):
             SamplingParams(temperature=args.temperature, seed=args.seed + args.stream_window * index + rank)
             for rank in range(len(pair))
         ]
-        return run_pair(engine, pair, tokens, sampling=params, stop_on_eos=args.stop_on_eos)
+        budgets = None if output_budgets is None else [min(tokens, output_budgets[q]) for q in pair]
+        return run_pair(engine, pair, tokens, sampling=params, stop_on_eos=args.stop_on_eos, budgets=budgets)
 
     def check_tokens(rows, reference):
         if not args.temperature:

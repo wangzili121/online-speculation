@@ -1,0 +1,160 @@
+{
+  "completed": true,
+  "terminal_cases": [
+    "a111-v292-explore294-longproc30-head135-kl-after295",
+    "a111-v292-explore294-spoc64-head135-kl-after295",
+    "a111-v292-explore294-spoc64-head128-tv-after295",
+    "a111-v292-explore294-longproc30-head128-tv-after295"
+  ],
+  "results": [
+    {
+      "accounting_passed": true,
+      "requests": 30,
+      "arms": {
+        "ar": {
+          "tokens": 3840,
+          "seconds": 224.7999244541861,
+          "tail_seconds": 0.0,
+          "tok_s": 17.08185627430042
+        },
+        "fixed": {
+          "tokens": 3840,
+          "seconds": 216.42435382003896,
+          "tail_seconds": 0.0,
+          "tok_s": 17.74292001903369
+        },
+        "online": {
+          "tokens": 3840,
+          "seconds": 214.83749602152966,
+          "tail_seconds": 0.0,
+          "tok_s": 17.87397484662165
+        }
+      },
+      "updates": 69,
+      "publications": 17,
+      "last_update_round": 1345,
+      "rounds_after_last_update": 16,
+      "online_vs_ar": 0.04637192583764849,
+      "online_vs_fixed": 0.007386316764510514,
+      "final_seen_tok_s": 17.54209065149963,
+      "independent_holdout_tok_s": 19.409798049065596,
+      "scope": "Request/timing/update accounting only; frozen recipe, data and source audited separately.",
+      "completed": true,
+      "tag": "a111-v292-explore294-longproc30-head135-kl-after295",
+      "raw_sha256": "6ab9a36273dd3707628ec4436b88ccfab5d7603adcf3ba0c20d6c31889f95161",
+      "source_exact": true,
+      "actual_published_shards": {
+        "rank0.safetensors": "f9d7ec5841dc9547f0367a5dd3d47f5ac04b8ff76555f167b8cf89a6d35aecb2",
+        "rank1.safetensors": "2f9ed4bf4f6cb84b50f54498f6367f4c6820b8e4d72645a67ce5c50cd5be3dae"
+      },
+      "both_5_exploration_gate": false
+    },
+    {
+      "accounting_passed": true,
+      "requests": 64,
+      "arms": {
+        "ar": {
+          "tokens": 10771,
+          "seconds": 520.5425424827263,
+          "tail_seconds": 0.0,
+          "tok_s": 20.691872653919397
+        },
+        "fixed": {
+          "tokens": 10771,
+          "seconds": 490.716021673521,
+          "tail_seconds": 0.0,
+          "tok_s": 21.94955844984835
+        },
+        "online": {
+          "tokens": 10771,
+          "seconds": 481.76270585600287,
+          "tail_seconds": 0.0,
+          "tok_s": 22.35747987354466
+        }
+      },
+      "updates": 106,
+      "publications": 26,
+      "last_update_round": 3713,
+      "rounds_after_last_update": 59,
+      "online_vs_ar": 0.08049572155615259,
+      "online_vs_fixed": 0.018584493379598,
+      "final_seen_tok_s": 23.84643688453081,
+      "independent_holdout_tok_s": 20.188509096127365,
+      "scope": "Request/timing/update accounting only; frozen recipe, data and source audited separately.",
+      "completed": true,
+      "tag": "a111-v292-explore294-spoc64-head135-kl-after295",
+      "raw_sha256": "8ed3e7beb7ee077ec4bf4ef0fb6e12995e42df984fc4580c1bc6a209307162dc",
+      "source_exact": true,
+      "actual_published_shards": {
+        "rank0.safetensors": "25bb3b12458f1627baadba26c476d1ae889ac9bd706b9e64537818919436d07b",
+        "rank1.safetensors": "931708b3c34f57605a7442850735a95024440cebebe5077eb43b3da4c4728d7b"
+      },
+      "both_5_exploration_gate": false
+    },
+    {
+      "completed": false,
+      "tag": "a111-v292-explore294-spoc64-head128-tv-after295",
+      "error": "AssertionError(\"RuntimeError('Batch runner failed to start')\")",
+      "traceback": "Traceback (most recent call last):\n  File \"/tmp/watch_explore296.py\", line 34, in <module>\n    try:proof=check(c,item)\n              ~~~~~^^^^^^^^\n  File \"/tmp/watch_explore296.py\", line 24, in check\n    assert item['model_complete']and not item.get('error'),item.get('error');raw=item['files'][c['tag']+'.json'];d=json.loads(raw);p=acct.audit(d,64);assert d['physical_device_count']==2 and d['learner_device']==0 and not d['background']and len(set(d['visible_devices'].split(',')))==2;assert d['max_model_len']==1024 and d['training_rows']==16 and d['last_layers']==1 and d['parameter_scope']=='full';assert d['prompts_sha256']==c['prompts_sha256'];assert d['head_step']==(135 if'head135'in c['tag']else 128)and d['optimizer_init']=='fresh';assert d['draft_width']==8 and d['candidates']==7 and d['teacher_tokens']==7;assert d['publish_every']==4 and d['warm_update_stride']==16 and d['warm_update_steps']==64 and d['temperature']==0 and d['stop_on_eos'];assert d['requests']==(30 if'longproc30'in c['tag']else 64);on=d['results']['64'];m=on['exported_head']['manifest'];assert m['published_banks_exact']and m['step']==d['head_step']+on['published_version'];assert item['actual_published_shards']=={x['name']:x['sha256']for x in m['rank_files']};src=json.loads(item['files'][c['tag']+'.source.json']);ref=json.loads((D/'context273/service292/a111-v292-context1024-trainingrows16-KL-replay.source.json').read_text());assert src['files']==ref['files'];p.update(completed=True,tag=c['tag'],raw_sha256=hashlib.sha256(raw.encode()).hexdigest(),source_exact=True,actual_published_shards=item['actual_published_shards'],both_5_exploration_gate=p['online_vs_ar']>.05 and p['online_vs_fixed']>.05);return p\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: RuntimeError('Batch runner failed to start')\n",
+      "model_error": "RuntimeError('Batch runner failed to start')"
+    },
+    {
+      "accounting_passed": true,
+      "requests": 30,
+      "arms": {
+        "ar": {
+          "tokens": 3840,
+          "seconds": 227.15751956845634,
+          "tail_seconds": 0.0,
+          "tok_s": 16.904569161060834
+        },
+        "fixed": {
+          "tokens": 3840,
+          "seconds": 221.12506409268826,
+          "tail_seconds": 0.0,
+          "tok_s": 17.36573832440089
+        },
+        "online": {
+          "tokens": 3840,
+          "seconds": 233.7493234272115,
+          "tail_seconds": 0.0,
+          "tok_s": 16.427855035891724
+        }
+      },
+      "updates": 71,
+      "publications": 17,
+      "last_update_round": 1472,
+      "rounds_after_last_update": 23,
+      "online_vs_ar": -0.028200312035588926,
+      "online_vs_fixed": -0.05400768288621105,
+      "final_seen_tok_s": 17.248283774035542,
+      "independent_holdout_tok_s": 18.41839430619662,
+      "scope": "Request/timing/update accounting only; frozen recipe, data and source audited separately.",
+      "completed": true,
+      "tag": "a111-v292-explore294-longproc30-head128-tv-after295",
+      "raw_sha256": "cd3a9e063451e68fb8526cb7b80d189a49e14f8c322c9c98d60311811f2c043a",
+      "source_exact": true,
+      "actual_published_shards": {
+        "rank0.safetensors": "bcf56c18a13d4822c9efa284bcd1a4b11e78d84bf564501961429791db878054",
+        "rank1.safetensors": "7071909c806ae57ad063b9cfb473b1325ad6525c46b0ffffd48a84103c565cb8"
+      },
+      "both_5_exploration_gate": false
+    }
+  ],
+  "observations": [
+    {
+      "tag": "a111-v292-explore294-longproc30-head128-tv-after295",
+      "stage": "completed",
+      "error": null,
+      "terminal": true,
+      "model_complete": true,
+      "progress": {},
+      "actual_published_shards": {
+        "rank0.safetensors": "bcf56c18a13d4822c9efa284bcd1a4b11e78d84bf564501961429791db878054",
+        "rank1.safetensors": "7071909c806ae57ad063b9cfb473b1325ad6525c46b0ffffd48a84103c565cb8"
+      }
+    }
+  ],
+  "automatic_reserved": false,
+  "scope": "Independent full exploration only; no confirmation dispatched or recipe changed by this read-only watcher."
+}

@@ -1,0 +1,74 @@
+{
+  "completed": true,
+  "terminal_cases": [
+    "a111-v292-explore299-spoc64-head128-kl",
+    "a111-v292-explore299-longproc30-head128-kl"
+  ],
+  "results": [
+    {
+      "completed": false,
+      "tag": "a111-v292-explore299-spoc64-head128-kl",
+      "error": "AssertionError(\"prerequisite failed: RuntimeError('Batch runner failed to start')\")",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/li/Documents/Codex/2026-09-13/kan-xi/release-repo/online-speculation/docs/validation/pypto-qwen38/online-datasets-20261119/context273/explore299/watch_explore299.py\", line 44, in <module>\n    try:proof=check(c,item)\n              ~~~~~^^^^^^^^\n  File \"/Users/li/Documents/Codex/2026-09-13/kan-xi/release-repo/online-speculation/docs/validation/pypto-qwen38/online-datasets-20261119/context273/explore299/watch_explore299.py\", line 34, in check\n    assert item['model_complete']and not item.get('error'),item.get('error');raw=item['files'][c['tag']+'.json'];d=json.loads(raw);check_frozen_options(d);p=acct.audit(d,64);assert d['physical_device_count']==2 and d['learner_device']==0 and not d['background']and len(set(d['visible_devices'].split(',')))==2;assert d['max_model_len']==1024 and d['training_rows']==16 and d['last_layers']==1 and d['parameter_scope']=='full';assert d['prompts_sha256']==c['prompts_sha256'];assert d['head_step']==(135 if'head135'in c['tag']else 128)and d['optimizer_init']=='fresh';assert d['draft_width']==8 and d['candidates']==7 and d['teacher_tokens']==7;assert d['publish_every']==4 and d['warm_update_stride']==16 and d['warm_update_steps']==64 and d['temperature']==0 and d['stop_on_eos'];assert d['requests']==(30 if'longproc30'in c['tag']else 64);on=d['results']['64'];m=on['exported_head']['manifest'];assert m['published_banks_exact']and m['step']==d['head_step']+on['published_version'];assert item['actual_published_shards']=={x['name']:x['sha256']for x in m['rank_files']};src=json.loads(item['files'][c['tag']+'.source.json']);ref=json.loads((D/'context273/service292/a111-v292-context1024-trainingrows16-KL-replay.source.json').read_text());assert src['files']==ref['files'];p.update(completed=True,tag=c['tag'],raw_sha256=hashlib.sha256(raw.encode()).hexdigest(),source_exact=True,actual_published_shards=item['actual_published_shards'],both_5_exploration_gate=p['online_vs_ar']>.05 and p['online_vs_fixed']>.05);return p\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: prerequisite failed: RuntimeError('Batch runner failed to start')\n",
+      "model_error": "prerequisite failed: RuntimeError('Batch runner failed to start')"
+    },
+    {
+      "accounting_passed": true,
+      "requests": 30,
+      "arms": {
+        "ar": {
+          "tokens": 3840,
+          "seconds": 222.11855293880217,
+          "tail_seconds": 0.0,
+          "tok_s": 17.288065085936303
+        },
+        "fixed": {
+          "tokens": 3840,
+          "seconds": 220.21568702463992,
+          "tail_seconds": 0.0,
+          "tok_s": 17.437449856014766
+        },
+        "online": {
+          "tokens": 3840,
+          "seconds": 214.70531240315177,
+          "tail_seconds": 0.0,
+          "tok_s": 17.884978983610985
+        }
+      },
+      "updates": 69,
+      "publications": 17,
+      "last_update_round": 1344,
+      "rounds_after_last_update": 4,
+      "online_vs_ar": 0.034527513328270976,
+      "online_vs_fixed": 0.025664826639880012,
+      "final_seen_tok_s": 18.351934834966166,
+      "independent_holdout_tok_s": 22.50072334007419,
+      "scope": "Request/timing/update accounting only; frozen recipe, data and source audited separately.",
+      "completed": true,
+      "tag": "a111-v292-explore299-longproc30-head128-kl",
+      "raw_sha256": "a82a9a7da9b5854dda0c6905873e096a71c37da72231788b9b3b9ba5dc1a8688",
+      "source_exact": true,
+      "actual_published_shards": {
+        "rank0.safetensors": "4c27eb8904977f65a9ef1974532e8f599ccc32dbce5c57b443f10131b2a246ca",
+        "rank1.safetensors": "284f0e550cc09fed6d345010807c9f0f3be776fe725d2b08f15f7b7504a377bc"
+      },
+      "both_5_exploration_gate": false
+    }
+  ],
+  "observations": [
+    {
+      "tag": "a111-v292-explore299-longproc30-head128-kl",
+      "stage": "completed",
+      "error": null,
+      "terminal": true,
+      "model_complete": true,
+      "progress": {},
+      "actual_published_shards": {
+        "rank0.safetensors": "4c27eb8904977f65a9ef1974532e8f599ccc32dbce5c57b443f10131b2a246ca",
+        "rank1.safetensors": "284f0e550cc09fed6d345010807c9f0f3be776fe725d2b08f15f7b7504a377bc"
+      }
+    }
+  ],
+  "automatic_reserved": false,
+  "scope": "Independent full exploration only; no confirmation dispatched or recipe changed by this read-only watcher."
+}
