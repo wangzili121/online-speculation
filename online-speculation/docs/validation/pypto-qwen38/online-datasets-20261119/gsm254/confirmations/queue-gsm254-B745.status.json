@@ -1,0 +1,54 @@
+{
+  "cases": [
+    {
+      "tag": "b167-v245-gsm254-confirm745",
+      "completed": true,
+      "error": null,
+      "error_chain": [],
+      "source_result": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/b167-v245-gsm254-confirm745.json",
+      "source_manifest": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/b167-v245-gsm254-confirm745.source.json",
+      "comparisons": {
+        "128": {
+          "net_increment": 0.06128308737815891,
+          "continuous": true,
+          "updates": 444,
+          "frozen_tokens": 71820,
+          "frozen_seconds": 2187.6594523689128,
+          "online_tokens": 71820,
+          "online_seconds": 2061.334509507171,
+          "ar_tokens": 71820,
+          "ar_seconds": 2259.461938687542,
+          "net_increment_vs_ar": 0.09611609773502505,
+          "ar_timing_layout": "interleaved_ar_frozen_online",
+          "full_cohort": true,
+          "resource_policy_ok": true,
+          "performance_run": true
+        }
+      },
+      "confirmation_group": "gsm254-step128-compact16-K8-TV1e5-staged256-pub4"
+    }
+  ],
+  "execution_complete": true,
+  "confirmation_groups": {
+    "gsm254-step128-compact16-K8-TV1e5-staged256-pub4": {
+      "repeats": 1,
+      "primary_metric": "continuous_online_vs_AR_and_initial_frozen",
+      "target_met": false,
+      "eligible": true,
+      "pooled_ar_tok_s": 31.786328758305274,
+      "pooled_frozen_tok_s": 32.82960696749648,
+      "pooled_online_tok_s": 34.84150663987618,
+      "pooled_gain": 0.09611609773502505,
+      "pooled_gain_vs_frozen": 0.06128308737815891,
+      "individual_gains": [
+        0.09611609773502505
+      ],
+      "individual_gains_vs_frozen": [
+        0.06128308737815891
+      ]
+    }
+  },
+  "controller_sha256": "539a93baad45abe31d6e3c056b86e176e88fbbdaab97fe18205b812b723258b1",
+  "metrics_sha256": "7756d4690a8cfdf1f5a76113ff14d3b01f4b4523b495670235850a293e6876ab",
+  "primary_metric": "continuous_online_vs_AR_and_initial_frozen"
+}
