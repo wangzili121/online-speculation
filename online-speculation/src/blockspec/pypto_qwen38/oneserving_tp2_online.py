@@ -271,7 +271,8 @@ class TP2Online:
         self.training = TrainingPrograms(self.graph, self.config, combined=True,
                                          chunk_size=None if len(self.layers) == 1 else 24,
                                          external_gradients=True)
-        self.optimization = SuffixOptimizerPrograms(self.graph, self.config, clip_norm=1.0)
+        self.optimization = SuffixOptimizerPrograms(self.graph, self.config, clip_norm=1.0,
+                                                  fused_statistics=len(self.layers) == 1)
         if self.device_publication:
             from .tp2_publication import PublicationPrograms
             from .tp2_suffix_publication import SuffixPublicationPrograms
