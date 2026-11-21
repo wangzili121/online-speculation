@@ -13,3 +13,5 @@ C机使用source303的完整计算包及benchmark原文。145个包文件和benc
 后两组只有第一组greedy和replay通过才运行。均为两个物理A2、TP2、学习器共用rank0；只在无其他进程的空闲卡上启动，等待时不保留设备。不会自动派发新题确认，也不会把旧题探索写成新题达标。
 
 `source303_bundle.json.gz`保存原始计算实现，不含权重。`runtime-vs-HEAD-audit.json`、`asset-provenance.json`和source /base /head绑定保留源码与数据依据。`stage_explore314.py`为一次性准备入口，已有目录与清单时拒绝重建；`watch_explore314.py --artifacts ... --validation-root ...`只读核验。
+
+实机边界门槛已通过，物理卡2 /3：输入992 /1000、输出32 /24，均覆盖1024总长度；4次更新 /4次发布，greedy及最终冻结重跑与AR一致。首次反馈replay TV 0.00234830、相对L2 0.00291207，实际发布分片核对通过。该诊断不报告性能收益。LongProc30的持续16轮更新完整探索已进入测量，SPoC64随后执行。
