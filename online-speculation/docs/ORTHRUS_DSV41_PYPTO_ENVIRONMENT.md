@@ -15,7 +15,7 @@ PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline NPU_DEVICE=0 \
   bash online-speculation/scripts/dsv41_pypto_env.sh handoff-check
 ```
 
-若需要为文本链路测试准备初始化 head，可在任一装有相同权重的机器导出一次，再把目录复制给另一台。目标盘需留约 10.3 GB。示例使用该公开 tokenizer 的占位 token 129279，训练 head 使用训练时的 mask ID。
+若需要为文本链路测试准备初始化 head，可在任一装有相同权重的机器导出一次，再把目录复制给另一台。目标盘需留约 10.3 GB。导出使用调用者的 UID/GID，已用普通账号从公开 W8A8 checkpoint 的实际注意力张量导出全部 40 层。示例使用该公开 tokenizer 的占位 token 129279，训练 head 使用训练时的 mask ID。
 
 ```bash
 PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline \

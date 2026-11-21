@@ -106,8 +106,13 @@ case "$action" in
       [[ ! -e "$DRAFT_HEAD" ]] || { echo "Head output already exists: $DRAFT_HEAD" >&2; exit 2; }
       mkdir -p "$(dirname "$DRAFT_HEAD")"
       head_parent="$(cd "$(dirname "$DRAFT_HEAD")" && pwd)"
-      options+=(-v "$root:/workspace/online-speculation:ro" -v "$head_parent:/results")
-      exec docker run "${options[@]}" "$image" env "PYTHONPATH=/workspace/online-speculation/src" +        python /workspace/online-speculation/scripts/export_dsv41_orthrus_head.py +        --model /workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8 +        --output "/results/$(basename "$DRAFT_HEAD")" --from-target "$@"
+      options+=(--user "$(id -u):$(id -g)" --entrypoint /opt/pypto/venv/bin/python
+                -e "OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}" -e PYTHONPATH=/workspace/online-speculation/src
+                -v "$root:/workspace/online-speculation:ro" -v "$head_parent:/results")
+      for group in $(id -G); do options+=(--group-add "$group"); done
+      exec docker run "${options[@]}" "$image" /workspace/online-speculation/scripts/export_dsv41_orthrus_head.py \
+        --model /workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8 \
+        --output "/results/$(basename "$DRAFT_HEAD")" --from-target "$@"
     fi
     if [[ "$action" == fabric-check ]]; then
       if [[ -n "${HCCL_IF_IP:-}" ]]; then options+=(-e HCCL_IF_IP); fi

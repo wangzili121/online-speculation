@@ -109,9 +109,13 @@ def test_init_head_keeps_target_readonly_and_writes_output_without_npu(tmp_path)
         ["bash", str(SCRIPT), "init-head", "--mask-token-id", "129279"], text=True, env=env,
     ))
     assert "--device" not in args
+    assert args[args.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
     assert f"{model}:/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8:ro" in args
     assert f"{tmp_path}:/results" in args
-    assert args[-5:] == ["--output", "/results/head", "--from-target", "--mask-token-id", "129279"]
+    assert args[args.index("--entrypoint") + 1] == "/opt/pypto/venv/bin/python"
+    assert args[-8:] == ["/workspace/online-speculation/scripts/export_dsv41_orthrus_head.py",
+                         "--model", "/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+                         "--output", "/results/head", "--from-target", "--mask-token-id", "129279"]
 
 
 def test_fabric_check_uses_host_network_and_only_one_device(tmp_path):
