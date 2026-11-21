@@ -103,6 +103,7 @@ def main():
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--heads", type=int, choices=(8, 16, 64), default=8)
     parser.add_argument("--iterations", type=int, default=10)
+    parser.add_argument("--check-every-run", action="store_true", help="Check each timed run for intermittent errors")
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--compressed", action="store_true", help="verify selected C1A/C2A history and LSE merge")
@@ -166,13 +167,19 @@ def main():
                 swa_handles.append(worker.alloc_tensor(tuple(tensor.shape), tensor.dtype))
         before = [torch.empty_like(tensor).share_memory_() for tensor in resident[:-2]]
         for index, (anchor, ratio) in enumerate(cases):
-            local, expected = fixture(anchor, args.heads, 173 + index)
+            local, swa_expected = fixture(anchor, args.heads, 173 + index)
+            expected = swa_expected
+            swa_errors = {}
             tensors = local
             if args.compressed:
                 tensors, expected = compressed_fixture(anchor, ratio, 173 + index, local)
                 upload(worker, local[:-2], swa_resident[:-2], swa_handles[:-2])
                 worker.run(swa_program, *swa_handles, config=config)
                 download(worker, swa_resident[-2:], swa_handles[-2:])
+                swa_errors = dict(
+                    swa_output_max_abs=float((swa_resident[-2] - swa_expected[0]).abs().max()),
+                    swa_lse_max_abs=float((swa_resident[-1] - swa_expected[1]).abs().max()),
+                )
                 download(worker, swa_resident[:-2], swa_handles[:-2])
                 for saved, original in zip(swa_resident[:-2], local[:-2], strict=True):
                     if not torch.equal(saved.view(torch.uint8), original.view(torch.uint8)):
@@ -182,33 +189,55 @@ def main():
                     host.copy_(F.pad(active, (0, 0, 0, HEAD_TILE - args.heads)).reshape_as(host))
             upload(worker, tensors[:-2], resident[:-2], handles[:-2])
             worker.run(program, *handles, config=config)
+            output, lse = resident[-2:]
+            if args.compressed:
+                output = output.unflatten(0, (BLOCK, HEAD_TILE))[:, :args.heads]
+                lse = lse.unflatten(0, (BLOCK, HEAD_TILE))[:, :args.heads]
             elapsed = []
             for _ in range(args.iterations):
                 start = time.perf_counter()
                 worker.run(program, *handles, config=config)
                 elapsed.append(time.perf_counter() - start)
-            download(worker, resident[-2:], handles[-2:])
+                if args.check_every_run:
+                    download(worker, resident[-2:], handles[-2:])
+                    if (not torch.allclose(output, expected[0], **report["output_tolerance"])
+                            or not torch.allclose(lse, expected[1], **report["lse_tolerance"])):
+                        break
+            if not args.check_every_run:
+                download(worker, resident[-2:], handles[-2:])
+            report.update(npu_execution=not args.simulate, simulator_execution=args.simulate)
             for saved, tensor, handle in zip(before, resident[:-2], handles[:-2], strict=True):
                 worker.copy_from(saved.data_ptr(), handle.data_ptr, saved.nbytes)
                 if not torch.equal(saved.view(torch.uint8), tensor.view(torch.uint8)):
                     raise AssertionError("PyPTO modified a read-only input")
-            output, lse = resident[-2:]
-            if args.compressed:
-                output = output.unflatten(0, (BLOCK, HEAD_TILE))[:, :args.heads]
-                lse = lse.unflatten(0, (BLOCK, HEAD_TILE))[:, :args.heads]
             case = {
                 "anchor": anchor, "history": min(anchor, WINDOW), "inputs_byte_exact": True,
                 "output_max_abs": float((output - expected[0]).abs().max()),
                 "lse_max_abs": float((lse - expected[1]).abs().max()),
+                "runs_checked": len(elapsed) if args.check_every_run else 1,
                 "resident_call_median_us": None if args.simulate else statistics.median(elapsed) * 1e6,
             }
             if args.compressed:
-                case.update(ratio=ratio, max_selected=min(anchor // ratio, TOPK))
+                case.update(ratio=ratio, max_selected=min(anchor // ratio, TOPK), **swa_errors)
             report["cases"].append(case)
-            torch.testing.assert_close(output, expected[0], **report["output_tolerance"])
-            torch.testing.assert_close(lse, expected[1], **report["lse_tolerance"])
+            try:
+                torch.testing.assert_close(output, expected[0], **report["output_tolerance"])
+                torch.testing.assert_close(lse, expected[1], **report["lse_tolerance"])
+            except AssertionError:
+                bad_rows = ~torch.isclose(output, expected[0], **report["output_tolerance"]).all(dim=-1)
+                if not args.compressed:
+                    bad_rows = bad_rows.reshape(args.heads, BLOCK).transpose(0, 1)
+                case["output_failed_token_heads"] = bad_rows.nonzero().tolist()
+                if args.compressed:
+                    case["selected_rows_by_failed_token"] = {
+                        int(token): int(tensors[3][token]) for token in bad_rows.any(dim=-1).nonzero().flatten()
+                    }
+                raise
+            if args.compressed:
+                torch.testing.assert_close(swa_resident[-2], swa_expected[0], **report["output_tolerance"])
+                torch.testing.assert_close(swa_resident[-1], swa_expected[1], **report["lse_tolerance"])
             print(json.dumps(case), flush=True)
-        report.update(passed=True, npu_execution=not args.simulate, simulator_execution=args.simulate)
+        report["passed"] = True
     except BaseException as error:
         report["error"] = repr(error)
         raise
