@@ -3,11 +3,11 @@ from pathlib import Path
 import argparse,datetime,hashlib,json,os,signal,subprocess,time
 p=argparse.ArgumentParser(description=__doc__);p.add_argument('--validation-root',type=Path,required=True);p.add_argument('--artifacts',type=Path,required=True);a=p.parse_args();D=a.validation_root.resolve();Q=D/'relocate318';A=a.artifacts.resolve()
 assert not(Q/'placement.json').exists(),'Already handed off; do not repeat'
-proof=json.loads((Q/'boundary-audit.json').read_text());assert proof['completed']and proof['source_base_head_runtime_checked']and proof['tag']=='a111-v292-spoc318B-boundary-mountfix322'
+proof=json.loads((Q/'boundary-audit.json').read_text());assert proof['completed']and proof['source_base_head_runtime_checked']and proof['tag']=='a111-v292-spoc318B-boundary-mountfix322-metadata323'
 for name in ['model-runtime-equivalence.json','extended-runtime-equivalence.json']:assert json.loads((Q/name).read_text())['passed']
 cann=json.loads((Q/'cann-library-equivalence.json').read_text());assert set(cann['differing'])=={'mstx.so','libmspti.so','libms_tools_ext.so'}
 original=json.loads((D/'spoc312/queue-spoc312-confirm745.json').read_text())['cases'][0]
-recovery=json.loads((Q/'queue-spoc322B.json').read_text());formal=recovery['cases'][1];stage=json.loads((Q/'recovery322-stage.json').read_text())
+recovery=json.loads((Q/'queue-spoc323B.json').read_text());formal=recovery['cases'][1];stage=json.loads((Q/'recovery323-stage.json').read_text())
 def numerical_args(args):
  out=[];i=0
  while i<len(args):
@@ -39,8 +39,9 @@ def check_no_model():
   v=procs[pid];assert v['uid']==1015 and v['ppid']==lp and v['args']=='/usr/local/bin/npu-smi info',v
  assert procs[lp]['ppid']==cp
  return{str(k):procs[k]for k in tree if k in procs}
-before=check_no_model();os.kill(cp,signal.SIGSTOP);os.kill(lp,signal.SIGSTOP)
+before=check_no_model();paused=[]
 try:
+ for pid in [cp,lp]:os.kill(pid,signal.SIGSTOP);paused.append(pid)
  time.sleep(.05);check_process(cp,['python3','study_queue_spoc312.py','--plan','queue-spoc312-confirm745.json']);check_process(lp,['python3','run_dense_v292_docker.py','--tag',tag,*P['args']]);after=check_no_model()
  for pid in [cp,lp]:os.kill(pid,signal.SIGTERM);os.kill(pid,signal.SIGCONT)
  time.sleep(.1)
@@ -50,7 +51,7 @@ try:
  with record.open('x')as f:json.dump(proof,f,indent=2)
  print(json.dumps(proof))
 except BaseException:
- for pid in [cp,lp]:
+ for pid in paused:
   try:os.kill(pid,signal.SIGCONT)
   except ProcessLookupError:pass
  raise
@@ -61,13 +62,13 @@ try:
 except BaseException:
  os.kill(observer,signal.SIGCONT);raise
 # 先持久化交接证明；B 在拿到激活文件前仍不能执行预留题。
-placement=dict(completed=True,tag=original['tag'],seed=745,execution_host='189.1.227.167',original_A_waiting_only_stopped=True,no_reserved_NN_started_on_A=True,stage_manifest='recovery322-stage.json',controller_status='queue-spoc322B.status.json',controller_log='queue-spoc322B.json.controller.log',controller_pid=stage['pid'],same_numeric_args=True,allowed_operational_changes=['host','physical idle-card candidates','wait duration','Docker same digest pin','result ownership','host CANN mount source'],CANN_library_differences=cann['differing'],CANN_full_tree_byte_exact=False,model_PyPTO_PTOAS_runtime_identity_proofs=['model-runtime-equivalence.json','extended-runtime-equivalence.json'],boundary_raw_sha256=proof['raw_sha256'],A_stop_sha256=hashlib.sha256((Q/'A-stopped-unstarted322.json').read_bytes()).hexdigest(),UTC=datetime.datetime.now(datetime.timezone.utc).isoformat())
+placement=dict(completed=True,tag=original['tag'],seed=745,execution_host='189.1.227.167',original_A_waiting_only_stopped=True,no_reserved_NN_started_on_A=True,stage_manifest='recovery323-stage.json',controller_status='queue-spoc323B.status.json',controller_log='queue-spoc323B.json.controller.log',controller_pid=stage['pid'],same_numeric_args=True,allowed_operational_changes=['host','physical idle-card candidates','wait duration','Docker same digest pin','result ownership','host CANN mount source'],CANN_library_differences=cann['differing'],CANN_full_tree_byte_exact=False,model_PyPTO_PTOAS_runtime_identity_proofs=['model-runtime-equivalence.json','extended-runtime-equivalence.json'],boundary_raw_sha256=proof['raw_sha256'],A_stop_sha256=hashlib.sha256((Q/'A-stopped-unstarted322.json').read_bytes()).hexdigest(),UTC=datetime.datetime.now(datetime.timezone.utc).isoformat())
 (Q/'placement.json').write_text(json.dumps(placement,indent=2)+'\n')
 activate=r'''from pathlib import Path
 import json,hashlib,os
 r=Path('/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies');tag=P['tag'];assert not(r/(tag+'.json')).exists()and not(r/(tag+'.log')).exists()
-raw=r/'a111-v292-spoc318B-boundary-mountfix322.json';d=json.loads(raw.read_text());assert d['completed']and d['clean_shutdown']and hashlib.sha256(raw.read_bytes()).hexdigest()==P['boundary_raw_sha256']
-proc=Path('/proc')/str(P['controller_pid']);assert proc.stat().st_uid==os.getuid();assert'study_queue_spoc312.py --plan queue-spoc322B.json'in(proc/'cmdline').read_bytes().replace(bytes([0]),b' ').decode()
+raw=r/'a111-v292-spoc318B-boundary-mountfix322-metadata323.json';d=json.loads(raw.read_text());assert d['completed']and d['clean_shutdown']and hashlib.sha256(raw.read_bytes()).hexdigest()==P['boundary_raw_sha256']
+proc=Path('/proc')/str(P['controller_pid']);assert proc.stat().st_uid==os.getuid();assert'study_queue_spoc312.py --plan queue-spoc323B.json'in(proc/'cmdline').read_bytes().replace(bytes([0]),b' ').decode()
 with(r/'spoc322-activated.json').open('x')as f:json.dump(P,f,indent=2)
 print(json.dumps(dict(activated=True,tag=tag,controller_pid=P['controller_pid'])))
 '''

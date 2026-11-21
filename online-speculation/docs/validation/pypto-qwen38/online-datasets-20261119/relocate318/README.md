@@ -17,3 +17,7 @@ B 的模型包、benchmark、native 源码与冻结的 A source292 完全相同�
 CPU 上的模型 / PyPTO / PTOAS 比较不能代替 CANN 实机初始化。单独库清单发现三个差异：`mstx.so`、`libmspti.so`、`libms_tools_ext.so`，其余所列库相同。因此不声称两个 CANN 完整目录逐字节一致，差异保存在 `cann-library-equivalence.json`。恢复后的 B 仍须通过完整的两卡旧输入、更新、replay、greedy 和实际权重检查，再决定是否迁移。
 
 恢复诊断的只读审核命令加 `--stage-file recovery322-stage.json --plan-file queue-spoc322B.json`。`handoff_unstarted322.py` 在诊断通过后仍会原子检查 A 从未启动模型；失败则保留 A 任务，不重复测量。
+
+第二次诊断完成 NPU 初始化和编译后，在原生权重加载器的版本校验处退出：公共权重目录缺少 `.cache/huggingface/download/config.json.metadata`。`failed-preweight322/` 保存完整错误，没有生成或训练结果。原有私有 model-view 保留这份真实下载标识，已在核对配置 / index / tokenizer 哈希后将其原文补回公共目录；不是生成新的版本声明，18个权重文件均未改动。复制由不挂载 NPU 的容器完成，标识 SHA256 记录在 `recovery323-stage.json`。
+
+当前恢复诊断改用 `--stage-file recovery323-stage.json --plan-file queue-spoc323B.json`。模型计算和启动脚本保持第二次诊断的版本，只修复输入目录缺失文件。原 B 控制器在诊断失败后自然结束，A745 仍在原处等待；B 预留题继续由激活文件拦住。完整审核额外核对这份版本标识。

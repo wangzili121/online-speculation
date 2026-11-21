@@ -21,6 +21,7 @@ if out['completed']:
  out['current_base_binding']=dict(metadata_sha256={n:hashlib.sha256((model/n).read_bytes()).hexdigest()for n in bind['metadata_sha256']},weight_files_stat={})
  for n in bind['weight_files_stat']:
   s=(model/n).stat();out['current_base_binding']['weight_files_stat'][n]=dict(size=s.st_size,mtime_ns=s.st_mtime_ns,inode=s.st_ino)
+ out['current_revision_marker_sha256']=hashlib.sha256((model/'.cache/huggingface/download/config.json.metadata').read_bytes()).hexdigest()
  out['current_image_id']=json.loads(subprocess.check_output(['docker','image','inspect',P['image']],text=True))[0]['Id']
 sys.stdout.buffer.write(zlib.compress(json.dumps(out).encode()))
 """
@@ -46,6 +47,7 @@ assert json.loads(reply['files'][tag+'.source.json'])['files']==stage['source']
 assert reply['status']['controller_sha256']==hashlib.sha256((D/'spoc312/study_queue_spoc312.py').read_bytes()).hexdigest()
 assert reply['current_base_binding']=={k:stage['base'][k]for k in ['metadata_sha256','weight_files_stat']}
 assert reply['current_image_id']==case['expected_image_id']
+if stage.get('marker_restoration'):assert reply['current_revision_marker_sha256']==stage['marker_restoration']['sha256']
 for proofname in ['model-runtime-equivalence.json','extended-runtime-equivalence.json']:
  assert json.loads((Q/proofname).read_text())['passed']
 on=d['results']['4'];m=on['exported_head']['manifest']

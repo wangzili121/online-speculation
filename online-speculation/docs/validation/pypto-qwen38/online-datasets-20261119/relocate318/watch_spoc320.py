@@ -35,7 +35,7 @@ if terminal:
   out['asset_text']=(r/'assets'/('spoc312-confirm-order'+str(P['seed'])+'.json')).read_text();binding=json.loads((r/P['base']).read_text());model=Path(binding['model']);current=dict(metadata_sha256={n:hashlib.sha256((model/n).read_bytes()).hexdigest()for n in binding['metadata_sha256']},weight_files_stat={})
   for n in binding['weight_files_stat']:
    st=(model/n).stat();current['weight_files_stat'][n]=dict(size=st.st_size,mtime_ns=st.st_mtime_ns,inode=st.st_ino)
-  out['current_base_binding']=current;out['current_image_id']=json.loads(subprocess.check_output(['docker','image','inspect',P['image']],text=True))[0]['Id']
+  out['current_base_binding']=current;out['current_revision_marker_sha256']=hashlib.sha256((model/'.cache/huggingface/download/config.json.metadata').read_bytes()).hexdigest();out['current_image_id']=json.loads(subprocess.check_output(['docker','image','inspect',P['image']],text=True))[0]['Id']
 sys.stdout.buffer.write(zlib.compress(json.dumps(out).encode()))
 '''
 for n in ['audit_accounting','_study_metrics_windows209']:
@@ -52,6 +52,7 @@ def check(t,item):
   rows=d['results'][arm]['request_timeline'];assert all(0<n<=192 for row in rows for n in row['output_tokens'])
  assert json.loads(item['files'][t['tag']+'.source.json'])['files']==(stage['source'] if t['seed']==745 else freeze['source_files']);assert item['controller_status']['controller_sha256']==hashlib.sha256((Q/'study_queue_spoc312.py').read_bytes()).hexdigest();binding=stage['base'] if t['seed']==745 else json.loads((Q/'base-files.json').read_text());assert item['current_base_binding']=={k:binding[k]for k in ['metadata_sha256','weight_files_stat']}
  assert item['current_image_id']==freeze['expected_image_id']
+ if t['seed']==745:assert item['current_revision_marker_sha256']==stage['marker_restoration']['sha256']
  on=d['results']['64'];m=on['exported_head']['manifest'];assert m['published_banks_exact']and m['step']==128+on['published_version']and on['optimizer_version']==len(on['updates']);assert on['published_version']==4*on['stream']['stats']['publications'];assert item['actual_published_shards']=={p['name']:p['sha256']for p in m['rank_files']};proof.update(completed=True,tag=t['tag'],seed=t['seed'],execution_host=t['host'],operational_relocation=t['seed']==745,raw_sha256=hashlib.sha256(item['files'][t['tag']+'.json'].encode()).hexdigest(),frozen_source_head_config_and_budget_checked=True,base_files_and_initial_dispatch_guard_checked=True,actual_published_shards=item['actual_published_shards']);return proof,d
 while len(cache)<3:
  observations=[]
