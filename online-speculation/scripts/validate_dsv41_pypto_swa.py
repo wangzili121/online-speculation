@@ -2,7 +2,6 @@
 """Compare PyPTO V4.1 K32 SWA and compressed history with the Torch FP32 reference."""
 
 import argparse
-from importlib.metadata import version
 import json
 from pathlib import Path
 import statistics
@@ -114,6 +113,7 @@ def main():
     if args.compressed and args.heads > HEAD_TILE:
         parser.error("compressed history probe supports up to sixteen local heads")
 
+    from pypto import __version__ as pypto_version
     from pypto.backend import BackendType
     from pypto.ir import DistributedConfig
     from pypto.runtime import DistributedWorker, ExecutionMode, RunConfig
@@ -128,7 +128,7 @@ def main():
         raise RuntimeError("PyPTO overrode the requested execution mode")
     report = {
         "passed": False, "compiled": False, "npu_execution": False, "simulator_execution": False,
-        "platform": config.platform, "torch": torch.__version__, "pypto": version("pypto"),
+        "platform": config.platform, "torch": torch.__version__, "pypto": pypto_version,
         "shape": {"block": BLOCK, "window": WINDOW, "heads": args.heads, "dim": HEAD_DIM},
         "output_tolerance": {"atol": 1e-5, "rtol": 1.3e-6},
         "lse_tolerance": {"atol": 2e-5, "rtol": 2e-6},
