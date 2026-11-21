@@ -1,0 +1,30 @@
+{
+  "completed": true,
+  "canceled_only_own_unstarted_sampling_waiters": [
+    {
+      "pid": 3167946,
+      "cmd": "python3 study_queue_windows223.py --plan queue-sampling224-nll.json ",
+      "children": [
+        "3168547"
+      ]
+    },
+    {
+      "pid": 3167949,
+      "cmd": "python3 study_queue_windows223.py --plan queue-sampling224-tv.json ",
+      "children": []
+    },
+    {
+      "pid": 3167951,
+      "cmd": "python3 validate_sampling224.py ",
+      "children": []
+    },
+    {
+      "pid": 3168547,
+      "cmd": "python3 run_dense_v223.py --tag b167-v224-sampling1-overlap-step128-audit-r1 --devices 0,1,2,3,4,5,6,7 --head kl-prewarm-suffix-tp2 --learner-device 0 --last-layers 1 --tokens 64 --strides 8 --warm-update-stride 4 --warm-update-steps 4 --replay-blocks 1 --publish-every 1 --learning-rate 1e-05 --warmup-updates 4 --objective log_overlap --candidates 7 --stop-on-eos --feedback-mode delayed --teacher-tokens 7 --request-file v95-mixed-eos-smoke6.json --holdout-file v95-eos-smoke-holdout.json --ar-check-requests 6 --wait 14400 --interleaved --seed 743 --interleave-ar --draft-convolution parallel128 --audit-replay --teacher-temperature 1 --position-weighting uniform --teacher-scaling host --teacher-targets distribution --parameterization dense --draft-width 8 --publication-backend device --feedback-timing early --gdn-valid-rows --stream-window 2 --temperature 1 --lazy-sampling --overlap-sampling ",
+      "children": []
+    }
+  ],
+  "no_NPU_children": true,
+  "reason": "A225 entire56 temperature1 already exposesCPU sampling bottleneck, online9.282 vsAR14.497. Prioritize compactdraft matrixwork; do not spend newlyidle pair on duplicate existing sampler recipes. Existing longGSM205 preserved.",
+  "alive_after": []
+}
