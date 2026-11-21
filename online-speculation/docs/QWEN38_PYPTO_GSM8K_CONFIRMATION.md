@@ -18,3 +18,5 @@
 完整记录、源码及权重身份、逐请求计时、实际发布分片核对见 `validation/pypto-qwen38/online-datasets-20261119/gsm254/confirmations/`。`gsm254-mixed271-confirmation-audit.json` 同时执行资源、数据、冻结配方、源码、计时与三次双门槛检查。
 
 Pseudo2code 的旧 24 题确认未达标，结果保留；新 LongProc 与 SPoC 派生探索流单独评估，不能用本节结果替代。
+
+实际更新事件也完成独立复核：轮次、学习率 warmup、发布频率、最终服务 /导出版本，以及逐次计时与全流计数一致。此检查不改变原有性能结论，见[事件复核](validation/pypto-qwen38/online-datasets-20261119/schedule326/)。

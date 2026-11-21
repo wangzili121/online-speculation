@@ -36,6 +36,11 @@ for name,text in reply['files'].items():
  raw=text.encode();suffix='.gz'if name.endswith('.log')or len(raw)>2<<20 else''
  (Q/(name+suffix)).write_bytes(gzip.compress(raw,mtime=0)if suffix else raw)
 d=json.loads(reply['files'][tag+'.json'])
+bundle=json.loads(gzip.decompress((Q/'source292_A_bundle.json.gz').read_bytes()))
+for flag,key in [('--request-file','prompts_sha256'),('--holdout-file','holdout_sha256')]:
+ name=case['args'][case['args'].index(flag)+1]
+ assert d[key]==hashlib.sha256(bundle['assets'][name].encode()).hexdigest(),name
+
 sp=importlib.util.spec_from_file_location('accounting318',D/'rows255/audit_accounting.py');acc=importlib.util.module_from_spec(sp);sp.loader.exec_module(acc)
 proof=acc.audit(d,4,allow_replay=True)
 assert d['requests']==d['ar_checked_requests']==2
