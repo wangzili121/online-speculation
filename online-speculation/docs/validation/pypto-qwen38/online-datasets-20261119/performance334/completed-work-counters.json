@@ -364,10 +364,10 @@
     },
     {
       "dataset": "spoc_supplementary",
-      "complete_confirmations": 2,
+      "complete_confirmations": 3,
       "required_confirmations": 3,
-      "full_group_complete": false,
-      "audit_path": "spoc312/first-two-complete-audit.json",
+      "full_group_complete": true,
+      "audit_path": "spoc312/three-confirmation-audit.json",
       "cases": [
         {
           "seed": 743,
@@ -482,6 +482,63 @@
           "online_vs_fixed": 0.09512736007063727,
           "fewer_draft_rounds": 0.16583633968962952,
           "fewer_verify_calls": 0.139344262295082
+        },
+        {
+          "seed": 745,
+          "requests": 256,
+          "raw_sha256": "443c54ee4ca6a7dcc4de6693c7bdd504a176b2b7f99c46413724dbed7980e7e1",
+          "raw_path": "spoc312/a111-v292-spoc312-confirm745.json",
+          "arms": {
+            "ar": {
+              "tokens": 43599,
+              "seconds": 2030.2382226437912,
+              "tok_s": 21.474819808694697,
+              "accepted_per_round": null,
+              "draft_rounds": 0,
+              "draft_batches": 0,
+              "verify_calls": 0,
+              "draft_seconds": 0.0,
+              "verify_seconds": 1915.720896828,
+              "direct_learning_seconds": 0.0,
+              "direct_learning_fraction": 0.0,
+              "updates": 0,
+              "publications": 0
+            },
+            "fixed": {
+              "tokens": 43599,
+              "seconds": 1958.4925338170724,
+              "tok_s": 22.26150942481573,
+              "accepted_per_round": 1.3054491394590886,
+              "draft_rounds": 17489,
+              "draft_batches": 10278,
+              "verify_calls": 10347,
+              "draft_seconds": 606.849358603,
+              "verify_seconds": 1265.148352341,
+              "direct_learning_seconds": 0.0,
+              "direct_learning_fraction": 0.0,
+              "updates": 0,
+              "publications": 0
+            },
+            "online": {
+              "tokens": 43599,
+              "seconds": 1800.6003913065651,
+              "tok_s": 24.213590206077523,
+              "accepted_per_round": 1.7553307818480044,
+              "draft_rounds": 14632,
+              "draft_batches": 8626,
+              "verify_calls": 8925,
+              "draft_seconds": 511.312456512,
+              "verify_seconds": 1191.053116322,
+              "direct_learning_seconds": 22.817691847,
+              "direct_learning_fraction": 0.012672268626156887,
+              "updates": 276,
+              "publications": 69
+            }
+          },
+          "online_vs_ar": 0.12753403389554663,
+          "online_vs_fixed": 0.08768860835131576,
+          "fewer_draft_rounds": 0.16335982617645373,
+          "fewer_verify_calls": 0.13743113946071328
         }
       ]
     }

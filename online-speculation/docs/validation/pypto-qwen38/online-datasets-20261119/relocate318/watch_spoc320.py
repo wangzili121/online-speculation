@@ -70,7 +70,7 @@ while len(cache)<3:
  state=dict(completed=len(cache)==3,terminal_cases=list(cache),observations=observations,results=[v['proof']for v in cache.values()],no_retuning=True)
  (A/'spoc312-mixed320-watcher-state.json').write_text(json.dumps(state,indent=2)+'\n')
  if len(cache)<3:time.sleep(30)
-proof=dict(completed=False,cases=[cache[t['tag']]['proof']for t in targets],scope='Supplementary SPoC-derived pseudocode-to-C++ task, NOT original LongProc benchmark. Frozen source292/head128/2A2TP2/rank0/samegeneration budget192C1024, all256samefreshpool shuffled743/744/745 with independenthead+Adam resets; seed745 operationally relocated unstarted A->B with complete model/runtime byte identity and B diagnostic, no numerical recipe change; exactsame controls/allcosts/fullcontinuous. No retuning from confirmation.')
+proof=dict(completed=False,cases=[cache[t['tag']]['proof']for t in targets],scope='Supplementary SPoC-derived pseudocode-to-C++ task, NOT original LongProc benchmark. Frozen source292/head128/2A2TP2/rank0/samegeneration budget192C1024, all256samefreshpool shuffled743/744/745 with independenthead+Adam resets; seed745 operationally relocated unstarted A->B with byte-checked model, PyPTO, PTOAS and selected runtime files plus B diagnostic; driver and three CANN-library differences separately recorded, no numerical recipe change; exactsame controls/allcosts/fullcontinuous. No retuning from confirmation.')
 try:
  assert all(v['proof']['completed']for v in cache.values());values=[]
  for t in targets:
