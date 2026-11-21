@@ -1,0 +1,49 @@
+{
+  "completed": true,
+  "source_file_sha256": {
+    "gsm254/gsm254-unused-reserve-audit.json": "9ab0aa0ff0ebce3743693c6a33bcac1145d28dd10a57e45e128d786bb521593e",
+    "gsm254/gsm254-confirm384.json": "9fa997d5ef5faaa38e8681fd2ae425ebe645bde09d51530939971a8de60be5d3",
+    "gsm254/gsm254-confirm384-manifest.json": "cac4bfbda19a8c1fea839cafbb2ad64f9c01d69a38d2a636f8c967eb00855384",
+    "gsm254/gsm254-holdout32.json": "bf6ccf463fa4d7b4cd27a5cdf054cdd911a21bd5dc31d2a8f49100b0fbbb3ba0",
+    "gsm254/gsm254-holdout32-manifest.json": "869367ebe110d0e70f597adc80147cfb9736c5df76bd4817d67348a1734b42ba",
+    "context273/spoc283/spoc283-selection-manifest.json": "bf7020a629163603979d446004b847a8d87f41ca8faf55eaa9459e485a39958c",
+    "spoc312/freshness-audit.json": "e43f988a9fa2c7bc6f282b1e4435690319d9b79c369c18ab5e78185a006acd0e",
+    "context273/spoc283/spoc283-explore64.json": "8738e62e21a89963210c936bf4074510ba15d38a71e88964307ff0b1d2582ed5",
+    "context273/spoc283/spoc283-confirm256.json": "ab574318a892a2d255d4bd4b025e346f2609dd319f2bd5e397fbca573ad39e4a",
+    "context273/spoc283/spoc283-holdout32.json": "fde0410bbddf03ea1962275c8eb8ecc637e7610bc210d646fc193406bfcc084d"
+  },
+  "gsm8k": {
+    "confirmation": 384,
+    "independent_holdout": 32,
+    "split": "train",
+    "initial_head128_recorded_IDs_excluded": 145,
+    "exact_question_IDs_and_whitespace_normalized_texts_disjoint": true,
+    "prior_history_snapshot": {
+      "189.1.227.167": {
+        "prior_tags": 84,
+        "exact_and_whitespace_normalized_intersections": 0
+      },
+      "159.138.54.61": {
+        "prior_tags": 144,
+        "exact_and_whitespace_normalized_intersections": 0
+      },
+      "159.138.5.111": {
+        "prior_tags": 77,
+        "exact_and_whitespace_normalized_intersections": 0
+      }
+    }
+  },
+  "spoc": {
+    "exploration": 64,
+    "confirmation": 256,
+    "independent_holdout": 32,
+    "one_example_per_problem": true,
+    "problem_IDs_and_exact_texts_disjoint": true,
+    "all_original_LongProc_IDs_excluded": 194,
+    "frozen_preassignment_full_substring_and_hash_audit_passed": true,
+    "task": "Supplementary SPoC-derived pseudocode-to-C++; not original LongProc benchmark"
+  },
+  "repeated_trials": "Three orders use the same reserved cohort with independent initial head and fresh Adam resets, not three independent datasets.",
+  "scope": "Current artifact integrity and partition recheck against immutable PRE-assignment snapshots. Current trials are already using assigned data; this does not claim those data remain unused now or that the base pretrained model never saw them.",
+  "NN_dispatch": false
+}
