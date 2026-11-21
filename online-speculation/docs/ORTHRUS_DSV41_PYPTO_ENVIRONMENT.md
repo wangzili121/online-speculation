@@ -62,3 +62,5 @@ PYPTO_BUILD_PROXY="${https_proxy:-${HTTPS_PROXY:-}}" \
 ```
 
 如果公司代理运行在 Docker 宿主机的回环地址，构建时还需设置 `PYPTO_BUILD_NETWORK=host`。如果 Git 通过镜像或 URL 重写访问 GitHub，需要先确认相同的访问方式可用于容器构建。
+
+如果代理连接成功但容器报 TLS 证书验证失败，将公司提供的 PEM CA 文件放在构建目录之外，并设置 `PYPTO_BUILD_CA=/path/to/company-ca.pem`。构建会临时将该 CA 与镜像已有的信任链合并，供 Git、curl 和 uv 下载依赖时使用。CA 文件不进入最终镜像。

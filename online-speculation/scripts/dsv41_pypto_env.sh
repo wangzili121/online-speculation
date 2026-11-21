@@ -15,12 +15,18 @@ case "$action" in
     if [[ -n "${PYPTO_BUILD_NETWORK:-}" ]]; then
       build_options+=(--network "$PYPTO_BUILD_NETWORK")
     fi
+    if [[ -n "${PYPTO_BUILD_CA:-}" ]]; then
+      [[ -f "$PYPTO_BUILD_CA" && -r "$PYPTO_BUILD_CA" && -s "$PYPTO_BUILD_CA" ]] || {
+        echo 'PYPTO_BUILD_CA must point to a readable, non-empty PEM CA file.' >&2; exit 2;
+      }
+      build_options+=(--secret "id=pypto_ca,src=$PYPTO_BUILD_CA")
+    fi
     if ! docker buildx version >/dev/null 2>&1; then
-      if [[ -n "${PYPTO_BUILD_PROXY:-}" ]]; then
-        echo 'Proxy builds require Docker Buildx. Install the CLI plugin and verify with docker buildx version.' >&2
+      if [[ -n "${PYPTO_BUILD_PROXY:-}${PYPTO_BUILD_CA:-}" ]]; then
+        echo 'Proxy or CA builds require Docker Buildx. Verify the plugin with docker buildx version.' >&2
         exit 2
       fi
-      sed 's/^RUN --mount=type=secret,id=pypto_proxy /RUN /' "$recipe" |
+      sed 's/^RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca /RUN /' "$recipe" |
         DOCKER_BUILDKIT=0 docker build "${build_options[@]}" -t "$image" -f - "$root/.."
       exit
     fi
