@@ -39,4 +39,6 @@ SPoC 派生代码题另有 64 题探索，在 head128 / KL 配方下全流相对
 
 实际更新事件也完成独立复核：轮次、学习率 warmup、发布频率、最终服务 /导出版本，以及逐次计时与全流计数一致。此检查不改变原有性能结论，见[事件复核](validation/pypto-qwen38/online-datasets-20261119/schedule326/)。
 
-SPoC补充请求流的前两次完整新题确认已通过，第三次继续运行；参数与独立结果见[SPoC报告](QWEN38_PYPTO_SPOC_CONFIRMATION.md)，原LongProc三次未达标结论保持不变。
+SPoC补充请求流的三次完整确认已全部通过，合并相对AR +13.46%、固定起草+9.66%；参数与独立结果见[SPoC报告](QWEN38_PYPTO_SPOC_CONFIRMATION.md)，原LongProc三次未达标结论保持不变。
+
+官方数据源再次核对后，HEAD仍是原冻结版本，未增加该任务数据；此前1K合格题池的登记未分配问题最多只剩1个，不足以重新组成充分的未见问题确认流。查询范围和数据边界见[数据可用性复查](validation/pypto-qwen38/online-datasets-20261119/data337/)。不会用反复重测已使用题库的有利数字替代原结论。
