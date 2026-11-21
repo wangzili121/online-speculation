@@ -1,0 +1,21 @@
+guard {'ok': True, 'reserved_gib': 16, 'devices': [0, 1]}
+guard {'ok': True, 'released': [0, 1]}
+Traceback (most recent call last):
+  File "<string>", line 2, in <module>
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/orthrus_bench_dense_v216.py", line 344, in main
+    engine = InferenceEngine(config)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/engine.py", line 36, in __init__
+    self.tokenizer = AutoTokenizer.from_pretrained(
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/models/auto/tokenization_auto.py", line 971, in from_pretrained
+    return tokenizer_class.from_pretrained(pretrained_model_name_or_path, *inputs, **kwargs)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/tokenization_utils_base.py", line 1736, in from_pretrained
+    return cls._from_pretrained(
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/tokenization_utils_base.py", line 1932, in _from_pretrained
+    tokenizer = cls(*init_inputs, **init_kwargs)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/packages/transformers/tokenization_utils_tokenizers.py", line 423, in __init__
+    raise ValueError(
+ValueError: Couldn't instantiate the backend tokenizer from one of: 
+(1) a `tokenizers` library serialization file, 
+(2) a slow tokenizer instance to convert or 
+(3) an equivalent slow tokenizer class to instantiate and convert. 
+You need to have sentencepiece or tiktoken installed to convert a slow tokenizer to a fast one.
