@@ -16,6 +16,7 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
         raise ValueError("draft context must be 512/1024; extended context requires paged Attention")
     from .tp2_row_layout import row_geometry, make_pack, make_expand, make_feedback
     external_rows, rows_per_dispatch = row_geometry(batch_size, physical_block_rows)
+    history_pages = context // 128
     if group_layers not in (4, 8, 16, 32, 64):
         raise ValueError("draft layer groups must divide the 64-layer backbone and end on full attention")
     if batch_size not in (1, 2) or batch_size == 2 and not compact_tp:
@@ -207,8 +208,9 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
                 first = seq * physical_block_rows
                 local_past = past + seq * (past_second - past)
                 local_width = width + seq * (width_second - width)
-                table_row = pl.slice(table, [1, 4], [seq, 0])
-                local_table: pl.Tensor[[4], pl.INT32] = pl.reshape(table_row, [4])
+                # 页表必须覆盖全部历史；1K 的第 5 至 8 页同样要传入 Attention。
+                table_row = pl.slice(table, [1, history_pages], [seq, 0])
+                local_table: pl.Tensor[[history_pages], pl.INT32] = pl.reshape(table_row, [history_pages])
                 local_bias = pl.slice(bias, [1, context], [seq, 0])
                 local_q = pl.slice(q, [physical_block_rows, 3072], [first, 0])
                 local_k = pl.slice(k, [physical_block_rows, 512], [first, 0])

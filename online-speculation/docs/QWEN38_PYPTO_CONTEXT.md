@@ -10,7 +10,9 @@
 
 本次真实权重对照中，32 行约 37 ms、16 行约 30 ms；这是前反向计时，不含优化器、发布和整模型推理。首次真实权重检查在工作区执行前遇到设备内存分配失败，保留原始记录；换空卡后的重试未修改 kernel 或输入。单卡检查结束后已释放设备。
 
-TP2 单请求 / 双请求 draft、历史采集和 learner 的入口编译也已通过。**整模型的长历史反馈、更新和发布仍需两卡验证，不作为新题性能达标证据。** 正在进行的 GSM8K 三次确认继续使用其冻结的 512 版本。
+首次两卡整模型检查在完成 AR 预热、开启起草后暴露出接入错误：外层页表为 8 页，Full Attention 内部仍只取 4 页，超过 512 历史时发生越界。已将内部 view 改为随上下文计算完整页数，并在 Attention 入口增加固定元素数的 view；外部传入短页表或内部截短到 4 页，都会在编译期失败。两条负例、512 / 1,024 两条正常编译路径、572 项 CPU 检查和 TP2 编排编译通过，原失败完整保留。
+
+**修正后的长历史反馈、更新和发布正在重跑两卡整模型验证，不作为新题性能达标证据。** 正在进行的 GSM8K 三次确认继续使用其冻结的 512 版本，不涉及本次改动。
 
 独立检查入口：
 
@@ -23,6 +25,8 @@ python scripts/validate_qwen38_pypto_attention.py \
 python scripts/validate_qwen38_pypto_training_rows.py \
   --context 1024 --model /path/to/model-view --head /path/to/tp2-head \
   --device 0 --output training1024.json
+
+python scripts/validate_qwen38_pypto_page_contract.py --output page-contract.json
 ```
 
 `--compile-only` 只生成程序；`--assemble-only` 进一步编译设备二进制，不创建 NPU worker，也不提供性能结论。后者调用当前固定 PyPTO 版本的内部编译入口，升级运行时后应重新核对。缺少 Git 元数据的导出环境可通过 `--runtime-artifacts` 提供已核对的文件清单，校验源码、原生绑定、实际加载的 Simpler 扩展和工具链；不伪造 Git 信息，也不关闭运行时检查。

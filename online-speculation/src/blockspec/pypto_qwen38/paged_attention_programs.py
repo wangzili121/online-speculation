@@ -17,6 +17,7 @@ def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity):
 
     K, HQ, HK, D = shape.block_size, shape.q_heads, shape.kv_heads, shape.head_dim
     M, C, PAGE = shape.query_tile, capacity, shape.page_size
+    TABLE_COLUMNS = shape.context // PAGE
     # K32 整块 query 用较宽的 KV tile，减少 QK/PV 的跨核交接。
     SPAN = min(capacity, 256) if M == 32 else 128
     ROWS = pool_layers * HK * physical_pages * PAGE
@@ -83,9 +84,11 @@ def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity):
 
     @pl.jit.inline
     def paged(query: pl.Tensor, key: pl.Tensor, value: pl.Tensor, gate: pl.Tensor,
-              key_pool: pl.Tensor, value_pool: pl.Tensor, table: pl.Tensor, bias: pl.Tensor,
+              key_pool: pl.Tensor, value_pool: pl.Tensor, table: pl.Tensor[[TABLE_COLUMNS], pl.INT32], bias: pl.Tensor,
               output: pl.Tensor, past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32],
               layer: pl.Scalar[pl.INT32]):
+        # 固定元素数的 view 使截短页表在编译期失败，而不是运行到第 5 页才越界。
+        complete_table = pl.reshape(table, [TABLE_COLUMNS])
         key_flat = pl.reshape(key_pool, [ROWS, D])
         value_flat = pl.reshape(value_pool, [ROWS, D])
         zero = pl.create_tensor([SPAN, D], dtype=pl.BF16)
@@ -98,14 +101,14 @@ def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity):
             head, row = task // (K // M), task % (K // M) * M
             kv = head // (HQ // HK)
             q = pl.slice(query, [M, D], [row, head * D])
-            score = score_kernel(q, key, key_flat, zero, table, bias, layer, kv, past, width, 0)
+            score = score_kernel(q, key, key_flat, zero, complete_table, bias, layer, kv, past, width, 0)
             exponential = pl.exp(pl.row_expand_sub(score, pl.row_max(score)))
             probability = pl.cast(pl.row_expand_div(exponential, pl.row_sum(exponential)), pl.BF16, mode="rint")
             total = pl.create_tensor([M, D], dtype=pl.FP32)
             # 先保持固定区间累加，避免跨 Cube/Vector 的条件输出携带状态。
             for part in pl.range(C // SPAN):
                 start = part * SPAN
-                values = gather(value_flat, value, zero, table, layer, kv, past, width, start)
+                values = gather(value_flat, value, zero, complete_table, layer, kv, past, width, start)
                 p = pl.slice(probability, [M, SPAN], [0, start])
                 total = pl.matmul_acc(total, p, values, init_cond=(part == 0))
             attended = pl.cast(total, pl.BF16, mode="rint")
@@ -117,14 +120,14 @@ def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity):
 
     @pl.jit
     def attention(query: pl.Tensor, key: pl.Tensor, value: pl.Tensor, gate: pl.Tensor,
-                  key_pool: pl.Tensor, value_pool: pl.Tensor, table: pl.Tensor, bias: pl.Tensor,
+                  key_pool: pl.Tensor, value_pool: pl.Tensor, table: pl.Tensor[[TABLE_COLUMNS], pl.INT32], bias: pl.Tensor,
                   output: pl.Out[pl.Tensor], past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32],
                   layer: pl.Scalar[pl.INT32]):
         return paged(query, key, value, gate, key_pool, value_pool, table, bias, output, past, width, layer)
 
     @pl.jit.host
     def entry(query: pl.Tensor, key: pl.Tensor, value: pl.Tensor, gate: pl.Tensor,
-              key_pool: pl.Tensor, value_pool: pl.Tensor, table: pl.Tensor, bias: pl.Tensor,
+              key_pool: pl.Tensor, value_pool: pl.Tensor, table: pl.Tensor[[TABLE_COLUMNS], pl.INT32], bias: pl.Tensor,
               output: pl.Out[pl.Tensor], past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32],
               layer: pl.Scalar[pl.INT32]):
         attention(query, key, value, gate, key_pool, value_pool, table, bias, output, past, width, layer, device=0)
@@ -145,6 +148,7 @@ def make_paged_attention(shape=AttentionShape(), *, physical_pages=256, pool_lay
             raise ValueError("capacity must be 128, 256, 512 or 1024 within the context")
         return _make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=capacity)
     import pypto.language as pl
+    TABLE_COLUMNS = shape.context // shape.page_size
     short, _ = _make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=128)
     medium, _ = _make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=256)
     long, _ = _make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=512)
@@ -153,7 +157,7 @@ def make_paged_attention(shape=AttentionShape(), *, physical_pages=256, pool_lay
 
     @pl.jit.inline
     def paged(query: pl.Tensor, key: pl.Tensor, value: pl.Tensor, gate: pl.Tensor,
-              key_pool: pl.Tensor, value_pool: pl.Tensor, table: pl.Tensor, bias: pl.Tensor,
+              key_pool: pl.Tensor, value_pool: pl.Tensor, table: pl.Tensor[[TABLE_COLUMNS], pl.INT32], bias: pl.Tensor,
               output: pl.Tensor, past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32],
               layer: pl.Scalar[pl.INT32]):
         if past + width <= 128:
@@ -168,14 +172,14 @@ def make_paged_attention(shape=AttentionShape(), *, physical_pages=256, pool_lay
 
     @pl.jit
     def attention(query: pl.Tensor, key: pl.Tensor, value: pl.Tensor, gate: pl.Tensor,
-                  key_pool: pl.Tensor, value_pool: pl.Tensor, table: pl.Tensor, bias: pl.Tensor,
+                  key_pool: pl.Tensor, value_pool: pl.Tensor, table: pl.Tensor[[TABLE_COLUMNS], pl.INT32], bias: pl.Tensor,
                   output: pl.Out[pl.Tensor], past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32],
                   layer: pl.Scalar[pl.INT32]):
         return paged(query, key, value, gate, key_pool, value_pool, table, bias, output, past, width, layer)
 
     @pl.jit.host
     def entry(query: pl.Tensor, key: pl.Tensor, value: pl.Tensor, gate: pl.Tensor,
-              key_pool: pl.Tensor, value_pool: pl.Tensor, table: pl.Tensor, bias: pl.Tensor,
+              key_pool: pl.Tensor, value_pool: pl.Tensor, table: pl.Tensor[[TABLE_COLUMNS], pl.INT32], bias: pl.Tensor,
               output: pl.Out[pl.Tensor], past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32],
               layer: pl.Scalar[pl.INT32]):
         attention(query, key, value, gate, key_pool, value_pool, table, bias, output, past, width, layer, device=0)
