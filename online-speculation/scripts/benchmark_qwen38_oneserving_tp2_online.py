@@ -12,21 +12,27 @@ from statistics import median
 import time
 
 
-def load_pairs(path):
+def load_pairs(path, *, window=2):
+    if type(window) is not int or window not in (2, 4, 8, 16, 32):
+        raise ValueError("request window must be 2, 4, 8, 16 or 32")
     texts = json.loads(path.read_text())
     if (not isinstance(texts, list) or not texts or len(texts) % 2
             or not all(isinstance(text, str) and text.strip() for text in texts)
             or len(set(text.strip() for text in texts)) != len(texts)):
         raise ValueError("expected a nonempty, even, distinct list of question strings")
-    return [tuple(texts[i:i + 2]) for i in range(0, len(texts), 2)]
+    return [tuple(texts[i:i + window]) for i in range(0, len(texts), window)]
 
 
 def run_pair(engine, pair, tokens, *, sampling=None, stop_on_eos=False):
+    # 名称保留兼容；大于两题时先全部入队，执行并发仍由 engine 的上限控制。
+    sampling_configs = sampling if sampling is not None else (None,) * len(pair)
+    if len(sampling_configs) != len(pair):
+        raise ValueError("one sampling configuration per queued request required")
     before = dict(engine.runner.spec_stats)
     started = time.monotonic()
     requests = [engine.submit_chat([{"role": "user", "content": question}], tokens,
                                    sampling=params, ignore_eos=not stop_on_eos)
-                for question, params in zip(pair, sampling or (None, None), strict=True)]
+                for question, params in zip(pair, sampling_configs, strict=True)]
     for req in requests:
         deadline = started + 300
         while time.monotonic() < deadline:
@@ -77,11 +83,36 @@ def update_policy(max_updates, *, require_continuous=False, warm_updates=0):
 
 
 def request_timeline(rows):
-    """Keep every paired interval so active-learning windows can be audited."""
-    return [dict(requests=[2 * i + 1, 2 * i + 2], seconds=row["seconds"],
-                 output_tokens=[len(tokens) for tokens in row["tokens"]],
-                 stats=row["stats"], learner=row["learner"])
-            for i, row in enumerate(rows)]
+    """保存每个提交窗口的完整请求序号；默认两题的输出格式不变。"""
+    result, first = [], 1
+    for row in rows:
+        count = len(row["tokens"])
+        result.append(dict(requests=list(range(first, first + count)), seconds=row["seconds"],
+                           output_tokens=[len(tokens) for tokens in row["tokens"]],
+                           stats=row["stats"], learner=row["learner"]))
+        first += count
+    return result
+
+
+def admission_summary(events):
+    """从调度事件验证真实活跃上限、未结束请求旁的补位及混合阶段。"""
+    active, survivors = set(), set()
+    maximum = refills = mixed = batches = 0
+    for row in events:
+        if row["event"] == "admitted":
+            refills += bool(survivors & active)
+            survivors.clear()
+            active.add(row["request_id"])
+            maximum = max(maximum, len(active))
+        elif row["event"] == "finished":
+            active.discard(row["request_id"])
+            survivors = set(active) if len(active) == 1 else set()
+        elif row["event"] == "batch_submit":
+            batches += 1
+            phases = {slot["phase"] for slot in row["slots"]}
+            mixed += phases == {"prefill", "decode"}
+    return dict(maximum_active_requests=maximum, refill_with_unfinished_request=refills,
+                batches=batches, mixed_prefill_decode_batches=mixed, remaining_active=len(active))
 
 
 def learner_snapshot(trainer):
@@ -225,6 +256,10 @@ def main(*, guard=None):
                    help="alternate frozen/online request pairs using resident banks; synchronous learning only")
     p.add_argument("--interleave-ar", action="store_true",
                    help="interleave full AR/frozen/online triplets in six balanced orders; requires --interleaved")
+    p.add_argument("--stream-window", type=int, choices=(2, 4, 8, 16, 32), default=2,
+                   help="requests queued per matched arm interval; engine execution concurrency remains two")
+    p.add_argument("--audit-admission", action="store_true",
+                   help="diagnostic scheduler admission trace; excluded from throughput qualification")
     p.add_argument("--compile-only", action="store_true")
     args = p.parse_args()
     if args.export_heads is not None and args.export_heads.exists():
@@ -254,17 +289,20 @@ def main(*, guard=None):
         p.error("interleaved evaluation requires one stride and synchronous updates")
     if args.interleave_ar and (not args.interleaved or args.cold_head is not None):
         p.error("AR triplets require --interleaved and a single starting head")
+    if args.stream_window != 2 and not args.interleave_ar:
+        p.error("larger request windows require full interleaved AR/frozen/online triplets")
     if (min(args.replay_blocks, args.publish_every) < 1 or len(set(strides)) != len(strides)
             or any(n < 2 * args.replay_blocks for n in strides) or args.tokens < 2 or args.output.exists()):
         p.error("use distinct strides >= twice replay-blocks, positive counts and a fresh result path")
     if args.warm_update_stride is not None and (
             args.warm_update_stride < 2 * args.replay_blocks or any(args.warm_update_stride >= n for n in strides)):
         p.error("initial cadence must fit replay blocks and be smaller than every continuing stride")
-    prompts, holdout = load_pairs(args.prompts), load_pairs(args.holdout)
-    ar_requests = 2 * len(prompts) if args.ar_check_requests is None else args.ar_check_requests
-    if not 2 <= ar_requests <= 2 * len(prompts) or ar_requests % 2:
+    prompts, holdout = (load_pairs(path, window=args.stream_window) for path in (args.prompts, args.holdout))
+    total_requests = sum(map(len, prompts))
+    ar_requests = total_requests if args.ar_check_requests is None else args.ar_check_requests
+    if not 2 <= ar_requests <= total_requests or ar_requests % 2:
         p.error("AR sample must contain an even number of requests within the stream")
-    if args.interleave_ar and ar_requests != 2 * len(prompts):
+    if args.interleave_ar and ar_requests != total_requests:
         p.error("AR triplets require the entire request stream, not an AR sample")
     if {q.strip() for pair in prompts for q in pair} & {q.strip() for pair in holdout for q in pair}:
         p.error("request stream and frozen holdout must have distinct questions")
@@ -315,6 +353,12 @@ def main(*, guard=None):
                                               draft_convolution=args.draft_convolution,
                                               audit_convolution=args.audit_convolution)
     engine.scheduler.runner = runner
+    admission_events = []
+    if args.audit_admission:
+        def trace_admission(event, fields):
+            if event in {"admitted", "finished", "batch_submit"}:
+                admission_events.append(dict(event=event, **fields))
+        engine.scheduler.on_trace = trace_admission
     summary = dict(completed=False, head_step=runner.head["step"], device_ids=list(config.devices),
                    head_payload_sha256=runner.head["source_payload_sha256"],
                    head_shard_sha256=[shard["sha256"] for shard in runner.head["rank_files"]],
@@ -331,10 +375,13 @@ def main(*, guard=None):
                    resource_policy=runner.resource_policy,
                    learning_rate=args.learning_rate, background=args.background,
                    overlap_sampling=args.overlap_sampling,
-                   benchmark_layout=("interleaved_ar_frozen_online" if args.interleave_ar else
+                   benchmark_layout=("interleaved_ar_frozen_online_windows" if args.stream_window != 2 else
+                                     "interleaved_ar_frozen_online" if args.interleave_ar else
                                      "interleaved_pairs" if args.interleaved else "separate_streams"),
-                   interleaved_order=("six_permutations_within_pair" if args.interleave_ar else
+                   interleaved_order=("six_permutations_within_window" if args.stream_window != 2 else
+                                      "six_permutations_within_pair" if args.interleave_ar else
                                       "alternating_within_pair" if args.interleaved else None),
+                   stream_window=args.stream_window, execution_max_num_seqs=2,
                    primary_metric="continuous_online_vs_target_only_AR",
                    warmup_updates=args.warmup_updates,
                    warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
@@ -342,7 +389,9 @@ def main(*, guard=None):
                    objective=args.objective, max_updates=args.max_updates,
                    focus_weight=args.focus_weight,
                    position_weighting=args.position_weighting,
-                   draft_convolution=args.draft_convolution, diagnostic_only=args.audit_convolution,
+                   draft_convolution=args.draft_convolution,
+                   diagnostic_only=args.audit_convolution or args.audit_admission,
+                   audit_admission=args.audit_admission,
                    feedback_mode=args.feedback_mode,
                    teacher_tokens=args.teacher_tokens if args.feedback_mode == "delayed" else None,
                    feedback_timing=args.feedback_timing,
@@ -358,7 +407,7 @@ def main(*, guard=None):
                    stop_on_eos=args.stop_on_eos, candidates=args.candidates,
                    draft_width=args.draft_width, gdn_valid_rows=args.gdn_valid_rows,
                    verify_chunk_size=args.verify_chunk_size,
-                   requests=2 * len(prompts), ar_checked_requests=ar_requests, output_tokens_per_request=args.tokens,
+                   requests=total_requests, ar_checked_requests=ar_requests, output_tokens_per_request=args.tokens,
                    prompts_sha256=hashlib.sha256(args.prompts.read_bytes()).hexdigest(),
                    holdout_sha256=hashlib.sha256(args.holdout.read_bytes()).hexdigest(),
                    gather_feedback=args.gather_feedback,
@@ -366,14 +415,17 @@ def main(*, guard=None):
 
     def persist():
         summary["convolution_audits"] = list(runner.convolution_audits)
+        if args.audit_admission:
+            summary["admission_events"] = list(admission_events)
+            summary["admission_summary"] = admission_summary(summary["admission_events"])
         tmp = args.output.with_suffix(".tmp")
         tmp.write_text(json.dumps(summary, indent=2) + "\n")
         tmp.replace(args.output)
 
     def issue(pair, tokens, index=0):
         params = None if not args.temperature else [
-            SamplingParams(temperature=args.temperature, seed=args.seed + 2 * index + rank)
-            for rank in range(2)
+            SamplingParams(temperature=args.temperature, seed=args.seed + args.stream_window * index + rank)
+            for rank in range(len(pair))
         ]
         return run_pair(engine, pair, tokens, sampling=params, stop_on_eos=args.stop_on_eos)
 
@@ -397,7 +449,7 @@ def main(*, guard=None):
             rows.append(row)
             if label is not None and index + 1 < len(pairs) and (index + 1) % 16 == 0:
                 stream = summarize(rows)
-                milestone = dict(requests=2 * len(rows), tokens=stream["tokens"], seconds=stream["seconds"],
+                milestone = dict(requests=sum(len(row["tokens"]) for row in rows), tokens=stream["tokens"], seconds=stream["seconds"],
                                  tok_s=stream["tok_s"], accepted_per_round=stream["accepted_per_round"],
                                  **{k: stream["stats"][k] for k in ("updates", "publications")})
                 if frozen is not None:
@@ -485,10 +537,11 @@ def main(*, guard=None):
                 trainer.stride = stride
                 if args.interleaved:
                     def checkpoint(rows, index, *, stride=stride):
-                        if index + 1 == len(prompts) or (index + 1) % 16:
+                        completed_requests = sum(len(row["tokens"]) for row in rows["online"])
+                        if index + 1 == len(prompts) or completed_requests % 32:
                             return
                         fixed, current = summarize(rows["frozen"]), summarize(rows["online"])
-                        milestone = dict(requests=2 * (index + 1), fixed_tok_s=fixed["tok_s"],
+                        milestone = dict(requests=completed_requests, fixed_tok_s=fixed["tok_s"],
                                          tok_s=current["tok_s"], net_increment=current["tok_s"] / fixed["tok_s"] - 1,
                                          accepted_per_round=current["accepted_per_round"],
                                          updates=current["stats"]["updates"], publications=current["stats"]["publications"])
@@ -569,7 +622,7 @@ def main(*, guard=None):
                 if args.continuous_updates and result["update_schedule"]["update_limit_reached"]:
                     raise RuntimeError("continuous run reached an update limit")
                 result["net_increment"] = result["stream"]["tok_s"] / results["frozen"]["stream"]["tok_s"] - 1
-                if ar_requests == 2 * len(prompts):
+                if ar_requests == total_requests:
                     result["net_increment_vs_ar"] = result["stream"]["tok_s"] / summarize(ar)["tok_s"] - 1
                 results[str(stride)] = result
                 persist()

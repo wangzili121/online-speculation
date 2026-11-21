@@ -3,6 +3,28 @@
 from math import isfinite
 
 
+def matched_request_timelines(count, window, *timelines):
+    """三个方法必须覆盖相同请求和提交窗口，不能把排队窗口误当执行并发。"""
+    if (type(count) is not int or count < 2 or count % 2
+            or type(window) is not int or window not in (2, 4, 8, 16, 32) or len(timelines) != 3):
+        return False
+    expected = [list(range(i + 1, min(i + window, count) + 1)) for i in range(0, count, window)]
+    for rows in timelines:
+        if not isinstance(rows, list) or len(rows) != len(expected):
+            return False
+        for row, ids in zip(rows, expected):
+            if (not isinstance(row, dict) or not isinstance(row.get("requests"), list)
+                    or any(type(i) is not int for i in row["requests"]) or row["requests"] != ids):
+                return False
+            lengths = row.get("output_tokens")
+            seconds = row.get("seconds")
+            if (not isinstance(lengths, list) or len(lengths) != len(ids)
+                    or any(type(n) is not int or n < 1 for n in lengths)
+                    or type(seconds) not in (int, float) or not isfinite(seconds) or seconds <= 0):
+                return False
+    return True
+
+
 def confirmation_metrics(values):
     """三次与合并吞吐必须同时超过 AR、初始固定起草各 5%。"""
     result = dict(repeats=len(values), primary_metric="continuous_online_vs_AR_and_initial_frozen",
