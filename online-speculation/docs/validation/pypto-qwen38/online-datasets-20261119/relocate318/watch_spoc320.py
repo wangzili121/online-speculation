@@ -5,7 +5,7 @@ p=argparse.ArgumentParser(description=__doc__);p.add_argument('--artifacts',type
 
 placement_path=D/'relocate318/placement.json'
 assert placement_path.exists(), 'No completed operational handoff; use original A observer'
-placement=json.loads(placement_path.read_text());stage=json.loads((D/'relocate318/stage.json').read_text())
+placement=json.loads(placement_path.read_text());stage=json.loads((D/'relocate318'/placement['stage_manifest']).read_text())
 assert placement['completed'] and placement['original_A_waiting_only_stopped'] and placement['no_reserved_NN_started_on_A']
 assert json.loads((D/'relocate318/model-runtime-equivalence.json').read_text())['passed']
 assert json.loads((D/'relocate318/extended-runtime-equivalence.json').read_text())['passed']
@@ -15,7 +15,7 @@ assert changes=={'run_dense_v292_docker.py','docker_entry_v292.py'}, changes
 for target in targets:
  target.update(host='159.138.5.111', status='queue-spoc312-confirm'+str(target['seed'])+'.status.json', base='spoc312-base-files.json', image='quay.io/ascend/vllm-ascend:nightly-releases-v0.32.0rc', controller_log='queue-spoc312-confirm'+str(target['seed'])+'.json.controller.log')
  if target['seed']==745:
-  target.update(host='189.1.227.167',pid=stage['pid'],status='queue-spoc318B.status.json',base='spoc318B-base-files.json',image=freeze['expected_image_id'],controller_log='queue-spoc318B.json.controller.log')
+  target.update(host='189.1.227.167',pid=stage['pid'],status=placement['controller_status'],base='spoc318B-base-files.json',image=freeze['expected_image_id'],controller_log=placement['controller_log'])
 
 read=r'''from pathlib import Path
 import json,hashlib,zlib,sys,subprocess

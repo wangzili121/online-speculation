@@ -4,12 +4,13 @@ import argparse,gzip,hashlib,importlib.util,json,subprocess,zlib
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--validation-root',type=Path,required=True)
 p.add_argument('--artifacts',type=Path,required=True)
-a=p.parse_args();D=a.validation_root;Q=D/'relocate318';stage=json.loads((Q/'stage.json').read_text())
-plan=json.loads((Q/'queue-spoc318B.json').read_text());case=plan['cases'][0];tag=case['tag']
+p.add_argument('--stage-file',default='stage.json');p.add_argument('--plan-file',default='queue-spoc318B.json')
+a=p.parse_args();D=a.validation_root;Q=D/'relocate318';stage=json.loads((Q/a.stage_file).read_text())
+plan=json.loads((Q/a.plan_file).read_text());case=plan['cases'][0];tag=case['tag']
 read=r"""from pathlib import Path
 import hashlib,json,subprocess,sys,zlib
 r=Path('/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies')
-s=r/'queue-spoc318B.status.json';status=json.loads(s.read_text())if s.exists()else{}
+s=r/P['status'];status=json.loads(s.read_text())if s.exists()else{}
 c=next((x for x in status.get('cases',[])if x['tag']==P['tag']),{})
 out=dict(status=status,completed=bool(c.get('completed')),error=c.get('error'))
 if out['completed']:
@@ -23,7 +24,7 @@ if out['completed']:
  out['current_image_id']=json.loads(subprocess.check_output(['docker','image','inspect',P['image']],text=True))[0]['Id']
 sys.stdout.buffer.write(zlib.compress(json.dumps(out).encode()))
 """
-x=subprocess.run(['ssh','-o','ControlPath=none','-o','ControlMaster=no','-o','BatchMode=yes','-o','ConnectTimeout=10','wangzili@189.1.227.167','python3 -'],input=('P='+repr(dict(tag=tag,image=case['expected_image_id']))+'\n'+read).encode(),capture_output=True,timeout=90)
+x=subprocess.run(['ssh','-o','ControlPath=none','-o','ControlMaster=no','-o','BatchMode=yes','-o','ConnectTimeout=10','wangzili@189.1.227.167','python3 -'],input=('P='+repr(dict(tag=tag,image=case['expected_image_id'],status=Path(a.plan_file).with_suffix('.status.json').name))+'\n'+read).encode(),capture_output=True,timeout=90)
 assert x.returncode==0,x.stderr.decode()[-2000:]
 reply=json.loads(zlib.decompress(x.stdout));assert not reply.get('error'),reply.get('error')
 if not reply['completed']:
