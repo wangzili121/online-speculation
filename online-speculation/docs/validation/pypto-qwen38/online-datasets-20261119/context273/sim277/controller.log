@@ -1,0 +1,48 @@
+compiling Attention paged
+Traceback (most recent call last):
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/kernel_compiler.py", line 145, in _run
+    result = subprocess.run(
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/subprocess.py", line 503, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/subprocess.py", line 971, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/subprocess.py", line 1863, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'g++-15'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/context-v275-compile/validate_qwen38_pypto_attention.py", line 239, in <module>
+    main()
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/context-v275-compile/validate_qwen38_pypto_attention.py", line 130, in main
+    worker = DistributedWorker(list(programs.values()), config=config, inherited_host_tensors=tensors)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/distributed_runner.py", line 1984, in __init__
+    chip_callables, prog_runtime, prog_enable_sdma = _assemble_chip_callables(prog)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/distributed_runner.py", line 450, in _assemble_chip_callables
+    chip_callable, chip_runtime, chip_runtime_config = _compile_and_assemble(
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/device_runner.py", line 475, in _compile_and_assemble
+    return _compile_and_assemble_locked(work_dir, platform)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/device_runner.py", line 633, in _compile_and_assemble_locked
+    kernel_binaries = [f.result() for f in fut_kernels]
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/device_runner.py", line 633, in <listcomp>
+    kernel_binaries = [f.result() for f in fut_kernels]
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/concurrent/futures/_base.py", line 451, in result
+    return self.__get_result()
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/concurrent/futures/_base.py", line 403, in __get_result
+    raise self._exception
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/device_runner.py", line 595, in _compile_one_kernel
+    _, kernel_bin = _compile_single_kernel(
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/device_runner.py", line 302, in _compile_single_kernel
+    raw = compiler.compile_incore(
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/kernel_compiler.py", line 206, in compile_incore
+    binary = self._run(cmd, output, "Incore")
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/kernel_compiler.py", line 156, in _run
+    raise RuntimeError(f"{label}: cannot run compiler {cmd[0]!r}: {exc}") from exc
+RuntimeError: Incore: cannot run compiler 'g++-15': [Errno 2] No such file or directory: 'g++-15'
+Traceback (most recent call last):
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/context-v277-sim/run.py", line 9, in <module>
+    if rc:raise RuntimeError('simulator gate failed')
+RuntimeError: simulator gate failed

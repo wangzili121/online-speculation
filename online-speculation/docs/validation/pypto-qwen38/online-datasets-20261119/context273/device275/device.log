@@ -1,0 +1,22 @@
+BEGIN attention-page16
+guard {'ok': True, 'reserved_gib': 16, 'devices': [0]}
+guard {'ok': True, 'released': [0]}
+Traceback (most recent call last):
+  File "<string>", line 2, in <module>
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/runpy.py", line 289, in run_path
+    return _run_module_code(code, init_globals, run_name,
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/runpy.py", line 96, in _run_module_code
+    _run_code(code, mod_globals, init_globals,
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/context-v275/validate_attention.py", line 239, in <module>
+    main()
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/context-v275/validate_attention.py", line 91, in main
+    exported_runtime_identity(pypto, args.runtime_artifacts))
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/context-v275/validate_attention.py", line 37, in exported_runtime_identity
+    raise ValueError("exported runtime package versions or Simpler pin changed")
+ValueError: exported runtime package versions or Simpler pin changed
+Traceback (most recent call last):
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/context-v275/entry.py", line 13, in <module>
+    if rc:raise RuntimeError('component gate failed: '+name)
+RuntimeError: component gate failed: attention-page16

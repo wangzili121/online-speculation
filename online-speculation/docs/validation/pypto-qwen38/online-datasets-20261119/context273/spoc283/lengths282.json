@@ -1,0 +1,145 @@
+{
+  "completed": true,
+  "source_manifest": {
+    "completed": true,
+    "url": "https://sumith1896.github.io/spoc/data/spoc.zip",
+    "zip_bytes": 9960355,
+    "sha256": "9a4439f7c61ee948a6522f93bcfa5495ac6cdfa6ffcd9b2807a093ed7130e7d1",
+    "entries": 2757,
+    "tsvs": [
+      {
+        "name": "test/spoc-testw.tsv",
+        "bytes": 1973163
+      },
+      {
+        "name": "test/spoc-testp.tsv",
+        "bytes": 3164094
+      },
+      {
+        "name": "train/split/spoc-train-train.tsv",
+        "bytes": 14165947
+      },
+      {
+        "name": "train/split/spoc-train-test.tsv",
+        "bytes": 1232023
+      },
+      {
+        "name": "train/split/spoc-train-eval.tsv",
+        "bytes": 1534203
+      },
+      {
+        "name": "train/spoc-train.tsv",
+        "bytes": 16932085
+      }
+    ],
+    "scope": "Official SPoC source archive, metadata audit only. No generatedanswers/modelrunning/newconfirmation assignment; separate candidate source fromfixedLongProc benchmark."
+  },
+  "ignored_answer_field": "code",
+  "rendering": "Onlyhumantext andprovidedindent, emptytextlines skipped. No reference code copied into prompt. LongProc tasktemplate retained; thisis a separateSPoC-derived candidate stream, not unchangedLongProc.",
+  "excluded_all_LongProc_problem_ids": 194,
+  "sets": [
+    {
+      "member": "train/spoc-train.tsv",
+      "member_sha256": "925cc1badb32282184842cc6f8b9d34adf46c802fb2f2088728205d3a129b460",
+      "all_annotated_programs": 14960,
+      "all_problem_ids": 519,
+      "excluded_all_LongProc_problem_ids": 155,
+      "additional_rendered_text_matched_problem_ids": [],
+      "eligibility": [
+        {
+          "context": 512,
+          "output_budget": 128,
+          "eligible_annotated_programs": 6156,
+          "eligible_unique_problems": 313
+        },
+        {
+          "context": 512,
+          "output_budget": 192,
+          "eligible_annotated_programs": 2621,
+          "eligible_unique_problems": 210
+        },
+        {
+          "context": 1024,
+          "output_budget": 128,
+          "eligible_annotated_programs": 9343,
+          "eligible_unique_problems": 364
+        },
+        {
+          "context": 1024,
+          "output_budget": 192,
+          "eligible_annotated_programs": 9328,
+          "eligible_unique_problems": 364
+        }
+      ]
+    },
+    {
+      "member": "test/spoc-testp.tsv",
+      "member_sha256": "12066105b90a69ee7545641e0c3ccd801283e41d95873942769916826711473e",
+      "all_annotated_programs": 1815,
+      "all_problem_ids": 158,
+      "excluded_all_LongProc_problem_ids": 39,
+      "additional_rendered_text_matched_problem_ids": [],
+      "eligibility": [
+        {
+          "context": 512,
+          "output_budget": 128,
+          "eligible_annotated_programs": 557,
+          "eligible_unique_problems": 83
+        },
+        {
+          "context": 512,
+          "output_budget": 192,
+          "eligible_annotated_programs": 133,
+          "eligible_unique_problems": 33
+        },
+        {
+          "context": 1024,
+          "output_budget": 128,
+          "eligible_annotated_programs": 1366,
+          "eligible_unique_problems": 119
+        },
+        {
+          "context": 1024,
+          "output_budget": 192,
+          "eligible_annotated_programs": 1356,
+          "eligible_unique_problems": 119
+        }
+      ]
+    },
+    {
+      "member": "test/spoc-testw.tsv",
+      "member_sha256": "2c4d76b0093f173dd962453a98391742e3bf57a3dd556b9d478319d40d86be7e",
+      "all_annotated_programs": 1749,
+      "all_problem_ids": 471,
+      "excluded_all_LongProc_problem_ids": 149,
+      "additional_rendered_text_matched_problem_ids": [],
+      "eligibility": [
+        {
+          "context": 512,
+          "output_budget": 128,
+          "eligible_annotated_programs": 804,
+          "eligible_unique_problems": 239
+        },
+        {
+          "context": 512,
+          "output_budget": 192,
+          "eligible_annotated_programs": 359,
+          "eligible_unique_problems": 126
+        },
+        {
+          "context": 1024,
+          "output_budget": 128,
+          "eligible_annotated_programs": 1126,
+          "eligible_unique_problems": 321
+        },
+        {
+          "context": 1024,
+          "output_budget": 192,
+          "eligible_annotated_programs": 1122,
+          "eligible_unique_problems": 320
+        }
+      ]
+    }
+  ],
+  "scope": "CPU eligibility counts only. No NPU, no generatedanswers, no recipe selection ornewreservedNNassignment; final future split must beproblemID disjoint acrossexploration/confirmation/holdout."
+}
