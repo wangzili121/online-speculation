@@ -24,14 +24,17 @@ def close(actual, expected, label):
     )
 
 
-def audit(report, stride):
+def audit(report, stride, *, layout="interleaved_ar_frozen_online", allow_replay=False):
     require(report.get("completed") and report.get("clean_shutdown"), "run incomplete")
-    require(not report.get("diagnostic_only") and not report.get("audit_replay"), "diagnostic run")
+    require(not report.get("diagnostic_only")
+            and (allow_replay or not report.get("audit_replay")), "diagnostic run")
     require(report["requests"] == report["ar_checked_requests"], "AR does not cover full cohort")
     require(report["max_updates"] is None, "updates were capped")
     require(report["online_update_policy"] in {"continuous_periodic", "continuous_two_stage"},
             "not a continuous update policy")
-    require(report["benchmark_layout"] == "interleaved_ar_frozen_online", "unmatched timing layout")
+    # 辅助三卡流分阶段计时；调用者须显式选择，主验收仍默认要求逐请求交错。
+    require(layout in {"interleaved_ar_frozen_online", "separate_streams"}, "unknown timing layout")
+    require(report["benchmark_layout"] == layout, "unmatched timing layout")
     require(report["stream_window"] == report["execution_max_num_seqs"] == 2, "different execution window")
 
     results = report["results"]
@@ -101,6 +104,7 @@ def audit(report, stride):
     require(online["learned_replay"]["exact_greedy"] is True, "final seen output mismatch")
     return dict(
         accounting_passed=True, requests=report["requests"], arms=rows,
+        timing_layout=layout, performance_run=not report.get("audit_replay"),
         updates=len(updates), publications=online["stream"]["stats"]["publications"],
         last_update_round=updates[-1]["round"], rounds_after_last_update=schedule["rounds_after_last_update"],
         online_vs_ar=online["net_increment_vs_ar"], online_vs_fixed=online["net_increment"],
