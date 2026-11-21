@@ -11,12 +11,13 @@ assert source[0]==source[1]
 fields=['head_step','head_shard_sha256','optimizer_init','physical_device_count','device_ids','learner_device','background','last_layers','parameter_scope','parameterization','publication_backend','training_rows','max_model_len','kv_pages','learning_rate','objective','warmup_updates','lr_schedule','replay_blocks','publish_every','inner_steps','teacher_targets','teacher_temperature','teacher_tokens','teacher_scaling','feedback_mode','feedback_timing','temperature','sampler','stop_on_eos','candidates','draft_width','paired_physical_rows','gdn_valid_rows','draft_convolution','stream_window','execution_max_num_seqs','verify_chunk_size','seed','prompts_sha256','holdout_sha256','output_tokens_per_request','requests','ar_checked_requests','max_updates']
 for key in fields:assert data[0][key]==data[1][key],key
 # 裁剪输出路径额外记录逐题预算；固定192路径不生成这些字段。
-optional=['output_budget_mode','request_prompt_tokens','request_output_budgets']
+optional=['output_budget_mode','request_prompt_tokens','request_output_budgets'];present=[]
 for key in optional:
  assert (key in data[0])==(key in data[1]),key
  if key in data[0]:
   assert data[0][key]==data[1][key],key
-  fields.append(key)
+  present.append(key)
+fields[fields.index('requests'):fields.index('requests')]=present
 if a.cohort=='spoc64':
  for d in data:assert d['output_tokens_per_request']==192
  for folder,tag,_ in specs:
