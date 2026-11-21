@@ -30,13 +30,13 @@ check_process(cp,['python3','study_queue_spoc312.py','--plan','queue-spoc312-con
 check_process(lp,['python3','run_dense_v292_docker.py','--tag',tag,*P['args']])
 def check_no_model():
  assert not(r/(tag+'.json')).exists()and not(r/(tag+'.log')).exists(),'A model already started; do not migrate'
- rows=[x.split(None,3)for x in subprocess.check_output(['ps','-eo','pid,ppid,uid,args'],text=True).splitlines()[1:]];procs={int(x[0]):dict(ppid=int(x[1]),uid=int(x[2]),args=x[3])for x in rows};tree={cp,lp}
+ rows=[x.split(None,4)for x in subprocess.check_output(['ps','-eo','pid,ppid,uid,stat,args'],text=True).splitlines()[1:]];procs={int(x[0]):dict(ppid=int(x[1]),uid=int(x[2]),state=x[3],args=x[4])for x in rows};tree={cp,lp}
  while True:
   new={pid for pid,v in procs.items()if v['ppid']in tree}-tree
   if not new:break
   tree.update(new)
  for pid in tree-{cp,lp}:
-  v=procs[pid];assert v['uid']==1015 and v['ppid']==lp and v['args']=='/usr/local/bin/npu-smi info',v
+  v=procs[pid];query=v['args']=='/usr/local/bin/npu-smi info';reaped_query=v['state'].startswith('Z') and v['args']=='[npu-smi] <defunct>';assert v['uid']==1015 and v['ppid']==lp and(query or reaped_query),v
  assert procs[lp]['ppid']==cp
  return{str(k):procs[k]for k in tree if k in procs}
 before=check_no_model();paused=[]
