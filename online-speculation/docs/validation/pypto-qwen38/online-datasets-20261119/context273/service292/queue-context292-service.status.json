@@ -1,0 +1,63 @@
+{
+  "cases": [
+    {
+      "tag": "a111-v292-context1024-trainingrows32-KL-replay",
+      "completed": true,
+      "error": null,
+      "error_chain": [],
+      "source_result": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/a111-v292-context1024-trainingrows32-KL-replay.json",
+      "source_manifest": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/a111-v292-context1024-trainingrows32-KL-replay.source.json",
+      "comparisons": {
+        "16": {
+          "net_increment": -0.03760479419410234,
+          "continuous": true,
+          "updates": 11,
+          "frozen_tokens": 384,
+          "frozen_seconds": 33.184045020956546,
+          "online_tokens": 384,
+          "online_seconds": 34.480684048263356,
+          "ar_tokens": 384,
+          "ar_seconds": 33.604324486572295,
+          "net_increment_vs_ar": -0.02541595637906735,
+          "ar_timing_layout": "interleaved_ar_frozen_online",
+          "full_cohort": true,
+          "resource_policy_ok": true,
+          "performance_run": false
+        }
+      },
+      "confirmation_group": null
+    },
+    {
+      "tag": "a111-v292-context1024-trainingrows16-KL-replay",
+      "completed": true,
+      "error": null,
+      "error_chain": [],
+      "source_result": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/a111-v292-context1024-trainingrows16-KL-replay.json",
+      "source_manifest": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/a111-v292-context1024-trainingrows16-KL-replay.source.json",
+      "comparisons": {
+        "16": {
+          "net_increment": 0.020012163657223914,
+          "continuous": true,
+          "updates": 11,
+          "frozen_tokens": 384,
+          "frozen_seconds": 35.12092364090495,
+          "online_tokens": 384,
+          "online_seconds": 34.43186747399159,
+          "ar_tokens": 384,
+          "ar_seconds": 33.87703449698165,
+          "net_increment_vs_ar": -0.016113937979955084,
+          "ar_timing_layout": "interleaved_ar_frozen_online",
+          "full_cohort": true,
+          "resource_policy_ok": true,
+          "performance_run": false
+        }
+      },
+      "confirmation_group": null
+    }
+  ],
+  "execution_complete": true,
+  "confirmation_groups": {},
+  "controller_sha256": "14e50a01c47b63dce1e3a4094c08880fb7f8dfa3eb48b75f72a29cd2c947de55",
+  "metrics_sha256": "7756d4690a8cfdf1f5a76113ff14d3b01f4b4523b495670235850a293e6876ab",
+  "primary_metric": "continuous_online_vs_AR_and_initial_frozen"
+}
