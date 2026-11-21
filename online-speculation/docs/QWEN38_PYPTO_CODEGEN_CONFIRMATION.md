@@ -38,3 +38,5 @@ greedy、自然 EOS、物理 K8、每轮最多 7 个候选。总上下文 1024�
 SPoC 派生代码题另有 64 题探索，在 head128 / KL 配方下全流相对 AR +9.17%、固定起草 +5.14%。它属于另一组代码生成数据，不能充当原 LongProc 的新题确认。三卡独立学习器结果也单独归档，不用于两卡验收。同源补充语料的256题新流已单独冻结，见 [SPoC补充实验](validation/pypto-qwen38/online-datasets-20261119/spoc312/)，不能把该结果写成原LongProc题库达标。
 
 实际更新事件也完成独立复核：轮次、学习率 warmup、发布频率、最终服务 /导出版本，以及逐次计时与全流计数一致。此检查不改变原有性能结论，见[事件复核](validation/pypto-qwen38/online-datasets-20261119/schedule326/)。
+
+SPoC补充请求流的前两次完整新题确认已通过，第三次继续运行；参数与独立结果见[SPoC报告](QWEN38_PYPTO_SPOC_CONFIRMATION.md)，原LongProc三次未达标结论保持不变。

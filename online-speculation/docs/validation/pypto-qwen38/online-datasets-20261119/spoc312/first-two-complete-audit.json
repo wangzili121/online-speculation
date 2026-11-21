@@ -1,0 +1,194 @@
+{
+  "completed_cases": 2,
+  "required_cases": 3,
+  "full_study_complete": false,
+  "scope": "Supplementary SPoC-derived pseudocode-to-C++ task, not original LongProc. All256 requests and all controls/costs/finalpublishedseen/independent32holdout completed per trial; no tuning after assignment. Firsttwo only; third continues unchanged onB.",
+  "cases": [
+    {
+      "seed": 743,
+      "host": "159.138.5.111",
+      "physical_cards": "3,6",
+      "ar_tok_s": 21.556829648256603,
+      "fixed_tok_s": 22.237307226760162,
+      "online_tok_s": 24.62174879879689,
+      "online_vs_ar": 0.1421785670968625,
+      "online_vs_fixed": 0.10722708229561695,
+      "updates": 271,
+      "publications": 67,
+      "final_actually_published_step": 396,
+      "final_seen_tok_s": 25.415505325713273,
+      "holdout_ar_tok_s": 20.913109803955518,
+      "holdout_initial_tok_s": 21.815912942666543,
+      "holdout_learned_tok_s": 24.266389368160056,
+      "learning_cost_fraction": 0.009447203107703871,
+      "actual_published_shards": {
+        "rank0.safetensors": "6a49cfebcdbdd5a7eb8ed258a4d7cce740267a6840645077e56808b31a60678b",
+        "rank1.safetensors": "bbbd2d172aa094266e4a814d5f33197ae17ce404ac9bdfd228ada3ea4b4eb93d"
+      },
+      "raw_sha256": "6971186fa3ad1c5cafbf30663a6d3349001c4392e9fa4035e853b8854f3a97a1"
+    },
+    {
+      "seed": 744,
+      "host": "159.138.5.111",
+      "physical_cards": "2,5",
+      "ar_tok_s": 21.487687088477315,
+      "fixed_tok_s": 22.252446315170072,
+      "online_tok_s": 24.36926278824578,
+      "online_vs_ar": 0.13410357698822306,
+      "online_vs_fixed": 0.09512736007063727,
+      "updates": 275,
+      "publications": 68,
+      "final_actually_published_step": 400,
+      "final_seen_tok_s": 25.549748089574102,
+      "holdout_ar_tok_s": 20.820550084135938,
+      "holdout_initial_tok_s": 21.666197394743495,
+      "holdout_learned_tok_s": 24.659010192827385,
+      "learning_cost_fraction": 0.009916508971353972,
+      "actual_published_shards": {
+        "rank0.safetensors": "590465fe3cc0dfcf178dba39a39ca26b9acf1b6ffbc038f6aa6f1dbb55217d4b",
+        "rank1.safetensors": "ada78e82f1ace53ce24e123bb3f99035fcae140af1ed16b4b17a9007abd0c6ab"
+      },
+      "raw_sha256": "020812d41ccc4f9d7b97a03c493ca9cf0260f1e487e722449b15807110fd592b"
+    }
+  ],
+  "audits": [
+    {
+      "primary": {
+        "accounting_passed": true,
+        "requests": 256,
+        "arms": {
+          "ar": {
+            "tokens": 43599,
+            "seconds": 2022.5144750599284,
+            "tail_seconds": 0.0,
+            "tok_s": 21.556829648256603
+          },
+          "fixed": {
+            "tokens": 43599,
+            "seconds": 1960.6240789592266,
+            "tail_seconds": 0.0,
+            "tok_s": 22.237307226760162
+          },
+          "online": {
+            "tokens": 43599,
+            "seconds": 1770.7515561254695,
+            "tail_seconds": 0.0,
+            "tok_s": 24.62174879879689
+          }
+        },
+        "timing_layout": "interleaved_ar_frozen_online",
+        "performance_run": true,
+        "updates": 271,
+        "publications": 67,
+        "last_update_round": 14272,
+        "rounds_after_last_update": 25,
+        "online_vs_ar": 0.1421785670968625,
+        "online_vs_fixed": 0.10722708229561695,
+        "final_seen_tok_s": 25.415505325713273,
+        "independent_holdout_tok_s": 24.266389368160056,
+        "scope": "Request/timing/update accounting only; frozen recipe, data and source audited separately.",
+        "completed": true,
+        "tag": "a111-v292-spoc312-confirm743",
+        "seed": 743,
+        "execution_host": "159.138.5.111",
+        "operational_relocation": false,
+        "raw_sha256": "6971186fa3ad1c5cafbf30663a6d3349001c4392e9fa4035e853b8854f3a97a1",
+        "frozen_source_head_config_and_budget_checked": true,
+        "base_files_and_initial_dispatch_guard_checked": true,
+        "actual_published_shards": {
+          "rank0.safetensors": "6a49cfebcdbdd5a7eb8ed258a4d7cce740267a6840645077e56808b31a60678b",
+          "rank1.safetensors": "bbbd2d172aa094266e4a814d5f33197ae17ce404ac9bdfd228ada3ea4b4eb93d"
+        }
+      },
+      "event_schedule": {
+        "completed": true,
+        "actual_schedule_checked": true,
+        "updates": 271,
+        "publications": 67,
+        "warmup_LR_checked": true,
+        "first_update_round": 16,
+        "last_update_round": 14272,
+        "final_optimizer_version": 271,
+        "actual_published_version": 268,
+        "final_exported_step": 396,
+        "tail_rounds": 25,
+        "nonoverlap_feedback_update_upload_seconds": 16.728649604,
+        "work_time_to_stream_wall_ratio": 0.009447203107703871,
+        "colocated_direct_cost_fraction": 0.009447203107703871,
+        "read_pack_already_in_update": true,
+        "cost_scope": "Colocated: nonoverlapping cost regions. Background learner: work duration may overlap generation; not a latency fraction.",
+        "background": false,
+        "physical_cards": 2
+      }
+    },
+    {
+      "primary": {
+        "accounting_passed": true,
+        "requests": 256,
+        "arms": {
+          "ar": {
+            "tokens": 43599,
+            "seconds": 2029.0224732181523,
+            "tail_seconds": 0.0,
+            "tok_s": 21.487687088477315
+          },
+          "fixed": {
+            "tokens": 43599,
+            "seconds": 1959.2902003892232,
+            "tail_seconds": 0.0,
+            "tok_s": 22.252446315170072
+          },
+          "online": {
+            "tokens": 43599,
+            "seconds": 1789.0980280712247,
+            "tail_seconds": 0.0,
+            "tok_s": 24.36926278824578
+          }
+        },
+        "timing_layout": "interleaved_ar_frozen_online",
+        "performance_run": true,
+        "updates": 275,
+        "publications": 68,
+        "last_update_round": 14528,
+        "rounds_after_last_update": 39,
+        "online_vs_ar": 0.13410357698822306,
+        "online_vs_fixed": 0.09512736007063727,
+        "final_seen_tok_s": 25.549748089574102,
+        "independent_holdout_tok_s": 24.659010192827385,
+        "scope": "Request/timing/update accounting only; frozen recipe, data and source audited separately.",
+        "completed": true,
+        "tag": "a111-v292-spoc312-confirm744",
+        "seed": 744,
+        "execution_host": "159.138.5.111",
+        "operational_relocation": false,
+        "raw_sha256": "020812d41ccc4f9d7b97a03c493ca9cf0260f1e487e722449b15807110fd592b",
+        "frozen_source_head_config_and_budget_checked": true,
+        "base_files_and_initial_dispatch_guard_checked": true,
+        "actual_published_shards": {
+          "rank0.safetensors": "590465fe3cc0dfcf178dba39a39ca26b9acf1b6ffbc038f6aa6f1dbb55217d4b",
+          "rank1.safetensors": "ada78e82f1ace53ce24e123bb3f99035fcae140af1ed16b4b17a9007abd0c6ab"
+        }
+      },
+      "event_schedule": {
+        "completed": true,
+        "actual_schedule_checked": true,
+        "updates": 275,
+        "publications": 68,
+        "warmup_LR_checked": true,
+        "first_update_round": 16,
+        "last_update_round": 14528,
+        "final_optimizer_version": 275,
+        "actual_published_version": 272,
+        "final_exported_step": 400,
+        "tail_rounds": 39,
+        "nonoverlap_feedback_update_upload_seconds": 17.741606646,
+        "work_time_to_stream_wall_ratio": 0.009916508971353972,
+        "colocated_direct_cost_fraction": 0.009916508971353972,
+        "read_pack_already_in_update": true,
+        "cost_scope": "Colocated: nonoverlapping cost regions. Background learner: work duration may overlap generation; not a latency fraction.",
+        "background": false,
+        "physical_cards": 2
+      }
+    }
+  ]
+}
