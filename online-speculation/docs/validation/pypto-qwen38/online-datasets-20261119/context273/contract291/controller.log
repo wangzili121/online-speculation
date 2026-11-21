@@ -1,0 +1,19 @@
+BEGIN page-contract
+/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/context-v291-contract/validate_qwen38_pypto_page_contract.py:23: DeprecationWarning: RunConfig(platform=...) is deprecated; use backend_type and execution_mode instead.
+  config = RunConfig(platform="a2a3", distributed_config=DistributedConfig(device_ids=[0], num_sub_workers=0))
+Error: pl operation 'reshape': tensor.reshape: cannot reshape tensor of size 4 into shape with size 8
+  --> /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-tp2-test/src-dense-v291/blockspec/pypto_qwen38/paged_attention_programs.py:91:9
+   |
+89 |               layer: pl.Scalar[pl.INT32]):
+90 |         # 固定元素数的 view 使截短页表在编译期失败，而不是运行到第 5 页才越界。
+91 |         complete_table = pl.reshape(table, [TABLE_COLUMNS])
+   |         ^^^^^^^^^^^^^^
+92 |         key_flat = pl.reshape(key_pool, [ROWS, D])
+93 |         value_flat = pl.reshape(value_pool, [ROWS, D])
+   |
+
+note: run with `PTO_BACKTRACE=1` environment variable to display a backtrace.
+Traceback (most recent call last):
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/context-v291-contract/run.py", line 9, in <module>
+    if rc:raise RuntimeError('CPU gate failed: '+name)
+RuntimeError: CPU gate failed: page-contract
