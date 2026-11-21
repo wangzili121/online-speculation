@@ -11,6 +11,7 @@ from .training_executor import TrainingPrograms
 from .training_flat import FlatLayout
 from .training_lora_graph import LoRAMergeGraph, LoRASuffixGraph
 from .training_optimizer_programs import make_reduce, make_stats
+from .training_graph import SuffixShape
 
 
 class TP2LoRAOnline(TP2DelayedOnline):
@@ -29,7 +30,8 @@ class TP2LoRAOnline(TP2DelayedOnline):
         super().__init__(checkpoint, *args, **kwargs)
 
     def build_training_graph(self):
-        graph = LoRASuffixGraph(len(self.layers), rank=self.adapter_rank, objective=self.objective,
+        graph = LoRASuffixGraph(len(self.layers), SuffixShape(block=self.training_rows, context=self.context),
+            rank=self.adapter_rank, objective=self.objective,
             focus_weight=self.focus_weight, position_weighted=self.position_weighting != "uniform")
         self.full_layout = FlatLayout(graph.original_parameters)
         return graph

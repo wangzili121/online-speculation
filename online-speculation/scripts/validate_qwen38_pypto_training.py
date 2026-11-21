@@ -24,9 +24,13 @@ def main():
     p.add_argument("--bridge", action="store_true", help="validate isolated workers and cross-device byte copies")
     p.add_argument("--learner-device", type=int)
     p.add_argument("--real-shape", action="store_true", help="exercise all six real 27B parameter dimensions")
+    p.add_argument("--context", type=int, choices=(64, 512, 1024),
+                   help="history capacity for standalone suffix numerical validation")
     a = p.parse_args()
     if a.output.exists():
         p.error("new output required")
+    if a.context is not None and not a.suffix:
+        p.error("--context applies to standalone suffix validation")
     if (a.focus_weight < 1 or a.focus_weight != 1 and
             (a.objective != "tv" or a.suffix or a.optimizer or a.feedback or a.bridge)):
         p.error("position weighting is validated by the standalone TV benchmark")
@@ -137,13 +141,17 @@ def suffix(args, config):
     from blockspec.pypto_qwen38.training_graph import LastLayerGraph, SuffixShape
     from blockspec.pypto_qwen38.training_executor import TrainingPrograms, TrainingWorkspace
     from blockspec.pypto_qwen38.training_reference import evaluate
-    graph = LastLayerGraph(objective=args.objective) if args.real_shape else LastLayerGraph(SuffixShape(hidden=128, intermediate=256, vocabulary=128,
-        q_heads=4, kv_heads=2, dimension=64, context=64, rotary=32), objective=args.objective)
+    context = args.context or (512 if args.real_shape else 64)
+    shape = SuffixShape(context=context) if args.real_shape else SuffixShape(
+        hidden=128, intermediate=256, vocabulary=128, q_heads=4, kv_heads=2,
+        dimension=64, context=context, rotary=32)
+    graph = LastLayerGraph(shape, objective=args.objective)
     programs = TrainingPrograms(graph, config, combined=args.combined, accumulate_gradients=args.accumulate_gradients)
     worker = workspace = None
-    handles, report = [], dict(passed=False, cases=[])
+    handles, report = [], dict(passed=False, cases=[], shape=vars(shape), npu_execution=False)
     try:
         worker = DistributedWorker(list(programs.programs.values()), config=config)
+        report["npu_execution"] = True
         workspace = TrainingWorkspace(programs, worker)
         inputs, device = {}, {}
         for name, value in graph.inputs.items():
@@ -164,7 +172,8 @@ def suffix(args, config):
                 destination[name] = worker.alloc_tensor(value.shape, torch.float32, init=zero)
                 handles.append(destination[name])
                 accumulated[value.name] = zero
-        cases = ((32, 32, 17),) if args.real_shape else ((0, 32, 31), (7, 17, 4), (32, 32, 1))
+        cases = ((context - 32, 32, 17),) if args.real_shape else (
+            (0, 32, 31), (7, 17, 4), (context - 32, 32, 1))
         report["scope"] = "real_shape_finiteness" if args.real_shape else "torch_numerical_comparison"
         for past, width, valid in cases:
             expected = None if args.real_shape else evaluate(graph, inputs, past=past, width=width, valid=valid)

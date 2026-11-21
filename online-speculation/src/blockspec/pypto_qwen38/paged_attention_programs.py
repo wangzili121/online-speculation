@@ -2,6 +2,15 @@
 
 from .attention import AttentionShape
 
+CONTEXTS = (512, 1024)
+
+
+def capacity_for(total):
+    """覆盖有效历史和临时块的最小计算容量，不改变块内可见性。"""
+    if type(total) is not int or not 1 <= total <= CONTEXTS[-1]:
+        raise ValueError("attention length must be in [1, 1024]")
+    return next(size for size in (128, 256, 512, 1024) if total <= size)
+
 
 def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity):
     import pypto.language as pl
@@ -62,7 +71,15 @@ def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity):
         second = pair(q, block, pool, zero, table, bias, layer, head, past, width, start + 2 * SPAN)
         return pl.concat(first, second)
 
-    score_kernel = scores if C // SPAN == 1 else pair if C // SPAN == 2 else quad
+    @pl.jit.inline
+    def octet(q: pl.Tensor, block: pl.Tensor, pool: pl.Tensor, zero: pl.Tensor,
+              table: pl.Tensor, bias: pl.Tensor, layer: pl.Scalar[pl.INT32], head: pl.Scalar[pl.INT32],
+              past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32], start: pl.Scalar[pl.INT32]):
+        first = quad(q, block, pool, zero, table, bias, layer, head, past, width, start)
+        second = quad(q, block, pool, zero, table, bias, layer, head, past, width, start + 4 * SPAN)
+        return pl.concat(first, second)
+
+    score_kernel = {1: scores, 2: pair, 4: quad, 8: octet}[C // SPAN]
 
     @pl.jit.inline
     def paged(query: pl.Tensor, key: pl.Tensor, value: pl.Tensor, gate: pl.Tensor,
@@ -117,18 +134,22 @@ def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity):
 
 def make_paged_attention(shape=AttentionShape(), *, physical_pages=256, pool_layers=1, capacity=None):
     """按有效历史与块长选择固定形状 kernel；控制流在编排层，不进入混合核。"""
-    if shape.context != 512 or shape.page_size not in {16, 128} or shape.query_tile not in {16, 32}:
-        raise ValueError("paged attention requires context=512, page_size=16 or 128 and query_tile=16 or 32")
+    if shape.context not in CONTEXTS or shape.page_size not in {16, 128} or shape.query_tile not in {16, 32}:
+        raise ValueError("paged attention requires context=512 or 1024, page_size=16 or 128 and query_tile=16 or 32")
+    if shape.context == 1024 and shape.query_tile != 16:
+        raise ValueError("1024 context requires query_tile=16 to bound vector storage")
     if any(type(n) is not int or n < 1 for n in (physical_pages, pool_layers)):
         raise ValueError("positive physical page and cache-layer counts required")
     if capacity is not None:
-        if type(capacity) is not int or capacity not in {128, 256, 512}:
-            raise ValueError("capacity must be 128, 256 or 512")
+        if type(capacity) is not int or capacity not in {128, 256, 512, 1024} or capacity > shape.context:
+            raise ValueError("capacity must be 128, 256, 512 or 1024 within the context")
         return _make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=capacity)
     import pypto.language as pl
     short, _ = _make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=128)
     medium, _ = _make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=256)
     long, _ = _make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=512)
+    extended, _ = (_make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=1024)
+                   if shape.context == 1024 else (long, None))
 
     @pl.jit.inline
     def paged(query: pl.Tensor, key: pl.Tensor, value: pl.Tensor, gate: pl.Tensor,
@@ -139,8 +160,10 @@ def make_paged_attention(shape=AttentionShape(), *, physical_pages=256, pool_lay
             output = short(query, key, value, gate, key_pool, value_pool, table, bias, output, past, width, layer)
         elif past + width <= 256:
             output = medium(query, key, value, gate, key_pool, value_pool, table, bias, output, past, width, layer)
-        else:
+        elif past + width <= 512:
             output = long(query, key, value, gate, key_pool, value_pool, table, bias, output, past, width, layer)
+        else:
+            output = extended(query, key, value, gate, key_pool, value_pool, table, bias, output, past, width, layer)
         return output
 
     @pl.jit

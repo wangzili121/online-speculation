@@ -2,7 +2,7 @@
 
 from .attention import AttentionShape
 from .attention_programs import make_attention
-from .paged_attention_programs import make_paged_attention
+from .paged_attention_programs import CONTEXTS, make_paged_attention
 
 
 # One device dispatch by default, with an option to split at full-attention boundaries.
@@ -11,7 +11,9 @@ GROUP_LAYERS = 64
 
 def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backend="paged",
                        batch_size=1, compact_tp=False, capture_layer=None, draft_convolution="sequential",
-                       gdn_valid_rows=False, physical_block_rows=32):
+                       gdn_valid_rows=False, physical_block_rows=32, context=512):
+    if type(context) is not int or context not in CONTEXTS or context != 512 and attention_backend != "paged":
+        raise ValueError("draft context must be 512/1024; extended context requires paged Attention")
     from .tp2_row_layout import row_geometry, make_pack, make_expand, make_feedback
     external_rows, rows_per_dispatch = row_geometry(batch_size, physical_block_rows)
     if group_layers not in (4, 8, 16, 32, 64):
@@ -137,7 +139,7 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
         return decay, beta
 
     shape = AttentionShape(block_size=physical_block_rows, q_heads=12, kv_heads=2, page_size=128,
-                           query_tile=physical_block_rows)
+                           query_tile=16 if context > 512 else physical_block_rows, context=context)
     if attention_backend == "paged":
         attention, _ = make_paged_attention(shape, physical_pages=pool_pages, pool_layers=17)
     else:
@@ -207,7 +209,7 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
                 local_width = width + seq * (width_second - width)
                 table_row = pl.slice(table, [1, 4], [seq, 0])
                 local_table: pl.Tensor[[4], pl.INT32] = pl.reshape(table_row, [4])
-                local_bias = pl.slice(bias, [1, 512], [seq, 0])
+                local_bias = pl.slice(bias, [1, context], [seq, 0])
                 local_q = pl.slice(q, [physical_block_rows, 3072], [first, 0])
                 local_k = pl.slice(k, [physical_block_rows, 512], [first, 0])
                 local_v = pl.slice(v, [physical_block_rows, 512], [first, 0])

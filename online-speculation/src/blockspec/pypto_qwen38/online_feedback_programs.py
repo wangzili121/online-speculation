@@ -34,11 +34,13 @@ def make_history(pages, layer=63):
     return entry
 
 
-def make_tp2_history(layers, pages, page_size):
+def make_tp2_history(layers, pages, page_size, context=512):
     """Gather layer 63 into two contiguous rank-local histories before DMA."""
     import pypto.language as pl
 
-    if page_size % 16 or 512 % page_size or layers <= 15:
+    if type(context) is not int or context not in (512, 1024):
+        raise ValueError("expected context 512 or 1024")
+    if page_size % 16 or context % page_size or layers <= 15:
         raise ValueError("expected layer 63 and a 16-aligned page size")
     rows = layers * 2 * pages * page_size
 
@@ -47,15 +49,15 @@ def make_tp2_history(layers, pages, page_size):
                out_key: pl.Out[pl.Tensor], out_value: pl.Out[pl.Tensor], past: pl.Scalar[pl.INT32]):
         k = pl.reshape(key, [rows, 256])
         v = pl.reshape(value, [rows, 256])
-        dst_k = pl.reshape(out_key, [1024, 256])
-        dst_v = pl.reshape(out_value, [1024, 256])
-        with pl.spmd(64, name_hint="orthrus_tp2_gather_history"):
+        dst_k = pl.reshape(out_key, [2 * context, 256])
+        dst_v = pl.reshape(out_value, [2 * context, 256])
+        with pl.spmd(2 * context // 16, name_hint="orthrus_tp2_gather_history"):
             tile = pl.tile.get_block_idx()
-            logical = (tile % 32) * 16
+            logical = (tile % (context // 16)) * 16
             dest = tile * 16
             if logical < past:
                 physical = pl.read(table, [logical // page_size])
-                src = ((30 + tile // 32) * pages + physical) * page_size + logical % page_size
+                src = ((30 + tile // (context // 16)) * pages + physical) * page_size + logical % page_size
                 dst_k[dest:dest + 16, 0:256] = pl.slice(k, [16, 256], [src, 0])
                 dst_v[dest:dest + 16, 0:256] = pl.slice(v, [16, 256], [src, 0])
             else:

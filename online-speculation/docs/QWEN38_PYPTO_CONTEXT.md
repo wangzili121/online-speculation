@@ -1,0 +1,30 @@
+# Qwen3.8 TP2 的 1,024 上下文实验路径
+
+新增可选的 `--max-model-len 1024`，用于容纳较长的 Pseudo2code 输入。AR、固定起草和持续在线使用同一个总上下文上限；默认仍为 512。head 的参数、K32 存储契约、逻辑块和接受规则不变。
+
+分页 Attention 增加 1,024 容量分支，每个 query 读取 anchor 前的真实历史和整个有效 draft 块。只在总有效长度超过 512 时进入该分支；1,024 上下文使用 16 行 query tile 控制片上空间。目标 KV 保持只读，临时 draft KV 仍不提交到目标 cache。
+
+服务侧页表、mask 和内存预算，在线反馈的历史缓冲、分页采集和训练图都随上下文一起扩展，避免服务看到了后半段历史而学习器只收到前 512 个位置。训练行数仍可独立选择 32 或 last-1 的 16；扩展历史不改变权重分片。
+
+已通过 572 项 CPU 检查，包含 1,024 历史末端的独立 autograd 核对。实机通过两种页尺寸的 38 个 Attention 用例，覆盖非整页边界、无效位置填 NaN 和输入只读检查；小形状的 6 个 TV / KL 前反向用例分别核对 77 个中间结果，最大相对 L2 为 0.00211。真实 27B 权重的 6 组 last-1 前反向中，16 / 32 行的有效 logits 和六类参数梯度均逐位相同，输入与历史不变。
+
+本次真实权重对照中，32 行约 37 ms、16 行约 30 ms；这是前反向计时，不含优化器、发布和整模型推理。首次真实权重检查在工作区执行前遇到设备内存分配失败，保留原始记录；换空卡后的重试未修改 kernel 或输入。单卡检查结束后已释放设备。
+
+TP2 单请求 / 双请求 draft、历史采集和 learner 的入口编译也已通过。**整模型的长历史反馈、更新和发布仍需两卡验证，不作为新题性能达标证据。** 正在进行的 GSM8K 三次确认继续使用其冻结的 512 版本。
+
+独立检查入口：
+
+```bash
+python scripts/validate_qwen38_pypto_attention.py \
+  --context 1024 --backend paged --query-tile 16 \
+  --q-heads 12 --kv-heads 2 --page-size 128 \
+  --device 0 --output attention1024.json
+
+python scripts/validate_qwen38_pypto_training_rows.py \
+  --context 1024 --model /path/to/model-view --head /path/to/tp2-head \
+  --device 0 --output training1024.json
+```
+
+`--compile-only` 只生成程序；`--assemble-only` 进一步编译设备二进制，不创建 NPU worker，也不提供性能结论。后者调用当前固定 PyPTO 版本的内部编译入口，升级运行时后应重新核对。缺少 Git 元数据的导出环境可通过 `--runtime-artifacts` 提供已核对的文件清单，校验源码、原生绑定、实际加载的 Simpler 扩展和工具链；不伪造 Git 信息，也不关闭运行时检查。
+
+LongProc 官方题池按问题 ID 和三台机器实际执行文本排重后，固定划为 30 题探索、24 题确认和 8 题独立留出。尚未执行的新确认题只在探索完整达标、配方冻结后使用。源码、编译、失败记录与分配清单保存在 `validation/pypto-qwen38/online-datasets-20261119/context273/`。

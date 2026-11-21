@@ -17,9 +17,13 @@ def main():
     parser.add_argument("--device", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compile-only", action="store_true")
+    parser.add_argument("--assemble-only", action="store_true")
+    parser.add_argument("--context", type=int, choices=(512, 1024), default=512)
     args = parser.parse_args()
     if args.output.exists():
         parser.error("new output required")
+    if args.compile_only and args.assemble_only:
+        parser.error("choose compile-only or assemble-only")
 
     import torch
     from safetensors import safe_open
@@ -50,13 +54,20 @@ def main():
     try:
         config = RunConfig(platform="a2a3", ring_heap=(512 << 20,) * 4,
                            distributed_config=DistributedConfig(device_ids=[args.device], num_sub_workers=0))
-        shapes = {rows: replace(SuffixShape(), block=rows) for rows in (32, 16)}
+        shapes = {rows: replace(SuffixShape(), block=rows, context=args.context) for rows in (32, 16)}
         graphs = {(obj, rows): LastLayerGraph(shape, objective=obj)
                   for obj in ("tv", "kl") for rows, shape in shapes.items()}
         programs = {key: TrainingPrograms(graph, config, combined=True)
                     for key, graph in graphs.items()}
         report["compiled_entries"] = sum(len(item.programs) for item in programs.values())
         assert report["compiled_entries"] == 4
+        if args.assemble_only:
+            from pypto.runtime.distributed_runner import _assemble_chip_callables
+            for item in programs.values():
+                for program in item.programs.values():
+                    _assemble_chip_callables(program)
+            report.update(completed=True, stage="assembled", npu_execution=False)
+            return
         if args.compile_only:
             report.update(completed=True, stage="compiled", npu_execution=False)
             return
@@ -112,7 +123,7 @@ def main():
             return result, losses
 
         for objective in ("tv", "kl"):
-            for past, width, valid in ((0, 8, 7), (127, 8, 3), (496, 16, 15)):
+            for past, width, valid in ((0, 8, 7), (127, 8, 3), (args.context - 16, 16, 15)):
                 before, old_loss = run((objective, 32), past, width, valid)
                 baseline = {name: read(handle) for name, handle in before.items()}
                 old_logits = read(workspaces[objective, 32].values[graphs[objective, 32].logits.name])

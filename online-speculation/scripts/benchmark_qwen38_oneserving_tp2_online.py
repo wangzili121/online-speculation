@@ -186,6 +186,8 @@ def main(*, guard=None):
     p.add_argument("--cold-head", type=Path, help="compare this head if no warm online mode beats frozen")
     p.add_argument("--learner-device", default=2, choices=(0, 2), type=int)
     p.add_argument("--kv-pages", type=int, help="cap the resident KV pool equally for all modes")
+    p.add_argument("--max-model-len", default=512, choices=(512, 1024), type=int,
+                   help="same total context capacity for AR, fixed and online")
     p.add_argument("--ring-heap-mib", type=int, default=256,
                    help="minimum temporary heap per ring; identical for AR, frozen and online")
     p.add_argument("--strides", default="16,32,64")
@@ -345,12 +347,13 @@ def main(*, guard=None):
                         focus_weight=args.focus_weight, audit_replay=args.audit_replay,
                         teacher_temperature=args.teacher_temperature, teacher_scaling=args.teacher_scaling,
                         teacher_targets=args.teacher_targets, training_rows=args.training_rows,
+                        context=args.max_model_len,
                         warmup_updates=args.warmup_updates,
                         lr_schedule=args.lr_schedule, parameter_scope=args.parameter_scope,
                         warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
                         publication_backend=args.publication_backend, inner_steps=args.inner_steps,
                         overlap_sampling=args.overlap_sampling, position_weighting=args.position_weighting, **extra)
-    config = ServingConfig(args.model, (0, 1), max_model_len=512, max_num_batched_tokens=128,
+    config = ServingConfig(args.model, (0, 1), max_model_len=args.max_model_len, max_num_batched_tokens=128,
                            max_num_seqs=2, speculative_tokens=0, prefix_cache=False,
                            long_prefill_token_threshold=4)
     engine = InferenceEngine(config)
@@ -374,7 +377,7 @@ def main(*, guard=None):
                 admission_events.append(dict(event=event, **fields))
         engine.scheduler.on_trace = trace_admission
     summary = dict(completed=False, head_step=runner.head["step"], device_ids=list(config.devices),
-                   training_rows=args.training_rows,
+                   training_rows=args.training_rows, max_model_len=args.max_model_len,
                    head_payload_sha256=runner.head["source_payload_sha256"],
                    head_shard_sha256=[shard["sha256"] for shard in runner.head["rank_files"]],
                    visible_devices=os.environ.get("ASCEND_RT_VISIBLE_DEVICES"),

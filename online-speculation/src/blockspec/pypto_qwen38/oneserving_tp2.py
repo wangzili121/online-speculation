@@ -19,6 +19,7 @@ from .head import POLICY, tensor_schema
 from .oneserving_tp2_programs import GROUP_LAYERS, make_draft_program
 from .lazy_proposals import LazyProposals
 from .oneserving_resources import bounded_ring_policy
+from .paged_attention_programs import CONTEXTS, capacity_for
 
 
 BLOCK = 32
@@ -36,13 +37,15 @@ SHAPES = (
 )
 
 
-def draft_inputs(batch_size):
+def draft_inputs(batch_size, context=512):
+    if type(context) is not int or context not in CONTEXTS:
+        raise ValueError("draft context must be 512 or 1024")
     rows = BLOCK * batch_size
     return (
         ("ids", (rows,), torch.int32), ("rows", (rows,), torch.int32),
         ("cos", (rows, 64), torch.bfloat16), ("sin", (rows, 64), torch.bfloat16),
-        ("table", (batch_size, 512 // BLOCK_SIZE), torch.int32),
-        ("bias", (batch_size, 512), torch.float32),
+        ("table", (batch_size, context // BLOCK_SIZE), torch.int32),
+        ("bias", (batch_size, context), torch.float32),
         ("valid", (rows,), torch.int32),
     )
 
@@ -171,10 +174,14 @@ class OrthrusTP2Runner(TensorParallelRunner):
                  lazy_sampling=False, ring_heap_min_mib=256, verify_chunk_size=VERIFY_ROWS, on_cache_event=None,
                  draft_convolution="sequential", audit_convolution=False, draft_width=BLOCK,
                  gdn_valid_rows=False, compact_paired_rows=False, audit_row_layout=False):
-        if (config.speculative_tokens or config.prefix_cache or config.max_model_len != 512
+        if (config.speculative_tokens or config.prefix_cache or config.max_model_len not in CONTEXTS
                 or config.long_prefill_token_threshold != VERIFY_ROWS
                 or config.max_num_batched_tokens < config.max_num_seqs * VERIFY_ROWS):
-            raise ValueError("Orthrus TP2 requires capped prefill, 512 context, and native MTP/prefix cache off")
+            raise ValueError("Orthrus TP2 requires capped prefill, 512/1024 context, and native MTP/prefix cache off")
+        if config.max_model_len != 512 and attention_backend != "paged":
+            raise ValueError("extended context requires the paged Attention backend")
+        if online is not None and getattr(online, "context", 512) != config.max_model_len:
+            raise ValueError("serving and learner contexts must match")
         if type(draft_width) is not int or not 2 <= draft_width <= BLOCK:
             raise ValueError("draft width must be in [2, 32]")
         if not 1 <= output_candidates < draft_width:
@@ -230,7 +237,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
                                  BLOCK_SIZE, on_event=on_cache_event)
         for size in range(1, self.draft_batch_size + 1):
             self._host_slabs.update({f"orthrus_{size}_{name}": shared((2, *shape), dtype)
-                                     for name, shape, dtype in draft_inputs(size)})
+                                     for name, shape, dtype in draft_inputs(size, config.max_model_len)})
         self.spec_stats.update(rounds=0, verify_calls=0, restore_ns=0, draft_batches=0, draft_pair_batches=0)
         if stochastic:
             vocab_host = (2, self.draft_batch_size * BLOCK, TP_VOCAB)
@@ -283,7 +290,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
         def meta(shape, dtype):
             return torch.empty((2, *shape), dtype=dtype, device="meta")
 
-        inputs = draft_inputs(batch_size)
+        inputs = draft_inputs(batch_size, self.settings.max_model_len)
         rows = BLOCK * batch_size
         sample_inputs = {name: meta(shape, dtype) for name, shape, dtype in inputs}
         banks = [meta(shape, getattr(torch, dtype)) for _, shape, dtype in TP_BANK_SPECS[:23]]
@@ -297,7 +304,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
                                    compact_tp=self.draft_batch_size == 2,
                                    capture_layer=None if self.online is None else self.online.layers[0],
                                    draft_convolution=convolution or self.draft_convolution,
-                                   gdn_valid_rows=self.gdn_valid_rows, physical_block_rows=physical_rows)
+                                   gdn_valid_rows=self.gdn_valid_rows, physical_block_rows=physical_rows,
+                                   context=self.settings.max_model_len)
         return draft.compile(sample_inputs["ids"], sample_inputs["rows"], *banks, *suffix, *state,
                              *(sample_inputs[name] for name, _, _ in inputs[2:-1]),
                              meta((rows, HIDDEN), torch.bfloat16),
@@ -322,7 +330,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
             extra += sum(torch.empty(shape, dtype=dtype, device="meta").nbytes
                          for index, (shape, dtype) in enumerate(SHAPES) if index in self.online.publish_banks)
         if self.online is not None and self.online.gather_feedback:
-            extra += 2 * 2 * 512 * 256 * 2
+            extra += 2 * 2 * self.settings.max_model_len * 256 * 2
         for rank in self.admission:
             rank["orthrus_extra_bytes"] = extra
             if rank["headroom_bytes"] < extra:
@@ -376,7 +384,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
         program = self.orthrus_pair if size == 2 else self.orthrus
         hidden, logits, decisions = self.draft_buffers[size]
         ids, rows, cos, sin, table, mask, valid = (
-            self._host_slabs[f"orthrus_{size}_{name}"] for name, _, _ in draft_inputs(size))
+            self._host_slabs[f"orthrus_{size}_{name}"] for name, _, _ in draft_inputs(size, self.settings.max_model_len))
         ids.fill_(self.head["source_head_contract"]["mask_token_id"])
         rows.fill_(-1)
         cos.fill_(1)
@@ -411,7 +419,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
         if size == 1:
             metadata.extend(metadata)
         feedback_row = -1 if feedback_index is None else feedback_index * BLOCK
-        layout_key = tuple((128 if p + w <= 128 else 256 if p + w <= 256 else 512, w)
+        layout_key = tuple((capacity_for(p + w), w)
                            for p, w in zip(metadata[1::3], metadata[2::3], strict=True))
         audit_rows = (getattr(self, "audit_row_layout", False) and size == 2
                       and not any(row["key"] == layout_key for row in self.row_layout_audits))

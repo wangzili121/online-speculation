@@ -1,5 +1,7 @@
 """独立 autograd 核对手工链式反向，而非用手写梯度生成参考。"""
 
+from dataclasses import replace
+
 import pytest
 import torch
 
@@ -61,6 +63,25 @@ def test_prefix_and_history_are_explicit_constants():
     for args in ((-1, 32, 1), (40, 32, 1), (0, 1, 1), (0, 32, 32)):
         with pytest.raises(ValueError):
             evaluate(graph, inputs, past=args[0], width=args[1], valid=args[2])
+
+
+@pytest.mark.parametrize("objective", ("tv", "kl"))
+@pytest.mark.parametrize("rows", (16, 32))
+@pytest.mark.parametrize("fp32", (True, False))
+def test_extended_history_manual_vjp_matches_independent_autograd(objective, rows, fp32):
+    torch.set_num_threads(4)
+    graph = LastLayerGraph(replace(small_graph().shape, block=rows, context=1024), objective=objective)
+    inputs, masters = sample_inputs(graph, fp32=fp32)
+    values = evaluate(graph, inputs, past=1008, width=16, valid=7, fp32=fp32)
+    expected = torch.autograd.grad(values[graph.losses.name][:, 0].sum(), tuple(masters.values()))
+    for (name, _), gradient in zip(masters.items(), expected, strict=True):
+        actual = values[graph.gradients[name].name]
+        if fp32:
+            torch.testing.assert_close(actual, gradient, atol=2e-8, rtol=2e-4)
+        else:
+            assert (actual - gradient).norm() / gradient.norm().clamp_min(1e-20) < .02
+            assert (actual - gradient).abs().max() < 2e-5
+        assert torch.count_nonzero(actual)
 
 
 def test_replay_uses_one_global_position_normalizer():

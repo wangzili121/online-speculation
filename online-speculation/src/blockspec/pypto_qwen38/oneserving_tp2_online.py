@@ -133,7 +133,10 @@ class TP2Online:
                  lr_schedule="constant", parameter_scope="full", warm_update_stride=None,
                  warm_update_steps=0, publication_backend="auto", inner_steps=1, overlap_sampling=False,
                  position_weighting="uniform", teacher_scaling="host", teacher_targets="distribution",
-                 training_rows=32):
+                 training_rows=32, context=512):
+        if type(context) is not int or context not in (512, 1024):
+            raise ValueError("learner context must be 512 or 1024")
+        self.context = context
         if (type(training_rows) is not int or training_rows not in (16, 32)
                 or training_rows == 16 and (last_layers != 1 or checkpoint is not None)):
             raise ValueError("16-row training requires last-1 with fresh Adam")
@@ -255,8 +258,8 @@ class TP2Online:
                                       "orthrus_feedback_teacher"), self.feedback_host_tensors(), strict=True))
         if self.gather_feedback:
             page_size = runner.state_specs[2][0][-2]
-            self.history_table = torch.empty((2, 512 // page_size), dtype=torch.int32).share_memory_()
-            self.history_host = [torch.empty((4, 512, 256), dtype=torch.bfloat16).share_memory_()
+            self.history_table = torch.empty((2, self.context // page_size), dtype=torch.int32).share_memory_()
+            self.history_host = [torch.empty((4, self.context, 256), dtype=torch.bfloat16).share_memory_()
                                  for _ in range(2)]
             runner._host_slabs.update(orthrus_history_table=self.history_table,
                                       orthrus_history_key=self.history_host[0], orthrus_history_value=self.history_host[1])
@@ -264,9 +267,9 @@ class TP2Online:
     def compile_history(self, runner):
         _, _, (shape, dtype), _ = runner.state_specs[:4]
         kv = torch.empty((2, *shape), dtype=dtype, device="meta")
-        out = torch.empty((2, 2, 512, 256), dtype=dtype, device="meta")
+        out = torch.empty((2, 2, self.context, 256), dtype=dtype, device="meta")
         layers, _, pages, page_size, _ = shape
-        self.history_program = make_tp2_history(layers, pages, page_size).compile(
+        self.history_program = make_tp2_history(layers, pages, page_size, self.context).compile(
             kv, kv, self.history_table, out, out, 1, config=runner.runconfig)
         return self.history_program
 
@@ -302,7 +305,7 @@ class TP2Online:
                 *([self.publication.program] if self.publication is not None else [])]
 
     def build_training_graph(self):
-        return SuffixGraph(len(self.layers), SuffixShape(block=self.training_rows),
+        return SuffixGraph(len(self.layers), SuffixShape(block=self.training_rows, context=self.context),
                            objective=self.objective, focus_weight=self.focus_weight,
                            parameter_scope=self.parameter_scope,
                            position_weighted=self.position_weighting != "uniform")
@@ -359,7 +362,7 @@ class TP2Online:
 
         self.runner = runner
         if self.gather_feedback:
-            self.history_output = [runner._allocate((2, 512, 256), torch.bfloat16) for _ in range(2)]
+            self.history_output = [runner._allocate((2, self.context, 256), torch.bfloat16) for _ in range(2)]
         if self.checkpoint is not None:
             manifest = json.loads((self.checkpoint / "manifest.json").read_text())
             self.head_identity = manifest["head"]
@@ -603,7 +606,7 @@ class TP2Online:
                 self.upload(f"l63_history_{name}", host)
         else:
             for name, source in (("key", key), ("value", value)):
-                history = torch.zeros((4, 512, 256), dtype=torch.bfloat16)
+                history = torch.zeros((4, self.context, 256), dtype=torch.bfloat16)
                 for rank in range(2):
                     for head in range(2):
                         for i, page in enumerate(used_pages):
