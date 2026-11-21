@@ -104,6 +104,7 @@ def main():
     parser.add_argument("--heads", type=int, choices=(8, 16, 64), default=8)
     parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--check-every-run", action="store_true", help="Check each timed run for intermittent errors")
+    parser.add_argument("--separate-swa-pv", action="store_true", help="Use independent SWA PV matmuls and FP32 adds")
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--compressed", action="store_true", help="verify selected C1A/C2A history and LSE merge")
@@ -130,6 +131,7 @@ def main():
     report = {
         "passed": False, "compiled": False, "npu_execution": False, "simulator_execution": False,
         "platform": config.platform, "torch": torch.__version__, "pypto": pypto_version,
+        "swa_pv": "separate" if args.separate_swa_pv else "accumulated",
         "shape": {"block": BLOCK, "window": WINDOW, "heads": args.heads, "dim": HEAD_DIM},
         "output_tolerance": {"atol": 1e-5, "rtol": 1.3e-6},
         "lse_tolerance": {"atol": 2e-5, "rtol": 2e-6},
@@ -146,7 +148,7 @@ def main():
     else:
         cases = tuple((anchor, None) for anchor in (0, 1, 31, 127, 128, 129, 255, 257, 8194))
     try:
-        swa_program = make_swa_program(args.heads).compile(*swa_resident, config=config)
+        swa_program = make_swa_program(args.heads, separate_pv=args.separate_swa_pv).compile(*swa_resident, config=config)
         programs = [swa_program]
         program, resident = swa_program, swa_resident
         if args.compressed:

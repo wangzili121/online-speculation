@@ -22,8 +22,10 @@ def swa_spans(page_table, anchor: int, physical_pages: int, *, stride_rows=WINDO
     return tuple(spans + [(0, 0, 0)] * (2 - len(spans)))
 
 
-def make_swa_attention(heads: int, *, token_major_query: bool = False):
+def make_swa_attention(heads: int, *, token_major_query: bool = False, separate_pv: bool = False):
     import pypto.language as pl
+
+    pv_width = HEAD_DIM // 4
 
     @pl.jit
     def attention(
@@ -37,6 +39,10 @@ def make_swa_attention(heads: int, *, token_major_query: bool = False):
         output: pl.Out[pl.Tensor],
         lse: pl.Out[pl.Tensor],
     ):
+        local_base = pl.create_tensor([heads * BLOCK, HEAD_DIM], dtype=pl.FP32)
+        local_residual = pl.create_tensor([heads * BLOCK, HEAD_DIM], dtype=pl.FP32)
+        block_base = pl.create_tensor([heads * BLOCK, HEAD_DIM], dtype=pl.FP32)
+        block_residual = pl.create_tensor([heads * BLOCK, HEAD_DIM], dtype=pl.FP32)
         # The anchor's committed SWA window intersects at most two 128-row pages.
         # Only those rows are copied to L1. The cache plane has no output binding.
         with pl.spmd(heads, name_hint="orthrus_v41_swa"):
@@ -78,20 +84,40 @@ def make_swa_attention(heads: int, *, token_major_query: bool = False):
             # Accumulate its residual with a second BF16 Cube multiplication.
             local_lo = pl.cast(pl.sub(p_local, pl.cast(local_hi, pl.FP32)), pl.BF16, mode="rint")
             block_lo = pl.cast(pl.sub(p_block, pl.cast(block_hi, pl.FP32)), pl.BF16, mode="rint")
-            value = pl.matmul(local_hi, history, out_dtype=pl.FP32)
-            value = pl.matmul_acc(value, block_hi, temporary)
-            value = pl.matmul_acc(value, local_lo, history)
-            output[row:row + BLOCK, 0:HEAD_DIM] = pl.matmul_acc(value, block_lo, temporary)
+            if separate_pv:
+                # Write the PV products separately to avoid reusing the Cube accumulator.
+                local_base[row:row + BLOCK, :] = pl.matmul(local_hi, history, out_dtype=pl.FP32)
+                block_base[row:row + BLOCK, :] = pl.matmul(block_hi, temporary, out_dtype=pl.FP32)
+                local_residual[row:row + BLOCK, :] = pl.matmul(local_lo, history, out_dtype=pl.FP32)
+                block_residual[row:row + BLOCK, :] = pl.matmul(block_lo, temporary, out_dtype=pl.FP32)
+            else:
+                value = pl.matmul(local_hi, history, out_dtype=pl.FP32)
+                value = pl.matmul_acc(value, block_hi, temporary)
+                value = pl.matmul_acc(value, local_lo, history)
+                output[row:row + BLOCK, 0:HEAD_DIM] = pl.matmul_acc(value, block_lo, temporary)
             lse[row:row + BLOCK, 0:1] = pl.add(ref, pl.log(total))
+        if separate_pv:
+            with pl.spmd(heads, name_hint="orthrus_v41_swa_sum_pv"):
+                row = pl.tile.get_block_idx() * BLOCK
+                # Quarter-width tiles keep the independent products within Vec memory.
+                for part in pl.range(4):
+                    col = part * pv_width
+                    tile_sum = pl.add(
+                        pl.slice(local_base, [BLOCK, pv_width], [row, col]),
+                        pl.slice(block_base, [BLOCK, pv_width], [row, col]),
+                    )
+                    tile_sum = pl.add(tile_sum, pl.slice(local_residual, [BLOCK, pv_width], [row, col]))
+                    output[row:row + BLOCK, col:col + pv_width] = pl.add(
+                        tile_sum, pl.slice(block_residual, [BLOCK, pv_width], [row, col]))
         return output, lse
 
     return attention
 
 
-def make_swa_program(heads: int):
+def make_swa_program(heads: int, *, separate_pv: bool = False):
     import pypto.language as pl
 
-    attention = make_swa_attention(heads)
+    attention = make_swa_attention(heads, separate_pv=separate_pv)
 
     @pl.jit.host
     def entry(
