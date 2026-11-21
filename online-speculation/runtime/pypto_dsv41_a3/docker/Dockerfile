@@ -21,7 +21,10 @@ COPY online-speculation/runtime/pypto_dsv41_a3/serving-pair.patch /opt/orthrus/i
 COPY online-speculation/runtime/pypto_dsv41_a3/runtime-release.patch /opt/orthrus/integration/runtime-release.patch
 
 # The runtime submodule is the revision checked by PyPTO at import time.
-RUN set -e; \
+RUN --mount=type=secret,id=pypto_proxy set -e; \
+    if [[ -s /run/secrets/pypto_proxy ]]; then \
+        https_proxy="$(cat /run/secrets/pypto_proxy)"; export https_proxy http_proxy="$https_proxy"; \
+    fi; \
     git init pypto; \
     git -C pypto fetch --depth 1 https://github.com/hw-native-sys/pypto.git 72a62d13efabbb25d240e35944f68ba5bcc22b7f; \
     git -C pypto checkout --detach FETCH_HEAD; \
@@ -30,7 +33,10 @@ RUN set -e; \
     git -C pypto/runtime apply --check /opt/orthrus/integration/runtime-release.patch; \
     git -C pypto/runtime apply /opt/orthrus/integration/runtime-release.patch
 
-RUN set -e; \
+RUN --mount=type=secret,id=pypto_proxy set -e; \
+    if [[ -s /run/secrets/pypto_proxy ]]; then \
+        https_proxy="$(cat /run/secrets/pypto_proxy)"; export https_proxy http_proxy="$https_proxy"; \
+    fi; \
     git init pypto-lib; \
     git -C pypto-lib fetch --depth 1 https://github.com/Adelaide999/pypto-lib.git e32726b7edb31ee17e398a0431c0272ebd545974; \
     git -C pypto-lib checkout --detach FETCH_HEAD; \
@@ -42,7 +48,10 @@ RUN set -e; \
     git -C pypto-serving -c user.name=Integration -c user.email=integration@localhost am \
         /opt/orthrus/integration/serving-pair.patch
 
-RUN set -e; \
+RUN --mount=type=secret,id=pypto_proxy set -e; \
+    if [[ -s /run/secrets/pypto_proxy ]]; then \
+        https_proxy="$(cat /run/secrets/pypto_proxy)"; export https_proxy http_proxy="$https_proxy"; \
+    fi; \
     source /opt/pypto/bin/pypto-activate.sh; \
     uv pip install --python /opt/pypto/venv/bin/python \
         -c "$PYPTO_SRC/build-constraints.txt" cmake ninja nanobind scikit-build-core; \

@@ -53,3 +53,12 @@ bash online-speculation/scripts/dsv41_pypto_env.sh doctor
 bash online-speculation/scripts/dsv41_pypto_env.sh compile-probe
 bash online-speculation/scripts/dsv41_pypto_env.sh save /path/to/orthrus-dsv41-pypto.tar.gz
 ```
+
+构建使用 Docker BuildKit。若宿主机需要通过公司代理访问依赖站点，设置 `PYPTO_BUILD_PROXY` 指向获准用于这些站点的代理。构建脚本通过 BuildKit secret 临时传入该值。可以从已配置的环境变量读取，例如：
+
+```bash
+PYPTO_BUILD_PROXY="${https_proxy:-${HTTPS_PROXY:-}}" \
+  bash online-speculation/scripts/dsv41_pypto_env.sh build
+```
+
+如果公司代理运行在 Docker 宿主机的回环地址，构建时还需设置 `PYPTO_BUILD_NETWORK=host`。如果 Git 通过镜像或 URL 重写访问 GitHub，需要先确认相同的访问方式可用于容器构建。
