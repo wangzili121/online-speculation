@@ -1,7 +1,7 @@
 # Sourced only by build steps that download dependencies.
 if [[ -s /run/secrets/pypto_proxy ]]; then
     https_proxy="$(cat /run/secrets/pypto_proxy)"
-    export https_proxy http_proxy="$https_proxy"
+    export https_proxy http_proxy="$https_proxy" HTTPS_PROXY="$https_proxy" HTTP_PROXY="$https_proxy"
 fi
 
 if [[ -s /run/secrets/pypto_ca ]]; then
