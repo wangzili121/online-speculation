@@ -1,0 +1,35 @@
+guard {'ok': True, 'reserved_gib': 16, 'devices': [0]}
+validate.py:15: DeprecationWarning: RunConfig(platform=...) is deprecated; use backend_type and execution_mode instead.
+  config=RunConfig(platform='a2a3',ring_heap=(512<<20,)*4,distributed_config=DistributedConfig(device_ids=[0],num_sub_workers=0))
+2026-11-21 17:14:13.567 I | [perf_hint] 3 hints across 3 sites; see build_output/_jit_entry_20261121_171413_b1_haq94/report/perf_hints.log
+2026-11-21 17:14:14.409 I | [perf_hint] 3 hints across 3 sites; see build_output/_jit_entry_20261121_171414_iu19yocu/report/perf_hints.log
+2026-11-21 17:14:14.991 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_entry_20261121_171414_qiz894vd/report/perf_hints.log
+2026-11-21 17:14:15.009 I | [perf_hint] 5 hints across 5 sites; see build_output/_jit_entry_20261121_171414_qiz894vd/report/perf_hints.log
+2026-11-21 17:14:15.598 I | [perf_hint] 2 hints across 1 site; see build_output/_jit_entry_20261121_171415_769ilc2x/report/perf_hints.log
+2026-11-21 17:14:15.615 I | [perf_hint] 5 hints across 5 sites; see build_output/_jit_entry_20261121_171415_769ilc2x/report/perf_hints.log
+2026-11-21 17:14:16.150 I | [perf_hint] 3 hints across 3 sites; see build_output/_jit_entry_20261121_171416_tzp0qiom/report/perf_hints.log
+2026-11-21 17:14:16.641 I | [perf_hint] 3 hints across 3 sites; see build_output/_jit_entry_20261121_171416_4md_6das/report/perf_hints.log
+2026-11-21 17:14:17.132 I | [perf_hint] 3 hints across 3 sites; see build_output/_jit_entry_20261121_171417_3ehu6v6b/report/perf_hints.log
+2026-11-21 17:14:17.638 I | [perf_hint] 3 hints across 3 sites; see build_output/_jit_entry_20261121_171417_otqxrd69/report/perf_hints.log
+2026-11-21 17:14:18.155 I | [perf_hint] 3 hints across 3 sites; see build_output/_jit_entry_20261121_171418_dyh1aa82/report/perf_hints.log
+2026-11-21 17:14:18.665 I | [perf_hint] 3 hints across 3 sites; see build_output/_jit_entry_20261121_171418_bi44yeno/report/perf_hints.log
+guard {'ok': True, 'released': [0]}
+Traceback (most recent call last):
+  File "<string>", line 2, in <module>
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/runpy.py", line 289, in run_path
+    return _run_module_code(code, init_globals, run_name,
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/runpy.py", line 96, in _run_module_code
+    _run_code(code, mod_globals, init_globals,
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "validate.py", line 20, in <module>
+    weights=TextWeights(Path('/data/disk/models/Qwen3.8-27B'));lm=weights.read('lm_head.weight').share_memory_();mlp=weights.layer(63,'mlp.up_proj.weight').share_memory_();hosts={'lm':lm,'mlp':mlp};upstream={};extra={}
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/weight.py", line 51, in __init__
+    verify_model_identity(root)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/pypto-serving-qwen3.8-27B/serving/weight.py", line 40, in verify_model_identity
+    if metadata.read_text().splitlines()[0] != EXPECTED_REVISION:
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/pathlib.py", line 1134, in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/pathlib.py", line 1119, in open
+    return self._accessor.open(self, mode, buffering, encoding, errors,
+FileNotFoundError: [Errno 2] No such file or directory: '/data/disk/models/Qwen3.8-27B/.cache/huggingface/download/config.json.metadata'

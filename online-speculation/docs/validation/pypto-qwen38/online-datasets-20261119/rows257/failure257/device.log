@@ -1,0 +1,29 @@
+guard {'ok': True, 'reserved_gib': 16, 'devices': [0]}
+validate.py:51: DeprecationWarning: RunConfig(platform=...) is deprecated; use backend_type and execution_mode instead.
+  config = RunConfig(platform="a2a3", ring_heap=(512 << 20,) * 4,
+guard {'ok': True, 'released': [0]}
+Traceback (most recent call last):
+  File "<string>", line 2, in <module>
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/runpy.py", line 289, in run_path
+    return _run_module_code(code, init_globals, run_name,
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/runpy.py", line 96, in _run_module_code
+    _run_code(code, mod_globals, init_globals,
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "validate.py", line 165, in <module>
+    main()
+  File "validate.py", line 56, in main
+    programs = {key: TrainingPrograms(graph, config, combined=True)
+  File "validate.py", line 56, in <dictcomp>
+    programs = {key: TrainingPrograms(graph, config, combined=True)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/src-dense-v257/blockspec/pypto_qwen38/training_executor.py", line 38, in __init__
+    entry, self.arguments = make_pipeline(graph, accumulate=accumulate_gradients)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/src-dense-v257/blockspec/pypto_qwen38/training_pipeline.py", line 86, in make_pipeline
+    return bind(text, {f"stage_{i}": stage(graph, node, accumulate=accumulate)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/src-dense-v257/blockspec/pypto_qwen38/training_pipeline.py", line 86, in <dictcomp>
+    return bind(text, {f"stage_{i}": stage(graph, node, accumulate=accumulate)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/src-dense-v257/blockspec/pypto_qwen38/training_pipeline.py", line 37, in stage
+    return make_rms(*shape, mode={"norm": "forward", "norm_dx": "input", "norm_dw": "weight"}[node.kind], **options)
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/src-dense-v257/blockspec/pypto_qwen38/training_programs.py", line 439, in make_rms
+    raise ValueError("aligned RMSNorm shape and a supported mode required")
+ValueError: aligned RMSNorm shape and a supported mode required

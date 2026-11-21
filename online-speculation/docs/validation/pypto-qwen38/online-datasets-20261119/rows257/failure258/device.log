@@ -1,0 +1,19 @@
+guard {'ok': True, 'reserved_gib': 16, 'devices': [0]}
+validate.py:51: DeprecationWarning: RunConfig(platform=...) is deprecated; use backend_type and execution_mode instead.
+  config = RunConfig(platform="a2a3", ring_heap=(512 << 20,) * 4,
+guard {'ok': True, 'released': [0]}
+Traceback (most recent call last):
+  File "<string>", line 2, in <module>
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/runpy.py", line 289, in run_path
+    return _run_module_code(code, init_globals, run_name,
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/runpy.py", line 96, in _run_module_code
+    _run_code(code, mod_globals, init_globals,
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "validate.py", line 165, in <module>
+    main()
+  File "validate.py", line 92, in main
+    worker = DistributedWorker([p for item in programs.values() for p in item.programs.values()],
+  File "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/pypto-core/python/pypto/runtime/distributed_runner.py", line 1945, in __init__
+    raise ValueError("DistributedWorker requires at least one compiled program")
+ValueError: DistributedWorker requires at least one compiled program
