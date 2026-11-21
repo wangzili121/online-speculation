@@ -1,0 +1,75 @@
+{
+  "registered_UTC": "2026-11-21T21:13:19.876321+00:00",
+  "status": "registered_not_dispatched",
+  "model_code_changed": false,
+  "numerical_recipe_changed": false,
+  "existing_spoc743": "a111-v292-spoc333-aux3card-confirmed256-order743",
+  "extension_registered_after_first_threecard_case_started": true,
+  "first_case_was_already_observed_partially": true,
+  "original_primary_reserved_cohorts_already_assigned": true,
+  "new_problem_cohort": false,
+  "independent_head_and_Adam_reset_per_trial": true,
+  "GSM145_NN_modules_and_benchmark_equal_to_primary": true,
+  "gsm_numeric_contract": {
+    "head_step": 128,
+    "head_shard_sha256": [
+      "f0308fed571f54be1d75aec6ae33d9a58230ccc1bbcea1d3f4df0d1fab6de610",
+      "131649c093812f5d895e304ca0f7655b934bc456c9325a3917b1f9ccdcf0f7fd"
+    ],
+    "last_layers": 1,
+    "parameter_scope": "full",
+    "parameterization": "dense",
+    "draft_width": 8,
+    "candidates": 7,
+    "teacher_tokens": 7,
+    "objective": "tv",
+    "learning_rate": 1e-05,
+    "warmup_updates": 8,
+    "warm_update_stride": 16,
+    "warm_update_steps": 256,
+    "lr_schedule": "constant",
+    "replay_blocks": 1,
+    "publish_every": 4,
+    "inner_steps": 1,
+    "teacher_targets": "distribution",
+    "teacher_temperature": 1.0,
+    "teacher_scaling": "host",
+    "feedback_mode": "delayed",
+    "feedback_timing": "early",
+    "publication_backend": "device",
+    "temperature": 0.0,
+    "stop_on_eos": true,
+    "paired_physical_rows": 16,
+    "draft_convolution": "parallel128",
+    "gdn_valid_rows": true,
+    "output_tokens_per_request": 192
+  },
+  "desired_seeds": {
+    "spoc": [
+      743,
+      744,
+      745
+    ],
+    "gsm": [
+      743,
+      744,
+      745
+    ]
+  },
+  "criterion": "Every complete trial and pooled throughput > matched AR and initial fixed by5%; all costs, no capped updates.",
+  "scope": "Resource-layout repeats of the same frozen numerical recipes and previously reserved cohorts. Record three-card separately from primary two-card confirmations; never claim new globally unseen problems. First three-card SPoC case is already running; extension timing is explicit, not retrospectively hidden.",
+  "assets": {
+    "resource338-spoc-holdout32.json": "fde0410bbddf03ea1962275c8eb8ecc637e7610bc210d646fc193406bfcc084d",
+    "resource339-gsm-holdout32.json": "bf6ccf463fa4d7b4cd27a5cdf054cdd911a21bd5dc31d2a8f49100b0fbbb3ba0",
+    "resource338-spoc-order744.json": "4c2997f717ace998284a81bed615e612e11366a98183a61f433fc7d68c2f050e",
+    "resource338-spoc-order745.json": "56507ffdc1e9ab84182e4a5f5b2928dad144adc7ac0c48e7ee68a8e7580fb861",
+    "resource339-gsm-order744.json": "c52b3afc057c923c73c158ee70f8e40927f245d32838c5c7013cb73db9528822",
+    "resource339-gsm-order743.json": "eff9b1cf3701f39376ce36638c573d9f235d52a56fb92bee6c48cb9f70a75f31",
+    "resource339-gsm-order745.json": "d2b291b451a46a9d897115c0b4de934b3d2fb55fb10042c475eded095ac69ca2"
+  },
+  "plans": {
+    "A": "4eb92ff4a8027ace2033a3fc928f4ef927269f49288613196d0f6953274fe97b",
+    "B_spoc": "9736170fe811e5792489abb11f6717589c20a0f97e745a65fcc871faf89b062f",
+    "B_gsm": "8cd70df7a25ce560f46a81da3c9328685be6a07359dc39f4dc5ed20a9e05f495"
+  }
+}
