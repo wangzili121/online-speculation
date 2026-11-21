@@ -2,6 +2,7 @@
 """Exercise the GLM Serving verifier using proposals with known acceptance lengths."""
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,11 @@ def prepare_programs(api, devices, directory, enable_draft):
 
     phases = ("prefill", "decode", "verify", "orthrus") if enable_draft else ("prefill", "decode", "verify")
     geometry = {name: api.forward_geometry(name) for name in phases}
+    draft_digest = None
+    if enable_draft:
+        from blockspec import pypto_glm53_backbone
+
+        draft_digest = hashlib.sha256(Path(pypto_glm53_backbone.__file__).read_bytes()).hexdigest()
     manifest = directory / "manifest.json" if directory is not None else None
     if manifest is not None and manifest.is_file():
         from pypto.ir import DistributedConfig
@@ -21,6 +27,8 @@ def prepare_programs(api, devices, directory, enable_draft):
         stored = json.loads(manifest.read_text())
         if stored["geometry"] != geometry or set(stored["programs"]) != set(phases):
             raise ValueError("compiled assets do not match the verifier geometry")
+        if enable_draft and stored.get("draft_source_sha256") != draft_digest:
+            raise ValueError("cached draft differs from the source; recompile into a fresh artifact directory")
         distributed = DistributedConfig(device_ids=devices, num_sub_workers=0)
 
         def load(name, path):
@@ -41,6 +49,8 @@ def prepare_programs(api, devices, directory, enable_draft):
 
         data = {"geometry": geometry, "programs": {name: artifact(programs[name]) for name in phases},
                 "auxiliary": {name: artifact(value) for name, value in programs["_auxiliary"].items()}}
+        if enable_draft:
+            data["draft_source_sha256"] = draft_digest
         manifest.parent.mkdir(parents=True, exist_ok=True)
         temporary = manifest.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, indent=2) + "\n")
@@ -54,6 +64,7 @@ def run_cases(runner, vocab_size, mask_id=None):
     page_size = runner._api.BLOCK_SIZE
     report = []
     for matched in (0, 1, 2, 5) if mask_id is None else (None,):
+        print(f"GLM_VERIFY_CASE phase={'verifier' if mask_id is None else 'draft'} accepted={matched}", flush=True)
         runner.reset_requests([0, 1])
         # The verify block straddles a page. A partial commit at exactly the
         # edge must also publish the corresponding KDA checkpoint.
@@ -71,7 +82,9 @@ def run_cases(runner, vocab_size, mask_id=None):
         if matched is None:
             from blockspec.pypto_glm53_serving import propose_greedy
 
+            print("GLM_DRAFT_PROPOSE_START", flush=True)
             guesses = propose_greedy(runner, 1, len(prompt), baseline[0], mask_id)
+            print("GLM_DRAFT_PROPOSE_DONE", flush=True)
             block = [baseline[0], *guesses]
             matched = next((i for i, token in enumerate(guesses) if token != baseline[i + 1]), len(guesses))
             if int(runner._seq_lens[1]) != len(prompt):
@@ -195,6 +208,7 @@ def main():
     parser.add_argument("--artifact-dir", type=Path, help="save or reuse precompiled programs")
     parser.add_argument("--mask-token-id", type=int, help="also compile and exercise the actual draft model")
     parser.add_argument("--device-greedy", action="store_true", help="return draft and verifier token IDs from the NPU")
+    parser.add_argument("--draft-first", action="store_true", help="diagnose the draft before running all verifier cases")
     parser.add_argument("--resident-distillation", action="store_true", help="check the Serving-to-PyPTO replay and KL path")
     parser.add_argument("--frozen-suffix", action="store_true", help="extend resident distillation through the final MoE")
     parser.add_argument("--resident-update", type=float, metavar="LR",
@@ -215,6 +229,8 @@ def main():
         args.resident_distillation = True
     if (args.resident_distillation or args.device_greedy) and args.mask_token_id is None:
         parser.error("--resident-distillation and --device-greedy require --mask-token-id")
+    if args.draft_first and args.mask_token_id is None:
+        parser.error("--draft-first requires --mask-token-id")
 
     from pypto_serving.model.glm53.kernel_api import import_kernel
     from pypto_serving.model.glm53.npu_runner import Glm53ModelRunner
@@ -261,17 +277,30 @@ def main():
         checkpoint = api.Checkpoint(args.checkpoint)
         runner = Glm53ModelRunner(api, programs, checkpoint, args.devices, "a2a3", host_num_threads=8,
                                   orthrus_mask_token_id=args.mask_token_id)
+        result["active_stage"] = "load_weights"
         runner.open()
         vocab_size = runner.weights.model.vocab_size
-        result["verifier"] = run_cases(runner, vocab_size)
+        stages = [("verifier", None)]
         if args.mask_token_id is not None:
-            result["draft"] = run_cases(runner, vocab_size, args.mask_token_id)
+            stages.append(("draft", args.mask_token_id))
+        if args.draft_first:
+            stages.reverse()
+        for name, mask_id in stages:
+            result["active_stage"] = name
+            print(f"GLM_ACCEPTANCE_STAGE {name}", flush=True)
+            result[name] = run_cases(runner, vocab_size, mask_id)
+            result["executed"] = True
+            args.output.with_suffix(".tmp").write_text(json.dumps(result, indent=2) + "\n")
+            args.output.with_suffix(".tmp").replace(args.output)
         if args.resident_distillation:
+            result["active_stage"] = "resident_distillation"
             result["resident_distillation"] = run_resident_distillation(
                 runner, args.mask_token_id, frozen_suffix=args.frozen_suffix, learning_rate=args.resident_update,
             )
         if args.resident_update is not None:
+            result["active_stage"] = "draft_after_update"
             result["draft_after_update"] = run_cases(runner, vocab_size, args.mask_token_id)
+        result.pop("active_stage", None)
         result.update(passed=True, executed=True)
     except BaseException as error:
         result["error"] = repr(error)

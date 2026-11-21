@@ -27,6 +27,18 @@ The script checks ordinary decode against forced zero, partial and full acceptan
 
 Set `"device_greedy":true` in `--speculative-config` or use `--device-greedy` in the acceptance script to evaluate device-side top-1. The draft and verifier write logits to an NPU buffer. PyPTO scans the local vocabulary in parallel and uses the GLM TP reduction with its lowest-global-ID tie break. The host reads the compact token IDs from one rank and matches the accepted prefix. An active ID of -1 reports a nonfinite score on any shard. Distillation still gets full resident logits through its own buffers.
 
+The packed draft head is flattened before extracting individual projection and norm fields. Each field then has canonical contiguous strides for the pinned runtime's zero-copy reshape. A two-dimensional column slice retains its original row stride and triggers the runtime's `is_contiguous` assertion. The request page table uses the same flat-view convention. These operations adjust tensor views without copying weights or cache data.
+
+The sublayer regression loads real TP8 MLA weight shards and uses a synthetic paged history. It runs the production mHC, draft MLA and TP reduction together, checks byte-identical inputs, exact BF16 reduction, zero padded rows and the residual result. It passed on one and two Ascend devices. It complements the standalone MLA numerical tests and the full-model TP8 acceptance.
+
+```bash
+python scripts/validate_glm53_pypto_backbone.py \
+  --checkpoint /data/disk1/wangzili/models/Eco-Tech/GLM-5.3-Flash-w8a8 \
+  --devices 0 1 --output backbone-tp2.json
+```
+
+The TP8 target verifier passed forced acceptance lengths 0, 1, 2 and 5 across a cache-page boundary. The complete draft and online-update run still requires a TP8 rerun with the corrected head views. Cached acceptance programs include the draft view source hash. After changing those views, recompile into a fresh artifact directory. `--draft-first` exercises actual drafting before the forced verifier cases, and the result file retains completed stages when a later stage fails.
+
 The standalone regression exercises the reduction without loading the model. It uses synthetic logits, changes the active query count over consecutive calls, and covers ties, padding and nonfinite inputs.
 
 ```bash
