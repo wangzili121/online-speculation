@@ -16,10 +16,11 @@ class SuffixShape:
     block: int = 32
 
     def __post_init__(self):
-        if (self.block != 32 or self.q_heads % self.kv_heads or self.rotary % 32
+        if (type(self.block) is not int or self.block not in (16, 32)
+                or self.q_heads % self.kv_heads or self.rotary % 32
                 or self.rotary > self.dimension or any(x % 64 for x in
                 (self.hidden, self.intermediate, self.vocabulary, self.dimension, self.context))):
-            raise ValueError("aligned K32 suffix and complete GQA/RoPE groups required")
+            raise ValueError("aligned 16/32-row suffix and complete GQA/RoPE groups required")
 
 
 @dataclass(frozen=True)

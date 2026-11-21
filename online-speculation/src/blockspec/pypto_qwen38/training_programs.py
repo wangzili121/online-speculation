@@ -266,7 +266,7 @@ def reduction_tile(k, limit):
     """归约 tile 必须整除 K；形状不齐整时退到较小的硬件对齐 tile。"""
     if type(limit) is not int or limit not in (32, 64, 128, 256, 512):
         raise ValueError("reduction tile must be 32, 64, 128, 256 or 512")
-    return max(t for t in (32, 64, 128, 256, 512) if t <= limit and k % t == 0)
+    return max(t for t in (16, 32, 64, 128, 256, 512) if t <= limit and k % t == 0)
 
 
 def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradient_weight=False,
@@ -276,7 +276,7 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
     kernel = pl.jit.inline if inline else pl.jit
     M, K = a_shape[::-1] if transpose_a else a_shape
     kb, N = b_shape[::-1] if transpose_b else b_shape
-    if K != kb or M % 32 or N % 64 or K % 32:
+    if K != kb or M % 16 or N % 64 or K % 16:
         raise ValueError("aligned M/N/K required")
     if batches < 1 or b_repeats < 1 or batches % b_repeats:
         raise ValueError("whole GQA groups required")
@@ -288,7 +288,7 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
         from .training_long_linear import make_long_linear
         return make_long_linear(M,K,N,inline=inline,
                                 reduction_limit=512 if reduction_limit is None else reduction_limit)
-    MT = 64 if M % 64 == 0 else 32
+    MT = 64 if M % 64 == 0 else 32 if M % 32 == 0 else 16
     NT = 64
     KT = reduction_tile(K, 64 if reduction_limit is None else reduction_limit)
     AR, AC = (KT, MT) if transpose_a else (MT, KT)
@@ -310,7 +310,7 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
                         row = local // (N // NT) * MT
                         col = local % (N // NT) * NT
                         if K == KT:
-                            # dW 沿 K32 token 维归约，一次 Cube 即可。
+                            # dW 沿物理 token 行归约，一次 Cube 即可。
                             x = pl.slice(a, [AR, AC], [head * a_shape[0] + (1 - TA) * row, TA * row])
                             w = pl.slice(b, [BR, BC], [head // b_repeats * b_shape[0] + TB * col, (1 - TB) * col])
                             acc = pl.matmul(x, w, a_trans=transpose_a, b_trans=transpose_b, out_dtype=pl.FP32)
@@ -435,12 +435,13 @@ def make_element(shape, kind, *, scale=1., inline=False, tile=128, task_group=1,
 
 def make_rms(rows, dimension, *, mode="forward", inline=False, accumulate=False):
     """RMSNorm 前向、输入梯度或共享 Q/K norm 参数梯度。gamma 已包含 1。"""
-    if dimension % 64 or rows % 32 or mode not in {"forward", "input", "weight"}:
+    if dimension % 64 or rows < 16 or rows % 16 or mode not in {"forward", "input", "weight"}:
         raise ValueError("aligned RMSNorm shape and a supported mode required")
     import pypto.language as pl
     kernel = pl.jit.inline if inline else pl.jit
     D = dimension
     INV_D = 1. / D
+    ROW_TILE = 32 if rows % 32 == 0 else 16
 
     @kernel
     def forward(x: pl.Tensor, gamma: pl.Tensor, y: pl.Out[pl.Tensor], inv: pl.Out[pl.Tensor]):
@@ -478,11 +479,11 @@ def make_rms(rows, dimension, *, mode="forward", inline=False, accumulate=False)
         with pl.spmd(D // 64, name_hint="orthrus_rms_weight_backward"):
             col = pl.tile.get_block_idx() * 64
             acc = pl.full([1, 64], dtype=pl.FP32, value=0.)
-            for block in pl.range(rows // 32):
-                row = block * 32
-                z = pl.cast(pl.slice(x, [32, 64], [row, col]), pl.FP32)
-                d = pl.cast(pl.slice(dy, [32, 64], [row, col]), pl.FP32)
-                r = pl.mul(pl.row_sum(pl.slice(inv, [32, 8], [row, 0])), .125)
+            for block in pl.range(rows // ROW_TILE):
+                row = block * ROW_TILE
+                z = pl.cast(pl.slice(x, [ROW_TILE, 64], [row, col]), pl.FP32)
+                d = pl.cast(pl.slice(dy, [ROW_TILE, 64], [row, col]), pl.FP32)
+                r = pl.mul(pl.row_sum(pl.slice(inv, [ROW_TILE, 8], [row, 0])), .125)
                 acc = pl.add(acc, pl.col_sum(pl.row_expand_mul(pl.mul(z, d), r)))
             # 训练 raw norm 是 BF16；转回 master FP32 前保留该梯度舍入。
             result = pl.cast(pl.cast(acc, pl.BF16, mode="rint"), pl.FP32)

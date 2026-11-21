@@ -9,8 +9,8 @@ def plan(k):
 
 
 def make_long_linear(m, k, n, *, inline=False, reduction_limit=512):
-    if m != 32:
-        raise ValueError("long-vocabulary VJP requires the pinned K32 row buffer")
+    if type(m) is not int or m not in (16, 32):
+        raise ValueError("long-vocabulary VJP requires 16 or 32 physical rows")
     import pypto.language as pl
     from .training_programs import make_linear
 

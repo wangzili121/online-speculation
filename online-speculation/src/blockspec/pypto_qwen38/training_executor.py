@@ -30,14 +30,16 @@ class TrainingPrograms:
                                                      accumulate=accumulate_gradients)
                     if len(arguments)+4 > 256:
                         raise ValueError("suffix chunk exceeds the runtime argument limit")
-                    compiled = entry.compile(*map(meta, arguments), 0, 32, 31, 31, config=config)
+                    compiled = entry.compile(*map(meta, arguments), 0, graph.shape.block,
+                                             graph.shape.block - 1, graph.shape.block - 1, config=config)
                     self.programs[str(index)] = compiled
                     self.chunks.append((compiled, arguments))
                 return
             entry, self.arguments = make_pipeline(graph, accumulate=accumulate_gradients)
             if len(self.arguments)+4 > 256:
                 raise ValueError("suffix entry exceeds the runtime argument limit; use bounded chunks")
-            self.programs["suffix"] = entry.compile(*map(meta, self.arguments), 0, 32, 31, 31, config=config)
+            self.programs["suffix"] = entry.compile(*map(meta, self.arguments), 0, graph.shape.block,
+                                                   graph.shape.block - 1, graph.shape.block - 1, config=config)
             return
         for node in graph.nodes:
             key = json.dumps((node.kind, [(v.shape, v.dtype) for v in (*node.inputs, *node.outputs)], node.options), sort_keys=True)
@@ -65,9 +67,9 @@ class TrainingPrograms:
                 else:
                     raise ValueError(node.kind)
                 if node.kind in {"join", "reduce_block", "softmax"}:
-                    extra = (0, 32)
+                    extra = (0, graph.shape.block)
                 elif node.kind in {"tv", "kl"}:
-                    extra = (31, 31)
+                    extra = (graph.shape.block - 1, graph.shape.block - 1)
                 print("compiling suffix", node.kind, shape, node.options, flush=True)
                 self.programs[key] = entry.compile(*map(meta, (*node.inputs, *node.outputs)), *extra, config=config)
             self.sequence.append(self.programs[key])
