@@ -111,6 +111,21 @@ CPU 测试覆盖完整 K32、部分接受、零接受、跨 128 行分页以及�
 
 分阶段 SWA 在 25.5.1 驱动、CANN 9.0.0 上复跑了相同的 40 层 TP4 单 rank 检查。真实初始化 head 常驻约 3.17 GB，执行 167 次设备调度，缓存复读一致，运行期间没有重新上传权重。
 
+### 单机多卡验证
+
+在配套 PyPTO 环境中，从 `online-speculation` 包目录运行以下脚本。每个进程只暴露所申请的物理卡，脚本内使用从 0 开始的逻辑编号。
+
+```bash
+PYTHONPATH=src python scripts/validate_dsv41_pypto_multicard.py \
+  --lib "$PYPTO_LIB_ROOT" --cards 4 --tp 2 --output transport.json
+
+PYTHONPATH=src python scripts/validate_dsv41_pypto_resident_draft.py \
+  --lib "$PYPTO_LIB_ROOT" --model "$TARGET_WEIGHTS" --head "$DRAFT_HEAD" \
+  --cards 4 --requests 2 --output resident-tp4
+```
+
+第一项使用小张量检查原生 TP、DP、EP 通信和各 rank 的跨页还原。第二项加载真实 head 的四个 TP4 分片，检查各层请求缓存、逐层 pack 和 BF16 ReduceScatter。两卡或三卡可用 `--cards 2` 或 `--cards 3` 检查对应分片，每层对参与 rank 的贡献执行 AllReduce。实际测试已通过两卡和三卡通信、回滚及 40 层分片执行，三卡另通过了两个不同历史长度的请求共享一次调度。测试中的历史页和隐状态由脚本构造。
+
 在 Serving 所用的 Python 环境安装本仓库的 `online-speculation` 包，或在已准备好依赖的环境中设置 `PYTHONPATH="$ORTHRUS_ROOT/online-speculation/src${PYTHONPATH:+:$PYTHONPATH}"`。申请一个完整的 A3 16-rank 作业，在同一设备映射和相同提示下分别运行 target-only 和 Orthrus。Engram 仍按配对 Serving 的 HOST 路径分配。
 
 ```bash
