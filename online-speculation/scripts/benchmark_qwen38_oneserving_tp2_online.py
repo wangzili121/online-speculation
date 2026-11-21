@@ -260,6 +260,10 @@ def main(*, guard=None):
                    help="requests queued per matched arm interval; engine execution concurrency remains two")
     p.add_argument("--audit-admission", action="store_true",
                    help="diagnostic scheduler admission trace; excluded from throughput qualification")
+    p.add_argument("--compact-paired-rows", action="store_true",
+                   help="pack paired draft computation into 16 rows per request; storage stays K32")
+    p.add_argument("--audit-row-layout", action="store_true",
+                   help="diagnostic paired logits comparison against padded32; excluded from performance")
     p.add_argument("--compile-only", action="store_true")
     args = p.parse_args()
     if args.export_heads is not None and args.export_heads.exists():
@@ -291,6 +295,10 @@ def main(*, guard=None):
         p.error("AR triplets require --interleaved and a single starting head")
     if args.stream_window != 2 and not args.interleave_ar:
         p.error("larger request windows require full interleaved AR/frozen/online triplets")
+    if args.compact_paired_rows and args.draft_width > 16:
+        p.error("compact paired rows require a logical draft width <= 16")
+    if args.audit_row_layout and (not args.compact_paired_rows or args.audit_convolution):
+        p.error("row-layout audit requires compact pairs and a separate convolution audit")
     if (min(args.replay_blocks, args.publish_every) < 1 or len(set(strides)) != len(strides)
             or any(n < 2 * args.replay_blocks for n in strides) or args.tokens < 2 or args.output.exists()):
         p.error("use distinct strides >= twice replay-blocks, positive counts and a fresh result path")
@@ -345,6 +353,8 @@ def main(*, guard=None):
     runner = engine.runner = OrthrusTP2Runner(config, args.head, draft_batch_size=2,
                                               output_candidates=args.candidates, draft_width=args.draft_width,
                                               gdn_valid_rows=args.gdn_valid_rows,
+                                              compact_paired_rows=args.compact_paired_rows,
+                                              audit_row_layout=args.audit_row_layout,
                                               online=trainer, kv_pages=args.kv_pages,
                                               stochastic=bool(args.temperature), lazy_sampling=args.lazy_sampling,
                                               verify_chunk_size=args.verify_chunk_size,
@@ -382,6 +392,7 @@ def main(*, guard=None):
                                       "six_permutations_within_pair" if args.interleave_ar else
                                       "alternating_within_pair" if args.interleaved else None),
                    stream_window=args.stream_window, execution_max_num_seqs=2,
+                   paired_physical_rows=16 if args.compact_paired_rows else 32,
                    primary_metric="continuous_online_vs_target_only_AR",
                    warmup_updates=args.warmup_updates,
                    warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
@@ -390,7 +401,7 @@ def main(*, guard=None):
                    focus_weight=args.focus_weight,
                    position_weighting=args.position_weighting,
                    draft_convolution=args.draft_convolution,
-                   diagnostic_only=args.audit_convolution or args.audit_admission,
+                   diagnostic_only=args.audit_convolution or args.audit_admission or args.audit_row_layout,
                    audit_admission=args.audit_admission,
                    feedback_mode=args.feedback_mode,
                    teacher_tokens=args.teacher_tokens if args.feedback_mode == "delayed" else None,
@@ -415,6 +426,7 @@ def main(*, guard=None):
 
     def persist():
         summary["convolution_audits"] = list(runner.convolution_audits)
+        summary["row_layout_audits"] = list(runner.row_layout_audits)
         if args.audit_admission:
             summary["admission_events"] = list(admission_events)
             summary["admission_summary"] = admission_summary(summary["admission_events"])

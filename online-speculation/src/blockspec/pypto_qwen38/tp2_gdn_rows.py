@@ -1,7 +1,9 @@
 """TP2 draft 的只读 GDN 递推；供推理与独立检查共用。"""
 
 
-def make_recurrence(batch_size, *, valid_rows=False, history_slots=32):
+def make_recurrence(batch_size, *, valid_rows=False, history_slots=32, block_rows=32):
+    from .tp2_row_layout import row_geometry
+    row_geometry(batch_size, block_rows)
     if type(batch_size) is not int or batch_size not in (1, 2):
         raise ValueError("one or two independent draft blocks required")
     if type(valid_rows) is not bool:
@@ -22,14 +24,14 @@ def make_recurrence(batch_size, *, valid_rows=False, history_slots=32):
             for task in pl.range(pl.tile.get_block_idx(), 48 * batch_size, recurrence_blocks):
                 seq = task // 48
                 head = task % 48 // 2
-                first = seq * 32
+                first = seq * block_rows
                 col = task % 2 * 64
                 request_slot = slot + seq * (slot_second - slot)
                 start = ((request_slot * 48 + layer) * 24 + head) * 128 + col
                 state = pl.slice(states, [64, 128], [start, 0])
                 count = width + seq * (width_second - width)
                 if not gdn_valid_rows:
-                    count = 32
+                    count = block_rows
                 for token in pl.range(count):
                     query = pl.slice(q, [1, 128], [first + token, head * 128])
                     key = pl.slice(k, [1, 128], [first + token, head * 128])
@@ -47,7 +49,7 @@ def make_recurrence(batch_size, *, valid_rows=False, history_slots=32):
                         y, pl.BF16, mode="rint")
                 if gdn_valid_rows:
                     # 无效行仍初始化，后续向量/矩阵核不会读取未定义的工作区。
-                    for token in pl.range(count, 32):
+                    for token in pl.range(count, block_rows):
                         out[first + token:first + token + 1, head * 128 + col:head * 128 + col + 64] = pl.full(
                             [1, 64], pl.BF16, value=0.)
         return out
@@ -55,9 +57,9 @@ def make_recurrence(batch_size, *, valid_rows=False, history_slots=32):
     return recurrent
 
 
-def make_entry(batch_size, *, valid_rows=False, history_slots=32):
+def make_entry(batch_size, *, valid_rows=False, history_slots=32, block_rows=32):
     import pypto.language as pl
-    recurrent = make_recurrence(batch_size, valid_rows=valid_rows, history_slots=history_slots)
+    recurrent = make_recurrence(batch_size, valid_rows=valid_rows, history_slots=history_slots, block_rows=block_rows)
 
     @pl.jit
     def kernel(q: pl.Tensor, k: pl.Tensor, v: pl.Tensor, decay: pl.Tensor, beta: pl.Tensor,

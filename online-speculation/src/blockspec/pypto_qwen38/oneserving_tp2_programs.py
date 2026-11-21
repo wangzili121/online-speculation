@@ -11,7 +11,9 @@ GROUP_LAYERS = 64
 
 def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backend="paged",
                        batch_size=1, compact_tp=False, capture_layer=None, draft_convolution="sequential",
-                       gdn_valid_rows=False):
+                       gdn_valid_rows=False, physical_block_rows=32):
+    from .tp2_row_layout import row_geometry, make_pack, make_expand, make_feedback
+    external_rows, rows_per_dispatch = row_geometry(batch_size, physical_block_rows)
     if group_layers not in (4, 8, 16, 32, 64):
         raise ValueError("draft layer groups must divide the 64-layer backbone and end on full attention")
     if batch_size not in (1, 2) or batch_size == 2 and not compact_tp:
@@ -24,7 +26,6 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
     # JIT 会解析条件分支；关闭反馈时也须保持层号比较为数值类型。
     capture_index = capture_layer if capture_feedback else -1
     fused_residual = batch_size == 2
-    rows_per_dispatch = 32 * batch_size
     window_rows = rows_per_dispatch if compact_tp else 16384
 
     import pypto.language as pl
@@ -36,9 +37,29 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
         residual_add, rms_norm, tp_finish, tp_sum,
     )
 
-    projection = linear_bf16_m64 if batch_size == 2 else linear_bf16_m32
-    row_projection = linear_partial_m64 if batch_size == 2 else linear_partial_m32
-    mlp_gate_up = ffn_gate_up_nz_m64 if batch_size == 2 else ffn_gate_up_nz_m32
+    projection = linear_bf16_m64 if rows_per_dispatch == 64 else linear_bf16_m32
+    row_projection = linear_partial_m64 if rows_per_dispatch == 64 else linear_partial_m32
+    mlp_gate_up = ffn_gate_up_nz_m64 if rows_per_dispatch == 64 else ffn_gate_up_nz_m32
+    pack_hidden = make_pack(batch_size, physical_block_rows, 5120)
+    pack_rope = make_pack(batch_size, physical_block_rows, 64)
+    expand_hidden = make_expand(batch_size, physical_block_rows, 5120)
+    expand_logits = make_expand(batch_size, physical_block_rows, 124160)
+    capture_input = make_feedback(physical_block_rows)
+
+    # 专门化器需要从实参或 create_tensor 直接推导 LM 输出形状。
+    if physical_block_rows == 32:
+        @pl.jit.inline
+        def project_logits(hidden: pl.Tensor[[rows_per_dispatch, 5120], pl.BF16], weight: pl.Tensor,
+                           storage: pl.Out[pl.Tensor[[external_rows, 124160], pl.BF16]]):
+            projection(hidden, weight, storage)
+            return storage
+    else:
+        @pl.jit.inline
+        def project_logits(hidden: pl.Tensor[[rows_per_dispatch, 5120], pl.BF16], weight: pl.Tensor,
+                           storage: pl.Out[pl.Tensor[[external_rows, 124160], pl.BF16]]):
+            compact = pl.create_tensor([rows_per_dispatch, 124160], dtype=pl.BF16)
+            projection(hidden, weight, compact)
+            return expand_logits(compact, storage)
 
     @pl.jit.inline(auto_scope=False)
     def reduce_draft(partial: pl.Tensor,
@@ -115,7 +136,8 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
             beta[row:row + 16, 0:32] = pl.cast(pl.cast(y, pl.BF16, mode="rint"), pl.FP32)
         return decay, beta
 
-    shape = AttentionShape(q_heads=12, kv_heads=2, page_size=128, query_tile=32)
+    shape = AttentionShape(block_size=physical_block_rows, q_heads=12, kv_heads=2, page_size=128,
+                           query_tile=physical_block_rows)
     if attention_backend == "paged":
         attention, _ = make_paged_attention(shape, physical_pages=pool_pages, pool_layers=17)
     else:
@@ -123,10 +145,11 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
 
     from .tp2_gdn_convolution import make_convolution
     convolution = make_convolution(batch_size, backend="sequential" if draft_convolution == "sequential" else "parallel",
-                                   channel_tile=64 if draft_convolution == "parallel64" else 128)
+                                   channel_tile=64 if draft_convolution == "parallel64" else 128,
+                                   block_rows=physical_block_rows)
 
     from .tp2_gdn_rows import make_recurrence
-    recurrent = make_recurrence(batch_size, valid_rows=gdn_valid_rows)
+    recurrent = make_recurrence(batch_size, valid_rows=gdn_valid_rows, block_rows=physical_block_rows)
 
     @pl.jit.inline(auto_scope=False)
     def gdn(x: pl.Tensor, qw: pl.Tensor, zw: pl.Tensor, ow: pl.Tensor, aw: pl.Tensor,
@@ -179,20 +202,20 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
             projection(x, vw, v)
             prepare_heads(qp, kp, qgamma, kgamma, cos, sin, q, k, gate)
             for seq in pl.range(batch_size):
-                first = seq * 32
+                first = seq * physical_block_rows
                 local_past = past + seq * (past_second - past)
                 local_width = width + seq * (width_second - width)
                 table_row = pl.slice(table, [1, 4], [seq, 0])
                 local_table: pl.Tensor[[4], pl.INT32] = pl.reshape(table_row, [4])
                 local_bias = pl.slice(bias, [1, 512], [seq, 0])
-                local_q = pl.slice(q, [32, 3072], [first, 0])
-                local_k = pl.slice(k, [32, 512], [first, 0])
-                local_v = pl.slice(v, [32, 512], [first, 0])
-                local_gate = pl.slice(gate, [32, 3072], [first, 0])
-                local_output = pl.create_tensor([32, 3072], dtype=pl.BF16)
+                local_q = pl.slice(q, [physical_block_rows, 3072], [first, 0])
+                local_k = pl.slice(k, [physical_block_rows, 512], [first, 0])
+                local_v = pl.slice(v, [physical_block_rows, 512], [first, 0])
+                local_gate = pl.slice(gate, [physical_block_rows, 3072], [first, 0])
+                local_output = pl.create_tensor([physical_block_rows, 3072], dtype=pl.BF16)
                 attention(local_q, local_k, local_v, local_gate, key_pool, value_pool,
                           local_table, local_bias, local_output, local_past, local_width, layer)
-                with pl.spmd(48, name_hint="orthrus_store_attention_block"):
+                with pl.spmd(physical_block_rows // 16 * 24, name_hint="orthrus_store_attention_block"):
                     tile = pl.tile.get_block_idx()
                     row = tile // 24 * 16
                     col = tile % 24 * 128
@@ -202,8 +225,8 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
         return partial
 
     @pl.jit
-    def embed_draft(ids: pl.Tensor[[rows_per_dispatch], pl.INT32], rows: pl.Tensor[[rows_per_dispatch], pl.INT32],
-                    embedding: pl.Tensor, hidden: pl.Out[pl.Tensor[[rows_per_dispatch, 5120], pl.BF16]]):
+    def embed_draft(ids: pl.Tensor[[external_rows], pl.INT32], rows: pl.Tensor[[external_rows], pl.INT32],
+                    embedding: pl.Tensor, hidden: pl.Out[pl.Tensor[[external_rows, 5120], pl.BF16]]):
         # The pinned compiler misbinds the loop-carried hidden buffer if this is
         # a conditional write inside the same device entry as the layer loop.
         return embed(ids, embedding, rows, hidden)
@@ -225,9 +248,9 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
         head_q: pl.Tensor, head_k: pl.Tensor, head_v: pl.Tensor, head_q_gamma: pl.Tensor,
         head_k_gamma: pl.Tensor, head_o: pl.Tensor,
         conv_state: pl.Tensor, recurrent_state: pl.Tensor, key_pool: pl.Tensor, value_pool: pl.Tensor,
-        cos: pl.Tensor, sin: pl.Tensor, table: pl.Tensor, bias: pl.Tensor,
-        hidden: pl.InOut[pl.Tensor[[rows_per_dispatch, 5120], pl.BF16]],
-        logits: pl.Out[pl.Tensor[[rows_per_dispatch, 124160], pl.BF16]],
+        cos_storage: pl.Tensor, sin_storage: pl.Tensor, table: pl.Tensor, bias: pl.Tensor,
+        hidden_storage: pl.InOut[pl.Tensor[[external_rows, 5120], pl.BF16]],
+        logits_storage: pl.Out[pl.Tensor[[external_rows, 124160], pl.BF16]],
         feedback: pl.InOut[pl.Tensor[[32, 5120], pl.BF16]],
         feedback_row: pl.Scalar[pl.INT32],
         slot: pl.Scalar[pl.INT32], past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32],
@@ -237,6 +260,9 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
         comm_signals: pld.DistributedTensor[[2, 1], pl.INT32], rank: pl.Scalar[pl.INT32],
     ):
         with pl.scope():
+            hidden: pl.Tensor[[rows_per_dispatch, 5120], pl.BF16] = pack_hidden(hidden_storage)
+            cos: pl.Tensor[[rows_per_dispatch, 64], pl.BF16] = pack_rope(cos_storage)
+            sin: pl.Tensor[[rows_per_dispatch, 64], pl.BF16] = pack_rope(sin_storage)
             normalized = pl.create_tensor([rows_per_dispatch, 5120], dtype=pl.BF16)
             partial = pl.create_tensor([rows_per_dispatch, 5120], dtype=pl.FP32)
             reduced = pl.create_tensor([rows_per_dispatch, 5120], dtype=pl.BF16)
@@ -249,12 +275,7 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
                     if layer == capture_index:
                         if feedback_row >= 0:
                             if rank == 0:
-                                with pl.spmd(20, name_hint="orthrus_online_suffix_input"):
-                                    tile = pl.tile.get_block_idx()
-                                    row = tile // 10 * 16
-                                    col = tile % 10 * 512
-                                    feedback[row:row + 16, col:col + 512] = pl.slice(
-                                        hidden, [16, 512], [feedback_row + row, col])
+                                feedback = capture_input(hidden, feedback, feedback_row)
                 with pl.scope():
                     gamma = pl.slice(input_gamma, [1, 5120], [layer, 0])
                     rms_norm(hidden, gamma, normalized)
@@ -311,9 +332,10 @@ def make_draft_program(*, pool_pages, group_layers=GROUP_LAYERS, attention_backe
                 reduce_and_add(partial, comm_data, comm_signals, residual, reduced, hidden, rank, offset * 2 + 2)
             if begin == 64 - group_layers:
                 rms_norm(hidden, final_gamma, hidden)
-                projection(hidden, lm_head, logits)
+                logits_storage = project_logits(hidden, lm_head, logits_storage)
+            hidden_storage = expand_hidden(hidden, hidden_storage)
             tp_finish(comm_signals, rank, group_layers * 2)
-        return hidden, logits
+        return hidden_storage, logits_storage
 
     @pl.jit.host
     def draft_host(

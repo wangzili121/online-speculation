@@ -170,7 +170,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
                  attention_backend="paged", draft_batch_size=1, online=None, kv_pages=None, stochastic=False,
                  lazy_sampling=False, ring_heap_min_mib=256, verify_chunk_size=VERIFY_ROWS, on_cache_event=None,
                  draft_convolution="sequential", audit_convolution=False, draft_width=BLOCK,
-                 gdn_valid_rows=False):
+                 gdn_valid_rows=False, compact_paired_rows=False, audit_row_layout=False):
         if (config.speculative_tokens or config.prefix_cache or config.max_model_len != 512
                 or config.long_prefill_token_threshold != VERIFY_ROWS
                 or config.max_num_batched_tokens < config.max_num_seqs * VERIFY_ROWS):
@@ -181,6 +181,15 @@ class OrthrusTP2Runner(TensorParallelRunner):
             raise ValueError("candidate budget must fit within the draft width")
         if type(gdn_valid_rows) is not bool:
             raise ValueError("gdn_valid_rows must be a boolean")
+        if (type(compact_paired_rows) is not bool or compact_paired_rows
+                and (draft_batch_size != 2 or draft_width > 16)):
+            raise ValueError("compact paired rows require batch two and a logical width <= 16")
+        self.compact_paired_rows = compact_paired_rows
+        if (type(audit_row_layout) is not bool or audit_row_layout
+                and (not compact_paired_rows or audit_convolution)):
+            raise ValueError("row-layout audit requires compact pairs and a separate convolution audit")
+        self.audit_row_layout = audit_row_layout
+        self.row_layout_audits = []
         self.draft_width, self.gdn_valid_rows = draft_width, gdn_valid_rows
         if type(verify_chunk_size) is not int or verify_chunk_size not in (1, 2, VERIFY_ROWS):
             raise ValueError("verification chunk must contain one, two or four rows")
@@ -254,6 +263,9 @@ class OrthrusTP2Runner(TensorParallelRunner):
             if self.draft_batch_size == 2:
                 self.reference_orthrus_pair = self.compile_draft(2, convolution="sequential")
                 entries.append(self.reference_orthrus_pair)
+        if self.audit_row_layout:
+            self.reference_orthrus_pair = self.compile_draft(2, physical_block_rows=BLOCK)
+            entries.append(self.reference_orthrus_pair)
         if self.online is not None:
             if self.online.gather_feedback:
                 entries.append(self.online.compile_history(self))
@@ -265,7 +277,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
         # Keep native MTP disabled while authorizing short Orthrus verification calls.
         return VERIFY_ROWS if self.output_candidates else 1
 
-    def compile_draft(self, batch_size=1, *, convolution=None):
+    def compile_draft(self, batch_size=1, *, convolution=None, physical_block_rows=None):
         def meta(shape, dtype):
             return torch.empty((2, *shape), dtype=dtype, device="meta")
 
@@ -276,18 +288,20 @@ class OrthrusTP2Runner(TensorParallelRunner):
         banks[DECAY_BANK] = meta(TP_BANK_SPECS[DECAY_BANK][1], torch.float32)
         suffix = [meta(shape, dtype) for shape, dtype in SHAPES]
         state = [meta(shape, dtype) for shape, dtype in self.state_specs[:4]]
+        physical_rows = (16 if getattr(self, "compact_paired_rows", False) and batch_size == 2 else BLOCK
+                         ) if physical_block_rows is None else physical_block_rows
         draft = make_draft_program(pool_pages=self.pool_blocks, group_layers=self.group_layers,
                                    attention_backend=self.attention_backend, batch_size=batch_size,
                                    compact_tp=self.draft_batch_size == 2,
                                    capture_layer=None if self.online is None else self.online.layers[0],
                                    draft_convolution=convolution or self.draft_convolution,
-                                   gdn_valid_rows=self.gdn_valid_rows)
+                                   gdn_valid_rows=self.gdn_valid_rows, physical_block_rows=physical_rows)
         return draft.compile(sample_inputs["ids"], sample_inputs["rows"], *banks, *suffix, *state,
                              *(sample_inputs[name] for name, _, _ in inputs[2:-1]),
                              meta((rows, HIDDEN), torch.bfloat16),
                              meta((rows, TP_VOCAB), torch.bfloat16), sample_inputs["valid"],
                              meta((rows, 16), torch.float32), meta((BLOCK, HIDDEN), torch.bfloat16), -1,
-                             0, 64, BLOCK, 1, 70, BLOCK, 0,
+                             0, 64, physical_rows, 1, 70, physical_rows, 0,
                              config=self.runconfig)
 
     def _check_memory_admission(self):
@@ -299,7 +313,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
             extra += rows * ((HIDDEN + TP_VOCAB) * 2 + 16 * 4)
             window_rows = rows if self.draft_batch_size == 2 else 16384
             extra += window_rows * HIDDEN * 4 + 32
-            if self.audit_convolution:
+            if self.audit_convolution or getattr(self, "audit_row_layout", False) and size == 2:
                 extra += window_rows * HIDDEN * 4 + 32
         extra += BLOCK * HIDDEN * 2
         if self.online is not None:
@@ -395,8 +409,13 @@ class OrthrusTP2Runner(TensorParallelRunner):
         if size == 1:
             metadata.extend(metadata)
         feedback_row = -1 if feedback_index is None else feedback_index * BLOCK
-        audit = (getattr(self, "audit_convolution", False)
+        layout_key = tuple((128 if p + w <= 128 else 256 if p + w <= 256 else 512, w)
+                           for p, w in zip(metadata[1::3], metadata[2::3], strict=True))
+        audit_rows = (getattr(self, "audit_row_layout", False) and size == 2
+                      and not any(row["key"] == layout_key for row in self.row_layout_audits))
+        audit_conv = (getattr(self, "audit_convolution", False)
                  and not any(row["batch"] == size for row in self.convolution_audits))
+        audit = audit_rows or audit_conv
         if audit:
             reference = self.reference_orthrus_pair if size == 2 else self.reference_orthrus
             for begin in range(0, 64, self.group_layers):
@@ -414,14 +433,28 @@ class OrthrusTP2Runner(TensorParallelRunner):
                               *self.resident[:4], cos, sin, table, mask, hidden, logits,
                               valid, decisions, self.feedback_hidden, feedback_row, *metadata, begin, config=self.runconfig)
         if audit:
+            actual_logits = []
             for rank in range(2):
                 host = torch.empty((size * BLOCK, TP_VOCAB), dtype=torch.bfloat16)
                 self._worker_call("copy_from", host.data_ptr(), logits.shards[rank].data_ptr, host.nbytes,
                                   worker_id=rank)
-                if not torch.equal(host[valid_indices], reference_logits[rank]):
+                actual_logits.append(host[valid_indices].clone())
+                if audit_conv and not torch.equal(host[valid_indices], reference_logits[rank]):
                     raise RuntimeError("parallel convolution changed real draft logits")
-            self.convolution_audits.append(dict(batch=size, backend=self.draft_convolution,
-                                                candidate_rows=len(valid_indices), logits_bitwise_equal=True))
+            if audit_conv:
+                self.convolution_audits.append(dict(batch=size, backend=self.draft_convolution,
+                                                    candidate_rows=len(valid_indices), logits_bitwise_equal=True))
+            if audit_rows:
+                left, right = [torch.cat(values, dim=-1).float() for values in (reference_logits, actual_logits)]
+                error = float((right-left).norm()/left.norm().clamp_min(1e-30))
+                tv = float((right.softmax(-1)-left.softmax(-1)).abs().sum(-1).mul(.5).max())
+                self.row_layout_audits.append(dict(key=layout_key, paired_physical_rows=16,
+                    candidate_rows=len(valid_indices), relative_L2=error, maximum_TV=tv,
+                    logits_bitwise_equal=torch.equal(left, right),
+                    argmax_matches=int((left.argmax(-1)==right.argmax(-1)).sum())))
+                if not bool(torch.isfinite(right).all()) or not error < .01 or not tv < .01:
+                    raise RuntimeError("compact paired logits differ from the padded reference: "
+                                       +str(self.row_layout_audits[-1]))
         if feedback_index is not None:
             self.online.capture_hidden(self.feedback_hidden)
             self.online.capture_logits(logits, feedback_index * BLOCK)

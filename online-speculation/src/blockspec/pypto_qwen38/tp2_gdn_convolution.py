@@ -1,7 +1,9 @@
 """Orthrus 的只读 K32 卷积：保留历史边界，批量计算块内独立位置。"""
 
 
-def make_convolution(batch_size, *, backend="sequential", channel_tile=128):
+def make_convolution(batch_size, *, backend="sequential", channel_tile=128, block_rows=32):
+    from .tp2_row_layout import row_geometry
+    row_geometry(batch_size, block_rows)
     if batch_size not in (1, 2) or backend not in ("sequential", "parallel"):
         raise ValueError("one/two draft blocks and a supported convolution backend required")
     if channel_tile not in (64, 128):
@@ -11,7 +13,7 @@ def make_convolution(batch_size, *, backend="sequential", channel_tile=128):
     tasks = C // T * batch_size
     blocks = min(tasks, 60)
     parallel = backend == "parallel"
-    prefix = 3 if parallel else 32
+    prefix = 3 if parallel else block_rows
 
     @pl.jit.inline
     def convolution(projected: pl.Tensor, weight: pl.Tensor, history: pl.Tensor,
@@ -22,7 +24,7 @@ def make_convolution(batch_size, *, backend="sequential", channel_tile=128):
             for task in pl.range(pl.tile.get_block_idx(), tasks, blocks):
                 seq = task // (C // T)
                 col = task % (C // T) * T
-                first = seq * 32
+                first = seq * block_rows
                 request_slot = slot + seq * (slot_second - slot)
                 base = (request_slot * 48 + layer) * 4
                 p1 = pl.cast(pl.slice(rows, [1, T], [base + 1, col]), pl.FP32)
@@ -44,23 +46,23 @@ def make_convolution(batch_size, *, backend="sequential", channel_tile=128):
                     p2 = p3
                     p3 = current
                 if parallel:
-                    a = pl.cast(pl.slice(projected, [29, T], [first, col]), pl.FP32)
-                    b = pl.cast(pl.slice(projected, [29, T], [first + 1, col]), pl.FP32)
-                    c = pl.cast(pl.slice(projected, [29, T], [first + 2, col]), pl.FP32)
-                    d = pl.cast(pl.slice(projected, [29, T], [first + 3, col]), pl.FP32)
+                    a = pl.cast(pl.slice(projected, [block_rows - 3, T], [first, col]), pl.FP32)
+                    b = pl.cast(pl.slice(projected, [block_rows - 3, T], [first + 1, col]), pl.FP32)
+                    c = pl.cast(pl.slice(projected, [block_rows - 3, T], [first + 2, col]), pl.FP32)
+                    d = pl.cast(pl.slice(projected, [block_rows - 3, T], [first + 3, col]), pl.FP32)
                     x = pl.add(pl.add(pl.col_expand_mul(a, w0), pl.col_expand_mul(b, w1)),
                                pl.add(pl.col_expand_mul(c, w2), pl.col_expand_mul(d, w3)))
                     x = pl.cast(pl.cast(x, pl.BF16, mode="rint"), pl.FP32)
-                    out[first + 3:first + 32, col:col + T] = pl.cast(
+                    out[first + 3:first + block_rows, col:col + T] = pl.cast(
                         pl.div(x, pl.add(pl.exp(pl.neg(x)), 1.), high_precision=True), pl.BF16, mode="rint")
         return out
 
     return convolution
 
 
-def make_entry(batch_size, *, backend="sequential", channel_tile=128):
+def make_entry(batch_size, *, backend="sequential", channel_tile=128, block_rows=32):
     import pypto.language as pl
-    convolution = make_convolution(batch_size, backend=backend, channel_tile=channel_tile)
+    convolution = make_convolution(batch_size, backend=backend, channel_tile=channel_tile, block_rows=block_rows)
 
     @pl.jit
     def kernel(projected: pl.Tensor, weight: pl.Tensor, history: pl.Tensor,
