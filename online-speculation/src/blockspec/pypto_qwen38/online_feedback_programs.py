@@ -137,14 +137,16 @@ def make_gdn_history(layer):
     return entry
 
 
-def make_loss_sum():
+def make_loss_sum(rows=32):
+    if type(rows) is not int or rows not in (16, 32):
+        raise ValueError("loss summary requires 16 or 32 physical rows")
     import pypto.language as pl
 
     @pl.jit
     def reduce(losses: pl.Tensor, output: pl.Out[pl.Tensor]):
         with pl.spmd(1, name_hint="orthrus_online_loss_summary"):
             row = pl.tile.get_block_idx()
-            output[row:row + 1, 0:8] = pl.col_sum(pl.slice(losses, [32, 8], [0, 0]))
+            output[row:row + 1, 0:8] = pl.col_sum(pl.slice(losses, [rows, 8], [0, 0]))
         return output
 
     @pl.jit.host

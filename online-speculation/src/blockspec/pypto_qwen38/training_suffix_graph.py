@@ -27,8 +27,9 @@ class SuffixGraph(GraphBuilder):
             raise ValueError("expected full, norms or output_norms attention parameter scope")
         self.objective, self.focus_weight = objective, focus_weight
         self.position_weighted = position_weighted
-        if type(last_layers) is not int or not 1 <= last_layers <= 64 or shape.block != gdn_shape.rows:
-            raise ValueError("last-1..64 and a common K32 block required")
+        if (type(last_layers) is not int or not 1 <= last_layers <= 64
+                or last_layers > 1 and shape.block != gdn_shape.rows):
+            raise ValueError("last-1..64 required; GDN suffixes use a common K32 block")
         self.last_layers, self.capture_layer = last_layers, 64-last_layers
         self.shape, self.gdn_shape = shape, gdn_shape
         self.inputs, self.nodes, self.gradients = {}, [], {}

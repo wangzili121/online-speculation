@@ -191,6 +191,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
         self.audit_row_layout = audit_row_layout
         self.row_layout_audits = []
         self.draft_width, self.gdn_valid_rows = draft_width, gdn_valid_rows
+        if online is not None and draft_width > getattr(online, "training_rows", BLOCK):
+            raise ValueError("logical draft width exceeds the learner's physical row count")
         if type(verify_chunk_size) is not int or verify_chunk_size not in (1, 2, VERIFY_ROWS):
             raise ValueError("verification chunk must contain one, two or four rows")
         self.verify_chunk_size = verify_chunk_size

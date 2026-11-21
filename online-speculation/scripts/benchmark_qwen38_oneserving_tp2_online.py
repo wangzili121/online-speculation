@@ -228,6 +228,8 @@ def main(*, guard=None):
                    help="temperature of the learner's teacher distribution; does not change generation")
     p.add_argument("--teacher-scaling", choices=("host", "device"), default="host",
                    help="device scaling uses the existing PyPTO elementwise kernel at power-of-two temperatures")
+    p.add_argument("--training-rows", type=int, choices=(16, 32), default=32,
+                   help="physical last-1 training rows; independent of the external K32 serving ABI")
     p.add_argument("--teacher-targets", choices=("distribution", "greedy"), default="distribution",
                    help="greedy learns emitted deterministic target IDs with the existing KL kernel")
     p.add_argument("--audit-replay", action="store_true",
@@ -266,6 +268,8 @@ def main(*, guard=None):
                    help="diagnostic paired logits comparison against padded32; excluded from performance")
     p.add_argument("--compile-only", action="store_true")
     args = p.parse_args()
+    if args.training_rows == 16 and (args.last_layers != 1 or args.parameterization != "dense"):
+        p.error("16-row training requires a dense last-1 learner")
     if args.export_heads is not None and args.export_heads.exists():
         p.error("head export directory must be new")
     try:
@@ -340,7 +344,7 @@ def main(*, guard=None):
                         gather_feedback=args.gather_feedback, objective=args.objective, max_updates=args.max_updates,
                         focus_weight=args.focus_weight, audit_replay=args.audit_replay,
                         teacher_temperature=args.teacher_temperature, teacher_scaling=args.teacher_scaling,
-                        teacher_targets=args.teacher_targets,
+                        teacher_targets=args.teacher_targets, training_rows=args.training_rows,
                         warmup_updates=args.warmup_updates,
                         lr_schedule=args.lr_schedule, parameter_scope=args.parameter_scope,
                         warm_update_stride=args.warm_update_stride, warm_update_steps=args.warm_update_steps,
@@ -370,6 +374,7 @@ def main(*, guard=None):
                 admission_events.append(dict(event=event, **fields))
         engine.scheduler.on_trace = trace_admission
     summary = dict(completed=False, head_step=runner.head["step"], device_ids=list(config.devices),
+                   training_rows=args.training_rows,
                    head_payload_sha256=runner.head["source_payload_sha256"],
                    head_shard_sha256=[shard["sha256"] for shard in runner.head["rank_files"]],
                    visible_devices=os.environ.get("ASCEND_RT_VISIBLE_DEVICES"),

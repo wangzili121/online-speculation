@@ -26,6 +26,7 @@ from .oneserving_tp2 import (BLOCK, HIDDEN, LAYERS, SHAPES, TP_VOCAB, VERIFY_ROW
 from .training_executor import TrainingPrograms, TrainingWorkspace
 from .training_memory import require_suffix_memory
 from .training_suffix_graph import SuffixGraph
+from .training_graph import SuffixShape
 from .training_programs import make_element, tv_supervision_weight
 
 
@@ -131,7 +132,12 @@ class TP2Online:
                  focus_weight=1, audit_replay=False, teacher_temperature=1.0, warmup_updates=0,
                  lr_schedule="constant", parameter_scope="full", warm_update_stride=None,
                  warm_update_steps=0, publication_backend="auto", inner_steps=1, overlap_sampling=False,
-                 position_weighting="uniform", teacher_scaling="host", teacher_targets="distribution"):
+                 position_weighting="uniform", teacher_scaling="host", teacher_targets="distribution",
+                 training_rows=32):
+        if (type(training_rows) is not int or training_rows not in (16, 32)
+                or training_rows == 16 and (last_layers != 1 or checkpoint is not None)):
+            raise ValueError("16-row training requires last-1 with fresh Adam")
+        self.training_rows = training_rows
         if type(overlap_sampling) is not bool or overlap_sampling and (background or last_layers not in (1, 4)):
             raise ValueError("sampling overlap requires last-1 or last-4 and no dedicated background learner")
         self.overlap_sampling = overlap_sampling
@@ -268,6 +274,8 @@ class TP2Online:
         self.config = config if self.colocated else replace(config, distributed_config=replace(
             config.distributed_config, device_ids=[self.device]))
         self.graph = self.build_training_graph()
+        if self.graph.shape.block != self.training_rows:
+            raise ValueError("the selected learner does not support the requested physical training rows")
         self.training = TrainingPrograms(self.graph, self.config, combined=True,
                                          chunk_size=None if len(self.layers) == 1 else 24,
                                          external_gradients=True)
@@ -278,9 +286,9 @@ class TP2Online:
             from .tp2_suffix_publication import SuffixPublicationPrograms
             publication = PublicationPrograms if len(self.layers) == 1 else SuffixPublicationPrograms
             self.publication = publication(self.publication_layout(), self.publish_banks, self.config)
-        partial = torch.empty((BLOCK, 8), dtype=torch.float32, device="meta")
+        partial = torch.empty((self.training_rows, 8), dtype=torch.float32, device="meta")
         total = torch.empty((1, 8), dtype=torch.float32, device="meta")
-        self.loss_program = make_loss_sum().compile(partial, total, config=self.config)
+        self.loss_program = make_loss_sum(self.training_rows).compile(partial, total, config=self.config)
         self.teacher_scale_programs = {}
         if self.device_teacher_scaling:
             for count in range(1, VERIFY_ROWS + 1):
@@ -294,7 +302,8 @@ class TP2Online:
                 *([self.publication.program] if self.publication is not None else [])]
 
     def build_training_graph(self):
-        return SuffixGraph(len(self.layers), objective=self.objective, focus_weight=self.focus_weight,
+        return SuffixGraph(len(self.layers), SuffixShape(block=self.training_rows),
+                           objective=self.objective, focus_weight=self.focus_weight,
                            parameter_scope=self.parameter_scope,
                            position_weighted=self.position_weighting != "uniform")
 
@@ -556,12 +565,14 @@ class TP2Online:
     def capture_history(self, slot, position, width, candidates, table, cos, sin):
         if self.feedback is not None:
             raise RuntimeError("the previous feedback block is still active")
+        if width > self.training_rows:
+            raise ValueError("the logical draft block exceeds the physical training rows")
         started = time.monotonic_ns()
         self.inputs = self.pool[len(self.replay)]
         self.feedback = dict(position=position, width=width, candidates=candidates, valid=0,
                              complete=False, inputs=self.inputs, first_rejection=None, capture_round=self.rounds)
-        self.upload("cos", cos)
-        self.upload("sin", sin)
+        self.upload("cos", cos if self.training_rows == BLOCK else cos[:self.training_rows])
+        self.upload("sin", sin if self.training_rows == BLOCK else sin[:self.training_rows])
         conv, recurrent, key, value = self.runner.resident[:4]
         for layer in self.layers[:-1]:
             item = slot * 48 + layer - layer // 4
@@ -605,7 +616,8 @@ class TP2Online:
 
     def capture_hidden(self, buffer):
         started = time.monotonic_ns()
-        hidden = self.feedback_hidden
+        # serving 仍保留每请求 32 行 ABI，学习器只接收自己的有效物理前缀。
+        hidden = self.feedback_hidden if self.training_rows == BLOCK else self.feedback_hidden[:self.training_rows]
         self.read(0, buffer, hidden)
         self.upload("hidden", hidden)
         self.runner.spec_stats["feedback_ns"] += time.monotonic_ns() - started
