@@ -37,6 +37,19 @@ NPU_DEVICE=0 bash online-speculation/scripts/dsv41_pypto_env.sh probe
 
 成功报告包含 `"kernel_executed": true`。如需进入同一环境排查，执行 `NPU_DEVICE=0 bash online-speculation/scripts/dsv41_pypto_env.sh shell`。
 
+旧镜像若在探针里尝试从 GitHub 获取 `pto-isa`，可从当前镜像制作一个补齐运行时缓存的本地镜像。更新代码后，在仓库根目录执行，无需重新编译工具链或下载依赖：
+
+```bash
+docker build --network none -t orthrus-dsv41-pypto:72a62d1-offline -f - . <<'EOF'
+FROM orthrus-dsv41-pypto:72a62d1
+COPY online-speculation/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh /tmp/cache-pto-isa.sh
+RUN bash /tmp/cache-pto-isa.sh
+EOF
+
+PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline NPU_DEVICE=0 \
+  bash online-speculation/scripts/dsv41_pypto_env.sh probe
+```
+
 镜像使用官方 ARM A2/A3 开发镜像的固定 digest，其用户态 CANN 为 9.0.0。官方对该基础镜像给出的已验证驱动为 26.0.rc1。现有机器报告的 `npu-smi 25.5.1` 仍需结合 `host-info` 中的实际 driver/version.info 和设备探针判断兼容性。Docker 镜像提供用户态软件，驱动由宿主机提供。 [基础镜像说明](https://github.com/hw-native-sys/pypto/blob/72a62d13efabbb25d240e35944f68ba5bcc22b7f/docs/en/user/04-dev-container.md)
 
 已完成从固定基础镜像构建、正常容器启动导入、设备代码编译和 75 项 Serving CPU 测试。环境验证不等于模型验收：本镜像的 NPU 探针、真实权重完整模型执行和双机通信仍需分别验收，跨机运行时尚待适配。

@@ -66,6 +66,9 @@ RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca --mount=t
     uv pip install --python /opt/pypto/venv/bin/python --no-deps --no-build-isolation \
         -e "$PYPTO_SERVING_ROOT"
 
+COPY online-speculation/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh /opt/orthrus/integration/cache-pto-isa.sh
+RUN --network=none bash /opt/orthrus/integration/cache-pto-isa.sh
+
 COPY online-speculation /opt/orthrus/online-speculation
 RUN cp "$PYPTO_SRC/docker/scripts/pypto-activate.sh" /opt/pypto/bin/pypto-activate.sh && \
     source /opt/pypto/bin/pypto-activate.sh && \

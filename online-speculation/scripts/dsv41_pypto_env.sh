@@ -26,7 +26,7 @@ case "$action" in
         echo 'Builds with a proxy, custom CA or Python index require Docker Buildx.' >&2
         exit 2
       fi
-      sed -E 's/^RUN( --mount=type=secret,id=[a-z_]+)+ /RUN /' "$recipe" |
+      sed -E 's/^RUN( --mount=type=secret,id=[a-z_]+)+ /RUN /; s/^RUN --network=none /RUN /' "$recipe" |
         DOCKER_BUILDKIT=0 docker build "${build_options[@]}" -t "$image" -f - "$root/.."
       exit
     fi
