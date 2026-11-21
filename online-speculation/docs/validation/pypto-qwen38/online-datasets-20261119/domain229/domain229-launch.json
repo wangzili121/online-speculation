@@ -1,0 +1,39 @@
+{
+  "launched": [
+    {
+      "pid": 2219551,
+      "watcher": 2219552,
+      "plan": "queue-domain229-prewarm2.json",
+      "prewarm": 2,
+      "evaluated": 54,
+      "recipe": {
+        "learning_rate": "3e-5",
+        "lr_schedule": "constant",
+        "warmup_steps": 8,
+        "early_update_stride": 16,
+        "early_update_steps": 64,
+        "continuing_update_stride": 64,
+        "publish_every": 4
+      }
+    },
+    {
+      "pid": 2219553,
+      "watcher": 2219554,
+      "plan": "queue-domain229-prewarm4.json",
+      "prewarm": 4,
+      "evaluated": 52,
+      "recipe": {
+        "learning_rate": "1e-4",
+        "lr_schedule": "inverse_sqrt",
+        "warmup_steps": 8,
+        "early_update_stride": 16,
+        "early_update_steps": 64,
+        "continuing_update_stride": 64,
+        "publish_every": 4
+      }
+    }
+  ],
+  "physicalcards_per_trial": 2,
+  "source209_unchanged": true,
+  "no_reserved": true
+}
