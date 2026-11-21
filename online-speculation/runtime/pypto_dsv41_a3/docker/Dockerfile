@@ -46,13 +46,16 @@ RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca set -e; \
     git -C pypto-serving -c user.name=Integration -c user.email=integration@localhost am \
         /opt/orthrus/integration/serving-pair.patch
 
-RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca set -e; \
+RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca --mount=type=secret,id=pypto_pypi set -e; \
     source /opt/orthrus/integration/build-network.sh; \
     source /opt/pypto/bin/pypto-activate.sh; \
+    if [[ -s /run/secrets/pypto_pypi ]]; then \
+        UV_DEFAULT_INDEX="$(cat /run/secrets/pypto_pypi)"; export UV_DEFAULT_INDEX; \
+    fi; \
     uv pip install --python /opt/pypto/venv/bin/python \
         -c "$PYPTO_SRC/build-constraints.txt" cmake ninja nanobind scikit-build-core; \
     uv pip install --python /opt/pypto/venv/bin/python \
-        torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu; \
+        torch==2.10.0 --default-index https://download.pytorch.org/whl/cpu; \
     bash "$PYPTO_SRC/docker/scripts/pypto-install-ptoas.sh"; \
     PYPTO_BUILD_JOBS="$BUILD_JOBS" bash "$PYPTO_SRC/docker/scripts/pypto-build" --clean; \
     uv pip install --python /opt/pypto/venv/bin/python --no-build-isolation \

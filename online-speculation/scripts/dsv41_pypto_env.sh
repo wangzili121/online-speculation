@@ -22,17 +22,21 @@ case "$action" in
       build_options+=(--secret "id=pypto_ca,src=$PYPTO_BUILD_CA")
     fi
     if ! docker buildx version >/dev/null 2>&1; then
-      if [[ -n "${PYPTO_BUILD_PROXY:-}${PYPTO_BUILD_CA:-}" ]]; then
-        echo 'Proxy or CA builds require Docker Buildx. Verify the plugin with docker buildx version.' >&2
+      if [[ -n "${PYPTO_BUILD_PROXY:-}${PYPTO_BUILD_CA:-}${PYPTO_BUILD_PYPI:-}" ]]; then
+        echo 'Builds with a proxy, custom CA or Python index require Docker Buildx.' >&2
         exit 2
       fi
-      sed 's/^RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca /RUN /' "$recipe" |
+      sed -E 's/^RUN( --mount=type=secret,id=[a-z_]+)+ /RUN /' "$recipe" |
         DOCKER_BUILDKIT=0 docker build "${build_options[@]}" -t "$image" -f - "$root/.."
       exit
     fi
     if [[ -n "${PYPTO_BUILD_PROXY:-}" ]]; then
       export PYPTO_BUILD_PROXY
       build_options+=(--secret id=pypto_proxy,env=PYPTO_BUILD_PROXY)
+    fi
+    if [[ -n "${PYPTO_BUILD_PYPI:-}" ]]; then
+      export PYPTO_BUILD_PYPI
+      build_options+=(--secret id=pypto_pypi,env=PYPTO_BUILD_PYPI)
     fi
     export DOCKER_BUILDKIT=1
     exec docker build "${build_options[@]}" \
