@@ -126,6 +126,8 @@ PYTHONPATH=src python scripts/validate_dsv41_pypto_resident_draft.py \
 
 第一项使用小张量检查原生 TP、DP、EP 通信和各 rank 的跨页还原。第二项加载真实 head 的四个 TP4 分片，检查各层请求缓存、逐层 pack 和 BF16 ReduceScatter。两卡或三卡可用 `--cards 2` 或 `--cards 3` 检查对应分片，每层对参与 rank 的贡献执行 AllReduce。实际测试已通过两卡和三卡通信、回滚及 40 层分片执行，三卡另通过了两个不同历史长度的请求共享一次调度。测试中的历史页和隐状态由脚本构造。
 
+在单机四张 910B3 上，用公开 W8A8 checkpoint 导出的 BF16 初始化 head 完成了两个请求的 40 层 TP4 测试。所有 rank 的目标缓存逐字节一致，40 次层间 ReduceScatter 均通过 BF16 误差检查，head 只在启动时上传。单 rank 的 Reindex 另测到 anchor 16351，32 个查询的 Top-512 与参考一致。 [四卡实测记录](validation/dsv41/pypto-resident-w8a8-tp4.json)
+
 在 Serving 所用的 Python 环境安装本仓库的 `online-speculation` 包，或在已准备好依赖的环境中设置 `PYTHONPATH="$ORTHRUS_ROOT/online-speculation/src${PYTHONPATH:+:$PYTHONPATH}"`。申请一个完整的 A3 16-rank 作业，在同一设备映射和相同提示下分别运行 target-only 和 Orthrus。Engram 仍按配对 Serving 的 HOST 路径分配。
 
 ```bash
