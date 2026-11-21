@@ -17,6 +17,8 @@
 
 单张 A2、真实 27B 的末层 draft 和共享 MLP / LM 权重，合成激活、历史和教师分布；每项为八次采样中位数，包含相同的 loss 读回同步，**不含优化器和发布**。六组有效 logits、六类参数梯度均逐位相同，输入与历史逐字节不变。约 19% 是完整前反向的时间减少，不是在线全流吞吐收益。
 
-543 项 CPU 检查通过。两卡 TP2 的真实请求回放正在检查默认 32 行、16 行及 TV / KL 更新，包括反馈、greedy、权重发布与导出；尚未据此启用服务默认值。实验选项 `--training-rows 16` 仅适用于 dense last-1、逻辑块长不超过 16；GDN / last-4 与默认训练保持 32 行。正在执行的 GSM8K 冻结配方确认不采用此改动。
+543 项 CPU 检查通过。真实 27B、两卡 TP2、学习器共用 rank0 的三组请求回放也已通过：默认 32 行 KL、16 行 KL、16 行 TV 均连续完成 8 次更新，greedy 输出与 AR 一致，反馈回放和权重发布、导出检查通过。32 行与 16 行 KL 的逐次 loss、梯度范数、学习率和最终两个发布分片均逐位相同。
 
-核心实现在 `training_long_linear.py`、`training_graph.py` 和 `training_programs.py`；独立入口为 `scripts/validate_qwen38_pypto_training_rows.py`。环境需提供固定版本 PyPTO 和 OneServing 的 `serving` 模块。原始采样、源码、矩阵分解及早期失败记录见 `validation/pypto-qwen38/online-datasets-20261119/rows257/`。
+完整请求流的开销对照仍待完成，服务默认值保持不变。实验选项 `--training-rows 16` 仅适用于 dense last-1、逻辑块长不超过 16；GDN / last-4 与默认训练保持 32 行。正在执行的 GSM8K 冻结配方确认不采用此改动。
+
+核心实现在 `training_long_linear.py`、`training_graph.py` 和 `training_programs.py`；独立入口为 `scripts/validate_qwen38_pypto_training_rows.py`。环境需提供固定版本 PyPTO 和 OneServing 的 `serving` 模块。原始采样、源码、矩阵分解及早期失败记录见 `validation/pypto-qwen38/online-datasets-20261119/rows257/`，双卡请求回放见其中 `service265/`。
