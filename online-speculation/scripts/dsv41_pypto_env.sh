@@ -64,17 +64,19 @@ case "$action" in
     docker version --format '{{.Server.Version}}'
     docker info --format '{{json .Runtimes}}'
     ;;
-  doctor|preflight|compile-probe|probe|shell)
+  doctor|preflight|compile-probe|probe|shell|attention-check)
     docker image inspect "$image" >/dev/null 2>&1 || {
       echo "Image missing. Build it on a networked host or load the transferred image.tar." >&2; exit 2;
     }
-    options=(--rm --network host --shm-size "${SHM_SIZE:-16g}")
+    network=host
+    if [[ "$action" == attention-check ]]; then network=none; fi
+    options=(--rm --network "$network" --shm-size "${SHM_SIZE:-16g}")
     if [[ "$action" == preflight ]]; then
       model="${TARGET_WEIGHTS:-/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8}"
       [[ -f "$model/config.json" ]] || { echo "Missing checkpoint $model" >&2; exit 2; }
       options+=(-v "$model:/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8:ro")
     fi
-    if [[ "$action" == probe || "$action" == shell ]]; then
+    if [[ "$action" == probe || "$action" == shell || "$action" == attention-check ]]; then
       : "${NPU_DEVICE:?Set NPU_DEVICE to an available physical device number}"
       [[ "$NPU_DEVICE" =~ ^[0-9]+$ ]] || { echo "NPU_DEVICE must be a number" >&2; exit 2; }
       options+=(
@@ -93,9 +95,15 @@ case "$action" in
       options+=(-it -v "$root:/workspace/online-speculation:ro")
       exec docker run "${options[@]}" "$image" bash
     fi
+    if [[ "$action" == attention-check ]]; then
+      report_dir="$(mktemp -d "$PWD/orthrus-attention.XXXXXX")"
+      echo "Reports: $report_dir"
+      options+=(-v "$root:/workspace/online-speculation:ro" -v "$report_dir:/results")
+      exec docker run "${options[@]}" "$image" bash /workspace/online-speculation/scripts/compare_dsv41_pypto_swa.sh "$@"
+    fi
     exec docker run "${options[@]}" "$image" "$action" "$@"
     ;;
   *)
-    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|shell}"
+    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|shell|attention-check}"
     ;;
 esac

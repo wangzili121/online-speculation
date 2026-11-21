@@ -105,6 +105,7 @@ def main():
     parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--check-every-run", action="store_true", help="Check each timed run for intermittent errors")
     parser.add_argument("--separate-swa-pv", action="store_true", help="Use independent SWA PV matmuls and FP32 adds")
+    parser.add_argument("--anchor", type=int, help="Run only the built-in cases at this anchor, preserving their seeds")
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--compressed", action="store_true", help="verify selected C1A/C2A history and LSE merge")
@@ -147,6 +148,8 @@ def main():
         report["swa_input"] = "pypto_swa_output_with_host_layout_conversion"
     else:
         cases = tuple((anchor, None) for anchor in (0, 1, 31, 127, 128, 129, 255, 257, 8194))
+    if args.anchor is not None and all(anchor != args.anchor for anchor, _ in cases):
+        parser.error("requested anchor is not in the selected fixture set")
     try:
         swa_program = make_swa_program(args.heads, separate_pv=args.separate_swa_pv).compile(*swa_resident, config=config)
         programs = [swa_program]
@@ -169,6 +172,8 @@ def main():
                 swa_handles.append(worker.alloc_tensor(tuple(tensor.shape), tensor.dtype))
         before = [torch.empty_like(tensor).share_memory_() for tensor in resident[:-2]]
         for index, (anchor, ratio) in enumerate(cases):
+            if args.anchor is not None and anchor != args.anchor:
+                continue
             local, swa_expected = fixture(anchor, args.heads, 173 + index)
             expected = swa_expected
             swa_errors = {}

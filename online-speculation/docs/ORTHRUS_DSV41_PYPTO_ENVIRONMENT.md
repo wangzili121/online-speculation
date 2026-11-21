@@ -50,6 +50,15 @@ PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline NPU_DEVICE=0 \
   bash online-speculation/scripts/dsv41_pypto_env.sh probe
 ```
 
+单卡加法探针通过后，可在同一张空闲卡上检查 Orthrus K32 Attention。下面的命令使用已挂载的最新仓库源码，对照两种 SWA 的 PV 实现，逐次检查输出和 LSE。命令打印两行摘要，并把完整日志保存在宿主机当前目录下的 `orthrus-attention.*`。
+
+```bash
+PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline NPU_DEVICE=0 \
+  bash online-speculation/scripts/dsv41_pypto_env.sh attention-check
+```
+
+默认使用 8 头复测已观察到的问题。可附加 `--heads 16` 测试 TP4 的单 rank 形状。该检查使用合成张量，不需要加载模型权重。报告中的 `passed` 判断数值是否通过，`npu_execution` 判断是否实际执行过。
+
 镜像使用官方 ARM A2/A3 开发镜像的固定 digest，其用户态 CANN 为 9.0.0。官方对该基础镜像给出的已验证驱动为 26.0.rc1。现有机器报告的 `npu-smi 25.5.1` 仍需结合 `host-info` 中的实际 driver/version.info 和设备探针判断兼容性。Docker 镜像提供用户态软件，驱动由宿主机提供。 [基础镜像说明](https://github.com/hw-native-sys/pypto/blob/72a62d13efabbb25d240e35944f68ba5bcc22b7f/docs/en/user/04-dev-container.md)
 
 已完成从固定基础镜像构建、正常容器启动导入、设备代码编译和 75 项 Serving CPU 测试。环境验证不等于模型验收：本镜像的 NPU 探针、真实权重完整模型执行和双机通信仍需分别验收，跨机运行时尚待适配。
