@@ -6,11 +6,44 @@
 
 固定版 Simpler 在 Release 模式下有两处仅供调试断言使用的变量，会触发 `-Werror`。镜像应用 `runtime-release.patch` 显式标记其用途，不改计算和断言；环境报告记录该补丁的 SHA256。
 
+## 已有离线镜像的复验
+
+更新仓库后，在已通过设备探针且 0 号卡空闲的机器上执行这一条命令。它依次核对镜像配对、默认 W8A8 权重目录和 K32 Attention，完整报告保存在当前目录的 `orthrus-handoff.*`。省略 `NPU_DEVICE` 可在另一台机器只检查环境和权重，对照两机输出的 `identity`。设置 `DRAFT_HEAD` 可同时校验指定 head。
+
+```bash
+PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline NPU_DEVICE=0 \
+  bash online-speculation/scripts/dsv41_pypto_env.sh handoff-check
+```
+
+若需要为文本链路测试准备初始化 head，可在任一装有相同权重的机器导出一次，再把目录复制给另一台。目标盘需留约 10.3 GB。示例使用该公开 tokenizer 的占位 token 129279，训练 head 使用训练时的 mask ID。
+
+```bash
+PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline \
+  DRAFT_HEAD=/workspace/models/orthrus-dsv41-w8a8-init \
+  bash online-speculation/scripts/dsv41_pypto_env.sh init-head --mask-token-id 129279
+```
+
+## 双机通信探针
+
+在两台机器各选择一张空闲卡，设置 `NODE7_IP`、`NODE8_IP` 为互通的内网网卡地址。两端均使用同一 rank 0 地址和端口；`HCCL_IF_IP` 使用各自本机地址。先在 node7 运行第一条，再在 node8 运行第二条。
+
+```bash
+# node7
+PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline NPU_DEVICE=0 HCCL_IF_IP="$NODE7_IP" \
+  bash online-speculation/scripts/dsv41_pypto_env.sh fabric-check --rank 0 --master-address "$NODE7_IP"
+
+# node8
+PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline NPU_DEVICE=0 HCCL_IF_IP="$NODE8_IP" \
+  bash online-speculation/scripts/dsv41_pypto_env.sh fabric-check --rank 1 --master-address "$NODE7_IP"
+```
+
+两端的 `passed: true` 表示跨机两卡的 HCCL AllReduce 和 AlltoAll 传回了预期数据。Serving 仍需跨机 rank 分配、请求和设备执行编排，以及 EP16 通信验收。当前原生 session 在同一进程持有完整的 16 个本地设备和缓存，EP 通信域由 `HcclCommInitAll` 建立。
+
 ## 内网安装
 
 将镜像 `orthrus-dsv41-pypto.tar.gz`、代码包 `orthrus-dsv41-pypto-code.tar.gz` 及各自的 `.sha256` 文件复制到两台内网机器的工作目录。Docker 镜像包含配对源码和已安装的 `pypto_serving_a3`；内网无需联网安装 Python 包或克隆依赖仓库。
 
-两台机器都需能访问完整权重目录，可以各自保存一份，也可以使用共享挂载。容器执行镜像内的固定代码；更新实现时需重新构建并传入镜像。
+两台机器都需能访问完整权重目录，可以各自保存一份，也可以使用共享挂载。镜像固定运行时和配对 Lib/Serving，复验和 head 导出会挂载当前检出的 Orthrus 源码。
 
 ```bash
 sha256sum -c orthrus-dsv41-pypto-code.tar.gz.sha256

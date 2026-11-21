@@ -64,19 +64,25 @@ case "$action" in
     docker version --format '{{.Server.Version}}'
     docker info --format '{{json .Runtimes}}'
     ;;
-  doctor|preflight|compile-probe|probe|shell|attention-check)
+  doctor|preflight|compile-probe|probe|shell|attention-check|handoff-check|fabric-check|init-head)
     docker image inspect "$image" >/dev/null 2>&1 || {
       echo "Image missing. Build it on a networked host or load the transferred image.tar." >&2; exit 2;
     }
     network=host
-    if [[ "$action" == attention-check ]]; then network=none; fi
+    if [[ "$action" == attention-check || "$action" == handoff-check || "$action" == init-head ]]; then network=none; fi
     options=(--rm --network "$network" --shm-size "${SHM_SIZE:-16g}")
-    if [[ "$action" == preflight ]]; then
+    if [[ "$action" == preflight || "$action" == handoff-check || "$action" == init-head ]]; then
       model="${TARGET_WEIGHTS:-/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8}"
       [[ -f "$model/config.json" ]] || { echo "Missing checkpoint $model" >&2; exit 2; }
       options+=(-v "$model:/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8:ro")
+      if [[ "$action" != init-head && -n "${DRAFT_HEAD:-}" ]]; then
+        [[ -f "$DRAFT_HEAD/manifest.json" ]] || { echo "Missing head manifest in $DRAFT_HEAD" >&2; exit 2; }
+        options+=(-v "$DRAFT_HEAD:/workspace/draft-head:ro" -e DRAFT_HEAD=/workspace/draft-head)
+        if [[ "$action" == preflight ]]; then set -- --head /workspace/draft-head "$@"; fi
+      fi
     fi
-    if [[ "$action" == probe || "$action" == shell || "$action" == attention-check ]]; then
+    if [[ "$action" == probe || "$action" == shell || "$action" == attention-check || "$action" == fabric-check ||
+          ( "$action" == handoff-check && -n "${NPU_DEVICE:-}" ) ]]; then
       : "${NPU_DEVICE:?Set NPU_DEVICE to an available physical device number}"
       [[ "$NPU_DEVICE" =~ ^[0-9]+$ ]] || { echo "NPU_DEVICE must be a number" >&2; exit 2; }
       options+=(
@@ -95,15 +101,34 @@ case "$action" in
       options+=(-it -v "$root:/workspace/online-speculation:ro")
       exec docker run "${options[@]}" "$image" bash
     fi
-    if [[ "$action" == attention-check ]]; then
-      report_dir="$(mktemp -d "$PWD/orthrus-attention.XXXXXX")"
+    if [[ "$action" == init-head ]]; then
+      : "${DRAFT_HEAD:?Set DRAFT_HEAD to a new output directory on the host}"
+      [[ ! -e "$DRAFT_HEAD" ]] || { echo "Head output already exists: $DRAFT_HEAD" >&2; exit 2; }
+      mkdir -p "$(dirname "$DRAFT_HEAD")"
+      head_parent="$(cd "$(dirname "$DRAFT_HEAD")" && pwd)"
+      options+=(-v "$root:/workspace/online-speculation:ro" -v "$head_parent:/results")
+      exec docker run "${options[@]}" "$image" env "PYTHONPATH=/workspace/online-speculation/src" +        python /workspace/online-speculation/scripts/export_dsv41_orthrus_head.py +        --model /workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8 +        --output "/results/$(basename "$DRAFT_HEAD")" --from-target "$@"
+    fi
+    if [[ "$action" == fabric-check ]]; then
+      if [[ -n "${HCCL_IF_IP:-}" ]]; then options+=(-e HCCL_IF_IP); fi
+      options+=(-v "$root:/workspace/online-speculation:ro")
+      exec docker run "${options[@]}" "$image" timeout -k 5s 180s python \
+        /workspace/online-speculation/scripts/probe_dsv41_pypto_fabric.py "$@"
+    fi
+    if [[ "$action" == attention-check || "$action" == handoff-check ]]; then
+      kind=handoff
+      if [[ "$action" == attention-check ]]; then kind=attention; fi
+      report_dir="$(mktemp -d "$PWD/orthrus-$kind.XXXXXX")"
       echo "Reports: $report_dir"
       options+=(-v "$root:/workspace/online-speculation:ro" -v "$report_dir:/results")
-      exec docker run "${options[@]}" "$image" bash /workspace/online-speculation/scripts/compare_dsv41_pypto_swa.sh "$@"
+      if [[ "$action" == attention-check ]]; then
+        exec docker run "${options[@]}" "$image" bash /workspace/online-speculation/scripts/compare_dsv41_pypto_swa.sh "$@"
+      fi
+      exec docker run "${options[@]}" "$image" bash /workspace/online-speculation/scripts/check_dsv41_pypto_handoff.sh "$@"
     fi
     exec docker run "${options[@]}" "$image" "$action" "$@"
     ;;
   *)
-    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|shell|attention-check}"
+    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|shell|attention-check|handoff-check|fabric-check|init-head}"
     ;;
 esac

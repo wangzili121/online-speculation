@@ -54,7 +54,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mask-token-id", type=int, required=True)
     inputs = parser.add_mutually_exclusive_group()
-    inputs.add_argument("--from-target", action="store_true", help="initialize from the W4A8 target attention")
+    inputs.add_argument("--from-target", action="store_true", help="initialize from the W4A8 or W8A8 target attention")
     inputs.add_argument(
         "--from-trained-head", type=Path, metavar="SAFETENSORS",
         help="pack offline-trained BF16/FP32 tensors in canonical layers.N.attn.* layout",

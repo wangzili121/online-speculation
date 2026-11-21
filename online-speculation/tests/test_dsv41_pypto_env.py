@@ -70,3 +70,59 @@ def test_attention_check_mounts_current_sources_and_writes_host_reports(tmp_path
     assert "/dev/davinci6:/dev/davinci6" in args
     assert args[-5:] == ["image:offline", "bash", "/workspace/online-speculation/scripts/compare_dsv41_pypto_swa.sh",
                          "--heads", "16"]
+
+
+def test_handoff_checks_checkpoint_and_head_without_npu_by_default(tmp_path):
+    model, head = tmp_path / "model", tmp_path / "head"
+    model.mkdir()
+    head.mkdir()
+    (model / "config.json").write_text("{}")
+    (head / "manifest.json").write_text("{}")
+    env = environment(tmp_path) | {"TARGET_WEIGHTS": str(model), "DRAFT_HEAD": str(head)}
+    env.pop("NPU_DEVICE", None)
+    result = subprocess.check_output(
+        ["bash", str(SCRIPT), "handoff-check"], text=True, env=env, cwd=tmp_path,
+    )
+    location, command = result.splitlines()
+    args = json.loads(command)
+    assert f"{Path(location.removeprefix('Reports: '))}:/results" in args
+    assert f"{model}:/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8:ro" in args
+    assert f"{head}:/workspace/draft-head:ro" in args
+    assert "--device" not in args
+    assert args[args.index("--network") + 1] == "none"
+    assert args[-1].endswith("/scripts/check_dsv41_pypto_handoff.sh")
+
+    result = subprocess.check_output(
+        ["bash", str(SCRIPT), "handoff-check"], text=True, env=env | {"NPU_DEVICE": "0"}, cwd=tmp_path,
+    )
+    args = json.loads(result.splitlines()[-1])
+    assert args.count("--device") == 4
+    assert "ASCEND_RT_VISIBLE_DEVICES=0" in args
+
+
+def test_init_head_keeps_target_readonly_and_writes_output_without_npu(tmp_path):
+    model, head = tmp_path / "model", tmp_path / "head"
+    model.mkdir()
+    (model / "config.json").write_text("{}")
+    env = environment(tmp_path) | {"TARGET_WEIGHTS": str(model), "DRAFT_HEAD": str(head), "NPU_DEVICE": "6"}
+    args = json.loads(subprocess.check_output(
+        ["bash", str(SCRIPT), "init-head", "--mask-token-id", "129279"], text=True, env=env,
+    ))
+    assert "--device" not in args
+    assert f"{model}:/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8:ro" in args
+    assert f"{tmp_path}:/results" in args
+    assert args[-5:] == ["--output", "/results/head", "--from-target", "--mask-token-id", "129279"]
+
+
+def test_fabric_check_uses_host_network_and_only_one_device(tmp_path):
+    env = environment(tmp_path) | {"NPU_DEVICE": "0", "HCCL_IF_IP": "192.0.2.7"}
+    args = json.loads(subprocess.check_output(
+        ["bash", str(SCRIPT), "fabric-check", "--rank", "0", "--master-address", "192.0.2.7"],
+        text=True, env=env,
+    ))
+    assert args.count("--device") == 4
+    assert "/dev/davinci0:/dev/davinci0" in args
+    assert args[args.index("--network") + 1] == "host"
+    assert "HCCL_IF_IP" in args
+    assert args[-5:] == ["/workspace/online-speculation/scripts/probe_dsv41_pypto_fabric.py",
+                         "--rank", "0", "--master-address", "192.0.2.7"]

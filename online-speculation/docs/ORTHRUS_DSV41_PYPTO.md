@@ -109,6 +109,8 @@ CPU 测试覆盖完整 K32、部分接受、零接受、跨 128 行分页以及�
 
 固定工具链下，单张 910B3 依次执行了 40 层的一个 TP4 rank，覆盖 SWA、C2A、C1A Full、Reindex 和跨层复用；校验了非零块偏移和 TP 归约前的打包、目标缓存逐字节一致以及 head 权重零重复上传。另测了 4096、8192、16384 行桶，96 个 query 的 Top-512 集合与参考一致，压缩 Attention 最大绝对误差为 `7.63e-6`。该测试使用初始化 head 和构造的分页历史。 [实机结果](validation/dsv41/pypto-resident-draft-tp4-910b3.json) · [运行入口](../scripts/validate_dsv41_pypto_resident_draft.py)
 
+分阶段 SWA 在 25.5.1 驱动、CANN 9.0.0 上复跑了相同的 40 层 TP4 单 rank 检查。真实初始化 head 常驻约 3.17 GB，执行 167 次设备调度，缓存复读一致，运行期间没有重新上传权重。
+
 在 Serving 所用的 Python 环境安装本仓库的 `online-speculation` 包，或在已准备好依赖的环境中设置 `PYTHONPATH="$ORTHRUS_ROOT/online-speculation/src${PYTHONPATH:+:$PYTHONPATH}"`。申请一个完整的 A3 16-rank 作业，在同一设备映射和相同提示下分别运行 target-only 和 Orthrus。Engram 仍按配对 Serving 的 HOST 路径分配。
 
 ```bash
