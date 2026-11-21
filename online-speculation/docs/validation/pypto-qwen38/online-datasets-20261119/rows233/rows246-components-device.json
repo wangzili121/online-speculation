@@ -1,0 +1,139 @@
+{
+  "completed": true,
+  "passed": true,
+  "clean_shutdown": true,
+  "cases": [
+    {
+      "kind": "pack/expand/feedback",
+      "starts": [
+        0,
+        32
+      ],
+      "active_bitwise": true,
+      "tail_zero": true,
+      "input_unchanged": true
+    },
+    {
+      "kind": "convolution",
+      "slots": [
+        3,
+        21
+      ],
+      "layer": 47,
+      "active_bitwise": true,
+      "nonzero_history_unchanged": true
+    },
+    {
+      "kind": "recurrence",
+      "widths": [
+        8,
+        6
+      ],
+      "active_bitwise": true,
+      "tail_zero": true,
+      "CPU_relative_L2": 7.40808036425733e-06,
+      "CPU_max_abs": 3.0517578125e-05
+    },
+    {
+      "kind": "recurrence",
+      "widths": [
+        16,
+        2
+      ],
+      "active_bitwise": true,
+      "tail_zero": true,
+      "CPU_relative_L2": 1.185488713417726e-06,
+      "CPU_max_abs": 3.814697265625e-06
+    },
+    {
+      "kind": "recurrence",
+      "widths": [
+        2,
+        16
+      ],
+      "active_bitwise": true,
+      "tail_zero": true,
+      "CPU_relative_L2": 2.541123831178993e-05,
+      "CPU_max_abs": 0.0001220703125
+    },
+    {
+      "kind": "paged_attention",
+      "past": 0,
+      "width": 8,
+      "active_bitwise": true,
+      "maximum_layout_abs": 0.0,
+      "layout_relative_L2": 0.0,
+      "independent_SDPA_passed": true,
+      "poisoned_inactive_inputs": true,
+      "history_bitwise_unchanged": true
+    },
+    {
+      "kind": "paged_attention",
+      "past": 127,
+      "width": 8,
+      "active_bitwise": true,
+      "maximum_layout_abs": 0.0,
+      "layout_relative_L2": 0.0,
+      "independent_SDPA_passed": true,
+      "poisoned_inactive_inputs": true,
+      "history_bitwise_unchanged": true
+    },
+    {
+      "kind": "paged_attention",
+      "past": 128,
+      "width": 16,
+      "active_bitwise": true,
+      "maximum_layout_abs": 0.0,
+      "layout_relative_L2": 0.0,
+      "independent_SDPA_passed": true,
+      "poisoned_inactive_inputs": true,
+      "history_bitwise_unchanged": true
+    },
+    {
+      "kind": "paged_attention",
+      "past": 255,
+      "width": 8,
+      "active_bitwise": true,
+      "maximum_layout_abs": 0.0,
+      "layout_relative_L2": 0.0,
+      "independent_SDPA_passed": true,
+      "poisoned_inactive_inputs": true,
+      "history_bitwise_unchanged": true
+    },
+    {
+      "kind": "paged_attention",
+      "past": 256,
+      "width": 16,
+      "active_bitwise": true,
+      "maximum_layout_abs": 0.0,
+      "layout_relative_L2": 0.0,
+      "independent_SDPA_passed": true,
+      "poisoned_inactive_inputs": true,
+      "history_bitwise_unchanged": true
+    },
+    {
+      "kind": "paged_attention",
+      "past": 496,
+      "width": 16,
+      "active_bitwise": true,
+      "maximum_layout_abs": 0.0,
+      "layout_relative_L2": 0.0,
+      "independent_SDPA_passed": true,
+      "poisoned_inactive_inputs": true,
+      "history_bitwise_unchanged": true
+    },
+    {
+      "kind": "paged_attention",
+      "past": 504,
+      "width": 8,
+      "active_bitwise": true,
+      "maximum_layout_abs": 0.0,
+      "layout_relative_L2": 0.0,
+      "independent_SDPA_passed": true,
+      "poisoned_inactive_inputs": true,
+      "history_bitwise_unchanged": true
+    }
+  ],
+  "scope": "One-card real TP2-local dimensions, different request histories; layout/feedback and GDN only, not throughput",
+  "history_bitwise_unchanged": true
+}
