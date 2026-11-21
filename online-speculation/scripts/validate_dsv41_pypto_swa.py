@@ -104,7 +104,9 @@ def main():
     parser.add_argument("--heads", type=int, choices=(8, 16, 64), default=8)
     parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--check-every-run", action="store_true", help="Check each timed run for intermittent errors")
-    parser.add_argument("--separate-swa-pv", action="store_true", help="Use independent SWA PV matmuls and FP32 adds")
+    parser.add_argument("--fused-swa", action="store_true", help="Compare against the former mixed-core SWA")
+    parser.add_argument("--serving-layout", action=argparse.BooleanOptionalAction, default=False,
+                        help="Use the token-major query layout from serving")
     parser.add_argument("--anchor", type=int, help="Run only the built-in cases at this anchor, preserving their seeds")
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--compile-only", action="store_true")
@@ -132,7 +134,8 @@ def main():
     report = {
         "passed": False, "compiled": False, "npu_execution": False, "simulator_execution": False,
         "platform": config.platform, "torch": torch.__version__, "pypto": pypto_version,
-        "swa_pv": "separate" if args.separate_swa_pv else "accumulated",
+        "swa": "fused" if args.fused_swa else "staged",
+        "query_layout": "token_major" if args.serving_layout else "head_major",
         "shape": {"block": BLOCK, "window": WINDOW, "heads": args.heads, "dim": HEAD_DIM},
         "output_tolerance": {"atol": 1e-5, "rtol": 1.3e-6},
         "lse_tolerance": {"atol": 2e-5, "rtol": 2e-6},
@@ -140,7 +143,20 @@ def main():
     }
     worker, handles, swa_handles = None, [], []
     local_tensors, _ = fixture(0, args.heads, 173)
+
+    def serving_query(tensor):
+        return tensor.reshape(args.heads, BLOCK, HEAD_DIM).transpose(0, 1).reshape(BLOCK, -1).contiguous()
+
+    def refresh_swa(tensors):
+        worker.run(swa_program, *swa_handles, config=config)
+        download(worker, swa_resident[-2:], swa_handles[-2:])
+        for host, segment in zip(tensors[-4:-2], swa_resident[-2:], strict=True):
+            active = segment.reshape(args.heads, BLOCK, -1).transpose(0, 1)
+            host.copy_(F.pad(active, (0, 0, 0, HEAD_TILE - args.heads)).reshape_as(host))
+
     swa_resident = [tensor.share_memory_() for tensor in local_tensors]
+    if args.serving_layout:
+        swa_resident[0] = serving_query(local_tensors[0]).share_memory_()
     if args.compressed:
         cases = ((0, 1), (31, 2), (129, 1), (257, 2), (1025, 1), (1025, 2))
         program_entry = make_sparse_program()
@@ -151,7 +167,9 @@ def main():
     if args.anchor is not None and all(anchor != args.anchor for anchor, _ in cases):
         parser.error("requested anchor is not in the selected fixture set")
     try:
-        swa_program = make_swa_program(args.heads, separate_pv=args.separate_swa_pv).compile(*swa_resident, config=config)
+        swa_program = make_swa_program(
+            args.heads, token_major_query=args.serving_layout, fused=args.fused_swa
+        ).compile(*swa_resident, config=config)
         programs = [swa_program]
         program, resident = swa_program, swa_resident
         if args.compressed:
@@ -180,20 +198,11 @@ def main():
             tensors = local
             if args.compressed:
                 tensors, expected = compressed_fixture(anchor, ratio, 173 + index, local)
+            if args.serving_layout:
+                local[0] = serving_query(local[0])
+            if args.compressed:
                 upload(worker, local[:-2], swa_resident[:-2], swa_handles[:-2])
-                worker.run(swa_program, *swa_handles, config=config)
-                download(worker, swa_resident[-2:], swa_handles[-2:])
-                swa_errors = dict(
-                    swa_output_max_abs=float((swa_resident[-2] - swa_expected[0]).abs().max()),
-                    swa_lse_max_abs=float((swa_resident[-1] - swa_expected[1]).abs().max()),
-                )
-                download(worker, swa_resident[:-2], swa_handles[:-2])
-                for saved, original in zip(swa_resident[:-2], local[:-2], strict=True):
-                    if not torch.equal(saved.view(torch.uint8), original.view(torch.uint8)):
-                        raise AssertionError("SWA modified a read-only input")
-                for host, segment in zip(tensors[-4:-2], swa_resident[-2:], strict=True):
-                    active = segment.reshape(args.heads, BLOCK, -1).transpose(0, 1)
-                    host.copy_(F.pad(active, (0, 0, 0, HEAD_TILE - args.heads)).reshape_as(host))
+                refresh_swa(tensors)
             upload(worker, tensors[:-2], resident[:-2], handles[:-2])
             worker.run(program, *handles, config=config)
             output, lse = resident[-2:]
@@ -202,17 +211,34 @@ def main():
                 lse = lse.unflatten(0, (BLOCK, HEAD_TILE))[:, :args.heads]
             elapsed = []
             for _ in range(args.iterations):
+                if args.compressed and args.check_every_run:
+                    refresh_swa(tensors)
+                    upload(worker, tensors[-4:-2], resident[-4:-2], handles[-4:-2])
                 start = time.perf_counter()
                 worker.run(program, *handles, config=config)
                 elapsed.append(time.perf_counter() - start)
                 if args.check_every_run:
                     download(worker, resident[-2:], handles[-2:])
+                    if args.compressed and (
+                        not torch.allclose(swa_resident[-2], swa_expected[0], **report["output_tolerance"])
+                        or not torch.allclose(swa_resident[-1], swa_expected[1], **report["lse_tolerance"])
+                    ):
+                        break
                     if (not torch.allclose(output, expected[0], **report["output_tolerance"])
                             or not torch.allclose(lse, expected[1], **report["lse_tolerance"])):
                         break
             if not args.check_every_run:
                 download(worker, resident[-2:], handles[-2:])
             report.update(npu_execution=not args.simulate, simulator_execution=args.simulate)
+            if args.compressed:
+                swa_errors = dict(
+                    swa_output_max_abs=float((swa_resident[-2] - swa_expected[0]).abs().max()),
+                    swa_lse_max_abs=float((swa_resident[-1] - swa_expected[1]).abs().max()),
+                )
+                download(worker, swa_resident[:-2], swa_handles[:-2])
+                for saved, original in zip(swa_resident[:-2], local[:-2], strict=True):
+                    if not torch.equal(saved.view(torch.uint8), original.view(torch.uint8)):
+                        raise AssertionError("SWA modified a read-only input")
             for saved, tensor, handle in zip(before, resident[:-2], handles[:-2], strict=True):
                 worker.copy_from(saved.data_ptr(), handle.data_ptr, saved.nbytes)
                 if not torch.equal(saved.view(torch.uint8), tensor.view(torch.uint8)):

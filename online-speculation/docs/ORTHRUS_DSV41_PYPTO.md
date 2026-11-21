@@ -60,6 +60,8 @@ PyPTO 程序接收 RoPE 后的 32 行 query、128 行分页滑窗的只读视图
 
 验收输入包括历史为空、滑窗刚满、跨乱序物理页和长前缀。所有不可见缓存行用 NaN 填充，设备输出与现有 Torch FP32 golden 比较，并逐字节复读目标缓存、元数据和临时块。默认用 8 个本地 query head、512 维 latent，与实模 TP8 的单 rank 一致。 [PyPTO 源码](../src/blockspec/pypto_dsv41_swa.py) · [Torch golden](../src/blockspec/vllm_ascend/dsv41_attention.py)
 
+910B3、25.5.1 驱动和 CANN 9.0.0 上复现了旧版融合 SWA 的间歇性输出错误。跨页时 SWA 输出已出现偏差，LSE 仍通过参考对照。单独拆开 PV 矩阵乘仍能复现。服务现在将 QK、softmax 和 PV 分成三个设备任务，用设备缓冲区交接中间结果。8 头原始布局和 16 头 token-major 布局各通过六组分页和压缩历史用例，每组重复 30 次，逐轮对照 FP32 参考。容器内的复验命令见[环境说明](ORTHRUS_DSV41_PYPTO_ENVIRONMENT.md)。
+
 ```bash
 PYTHONPATH=src python3 scripts/validate_dsv41_pypto_swa.py \
   --device 0 --output /tmp/dsv41-swa-a2.json
