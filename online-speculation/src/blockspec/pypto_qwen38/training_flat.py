@@ -127,10 +127,11 @@ def make_render(layout):
     return entry
 
 
-def make_summary(max_norm):
+def make_summary(max_norm, *, inline=False):
     import pypto.language as pl
 
-    @pl.jit
+    kernel = pl.jit.inline if inline else pl.jit
+    @kernel
     def calculate(sums: pl.Tensor, flags: pl.Tensor, output: pl.Out[pl.Tensor]):
         with pl.spmd(1,name_hint="orthrus_suffix_global_norm"):
             row = pl.tile.get_block_idx()
@@ -148,7 +149,7 @@ def make_summary(max_norm):
     @pl.jit.host
     def entry(sums: pl.Tensor, flags: pl.Tensor, output: pl.Out[pl.Tensor]):
         calculate(sums,flags,output,device=0)
-    return entry
+    return calculate if inline else entry
 
 
 def make_flat_zero(elements, dtype="fp32"):

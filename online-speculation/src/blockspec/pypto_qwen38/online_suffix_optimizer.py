@@ -9,7 +9,7 @@ from .training_programs import make_adam
 
 
 class SuffixOptimizerPrograms:
-    def __init__(self, graph, config, *, clip_norm):
+    def __init__(self, graph, config, *, clip_norm, fused_statistics=False):
         import torch
         self.graph,self.config = graph,config
         self.layout = FlatLayout(graph.parameters)
@@ -33,12 +33,20 @@ class SuffixOptimizerPrograms:
             self.counts.append(count)
             rows = count
         self.summary = make_summary(clip_norm).compile(meta((1,8)),meta((1,8)),meta((3,8)),config=config)
+        self.fused_statistics = None
+        if fused_statistics:
+            from .training_statistics import make_statistics
+            entry, counts = make_statistics(shape, clip_norm)
+            assert counts == self.counts
+            arguments = [meta((count,8)) for count in counts for _ in range(2)]
+            self.fused_statistics = entry.compile(f,*arguments,meta((3,8)),config=config)
         d = graph.shape.dimension
         self.equal = make_norm_equal(d).compile(meta((1,d)),meta((1,d)),meta((1,8)),config=config)
 
     def programs(self):
         return [self.initialize,self.render,self.adam,self.accumulate,self.zero,self.zero_raw,self.zero_special,
-                self.stat,*self.reductions,self.summary,self.equal]
+                self.stat,*self.reductions,self.summary,self.equal,
+                *([self.fused_statistics] if self.fused_statistics is not None else [])]
 
 
 class SuffixOptimizer:
@@ -139,10 +147,14 @@ class SuffixOptimizer:
         self.run(self.programs.accumulate,self.candidate[0],self.scratch,self.candidate[0])
 
     def statistics(self, value):
-        self.run(self.programs.stat,value,*self.stats[0])
-        for i,entry in enumerate(self.programs.reductions):
-            self.run(entry,*self.stats[i],*self.stats[i+1])
-        self.run(self.programs.summary,*self.stats[-1],self.summary)
+        fused = getattr(self.programs,"fused_statistics",None)
+        if fused is not None:
+            self.run(fused,value,*(tensor for pair in self.stats for tensor in pair),self.summary)
+        else:
+            self.run(self.programs.stat,value,*self.stats[0])
+            for i,entry in enumerate(self.programs.reductions):
+                self.run(entry,*self.stats[i],*self.stats[i+1])
+            self.run(self.programs.summary,*self.stats[-1],self.summary)
         self.worker.copy_from(self.summary_host.data_ptr(),self.summary.data_ptr,96)
         norm,scale,valid = self.summary_host[:,0].tolist()
         if valid != 1. or not math.isfinite(norm) or not math.isfinite(scale):

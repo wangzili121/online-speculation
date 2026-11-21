@@ -1,7 +1,7 @@
 """梯度有限性、全局裁剪与执行参数发布；状态候选确认后才切换版本。"""
 
 
-def make_stats(shape, *, input_bf16=False):
+def make_stats(shape, *, input_bf16=False, inline=False):
     from math import prod
     import pypto.language as pl
     N = prod(shape)
@@ -11,7 +11,8 @@ def make_stats(shape, *, input_bf16=False):
     from .training_programs import make_fp32_row
     load = make_fp32_row(T, input_fp32=not input_bf16)
 
-    @pl.jit
+    kernel = pl.jit.inline if inline else pl.jit
+    @kernel
     def stats(value: pl.Tensor, sums: pl.Out[pl.Tensor], flags: pl.Out[pl.Tensor]):
         x = pl.reshape(value, [N // T, T])
         with pl.spmd((N // T + 15) // 16, name_hint="orthrus_gradient_statistics"):
@@ -28,14 +29,15 @@ def make_stats(shape, *, input_bf16=False):
     @pl.jit.host
     def entry(value: pl.Tensor, sums: pl.Out[pl.Tensor], flags: pl.Out[pl.Tensor]):
         stats(value, sums, flags, device=0)
-    return entry, N // T
+    return (stats if inline else entry), N // T
 
 
-def make_reduce(rows):
+def make_reduce(rows, *, inline=False):
     import pypto.language as pl
     R = (rows + 63) // 64
 
-    @pl.jit
+    kernel = pl.jit.inline if inline else pl.jit
+    @kernel
     def reduce(sums: pl.Tensor, flags: pl.Tensor, out_sums: pl.Out[pl.Tensor], out_flags: pl.Out[pl.Tensor]):
         padded = pl.create_tensor([R * 64, 8], dtype=pl.FP32)
         good = pl.create_tensor([R * 64, 8], dtype=pl.FP32)
@@ -59,7 +61,7 @@ def make_reduce(rows):
     @pl.jit.host
     def entry(sums: pl.Tensor, flags: pl.Tensor, out_sums: pl.Out[pl.Tensor], out_flags: pl.Out[pl.Tensor]):
         reduce(sums, flags, out_sums, out_flags, device=0)
-    return entry, R
+    return (reduce if inline else entry), R
 
 
 def make_publish(shape, *, gamma=False, inline=False):
