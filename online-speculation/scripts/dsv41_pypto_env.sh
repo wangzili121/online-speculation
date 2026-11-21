@@ -10,17 +10,27 @@ case "$action" in
     [[ "$(uname -s)/$(uname -m)" == Linux/aarch64 ]] || {
       echo "Build this ARM64 image on a Linux aarch64 Docker host." >&2; exit 2;
     }
+    recipe="$root/runtime/pypto_dsv41_a3/docker/Dockerfile"
     build_options=(--build-arg "BUILD_JOBS=${BUILD_JOBS:-4}")
+    if [[ -n "${PYPTO_BUILD_NETWORK:-}" ]]; then
+      build_options+=(--network "$PYPTO_BUILD_NETWORK")
+    fi
+    if ! docker buildx version >/dev/null 2>&1; then
+      if [[ -n "${PYPTO_BUILD_PROXY:-}" ]]; then
+        echo 'Proxy builds require Docker Buildx. Install the CLI plugin and verify with docker buildx version.' >&2
+        exit 2
+      fi
+      sed 's/^RUN --mount=type=secret,id=pypto_proxy /RUN /' "$recipe" |
+        DOCKER_BUILDKIT=0 docker build "${build_options[@]}" -t "$image" -f - "$root/.."
+      exit
+    fi
     if [[ -n "${PYPTO_BUILD_PROXY:-}" ]]; then
       export PYPTO_BUILD_PROXY
       build_options+=(--secret id=pypto_proxy,env=PYPTO_BUILD_PROXY)
     fi
-    if [[ -n "${PYPTO_BUILD_NETWORK:-}" ]]; then
-      build_options+=(--network "$PYPTO_BUILD_NETWORK")
-    fi
     export DOCKER_BUILDKIT=1
     exec docker build "${build_options[@]}" \
-      -t "$image" -f "$root/runtime/pypto_dsv41_a3/docker/Dockerfile" "$root/.."
+      -t "$image" -f "$recipe" "$root/.."
     ;;
   save)
     destination="${1:?Usage: dsv41_pypto_env.sh save /path/to/image.tar}"
