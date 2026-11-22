@@ -14,7 +14,7 @@ from .pypto_dsv41_draft import (
     read_draft_weights,
 )
 from .pypto_dsv41_indexer import INDEX_DIM, INDEX_HEADS, index_controls, make_indexer_program
-from .pypto_dsv41_sparse import TILE, TOPK, make_sparse_attention
+from .pypto_dsv41_sparse import TILE, TOPK, make_joined_attention, make_sparse_attention
 from .pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW, make_swa_attention, swa_spans
 
 
@@ -25,7 +25,8 @@ def native(name):
 class ResidentDraftAttention:
     """Own static diffusion operands and share the native rank workers."""
 
-    def __init__(self, model, head, resident, topology, output, *, native_module=native, local_ranks=None):
+    def __init__(self, model, head, resident, topology, output, *, native_module=native, local_ranks=None,
+                 joined_attention=False):
         if topology["tp"] != 4:
             raise ValueError("DSV4.1 draft attention requires the verified TP4 shard geometry")
         ranks = tuple(range(topology["ep"]) if local_ranks is None else local_ranks)
@@ -35,6 +36,7 @@ class ResidentDraftAttention:
         self.rank_ids = {rank: local for local, rank in enumerate(ranks)}
         self.config, self.manifest, files = read_draft_artifact(Path(model), Path(head))
         self.resident, self.topology = resident, topology
+        self.joined_attention = joined_attention
         self.native = native_module
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
@@ -177,27 +179,39 @@ class DraftRound:
         spans = swa_spans(swa["pages"], anchor, swa["shape"][0], stride_rows=swa["stride_rows"],
                           offset_rows=swa["offset_rows"])
         output_shape = (BLOCK * heads, HEAD_DIM)
-        local = workspace(output_shape, torch.float32)
-        local_lse = workspace((BLOCK * heads, 1), torch.float32)
-        attention.execute(("swa", swa["handle"].shape[0]), rank,
-                          lambda: make_swa_attention(heads, token_major_query=True),
-                          dict(query=values["query"], pages=swa["handle"], spans=torch.tensor(spans, dtype=torch.int32),
-                               temporary=values["temporary"], history_bias=bias, sink=operands["sink"],
-                               zeros=attention.constants[rank]["swa_zero"], output=local, lse=local_lse))
-
         compressed = role["index_source"] is not None
-        context = local
+        lse_shape = (BLOCK * heads, 1)
+        swa_args = dict(query=values["query"], spans=torch.tensor(spans, dtype=torch.int32),
+                        temporary=values["temporary"], history_bias=bias, sink=operands["sink"])
+        swa_pages = swa["handle"]
+        swa_zeros = attention.constants[rank]["swa_zero"]
+        joined = compressed and attention.joined_attention
+        if not joined:
+            local = workspace(output_shape, torch.float32)
+            local_lse = workspace(lse_shape, torch.float32)
+            attention.execute(("swa", swa_pages.shape[0]), rank,
+                              lambda: make_swa_attention(heads, token_major_query=True),
+                              dict(swa_args, pages=swa_pages, zeros=swa_zeros, output=local, lse=local_lse))
+            context = local
+
         if compressed:
             long, = planes["long"]
             selected = self.index_rows(rank, layer, owner, history, values, workspace)
             context = workspace(output_shape, torch.float32)
-            attention.execute(("sparse", long["handle"].shape[0]), rank,
-                              lambda: make_sparse_attention(head_major_swa=True),
-                              dict(query=values["query"].view(-1, HEAD_DIM), pages=long["handle"],
-                                   rows=selected["physical_rows"], lengths=selected["lengths"],
-                                   bias=selected["bias"], zeros=attention.constants[rank]["sparse_zero"],
-                                   local_output=local, local_lse=local_lse, output=context,
-                                   lse=workspace((BLOCK * heads, 1), torch.float32)))
+            sparse_args = dict(pages=long["handle"], rows=selected["physical_rows"],
+                               lengths=selected["lengths"], bias=selected["bias"],
+                               zeros=attention.constants[rank]["sparse_zero"], output=context,
+                               lse=workspace(lse_shape, torch.float32))
+            flat_query = values["query"].view(-1, HEAD_DIM)
+            if joined:
+                attention.execute(("joined_attention", swa_pages.shape[0], long["handle"].shape[0]), rank,
+                                  make_joined_attention,
+                                  dict(swa_args, **sparse_args, swa_pages=swa_pages, swa_zeros=swa_zeros,
+                                       query_flat=flat_query))
+            else:
+                attention.execute(("sparse", long["handle"].shape[0]), rank,
+                                  lambda: make_sparse_attention(head_major_swa=True),
+                                  dict(sparse_args, query=flat_query, local_output=local, local_lse=local_lse))
 
         values.update(attention=context, context=workspace((BLOCK, width)), unrotated=workspace((BLOCK, width)),
                       grouped=workspace((BLOCK, operands["wo_b"].shape[0])), contribution=contribution)

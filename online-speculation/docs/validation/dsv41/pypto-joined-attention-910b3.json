@@ -1,0 +1,28 @@
+{
+  "device": "Ascend 910B3",
+  "pypto": "72a62d13",
+  "block": 32,
+  "local_query_heads": 16,
+  "comparison": "Same resident worker, alternating separate and grouped dispatch with identical inputs",
+  "warmup_pairs": 5,
+  "timed_pairs_per_case": 50,
+  "cases": [
+    {"anchor": 31, "ratio": 2, "separate_us": 1969.31, "grouped_us": 1239.78, "output_and_lse_byte_exact": true},
+    {"anchor": 129, "ratio": 1, "separate_us": 2142.05, "grouped_us": 1300.33, "output_and_lse_byte_exact": true},
+    {"anchor": 257, "ratio": 2, "separate_us": 2094.81, "grouped_us": 1276.54, "output_and_lse_byte_exact": true},
+    {"anchor": 1025, "ratio": 1, "separate_us": 2084.82, "grouped_us": 1267.72, "output_and_lse_byte_exact": true},
+    {"anchor": 1025, "ratio": 2, "separate_us": 2046.73, "grouped_us": 1246.03, "output_and_lse_byte_exact": true}
+  ],
+  "single_rank_draft_integration": {
+    "inputs": "Synthetic head with production dimensions and synthetic paged history",
+    "global_rank": 0,
+    "layers": 40,
+    "requests": 2,
+    "anchors": [257, 129],
+    "separate_dispatches": 333,
+    "grouped_dispatches": 257,
+    "output_byte_exact": true,
+    "interleaved_replay_byte_exact": true,
+    "history_cache_byte_exact": true
+  }
+}

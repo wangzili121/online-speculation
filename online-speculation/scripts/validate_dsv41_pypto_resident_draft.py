@@ -88,10 +88,9 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
     table, pinned, active, record, width, hidden, cos, sin = prepared
     capacity = hidden.shape[0]
     draft = attention.start_round(table)
-    replay = args.replay
     roles = []
     collective_error = 0.0
-    fingerprint = hashlib.sha256() if replay else None
+    fingerprint = hashlib.sha256() if args.replay or args.compare_joined_attention else None
     for layer in range(40):
         role = native("cache").resolve_layer_role(layer)
         roles.append(role["mode"])
@@ -145,6 +144,8 @@ def main():
     parser.add_argument("--rank-offset", type=int, choices=(0, 4, 8, 12), default=0,
                         help="Global rank at the start of the local TP4 partition")
     parser.add_argument("--replay", action="store_true", help="Interleave a second generation and replay the first")
+    parser.add_argument("--compare-joined-attention", action="store_true",
+                        help="Compare the 40-layer draft with grouped SWA/compressed dispatch")
     args = parser.parse_args()
     sys.path.insert(0, str(args.lib.resolve()))
     args.output.mkdir()
@@ -160,8 +161,22 @@ def main():
         )
         anchors = (257, 129)[:args.requests]
         primary = prepare_round(runtime, attention, ranks, anchors, 1)
-        before = runtime.stats["device_weight_upload_calls"]
+        upload_counts = ("device_weight_upload_calls", "device_draft_weight_upload_calls")
+        before = [runtime.stats.get(name, 0) for name in upload_counts]
+        start_dispatches = runtime.stats["dispatches"]
         roles, collective_error, fingerprint = run_round(runtime, attention, args, ranks, anchors, 1, primary)
+        joined_dispatches = None
+        if args.compare_joined_attention:
+            baseline_dispatches = runtime.stats["dispatches"] - start_dispatches
+            attention.joined_attention = True
+            start_dispatches = runtime.stats["dispatches"]
+            _, joined_error, joined_fingerprint = run_round(runtime, attention, args, ranks, anchors, 1, primary)
+            if fingerprint != joined_fingerprint:
+                raise ValueError("Grouped dispatch changed draft output bytes")
+            collective_error = max(collective_error, joined_error)
+            joined_dispatches = dict(baseline=baseline_dispatches,
+                                     joined=runtime.stats["dispatches"] - start_dispatches,
+                                     output_byte_exact=True)
         replay_passed = None
         if args.replay:
             other_anchors = (255, 127)[:args.requests]
@@ -172,15 +187,18 @@ def main():
             assert fingerprint == replay_fingerprint, "Interleaved generation changed repeated draft outputs"
             collective_error = max(collective_error, middle_error, replay_error)
             replay_passed = True
-        assert before == runtime.stats["device_weight_upload_calls"]
+        assert before == [runtime.stats.get(name, 0) for name in upload_counts]
+        draft_bytes = runtime.stats.get("draft_weight_bytes", runtime.stats["weight_bytes"])
         result = dict(physical_devices=args.cards, global_ranks=ranks, tp4_lanes=devices, full_tp4=args.cards == 4,
                       anchors=list(anchors), layers=list(range(40)),
                       roles={role: roles.count(role) for role in sorted(set(roles))},
                       block=BLOCK, cache_unchanged=True, weights_reuploaded=False,
-                      dispatches=runtime.stats["dispatches"], weight_bytes=runtime.stats["weight_bytes"],
+                      dispatches=runtime.stats["dispatches"], weight_bytes=draft_bytes,
                       collective_max_abs_error=collective_error, transport_calls=runtime.stats["transport_calls"])
         if replay_passed:
             result.update(rounds=3, replay_byte_exact=True, interleaved_anchors=list(other_anchors))
+        if joined_dispatches is not None:
+            result["joined_attention"] = joined_dispatches
         (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         print(result, flush=True)
 

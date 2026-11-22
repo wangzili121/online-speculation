@@ -1,6 +1,6 @@
 """Merge per-query compressed history into the V4.1 SWA and draft-block output."""
 
-from .pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW
+from .pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW, make_swa_attention
 
 TOPK = 512
 TILE = 128
@@ -133,3 +133,27 @@ def make_sparse_program(*, head_major_swa=False):
         attend(query, pages, rows, lengths, bias, zeros, local_output, local_lse, output, lse, device=0)
 
     return entry
+
+
+def make_joined_attention():
+    """Dispatch staged SWA and compressed Attention together for the TP4 layout."""
+    import pypto.language as pl
+
+    swa = pl.jit.inline(make_swa_attention(HEAD_TILE, token_major_query=True)._func)
+    sparse = pl.jit.inline(make_sparse_attention(head_major_swa=True)._func)
+
+    @pl.jit
+    def attend(
+        query: pl.Tensor, swa_pages: pl.Tensor, spans: pl.Tensor, temporary: pl.Tensor,
+        history_bias: pl.Tensor, sink: pl.Tensor, swa_zeros: pl.Tensor,
+        query_flat: pl.Tensor, pages: pl.Tensor, rows: pl.Tensor, lengths: pl.Tensor,
+        bias: pl.Tensor, zeros: pl.Tensor, output: pl.Out[pl.Tensor], lse: pl.Out[pl.Tensor],
+    ):
+        local = pl.create_tensor([BLOCK * HEAD_TILE, HEAD_DIM], dtype=pl.FP32)
+        local_lse = pl.create_tensor([BLOCK * HEAD_TILE, 1], dtype=pl.FP32)
+        local, local_lse = swa(query, swa_pages, spans, temporary, history_bias, sink, swa_zeros,
+                               local, local_lse)
+        output, lse = sparse(query_flat, pages, rows, lengths, bias, zeros, local, local_lse, output, lse)
+        return output, lse
+
+    return attend
