@@ -46,6 +46,14 @@ if [[ "$action" == cluster-check || "$action" == cluster-accept ||
 fi
 image="${PYPTO_IMAGE:-$default_image}"
 case "$action" in
+  gsm8k-prepare)
+    destination="${1:-/workspace/data/orthrus-dsv41-gsm8k}"
+    exec python3 "$root/scripts/prepare_dsv41_gsm8k.py" --output "$destination"
+    ;;
+  gsm8k-summary)
+    [[ $# -gt 0 ]] || { echo "Usage: $0 gsm8k-summary RESULT..." >&2; exit 2; }
+    exec python3 "$root/scripts/summarize_dsv41_gsm8k.py" "$@"
+    ;;
   build)
     [[ "$(uname -s)/$(uname -m)" == Linux/aarch64 ]] || {
       echo "Build this ARM64 image on a Linux aarch64 Docker host." >&2; exit 2;
@@ -250,6 +258,15 @@ case "$action" in
         mkdir -p "$state_dir"
         state_dir="$(cd "$state_dir" && pwd -P)"
         options+=(-v "$log_dir:/results" -v "$state_dir:/cluster-state" -e PYPTO_A3_STATE_DIR=/cluster-state)
+        if [[ -n "${ORTHRUS_WORKLOAD:-}" ]]; then
+          workload="$(cd "$(dirname "$ORTHRUS_WORKLOAD")" && pwd -P)/$(basename "$ORTHRUS_WORKLOAD")"
+          [[ -f "$workload" && -r "$workload" ]] || {
+            echo "Unreadable ORTHRUS_WORKLOAD: $workload" >&2
+            exit 2
+          }
+          options+=(-v "$workload:/run/orthrus-workload.jsonl:ro")
+          set -- "$@" --workload /run/orthrus-workload.jsonl
+        fi
         if [[ -z "${DRAFT_HEAD:-}" ]]; then
           previous_head=""
           for previous in "$logs_root"/orthrus-cluster-accept.*/initialized-head; do
@@ -302,7 +319,7 @@ case "$action" in
     exec docker run "${options[@]}" "$image" "$action" "$@"
     ;;
   *)
-    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head}"
+    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
     echo "Company checks: $0 {fabric-check|cluster-check|cluster-accept} {node7|node8}"
     ;;
 esac

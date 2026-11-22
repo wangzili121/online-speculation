@@ -1,0 +1,57 @@
+{
+  "format": "orthrus-dsv41-gsm8k-study-v1",
+  "model": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+  "sampling": {
+    "temperature": 0,
+    "ignore_eos": false,
+    "max_new_tokens": 192
+  },
+  "draft": {
+    "block_size": 32,
+    "num_speculative_tokens": 31,
+    "initialization": "copy-target-attention"
+  },
+  "screening": {
+    "dataset": "tuning.jsonl",
+    "examples": 32,
+    "teacher_rows": [3, 7, 15],
+    "learning_rates": [3e-06, 1e-05, 3e-05],
+    "update_strides": [16, 32, 64],
+    "last_layers": [1]
+  },
+  "candidate_default": {
+    "teacher_rows": 7,
+    "learning_rate": 1e-05,
+    "warmup_updates": 8,
+    "warm_update_stride": 16,
+    "warm_update_steps": 256,
+    "steady_update_stride": 128,
+    "publish_every": 4,
+    "objective": "tv",
+    "last_layers": 1
+  },
+  "arms": [
+    {"name": "target", "speculation": false, "updates": false},
+    {"name": "fixed_initialized", "speculation": true, "updates": false},
+    {"name": "online_initialized", "speculation": true, "updates": true, "warmup_head": null},
+    {"name": "online_prewarmed", "speculation": true, "updates": true, "warmup_head": "warmup-last1"}
+  ],
+  "final_evaluation": {
+    "dataset": "online_eval.jsonl",
+    "examples": 384,
+    "orders": [743, 744, 745],
+    "required_correctness": "greedy tokens equal target-only for every request",
+    "report": [
+      "output_tokens_per_second",
+      "mean_accepted_candidates",
+      "acceptance_histogram",
+      "draft_seconds",
+      "verify_seconds",
+      "update_seconds",
+      "publication_seconds",
+      "updates",
+      "publications",
+      "gsm8k_exact_match"
+    ]
+  }
+}

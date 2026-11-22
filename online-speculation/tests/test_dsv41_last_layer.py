@@ -8,6 +8,7 @@ import torch.nn.functional as F
 
 from blockspec.vllm_ascend.dsv41_attention import PagedRows
 from blockspec.vllm_ascend.dsv41_last_layer import (
+    LastLayerLearner,
     LastLayerReplay,
     W4A8LastLayerWeights,
     last_layer_loss,
@@ -115,3 +116,18 @@ def test_modelslim_signed_nibbles_unpack_in_output_channel_order():
     }
     expected = torch.tensor([[-8., -1.], [14., -14.], [-6., 21.], [4., -16.]])
     torch.testing.assert_close(base.linear_weight(name, "cpu"), expected)
+
+
+def test_last_layer_learner_accepts_delayed_teacher_rows_and_updates_rate():
+    learner = object.__new__(LastLayerLearner)
+    parameter = torch.nn.Parameter(torch.tensor([0.5]))
+    learner.master = {"weight": parameter}
+    learner.optimizer = torch.optim.AdamW([parameter], lr=1e-3, weight_decay=0)
+    learner.version = 0
+    learner.loss_rows = lambda replay, teacher, kind="tv": (parameter - teacher.mean()).square().sum()
+    loss, norm, version = learner.update_rows(
+        object(), torch.tensor([[1.0], [2.0], [3.0]]), kind="tv", learning_rate=2e-4,
+    )
+    assert loss == pytest.approx(2.25) and norm == pytest.approx(3.0)
+    assert version == 1 and learner.optimizer.param_groups[0]["lr"] == pytest.approx(2e-4)
+    assert parameter.item() > 0.5

@@ -9,8 +9,10 @@ import logging
 import os
 from pathlib import Path
 import sys
+import time
 
 from blockspec.pypto_dsv41_cluster import ClusterDispatcher, ControlLink, RankPlan
+from blockspec.dsv41_online import read_workload
 from validate_dsv41_pypto_cluster import check_visible_devices
 from verify_dsv41_pypto_acceptance import TokenDivergence, audit_session, check_generated_prefix, request_parity
 
@@ -37,7 +39,8 @@ def fingerprint(paths):
     return digest.hexdigest()
 
 
-def generate(runner, prompts, steps, assignments, *, reference=None):
+def generate(runner, prompts, steps, assignments, *, identities=None, metadata=None,
+             decoder=None, reference=None):
     import torch
     from pypto_serving.config.types import DecodeBatch, PrefillBatch, SamplingParams
 
@@ -46,7 +49,10 @@ def generate(runner, prompts, steps, assignments, *, reference=None):
     counts = Counter()
     speculative = reference is not None
     mode = "orthrus" if speculative else "target"
-    for index, (prompt, partition) in enumerate(zip(prompts, assignments, strict=True)):
+    identities = list(range(len(prompts))) if identities is None else identities
+    metadata = [{} for _ in prompts] if metadata is None else metadata
+    for index, (prompt, partition, identity, attributes) in enumerate(
+            zip(prompts, assignments, identities, metadata, strict=True)):
         request_id = f"{mode}-request-{index}"
         expected = reference[index]["token_ids"] if speculative else None
         # Exercise the native chunked-prefill path, including the left-over chunk.
@@ -87,8 +93,14 @@ def generate(runner, prompts, steps, assignments, *, reference=None):
             if speculative:
                 check_generated_prefix(index, expected, output, phase=phase)
         runner.release_finished_requests([request_id])
-        generated.append(dict(index=index, dp=partition, prompt_ids=prompt, token_ids=output,
-            finish_reason="length", usage=dict(prompt_tokens=len(prompt), completion_tokens=len(output))))
+        generated.append(dict(
+            index=index, workload_id=identity, dp=partition,
+            prompt_ids=prompt, token_ids=output,
+            output_text=decoder(output) if decoder is not None else None,
+            reference_answer=attributes.get("reference_answer"),
+            finish_reason="length",
+            usage=dict(prompt_tokens=len(prompt), completion_tokens=len(output)),
+        ))
     return generated, dict(counts)
 
 
@@ -187,10 +199,16 @@ def run(args):
     config = A3Config.from_source(source, max_num_seqs=4, max_context=args.context,
                                  step_tokens=128, chunk_tokens=16)
     tokenize = source.module("prefill_prepare").tokenize_prompt
-    prompts = [tokenize(text, args.model, checkpoint.text["vocab_size"]) for text in (args.prompt or PROMPTS)]
+    entries = (read_workload(args.workload, args.max_requests) if args.workload is not None
+               else [dict(id=f"prompt-{i}", prompt=text) for i, text in enumerate(args.prompt or PROMPTS)])
+    identities = [row["id"] for row in entries]
+    raw_prompts = [row["prompt"] for row in entries]
+    prompts = [tokenize(text, args.model, checkpoint.text["vocab_size"]) for text in raw_prompts]
+    from tokenizers import Tokenizer
+    decoder = Tokenizer.from_file(str(args.model / "tokenizer.json")).decode
     if any(len(prompt) + args.tokens + 31 > args.context for prompt in prompts):
         raise ValueError("Context must cover the prompt, requested output and the full K32 draft block")
-    assignments = [0, 2]
+    assignments = [index % config.topology["dp"] for index in range(len(prompts))]
     _, head, head_files = read_draft_artifact(args.model, args.head)
     head_identity = fingerprint([args.head / "manifest.json", find_weight_index(args.head)]
                                 + [args.head / file for file in sorted(set(head_files.values()))])
@@ -215,7 +233,8 @@ def run(args):
     with ControlLink.connect(plan.node, address, key, args.connect_timeout) as link:
         link.connection.settimeout(args.timeout)
         request = dict(build=identity, checkpoint=checkpoint_identity, head=head_identity,
-                       prompts=prompts, partitions=assignments, tokens=args.tokens, context=args.context,
+                       prompts=prompts, workload_ids=identities, partitions=assignments,
+                       tokens=args.tokens, context=args.context,
                        trace_prefill=args.trace_prefill, trace_position=args.trace_position)
         if link.exchange("acceptance/configuration", request) != request:
             raise ValueError("Nodes must use the same checkout, model, head and workload")
@@ -240,9 +259,16 @@ def run(args):
             for mode in modes:
                 print(f"Node {args.node} running {mode} on global ranks {list(plan.local_ranks)}", flush=True)
                 expected = results["target"]["requests"] if mode == "orthrus" else None
-                rows, stats = generate(runner, prompts, args.tokens, assignments, reference=expected)
+                started = time.perf_counter()
+                rows, stats = generate(
+                    runner, prompts, args.tokens, assignments,
+                    identities=identities, metadata=entries, decoder=decoder, reference=expected,
+                )
+                elapsed = time.perf_counter() - started
                 results[mode] = dict(status="executed", devices=devices, sampling=SAMPLING,
-                                     requests=rows, speculation=stats)
+                                     requests=rows, speculation=stats, elapsed_seconds=elapsed,
+                                     output_tokens=sum(len(row["token_ids"]) for row in rows),
+                                     output_tokens_per_second=sum(len(row["token_ids"]) for row in rows) / elapsed)
                 write_report(args.output / mode / "result.json", results[mode])
         except TokenDivergence as error:
             diagnostics = {"prefill": prefill_difference, "verify/accept": verification_difference}
@@ -283,6 +309,9 @@ def main():
     parser.add_argument("--head", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--prompt", action="append", help="Supply exactly two raw prompts, one per host")
+    parser.add_argument("--workload", type=Path,
+                        help="JSONL rows with unique id and prompt fields; replaces --prompt")
+    parser.add_argument("--max-requests", type=int)
     parser.add_argument("--tokens", type=int, default=8)
     parser.add_argument("--context", type=int, default=512)
     parser.add_argument("--host-threads", type=int, default=4)
@@ -294,8 +323,10 @@ def main():
     parser.add_argument("--timeout", type=int, default=3600, help="Maximum seconds of peer inactivity")
     args = parser.parse_args()
     if (args.tokens < 2 or args.host_threads < 1 or args.timeout < 1
-            or (args.prompt is not None and len(args.prompt) != 2)):
-        parser.error("Require at least two output tokens, positive timeouts/threads and exactly two prompts")
+            or args.max_requests is not None and args.max_requests < 1
+            or args.workload is not None and args.prompt is not None
+            or args.workload is None and args.prompt is not None and len(args.prompt) != 2):
+        parser.error("Require valid dimensions and exactly one prompt source")
     if args.trace_position is not None and not 0 <= args.trace_position < args.context:
         parser.error("--trace-position must be in the reserved context")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

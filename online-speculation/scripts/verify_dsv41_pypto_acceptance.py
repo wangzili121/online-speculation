@@ -38,7 +38,10 @@ def request_parity(target, draft):
         raise ValueError("Both offline runs must contain the same nonempty request set")
     tokens = 0
     for a, b in zip(target["requests"], draft["requests"], strict=True):
-        for field in ("index", "prompt_ids", "finish_reason", "usage"):
+        fields = ("index", "prompt_ids", "finish_reason", "usage")
+        if "workload_id" in a or "workload_id" in b:
+            fields += ("workload_id",)
+        for field in fields:
             if a[field] != b[field]:
                 raise ValueError(f"Request {a['index']} differs in {field}")
         check_generated_prefix(a["index"], a["token_ids"], b["token_ids"], phase="final comparison")

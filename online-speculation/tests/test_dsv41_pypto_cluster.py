@@ -5,12 +5,33 @@ import socket
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import json
 
 from blockspec.pypto_dsv41_cluster import ClusterDispatcher, ControlLink, RankPlan
 from blockspec.pypto_dsv41_cluster_transport import ClusterCollectives
+from blockspec.dsv41_online import read_workload
 
 
 class ClusterTest(unittest.TestCase):
+    def test_workload_reader_preserves_metadata_and_limits_rows(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "workload.jsonl"
+            path.write_text("\n".join(json.dumps(row) for row in (
+                {"id": "a", "prompt": "one", "reference_answer": "#### 1"},
+                {"id": "b", "prompt": "two", "reference_answer": "#### 2"},
+            )) + "\n")
+            rows = read_workload(path, 1)
+            self.assertEqual(rows, [{"id": "a", "prompt": "one", "reference_answer": "#### 1"}])
+
+    def test_workload_reader_rejects_duplicate_ids(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "workload.jsonl"
+            path.write_text('{"id":"same","prompt":"one"}\n{"id":"same","prompt":"two"}\n')
+            with self.assertRaisesRegex(ValueError, "unique"):
+                read_workload(path, None)
+
     def pair(self, task):
         left, right = socket.socketpair()
         for endpoint in (left, right):

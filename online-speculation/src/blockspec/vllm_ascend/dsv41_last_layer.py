@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, replace
 import hashlib
 from functools import partial
+import math
 import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -353,7 +354,22 @@ class LastLayerLearner:
     @torch.inference_mode(False)
     @torch.enable_grad()
     def update(self, replay, teacher, scheduled, sampled, *, kind="tv"):
-        loss = self.loss(replay, teacher, scheduled, sampled, kind=kind)
+        reached = min(scheduled, sampled)
+        return self.update_rows(replay, teacher[:reached], kind=kind)
+
+    @torch.inference_mode(False)
+    @torch.enable_grad()
+    def update_rows(self, replay, teacher, *, kind="tv", learning_rate=None):
+        """Update from authoritative contiguous teacher rows, including delayed rows."""
+        if (not torch.is_tensor(teacher) or teacher.ndim != 2 or teacher.shape[0] < 1
+                or not teacher.is_floating_point() or not torch.isfinite(teacher).all()):
+            raise ValueError("one or more finite teacher-logit rows are required")
+        if learning_rate is not None:
+            if not math.isfinite(learning_rate) or learning_rate <= 0:
+                raise ValueError("online learning rate must be positive and finite")
+            for group in self.optimizer.param_groups:
+                group["lr"] = learning_rate
+        loss = self.loss_rows(replay, teacher, kind=kind)
         self.optimizer.zero_grad(set_to_none=True)
         if not torch.isfinite(loss):
             raise FloatingPointError("nonfinite V4.1 draft loss")
@@ -364,6 +380,10 @@ class LastLayerLearner:
             raise FloatingPointError("nonfinite V4.1 draft parameters after update")
         self.version += 1
         return float(loss.detach()), float(norm), self.version
+
+    def loss_rows(self, replay, teacher, *, kind="tv"):
+        logits = self.logits(replay, reached=teacher.shape[0])
+        return divergence(logits, teacher.float(), kind).mean()
 
     def loss(self, replay, teacher, scheduled, sampled, *, kind="tv"):
         logits = self.logits(replay, reached=min(scheduled, sampled))
