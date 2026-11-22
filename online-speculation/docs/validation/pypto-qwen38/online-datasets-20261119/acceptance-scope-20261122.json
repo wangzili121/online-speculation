@@ -1,0 +1,29 @@
+{
+  "confirmed_UTC": "2026-11-22T03:57:26.585000+00:00",
+  "confirmation": "以GSM8K＋SPoC验收，保留LongProc负结果",
+  "acceptance_datasets": [
+    "GSM8K",
+    "SPoC-derived pseudocode-to-C++"
+  ],
+  "longproc_negative_preserved": true,
+  "longproc_is_acceptance_gate": false,
+  "scope_confirmed_after_completed_two_card_and_SPoc_three_card_results": true,
+  "numerical_recipe_or_data_changed_by_this_confirmation": false,
+  "criteria": {
+    "same_physical_card_count_TP_base_generation_and_initial_head_per_comparison": true,
+    "continuous_periodic_updates_from_first_request": true,
+    "include_feedback_backward_optimizer_publication_and_tail": true,
+    "independent_head_and_Adam_reset_and_request_reorder_repeats": 3,
+    "every_repeat_and_pooled_online_gain_vs_AR_strictly_greater_than": 0.05,
+    "every_repeat_and_pooled_online_gain_vs_initial_fixed_strictly_greater_than": 0.05,
+    "final_actually_published_head_seen_replay_and_independent_holdout_required": true,
+    "two_card_colocated_and_three_card_independent_learner_reported_separately": true,
+    "retain_negative_results": true
+  },
+  "timing_and_data_boundaries": "Primary two-card confirmations used the reserved cohorts after exploration-only recipe selection. Three-card resource repeats reuse those assigned cohorts, use separate-stream timing and record extension after first partial observation. Do not relabel them as new globally unseen cohorts or original LongProc success.",
+  "negative_proofs": [
+    "rows255/pseudo253/",
+    "pseudo310/three-confirmation-audit.json"
+  ],
+  "scope_only_no_NN_dispatch": true
+}
