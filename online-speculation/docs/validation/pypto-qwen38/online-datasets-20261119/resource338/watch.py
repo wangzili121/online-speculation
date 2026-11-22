@@ -59,7 +59,8 @@ def load_module(path, name):
     return module
 
 
-def audit(case, item, source, base, asset_hashes, head_shards, accounting, schedule):
+def audit(case, item, source, base, asset_hashes, head_shards, accounting, schedule,
+          *, layout="separate_streams", background=True):
     assert item["completed"] and not item.get("error"), item.get("error")
     tag = case["tag"]
     raw = item["files"][tag + ".json"].encode()
@@ -68,9 +69,9 @@ def audit(case, item, source, base, asset_hashes, head_shards, accounting, sched
     option = lambda flag, default=None: args[args.index(flag) + 1] if flag in args else default
     stride = int(option("--strides"))
     gate = "--audit-replay" in args
-    result = accounting.audit(d, stride, layout="separate_streams", allow_replay=gate)
+    result = accounting.audit(d, stride, layout=layout, allow_replay=gate)
     assert d["physical_device_count"] == len(set(d["visible_devices"].split(","))) == 3
-    assert d["device_ids"] == [0, 1] and d["learner_device"] == 2 and d["background"] is True
+    assert d["device_ids"] == [0, 1] and d["learner_device"] == 2 and d["background"] is background
     assert d["head_step"] == 128 and d["head_shard_sha256"] == head_shards and d["optimizer_init"] == "fresh"
     assert d["requests"] == d["ar_checked_requests"] == int(option("--ar-check-requests"))
     fields = [("--tokens", "output_tokens_per_request", int, None),
@@ -121,8 +122,8 @@ def audit(case, item, source, base, asset_hashes, head_shards, accounting, sched
                   physical_cards=3, independent_learner=True, frozen_source_head_assets_base_checked=True,
                   actual_published_shards=item["actual_shards"], actual_events=event_proof,
                   first_feedback_replays=replays, primary_two_card_proof=False,
-                  scope="Three-card resource repeat on an already assigned cohort. Separate-stream timing; "
-                        "not new globally unseen problems or a substitute for primary two-card results.")
+                  scope="Three-card evidence on already assigned inputs; timing layout is explicit. "
+                        "Not new globally unseen problems or a substitute for primary two-card results.")
     return result
 
 

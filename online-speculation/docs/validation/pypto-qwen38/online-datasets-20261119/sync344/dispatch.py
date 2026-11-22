@@ -9,7 +9,7 @@ import subprocess
 REMOTE = r'''
 from pathlib import Path
 import hashlib,json,subprocess,os,datetime
-r=Path(P['root']);marker=r/('sync344-'+P['host']+'-launch.json')
+r=Path(P['root']);suite=P.get('suite','sync344');marker=r/(suite+'-'+P['host']+'-launch.json')
 if marker.exists():
  print(marker.read_text());raise SystemExit(0)
 sha=lambda b:hashlib.sha256(b).hexdigest()
@@ -27,10 +27,10 @@ def file_sha(path):
  return h.hexdigest()
 assert [file_sha(head/('rank'+str(i)+'.safetensors'))for i in range(2)]==c['expected_initial_head_shards']
 for name,text in P['assets'].items():
- path=r/name;data=text.encode()
+ path=r/'assets'/name;data=text.encode()
  if path.exists():assert path.read_bytes()==data
  else:path.write_bytes(data)
-name='queue-sync344-'+P['host']+'.json';path=r/name;data=(json.dumps(P['plan'],indent=2)+'\n').encode()
+name='queue-'+suite+'-'+P['host']+'.json';path=r/name;data=(json.dumps(P['plan'],indent=2)+'\n').encode()
 if path.exists():assert path.read_bytes()==data
 else:path.write_bytes(data)
 with(r/(name+'.controller.log')).open('xb')as log:
