@@ -106,6 +106,8 @@ def request_receipts(receipt_path, mode, index, phase):
 
 def prefill_difference(receipt_path, request_index):
     """Summarize the first host-local activation mismatch without sharing tensor payloads."""
+    import torch
+
     modes = ("target", "orthrus")
     traces = {
         mode: [row for row, _ in request_receipts(receipt_path, mode, request_index, "prefill")]
@@ -118,10 +120,36 @@ def prefill_difference(receipt_path, request_index):
         paths = [row["prefill_activation_trace"] for row in (baseline, candidate)]
         if not all(paths):
             continue
-        left, right = (json.loads(Path(path).read_text()) for path in paths)
-        for a, b in zip(left, right, strict=True):
-            if a != b:
-                result["first_activation_difference"] = dict(chunk=chunk, target=a, orthrus=b)
+        evidence = [json.loads(Path(path).read_text()) for path in paths]
+        stages = [item["stages"] if isinstance(item, dict) else item for item in evidence]
+
+        def identity(row):
+            return row["stage"], row["rank"], row["case"]
+
+        candidate = {identity(row): row for row in stages[1]}
+        for a in stages[0]:
+            b = candidate.get(identity(a))
+            if b is None or a != b:
+                difference = dict(chunk=chunk, target=a, orthrus=b)
+                if (b is not None and isinstance(evidence[0], dict) and isinstance(evidence[1], dict)
+                        and a.get("sha256") != b.get("sha256")):
+                    key = f"{a['stage']}/rank-{a['rank']}/case-{a['case']}"
+                    tensors = [torch.load(Path(path).parent / item["tensors"], map_location="cpu",
+                                          weights_only=True) for path, item in zip(paths, evidence, strict=True)]
+                    left, right = (item[key] for item in tensors)
+                    if left.shape == right.shape and left.dtype == right.dtype:
+                        delta = (left.float() - right.float()).abs()
+                        values, indices = delta.flatten().topk(min(5, delta.numel()))
+                        difference["tensor_difference"] = dict(
+                            byte_exact=bool(torch.equal(left, right)),
+                            mismatched=int(torch.count_nonzero(left != right)),
+                            elements=left.numel(),
+                            max_abs=float(delta.max()) if delta.numel() else 0.0,
+                            mean_abs=float(delta.mean()) if delta.numel() else 0.0,
+                            largest_flat_indices=indices.tolist(), largest_abs=values.tolist(),
+                        )
+                result["trace_position"] = evidence[0].get("position") if isinstance(evidence[0], dict) else None
+                result["first_activation_difference"] = difference
                 return result
     return result
 

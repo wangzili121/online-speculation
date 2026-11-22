@@ -178,17 +178,58 @@ def verifier_logits(directory):
     return report
 
 
+def failure_diagnosis(directory):
+    """Return the most specific diagnosis already captured by one acceptance run."""
+    status = json.loads((directory / "acceptance.json").read_text())
+    failure = status.get("divergence")
+    if not failure:
+        return dict(passed=status.get("passed"), node=status.get("node"), error=status.get("error"))
+    phase = failure.get("phase")
+    if phase == "verify/accept":
+        report = verifier_logits(directory)
+        report["phase"] = phase
+        return report
+    native = failure.get("native", {})
+    report = dict(
+        phase=phase,
+        request=failure.get("request"),
+        generated_index=failure.get("generated_index"),
+        target_token=failure.get("target_token"),
+        orthrus_token=failure.get("orthrus_token"),
+    )
+    if phase == "prefill":
+        report.update(
+            trace_position=native.get("trace_position"),
+            target_topk=native.get("target"),
+            orthrus_topk=native.get("orthrus"),
+            first_activation_difference=native.get("first_activation_difference"),
+            trace_error=failure.get("native_trace_error"),
+        )
+    else:
+        report["native"] = native
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path, help="The acceptance directory printed by cluster-accept")
     parser.add_argument("--verifier-logits", action="store_true",
                         help="Compare the saved target and verification logits on the request's host")
+    parser.add_argument("--failure-diagnosis", action="store_true",
+                        help="Diagnose whichever acceptance phase failed using evidence from the same run")
     args = parser.parse_args()
+    if args.verifier_logits and args.failure_diagnosis:
+        parser.error("Choose only one diagnostic mode")
     try:
-        summary = verifier_logits(args.directory) if args.verifier_logits else summarize(args.directory)
+        if args.failure_diagnosis:
+            summary = failure_diagnosis(args.directory)
+        elif args.verifier_logits:
+            summary = verifier_logits(args.directory)
+        else:
+            summary = summarize(args.directory)
     except (OSError, ImportError, IndexError, KeyError, ValueError) as error:
         parser.exit(1, f"{error}\n")
-    print(json.dumps(summary, indent=None if args.verifier_logits else 2))
+    print(json.dumps(summary, indent=None if args.verifier_logits or args.failure_diagnosis else 2))
 
 
 if __name__ == "__main__":

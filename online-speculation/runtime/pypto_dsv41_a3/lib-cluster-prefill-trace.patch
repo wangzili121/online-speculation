@@ -45,7 +45,7 @@
              logits = executor.resident.read_output(logits, executor.rank_devices[rank])
              path = directory / f"rank-{rank}-{case}-network-logits.pt"
              torch.save(
-@@ -1419,6 +1434,156 @@
+@@ -1419,6 +1434,164 @@
      hidden, premix = embed_network_input(
          inputs["input_contract"], weights, executor, text, output / "embedding"
      )
@@ -53,6 +53,14 @@
 +    trace_tensors = {}
 +    trace_prefill = phase == "prefill" and contract.get("trace_prefill", False)
 +    trace_position = contract.get("trace_position") if phase in ("decode", "verify") else None
++    if trace_prefill:
++        active_positions = [
++            int(position)
++            for records in provider.batch_for_layer(0)["cases"].values()
++            for rank in provider.local_ranks
++            for position in records[rank]["positions"].tolist()
++        ]
++        trace_position = max(active_positions) if active_positions else None
 +
 +    def record_host_trace(stage, rank, case, actual, *, row=None, layer=None, role=None):
 +        actual = actual.cpu().contiguous()
@@ -202,7 +210,7 @@
      hash_batch = provider.hash_batch()
      common_engram = engram_contracts[1]
      if progress is not None:
-@@ -1489,6 +1654,10 @@
+@@ -1489,6 +1662,10 @@
                      raise RuntimeError(f"Non-finite {phase} state after layer {layer} on rank {rank}")
          if draft is None:
              provider.observe_layer(layer, result)
@@ -213,7 +221,7 @@
          extra = () if draft is None else draft.finish_layer(layer)
          executor.retain_boundaries(result["hidden"], result["pre_mix"], extra)
          completed_layers.append(layer)
-@@ -1519,9 +1688,20 @@
+@@ -1519,9 +1696,25 @@
              weights=weights,
              executor=executor,
              output=output / "actual-layer39-output",
@@ -223,7 +231,12 @@
          if any(not torch.isfinite(value).all() for row in output_result["logits"] for value in row.values()):
              raise RuntimeError(f"Non-finite {phase} vocabulary logits")
 +        if trace_prefill:
-+            write_json(output / "prefill-activations.json", trace)
++            torch.save(trace_tensors, output / "prefill-tensors.pt")
++            write_json(output / "prefill-activations.json", dict(
++                position=trace_position,
++                stages=trace,
++                tensors="prefill-tensors.pt",
++            ))
 +        elif trace_position is not None and trace:
 +            torch.save(trace_tensors, output / "verifier-tensors.pt")
 +            write_json(output / "verifier-activations.json", dict(
@@ -234,7 +247,7 @@
          loaded_source_files(runtime)
          runtime.update(
              status="executed_full40_not_compared",
-@@ -1563,6 +1743,7 @@
+@@ -1563,6 +1756,7 @@
              ),
          )
          return dict(runtime, logits=output_result["logits"], compilation=program.summary(),

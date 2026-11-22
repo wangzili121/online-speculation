@@ -89,7 +89,7 @@ CLUSTER_KEY_FILE=/home/wangzili/.orthrus-cluster.key \
 
 重跑会优先使用结果盘上最近一次导出且与基模匹配的初始化 head。Engram 分片的 SHA256 保存在结果盘的 `.orthrus-dsv41-state` 中，只有底层文件标识和时间戳一致时才复用。首次写入此缓存时，日志会逐分片打印校验进度。当前离线镜像通过 `pl.tile.rsqrt(x, tmp)` 保留基模所需的高精度倒平方根路径。
 
-程序先运行 target-only 再运行 Orthrus，在两个节点的 DP 分区各运行一个请求。两次生成复用同一份已加载的基模和通信组，各自重新分配并清理请求缓存。起草前先比较 prefill 生成的第一个 token，之后每轮验证立即比较新增 token。默认记录 prefill 每层激活的散列值。首 token 分叉时报告会附上本端最早的变化和候选分数，验证阶段分叉时会附上候选和目标判定。`--tokens 4` 可快速覆盖前四个输出位置，两端需传相同参数。两次独立冷启动的精度一致性仍需另起进程验证。
+程序先运行 target-only 再运行 Orthrus，在两个节点的 DP 分区各运行一个请求。两次生成复用同一份已加载的基模和通信组，各自重新分配并清理请求缓存。起草前先比较 prefill 生成的第一个 token，之后每轮验证立即比较新增 token。默认追踪 prefill 最后一个 prompt token 的 embedding、每层 Attention/HC/MoE 子阶段和输出头；`--trace-position` 同时指定 Decode 与 Verify 的绝对位置。首 token或验证阶段分叉时，退出前都会自动打印第一处不同的阶段、rank 和张量误差。`--tokens 4` 可快速覆盖前四个输出位置，两端需传相同参数。两次独立冷启动的精度一致性仍需另起进程验证。
 
 程序检查全部 40 层、逐 token 的贪心一致性、K32 起草和验证、接受前缀提交、验证后的 KV 恢复及请求释放。两台各自记录 `orthrus-cluster-accept.*/acceptance/acceptance.json`，详细日志为同目录的 `cluster-accept.log`。先看两端的 `passed`，再看 `compared_tokens`、`draft_rounds` 和 `verifier_restored_bytes`。此入口用于离线推理验收。初始化 head 的接受数供诊断使用，性能结论需用训练 head。
 
@@ -108,7 +108,7 @@ docker run --rm --network none -v "$A:/a:ro" \
   python /tools/summarize_dsv41_pypto_cluster.py /a --verifier-logits
 ```
 
-若需定位当前分叉，双机启动时都加 `--trace-position 11 --tokens 3`。这里的 11 是已确认分叉的 12-token 前缀最后一个输入位置，从零开始计数。一次运行会保存该位置的 embedding、各层 HC/Attention QKV 与索引、TP 投影和归约、Router/MoE、层输出及 LM head；`--verifier-logits` 自动报告 Decode 与 K32 Verify 的第一个不同阶段、rank、张量误差和最大误差位置。该功能只读激活，不改变候选、验证或接受逻辑。
+若需定位当前分叉，双机启动时都加 `--trace-position 11 --tokens 3`。这里的 11 是已确认分叉的 12-token 前缀最后一个输入位置，从零开始计数。一次运行同时保留 prefill 最后一个 prompt token 和该 Verify 位置的完整子阶段证据；无论先在哪个阶段失败，`Automatic failure diagnosis` 都会给出本次运行可得到的最具体结论。该功能只读激活，不改变候选、验证或接受逻辑。
 
 离线镜像已通过补丁和启动检查。CPU 测试覆盖全局 rank 到本机设备的映射、Engram 文件映射，以及两端通过控制连接同步起草、验证、提交和释放。真实 W8A8 双机已分别完成 target-only 和 Orthrus 生成，首次验收发现两次独立基模 prefill 的 logits 有差异。共享基模会话的双机逐 token 结果仍需复验。
 

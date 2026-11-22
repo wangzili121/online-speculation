@@ -271,13 +271,13 @@ case "$action" in
         acceptance_status="${PIPESTATUS[0]}"
         set -e
         if [[ -f "$log_dir/acceptance/acceptance.json" ]] && \
-           grep -q '"phase": "verify/accept"' "$log_dir/acceptance/acceptance.json"; then
-          echo "Automatic verifier diagnosis:" >&2
+           grep -q '"divergence"' "$log_dir/acceptance/acceptance.json"; then
+          echo "Automatic failure diagnosis:" >&2
           docker run --rm --network none \
             -v "$log_dir/acceptance:/acceptance:ro" \
             -v "$root/scripts:/tools:ro" \
             "$image" /opt/pypto/venv/bin/python \
-            /tools/summarize_dsv41_pypto_cluster.py /acceptance --verifier-logits || true
+            /tools/summarize_dsv41_pypto_cluster.py /acceptance --failure-diagnosis || true
         fi
         exit "$acceptance_status"
       fi

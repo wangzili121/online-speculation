@@ -182,6 +182,31 @@ class AcceptanceTest(unittest.TestCase):
         self.assertEqual(first["difference"]["mismatched"], 1)
         self.assertEqual(first["difference"]["max_abs"], 2.0)
 
+    def test_failure_diagnosis_reports_prefill_substage_without_another_run(self):
+        native = dict(
+            target=[dict(ids=[2], logits=[4.0])],
+            orthrus=[dict(ids=[3], logits=[4.5])],
+            trace_position=9,
+            first_activation_difference=dict(
+                chunk=0,
+                target=dict(stage="layer-0/query", rank=0, case="fresh"),
+                orthrus=dict(stage="layer-0/query", rank=0, case="fresh"),
+                tensor_difference=dict(mismatched=1, elements=2, max_abs=0.5),
+            ),
+        )
+        divergence = dict(request=0, generated_index=0, phase="prefill",
+                          target_token=2, orthrus_token=3, native=native)
+        (self.root / "acceptance.json").write_text(json.dumps(dict(
+            passed=False, node=0, divergence=divergence,
+        )))
+        result = subprocess.run([sys.executable, str(SUMMARY), str(self.root), "--failure-diagnosis"],
+                                check=True, capture_output=True)
+        report = json.loads(result.stdout)
+        self.assertEqual((report["phase"], report["trace_position"]), ("prefill", 9))
+        first = report["first_activation_difference"]
+        self.assertEqual(first["target"]["stage"], "layer-0/query")
+        self.assertEqual(first["tensor_difference"]["max_abs"], 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()
