@@ -17,7 +17,11 @@ def main():
     assert hashlib.sha256(raw).hexdigest() == protocol["files_sha256"]["queue-A.json"]
     plan = json.loads(raw)
     old = json.loads((parent / "sync344/queue-A.json").read_text())["cases"][0]
-    assert plan["cases"][0]["args"] == old["args"]
+    def numeric_args(args):
+        value = list(args)
+        value[value.index("--devices") + 1] = "<physical device candidates>"
+        return value
+    assert numeric_args(plan["cases"][0]["args"]) == numeric_args(old["args"])
     assets = {n: (q / n).read_text() for n in protocol["asset_names"]}
     assert all(hashlib.sha256(text.encode()).hexdigest() == protocol["files_sha256"][n]
                for n, text in assets.items())
