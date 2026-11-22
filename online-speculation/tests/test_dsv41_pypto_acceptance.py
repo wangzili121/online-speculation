@@ -7,6 +7,8 @@ import sys
 import tempfile
 import unittest
 
+import torch
+
 
 COMMAND = Path(__file__).resolve().parents[1] / "scripts/verify_dsv41_pypto_acceptance.py"
 SUMMARY = COMMAND.with_name("summarize_dsv41_pypto_cluster.py")
@@ -120,6 +122,65 @@ class AcceptanceTest(unittest.TestCase):
             native_chunk=dict(calls=3, first_ms=400.0, subsequent_median_ms=100.0),
         ))
         self.assertEqual(report["node_local_counters"]["verify_backup_d2d_bytes"], 384)
+
+    def test_verifier_summary_reports_first_substage_tensor_difference(self):
+        session = self.root / "native" / "session-1"
+        session.mkdir(parents=True)
+        (session / "run-manifest.json").write_text(json.dumps(dict(
+            ranks=[dict(rank=0, dp_rank=0)],
+        )))
+        owner = dict(request_id="target-request-0")
+        (session / "serving-dispatches.jsonl").write_text(json.dumps(dict(
+            phase="decode", owners=[owner], native_epoch=0, seconds=1,
+            timings=dict(chunk_seconds=1),
+        )) + "\n")
+        (self.root / "target").mkdir(exist_ok=True)
+        (self.root / "target/result.json").write_text(json.dumps(dict(requests=[dict(
+            index=0, dp=0, prompt_ids=[10], token_ids=[2, 3],
+        )])))
+        divergence = dict(
+            request=0, generated_index=1, phase="verify/accept", target_token=2, orthrus_token=3,
+            native=dict(verify=dict(epoch=0, tokens=[3])),
+        )
+        (self.root / "acceptance.json").write_text(json.dumps(dict(passed=False, divergence=divergence)))
+
+        stages = [
+            dict(stage="embedding/hidden", rank=0, case="fresh", layer=None, role=None, row=0,
+                 shape=[1, 2], dtype="torch.bfloat16", sha256="same", max_abs=1, mean=1),
+            dict(stage="layer-0/query", rank=0, case="fresh", layer=0, role="swa", row=0,
+                 shape=[1, 2], dtype="torch.bfloat16", sha256="target", max_abs=2, mean=1.5),
+        ]
+        for controls, forward, token, trace_hash, tensor in (
+            ("controls-0", "decode/step-1", 2, "target", torch.tensor([[1, 2]], dtype=torch.bfloat16)),
+            ("controls-verify-1", "verify-1", 3, "verify", torch.tensor([[1, 4]], dtype=torch.bfloat16)),
+        ):
+            control = session / controls
+            output = session / forward
+            logits_dir = output / "actual-layer39-output"
+            control.mkdir(parents=True)
+            logits_dir.mkdir(parents=True)
+            (control / "input-contract.json").write_text(json.dumps(dict(DP_engines=[dict(requests=[dict(
+                position_ids=[1], history_tokens=[10], token_ids=[2],
+            )])])))
+            logits = torch.zeros(1, 8, dtype=torch.bfloat16)
+            logits[0, token] = 2
+            torch.save(dict(logits=logits, positions=torch.tensor([1]), active=1),
+                       logits_dir / "rank-0-fresh-network-logits.pt")
+            actual_stages = [dict(row) for row in stages]
+            actual_stages[-1]["sha256"] = trace_hash
+            (output / "verifier-activations.json").write_text(json.dumps(dict(
+                position=1, stages=actual_stages, tensors="verifier-tensors.pt",
+            )))
+            torch.save({"embedding/hidden/rank-0/case-fresh": torch.ones(1, 2, dtype=torch.bfloat16),
+                        "layer-0/query/rank-0/case-fresh": tensor}, output / "verifier-tensors.pt")
+
+        result = subprocess.run([sys.executable, str(SUMMARY), str(self.root), "--verifier-logits"],
+                                check=True, capture_output=True)
+        report = json.loads(result.stdout)
+        first = report["activation_trace"]["first_difference"]
+        self.assertEqual((first["stage"], first["layer"], first["role"]), ("layer-0/query", 0, "swa"))
+        self.assertEqual(first["difference"]["mismatched"], 1)
+        self.assertEqual(first["difference"]["max_abs"], 2.0)
 
 
 if __name__ == "__main__":

@@ -108,7 +108,7 @@ docker run --rm --network none -v "$A:/a:ro" \
   python /tools/summarize_dsv41_pypto_cluster.py /a --verifier-logits
 ```
 
-若需继续定位，双机启动时都加 `--trace-position 11 --tokens 3`。这里的 11 是已确认分叉的 12-token 前缀最后一个输入位置，从零开始计数。重复该分叉时，`--verifier-logits` 还会报告这行从 embedding 到第 39 层的首个激活差异。该功能只读激活，保留原有逐 token 门槛。
+若需定位当前分叉，双机启动时都加 `--trace-position 11 --tokens 3`。这里的 11 是已确认分叉的 12-token 前缀最后一个输入位置，从零开始计数。一次运行会保存该位置的 embedding、各层 HC/Attention QKV 与索引、TP 投影和归约、Router/MoE、层输出及 LM head；`--verifier-logits` 自动报告 Decode 与 K32 Verify 的第一个不同阶段、rank、张量误差和最大误差位置。该功能只读激活，不改变候选、验证或接受逻辑。
 
 离线镜像已通过补丁和启动检查。CPU 测试覆盖全局 rank 到本机设备的映射、Engram 文件映射，以及两端通过控制连接同步起草、验证、提交和释放。真实 W8A8 双机已分别完成 target-only 和 Orthrus 生成，首次验收发现两次独立基模 prefill 的 logits 有差异。共享基模会话的双机逐 token 结果仍需复验。
 

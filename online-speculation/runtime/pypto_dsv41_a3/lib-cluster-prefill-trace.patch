@@ -1,19 +1,86 @@
-diff --git a/models/deepseek_v4_1_flash_a3/network.py b/models/deepseek_v4_1_flash_a3/network.py
-index 7775299..7e4bf41 100644
 --- a/models/deepseek_v4_1_flash_a3/network.py
 +++ b/models/deepseek_v4_1_flash_a3/network.py
-@@ -1418,8 +1418,34 @@ def run_network_chunk(
-     executor.precheck()
+@@ -759,7 +759,8 @@
+     return hidden, premix
+
+
+-def run_output_boundary(result, *, batch, topology, config, weights, executor, output):
++def run_output_boundary(result, *, batch, topology, config, weights, executor, output,
++                        trace_position=None, trace_record=None):
+     """Consume actual layer39 local delayed HC state and restore complete SP/TP vocabulary output."""
+     capacity, world, tp = executor.provider.capacity, topology["ep"], topology["tp"]
+     directory = Path(output)
+@@ -790,6 +791,11 @@
+                 [result["hidden"][rank][case], result["pre_mix"][rank][case], collapsed, physical],
+                 dict(local_collapsed=collapsed),
+             )
++            begin = record["cp_token_range"][0]
++            local_positions = record["positions"][begin:begin + record["SP_valid_rows"]].tolist()
++            if trace_record is not None and trace_position in local_positions:
++                trace_record("output-head/local-collapsed", rank, case, collapsed,
++                             local_positions.index(trace_position))
+             packets[rank][case] = collapsed
+         executor.map_ranks(run_output_boundary_rank_0)
+     gathered = executor.exchange(executor.namespace + "-output-SP-gather", packets, "all_gather", "tp")
+@@ -826,6 +832,12 @@
+                     ),
+                 ),
+             )
++            positions = record["positions"].tolist()
++            if trace_record is not None and trace_position in positions:
++                row = positions.index(trace_position)
++                trace_record("output-head/collapsed", rank, case, collapsed, row)
++                trace_record("output-head/normalized", rank, case, normalized, row)
++                trace_record("output-head/local-logits", rank, case, local_logits, row)
+             logits_packets[rank][case] = local_logits
+         executor.map_ranks(run_output_boundary_rank_1)
+     gathered_logits = executor.exchange(
+@@ -843,6 +855,9 @@
+                 [gathered_logits[rank][case], logits, len(record["positions"])],
+                 dict(logits=logits),
+             )
++            positions = record["positions"].tolist()
++            if trace_record is not None and trace_position in positions:
++                trace_record("output-head/logits", rank, case, logits, positions.index(trace_position))
+             logits = executor.resident.read_output(logits, executor.rank_devices[rank])
+             path = directory / f"rank-{rank}-{case}-network-logits.pt"
+             torch.save(
+@@ -1419,6 +1434,112 @@
      hidden, premix = embed_network_input(
          inputs["input_contract"], weights, executor, text, output / "embedding"
      )
 +    trace = []
++    trace_tensors = {}
 +    trace_prefill = phase == "prefill" and contract.get("trace_prefill", False)
 +    trace_position = contract.get("trace_position") if phase in ("decode", "verify") else None
 +
++    def record_trace(stage, rank, case, value, row, *, layer=None, role=None):
++        if value is None or not 0 <= row < value.shape[0]:
++            return
++        device = executor.rank_devices[rank]
++        actual = resident.read_output(value[row:row + 1], device).cpu().contiguous()
++        key = f"{stage}/rank-{rank}/case-{case}"
++        if key in trace_tensors:
++            raise RuntimeError(f"Duplicate diagnostic trace key: {key}")
++        trace_tensors[key] = actual
++        numeric = actual.float()
++        trace.append(dict(
++            stage=stage,
++            rank=rank,
++            case=case,
++            layer=layer,
++            role=role,
++            row=row,
++            shape=list(actual.shape),
++            dtype=str(actual.dtype),
++            sha256=tensor_sha(actual),
++            max_abs=float(numeric.abs().max()) if actual.numel() else 0.0,
++            mean=float(numeric.mean()) if actual.numel() else 0.0,
++        ))
++
 +    def capture_activation(stage, activations, coefficients):
 +        for case, records in provider.batch_for_layer(0)["cases"].items():
-+            for rank, device in executor.rank_devices.items():
++            for rank in executor.rank_devices:
 +                record = records[rank]
 +                valid = record["SP_valid_rows"]
 +                if not valid:
@@ -26,43 +93,104 @@ index 7775299..7e4bf41 100644
 +                        continue
 +                    start = positions.index(trace_position)
 +                    stop = start + 1
-+                actual = resident.read_output(activations[rank][case][start:stop], device)
-+                mixes = resident.read_output(coefficients[rank][case][start:stop], device)
-+                trace.append(dict(stage=stage, rank=rank, case=case, rows=stop - start,
-+                                  hidden_sha256=tensor_sha(actual), premix_sha256=tensor_sha(mixes)))
++                record_trace(stage + "/hidden", rank, case, activations[rank][case], start)
++                record_trace(stage + "/premix", rank, case, coefficients[rank][case], start)
++
++    def capture_layer_state(layer, result):
++        role = resolve_layer_role(layer)["mode"]
++        for rank in provider.local_ranks:
++            for case, state in result["states"][rank].items():
++                original = state["original"]
++                positions = original["positions"].tolist()
++                begin = original["cp_token_range"][0]
++                local_positions = positions[begin:begin + original["SP_valid_rows"]]
++                local_row = local_positions.index(trace_position) if trace_position in local_positions else None
++                global_row = positions.index(trace_position) if trace_position in positions else None
++                start, end = original["cp_token_range"][:2]
++                query_positions = positions[start:min(end, len(positions))]
++                query_row = query_positions.index(trace_position) if trace_position in query_positions else None
++
++                def local(name, value):
++                    if local_row is not None:
++                        record_trace(f"layer-{layer}/{name}", rank, case, value, local_row,
++                                     layer=layer, role=role)
++
++                def global_value(name, value):
++                    if global_row is not None:
++                        record_trace(f"layer-{layer}/{name}", rank, case, value, global_row,
++                                     layer=layer, role=role)
++
++                def query_value(name, value):
++                    if query_row is not None:
++                        record_trace(f"layer-{layer}/{name}", rank, case, value, query_row,
++                                     layer=layer, role=role)
++
++                local("input-hidden", state.get("readonly_hidden"))
++                local("input-premix", state.get("incoming"))
++                local("engram-hidden", state.get("hidden"))
++                local("attn-collapsed", state.get("attn_collapsed"))
++                local("attn-norm-local", state.get("attn_norm_local"))
++                global_value("attn-norm-global", state.get("full_norm"))
++                for name in ("wqa", "q_latent", "qb", "query", "attention_indices",
++                             "attention_context", "inverse_rope"):
++                    query_value(name.replace("_", "-"), state.get(name))
++                for name in ("kv_raw", "kv_norm", "kv_rope", "compressor_projected",
++                             "compressor_normalized", "index_key"):
++                    global_value(name.replace("_", "-"), state.get(name))
++                global_value("attention-heads", state.get("attention_heads"))
++                global_value("wo-a", state.get("wo_a"))
++                global_value("wo-b", state.get("wo_b"))
++                local("attention-scattered", state.get("attention_scattered"))
++                local("post-attention-hidden", state.get("changed"))
++                local("ffn-premix", state.get("ffn_pre"))
++                local("ffn-collapsed", state.get("ffn_collapsed"))
++                local("ffn-norm", state.get("ffn_normed"))
++                local("router-logits", state.get("router_logits"))
++                local("router-ids", state.get("route_ids"))
++                local("router-weights", state.get("weights"))
++                local("shared-expert", state.get("shared"))
++                local("moe-combined", state.get("combined"))
++                local("output-hidden", state.get("padded_hidden"))
++                local("output-premix", state.get("ffn_pre"))
 +
 +    if trace_prefill or trace_position is not None:
 +        capture_activation("embedding", hidden, premix)
      hash_batch = provider.hash_batch()
      common_engram = engram_contracts[1]
      if progress is not None:
-         progress(dict(stage="preparing_engram", epoch=epoch))
-@@ -1488,8 +1514,10 @@ def run_network_chunk(
-                 if not bool(executor.read_control(status, rank).all()):
+@@ -1489,6 +1610,10 @@
                      raise RuntimeError(f"Non-finite {phase} state after layer {layer} on rank {rank}")
          if draft is None:
              provider.observe_layer(layer, result)
 +        if trace_prefill or trace_position is not None:
++            if trace_position is not None:
++                capture_layer_state(layer, result)
 +            capture_activation(f"layer-{layer}", result["hidden"], result["pre_mix"])
          extra = () if draft is None else draft.finish_layer(layer)
          executor.retain_boundaries(result["hidden"], result["pre_mix"], extra)
          completed_layers.append(layer)
-         layer_timings.append(dict(layer=layer, weight_load_seconds=0.0,
-@@ -1521,8 +1549,12 @@ def run_network_chunk(
+@@ -1519,9 +1644,20 @@
+             weights=weights,
+             executor=executor,
              output=output / "actual-layer39-output",
++            trace_position=trace_position,
++            trace_record=record_trace if trace_position is not None else None,
          )
          if any(not torch.isfinite(value).all() for row in output_result["logits"] for value in row.values()):
              raise RuntimeError(f"Non-finite {phase} vocabulary logits")
 +        if trace_prefill:
 +            write_json(output / "prefill-activations.json", trace)
 +        elif trace_position is not None and trace:
-+            write_json(output / "verifier-activations.json", dict(position=trace_position, stages=trace))
++            torch.save(trace_tensors, output / "verifier-tensors.pt")
++            write_json(output / "verifier-activations.json", dict(
++                position=trace_position,
++                stages=trace,
++                tensors="verifier-tensors.pt",
++            ))
          loaded_source_files(runtime)
          runtime.update(
              status="executed_full40_not_compared",
-             completed_layers=list(range(40)),
-@@ -1562,8 +1594,9 @@ def run_network_chunk(
-                 complete_network_acceptance="not_run",
+@@ -1563,6 +1699,7 @@
              ),
          )
          return dict(runtime, logits=output_result["logits"], compilation=program.summary(),
@@ -70,4 +198,102 @@ index 7775299..7e4bf41 100644
                      timings=dict(layers=layer_timings, chunk_seconds=chunk_seconds,
                                   weight_load_seconds=weights.load_seconds - initial_load_seconds,
                                   checkpoint_read_calls=weights.reader.read_calls - initial_read_calls))
-     except BaseException as error:
+--- a/models/deepseek_v4_1_flash_a3/prefill_layer.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+@@ -289,6 +289,8 @@
+                 pre=pre,
+                 post=post,
+                 comb=comb,
++                attn_collapsed=collapsed,
++                attn_norm_local=normed,
+                 role=role,
+                 live=cache_state[rank][case],
+                 runtime=runtime,
+@@ -373,6 +375,17 @@
+                 ],
+             )
+             state["kv_rope"] = kv_rope
++            state.update(
++                full_norm=full_norm,
++                query_row_start=start,
++                query_rows=query_rows,
++                wqa=wqa,
++                q_latent=latent,
++                qb=qb,
++                query=query,
++                kv_raw=kv_raw,
++                kv_norm=kv_norm,
++            )
+             if role["mode"] == "full":
+                 context, cache = run_compressed_attention(
+                     state,
+@@ -446,6 +459,7 @@
+                     {"context": context},
+                     "swa",
+                 )
++                state["attention_indices"] = indices
+             packet = zeros(rank, tp * capacity, head_width)
+             execute_region(
+                 runtime,
+@@ -463,6 +477,7 @@
+                 ],
+             )
+             state.update(cache=cache, per_rank=per_rank, positions=positions)
++            state.update(attention_context=context, inverse_rope=inverse, attention_packet=packet)
+             head_packets[rank][case] = packet
+         map_ranks(attend_rank)
+     exchanged = exchange("attention-head-exchange", head_packets, "all_to_all", "tp") if draft is None else None
+@@ -506,6 +521,7 @@
+                     ("reduce_pack", [wob, packed, physical, total], {"packed": packed}, "output_projection"),
+                 ],
+             )
++            state.update(attention_heads=heads, wo_a=woa, wo_b=wob, reduction_packet=packed)
+             reduction[rank][case] = packed
+         map_ranks(project_rank)
+     reduced = exchange("attention-output-reduce", reduction, "all_reduce", "tp")
+@@ -514,6 +530,7 @@
+         begin = (rank % tp) * capacity
+         for case, value in reduced[rank].items():
+             scattered[rank][case] = value[begin : begin + capacity].contiguous()
++            states[rank][case].update(attention_reduced=value, attention_scattered=scattered[rank][case])
+     map_ranks(select_rank_output)
+     slab = runtime.get("moe_slab_rows", capacity)
+     routes, packet_rows = slab * 6, world * slab * 6
+@@ -556,7 +573,9 @@
+                  dict(logits=logits, route_ids=ids, route_weights=weights), "router"),
+             ])
+             state.update(changed=changed, ffn_pre=pre, ffn_post=post, ffn_comb=comb, weights=weights,
+-                         route_ids=ids, normed=normed, shared=zeros(rank, capacity, 5120), output_hidden=output,
++                         route_ids=ids, router_logits=logits, ffn_collapsed=collapsed,
++                         ffn_normed=normed, router_input=router_input,
++                         normed=normed, shared=zeros(rank, capacity, 5120), output_hidden=output,
+                          combined=zeros(rank, capacity, 5120))
+         map_ranks(route_rank)
+     slab_work = [{} for _ in range(world)]
+--- a/models/deepseek_v4_1_flash_a3/prefill_compressed_runtime.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_compressed_runtime.py
+@@ -334,6 +334,14 @@
+         dict(indices=indices),
+         "compressed_attention",
+     )
++    state.update(
++        compressor_projected=kv,
++        compressor_normalized=normalized,
++        index_key=key,
++        attention_indices=indices,
++        index_selected=selected,
++        index_lengths=lengths,
++    )
+     context = zeros(capacity, 32768)
+     if network is not None:
+         controls = read_runtime_control(state.get("runtime", {}), indices[:query_rows], rank)
+--- a/models/deepseek_v4_1_flash_a3/prefill_consumer_runtime.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_consumer_runtime.py
+@@ -131,6 +131,7 @@
+     indices = torch.full((capacity, 640), -1, dtype=torch.int32)
+     execute("sparse_index_pack", rank, case, [window, compressed, indices, query_rows],
+             dict(indices=indices), "compressed_attention")
++    state.update(attention_indices=indices, index_selected=selected, index_lengths=lengths)
+     context = allocate_runtime_tensor(state.get("runtime", {}), (capacity, 32768), torch.bfloat16, rank)
+     if network is not None:
+         controls = read_runtime_control(state.get("runtime", {}), indices[:query_rows], rank)

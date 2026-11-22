@@ -103,15 +103,20 @@ def verifier_logits(directory):
         saved = torch.load(path, map_location="cpu", weights_only=True)
         row = list(map(int, saved["positions"])).index(position)
         trace = session / forward / "verifier-activations.json"
-        stages = None
+        stages = tensors = None
         if trace.is_file():
             evidence = json.loads(trace.read_text())
             if evidence["position"] == position:
                 stages = evidence["stages"]
-        return saved["logits"][row].float(), stages
+                tensor_path = trace.parent / evidence.get("tensors", "verifier-tensors.pt")
+                if tensor_path.is_file():
+                    tensors = torch.load(tensor_path, map_location="cpu", weights_only=True)
+        return saved["logits"][row].float(), stages, tensors
 
-    target, target_stages = read_row(f"controls-{target_row['native_epoch']}", f"decode/step-{step}")
-    verify, verify_stages = read_row(f"controls-verify-{verify_call}", f"verify-{verify_call}")
+    target, target_stages, target_tensors = read_row(
+        f"controls-{target_row['native_epoch']}", f"decode/step-{step}")
+    verify, verify_stages, verify_tensors = read_row(
+        f"controls-verify-{verify_call}", f"verify-{verify_call}")
     if (int(target.argmax()), int(verify.argmax())) != (failure["target_token"], failure["orthrus_token"]):
         raise ValueError("Saved argmax does not match the recorded divergence")
     difference = (target - verify).abs()
@@ -122,12 +127,53 @@ def verifier_logits(directory):
         verify_top5=dict(zip(verify.topk(5).indices.tolist(), verify.topk(5).values.tolist(), strict=True)),
     )
     if target_stages is not None and verify_stages is not None:
-        keys = ("hidden_sha256", "premix_sha256")
-        report["first_activation_difference"] = next(
-            (dict(stage=a["stage"], target_rank=a["rank"], verify_rank=b["rank"],
-                  tensors=[name for name in keys if a[name] != b[name]])
-             for a, b in zip(target_stages, verify_stages, strict=True)
-             if a["stage"] == b["stage"] and any(a[name] != b[name] for name in keys)), None,
+        def identity(row):
+            return row["stage"], row["rank"], row["case"]
+
+        verify_by_key = {identity(row): row for row in verify_stages}
+        first = None
+        compared = 0
+        for left in target_stages:
+            key = identity(left)
+            right = verify_by_key.get(key)
+            if right is None:
+                first = dict(stage=left["stage"], rank=left["rank"], case=left["case"],
+                             reason="missing_from_verify")
+                break
+            compared += 1
+            if left["sha256"] == right["sha256"]:
+                continue
+            first = dict(
+                stage=left["stage"], rank=left["rank"], case=left["case"],
+                layer=left.get("layer"), role=left.get("role"),
+                target=dict(shape=left["shape"], dtype=left["dtype"],
+                            max_abs=left["max_abs"], mean=left["mean"]),
+                verify=dict(shape=right["shape"], dtype=right["dtype"],
+                            max_abs=right["max_abs"], mean=right["mean"]),
+            )
+            tensor_key = f"{left['stage']}/rank-{left['rank']}/case-{left['case']}"
+            if target_tensors is not None and verify_tensors is not None:
+                a, b = target_tensors[tensor_key], verify_tensors[tensor_key]
+                if a.shape == b.shape and a.dtype == b.dtype:
+                    delta = (a.float() - b.float()).abs()
+                    flat = delta.flatten()
+                    count = min(5, flat.numel())
+                    values, indices = flat.topk(count)
+                    first["difference"] = dict(
+                        byte_exact=bool(torch.equal(a, b)),
+                        mismatched=int(torch.count_nonzero(a != b)),
+                        elements=a.numel(),
+                        max_abs=float(delta.max()) if delta.numel() else 0.0,
+                        mean_abs=float(delta.mean()) if delta.numel() else 0.0,
+                        largest_flat_indices=indices.tolist(),
+                        largest_abs=values.tolist(),
+                    )
+            break
+        extra = sorted(set(verify_by_key) - {identity(row) for row in target_stages})
+        report["activation_trace"] = dict(
+            target_stages=len(target_stages), verify_stages=len(verify_stages),
+            compared_before_difference=compared, extra_verify_stages=len(extra),
+            first_difference=first,
         )
     return report
 
