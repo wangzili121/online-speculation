@@ -53,6 +53,7 @@ class DSV41ServingReplay:
     plan: DSV41SuffixPlan
     boundary: object
     layers: tuple[DSV41CapturedLayer, ...]
+    student_logits: object | None = None
 
     def __post_init__(self):
         if not self.request_id or not self.prefix or len(self.owner) != 3:
@@ -61,7 +62,16 @@ class DSV41ServingReplay:
             raise ValueError("serving replay does not cover the selected suffix")
 
     def suffix(self):
-        return DSV41SuffixReplay(self.plan, self.boundary, self.layers)
+        return DSV41SuffixReplay(
+            self.plan, self.boundary, self.layers, self.student_logits,
+        )
+
+    def with_student_logits(self, value):
+        """Attach the draft distribution emitted by this exact captured pass."""
+        return DSV41ServingReplay(
+            self.request_id, self.prefix, self.owner, self.plan,
+            self.boundary, self.layers, value,
+        )
 
 
 class DSV41ServingOnline:

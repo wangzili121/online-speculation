@@ -26,7 +26,7 @@ index 794ef00..88cb669 100644
  
      def execute(self, phase, input_contract, rank_payloads, handles):
          if self.closed:
-@@ -219,8 +222,28 @@ class NativeSession:
+@@ -219,8 +222,40 @@ class NativeSession:
          elif phase == "draft":
              if self.draft is None:
                  raise RuntimeError("No diffusion head was configured")
@@ -48,14 +48,26 @@ index 794ef00..88cb669 100644
              result = self.native.propose_candidates(chunk, self.draft,
                  output=self.directory / f"draft-{self.calls}", progress=progress)
 +            if self.online is not None:
++                draft_logits = {}
++                for engine in input_contract["DP_engines"]:
++                    dp, end = engine["dp_rank"], 0
++                    if dp not in local_dp:
++                        continue
++                    logits = result["logits"][dp * self.config.tp]["fresh"]
++                    for request in engine["requests"]:
++                        start, end = end, end + len(request["token_ids"])
++                        draft_logits[(dp, request["request_slot"], request["generation"])] = (
++                            logits[start:end - 1].detach().cpu().contiguous()
++                        )
 +                for handle in handles:
 +                    replay = self.native.take_draft_replay(handle.dp, handle.slot, handle.generation)
 +                    if replay is not None:
-+                        self.online.register_replay(replay)
++                        owner = handle.dp, handle.slot, handle.generation
++                        self.online.register_replay(replay.with_student_logits(draft_logits[owner]))
          elif phase == "verify":
              result = self.native.verify_candidates(chunk, output=self.directory / f"verify-{self.calls}",
                                                     progress=progress)
-@@ -233,7 +256,7 @@ class NativeSession:
+@@ -233,7 +268,7 @@ class NativeSession:
              raise RuntimeError("Native dispatch did not execute all 40 layers")
          if before is not None and before != self.native.weights.counters():
              raise RuntimeError("Serving dispatch changed the resident static weight bank")
@@ -64,7 +76,7 @@ index 794ef00..88cb669 100644
          for engine in input_contract["DP_engines"]:
              dp, end = engine["dp_rank"], 0
              if dp * self.config.tp not in self.local_ranks:
-@@ -249,6 +272,32 @@ class NativeSession:
+@@ -249,6 +284,32 @@ class NativeSession:
                      row = logits[start:end - 1].argmax(dim=-1)
                  else:
                      row = logits[start:end] if phase == "verify" else logits[end - 1]
@@ -97,7 +109,7 @@ index 794ef00..88cb669 100644
                      if self.cluster is not None:
                          if phase == "prefill":
                              values, ids = row.float().topk(min(5, row.numel()))
-@@ -257,6 +306,8 @@ class NativeSession:
+@@ -257,6 +318,8 @@ class NativeSession:
                                  ids=ids.tolist(), logits=values.tolist()))
                          row = row.argmax(dim=-1)
                  rows[(dp, request["request_slot"], request["generation"])] = row

@@ -20,6 +20,10 @@ class Backend:
         self.events.append(("project", None))
         return torch.zeros(3, 11), hidden
 
+    def captured_output_state(self, layer):
+        self.events.append(("captured_output", None))
+        return layer
+
     def loss_vjp(self, logits, teacher, valid, kind):
         self.events.append(("loss", kind, valid))
         return torch.tensor(.25), torch.ones_like(logits)
@@ -81,4 +85,19 @@ def test_non_owner_replica_contributes_zero_then_applies_reduced_update():
     assert backend.events == [
         ("zero", plan.layers), ("dp_all_reduce", 32),
         ("clip", 1.), ("adamw", 2e-6, 1),
+    ]
+
+
+def test_device_suffix_update_reuses_captured_student_logits():
+    plan = DSV41SuffixPlan(1)
+    backend = Backend(plan)
+    learner = DSV41DeviceSuffixLearner(backend, last_layers=1)
+    captured = SimpleNamespace()
+    replay = DSV41SuffixReplay(
+        plan, torch.zeros(32, 4), (captured,), torch.zeros(3, 11),
+    )
+    assert learner.update_rows(replay, torch.randn(3, 11)) == (.25, .5, 1)
+    assert not any(event[0] in ("forward", "project") for event in backend.events)
+    assert backend.events[:3] == [
+        ("captured_output", None), ("loss", "tv", 3), ("project_vjp", None),
     ]

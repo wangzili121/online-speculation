@@ -67,12 +67,19 @@ class DSV41SuffixReplay:
     plan: DSV41SuffixPlan
     boundary: object
     layers: tuple[object, ...]
+    student_logits: object | None = None
 
     def __post_init__(self):
         if self.boundary is None:
             raise ValueError("suffix replay boundary must be a tensor or backend-owned handle")
         if len(self.layers) != self.plan.last_layers:
             raise ValueError("suffix replay must contain one state per selected layer")
+        if self.student_logits is not None and (
+            not torch.is_tensor(self.student_logits) or self.student_logits.ndim != 2
+            or not self.student_logits.is_floating_point()
+            or not 1 <= self.student_logits.shape[0] < 32
+        ):
+            raise ValueError("captured student logits must be K32 full-vocabulary rows")
 
 
 class DSV41SuffixLearner:

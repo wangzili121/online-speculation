@@ -36,6 +36,12 @@ class DSV41DeviceSuffixLearner:
         self.version = 0
 
     def _forward(self, replay):
+        if replay.student_logits is not None:
+            # The captured layer states and student logits come from the same
+            # immutable draft version.  Reusing them avoids a second 40-layer
+            # forward; reverse still traverses the complete selected suffix.
+            output_state = self.backend.captured_output_state(replay.layers[-1])
+            return replay.student_logits, output_state, replay.layers
         hidden = replay.boundary
         states = []
         for layer, captured in zip(self.plan.layers, replay.layers, strict=True):
