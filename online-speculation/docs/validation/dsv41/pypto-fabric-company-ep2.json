@@ -1,0 +1,29 @@
+{
+  "date": "2026-11-22",
+  "source_commit": "bbe5299",
+  "command": "dsv41_pypto_env.sh fabric-check <node7|node8>",
+  "image": "orthrus-dsv41-pypto:72a62d1-offline",
+  "physical_hosts": 2,
+  "physical_devices": 2,
+  "session": "999f13720812",
+  "ranks": [
+    {
+      "node": "node7",
+      "rank": 0,
+      "default_physical_device": 1,
+      "runtime_device": 0,
+      "passed": true,
+      "all_reduce": [4.0, 6.0],
+      "all_to_all": [1.0, 3.0]
+    },
+    {
+      "node": "node8",
+      "rank": 1,
+      "default_physical_device": 0,
+      "runtime_device": 0,
+      "passed": true,
+      "all_reduce": [4.0, 6.0],
+      "all_to_all": [2.0, 4.0]
+    }
+  ]
+}

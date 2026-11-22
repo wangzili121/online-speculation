@@ -27,7 +27,9 @@ python "$ORTHRUS_ROOT/online-speculation/scripts/validate_dsv41_pypto_cluster.py
 
 ## 实测边界
 
-8+8 逻辑 rank 的控制流程通过了双进程 TCP 回环。在两台实验机上分别做单机双卡测试，两进程各持一张 910B3，设备集合通信均逐元素通过参考校验，覆盖了驱动 25.5.1/CANN 9.0.0 与驱动 26.1.1/CANN 9.1.1。三卡 2+1 进入 EP AlltoAll 后报设备链路超时 `507048`，相同卡两两连接的用例通过。外部实验机之间的探针停在 TCP 握手，实际跨物理节点的 HCCL 和 EP16 尚待实测。 [两卡记录](validation/dsv41/pypto-cluster-loopback-ep2.json)
+公司内网 node7 和 node8 各使用一张卡，完成 HCCL 建链、AllReduce 和 AlltoAll。两端的会话 ID 一致，数据与参考逐元素一致。实际 8+8 卡的 EP16 硬件测试仍待执行。 [公司双机记录](validation/dsv41/pypto-fabric-company-ep2.json)
+
+8+8 逻辑 rank 的控制流程通过了双进程 TCP 回环。外部实验机上的单机双卡测试覆盖了驱动 25.5.1/CANN 9.0.0 与驱动 26.1.1/CANN 9.1.1。三卡 2+1 进入 EP AlltoAll 后报设备链路超时 `507048`，相同卡两两连接的用例通过。 [单机两卡记录](validation/dsv41/pypto-cluster-loopback-ep2.json)
 
 完整模型 Serving 仍通过单进程创建所有 rank。接入时，`GenerationSession` 下的权重、KV 页和运行时张量按本机 rank 分配。编译仍保留全局 EP16，MoE 专家归属和收发桶按全局 rank 编号。层循环通过 `NetworkExecutor.exchange` 接到新通信层，两端执行同一阶段序列，空 DP 仍参与 collective。真实 W8A8 基模用同一组输入跑 target-only 和 Orthrus，再由[整模验收](ORTHRUS_DSV41_PYPTO.md#serving-入口与实机验收)检查实际投机阶段和逐 token 一致性。
 
