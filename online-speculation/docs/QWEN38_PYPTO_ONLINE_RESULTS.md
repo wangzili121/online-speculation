@@ -60,3 +60,4 @@ GSM8K 使用官方 train 中按登记划分的预留请求；SPoC 使用官方�
 - [三卡资源重复及原 GSM8K 负结果](validation/pypto-qwen38/online-datasets-20261119/resource338/three-card-summary.json)
 - [新三卡 GSM8K 冻结配方与状态](validation/pypto-qwen38/online-datasets-20261119/confirm350/README.md)
 - [本页取数与全流账目复核](validation/pypto-qwen38/online-datasets-20261119/completed-primary-result-render-check.json)
+- [按实际运行哈希恢复冻结源码](validation/pypto-qwen38/online-datasets-20261119/source340/README.md)：可同时恢复六次双卡正式验证的原始入口与目录；运行环境和模型权重单独准备。

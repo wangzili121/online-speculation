@@ -11,7 +11,7 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def recover(root, output=None):
+def recover(root, output=None, *, include_primary=False):
     here = root / "source340"
     manifest = json.loads((here / "manifest.json").read_text())
     spoc = json.loads(gzip.decompress((root / "relocate318/source292_A_bundle.json.gz").read_bytes()))
@@ -25,8 +25,22 @@ def recover(root, output=None):
         data = text.encode()
         assert sha(data) == expected
         available[expected] = data
+    source_maps = dict(manifest["source_maps"])
+    primary_records = {}
+    if include_primary:
+        # 六次主验证的模型代码均已归档；B245启动器保存在原实验目录。
+        launcher = (root / "rows233/run_dense_v245.py").read_bytes()
+        available[sha(launcher)] = launcher
+        records = sorted((root / "gsm254/confirmations").glob("*confirm*.source.json"))
+        records += sorted((root / "spoc312").glob("*confirm*.source.json"))
+        assert len(records) == 6
+        for record in records:
+            raw = record.read_bytes()
+            flavor = "primary__" + record.name.removesuffix(".source.json")
+            source_maps[flavor] = json.loads(raw)["files"]
+            primary_records[str(record.relative_to(root))] = sha(raw)
     groups = {}
-    for flavor, files in manifest["source_maps"].items():
+    for flavor, files in source_maps.items():
         for name, expected in files.items():
             path = PurePosixPath(name)
             assert not path.is_absolute() and ".." not in path.parts and path.suffix == ".py"
@@ -36,9 +50,10 @@ def recover(root, output=None):
                               all_hashes_match=True, syntax_parses=True)
     if output is not None:
         output.mkdir(parents=True, exist_ok=False)
-        for flavor, files in manifest["source_maps"].items():
+        for flavor, files in source_maps.items():
             base = output / flavor
-            working = base / ("online-background" if flavor == "B_gsm" else "online-studies")
+            working = base / ("online-background" if any(name.startswith("online-background/") for name in files)
+                              else "online-studies")
             for name, expected in files.items():
                 path = (working if len(PurePosixPath(name).parts) == 1 else base) / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,15 +68,20 @@ def recover(root, output=None):
                 path.write_text(text)
             (base / "source-manifest.json").write_text(json.dumps(files, indent=2) + "\n")
             groups[flavor]["recovered_files_rehashed"] = True
-    return dict(completed=True, groups=groups, unique_guarded_source_files=len(set(
-        value for files in manifest["source_maps"].values() for value in files.values())),
+    result = dict(completed=True, groups=groups, unique_guarded_source_files=len(set(
+        value for files in source_maps.values() for value in files.values())),
                 NN_started=False, environment_installed=False, weights_included=False,
                 scope="Exact source-text coverage and byte recovery, not an offline runtime or a new NPU validation.")
+    if include_primary:
+        result["primary_records_sha256"] = primary_records
+        result["includes_six_primary_runs"] = True
+    return result
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--validation-root", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--output", type=Path, help="新建源码目录；目标存在则拒绝写入")
+    parser.add_argument("--include-primary", action="store_true", help="同时恢复六次正式双卡验证的原始源码布局")
     args = parser.parse_args()
-    print(json.dumps(recover(args.validation_root, args.output), indent=2))
+    print(json.dumps(recover(args.validation_root, args.output, include_primary=args.include_primary), indent=2))

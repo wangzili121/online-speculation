@@ -17,6 +17,11 @@ python3 recover_sources.py
 
 # 恢复到一个尚不存在的新目录，并重新核对实际写出的每个文件
 python3 recover_sources.py --output /tmp/orthrus-frozen-sources
+
+# 同时恢复六次正式双卡验证各自的原始目录布局
+python3 recover_sources.py --include-primary --output /tmp/orthrus-primary-sources
 ```
+
+`--include-primary`按六份原始`.source.json`逐文件恢复GSM8K和SPoC正式验证。它额外读取已在仓库保存的`rows233/run_dense_v245.py`，保留B机GSM第三次确认实际使用的v245入口及模块路径；其余模型与原生服务代码复用已有归档。共恢复10个版本/用例目录、175个不同的受保护源码文件，实际写出后再次逐个核对SHA256。`primary-recovery-audit.json`记录六份原始清单的哈希、布局及语法检查；默认四版本恢复行为保持不变。
 
 每种版本分别恢复自己的工作目录、模型模块和原生服务文件，另附原始哈希清单。该入口**不安装镜像、CANN、PyPTO或模型权重，也不启动NPU任务**；它证明实验源码可以逐字节恢复，不能代替部署环境或性能验收。运行参数、数据及资源绑定仍以各实验的冻结计划和原始记录为准。
