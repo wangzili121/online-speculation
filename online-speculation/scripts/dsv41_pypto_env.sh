@@ -263,11 +263,23 @@ case "$action" in
             options+=(-v "$previous_head:/previous-head:ro" -e PYPTO_PREVIOUS_HEAD=/previous-head)
           fi
         fi
+        set +e
         docker run "${options[@]}" "$image" bash \
           /workspace/online-speculation/scripts/run_dsv41_pypto_cluster.sh "$@" \
           --node "$rank" --master-address "$master_address" --key-file /run/orthrus-cluster.key \
           2>&1 | tee "$log_dir/cluster-accept.log"
-        exit
+        acceptance_status="${PIPESTATUS[0]}"
+        set -e
+        if [[ -f "$log_dir/acceptance/acceptance.json" ]] && \
+           grep -q '"phase": "verify/accept"' "$log_dir/acceptance/acceptance.json"; then
+          echo "Automatic verifier diagnosis:" >&2
+          docker run --rm --network none \
+            -v "$log_dir/acceptance:/acceptance:ro" \
+            -v "$root/scripts:/tools:ro" \
+            "$image" /opt/pypto/venv/bin/python \
+            /tools/summarize_dsv41_pypto_cluster.py /acceptance --verifier-logits || true
+        fi
+        exit "$acceptance_status"
       fi
       docker run "${options[@]}" "$image" timeout -k 5s 15m python \
         /workspace/online-speculation/scripts/validate_dsv41_pypto_cluster.py --timeout 120 --port 29641 "$@" \
