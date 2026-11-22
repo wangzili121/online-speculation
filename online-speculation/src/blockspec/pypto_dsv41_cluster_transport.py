@@ -31,14 +31,14 @@ class ClusterCollectives:
     def __enter__(self):
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, exc_type, *_):
         first_error = None
         for channel in reversed(self.owned):
             try:
                 channel.close()
             except Exception as error:
                 first_error = first_error or error
-        if first_error is not None:
+        if exc_type is None and first_error is not None:
             raise first_error
 
     def _cross_group(self, group, tag):

@@ -197,13 +197,45 @@ def test_company_fabric_check_selects_node_defaults(tmp_path):
     assert "image:custom" in args
 
     result = subprocess.run(["bash", str(SCRIPT), "fabric-check", "node9"], capture_output=True, text=True, env=env)
-    assert result.returncode == 2 and "fabric-check {node7|node8}" in result.stderr
+    assert result.returncode == 2 and "Specify node7 or node8" in result.stderr
 
     ip.write_text('#!/bin/sh\necho "local 7.150.6.33 dev lo src 7.150.6.33"\n')
     result = subprocess.run(
         ["bash", str(SCRIPT), "fabric-check", "node8"], capture_output=True, text=True, env=env,
     )
     assert result.returncode == 2 and "Run the node8 probe on the peer host" in result.stderr
+
+
+def test_cluster_check_exposes_only_reserved_cards_and_keeps_reports(tmp_path):
+    key = tmp_path / "job.key"
+    key.write_text("test-key-used-only-for-mocked-docker")
+    env = environment(tmp_path) | {"CLUSTER_KEY_FILE": str(key), "NPU_DEVICES": "1,3"}
+    script = ["bash", str(SCRIPT), "cluster-check", "node7"]
+    control = json.loads(subprocess.check_output(
+        [*script, "--control-only"], text=True, env=env, cwd=tmp_path,
+    ))
+    assert "--device" not in control
+    assert "--control-only" in control
+    assert "ASCEND_RT_VISIBLE_DEVICES=" in control
+    assert "PYTHONPATH=/workspace/online-speculation/src" in control
+    assert "/run/orthrus-cluster.key" in control
+    assert f"{key.resolve()}:/run/orthrus-cluster.key:ro" in control
+    assert control[-6:] == ["--node", "0", "--master-address", "7.150.6.33", "--key-file", "/run/orthrus-cluster.key"]
+
+    args = json.loads(subprocess.check_output(
+        [*script, "--counts", "2", "2", "--tp", "2"], text=True, env=env, cwd=tmp_path,
+    ))
+    assert args.count("--device") == 5
+    assert "/dev/davinci1:/dev/davinci1" in args
+    assert "/dev/davinci3:/dev/davinci3" in args
+    assert "ASCEND_RT_VISIBLE_DEVICES=0,1" in args
+    assert "ORTHRUS_CLUSTER_PHYSICAL_CARDS=1,3" in args
+    assert len(list(tmp_path.glob("orthrus-cluster.*/probe.log"))) == 2
+
+    result = subprocess.run(
+        script, text=True, capture_output=True, env=env | {"NPU_DEVICES": "1,3,3"}, cwd=tmp_path,
+    )
+    assert result.returncode == 2 and "repeated cards" in result.stderr
 
 
 def test_fabric_rendezvous_ignores_plain_tcp_connections(tmp_path):

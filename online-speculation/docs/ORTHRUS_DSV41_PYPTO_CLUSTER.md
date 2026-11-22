@@ -8,7 +8,35 @@
 
 ## 验证入口
 
-在两台机器使用同版源码。为本次作业生成一个密钥文件，通过已授权的文件传输方式放到两端。两端设置同一个 rank 0 内网 IPv4、端口和版本标识。用 `--control-only` 可先验证 8+8 布局、阶段推进和 token 行回收。
+公司 node7 和 node8 使用同版仓库及已验证的离线镜像。生成一次作业密钥，并把同一个文件经 SSH 或 SCP 放到两台机器执行账号的 `~/.orthrus-cluster.key`。可用 `CLUSTER_KEY_FILE` 指定其他位置。
+
+```bash
+(umask 077; openssl rand -hex 32 > "$HOME/.orthrus-cluster.key")
+```
+
+先启动 node7，再在两分钟内启动 node8。控制测试复用两卡探针已验证的 TCP 端口 29641。测试用 8+8 的逻辑布局，走请求路由、阶段顺序、接受提交和 token 回收，无需 NPU。每次启动会校对两端的代码标识。
+
+```bash
+# node7
+bash online-speculation/scripts/dsv41_pypto_env.sh cluster-check node7 --control-only
+
+# node8
+bash online-speculation/scripts/dsv41_pypto_env.sh cluster-check node8 --control-only
+```
+
+实卡测试只挂载 `NPU_DEVICES` 中指定的物理卡。两台各八卡空闲时执行下方命令，检查 TP4、DP4、EP16 的四种集合通信。若先用两台各两卡联调，两端把卡号改成实际空闲的卡，并加 `--counts 2 2 --tp 2`。卡号应按容器映射顺序列出。
+
+```bash
+# node7
+NPU_DEVICES=0,1,2,3,4,5,6,7 bash online-speculation/scripts/dsv41_pypto_env.sh cluster-check node7
+
+# node8
+NPU_DEVICES=0,1,2,3,4,5,6,7 bash online-speculation/scripts/dsv41_pypto_env.sh cluster-check node8
+```
+
+两台最后一行均为 `passed: true` 且 `device_collectives` 包含 `ep/all_to_all`、`ep/reduce_scatter` 和 `ep/all_reduce`，才算对应实卡通信通过。日志和结果写入各自的 `orthrus-cluster.*` 目录。
+
+其他机器可以直接运行 Python 入口，并显式传入本机编号、rank 0 地址、密钥和 PyPTO Lib 路径。用 `--control-only` 可先验证 8+8 布局。
 
 ```bash
 export PYTHONPATH="$ORTHRUS_ROOT/online-speculation/src"
@@ -29,9 +57,9 @@ python "$ORTHRUS_ROOT/online-speculation/scripts/validate_dsv41_pypto_cluster.py
 
 公司内网 node7 和 node8 各使用一张卡，完成 HCCL 建链、AllReduce 和 AlltoAll。两端的会话 ID 一致，数据与参考逐元素一致。实际 8+8 卡的 EP16 硬件测试仍待执行。 [公司双机记录](validation/dsv41/pypto-fabric-company-ep2.json)
 
-8+8 逻辑 rank 的控制流程通过了双进程 TCP 回环。外部实验机上的单机双卡测试覆盖了驱动 25.5.1/CANN 9.0.0 与驱动 26.1.1/CANN 9.1.1。三卡 2+1 进入 EP AlltoAll 后报设备链路超时 `507048`，相同卡两两连接的用例通过。 [单机两卡记录](validation/dsv41/pypto-cluster-loopback-ep2.json)
+8+8 逻辑 rank 的控制流程通过了双进程和双离线容器的 TCP 回环。外部实验机上的单机双卡测试覆盖了驱动 25.5.1/CANN 9.0.0 与驱动 26.1.1/CANN 9.1.1，25.5.1 环境另复验了物理到运行时卡号映射。三卡 2+1 进入 EP AlltoAll 后报设备链路超时 `507048`，相同卡两两连接的用例通过。 [单机两卡记录](validation/dsv41/pypto-cluster-loopback-ep2.json)
 
-完整模型 Serving 仍通过单进程创建所有 rank。接入时，`GenerationSession` 下的权重、KV 页和运行时张量按本机 rank 分配。编译仍保留全局 EP16，MoE 专家归属和收发桶按全局 rank 编号。层循环通过 `NetworkExecutor.exchange` 接到新通信层，两端执行同一阶段序列，空 DP 仍参与 collective。真实 W8A8 基模用同一组输入跑 target-only 和 Orthrus，再由[整模验收](ORTHRUS_DSV41_PYPTO.md#serving-入口与实机验收)检查实际投机阶段和逐 token 一致性。
+现有整模入口 `run_network_runtime` 用全局 EP 数量配置本地设备，同时给所有 rank 分配 `A3ResidentWeights` 和 KV 缓存。双机接入需要让 `GenerationSession` 只持有本机权重、KV 页和运行时张量。模型编译仍保留全局 EP16，MoE 专家和收发桶继续按全局 rank 编号。层循环需要把 `NetworkExecutor.exchange` 接到跨机通信，两端执行相同阶段，空 DP 仍参与集合通信。真实 W8A8 基模用同一组输入跑 target-only 和 Orthrus，再由[整模验收](ORTHRUS_DSV41_PYPTO.md#serving-入口与实机验收)检查实际投机阶段和逐 token 一致性。
 
 ## 精度验收
 

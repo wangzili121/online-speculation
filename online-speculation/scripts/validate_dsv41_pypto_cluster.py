@@ -2,6 +2,8 @@
 """Run the two-host dispatch and HCCL path with node-local Ascend workers."""
 
 import argparse
+import ctypes
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,11 +15,26 @@ from blockspec.pypto_dsv41_cluster_transport import ClusterCollectives
 
 def run(args, plan):
     address, key = (args.master_address, args.port), args.key_file.read_bytes().strip()
+    mode = "control" if args.control_only else "device"
+    identity = f"{mode}/{args.build_id or build_identity(args.lib if not args.control_only else None)}"
+    print(f"Node {plan.node} connecting to {address[0]}:{address[1]}, {identity}", file=sys.stderr, flush=True)
     with ControlLink.connect(plan.node, address, key, args.timeout) as link:
-        dispatch = ClusterDispatcher(plan, link, build_id=args.build_id)
-        if args.control_only:
-            return check_dispatch(dispatch, plan)
-        return check_device(args, plan, link, dispatch)
+        dispatch = ClusterDispatcher(plan, link, build_id=identity)
+        result = check_dispatch(dispatch, plan) if args.control_only else check_device(args, plan, link, dispatch)
+    return dict(result, build_id=identity)
+
+
+def build_identity(lib):
+    root = Path(__file__).resolve().parents[1]
+    files = [Path(__file__), root / "src/blockspec/pypto_dsv41_cluster.py",
+             root / "src/blockspec/pypto_dsv41_cluster_transport.py"]
+    if lib is not None:
+        source = lib / "models/deepseek_v4_1_flash_a3"
+        files.extend((source / "prefill_resident.py", source / "moe_transport.py"))
+    fingerprint = hashlib.sha256()
+    for file in files:
+        fingerprint.update(hashlib.sha256(file.read_bytes()).digest())
+    return fingerprint.hexdigest()[:16]
 
 
 def check_device(args, plan, link, dispatch):
@@ -30,9 +47,38 @@ def check_device(args, plan, link, dispatch):
     os.environ.setdefault("HCCL_EXEC_TIMEOUT", str(args.timeout))
     torch.set_num_threads(2)
     local_devices = len(plan.local_ranks)
+    physical_cards = os.environ.get("ORTHRUS_CLUSTER_PHYSICAL_CARDS")
+    card_map = None
+    if physical_cards:
+        cards = [int(card) for card in physical_cards.split(",")]
+        if len(cards) != local_devices or len(set(cards)) != local_devices:
+            raise ValueError(f"The rank plan requires {local_devices} distinct local NPU devices")
+        card_map = check_visible_devices(cards)
+        print(f"Node {plan.node} physical-to-runtime NPU mapping: {card_map}", file=sys.stderr, flush=True)
     topology = dict(ep=local_devices, tp=plan.tp, dp=local_devices // plan.tp)
     with ResidentNetworkRuntime(list(range(local_devices)), topology) as runtime, ClusterCollectives(runtime, plan, link) as comm:
-        return check_dispatch(dispatch, plan, runtime, comm)
+        result = check_dispatch(dispatch, plan, runtime, comm)
+    return dict(result, physical_to_runtime=card_map) if card_map is not None else result
+
+
+def check_visible_devices(cards):
+    from models.deepseek_v4_1_flash_a3.moe_transport import CANNMemory, _check
+
+    acl = CANNMemory().library
+    count = ctypes.c_uint32()
+    _check(acl.aclrtGetDeviceCount(ctypes.byref(count)), "aclrtGetDeviceCount")
+    if count.value != len(cards):
+        raise ValueError(f"CANN reports {count.value} visible devices for the {len(cards)} mounted cards")
+    mapping = {}
+    # The launcher exposes all mounted container logical IDs in order.
+    for runtime_id in range(count.value):
+        physical = ctypes.c_int32()
+        _check(acl.aclrtGetPhyDevIdByLogicDevId(runtime_id, ctypes.byref(physical)),
+               f"aclrtGetPhyDevIdByLogicDevId({runtime_id})")
+        mapping[physical.value] = runtime_id
+    if list(mapping) != cards:
+        raise ValueError(f"Unexpected CANN device order {mapping}; order NPU_DEVICES by its runtime IDs")
+    return mapping
 
 
 def check_dispatch(dispatch, plan, runtime=None, comm=None):
@@ -65,6 +111,8 @@ def check_dispatch(dispatch, plan, runtime=None, comm=None):
                                         collect_tokens=phase != "release")
         if phase != "release" and results != [[tag + dp] for dp in active_dps]:
             raise AssertionError("Cluster token rows were not restored to Serving wave order")
+        print(f"Node {plan.node} completed {phase}" + (f" ({group}/{method})" if comm else ""),
+              file=sys.stderr, flush=True)
     return dict(passed=True, node=plan.node, global_ranks=list(plan.local_ranks), epoch=dispatch.epoch,
                 phases=[phase for phase, _, _ in operations], topology=topology,
                 device_collectives=[f"{group}/{method}" for _, group, method in operations] if comm else [])
@@ -74,8 +122,11 @@ def check_exchange(plan, runtime, comm, phase, group, method, tag):
     import torch
 
     def value(rank):
-        dtype = torch.uint8 if method == "all_to_all" else torch.bfloat16
-        return (torch.arange(sum(plan.counts) * 8).reshape(-1, 1) % 13 + rank + tag).to(dtype)
+        rows = torch.arange(sum(plan.counts) * 8).reshape(-1, 1)
+        if method == "all_to_all":
+            return ((rows * 3 + rank * 17 + tag) % 251).to(torch.uint8)
+        # Each EP16 sum is at most 192 and is exact for BF16 accumulation.
+        return ((rows + rank + tag) % 13).to(torch.bfloat16)
 
     packets = [{"phase": {"value": value(rank)}} for rank in plan.local_ranks]
     try:
@@ -111,9 +162,9 @@ def main():
     parser.add_argument("--port", type=int, default=29642)
     parser.add_argument("--timeout", type=int, default=45)
     parser.add_argument("--key-file", type=Path, required=True)
-    parser.add_argument("--lib", type=Path)
+    parser.add_argument("--lib", type=Path, default=os.environ.get("PYPTO_LIB_ROOT"))
     parser.add_argument("--control-only", action="store_true")
-    parser.add_argument("--build-id", required=True)
+    parser.add_argument("--build-id", help="Override the automatically computed source fingerprint")
     args = parser.parse_args()
     if not args.control_only and args.lib is None:
         parser.error("Specify --lib for the device-collective check")

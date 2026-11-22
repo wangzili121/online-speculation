@@ -5,13 +5,19 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 action="${1:-help}"
 if [[ $# -gt 0 ]]; then shift; fi
 default_image=orthrus-dsv41-pypto:72a62d1
-if [[ "$action" == fabric-check && "${1:-}" == node* ]]; then
-  if [[ $# -ne 1 || ( "$1" != node7 && "$1" != node8 ) ]]; then
+if [[ "$action" == cluster-check || ( "$action" == fabric-check && "${1:-}" == node* ) ]]; then
+  node="${1:-}"
+  if [[ "$node" != node7 && "$node" != node8 ]]; then
+    echo "Specify node7 or node8 for $action" >&2
+    exit 2
+  fi
+  shift
+  if [[ "$action" == fabric-check && $# -ne 0 ]]; then
     echo "Usage: $0 fabric-check {node7|node8}" >&2
     exit 2
   fi
   master_address=7.150.6.33
-  case "$1" in
+  case "$node" in
     node7)
       rank=0
       HCCL_IF_IP="$master_address"
@@ -33,7 +39,9 @@ if [[ "$action" == fabric-check && "${1:-}" == node* ]]; then
   esac
   echo "Rank $rank HCCL host IP: $HCCL_IF_IP" >&2
   default_image+=-offline
-  set -- --rank "$rank" --master-address "$master_address"
+  if [[ "$action" == fabric-check ]]; then
+    set -- --rank "$rank" --master-address "$master_address"
+  fi
 fi
 image="${PYPTO_IMAGE:-$default_image}"
 case "$action" in
@@ -95,7 +103,7 @@ case "$action" in
     docker version --format '{{.Server.Version}}'
     docker info --format '{{json .Runtimes}}'
     ;;
-  doctor|preflight|compile-probe|probe|device-map|shell|attention-check|handoff-check|fabric-check|init-head)
+  doctor|preflight|compile-probe|probe|device-map|shell|attention-check|handoff-check|fabric-check|cluster-check|init-head)
     docker image inspect "$image" >/dev/null 2>&1 || {
       echo "Image missing. Build it on a networked host or load the transferred image.tar." >&2; exit 2;
     }
@@ -149,7 +157,7 @@ case "$action" in
         options+=(-e "ASCEND_RT_VISIBLE_DEVICES=$visible_device")
       fi
     else
-      options+=(-e ASCEND_RT_VISIBLE_DEVICES=)
+      if [[ "$action" != cluster-check ]]; then options+=(-e ASCEND_RT_VISIBLE_DEVICES=); fi
       if [[ -d /usr/local/Ascend/driver ]]; then
         options+=(-v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro)
       fi
@@ -176,17 +184,58 @@ case "$action" in
         --model /workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8 \
         --output "/results/$(basename "$DRAFT_HEAD")" --from-target "$@"
     fi
-    if [[ "$action" == fabric-check ]]; then
+    if [[ "$action" == fabric-check || "$action" == cluster-check ]]; then
       for name in HCCL_IF_IP HCCL_SOCKET_IFNAME HCCL_IF_BASE_PORT HCCL_HOST_SOCKET_PORT_RANGE; do
         if [[ -n "${!name:-}" ]]; then options+=(-e "$name=${!name}"); fi
       done
       if [[ -f /etc/hccn.conf ]]; then options+=(-v /etc/hccn.conf:/etc/hccn.conf:ro); fi
-      log_dir="$(mktemp -d "$PWD/orthrus-fabric.XXXXXX")"
+      log_dir="$(mktemp -d "$PWD/orthrus-${action%-check}.XXXXXX")"
       echo "CANN logs: $log_dir" >&2
       options+=(-v "$root:/workspace/online-speculation:ro"
                 -v "$log_dir:/cann-logs" -e ASCEND_PROCESS_LOG_PATH=/cann-logs -e ASCEND_MODULE_LOG_LEVEL=HCCL=1)
+    fi
+    if [[ "$action" == fabric-check ]]; then
       exec docker run "${options[@]}" "$image" "${command_env[@]}" timeout -k 5s 180s python \
         /workspace/online-speculation/scripts/probe_dsv41_pypto_fabric.py "$@" --device "$runtime_device"
+    fi
+    if [[ "$action" == cluster-check ]]; then
+      key_file="${CLUSTER_KEY_FILE:-$HOME/.orthrus-cluster.key}"
+      [[ -f "$key_file" && -r "$key_file" ]] || { echo "Missing cluster key file: $key_file" >&2; exit 2; }
+      key_dir="$(cd "$(dirname "$key_file")" && pwd -P)"
+      options+=(-v "$key_dir/$(basename "$key_file"):/run/orthrus-cluster.key:ro"
+                -e PYTHONPATH=/workspace/online-speculation/src)
+      control_only=false
+      for arg in "$@"; do
+        if [[ "$arg" == --control-only ]]; then control_only=true; fi
+      done
+      if "$control_only"; then
+        options+=(-e ASCEND_RT_VISIBLE_DEVICES=)
+      else
+        : "${NPU_DEVICES:?Set NPU_DEVICES to the reserved physical cards, e.g. 0,1,2,3,4,5,6,7}"
+        [[ "$NPU_DEVICES" =~ ^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*))*$ ]] || { echo "Invalid NPU_DEVICES list" >&2; exit 2; }
+        IFS=, read -ra cards <<< "$NPU_DEVICES"
+        visible=""
+        seen=","
+        index=0
+        for card in "${cards[@]}"; do
+          if [[ "$seen" == *",$card,"* ]]; then
+            echo "NPU_DEVICES contains repeated cards" >&2
+            exit 2
+          fi
+          seen+="$card,"
+          options+=(--device "/dev/davinci$card:/dev/davinci$card")
+          visible="${visible:+$visible,}$index"
+          index=$((index + 1))
+        done
+        options+=(--device /dev/davinci_manager --device /dev/devmm_svm --device /dev/hisi_hdc
+                  -e "ASCEND_RT_VISIBLE_DEVICES=$visible"
+                  -e "ORTHRUS_CLUSTER_PHYSICAL_CARDS=$NPU_DEVICES")
+      fi
+      docker run "${options[@]}" "$image" timeout -k 5s 15m python \
+        /workspace/online-speculation/scripts/validate_dsv41_pypto_cluster.py --timeout 120 --port 29641 "$@" \
+        --node "$rank" --master-address "$master_address" --key-file /run/orthrus-cluster.key \
+        2>&1 | tee "$log_dir/probe.log"
+      exit
     fi
     if [[ "$action" == attention-check || "$action" == handoff-check ]]; then
       kind=handoff
@@ -203,7 +252,7 @@ case "$action" in
     exec docker run "${options[@]}" "$image" "$action" "$@"
     ;;
   *)
-    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|handoff-check|fabric-check|init-head}"
-    echo "Company fabric probe: $0 fabric-check {node7|node8}"
+    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|handoff-check|fabric-check|cluster-check|init-head}"
+    echo "Company probes: $0 {fabric-check|cluster-check} {node7|node8}"
     ;;
 esac
