@@ -32,6 +32,6 @@ check environment 60 python "$root/scripts/check_dsv41_pypto_environment.py"
 head=()
 if [[ -n "${DRAFT_HEAD:-}" ]]; then head=(--head "$DRAFT_HEAD"); fi
 check checkpoint 120 python "$root/scripts/preflight_dsv41_pypto.py" "${head[@]}"
-if [[ -n "${ASCEND_RT_VISIBLE_DEVICES:-}" ]]; then
+if [[ -n "${PYPTO_RUNTIME_DEVICE:-${ASCEND_RT_VISIBLE_DEVICES:-}}" ]]; then
     bash "$root/scripts/compare_dsv41_pypto_swa.sh" "$@"
 fi

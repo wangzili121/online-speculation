@@ -62,13 +62,15 @@ python3 online-speculation/scripts/preflight_dsv41_pypto.py --inspect --output c
 
 ## 验证设备执行
 
-确认所选卡空闲后执行。卡号使用宿主机的物理编号，脚本只映射这张卡，并将同一个编号传给探针。探针会编译并执行一个加法内核，再与 Torch 的结果精确对照。
+确认所选卡空闲后执行。`NPU_DEVICE` 选择宿主机物理卡。探针默认用单卡可见列表内的索引 0，编译并执行一个加法内核，再与 Torch 的结果精确对照。
 
 ```bash
 NPU_DEVICE=0 bash online-speculation/scripts/dsv41_pypto_env.sh probe
 ```
 
 成功报告包含 `"kernel_executed": true`。如需进入同一环境排查，执行 `NPU_DEVICE=0 bash online-speculation/scripts/dsv41_pypto_env.sh shell`。
+
+非 0 号物理卡若在设备初始化时报可见编号非法，可用 `NPU_DEVICE=1 bash online-speculation/scripts/dsv41_pypto_env.sh device-map` 检查。此命令只挂载所选卡，分别检查无可见列表、可见列表为 0、可见列表为所选卡号的方式。找到 `set_device=0` 的结果后，将其中的 `visible` 和 `runtime_device` 分别设成 `PYPTO_VISIBLE_DEVICE` 和 `PYPTO_RUNTIME_DEVICE`。JSON 的 `null` 对应 `PYPTO_VISIBLE_DEVICE=unset`。随后用同一设置运行其他探针。 [CANN 可见设备说明](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/maintenref/envvar/envref_07_0028.html)
 
 旧镜像若在探针里尝试从 GitHub 获取 `pto-isa`，可从当前镜像制作一个补齐运行时缓存的本地镜像。更新代码后，在仓库根目录执行，无需重新编译工具链或下载依赖：
 

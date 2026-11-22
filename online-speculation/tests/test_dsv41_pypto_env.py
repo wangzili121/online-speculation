@@ -19,7 +19,10 @@ def environment(tmp_path):
         "print(json.dumps(sys.argv[1:]))\n"
     )
     docker.chmod(0o755)
-    return dict(os.environ, PATH=f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    env = dict(os.environ, PATH=f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    env.pop("PYPTO_VISIBLE_DEVICE", None)
+    env.pop("PYPTO_RUNTIME_DEVICE", None)
+    return env
 
 
 def test_preflight_mounts_weights_without_npu_devices(tmp_path):
@@ -47,7 +50,21 @@ def test_probe_requires_a_device_and_maps_only_that_device(tmp_path):
     assert "ASCEND_RT_VISIBLE_DEVICES=6" in args
     assert f"{SCRIPT.parents[1]}:/workspace/online-speculation:ro" in args
     assert args[-4:] == ["/workspace/online-speculation/scripts/check_dsv41_pypto_environment.py",
-                         "--device-probe", "--device", "6"]
+                         "--device-probe", "--device", "0"]
+
+
+def test_device_map_keeps_the_physical_mount_in_all_three_probes(tmp_path):
+    env = environment(tmp_path) | {"NPU_DEVICE": "6"}
+    result = subprocess.check_output(["bash", str(SCRIPT), "device-map"], text=True, env=env)
+    probes = [json.loads(row) for row in result.splitlines()]
+    assert len(probes) == 3
+    for args in probes:
+        assert "/dev/davinci6:/dev/davinci6" in args
+        assert args.count("--device") == 4
+        assert args[-1] == "6"
+    assert "ASCEND_RT_VISIBLE_DEVICES" in probes[0] and "-u" in probes[0]
+    assert "ASCEND_RT_VISIBLE_DEVICES=0" in probes[1]
+    assert "ASCEND_RT_VISIBLE_DEVICES=6" in probes[2]
 
 
 def test_compilation_probe_does_not_map_npu_devices(tmp_path):
@@ -70,8 +87,8 @@ def test_attention_check_mounts_current_sources_and_writes_host_reports(tmp_path
     assert f"{SCRIPT.parents[1]}:/workspace/online-speculation:ro" in args
     assert args[args.index("--network") + 1] == "none"
     assert "/dev/davinci6:/dev/davinci6" in args
-    assert args[-7:] == ["image:offline", "bash", "/workspace/online-speculation/scripts/compare_dsv41_pypto_swa.sh",
-                         "--heads", "16", "--device", "6"]
+    assert args[-8:] == ["image:offline", "env", "bash", "/workspace/online-speculation/scripts/compare_dsv41_pypto_swa.sh",
+                         "--heads", "16", "--device", "0"]
 
 
 def test_handoff_checks_checkpoint_and_head_without_npu_by_default(tmp_path):
@@ -95,12 +112,14 @@ def test_handoff_checks_checkpoint_and_head_without_npu_by_default(tmp_path):
     assert args[-1].endswith("/scripts/check_dsv41_pypto_handoff.sh")
 
     result = subprocess.check_output(
-        ["bash", str(SCRIPT), "handoff-check"], text=True, env=env | {"NPU_DEVICE": "6"}, cwd=tmp_path,
+        ["bash", str(SCRIPT), "handoff-check"], text=True,
+        env=env | {"NPU_DEVICE": "6", "PYPTO_VISIBLE_DEVICE": "unset", "PYPTO_RUNTIME_DEVICE": "2"}, cwd=tmp_path,
     )
     args = json.loads(result.splitlines()[-1])
     assert args[:-2].count("--device") == 4
-    assert "ASCEND_RT_VISIBLE_DEVICES=6" in args
-    assert args[-2:] == ["--device", "6"]
+    assert "PYPTO_RUNTIME_DEVICE=2" in args
+    assert "ASCEND_RT_VISIBLE_DEVICES" in args and "-u" in args
+    assert args[-2:] == ["--device", "2"]
 
 
 def test_init_head_keeps_target_readonly_and_writes_output_without_npu(tmp_path):
@@ -132,4 +151,4 @@ def test_fabric_check_uses_host_network_and_only_one_device(tmp_path):
     assert args[args.index("--network") + 1] == "host"
     assert "HCCL_IF_IP" in args
     assert args[-7:] == ["/workspace/online-speculation/scripts/probe_dsv41_pypto_fabric.py",
-                         "--rank", "0", "--master-address", "192.0.2.7", "--device", "6"]
+                         "--rank", "0", "--master-address", "192.0.2.7", "--device", "0"]

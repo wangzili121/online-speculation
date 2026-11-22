@@ -64,13 +64,14 @@ case "$action" in
     docker version --format '{{.Server.Version}}'
     docker info --format '{{json .Runtimes}}'
     ;;
-  doctor|preflight|compile-probe|probe|shell|attention-check|handoff-check|fabric-check|init-head)
+  doctor|preflight|compile-probe|probe|device-map|shell|attention-check|handoff-check|fabric-check|init-head)
     docker image inspect "$image" >/dev/null 2>&1 || {
       echo "Image missing. Build it on a networked host or load the transferred image.tar." >&2; exit 2;
     }
     network=host
-    if [[ "$action" == attention-check || "$action" == handoff-check || "$action" == init-head ]]; then network=none; fi
+    if [[ "$action" == attention-check || "$action" == handoff-check || "$action" == init-head || "$action" == device-map ]]; then network=none; fi
     options=(--rm --network "$network" --shm-size "${SHM_SIZE:-16g}")
+    command_env=(env)
     if [[ "$action" == preflight || "$action" == handoff-check || "$action" == init-head ]]; then
       model="${TARGET_WEIGHTS:-/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8}"
       [[ -f "$model/config.json" ]] || { echo "Missing checkpoint $model" >&2; exit 2; }
@@ -81,16 +82,41 @@ case "$action" in
         if [[ "$action" == preflight ]]; then set -- --head /workspace/draft-head "$@"; fi
       fi
     fi
-    if [[ "$action" == probe || "$action" == shell || "$action" == attention-check || "$action" == fabric-check ||
+    if [[ "$action" == probe || "$action" == device-map || "$action" == shell || "$action" == attention-check || "$action" == fabric-check ||
           ( "$action" == handoff-check && -n "${NPU_DEVICE:-}" ) ]]; then
       : "${NPU_DEVICE:?Set NPU_DEVICE to an available physical device number}"
       [[ "$NPU_DEVICE" =~ ^[0-9]+$ ]] || { echo "NPU_DEVICE must be a number" >&2; exit 2; }
       options+=(
         --device "/dev/davinci$NPU_DEVICE:/dev/davinci$NPU_DEVICE"
         --device /dev/davinci_manager --device /dev/devmm_svm --device /dev/hisi_hdc
-        -e "ASCEND_RT_VISIBLE_DEVICES=$NPU_DEVICE"
         -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
       )
+      if [[ "$action" == device-map ]]; then
+        options+=(-v "$root:/workspace/online-speculation:ro")
+        status=1
+        filters=(unset 0)
+        if [[ "$NPU_DEVICE" != 0 ]]; then filters+=("$NPU_DEVICE"); fi
+        for filter in "${filters[@]}"; do
+          if [[ "$filter" == unset ]]; then
+            command_env=(env -u ASCEND_RT_VISIBLE_DEVICES)
+          else
+            command_env=(env "ASCEND_RT_VISIBLE_DEVICES=$filter")
+          fi
+          if docker run "${options[@]}" "$image" "${command_env[@]}" timeout -k 2s 20s python \
+            /workspace/online-speculation/scripts/probe_dsv41_pypto_device_map.py "$NPU_DEVICE"; then status=0; fi
+        done
+        exit "$status"
+      fi
+      visible_device="${PYPTO_VISIBLE_DEVICE:-$NPU_DEVICE}"
+      runtime_device="${PYPTO_RUNTIME_DEVICE:-0}"
+      [[ "$runtime_device" =~ ^[0-9]+$ ]] || { echo "PYPTO_RUNTIME_DEVICE must be a number" >&2; exit 2; }
+      options+=(-e "PYPTO_RUNTIME_DEVICE=$runtime_device")
+      if [[ "$visible_device" == unset ]]; then
+        command_env=(env -u ASCEND_RT_VISIBLE_DEVICES)
+      else
+        [[ "$visible_device" =~ ^[0-9]+$ ]] || { echo "PYPTO_VISIBLE_DEVICE must be a number or unset" >&2; exit 2; }
+        options+=(-e "ASCEND_RT_VISIBLE_DEVICES=$visible_device")
+      fi
     else
       options+=(-e ASCEND_RT_VISIBLE_DEVICES=)
       if [[ -d /usr/local/Ascend/driver ]]; then
@@ -99,12 +125,12 @@ case "$action" in
     fi
     if [[ "$action" == probe ]]; then
       options+=(-v "$root:/workspace/online-speculation:ro")
-      exec docker run "${options[@]}" "$image" python \
-        /workspace/online-speculation/scripts/check_dsv41_pypto_environment.py --device-probe "$@" --device "$NPU_DEVICE"
+      exec docker run "${options[@]}" "$image" "${command_env[@]}" python \
+        /workspace/online-speculation/scripts/check_dsv41_pypto_environment.py --device-probe "$@" --device "$runtime_device"
     fi
     if [[ "$action" == shell ]]; then
       options+=(-it -v "$root:/workspace/online-speculation:ro")
-      exec docker run "${options[@]}" "$image" bash
+      exec docker run "${options[@]}" "$image" "${command_env[@]}" bash
     fi
     if [[ "$action" == init-head ]]; then
       : "${DRAFT_HEAD:?Set DRAFT_HEAD to a new output directory on the host}"
@@ -122,8 +148,8 @@ case "$action" in
     if [[ "$action" == fabric-check ]]; then
       if [[ -n "${HCCL_IF_IP:-}" ]]; then options+=(-e HCCL_IF_IP); fi
       options+=(-v "$root:/workspace/online-speculation:ro")
-      exec docker run "${options[@]}" "$image" timeout -k 5s 180s python \
-        /workspace/online-speculation/scripts/probe_dsv41_pypto_fabric.py "$@" --device "$NPU_DEVICE"
+      exec docker run "${options[@]}" "$image" "${command_env[@]}" timeout -k 5s 180s python \
+        /workspace/online-speculation/scripts/probe_dsv41_pypto_fabric.py "$@" --device "$runtime_device"
     fi
     if [[ "$action" == attention-check || "$action" == handoff-check ]]; then
       kind=handoff
@@ -131,15 +157,15 @@ case "$action" in
       report_dir="$(mktemp -d "$PWD/orthrus-$kind.XXXXXX")"
       echo "Reports: $report_dir"
       options+=(-v "$root:/workspace/online-speculation:ro" -v "$report_dir:/results")
-      if [[ -n "${NPU_DEVICE:-}" ]]; then set -- "$@" --device "$NPU_DEVICE"; fi
+      if [[ -n "${runtime_device:-}" ]]; then set -- "$@" --device "$runtime_device"; fi
       if [[ "$action" == attention-check ]]; then
-        exec docker run "${options[@]}" "$image" bash /workspace/online-speculation/scripts/compare_dsv41_pypto_swa.sh "$@"
+        exec docker run "${options[@]}" "$image" "${command_env[@]}" bash /workspace/online-speculation/scripts/compare_dsv41_pypto_swa.sh "$@"
       fi
-      exec docker run "${options[@]}" "$image" bash /workspace/online-speculation/scripts/check_dsv41_pypto_handoff.sh "$@"
+      exec docker run "${options[@]}" "$image" "${command_env[@]}" bash /workspace/online-speculation/scripts/check_dsv41_pypto_handoff.sh "$@"
     fi
     exec docker run "${options[@]}" "$image" "$action" "$@"
     ;;
   *)
-    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|shell|attention-check|handoff-check|fabric-check|init-head}"
+    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|handoff-check|fabric-check|init-head}"
     ;;
 esac
