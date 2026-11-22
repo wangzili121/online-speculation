@@ -124,9 +124,9 @@ def selfcheck():
 
 def deploy():
     q, capture, payload, program = context()
+    transport = module(q.parent / "resource338/ssh_connection.py", "server_transport350")
     call = subprocess.run(
-        ["ssh", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "BatchMode=yes",
-         "-o", "ConnectTimeout=10", "wangzili@189.1.227.167", "python3 -"],
+        transport.command("189.1.227.167"),
         input=("P=" + repr(dict(root=payload["root"], program=program)) + "\n" + DEPLOY).encode(),
         capture_output=True, timeout=40, check=True,
     )

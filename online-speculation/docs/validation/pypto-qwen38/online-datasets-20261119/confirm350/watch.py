@@ -25,6 +25,7 @@ def main():
     q = Path(__file__).resolve().parent
     root = q.parent
     collector = module(root / "sync344/collect.py", "collect350")
+    transport = module(root / "resource338/ssh_connection.py", "transport350")
     registration = read(q / "registration.json")
     qualifier_tag = registration["qualification_tag"]
     qualifier_proof = root / "sync345" / (qualifier_tag + ".audit.json")
@@ -37,8 +38,7 @@ def main():
         try:
             old = read(root / "sync345/launch-B.json")
             call = subprocess.run(
-                ["ssh", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "BatchMode=yes",
-                 "-o", "ConnectTimeout=10", "wangzili@189.1.227.167", "python3 -"],
+                transport.command("189.1.227.167"),
                 input=("P=" + repr(old) + "\n" + PROBE).encode(), capture_output=True, timeout=40,
             )
             if call.returncode:

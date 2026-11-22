@@ -33,3 +33,11 @@
 网络监控曾中断，另部署`server_binding.py`在服务器上保存运行期间的设备绑定。它复用原来的只读采集代码，按真实worker PID、启动时间和`npu-smi`匹配三张物理卡；输出保存在实验目录的`resource-observations-confirm350/`。采齐三次绑定后自行退出，不调用模型、占卡或重启任何任务，也不更改冻结配方。
 
 本地收集器优先读取这份快照，核对采集程序SHA256、tag、目录、主机与三卡worker集合，再审核完整结果。这样即使worker已经正常退出，也能保留运行时证据。`server-binding-observer.json`记录实际采集进程与程序哈希，`server-binding-live-check.json`和`server-binding-consumer-check.json`记录首次实机采集及读取核对；CPU持久化检查另列，不代替实机结果。当前NN控制器、模型源文件和输入均保持原样。
+
+## 已完成结果
+
+顺序743已完成全部384题、最终head同题重跑和32题留出。AR /固定 /在线为31.7848 /32.7558 /35.2986 tok/s，在线比两基线分别快11.06% /7.76%。完整计时、greedy、源码/基模/初始head、实际三卡和实际导出分片审核通过；439次更新、109次发布，实际发布版本436，导出step564。最终冻结同题/留出吞吐为36.8087 /37.2853 tok/s，原模型进程已自然退出。`first-completed-recheck.json`再次运行冻结数据、运行布局及事件审核，明确仍有两次待完成。
+
+第二轮已核对仍用同一step128权重和fresh Adam，原队列控制器继续运行。`second-initial-state-check.json`记录真实起点，`first-original-instance-release.json`记录第一轮原进程退出；不把第一轮通过当作三轮整体通过。
+
+监控新入口通过`resource338/ssh_connection.py`复用SSH连接，活动期间共享同一主连接，空闲600秒退出，每20秒保活；私有socket放在短临时目录，不修改全局SSH配置。`ssh-multiplex-validation.json`核对了两条真实命令的连接标识及主连接PID相同。已运行的旧本地观察器保留到自然结束，新的查询和后续启动的观察器使用复用入口；连接变化不重启NN实验。

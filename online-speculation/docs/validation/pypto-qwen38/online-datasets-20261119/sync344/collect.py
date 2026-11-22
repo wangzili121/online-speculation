@@ -33,6 +33,7 @@ def collect(root, host, suite="sync344", case_tag=None):
     watch = module(root / "resource338/watch.py", "resource_watch_sync344")
     accounting = module(root / "rows255/audit_accounting.py", "accounting_sync344")
     schedule = module(root / "schedule326/audit_schedule.py", "schedule_sync344")
+    transport = module(root / "resource338/ssh_connection.py", "transport_sync344")
     launch = json.loads((q / f"launch-{host}.json").read_text())
     cases = json.loads((q / f"queue-{host}.json").read_text())["cases"]
     case = next(c for c in cases if c["tag"] == case_tag) if case_tag is not None else cases[0]
@@ -47,8 +48,7 @@ def collect(root, host, suite="sync344", case_tag=None):
         capture = module(root / "resource338/capture_resources.py", "capture_sync344")
         binding_payload = dict(root=launch["root"], tag=tag, host=address, launcher=case["launcher"])
         observation = subprocess.run(
-            ["ssh", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "BatchMode=yes",
-             "-o", "ConnectTimeout=10", "wangzili@" + address, "python3 -"],
+            transport.command(address),
             input=("P=" + repr(binding_payload) + "\n" + capture.REMOTE).encode(),
             capture_output=True, timeout=40,
         )
@@ -61,8 +61,7 @@ def collect(root, host, suite="sync344", case_tag=None):
             write_json(binding_path, binding)
     payload = launch | dict(cases=[case])
     call = subprocess.run(
-        ["ssh", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "BatchMode=yes",
-         "-o", "ConnectTimeout=10", "wangzili@" + address, "python3 -"],
+        transport.command(address),
         input=("P=" + repr(payload) + "\n" + watch.REMOTE).encode(),
         capture_output=True, timeout=60,
     )
