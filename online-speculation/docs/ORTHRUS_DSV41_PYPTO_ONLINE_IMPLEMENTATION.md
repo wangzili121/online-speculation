@@ -20,6 +20,8 @@ GSM8K 数据固定、延迟教师反馈状态机、两阶段更新频率、学�
 
 其中模型无关的完整词表 TV/KL、线性梯度、RMSNorm 前反向、SiLU 梯度、AdamW、梯度统计/裁剪和 BF16 发布 PyPTO kernel 已经放在 `pypto_dsv41_online_programs.py` 与 `pypto_dsv41_optimizer_programs.py`。它们不是占位接口：上述路径已在 910B3 上与 Torch 参考对照通过；词表分块额外适配了 DSV4.1 的 129280 维词表。真实 TP4 shard 下的 LM Head、WQ-A、WQ-B、WKV、WO-A 和 WO-B 梯度形状也已完成 PyPTO 编译。剩余工作集中在模型专属 Attention/C1A 反向与双机发布编排。
 
+Attention 反向的独立 Torch golden 已放在 `dsv41_attention_vjp.py`，显式给出含 sink 和特殊 block mask 的 `dQ/dK/dV/dSink`，并只把临时 K32 块的 K/V 梯度交给 draft 参数；目标历史 KV 的梯度被丢弃。该公式已与 Torch autograd 对照通过，后续 PyPTO Attention VJP 必须逐项匹配它。
+
 双机切换协议已固化在 `dsv41_publication.py`：两个节点先把同一 SHA256、同一版本写入 16 个 rank 的备用槽，确认 rank 不重不漏后再切换 live pointer；任一步失败都调用 rollback，旧版本继续服务。设备侧仍需把该协议的 `stage/activate/rollback` 回调接到 PyPTO 的驻留 draft 权重句柄。
 
 因此，当前不能把 Torch/CPU 学习器称为“PyPTO 在线训练已完成”。它已经证明训练目标、梯度范围和权重格式可行；最终高性能版本仍需补 C1A/mHC/MoE 的模型专属反向，以及 TP4/DP4 原子发布。普通权重加载、数据下载和主模型推理不需要重写成训练算子。
