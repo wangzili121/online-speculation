@@ -47,7 +47,7 @@ def test_probe_requires_a_device_and_maps_only_that_device(tmp_path):
     args = json.loads(result)
     assert args[:-2].count("--device") == 4
     assert "/dev/davinci6:/dev/davinci6" in args
-    assert "ASCEND_RT_VISIBLE_DEVICES=6" in args
+    assert "ASCEND_RT_VISIBLE_DEVICES=0" in args
     assert f"{SCRIPT.parents[1]}:/workspace/online-speculation:ro" in args
     assert args[-4:] == ["/workspace/online-speculation/scripts/check_dsv41_pypto_environment.py",
                          "--device-probe", "--device", "0"]
@@ -87,6 +87,7 @@ def test_attention_check_mounts_current_sources_and_writes_host_reports(tmp_path
     assert f"{SCRIPT.parents[1]}:/workspace/online-speculation:ro" in args
     assert args[args.index("--network") + 1] == "none"
     assert "/dev/davinci6:/dev/davinci6" in args
+    assert "ASCEND_RT_VISIBLE_DEVICES=0" in args
     assert args[-8:] == ["image:offline", "env", "bash", "/workspace/online-speculation/scripts/compare_dsv41_pypto_swa.sh",
                          "--heads", "16", "--device", "0"]
 
@@ -149,6 +150,7 @@ def test_fabric_check_uses_host_network_and_only_one_device(tmp_path):
     assert args[:-2].count("--device") == 4
     assert "/dev/davinci6:/dev/davinci6" in args
     assert args[args.index("--network") + 1] == "host"
+    assert "ASCEND_RT_VISIBLE_DEVICES=0" in args
     assert "HCCL_IF_IP" in args
     assert args[-7:] == ["/workspace/online-speculation/scripts/probe_dsv41_pypto_fabric.py",
                          "--rank", "0", "--master-address", "192.0.2.7", "--device", "0"]

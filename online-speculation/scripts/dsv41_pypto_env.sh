@@ -107,7 +107,7 @@ case "$action" in
         done
         exit "$status"
       fi
-      visible_device="${PYPTO_VISIBLE_DEVICE:-$NPU_DEVICE}"
+      visible_device="${PYPTO_VISIBLE_DEVICE:-0}"
       runtime_device="${PYPTO_RUNTIME_DEVICE:-0}"
       [[ "$runtime_device" =~ ^[0-9]+$ ]] || { echo "PYPTO_RUNTIME_DEVICE must be a number" >&2; exit 2; }
       options+=(-e "PYPTO_RUNTIME_DEVICE=$runtime_device")
