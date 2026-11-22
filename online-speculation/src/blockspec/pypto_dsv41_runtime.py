@@ -18,6 +18,7 @@ from .pypto_dsv41_indexer import INDEX_DIM, INDEX_HEADS, index_controls, make_in
 from .pypto_dsv41_sparse import TILE, TOPK, make_joined_attention, make_sparse_attention
 from .pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW, make_swa_attention, swa_spans
 from .dsv41_publication import AtomicHeadPublisher, PublicationReceipt
+from .dsv41_serving_online import DSV41CapturedLayer, DSV41ServingReplay
 from .dsv41_suffix import DSV41SuffixPlan
 
 
@@ -139,6 +140,7 @@ class ResidentDraftAttention:
         self.compile_lock = Lock()
         self.operands = {}
         self.online_bank = None
+        self._capture_request = None
         self.max_context = self.native("decode_network").MAX_CONTEXT
         self.heads = self.config["num_attention_heads"] // topology["tp"]
         for layer, declared in enumerate(self.manifest["layers"]):
@@ -197,10 +199,27 @@ class ResidentDraftAttention:
         compiled, abi = self.programs[key]
         self.resident.execute(compiled, self.rank_ids[rank], [inputs[name] for name in compiled.param_names], abi)
 
+    def arm_online_capture(self, requests, plan):
+        """Capture exactly the next draft round for the selected request owners."""
+        if self._capture_request is not None:
+            raise RuntimeError("a draft replay capture is already armed")
+        plan = plan if isinstance(plan, DSV41SuffixPlan) else DSV41SuffixPlan(plan)
+        requests = {
+            tuple(owner): (str(request_id), tuple(int(token) for token in prefix))
+            for owner, (request_id, prefix) in requests.items()
+        }
+        if not requests or any(len(owner) != 3 or not prefix for owner, (_, prefix) in requests.items()):
+            raise ValueError("online capture requires owner-to-request prefix mappings")
+        self._capture_request = plan, requests
+
+    def cancel_online_capture(self):
+        self._capture_request = None
+
     def start_round(self, histories):
         if any(rank not in self.rank_ids for rank, _, _ in histories):
             raise ValueError("Draft history includes a rank assigned to a different node")
-        return DraftRound(self, histories)
+        capture, self._capture_request = self._capture_request, None
+        return DraftRound(self, histories, capture=capture)
 
     def enable_online(self, last_layers):
         """Allocate two device-resident suffix banks without changing values."""
@@ -270,11 +289,14 @@ class ResidentDraftAttention:
 class DraftRound:
     """Hold request-local Top-K only until the last consumer of each source."""
 
-    def __init__(self, attention, histories):
+    def __init__(self, attention, histories, *, capture=None):
         self.attention = attention
         self.histories = histories
         self.owners = {(owner[0], owner[1]): owner for _, _, owner in histories}
         self.selection = {}
+        self.capture = capture
+        self.captured_attention = {}
+        self.captured_tail = {}
         self.last_use = {
             role["index_source"]: layer for layer in range(attention.config["num_hidden_layers"])
             if (role := attention.native("cache").resolve_layer_role(layer))["index_source"] is not None
@@ -284,11 +306,88 @@ class DraftRound:
         for key in tuple(self.selection):
             if self.last_use[key[-1]] == layer:
                 del self.selection[key]
-        return [
+        keep = [
             (self.attention.rank_ids[key[0]], value)
             for key, (_, controls) in self.selection.items()
             for value in controls.values()
         ]
+        if self.capture is not None and layer in self.capture[0].layers:
+            seen = set()
+            for value in (*self.captured_attention.values(), *self.captured_tail.values()):
+                for tensor in self._tensors(value):
+                    rank = value.get("rank")
+                    key = rank, tensor.untyped_storage()._cdata
+                    if key not in seen:
+                        seen.add(key)
+                        if rank is not None:
+                            keep.append((self.attention.rank_ids[rank], tensor))
+        return keep
+
+    @staticmethod
+    def _tensors(value):
+        if torch.is_tensor(value):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from DraftRound._tensors(item)
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                yield from DraftRound._tensors(item)
+
+    def observe_layer(self, layer, result):
+        """Retain native mHC/MoE state before the layer driver releases scratch."""
+        if self.capture is None or layer not in self.capture[0].layers:
+            return
+        requests = self.capture[1]
+        for rank, cases in enumerate(result["states"]):
+            if rank not in self.attention.rank_ids:
+                continue
+            for case, state in cases.items():
+                record = state["original"]
+                for item in record["request_token_map"]:
+                    owner = self.owners[rank // self.attention.topology["tp"], item["request_slot"]]
+                    if owner in requests:
+                        self.captured_tail[rank, layer, owner] = dict(state, rank=rank, case=case)
+
+    def replays(self):
+        """Return backend-owned last-N state after all selected layers completed."""
+        if self.capture is None:
+            return {}
+        plan, requests = self.capture
+        replays = {}
+        for owner, (request_id, prefix) in requests.items():
+            layers = []
+            for layer in plan.layers:
+                attention, ffn = {}, {}
+                for rank in self.attention.rank_ids:
+                    key = rank, layer, owner
+                    if key not in self.captured_attention or key not in self.captured_tail:
+                        continue
+                    a, state = self.captured_attention[key], self.captured_tail[key]
+                    attention[rank] = dict(
+                        a,
+                        hidden=state["hidden"], incoming=state["incoming"],
+                        pre=state["pre"], post=state["post"], comb=state["comb"],
+                        collapsed=state["attn_collapsed"],
+                    )
+                    ffn[rank] = {
+                        "changed": state["changed"], "pre": state["ffn_pre"],
+                        "post": state["ffn_post"], "comb": state["ffn_comb"],
+                        "collapsed": state["ffn_collapsed"], "normed": state["ffn_normed"],
+                        "router_input": state["router_input"], "router_logits": state["router_logits"],
+                        "route_ids": state["route_ids"], "route_weights": state["weights"],
+                        "shared": state["shared"], "combined": state["combined"],
+                    }
+                if not attention:
+                    raise RuntimeError(f"captured request has no local TP state at layer {layer}")
+                layers.append(DSV41CapturedLayer(layer, attention, ffn))
+            boundary = {rank: values["hidden"] for (rank, layer, captured_owner), values
+                        in self.captured_attention.items()
+                        if layer == plan.first_layer and captured_owner == owner}
+            replays[owner] = DSV41ServingReplay(
+                request_id, prefix, owner, plan, boundary, tuple(layers),
+            )
+        return replays
 
     def project_layer(self, rank, layer, record, hidden, cos, sin, contribution):
         dp = rank // self.attention.topology["tp"]
@@ -300,7 +399,7 @@ class DraftRound:
             if self.histories[rank, layer, owner]["committed_tokens"] != item["initial_context_length"]:
                 raise ValueError("Draft block and committed history identify different anchors")
             self.project_block(rank, layer, owner, hidden[begin:end], cos[begin:end], sin[begin:end],
-                               contribution[begin:end])
+                               contribution[begin:end], record=record)
 
     def pack(self, rank, contribution, packed, physical, total):
         capacity, hidden = contribution.shape
@@ -309,7 +408,7 @@ class DraftRound:
         self.attention.execute(("reduce_pack", capacity), rank, program,
                                dict(value=contribution, packed=packed, physical=physical, active=total))
 
-    def project_block(self, rank, layer, owner, hidden, cos, sin, contribution):
+    def project_block(self, rank, layer, owner, hidden, cos, sin, contribution, *, record):
         attention = self.attention
         runtime = attention.resident
         history = self.histories[rank, layer, owner]
@@ -377,6 +476,14 @@ class DraftRound:
                       grouped=workspace((BLOCK, operands["wo_b"].shape[0])), contribution=contribution)
         attention.execute(("output", compressed), rank,
                           lambda: make_output_program(attention.native, config, head_major_input=not compressed), values)
+        if self.capture is not None and layer in self.capture[0].layers and owner in self.capture[1]:
+            self.captured_attention[rank, layer, owner] = {
+                "rank": rank, "record": record, "hidden": hidden, "incoming": None,
+                "pre": None, "post": None, "comb": None, "collapsed": hidden,
+                "cos": cos, "sin": sin, "history": history,
+                "selection": selected if compressed else None,
+                "qkv": values, "contribution": contribution,
+            }
 
     def index_rows(self, rank, layer, owner, history, values, workspace):
         attention = self.attention

@@ -65,12 +65,12 @@ class DSV41SuffixReplay:
     """One authoritative K32 replay boundary plus backend-owned layer state."""
 
     plan: DSV41SuffixPlan
-    boundary: torch.Tensor
+    boundary: object
     layers: tuple[object, ...]
 
     def __post_init__(self):
-        if not torch.is_tensor(self.boundary) or self.boundary.ndim < 2:
-            raise ValueError("suffix replay boundary must be a tensor")
+        if self.boundary is None:
+            raise ValueError("suffix replay boundary must be a tensor or backend-owned handle")
         if len(self.layers) != self.plan.last_layers:
             raise ValueError("suffix replay must contain one state per selected layer")
 

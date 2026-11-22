@@ -14,7 +14,7 @@ fi
 
 for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.patch \
     lib-pypto72-compat.patch lib-cluster-retry.patch lib-cluster-prefill-trace.patch \
-    lib-deterministic-reduction.patch; do
+    lib-deterministic-reduction.patch lib-cluster-online.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -24,6 +24,8 @@ git -C "$PYPTO_LIB_ROOT" -c user.name=Integration -c user.email=integration@loca
 export ORTHRUS_CLUSTER_LIB_TREE="$(git -C "$PYPTO_LIB_ROOT" rev-parse 'HEAD^{tree}')"
 git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-cluster.patch"
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-cluster.patch"
+git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-online.patch"
+git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-online.patch"
 python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolve(cluster=True)'
 
 if [[ "${1:-}" == --prepare-only ]]; then

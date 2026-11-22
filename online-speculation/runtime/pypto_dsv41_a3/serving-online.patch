@@ -1,0 +1,82 @@
+diff --git a/models/deepseek_v41_a3/session.py b/models/deepseek_v41_a3/session.py
+index 794ef00..fc81d88 100644
+--- a/models/deepseek_v41_a3/session.py
++++ b/models/deepseek_v41_a3/session.py
+@@ -39,12 +39,13 @@ class NativeSession:
+ 
+     def __init__(self, source, checkpoint, devices, directory, config, vocabulary, cache_plan, *,
+                  orthrus_head=None, cluster=None, prepared_cache=None, defer_draft=False, trace_prefill=False,
+-                 trace_position=None):
++                 trace_position=None, online=None):
+         self.source, self.config, self.vocabulary = source, config, vocabulary
+         self.devices, self.checkpoint = tuple(devices), str(Path(checkpoint).resolve())
+         self.orthrus_head = orthrus_head
+         self.defer_draft = defer_draft
+         self.cluster = cluster
++        self.online = online
+         self.draft = None
+         self.ledger = self.native = self.decode = self.host = self.hbm = None
+         self.closed, self.calls, self.predecessor = False, 0, None
+@@ -161,6 +162,8 @@ class NativeSession:
+             self.config.topology, self.directory / "compiled-draft", native_module=self.source.module,
+             local_ranks=self.local_ranks,
+         )
++        if self.online is not None:
++            self.draft.enable_online(self.online.plan.last_layers)
+ 
+     def execute(self, phase, input_contract, rank_payloads, handles):
+         if self.closed:
+@@ -219,8 +222,28 @@ class NativeSession:
+         elif phase == "draft":
+             if self.draft is None:
+                 raise RuntimeError("No diffusion head was configured")
++            local_dp = {rank // self.config.tp for rank in self.local_ranks}
++            if self.online is not None and self.online.capture_due():
++                requests = {}
++                for handle in handles:
++                    if handle.dp not in local_dp:
++                        continue
++                    state = self.ledger.get(handle)
++                    engine = input_contract["DP_engines"][handle.dp]
++                    request = next(item for item in engine["requests"]
++                                   if item["request_slot"] == handle.slot
++                                   and item["generation"] == handle.generation)
++                    prefix = (*state.history, request["token_ids"][0])
++                    requests[(handle.dp, handle.slot, handle.generation)] = (handle.request_id, prefix)
++                if requests:
++                    self.draft.arm_online_capture(requests, self.online.plan)
+             result = self.native.propose_candidates(chunk, self.draft,
+                 output=self.directory / f"draft-{self.calls}", progress=progress)
++            if self.online is not None:
++                for handle in handles:
++                    replay = self.native.take_draft_replay(handle.dp, handle.slot, handle.generation)
++                    if replay is not None:
++                        self.online.register_replay(replay)
+         elif phase == "verify":
+             result = self.native.verify_candidates(chunk, output=self.directory / f"verify-{self.calls}",
+                                                    progress=progress)
+@@ -249,6 +272,24 @@ class NativeSession:
+                     row = logits[start:end - 1].argmax(dim=-1)
+                 else:
+                     row = logits[start:end] if phase == "verify" else logits[end - 1]
++                    if self.online is not None and phase in ("verify", "decode"):
++                        handle = next(handle for handle in handles
++                                      if (handle.dp, handle.slot, handle.generation)
++                                      == (dp, request["request_slot"], request["generation"]))
++                        state = self.ledger.get(handle)
++                        prefix = (*state.history, request["token_ids"][0])
++                        if phase == "verify":
++                            target = row.argmax(dim=-1).tolist()
++                            candidates = tuple(request["token_ids"][1:])
++                            match = next((i for i, token in enumerate(candidates)
++                                          if token != target[i]), len(candidates))
++                            delivered = (*candidates[:match], target[match])
++                            self.online.verified(
++                                handle.request_id, prefix, candidates, delivered, row,
++                            )
++                        else:
++                            delivered = (int(row.argmax()),)
++                            self.online.continued(handle.request_id, prefix, delivered, row.unsqueeze(0))
+                     if self.cluster is not None:
+                         if phase == "prefill":
+                             values, ids = row.float().topk(min(5, row.numel()))

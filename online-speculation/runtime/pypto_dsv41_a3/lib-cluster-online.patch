@@ -1,0 +1,51 @@
+diff --git a/models/deepseek_v4_1_flash_a3/network.py b/models/deepseek_v4_1_flash_a3/network.py
+index 4fbb498..7fef66e 100644
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -970,6 +970,7 @@ class GenerationSession:
+         self.ownership = [weights.layout.ownership(rank) for rank in range(weights.world)]
+         self.epoch, self.closed, self.failed = 0, False, False
+         self._draft_plane_handles = {}
++        self._draft_replays = {}
+         self._verified_requests = None
+         self.cache_views = weights.cache_handles
+         for rank, device in weights.rank_devices.items():
+@@ -1126,12 +1127,27 @@ class GenerationSession:
+         previous = (self.epoch, self.contract, self.engram_contracts, self.program, self.provider.capacity)
+         try:
+             with self.provider.provisional_dispatch():
+-                return self._advance(chunk, output=output, progress=progress, phase="draft",
+-                                     draft=attention.start_round(histories))
++                draft_round = attention.start_round(histories)
++                result = self._advance(
++                    chunk, output=output, progress=progress, phase="draft", draft=draft_round,
++                )
++                replays = draft_round.replays()
++                overlap = set(self._draft_replays) & set(replays)
++                if overlap:
++                    raise RuntimeError("an unconsumed online replay would be overwritten")
++                self._draft_replays.update(replays)
++                return result
+         finally:
+             self.epoch, self.contract, self.engram_contracts, self.program, capacity = previous
+             self.provider.set_execution_capacity(capacity)
+ 
++    def take_draft_replay(self, dp_rank, request_slot, generation):
++        """Transfer one captured suffix replay to the serving online learner."""
++        owner = dp_rank, request_slot, generation
++        if owner not in self._draft_replays:
++            return None
++        return self._draft_replays.pop(owner)
++
+     def verify_candidates(self, chunk, *, output, progress=None):
+         """Evaluate packed causal K32 candidates and restore authoritative state before returning logits."""
+         if self.closed or self.failed or self.provider.max_requests_per_partition is None:
+@@ -1666,6 +1682,8 @@ def run_network_chunk(
+             if trace_position is not None:
+                 capture_layer_state(layer, result)
+             capture_activation(f"layer-{layer}", result["hidden"], result["pre_mix"])
++        if draft is not None:
++            draft.observe_layer(layer, result)
+         extra = () if draft is None else draft.finish_layer(layer)
+         executor.retain_boundaries(result["hidden"], result["pre_mix"], extra)
+         completed_layers.append(layer)
