@@ -24,7 +24,7 @@ GSM8K 数据固定、延迟教师反馈状态机、两阶段更新频率、学�
 
 Attention 反向的 Torch golden 在 `dsv41_attention_vjp.py`，显式给出含 sink 和特殊 block mask 的 `dQ/dK/dV/dSink`。对应 PyPTO 实现在 `pypto_dsv41_attention_vjp.py`：它完成 softmax VJP、sink 归并、Q/K/V 矩阵梯度、16 个本地 query head 对共享 latent K/V 的梯度归并，并只将临时 K32 行交给 draft 参数；目标历史 KV 不产生梯度。Torch 公式已与 autograd 对照，生产 TP4/K32 形状已完成 PyPTO 编译。
 
-冻结尾部的反向顺序固定为 LM Head、final norm、最终 mHC collapse、FFN mHC post、所选 MoE、FFN norm、FFN mHC pre、Attention mHC post。`dsv41_tail_vjp.py` 给出精确 Torch 契约，`pypto_dsv41_tail_vjp.py` 已实现最占带宽的 mHC post 数据梯度，并以 K32×5120 生产形状编译。还需在真实 session 中把前向保存的路由与 mHC 小状态接给这些叶子；Top-K 路由本身不重新求导。
+冻结尾部的反向顺序固定为 LM Head、final norm、最终 mHC collapse、FFN mHC post、所选 MoE、FFN norm、FFN mHC pre、Attention mHC post。`dsv41_tail_vjp.py` 给出精确 Torch 契约，`pypto_dsv41_tail_vjp.py` 已实现最占带宽的 mHC post 数据梯度，并以 K32×5120 生产形状编译。`pypto_dsv41_moe_vjp.py` 覆盖共享专家、固定 Top-6 选中专家和归一化路由权重的反向；前向离散 Top-K ID 保持不变。还需在真实 session 中把保存的路由与 mHC 小状态接给这些叶子，并编排为一次完整更新。
 
 双机切换协议已固化在 `dsv41_publication.py`：两个节点先把同一 SHA256、同一版本写入 16 个 rank 的备用槽，确认 rank 不重不漏后再进行可逆切换；双方都确认激活后才 commit。任一步失败都恢复旧 slot 和旧版本，避免两个节点混用不同 head。`ResidentDraftAttention.enable_online(last_layers)` 会为完整后缀建立两个可变驻留槽；激活只发生在 verifier 安全边界。
 

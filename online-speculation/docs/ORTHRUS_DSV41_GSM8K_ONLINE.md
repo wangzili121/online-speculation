@@ -28,7 +28,7 @@ NPU_DEVICE=0 PYPTO_VISIBLE_DEVICE=0 PYPTO_RUNTIME_DEVICE=0 \
   bash online-speculation/scripts/dsv41_pypto_env.sh online-kernel-check
 ```
 
-当前验收基线为：15 个设备数值用例通过，39 个生产形状程序完成编译；其中包含 TP4/K32 的 C1A softmax、sink、共享 KV 梯度汇总和 K32 临时块提取，以及 K32×5120 的 mHC post 反向。该结果验证算子叶子，不替代双机 serving 中的一次完整在线更新。
+当前验收基线为：16 个设备数值用例通过，43 个生产形状程序完成编译；其中包含 TP4/K32 的 C1A softmax、sink、共享 KV 梯度汇总和 K32 临时块提取，K32×5120 的 mHC post 反向，以及固定 Top-6 路由下的 MoE 合并与路由归一化反向。该结果验证算子叶子，不替代双机 serving 中的一次完整在线更新。
 
 先在两台机器放置相同的 `tuning.jsonl`，然后同时启动 4 题、每题 32 token 的固定 head smoke。这个入口先验证真实 GSM8K 输入、文本解码、greedy 一致性、接受率和吞吐；它不会伪装成已经在线更新。
 

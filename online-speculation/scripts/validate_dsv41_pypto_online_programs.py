@@ -38,6 +38,7 @@ def main():
         make_softmax_vjp,
     )
     from blockspec.pypto_dsv41_tail_vjp import make_hc_post_data_vjp, make_hc_post_gate_vjp
+    from blockspec.pypto_dsv41_moe_vjp import make_moe_combine_vjp, make_normalized_route_vjp
 
     torch.set_num_threads(4)
     torch.manual_seed(41)
@@ -121,6 +122,15 @@ def main():
             empty((32, 16), torch.float32), empty((32 * 4, 16), torch.float32),
             config=config,
         ),
+        "moe_combine_vjp": make_moe_combine_vjp(4, 128).compile(
+            empty((4, 128)), empty((4 * 6, 128)), empty((4, 6), torch.float32),
+            empty((4, 128)), empty((4 * 6, 128)), empty((4, 16), torch.float32),
+            config=config,
+        ),
+        "normalized_route_vjp": make_normalized_route_vjp(4).compile(
+            empty((4, 6), torch.float32), empty((4, 6), torch.float32),
+            empty((4, 16), torch.float32), 2.5, config=config,
+        ),
     }
     if not args.skip_full_shape_compile:
         production_attention = C1AAttentionVJPGeometry()
@@ -153,6 +163,15 @@ def main():
             empty((32, 5120)), empty((32 * 4, 5120)), empty((32 * 4, 5120)),
             empty((32, 16), torch.float32), empty((32 * 4, 16), torch.float32),
             config=config,
+        )
+        programs["moe_combine_vjp_k32x5120"] = make_moe_combine_vjp().compile(
+            empty((32, 5120)), empty((32 * 6, 5120)), empty((32, 6), torch.float32),
+            empty((32, 5120)), empty((32 * 6, 5120)), empty((32, 16), torch.float32),
+            config=config,
+        )
+        programs["normalized_route_vjp_k32"] = make_normalized_route_vjp().compile(
+            empty((32, 6), torch.float32), empty((32, 6), torch.float32),
+            empty((32, 16), torch.float32), 2.5, config=config,
         )
         # The frozen LM head is not updated, but its transpose is required to
         # propagate dLogits into the final trainable draft layer. Compile the
@@ -416,6 +435,44 @@ def main():
             {"operator": "hc_post_data_vjp", "shape": [32, 4, 128]},
             {"operator": "hc_post_gate_vjp", "shape": [32, 4, 128]},
         ))
+
+        moe_dy = torch.randn(4, 128).bfloat16()
+        expert_outputs = torch.randn(4, 6, 128).bfloat16()
+        selected_scores = torch.rand(4, 6, dtype=torch.float32) + .1
+        route_weights = 2.5 * selected_scores / selected_scores.sum(-1, keepdim=True)
+        shared_grad_handle = allocate(torch.zeros(4, 128, dtype=torch.bfloat16))
+        expert_grad_handle = allocate(torch.zeros(4 * 6, 128, dtype=torch.bfloat16))
+        weight_grad_handle = allocate(torch.zeros(4, 16, dtype=torch.float32))
+        worker.run(
+            programs["moe_combine_vjp"], allocate(moe_dy), allocate(expert_outputs.flatten(0, 1)),
+            allocate(route_weights), shared_grad_handle, expert_grad_handle, weight_grad_handle,
+            config=config,
+        )
+        expected_expert_grad = route_weights.unsqueeze(-1) * moe_dy.float().unsqueeze(1)
+        expected_weight_grad = torch.einsum("td,trd->tr", moe_dy.float(), expert_outputs.float())
+        torch.testing.assert_close(
+            read(shared_grad_handle, torch.empty_like(moe_dy)), moe_dy, atol=0, rtol=0,
+        )
+        torch.testing.assert_close(
+            read(expert_grad_handle, torch.empty(4 * 6, 128, dtype=torch.bfloat16)),
+            expected_expert_grad.flatten(0, 1).bfloat16(), atol=.016, rtol=.016,
+        )
+        actual_weight_grad = read(weight_grad_handle, torch.empty(4, 16))[:, :6]
+        torch.testing.assert_close(actual_weight_grad, expected_weight_grad, atol=.02, rtol=.002)
+        score_grad_handle = allocate(torch.zeros(4, 16, dtype=torch.float32))
+        worker.run(
+            programs["normalized_route_vjp"], allocate(selected_scores), allocate(actual_weight_grad.contiguous()),
+            score_grad_handle, 2.5, config=config,
+        )
+        probability = selected_scores / selected_scores.sum(-1, keepdim=True)
+        expected_score_grad = 2.5 / selected_scores.sum(-1, keepdim=True) * (
+            expected_weight_grad - (expected_weight_grad * probability).sum(-1, keepdim=True)
+        )
+        torch.testing.assert_close(
+            read(score_grad_handle, torch.empty(4, 16))[:, :6],
+            expected_score_grad, atol=.01, rtol=.002,
+        )
+        report["cases"].append({"operator": "fixed_route_moe_vjp", "shape": [4, 6, 128]})
 
         master = torch.nn.Parameter(torch.randn(64, 128))
         optimizer = torch.optim.AdamW([master], lr=1e-4, weight_decay=0, foreach=False)
