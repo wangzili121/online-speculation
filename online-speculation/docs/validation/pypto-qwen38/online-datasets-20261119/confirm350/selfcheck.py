@@ -1,12 +1,13 @@
 """仅检查确认流程的拒绝条件和分配文件；不运行NPU或模型。"""
 import ast
+import copy
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 import tempfile
 from unittest.mock import patch
 
-from common import change, comparable, module, qualified, read, sha
+from common import change, check_runtime_contract, comparable, module, qualified, read, sha
 
 
 def main():
@@ -68,6 +69,27 @@ def main():
         changed = change(changed, flag, value)
     assert comparable(changed) == comparable(args)
     assert comparable(change(changed, "--learning-rate", 1e-4)) != comparable(args)
+    # 真实冻结版本的完整报告没有两个较新版本才增加的顶层字段。
+    reference = read(root / "sync345/b167-v308-sync345-gsm384-explore.json")
+    assert "max_model_len" not in reference and "training_rows" not in reference
+    check_runtime_contract(reference, reference)
+    for field in ("kv_pages", "trainable_parameters", "training_dispatches", "paired_physical_rows"):
+        mutated = copy.deepcopy(reference)
+        mutated[field] += 1
+        try:
+            check_runtime_contract(mutated, reference)
+        except AssertionError as error:
+            assert str(error) == field
+        else:
+            raise AssertionError(f"Changed runtime layout accepted: {field}")
+    mutated = copy.deepcopy(reference)
+    mutated["resource_policy"]["max_rows"] += 1
+    try:
+        check_runtime_contract(mutated, reference)
+    except AssertionError as error:
+        assert str(error) == "max_rows"
+    else:
+        raise AssertionError("Changed maximum rows accepted")
     # 只在临时目录验证数据编排；假资格/语料均不用于任何真实实验。
     builder = module(q / "prepare.py", "prepare_fixture350")
     with tempfile.TemporaryDirectory() as directory:
@@ -119,6 +141,7 @@ def main():
                  temporary_synthetic_preparation_and_reinvocation_checked=True,
                  all_three_valid_performance_trials_have_no_skip_or_retry=True,
                  numerical_recipe_mutation_detected=True, NPU_or_model_calls=False,
+                 actual_v308_report_schema_checked=True, runtime_layout_mutations_rejected=True,
                  scope="CPU guard checks only; does not prove new NPU performance or confirmation success.")
     (q / "selfcheck.json").write_text(json.dumps(proof, indent=2) + "\n")
     print(json.dumps(proof))

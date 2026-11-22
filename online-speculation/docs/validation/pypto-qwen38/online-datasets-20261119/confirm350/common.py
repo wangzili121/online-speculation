@@ -69,3 +69,14 @@ def comparable(args):
     for name in ("--devices", "--request-file", "--holdout-file", "--seed"):
         result[result.index(name) + 1] = "<trial placement or data>"
     return result
+
+
+def check_runtime_contract(actual, reference):
+    """核对冻结 v308 实际输出的形状/布局字段，源码默认值另由哈希审核。"""
+    # 该版本没有 max_model_len、training_rows 顶层字段，不能向报告索取虚构字段。
+    fields = ("kv_pages", "trainable_parameters", "training_dispatches",
+              "paired_physical_rows", "execution_max_num_seqs", "stream_window",
+              "head_payload_sha256")
+    for key in fields:
+        assert actual[key] == reference[key], key
+    assert actual["resource_policy"]["max_rows"] == reference["resource_policy"]["max_rows"], "max_rows"

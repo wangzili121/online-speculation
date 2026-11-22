@@ -2,6 +2,8 @@
 
 本文记录真实 Qwen3.8-27B 在 Ascend A2 上的在线更新、固定 head 推理和服务验证。各节保留对应日期的配置和结果。
 
+当前完整结果、实际配置和最终 head 留出对照见[简版结果报告](QWEN38_PYPTO_ONLINE_RESULTS.md)；下面保留各项探索和验证记录。
+
 最终验收采用 **GSM8K与SPoC派生代码生成流**；原LongProc Pseudo2code的负结果完整保留，单独报告，不作为最终验收门槛。此范围于11月22日确认，未改变正在运行的配方、题目或双基线各超过5%的要求，见[验收范围记录](validation/pypto-qwen38/online-datasets-20261119/acceptance-scope-20261122.json)。
 
 ## 已完成的双卡持续更新确认

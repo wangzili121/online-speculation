@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import random
 
-from common import comparable, module, read, read_bytes, sha
+from common import check_runtime_contract, comparable, module, read, read_bytes, sha
 
 
 def summarize(root):
@@ -59,8 +59,7 @@ def summarize(root):
             assert d["prompts_sha256"] == sha(prompt_path.read_bytes())
             assert d["holdout_sha256"] == sha(hold_path.read_bytes())
             assert all(d[key] == qualifier[key] for key in contract)
-            for key in ("max_model_len", "training_rows", "execution_max_num_seqs", "stream_window", "head_payload_sha256"):
-                assert d[key] == qualifier[key], key
+            check_runtime_contract(d, qualifier)
             binding = read(q / (tag + ".resources.json"))
             assert binding["captured"] and len(set(binding["physical_cards"])) == 3
             assert binding["physical_cards"] == list(map(int, d["visible_devices"].split(",")))
