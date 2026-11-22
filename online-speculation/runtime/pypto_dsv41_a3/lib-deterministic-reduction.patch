@@ -1,0 +1,105 @@
+--- a/models/deepseek_v4_1_flash_a3/input_pack.py
++++ b/models/deepseek_v4_1_flash_a3/input_pack.py
+@@ -384,6 +384,48 @@
+     return reduce_pack
+
+
++def make_sp_reduce_widen(rows, hidden):
++    """Convert packed BF16 partials to FP32 before the TP reduction."""
++
++    @pl.jit
++    def reduce_widen(
++        value: pl.Tensor[[rows, hidden], pl.BF16],
++        output: pl.InOut[pl.Tensor[[rows, hidden], pl.FP32]],
++    ):
++        block_count = rows * (hidden // D_TILE)
++        for block_worker in pl.spmd(pl.min(block_count, SPMD_WORKER_LIMIT),
++                                    name_hint="prefill_sp_reduce_widen"):
++            for block in pl.range(block_worker, block_count, SPMD_WORKER_LIMIT):
++                row = block // (hidden // D_TILE)
++                column = block % (hidden // D_TILE) * D_TILE
++                tile = value[row : row + 1, column : column + D_TILE]
++                output[row : row + 1, column : column + D_TILE] = pl.cast(tile, pl.FP32)
++        return output
++
++    return reduce_widen
++
++
++def make_sp_reduce_narrow(rows, hidden):
++    """Round the deterministic FP32 TP sum once at the layer boundary."""
++
++    @pl.jit
++    def reduce_narrow(
++        value: pl.Tensor[[rows, hidden], pl.FP32],
++        output: pl.InOut[pl.Tensor[[rows, hidden], pl.BF16]],
++    ):
++        block_count = rows * (hidden // D_TILE)
++        for block_worker in pl.spmd(pl.min(block_count, SPMD_WORKER_LIMIT),
++                                    name_hint="prefill_sp_reduce_narrow"):
++            for block in pl.range(block_worker, block_count, SPMD_WORKER_LIMIT):
++                row = block // (hidden // D_TILE)
++                column = block % (hidden // D_TILE) * D_TILE
++                tile = value[row : row + 1, column : column + D_TILE]
++                output[row : row + 1, column : column + D_TILE] = pl.cast(tile, pl.BF16, mode="rint")
++        return output
++
++    return reduce_narrow
++
++
+ if __name__ == "__main__":
+     import argparse
+     import json
+--- a/models/deepseek_v4_1_flash_a3/prefill_layer.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+@@ -72,7 +72,14 @@
+     from .prefill_moe import make_shared_moe_w8a8
+     from .grouped_moe import make_grouped_routed_experts
+     from .rope import make_rope_tables
+-    from .input_pack import make_head_pack, make_sp_gather_unpack, make_sp_masked_zero, make_sp_reduce_pack
++    from .input_pack import (
++        make_head_pack,
++        make_sp_gather_unpack,
++        make_sp_masked_zero,
++        make_sp_reduce_narrow,
++        make_sp_reduce_pack,
++        make_sp_reduce_widen,
++    )
+     from .rmsnorm import make_prefill_norm_cast
+     from .cache import resolve_layer_role
+     from .prefill_swa import make_builders
+@@ -94,6 +101,8 @@
+         head_unpack=make_sp_gather_unpack(capacity, 32768 // tp, tp),
+         sp_unpack=make_sp_gather_unpack(capacity, 5120, tp),
+         reduce_pack=make_sp_reduce_pack(capacity, 5120, tp),
++        reduce_widen=make_sp_reduce_widen(tp * capacity, 5120),
++        reduce_narrow=make_sp_reduce_narrow(capacity, 5120),
+         router=make_moe_router(capacity, config, pl.FP32),
+         shared=make_shared_moe_w8a8(
+             capacity, config, fused_activation=True, fused_channel_dtype=pl.FP32, partitions=tp,
+@@ -524,12 +533,23 @@
+             state.update(attention_heads=heads, wo_a=woa, wo_b=wob, reduction_packet=packed)
+             reduction[rank][case] = packed
+         map_ranks(project_rank)
+-    reduced = exchange("attention-output-reduce", reduction, "all_reduce", "tp")
++    widened = [{} for _ in range(world)]
++    for case in batch["cases"]:
++        def widen_rank(rank):
++            output = zeros(rank, tp * capacity, 5120, dtype=torch.float32)
++            execute("reduce_widen", rank, case, [reduction[rank][case], output],
++                    {"output": output}, "output_projection")
++            widened[rank][case] = output
++            states[rank][case]["reduction_wide"] = output
++        map_ranks(widen_rank)
++    reduced = exchange("attention-output-reduce-fp32", widened, "reduce_scatter", "tp")
+     scattered = [{} for _ in range(world)]
+     def select_rank_output(rank):
+-        begin = (rank % tp) * capacity
+         for case, value in reduced[rank].items():
+-            scattered[rank][case] = value[begin : begin + capacity].contiguous()
++            output = zeros(rank, capacity, 5120)
++            execute("reduce_narrow", rank, case, [value, output],
++                    {"output": output}, "output_projection")
++            scattered[rank][case] = output
+             states[rank][case].update(attention_reduced=value, attention_scattered=scattered[rank][case])
+     map_ranks(select_rank_output)
+     slab = runtime.get("moe_slab_rows", capacity)
