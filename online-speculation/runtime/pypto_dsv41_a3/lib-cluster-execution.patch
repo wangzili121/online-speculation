@@ -1,0 +1,752 @@
+diff --git a/models/deepseek_v4_1_flash_a3/engram_host.py b/models/deepseek_v4_1_flash_a3/engram_host.py
+index 50294bb..8d50dcc 100644
+--- a/models/deepseek_v4_1_flash_a3/engram_host.py
++++ b/models/deepseek_v4_1_flash_a3/engram_host.py
+@@ -33,14 +33,15 @@ def lookup_columns(codes, scales, rows):
+
+ class HostEngram:
+     """Retain both complete host tables and return only the current chunk's rows."""
+
+-    def __init__(self, checkpoint, contracts, namespace):
++    def __init__(self, checkpoint, contracts, namespace, *, checkpoint_mmap=False):
+         if set(contracts) != {1, 14} or not namespace or "/" in namespace or ".." in namespace:
+             raise ValueError("Require both original Engram slots and a private host-storage namespace")
+         self.checkpoint = str(Path(checkpoint).resolve())
+         self.contracts = deepcopy(contracts)
+         self.namespace = namespace
++        self.checkpoint_mmap = checkpoint_mmap
+         self.arrays = {}
+         self._stack = ExitStack()
+         self._closed = False
+         self.constants = self.contracts[1]["hash_constants"]
+@@ -116,8 +117,9 @@ class HostEngram:
+                 width,
+                 dtype,
+                 shard["host_payload_sha256"][kind],
+                 f"{self.namespace}-L{layer}-tp{rank}-{kind}",
++                checkpoint_mmap=self.checkpoint_mmap,
+             )
+             self._stack.callback(array.close)
+             self.arrays[key] = array
+         return self.arrays[key]
+@@ -723,9 +725,9 @@ def checkpoint_region(checkpoint, name):
+
+ class SharedEngramArray:
+     """Retain one complete TP array in a task-owned MAP_SHARED backing."""
+
+-    def __init__(self, checkpoint, name, row_range, width, dtype, expected_sha, owner):
++    def __init__(self, checkpoint, name, row_range, width, dtype, expected_sha, owner, *, checkpoint_mmap=False):
+         path, payload, spec = checkpoint_region(checkpoint, name)
+         if spec["dtype"] != dtype or spec["shape"][1:] != [width]:
+             raise ValueError("Original Engram checkpoint dtype/shape differs: " + name)
+         begin, end = row_range
+@@ -738,8 +740,33 @@ class SharedEngramArray:
+         self.mapping = None
+         self.view = None
+         self.tensor = None
+         self.row_start = begin
++        if checkpoint_mmap:
++            byte_offset = payload + begin * width * element_bytes
++            aligned = byte_offset // mmap.ALLOCATIONGRANULARITY * mmap.ALLOCATIONGRANULARITY
++            offset = byte_offset - aligned
++            try:
++                with path.open("rb") as source:
++                    self.mapping = mmap.mmap(source.fileno(), offset + self.byte_count,
++                                             access=mmap.ACCESS_COPY, offset=aligned)
++                self.view = memoryview(self.mapping)[offset:offset + self.byte_count]
++                actual_sha = hashlib.sha256(self.view).hexdigest()
++                if actual_sha != expected_sha:
++                    raise ValueError("Complete assigned Engram bytes differ from frozen checkpoint: " + name)
++                if hasattr(self.mapping, "madvise"):
++                    self.mapping.madvise(mmap.MADV_RANDOM)
++                self.tensor = torch.frombuffer(
++                    self.mapping, dtype={"I8": torch.int8, "F32": torch.float32}[dtype],
++                    count=self.shape[0] * width, offset=offset,
++                ).reshape(self.shape)
++                self.receipt = dict(checkpoint_file=str(path), tensor=name, row_range=list(row_range),
++                                    shape=list(self.shape), dtype=dtype, bytes=self.byte_count,
++                                    payload_sha256=actual_sha, storage="checkpoint_mmap", shared_path=None)
++            except BaseException:
++                self.close()
++                raise
++            return
+         available = os.statvfs("/dev/shm")
+         if self.byte_count > available.f_bavail * available.f_frsize:
+             raise RuntimeError("Insufficient shared host capacity for complete Engram array")
+         fd, filename = tempfile.mkstemp(prefix=f"ds41-{owner}-", dir="/dev/shm")
+diff --git a/models/deepseek_v4_1_flash_a3/network.py b/models/deepseek_v4_1_flash_a3/network.py
+index 4d1d456..7775299 100644
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -556,15 +556,21 @@ class NetworkExecutor:
+         program,
+         namespace="chunk0",
+         resident=None,
+         phase="prefill",
++        transport=None,
+     ):
+         self.topology = topology
+         self.provider, self.ownership, self.memory = provider, ownership, memory
+         self.reports = reports
+         self.namespace = namespace
+         self.program = program
+         self.resident = resident
++        self.transport = transport
++        self.rank_devices = {rank: device for device, rank in enumerate(provider.local_ranks)}
++        if len(self.rank_devices) != len(resident.devices) or (len(self.rank_devices) != topology["ep"]
++                                                               and transport is None):
++            raise ValueError("The resident workers and transport must cover the assigned global ranks")
+         self.current_layer, self.current_entries = None, None
+         self.compiled = {}
+         compiled_entries = {id(entry.compiled): entry.compiled
+                             for entries in program.stages.values() for entry in entries.values()}
+@@ -574,26 +580,56 @@ class NetworkExecutor:
+         self.resident_abis = resident.parameter_abis
+         self.phase = phase
+         self.activation_banks = {}
+
++    def map_ranks(self, function):
++        """Run local workers with global model coordinates."""
++        def invoke(device):
++            return function(self.provider.local_ranks[device])
++        return self.resident.map_ranks(invoke)
++
++    def read_control(self, value, rank):
++        return self.resident.read_control(value, self.rank_devices[rank])
++
++    def copy_tensor(self, target, source, rank):
++        return self.resident.copy_tensor(target, source, self.rank_devices[rank])
++
++    def workspace(self, shape, dtype, rank, *, fill=0):
++        return self.resident.workspace(shape, dtype, self.rank_devices[rank], fill=fill)
++
++    def release_tensors(self, tensors):
++        return self.resident.release_tensors([(self.rank_devices[rank], value) for rank, value in tensors])
++
+     def execute_entry(self, entry, rank, arguments, *, empty_capture=False):
+         """Bind one existing compiled entry to the generation's persistent worker."""
+         if self.resident is None:
+             raise ValueError("Ordinary execution requires an initialized resident runtime")
+         key = id(entry.compiled)
+         if key not in self.resident_abis:
+             self.resident_abis[key] = network_parameter_abi(entry.compiled)
+-        self.resident.execute(entry.compiled, rank, arguments, self.resident_abis[key], empty_capture=empty_capture)
++        self.resident.execute(entry.compiled, self.rank_devices[rank], arguments, self.resident_abis[key],
++                              empty_capture=empty_capture)
+
+     def exchange(self, stage, values, collective, group, *, packets=False, host_control=False):
+         if not stage or "/" in stage or ".." in stage:
+             raise ValueError("HCCL stages require distinct safe chunk/layer identities")
+         transport = (
+             values if packets else [{case: {"value": value} for case, value in row.items()} for row in values]
+         )
+-        result, receipts = self.resident.exchange(stage, transport, collective, group, host_control=host_control)
+-        for rank, receipt in enumerate(receipts):
+-            self.reports[rank]["communication"].append(receipt)
++        if self.transport is None:
++            result, receipts = self.resident.exchange(stage, transport, collective, group, host_control=host_control)
++        else:
++            if len(transport) != self.topology["ep"]:
++                raise ValueError("Cluster collective must use globally indexed packets")
++            local, receipts = self.transport.exchange(
++                stage, [transport[rank] for rank in self.rank_devices], collective, group
++            )
++            result = [{} for _ in transport]
++            for rank, row in zip(self.rank_devices, local, strict=True):
++                result[rank] = ({case: {name: self.read_control(value, rank) for name, value in packet.items()}
++                                 for case, packet in row.items()} if host_control else row)
++        for receipt in receipts:
++            self.reports[receipt["rank"]]["communication"].append(receipt)
+         if packets:
+             return result
+         return [{case: packet["value"] for case, packet in row.items()} for row in result]
+
+@@ -607,9 +643,9 @@ class NetworkExecutor:
+         for group in ("ep", "tp", "dp"):
+             observed = self.exchange(
+                 self.namespace + "-network-startup-" + group, values, "all_gather", group, host_control=True
+             )
+-            for rank in range(world):
++            for rank in self.rank_devices:
+                 tp = self.topology["tp"]
+                 expected = (
+                     list(range(world))
+                     if group == "ep"
+@@ -635,9 +671,9 @@ class NetworkExecutor:
+         """Retire completed scratch and preserve the current device boundary buffers."""
+         keep = [(rank, value) for rows in (hidden, premix)
+                 for rank, cases in enumerate(rows) for value in cases.values()]
+         keep.extend((rank, value) for (rank, _, _), pair in self.activation_banks.items() for value in pair)
+-        self.resident.release_values(keep + list(extra))
++        self.resident.release_values([(self.rank_devices[rank], value) for rank, value in keep] + list(extra))
+
+     def for_layer(self, layer_id):
+         moe_geometry = self.program.moe_geometry[layer_id]
+         geometry, expert_capacity = network_layer_geometry(self.provider, self.topology, layer_id, moe_geometry)
+@@ -666,16 +702,16 @@ class NetworkExecutor:
+             execute=execute,
+             execute_l2=execute,
+             exchange=self.exchange,
+             exchange_async=self.exchange_async,
+-            map_ranks=self.resident.map_ranks,
++            map_ranks=self.map_ranks,
+             epoch=batch["epoch"],
+             token_map_id=batch["token_map_id"],
+             output_sentinel=-37.0,
+-            read_control=self.resident.read_control,
+-            copy_tensor=self.resident.copy_tensor,
+-            workspace=self.resident.workspace,
+-            release_tensors=self.resident.release_tensors,
++            read_control=self.read_control,
++            copy_tensor=self.copy_tensor,
++            workspace=self.workspace,
++            release_tensors=self.release_tensors,
+             layer_buffers=self.layer_buffers,
+             stage_namespace=f"{self.namespace}-layer{layer_id}",
+         )
+
+@@ -700,9 +736,9 @@ def embed_network_input(input_contract, weights, executor, config, output):
+         reader=weights.reader,
+         execute=execute,
+         exchange=exchange,
+         execute_l2=execute,
+-        map_ranks=executor.resident.map_ranks,
++        map_ranks=executor.map_ranks,
+     )
+     write_json(
+         directory / "execution.json",
+         dict(
+@@ -711,15 +747,16 @@ def embed_network_input(input_contract, weights, executor, config, output):
+             ranks=len(boundaries),
+             layers_executed=[],
+         ),
+     )
+-    hidden, premix = [], []
+-    for rank, original in enumerate(boundaries):
++    hidden, premix = [{} for _ in boundaries], [{} for _ in boundaries]
++    for rank in executor.rank_devices:
++        original = boundaries[rank]
+         record = executor.provider.batch_for_layer(0)["cases"]["fresh"][rank]
+         if any(original[name] != record[name] for name in ("SP_physical_rows", "SP_valid_rows")):
+             raise ValueError("Embedding and cache metadata disagree on rank-local token ownership")
+-        hidden.append(dict(fresh=original["hidden"]))
+-        premix.append(dict(fresh=original["pre_mix"]))
++        hidden[rank]["fresh"] = original["hidden"]
++        premix[rank]["fresh"] = original["pre_mix"]
+     return hidden, premix
+
+
+ def run_output_boundary(result, *, batch, topology, config, weights, executor, output):
+@@ -753,9 +790,9 @@ def run_output_boundary(result, *, batch, topology, config, weights, executor, o
+                 [result["hidden"][rank][case], result["pre_mix"][rank][case], collapsed, physical],
+                 dict(local_collapsed=collapsed),
+             )
+             packets[rank][case] = collapsed
+-        executor.resident.map_ranks(run_output_boundary_rank_0)
++        executor.map_ranks(run_output_boundary_rank_0)
+     gathered = executor.exchange(executor.namespace + "-output-SP-gather", packets, "all_gather", "tp")
+     logits_packets = [{} for _ in range(world)]
+     for case, records in batch["cases"].items():
+         def run_output_boundary_rank_1(rank):
+@@ -789,9 +826,9 @@ def run_output_boundary(result, *, batch, topology, config, weights, executor, o
+                     ),
+                 ),
+             )
+             logits_packets[rank][case] = local_logits
+-        executor.resident.map_ranks(run_output_boundary_rank_1)
++        executor.map_ranks(run_output_boundary_rank_1)
+     gathered_logits = executor.exchange(
+         executor.namespace + "-output-vocabulary-gather", logits_packets, "all_gather", "tp"
+     )
+     files, actual_logits = {}, [{} for _ in range(world)]
+@@ -805,9 +842,9 @@ def run_output_boundary(result, *, batch, topology, config, weights, executor, o
+                 case,
+                 [gathered_logits[rank][case], logits, len(record["positions"])],
+                 dict(logits=logits),
+             )
+-            logits = executor.resident.read_output(logits, rank)
++            logits = executor.resident.read_output(logits, executor.rank_devices[rank])
+             path = directory / f"rank-{rank}-{case}-network-logits.pt"
+             torch.save(
+                 dict(
+                     logits=logits,
+@@ -818,9 +855,9 @@ def run_output_boundary(result, *, batch, topology, config, weights, executor, o
+                 path,
+             )
+             files[str(path)] = file_sha(path)
+             actual_logits[rank][case] = logits[: len(record["positions"])].clone()
+-        executor.resident.map_ranks(run_output_boundary_rank_2)
++        executor.map_ranks(run_output_boundary_rank_2)
+     write_json(
+         directory / "execution.json",
+         dict(
+             outcome="executed_actual_layer39_output_boundary_not_compared",
+@@ -905,11 +942,12 @@ def prepare_network_provider(inputs, contract, allocation_id, *, geometry_only=F
+ class GenerationSession:
+     """Own both phases' workers, weights, cache aliases and monotonically advancing state."""
+
+     def __init__(self, stack, *, resident, weights, provider, program, contract, engram_contracts,
+-                 memory, assigned, output, request_inputs=None):
++                 memory, assigned, output, request_inputs=None, transport=None):
+         self._stack = stack
+         self.runtime = self.resident = resident
++        self.transport = transport
+         self.weights, self.provider, self.program = weights, provider, program
+         self.contract, self.engram_contracts = contract, engram_contracts
+         self.memory, self.assigned, self.output = memory, assigned, output
+         self.request_inputs = request_inputs
+@@ -918,11 +956,11 @@ class GenerationSession:
+         self.epoch, self.closed, self.failed = 0, False, False
+         self._draft_plane_handles = {}
+         self._verified_requests = None
+         self.cache_views = weights.cache_handles
+-        for rank, cases in enumerate(provider.arenas):
+-            sources = {case + "/" + name: resident.handle(value, rank)
+-                       for case, tensors in cases.items() for name, value in tensors.items()}
++        for rank, device in weights.rank_devices.items():
++            sources = {case + "/" + name: resident.handle(value, device)
++                       for case, tensors in provider.arenas[rank].items() for name, value in tensors.items()}
+             weights.bind_cache_views(rank, sources, {name: name for name in sources})
+
+     def close(self):
+         if not self.closed:
+@@ -981,9 +1019,11 @@ class GenerationSession:
+                 if stride[0] % width or offset_bytes % row_bytes or stride[1:] != (width, width, 1):
+                     raise ValueError("Draft history plane requires aligned contiguous rows")
+                 key = rank, storage, dtype, width
+                 if key not in self._draft_plane_handles:
+-                    self._draft_plane_handles[key] = self.resident.handle(matrix, rank, readonly=True)
++                    self._draft_plane_handles[key] = self.resident.handle(
++                        matrix, self.weights.rank_devices[rank], readonly=True
++                    )
+                 bindings.append(dict(handle=self._draft_plane_handles[key], pages=pages,
+                                      dtype=descriptor["dtype"], shape=shape, stride=stride,
+                                      stride_rows=stride[0] // width, offset_rows=offset_bytes // row_bytes))
+             planes[kind] = tuple(bindings)
+@@ -996,9 +1036,11 @@ class GenerationSession:
+         groups = self.provider.request_pages(dp_rank, request_slot, generation, case=case)
+         self._verified_requests = None
+         tp = self.contract["topology"]["tp"]
+         try:
+-            for rank in range(dp_rank * tp, (dp_rank + 1) * tp):
++            for rank, device in self.weights.rank_devices.items():
++                if rank // tp != dp_rank:
++                    continue
+                 layout = self.provider.layouts[rank][case]
+                 ranges, history_pages = {}, set()
+                 for group in groups.values():
+                     if "model.layers.1.self_attn.swa_cache" in group["names"]:
+@@ -1010,14 +1052,14 @@ class GenerationSession:
+                             stride = plane["stride"][0] * size
+                             ranges.setdefault(plane["storage_key"], set()).update(
+                                 (page * stride, stride) for page in group["pages"])
+                 for storage, intervals in ranges.items():
+-                    self.runtime.clear_ranges(self.provider.arenas[rank][case][storage], rank, sorted(intervals))
++                    self.runtime.clear_ranges(self.provider.arenas[rank][case][storage], device, sorted(intervals))
+                 for page in history_pages:
+                     self.provider.history.caches[rank][case][page * 128:(page + 1) * 128].zero_()
+                 for name, value in self.provider.shared[rank][case].items():
+                     byte = 255 if name in ("topk_indices", "candidates") else 0
+-                    self.runtime.clear_ranges(value, rank, [(0, value.numel() * value.element_size())], byte=byte)
++                    self.runtime.clear_ranges(value, device, [(0, value.numel() * value.element_size())], byte=byte)
+                 self.provider.versions[rank][case].clear()
+             self.provider.release_request(dp_rank, request_slot, generation, case=case)
+         except BaseException:
+             self.failed = True
+@@ -1061,9 +1103,9 @@ class GenerationSession:
+             (rank, layer, (dp, slot, generation)): self.draft_history(
+                 dp, slot, generation, rank=rank, layer=layer, anchor_position=anchor,
+             )
+             for dp, slot, generation, anchor in requests
+-            for rank in range(dp * tp, (dp + 1) * tp)
++            for rank in self.provider.local_ranks if rank // tp == dp
+             for layer in range(40)
+         }
+         self._verified_requests = None
+         previous = (self.epoch, self.contract, self.engram_contracts, self.program, self.provider.capacity)
+@@ -1098,15 +1140,15 @@ class GenerationSession:
+             raise ValueError("Verification metadata must describe every resident rank")
+         try:
+             with ExitStack() as restore:
+                 restore.enter_context(self.provider.provisional_dispatch())
+-                for rank, payload in enumerate(metadata):
++                for rank, device in self.weights.rank_devices.items():
+                     if not actual["DP_engines"][rank // world["tp"]]["requests"]:
+                         continue
+-                    intervals, history_pages = self.provider.verification_ranges(rank, payload)
++                    intervals, history_pages = self.provider.verification_ranges(rank, metadata[rank])
+                     raw = self.provider.arenas[rank]["fresh"]
+                     ranges = [(raw[key], sorted(extents)) for key, extents in intervals.items()]
+-                    restore.enter_context(self.runtime.preserve_cache_ranges(rank, ranges))
++                    restore.enter_context(self.runtime.preserve_cache_ranges(device, ranges))
+                     for page in history_pages:
+                         history = self.provider.history.caches[rank]["fresh"][page * 128:(page + 1) * 128]
+                         restore.callback(history.copy_, history.clone())
+                 result = self._advance(chunk, output=output, progress=progress, phase="verify")
+@@ -1187,9 +1229,9 @@ class GenerationSession:
+             output.mkdir(parents=True, exist_ok=False)
+             result = run_network_chunk(following, contract=contract, output=output, provider=self.provider,
+                 weights=self.weights, memory=self.memory, ownership=self.ownership, assigned=self.assigned,
+                 engram_contracts=self.engram_contracts, program=self.program, epoch=epoch, progress=progress,
+-                resident=self.runtime, phase=phase, draft=draft)
++                resident=self.runtime, phase=phase, draft=draft, transport=self.transport)
+             self.weights.assert_static_unchanged()
+             if cache_uploads != self.runtime.stats["cache_h2d_bytes"]:
+                 raise RuntimeError("A token step uploaded persistent cache bytes")
+         except BaseException:
+@@ -1211,9 +1253,10 @@ class GenerationSession:
+         self.close()
+
+
+ def run_network_runtime(inputs, *, contract, output, devices, checkpoint=None, continuation=None,
+-                        compiled=None, progress=None, keep_runtime=False, request_inputs=None):
++                        compiled=None, progress=None, keep_runtime=False, request_inputs=None,
++                        local_ranks=None, transport_factory=None):
+     """Initialize one complete network session and retain it through both phases."""
+     from .moe_transport import CANNMemory
+     from .prefill_resident import ResidentNetworkRuntime
+     from .resident_weights import A3ResidentWeights
+@@ -1221,16 +1264,22 @@ def run_network_runtime(inputs, *, contract, output, devices, checkpoint=None, c
+
+     if "engram_lookup" not in inputs:
+         raise ValueError("Prepare Engram lookup rows before calling the network")
+     topology = contract["topology"]
+-    assigned = configure_devices(devices, world=topology["ep"])
++    if (local_ranks is None) != (transport_factory is None):
++        raise ValueError("Local ranks and a cluster transport must be configured together")
++    scope = {} if local_ranks is None else {"local_ranks": tuple(local_ranks)}
++    local_topology = topology if not scope else dict(
++        topology, ep=len(scope["local_ranks"]), dp=len(scope["local_ranks"]) // topology["tp"]
++    )
++    assigned = configure_devices(devices, world=local_topology["ep"])
+     output = Path(output).resolve()
+     if checkpoint is not None:
+         contract = dict(contract, checkpoint=str(Path(checkpoint).resolve()))
+     output.mkdir(parents=True, exist_ok=False)
+     if progress is not None:
+         progress(dict(stage="compiling_network", epoch=0))
+-    provider = prepare_network_provider(inputs, contract, output.name, geometry_only=True)
++    provider = prepare_network_provider(inputs, contract, output.name, geometry_only=True, **scope)
+     validate_host_lookup(inputs["engram_lookup"], inputs["engram_contracts"][1], provider.hash_batch())
+     program = compiled if compiled is not None else NetworkProgram(output / "compiled")
+     program.compile(provider, contract["model_config"], topology, inputs["engram_contracts"])
+     phase_programs = {contract["capacity"]: program}
+@@ -1253,33 +1302,37 @@ def run_network_runtime(inputs, *, contract, output, devices, checkpoint=None, c
+                                        decode_chunk["cache"]["engram_contracts"])
+                 phase_programs[16] = decode_program
+             finally:
+                 request.close()
+-    provider = prepare_network_provider(inputs, contract, output.name)
++    provider = prepare_network_provider(inputs, contract, output.name, **scope)
+     with ExitStack() as stack:
+         profiling = dict(contract.get("profiling", {}))
+         profiling.setdefault("output_dir", str(output / "profiling"))
+         ring_heap = network_ring_heap(contract["capacity"], contract["model_config"]["text_config"], topology["tp"])
+-        resident = stack.enter_context(ResidentNetworkRuntime(assigned, topology, profiling=profiling, ring_heap=ring_heap))
++        resident = stack.enter_context(ResidentNetworkRuntime(assigned, local_topology, profiling=profiling,
++                                                               ring_heap=ring_heap))
++        transport = stack.enter_context(transport_factory(resident)) if scope else None
+         for phase_program in phase_programs.values():
+             resident.register(phase_program)
+-        weights = A3ResidentWeights(contract["checkpoint"], topology, contract["model_config"], resident)
++        weights = A3ResidentWeights(contract["checkpoint"], topology, contract["model_config"], resident, **scope)
+         stack.callback(weights.close)
+         weights.preload_once(progress)
+         weights.write_audit(output / "weight-audit.json")
+         for family, values in (("raw", provider.arenas), ("shared", provider.shared)):
+             for rank, cases in enumerate(values):
+                 for case, tensors in cases.items():
+                     items = tensors.items() if isinstance(tensors, dict) else (("history", tensors),)
+                     for name, value in items:
+-                        resident.pin(value, [rank], readonly=False, name=f"{family}/{rank}/{case}/{name}")
++                        resident.pin(value, [weights.rank_devices[rank]], readonly=False,
++                                     name=f"{family}/{rank}/{case}/{name}")
+         session = GenerationSession(stack, resident=resident, weights=weights, provider=provider, program=program,
+             contract=contract, engram_contracts=inputs["engram_contracts"], memory=CANNMemory(diagnostics=False),
+-            assigned=assigned, output=output, request_inputs=request_inputs)
++            assigned=assigned, output=output, request_inputs=request_inputs, transport=transport)
+         session.phase_programs = phase_programs
+         first = run_network_chunk(inputs, contract=contract, output=output, provider=provider, weights=weights,
+             memory=session.memory, ownership=session.ownership, assigned=assigned,
+-            engram_contracts=session.engram_contracts, program=program, epoch=0, progress=progress, resident=resident)
++            engram_contracts=session.engram_contracts, program=program, epoch=0, progress=progress,
++            resident=resident, transport=transport)
+         weights.assert_static_unchanged()
+         completed = [first]
+         chunks = (continuation,) if isinstance(continuation, Mapping) else continuation
+         if chunks is not None:
+@@ -1311,8 +1364,9 @@ def run_network_chunk(
+     progress=None,
+     resident=None,
+     phase="prefill",
+     draft=None,
++    transport=None,
+ ):
+     """Execute embedding, the complete backbone and the final head with persistent owners."""
+     begin = perf_counter()
+     initial_load_seconds, initial_load_calls = weights.load_seconds, weights.load_calls
+@@ -1326,9 +1380,9 @@ def run_network_chunk(
+     runtime_path = output / "runtime_config.json"
+     runtime = dict(
+         topology=topology,
+         assigned_devices=assigned,
+-        logical_rank_mapping=list(range(topology["ep"])),
++        logical_rank_mapping=list(provider.local_ranks),
+         source_root=str(Path(__file__).resolve().parents[2]),
+         source_files={},
+         groups=dict(
+             ep=[list(range(topology["ep"]))],
+@@ -1358,8 +1412,9 @@ def run_network_chunk(
+         program,
+         namespace,
+         resident=resident,
+         phase=phase,
++        transport=transport,
+     )
+     executor.precheck()
+     hidden, premix = embed_network_input(
+         inputs["input_contract"], weights, executor, text, output / "embedding"
+@@ -1386,16 +1441,16 @@ def run_network_chunk(
+         output=output / "engram",
+         reports=reports,
+         memory=memory,
+         exchange=executor.exchange,
+-        map_ranks=resident.map_ranks,
++        map_ranks=executor.map_ranks,
+         entries_for_stage=program.entries_for_stage,
+         execute_entry=executor.execute_entry,
+         projection_for_layer=weights.projection_for_layer,
+     )
+     eng_runtime["load_rotation"] = resident.load_rotation
+-    eng_runtime["read_control"] = resident.read_control
+-    eng_runtime["copy_tensor"] = resident.copy_tensor
++    eng_runtime["read_control"] = executor.read_control
++    eng_runtime["copy_tensor"] = executor.copy_tensor
+     prepared_engram = prepare_network_engram(
+         common_engram,
+         hash_batch,
+         provider.history,
+@@ -1423,14 +1478,15 @@ def run_network_chunk(
+     completed_layers = []
+
+     def observe_layer(layer, result):
+         for case, records in provider.batch_for_layer(layer)["cases"].items():
+-            for rank, record in enumerate(records):
++            for rank in provider.local_ranks:
++                record = records[rank]
+                 valid = record["SP_valid_rows"]
+                 status = torch.empty(provider.capacity, dtype=torch.int32)
+                 arguments = [result["hidden"][rank][case], result["pre_mix"][rank][case], status, valid]
+                 executor.execute_entry(program.entries_for_stage("validation")["finite"], rank, arguments)
+-                if not bool(resident.read_control(status, rank).all()):
++                if not bool(executor.read_control(status, rank).all()):
+                     raise RuntimeError(f"Non-finite {phase} state after layer {layer} on rank {rank}")
+         if draft is None:
+             provider.observe_layer(layer, result)
+         extra = () if draft is None else draft.finish_layer(layer)
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_fwd.py b/models/deepseek_v4_1_flash_a3/prefill_fwd.py
+index 4e1ff25..3da6c6b 100644
+--- a/models/deepseek_v4_1_flash_a3/prefill_fwd.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_fwd.py
+@@ -74,8 +74,10 @@ def prefill_fwd(
+     continuation=None,
+     progress=None,
+     engram_lookup=None,
+     keep_runtime=False,
++    local_ranks=None,
++    transport_factory=None,
+ ):
+     """Execute the existing network using explicit checkpoint and cache-state providers.
+
+     ``inputs`` accepts raw completion text, 1..16384 token IDs, or prepared
+@@ -98,9 +100,9 @@ def prefill_fwd(
+     chunks = None
+     request_inputs = None
+     transferred = False
+     try:
+-        configure_devices(devices, world=config["topology"]["ep"])
++        configure_devices(devices, world=config["topology"]["ep"] if local_ranks is None else len(local_ranks))
+         if isinstance(inputs, (str, list, tuple)):
+             from .prefill_prepare import TokenChunkInputs, tokenize_prompt
+
+             if continuation is not None or Path(output).exists():
+@@ -140,8 +142,10 @@ def prefill_fwd(
+             continuation=continuation,
+             progress=progress,
+             keep_runtime=keep_runtime,
+             request_inputs=request_inputs,
++            local_ranks=local_ranks,
++            transport_factory=transport_factory,
+         )
+         transferred = keep_runtime and "session" in result
+         return result
+     finally:
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_layer.py b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+index 1f3fc2d..aae4a4c 100644
+--- a/models/deepseek_v4_1_flash_a3/prefill_layer.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+@@ -615,9 +615,10 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+         returns = [{} for _ in range(world)]
+         def execute_rank_experts(rank):
+             for case, packet in received[rank].items():
+                 state, work = states[rank][case], slab_work[rank][case]
+-                valid_by_rank = [max(0, min(slab, states[source][case]["valid"] - base)) for source in range(world)]
++                valid_by_rank = [max(0, min(slab, source["SP_valid_rows"] - base))
++                                 for source in batch["cases"][case]]
+                 controls = {name: read_runtime_control(runtime, packet[name], rank) for name in ("routes", "counts")}
+                 expected_total = validate_received_routes(
+                     controls, rank, layout, routes, valid_by_rank, expert_capacity=expert_capacity,
+                 )
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_resident.py b/models/deepseek_v4_1_flash_a3/prefill_resident.py
+index 514fc74..ff06418 100644
+--- a/models/deepseek_v4_1_flash_a3/prefill_resident.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_resident.py
+@@ -344,9 +344,10 @@ class ResidentNetworkRuntime:
+         self._select = lambda rank: None
+         self.stats = dict(worker_initializations=0, dispatches=0, h2d_bytes=0, d2h_bytes=0,
+                           weight_bytes=[0] * len(devices), state_bytes=[0] * len(devices),
+                           transport_calls=0, transport_seconds=0.0, device_weight_upload_calls=0,
+-                          device_weight_upload_seconds=0.0,
++                          device_weight_upload_seconds=0.0, draft_weight_bytes=[0] * len(devices),
++                          device_draft_weight_upload_calls=0, device_draft_weight_upload_seconds=0.0,
+                           dynamic_allocations=0, cache_h2d_bytes=0, control_d2h_bytes=0, output_d2h_bytes=0,
+                           activation_d2h_bytes=0, d2d_bytes=0, program_evictions=0, staging_worker_initializations=0,
+                           verify_backup_d2d_bytes=0, verify_restore_d2d_bytes=0,
+                           workspace_fill_bytes=0, workspace_requests=0, workspace_reuses=0)
+@@ -634,10 +635,10 @@ class ResidentNetworkRuntime:
+                 self.static_parameters[id(entry.compiled)] = names.intersection(entry.compiled.param_names)
+         if len(phase_entries) > 64:
+             raise ValueError("One execution shape exceeds the worker's 64 program slots")
+
+-    def weight(self, value, rank):
+-        """Upload a complete immutable owned expert operand without retaining host payloads."""
++    def weight(self, value, rank, *, draft=False):
++        """Upload an immutable operand and account for its resident weight bank."""
+         if self._closed:
+             raise RuntimeError("Resident runtime is closed")
+         self._select(rank)
+         value = value.contiguous()
+@@ -646,15 +647,19 @@ class ResidentNetworkRuntime:
+         self.allocations[rank].append(result)
+         self.device_owners[id(result.buffer)] = rank
+         self.device_readonly[id(result.buffer)] = True
+         self.device_active[id(result.buffer)] = True
+-        self.stats["weight_bytes"][rank] += result.nbytes
++        bank = "draft_weight" if draft else "weight"
++        self.stats[bank + "_bytes"][rank] += result.nbytes
+         self._record_transfer(rank, "h2d_bytes", result.nbytes)
+-        self.stats["device_weight_upload_calls"] += 1
+-        self.stats["device_weight_upload_seconds"] += perf_counter() - upload_begin
++        self.stats[f"device_{bank}_upload_calls"] += 1
++        self.stats[f"device_{bank}_upload_seconds"] += perf_counter() - upload_begin
+         self.alias_leases[id(result)] = result
+         return result
+
++    def draft_weight(self, value, rank):
++        return self.weight(value, rank, draft=True)
++
+     def staging_worker(self, rank):
+         """Create a separate public worker whose buffers never alias resident allocations."""
+         if self._closed:
+             raise RuntimeError("Resident runtime is closed")
+diff --git a/tests/contract/test_ds41_resident_session.py b/tests/contract/test_ds41_resident_session.py
+index 93caa82..3eff226 100644
+--- a/tests/contract/test_ds41_resident_session.py
++++ b/tests/contract/test_ds41_resident_session.py
+@@ -101,8 +101,11 @@ def test_dispatch_reuses_dynamic_buffers_and_never_reuploads_static_or_cache_vie
+         abi = dict(params=[dict(shape=[8]), dict(shape=[8]), dict(shape=[8])],
+                    effective_directions=["In", "InOut", "InOut"])
+         program = object()
+         static_uploads = runtime.stats["device_weight_upload_calls"]
++        draft = runtime.draft_weight(torch.zeros(8), 0)
++        assert runtime.stats["device_draft_weight_upload_calls"] == 1
++        assert runtime.stats["draft_weight_bytes"] == [draft.nbytes]
+         cache_uploads = runtime.stats["cache_h2d_bytes"]
+         for _ in range(3):
+             runtime.execute(program, 0, [weight, cache[:8], scratch], abi)
+         assert runtime.stats["device_weight_upload_calls"] == static_uploads
+@@ -465,8 +468,10 @@ def test_request_pool_retains_inactive_history_rejects_aliases_and_retires_gener
+         return handle
+
+     session = SimpleNamespace(closed=False, failed=False, contract={"topology": topology},
+                               provider=provider, _draft_plane_handles={},
++                              weights=SimpleNamespace(rank_devices={rank: device for device, rank in
++                                                                    enumerate(provider.local_ranks)}),
+                               resident=SimpleNamespace(handle=resident_handle))
+     def bind(layer, anchor=1, rank=reader_rank):
+         return GenerationSession.draft_history(
+             session, dp_rank, 0, 1, rank=rank, layer=layer, anchor_position=anchor
+@@ -482,11 +487,11 @@ def test_request_pool_retains_inactive_history_rejects_aliases_and_retires_gener
+         descriptors = layout["views"][name]
+         descriptors = descriptors if isinstance(descriptors, list) else [descriptors]
+         assert len(source[key]) == len(descriptors)
+         for plane, descriptor in zip(source[key], descriptors, strict=True):
+-            matrix, rank = handles[plane["handle"]]
+-            assert rank == reader_rank
+-            raw = provider.arenas[rank]["fresh"][descriptor["storage_key"]]
++            matrix, device = handles[plane["handle"]]
++            assert device == 2
++            raw = provider.arenas[reader_rank]["fresh"][descriptor["storage_key"]]
+             assert matrix.untyped_storage()._cdata == raw.untyped_storage()._cdata
+             assert matrix.dtype == getattr(torch, descriptor["dtype"].split(".")[-1])
+             assert matrix.shape[1] == descriptor["shape"][-1]
+             assert plane["stride_rows"] * matrix.shape[1] == descriptor["stride"][0]
+@@ -539,4 +544,58 @@ def test_request_pool_retains_inactive_history_rejects_aliases_and_retires_gener
+     complete_controls()
+     assert provider.request_pages(dp_rank, 1, 1)
+     assert provider.request_pages(dp_rank, 0, 2)
+     inputs.close()
++
++
++def test_second_host_executor_maps_global_collective_and_cache_coordinates():
++    from models.deepseek_v4_1_flash_a3.network import NetworkExecutor
++
++    ranks = tuple(range(8, 16))
++    device_rows = tuple(range(8))
++    topology = dict(dp=4, tp=4, ep=16)
++    observed = []
++
++    def exchange(stage, packets, collective, group):
++        assert (stage, collective, group) == ("ep-test", "all_to_all", "ep")
++        assert [int(row["fresh"]["value"]) for row in packets] == list(ranks)
++        return packets, [dict(rank=rank, collective=collective) for rank in ranks]
++
++    def read(value, device):
++        observed.append(device)
++        return value.clone()
++
++    resident = SimpleNamespace(devices=device_rows, parameter_abis={}, read_control=read,
++                               map_ranks=lambda function: [function(device) for device in device_rows])
++    reports = [dict(communication=[]) for _ in range(16)]
++    executor = NetworkExecutor(topology, SimpleNamespace(local_ranks=ranks), None, None, reports,
++                               SimpleNamespace(stages={}), resident=resident,
++                               transport=SimpleNamespace(exchange=exchange))
++    assert executor.map_ranks(lambda rank: rank) == list(ranks)
++    rows = [{} for _ in range(8)] + [dict(fresh=torch.tensor([rank])) for rank in ranks]
++    output = executor.exchange("ep-test", rows, "all_to_all", "ep", host_control=True)
++    assert output[:8] == [{} for _ in range(8)] and observed == list(device_rows)
++    assert [int(row["fresh"]) for row in output[8:]] == list(ranks)
++    assert [row["communication"][0]["rank"] for row in reports[8:]] == list(ranks)
++
++
++def test_checkpoint_engram_mapping_gathers_rows_without_tmpfs(tmp_path):
++    import hashlib
++    from models.deepseek_v4_1_flash_a3.engram_host import SharedEngramArray
++
++    name = "layers.1.engram.embed.weight"
++    shard = tmp_path / "engram.safetensors"
++    values = torch.arange(32, dtype=torch.int8).view(8, 4)
++    save_file({name: values}, shard)
++    (tmp_path / "quant_model_weights.safetensors.index.json").write_text(
++        json.dumps(dict(weight_map={name: shard.name}))
++    )
++    digest = hashlib.sha256(values[2:7].numpy().tobytes()).hexdigest()
++    owner = SharedEngramArray(tmp_path, name, (2, 7), 4, "I8", digest, "test", checkpoint_mmap=True)
++    try:
++        assert owner.path is None and owner.receipt["storage"] == "checkpoint_mmap"
++        expected = torch.stack((values[2], values[6], torch.zeros(4, dtype=torch.int8)))
++        assert torch.equal(owner.gather(torch.tensor([2, 6, 7])), expected)
++    finally:
++        owner.close()
++    with pytest.raises(ValueError, match="frozen checkpoint"):
++        SharedEngramArray(tmp_path, name, (2, 7), 4, "I8", "wrong", "test", checkpoint_mmap=True)

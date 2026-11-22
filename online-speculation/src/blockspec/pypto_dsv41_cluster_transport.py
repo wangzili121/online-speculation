@@ -9,13 +9,14 @@ ROOT_INFO_BYTES = 4108
 class ClusterCollectives:
     """Match global groups while keeping tensor ownership on the local runtime."""
 
-    def __init__(self, runtime, plan, link):
-        from models.deepseek_v4_1_flash_a3.moe_transport import CANNMemory, HCCLBytes, _bind, _check
+    def __init__(self, runtime, plan, link, *, native=None):
+        if native is None:
+            from models.deepseek_v4_1_flash_a3 import moe_transport as native
 
         if tuple(runtime.devices) != tuple(range(len(plan.local_ranks))) or link.node != plan.node:
             raise ValueError("Runtime must use the plan's node-local logical device IDs starting at zero")
         self.runtime, self.plan, self.link = runtime, plan, link
-        self.memory, self.channel_type, self.check = CANNMemory(), HCCLBytes, _check
+        self.memory, self.channel_type, self.check = native.CANNMemory(), native.HCCLBytes, native._check
         self.channels, self.owned = {}, []
         self.library = C.CDLL("libhccl.so", mode=C.RTLD_GLOBAL)
         p, n, i = C.c_void_p, C.c_uint64, C.c_int
@@ -26,7 +27,7 @@ class ClusterCollectives:
             "HcclReduceScatter": [p, p, n, i, i, p, p],
         }
         for name, signature in signatures.items():
-            _bind(self.library, name, signature)
+            native._bind(self.library, name, signature)
 
     def __enter__(self):
         return self

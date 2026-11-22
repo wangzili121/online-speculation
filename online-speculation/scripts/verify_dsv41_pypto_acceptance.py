@@ -35,7 +35,7 @@ def request_parity(target, draft):
     return tokens
 
 
-def audit_session(directory, *, speculative):
+def audit_session(directory, *, speculative, node_local=False):
     receipts = list(directory.rglob("serving-dispatches.jsonl"))
     if len(receipts) != 1:
         raise ValueError(f"Expected exactly one native session receipt in {directory}, found {len(receipts)}")
@@ -46,6 +46,7 @@ def audit_session(directory, *, speculative):
         raise ValueError(f"Unexpected Orthrus head configuration in {session}")
     if not cleanup["closed"] or not cleanup["runtime_closed"] or cleanup["errors"]:
         raise ValueError(f"Native runtime cleanup failed in {session}")
+    local_dps = {rank["dp_rank"] for rank in manifest["ranks"]} if node_local else None
 
     phases = Counter()
     sequence = ("draft", "verify", "accept")
@@ -75,7 +76,9 @@ def audit_session(directory, *, speculative):
                 runtime = row["runtime"]
                 next_backup = runtime["verify_backup_d2d_bytes"]
                 restored = runtime["verify_restore_d2d_bytes"]
-                if next_backup <= backup or next_backup != restored:
+                owns_request = local_dps is None or any(dp in local_dps for dp, _, _ in group)
+                moved_expected_bytes = next_backup > backup if owns_request else next_backup == backup
+                if not moved_expected_bytes or next_backup != restored:
                     raise ValueError(f"Verifier snapshot and restore disagree in {session}")
                 backup = next_backup
             position = (position + 1) % len(sequence)
@@ -85,6 +88,8 @@ def audit_session(directory, *, speculative):
         raise ValueError("No Orthrus round executed. Greedy parity alone cannot validate the speculative path.")
     if not speculative and not phases["decode"]:
         raise ValueError("Baseline did not execute a target decode step")
+    if node_local and (not phases["release"] or (speculative and not restored)):
+        raise ValueError(f"Missing local request release or verifier restoration in {session}")
     return manifest["checkpoint"], dict(phases), restored
 
 

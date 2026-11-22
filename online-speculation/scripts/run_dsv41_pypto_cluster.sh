@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Apply the pinned integration on top of the prebuilt offline image's writable layer.
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+patches="$root/runtime/pypto_dsv41_a3"
+: "${PYPTO_LIB_ROOT:?Use the paired A3 offline image}"
+: "${PYPTO_SERVING_ROOT:?Use the paired A3 offline image}"
+
+python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolve()'
+if [[ -n "$(git -C "$PYPTO_SERVING_ROOT" status --porcelain --untracked-files=no)" ]]; then
+  echo 'Use a fresh offline image with the paired Serving adapter.' >&2
+  exit 2
+fi
+
+for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.patch; do
+  git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
+  git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
+done
+git -C "$PYPTO_LIB_ROOT" add -u
+git -C "$PYPTO_LIB_ROOT" -c user.name=Integration -c user.email=integration@localhost \
+  -c commit.gpgsign=false commit -qm 'Run the resident DSV4.1 network across two nodes'
+export ORTHRUS_CLUSTER_LIB_TREE="$(git -C "$PYPTO_LIB_ROOT" rev-parse 'HEAD^{tree}')"
+git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-cluster.patch"
+git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-cluster.patch"
+python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolve(cluster=True)'
+
+if [[ "${1:-}" == --prepare-only ]]; then
+  exec python - <<'PY'
+import json
+import os
+from pypto_serving_a3.session import NativeSession
+from pypto_serving_a3.source import KernelSource
+
+source = KernelSource.resolve(cluster=True)
+source.require_generation()
+from inspect import signature
+assert "transport_factory" in signature(source.module("prefill_fwd").prefill_fwd).parameters
+assert "cluster" in signature(NativeSession).parameters
+print(json.dumps(dict(passed=True, stage="offline-overlay", tree=os.environ["ORTHRUS_CLUSTER_LIB_TREE"])))
+PY
+fi
+
+: "${TARGET_WEIGHTS:?Mount the paired W8A8 model}"
+if [[ -z "${DRAFT_HEAD:-}" ]]; then
+  DRAFT_HEAD=/results/initialized-head
+  echo 'Preparing a target-initialized BF16 Orthrus head for the inference smoke test.'
+  python "$root/scripts/export_dsv41_orthrus_head.py" \
+    --model "$TARGET_WEIGHTS" --output "$DRAFT_HEAD" --from-target --mask-token-id 129279
+fi
+
+exec python "$root/scripts/run_dsv41_pypto_cluster.py" "$@" \
+  --model "$TARGET_WEIGHTS" --head "$DRAFT_HEAD" --output /results/acceptance

@@ -61,20 +61,21 @@ def check_device(args, plan, link, dispatch):
     return dict(result, physical_to_runtime=card_map) if card_map is not None else result
 
 
-def check_visible_devices(cards):
-    from models.deepseek_v4_1_flash_a3.moe_transport import CANNMemory, _check
+def check_visible_devices(cards, *, native=None):
+    if native is None:
+        from models.deepseek_v4_1_flash_a3 import moe_transport as native
 
-    acl = CANNMemory().library
+    acl = native.CANNMemory().library
     count = ctypes.c_uint32()
-    _check(acl.aclrtGetDeviceCount(ctypes.byref(count)), "aclrtGetDeviceCount")
+    native._check(acl.aclrtGetDeviceCount(ctypes.byref(count)), "aclrtGetDeviceCount")
     if count.value != len(cards):
         raise ValueError(f"CANN reports {count.value} visible devices for the {len(cards)} mounted cards")
     mapping = {}
     # The launcher exposes all mounted container logical IDs in order.
     for runtime_id in range(count.value):
         physical = ctypes.c_int32()
-        _check(acl.aclrtGetPhyDevIdByLogicDevId(runtime_id, ctypes.byref(physical)),
-               f"aclrtGetPhyDevIdByLogicDevId({runtime_id})")
+        native._check(acl.aclrtGetPhyDevIdByLogicDevId(runtime_id, ctypes.byref(physical)),
+                      f"aclrtGetPhyDevIdByLogicDevId({runtime_id})")
         mapping[physical.value] = runtime_id
     if list(mapping) != cards:
         raise ValueError(f"Unexpected CANN device order {mapping}; order NPU_DEVICES by its runtime IDs")

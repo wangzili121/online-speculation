@@ -51,13 +51,14 @@ class ResidentDraftAttention:
             if any(declared[key] != role[key] for key in fields):
                 raise ValueError(f"Incompatible diffusion head role at layer {layer}")
         tp_lanes = sorted({rank % topology["tp"] for rank in ranks})
+        load_weight = getattr(resident, "draft_weight", resident.weight)
         for layer in range(len(self.manifest["layers"])):
             weights = read_draft_weights(Path(head), self.manifest, files, layer)
             lanes = {lane: prepare_draft_operands(weights, self.config, tp_rank=lane)
                      for lane in tp_lanes}
             for rank, local in self.rank_ids.items():
                 self.operands[rank, layer] = {
-                    name: resident.weight(value, local)
+                    name: load_weight(value, local)
                     for name, value in lanes[rank % topology["tp"]].items()
                 }
         constants = {
@@ -67,7 +68,7 @@ class ResidentDraftAttention:
                for ratio in (1, 2)},
         }
         self.constants = {
-            rank: {name: resident.weight(value, local) for name, value in constants.items()}
+            rank: {name: load_weight(value, local) for name, value in constants.items()}
             for rank, local in self.rank_ids.items()
         }
 

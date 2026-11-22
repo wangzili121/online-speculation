@@ -1,0 +1,429 @@
+diff --git a/models/deepseek_v41_a3/bindings.py b/models/deepseek_v41_a3/bindings.py
+index 39a21cd..71f0785 100644
+--- a/models/deepseek_v41_a3/bindings.py
++++ b/models/deepseek_v41_a3/bindings.py
+@@ -21,12 +21,12 @@ class A3Bindings:
+         return self.source.module("prefill_fwd").compile_prefill(
+             inputs, cache=cache, config=config, output=output, weights=weights)
+
+     def prefill(self, inputs, *, weights, cache, config, devices, output, compiled=None,
+-                continuation=None, progress=None, engram_lookup=None, keep_runtime=False):
++                continuation=None, progress=None, engram_lookup=None, keep_runtime=False, **cluster):
+         return self.source.module("prefill_fwd").prefill_fwd(
+             inputs, weights=weights, cache=cache, config=config, devices=devices, output=output,
+             compiled=compiled, continuation=continuation, progress=progress, engram_lookup=engram_lookup,
+-            keep_runtime=keep_runtime)
++            keep_runtime=keep_runtime, **cluster)
+
+     def require_generation(self):
+         self.source.require_generation()
+diff --git a/models/deepseek_v41_a3/runner.py b/models/deepseek_v41_a3/runner.py
+index 790bf22..18b4547 100644
+--- a/models/deepseek_v41_a3/runner.py
++++ b/models/deepseek_v41_a3/runner.py
+@@ -38,12 +38,13 @@ class ResidentSession(Protocol):
+
+
+ class A3Runner:
+     """Lower shared serving batches while keeping transactional request ownership."""
+-    def __init__(self, source, config, cache_plan, session: ResidentSession, vocabulary):
++    def __init__(self, source, config, cache_plan, session: ResidentSession, vocabulary, *, greedy_tokens=False):
+         self.source, self.config, self.cache_plan, self.session = source, config, cache_plan, session
+         self.ledger = RequestLedger(config, cache_plan, vocabulary)
+         self.vocabulary = vocabulary
++        self.greedy_tokens = greedy_tokens
+         if callable(getattr(session, "bind_ledger", None)):
+             session.bind_ledger(self.ledger)
+         self.closed, self.failed = False, False
+         self.dispatch_count = 0
+@@ -129,14 +130,19 @@ class A3Runner:
+             for wave in self.ledger.dispatches(chunks):
+                 contract, order = self.ledger.input_contract(wave)
+                 payloads = rank_metadata(self.source, self.cache_plan, self.ledger, wave)
+                 result = self.session.execute(phase, contract, payloads, tuple(handle for handle, _ in order))
+-                if (not isinstance(result, torch.Tensor) or result.device.type != "cpu"
+-                        or result.shape != (len(wave), self.vocabulary) or not result.is_floating_point()
+-                        or not torch.isfinite(result).all()):
++                if self.greedy_tokens:
++                    if (not isinstance(result, torch.Tensor) or result.device.type != "cpu"
++                            or result.shape != (len(wave),) or result.dtype != torch.long
++                            or ((result < 0) | (result >= self.vocabulary)).any()):
++                        raise ValueError("A3 cluster returned invalid greedy token IDs")
++                elif (not isinstance(result, torch.Tensor) or result.device.type != "cpu"
++                      or result.shape != (len(wave), self.vocabulary) or not result.is_floating_point()
++                      or not torch.isfinite(result).all()):
+                     raise ValueError("A3 session returned invalid last-query logit rows")
+                 if output is None:
+-                    output = torch.empty((len(chunks), self.vocabulary), dtype=result.dtype)
++                    output = torch.empty((len(chunks), *result.shape[1:]), dtype=result.dtype)
+                 for row, (_, destination) in enumerate(order):
+                     output[destination].copy_(result[row])
+                 self.ledger.commit(wave)
+                 self.dispatch_count += 1
+@@ -146,9 +152,12 @@ class A3Runner:
+                 self.release_finished_requests([chunk.handle.request_id for chunk in chunks])
+             except Exception:
+                 logger.exception("A3 request cleanup failed after dispatch failure")
+             raise
+-        return PrefillResult(None, output) if phase == "prefill" else DecodeResult(None, output)
++        result_type = PrefillResult if phase == "prefill" else DecodeResult
++        if self.greedy_tokens:
++            return result_type(None, None, sampled_token_ids=output)
++        return result_type(None, output)
+
+     @staticmethod
+     def _ordinary_sampling(batch):
+         return bool(batch.constraint_states) or any(
+@@ -199,13 +208,20 @@ class A3Runner:
+         by_handle = {chunk.handle: chunk for chunk in wave}
+         accepted = []
+         for handle, logits in zip(handles, verifier_rows, strict=True):
+             chunk = by_handle[handle]
+-            if (not isinstance(logits, torch.Tensor) or not logits.is_floating_point()
+-                    or logits.shape != (len(chunk.tokens), self.vocabulary)
+-                    or logits.device.type != "cpu" or not torch.isfinite(logits).all()):
+-                raise ValueError("A3 verifier must return one finite logit row per block position")
+-            target = logits.argmax(dim=-1).tolist()
++            if self.greedy_tokens:
++                if (not isinstance(logits, torch.Tensor) or logits.dtype != torch.long
++                        or logits.shape != (len(chunk.tokens),) or logits.device.type != "cpu"
++                        or ((logits < 0) | (logits >= self.vocabulary)).any()):
++                    raise ValueError("A3 cluster verifier must return one valid greedy ID per block position")
++                target = logits.tolist()
++            else:
++                if (not isinstance(logits, torch.Tensor) or not logits.is_floating_point()
++                        or logits.shape != (len(chunk.tokens), self.vocabulary)
++                        or logits.device.type != "cpu" or not torch.isfinite(logits).all()):
++                    raise ValueError("A3 verifier must return one finite logit row per block position")
++                target = logits.argmax(dim=-1).tolist()
+             draft = chunk.tokens[1:]
+             match = next((i for i, token in enumerate(draft) if token != target[i]), len(draft))
+             outputs[chunk.output_row] = list(draft[:match]) + [target[match]]
+             accepted.append(self.ledger.prepare_chunk(handle, chunk.tokens[:match + 1],
+diff --git a/models/deepseek_v41_a3/session.py b/models/deepseek_v41_a3/session.py
+index 223ff38..a142497 100644
+--- a/models/deepseek_v41_a3/session.py
++++ b/models/deepseek_v41_a3/session.py
+@@ -10,9 +10,10 @@
+
+ from __future__ import annotations
+
+ from dataclasses import asdict
+-from importlib.metadata import version
++from importlib.metadata import PackageNotFoundError, version
++import hashlib
+ import importlib
+ import json
+ import logging
+ import os
+@@ -35,12 +36,14 @@ logger = logging.getLogger(__name__)
+
+ class NativeSession:
+     """Run both phases in the public serving worker over one native resource owner."""
+
+-    def __init__(self, source, checkpoint, devices, directory, config, vocabulary, cache_plan, *, orthrus_head=None):
++    def __init__(self, source, checkpoint, devices, directory, config, vocabulary, cache_plan, *,
++                 orthrus_head=None, cluster=None, prepared_cache=None):
+         self.source, self.config, self.vocabulary = source, config, vocabulary
+         self.devices, self.checkpoint = tuple(devices), str(Path(checkpoint).resolve())
+         self.orthrus_head = orthrus_head
++        self.cluster = cluster
+         self.draft = None
+         self.ledger = self.native = self.decode = self.host = self.hbm = None
+         self.closed, self.calls, self.predecessor = False, 0, None
+         self.receipts = []
+@@ -48,31 +51,46 @@ class NativeSession:
+         base.mkdir(parents=True, exist_ok=True)
+         self.directory = Path(tempfile.mkdtemp(prefix="session-", dir=base))
+         self.receipt_path = self.directory / "serving-dispatches.jsonl"
+         logger.warning("A3 service evidence directory: %s", self.directory)
+-        source.module("runtime_config").configure_devices(list(devices), world=config.ep)
++        self.local_ranks = tuple(range(config.ep) if cluster is None else cluster.plan.local_ranks)
++        source.module("runtime_config").configure_devices(list(devices), world=len(self.local_ranks))
+         sys.path.append(str(source.root))
+         golden = importlib.import_module("golden")
+         if not Path(golden.__file__).resolve().is_relative_to(source.root):
+             raise ImportError("Native golden imports resolved outside the paired A3 checkout")
+         self.bindings = A3Bindings(source)
+         self.cache_plan = cache_plan
+-        self.cache, self.native_config = source.module("prefill_prepare").checkpoint_cache(checkpoint, config.topology)
+-        self.native_config.update(max_requests_per_partition=config.slots_per_dp)
++        self.cache, native_config = (prepared_cache if prepared_cache is not None else
++            source.module("prefill_prepare").checkpoint_cache(checkpoint, config.topology))
++        self.native_config = dict(native_config, max_requests_per_partition=config.slots_per_dp)
+         self.identity = A3Checkpoint(checkpoint, source).identity()
++        ranks = config.rank_map(devices) if cluster is None else tuple(
++            dict(rank=rank, dp_rank=rank // config.tp, tp_rank=rank % config.tp, ep_owner=rank, device=device)
++            for rank, device in zip(self.local_ranks, devices, strict=True)
++        )
++        packages = {name: version(name) for name in ("torch", "transformers", "safetensors", "tokenizers")}
++        try:
++            packages["pypto"] = version("pypto")
++        except PackageNotFoundError:
++            packages["pypto"] = getattr(importlib.import_module("pypto"), "__version__", "source")
+         manifest = dict(kernel=source.audit(), integration=integration_identity(), checkpoint=self.identity,
+-            orthrus_head=orthrus_head, config=asdict(config), ranks=config.rank_map(devices),
++            orthrus_head=orthrus_head, config=asdict(config), ranks=ranks,
+             cache_resident_bytes_per_rank=cache_plan.resident_bytes_per_rank,
+-            versions={name: version(name) for name in ("torch", "pypto", "transformers", "safetensors", "tokenizers")},
++            versions=packages,
+             environment={name: os.environ.get(name) for name in (
+                 "PYPTO_A3_STATE_DIR", "HCCL_HOST_SOCKET_PORT_RANGE", "HCCL_NPU_SOCKET_PORT_RANGE",
+                 "PTO2_RING_HEAP", "PTO2_RING_TASK_WINDOW", "PTO2_RING_DEP_POOL")})
+         self._write("run-manifest.json", manifest)
+         try:
+             self.hbm = HBMSampler(devices, self.directory)
+-            self.host = managed_host_engram(source.module("engram_host").HostEngram,
+-                checkpoint, self.cache["engram_contracts"], self.directory.name,
+-                self.directory / "host-storage.json")
++            host_class = source.module("engram_host").HostEngram
++            if cluster is None:
++                self.host = managed_host_engram(host_class, checkpoint, self.cache["engram_contracts"],
++                    self.directory.name, self.directory / "host-storage.json")
++            else:
++                self.host = host_class(checkpoint, self.cache["engram_contracts"], self.directory.name,
++                                       checkpoint_mmap=True)
+             self.host.__enter__()
+         except BaseException:
+             self.close()
+             raise
+@@ -132,9 +150,21 @@ class NativeSession:
+     def execute(self, phase, input_contract, rank_payloads, handles):
+         if self.closed:
+             raise RuntimeError("A3 native session is closed after teardown")
+         try:
+-            return self._execute(phase, input_contract, rank_payloads, handles)
++            if self.cluster is None:
++                return self._execute(phase, input_contract, rank_payloads, handles)
++            controls = dict(contract=input_contract, owners=[asdict(h) for h in handles],
++                            pages=[self.ledger.get(h).pages for h in handles])
++            identity = hashlib.sha256(json.dumps(controls, sort_keys=True).encode()).hexdigest()
++
++            def dispatch(command):
++                if command != identity:
++                    raise ValueError("Cluster nodes lowered different request or page assignments")
++                return self._execute(phase, input_contract, rank_payloads, handles)
++
++            return self.cluster.execute(phase, dispatch,
++                                        command=identity if self.cluster.plan.node == 0 else None)
+         except BaseException:
+             try:
+                 self.close()
+             except Exception:
+@@ -148,19 +178,26 @@ class NativeSession:
+         progress = lambda event: logger.info("A3 native %s %s", phase, event)
+         if self.native is None:
+             if phase != "prefill":
+                 raise ValueError("The first resident dispatch must be Prefill")
++            cluster_options = {}
++            if self.cluster is not None:
++                from blockspec.pypto_dsv41_cluster_transport import ClusterCollectives
++                cluster_options = dict(local_ranks=self.local_ranks, transport_factory=lambda runtime:
++                    ClusterCollectives(runtime, self.cluster.plan, self.cluster.link,
++                                       native=self.source.module("moe_transport")))
+             result = self.bindings.prefill(chunk["inputs"], weights=self.checkpoint, cache=chunk["cache"],
+                 config=chunk["contract"], devices=self.devices, output=self.directory / "initial-prefill",
+-                progress=progress, keep_runtime=True)
++                progress=progress, keep_runtime=True, **cluster_options)
+             self.native = result.pop("session")
+             self.decode = self.source.module("decode_network").DecodeNetwork(session=self.native,
+                 output=self.directory / "decode", progress=lambda event: logger.info("A3 native decode %s", event))
+             if self.orthrus_head is not None:
+                 from blockspec.pypto_dsv41_runtime import ResidentDraftAttention
+                 self.draft = ResidentDraftAttention(
+                     self.checkpoint, self.orthrus_head, self.native.runtime,
+                     self.config.topology, self.directory / "compiled-draft", native_module=self.source.module,
++                    local_ranks=self.local_ranks,
+                 )
+             self._write("resource-initialization.json", dict(runtime_identity=id(self.native.runtime),
+                 static_counters=self.native.weights.counters(), runtime=self.native.runtime.summary(),
+                 weights=self.native.weights.summary(), cache_aliases=self.native.weights.cache_alias_receipts))
+@@ -188,8 +225,10 @@ class NativeSession:
+             raise RuntimeError("Serving dispatch changed the resident static weight bank")
+         rows = {}
+         for engine in input_contract["DP_engines"]:
+             dp, end = engine["dp_rank"], 0
++            if dp * self.config.tp not in self.local_ranks:
++                continue
+             logits = result["logits"][dp * self.config.tp]["fresh"]
+             for lane in range(1, self.config.tp):
+                 if not torch.equal(logits, result["logits"][dp * self.config.tp + lane]["fresh"]):
+                     raise ValueError("Native TP vocabulary rows disagree")
+@@ -200,9 +239,21 @@ class NativeSession:
+                     # diffusion head predicts at MASK positions in parallel.
+                     row = logits[start + 1:end].argmax(dim=-1)
+                 else:
+                     row = logits[start:end] if phase == "verify" else logits[end - 1]
++                    if self.cluster is not None:
++                        row = row.argmax(dim=-1)
+                 rows[(dp, request["request_slot"], request["generation"])] = row
++        if self.cluster is not None:
++            encoded = [[list(key), value.tolist()] for key, value in rows.items()]
++            peer = self.cluster.link.exchange(f"greedy-output/{phase}", encoded)
++            for owner, value in peer:
++                key = tuple(owner)
++                if key in rows or key[0] * self.config.tp in self.local_ranks:
++                    raise ValueError("Peer sent tokens for a locally owned request")
++                rows[key] = torch.tensor(value, dtype=torch.long)
++            if set(rows) != {(h.dp, h.slot, h.generation) for h in handles}:
++                raise ValueError("Cluster greedy output does not cover the dispatch owners")
+         ordered = tuple(rows[(h.dp, h.slot, h.generation)] for h in handles)
+         output = ordered if phase == "verify" else torch.stack(ordered)
+         if phase not in ("draft", "verify"):
+             self.predecessor = chunk["contract"]["input_contract_sha256"]
+@@ -214,9 +265,18 @@ class NativeSession:
+         return output
+
+     def clear_request(self, handle):
+         if not self.closed and self.native is not None:
+-            self.native.release_request(handle.dp, handle.slot, handle.generation)
++            def clear(command):
++                if command != asdict(handle):
++                    raise ValueError("Cluster nodes disagree on the request to release")
++                self.native.release_request(handle.dp, handle.slot, handle.generation)
++
++            owner = asdict(handle)
++            if self.cluster is None:
++                clear(owner)
++            else:
++                self.cluster.execute("release", clear, command=owner if self.cluster.plan.node == 0 else None)
+         if self.ledger is not None:
+             state = self.ledger.requests[handle.request_id]
+             self._record(dict(phase="release", owner=asdict(handle), committed_length=len(state.history),
+                               epoch=state.epoch, native_state_cleared=True, session_closed=self.closed))
+diff --git a/models/deepseek_v41_a3/source.py b/models/deepseek_v41_a3/source.py
+index 10d0943..db02735 100644
+--- a/models/deepseek_v41_a3/source.py
++++ b/models/deepseek_v41_a3/source.py
+@@ -24,8 +24,9 @@ from types import ModuleType
+
+ A3_BASE_COMMIT = "e32726b7edb31ee17e398a0431c0272ebd545974"
+ A3_COMMIT = "8e85bae2e8cae60c4d1960c8e52db9f67e893602"
+ A3_TREE = "b8946cca12034dbbed755bb70da9ff09b43d1e39"
++A3_CLUSTER_TREE = "fd74d16fbecf49532124bf28954b84cb184ed425"
+ KERNEL_DIRECTORY = "models/deepseek_v4_1_flash_a3"
+
+
+ class BaselineUnavailable(RuntimeError):
+@@ -37,17 +38,20 @@ class KernelSource:
+     root: Path
+     commit: str
+
+     @classmethod
+-    def resolve(cls, root: str | Path | None = None) -> KernelSource:
++    def resolve(cls, root: str | Path | None = None, *, cluster=False) -> KernelSource:
+         value = root or os.environ.get("PYPTO_LIB_ROOT")
+         if not value:
+             raise ValueError("A3 requires explicit PYPTO_LIB_ROOT pointing to the paired A3 checkout")
+         path = Path(value).expanduser().resolve()
+         def git(*args):
+             return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
+         commit = git("rev-parse", "HEAD")
+-        if commit != A3_COMMIT and git("rev-parse", "HEAD^{tree}") != A3_TREE:
++        tree = git("rev-parse", "HEAD^{tree}")
++        if cluster and tree != A3_CLUSTER_TREE:
++            raise ValueError(f"Unverified A3 cluster source pairing: expected tree {A3_CLUSTER_TREE}, found {tree}")
++        if not cluster and commit != A3_COMMIT and tree != A3_TREE:
+             raise ValueError(f"Unverified A3 source pairing: expected {A3_COMMIT}, found {commit}")
+         if git("status", "--porcelain", "--untracked-files=no", ):
+             raise ValueError("A3 kernel checkout has uncommitted changes; use the recorded clean version pairing")
+         source = cls(path, commit)
+diff --git a/tests/unit/model/deepseek_v41_a3/test_session.py b/tests/unit/model/deepseek_v41_a3/test_session.py
+index 65a5554..02964b0 100644
+--- a/tests/unit/model/deepseek_v41_a3/test_session.py
++++ b/tests/unit/model/deepseek_v41_a3/test_session.py
+@@ -81,8 +81,9 @@ def test_native_session_reuses_one_owner_across_chunks_and_decode_and_maps_last_
+         return dict(logits=logits, completed_layers=list(range(40)), timings={})
+     def initial(inputs, **options):
+         return dict(result(inputs["input_contract"], "prefill"), session=owner)
+     native = NativeSession.__new__(NativeSession)
++    native.cluster, native.local_ranks = None, tuple(range(16))
+     native.native = native.decode = native.host = native.hbm = None
+     native.orthrus_head = native.draft = None
+     native.closed, native.calls, native.predecessor = False, 0, None
+     native.config, native.directory, native.checkpoint = runner.config, tmp_path, "HOST-double"
+@@ -127,8 +128,9 @@ def test_native_session_reuses_one_owner_across_chunks_and_decode_and_maps_last_
+
+
+ def test_failed_native_session_tears_down_before_release_ack(runner, plan):
+     native = NativeSession.__new__(NativeSession)
++    native.cluster = None
+     native.closed, native.native = False, None
+     records = []
+     native._record = records.append
+     native._execute = lambda *args: (_ for _ in ()).throw(ValueError("original native IO failure"))
+@@ -143,8 +145,74 @@ def test_failed_native_session_tears_down_before_release_ack(runner, plan):
+     assert records[0]["native_state_cleared"]
+     runner.release_finished_requests(["bad"])
+
+
++def test_two_host_greedy_session_commits_and_releases_both_dp_owners(source, config, plan, tmp_path):
++    import socket
++    from concurrent.futures import ThreadPoolExecutor
++    from blockspec.pypto_dsv41_cluster import ClusterDispatcher, ControlLink, RankPlan
++    from pypto_serving.config.types import DecodeBatch, SamplingParams
++    from pypto_serving_a3.runner import A3Runner
++
++    def run(node, connection):
++        connection.settimeout(5)
++        phases, released = [], []
++        rank_plan = RankPlan((8, 8), 4, node)
++        with ControlLink(connection, node, b"fixture-key-that-is-at-least-16-bytes") as link:
++            dispatcher = ClusterDispatcher(rank_plan, link, build_id="host-only")
++            owner = SimpleNamespace(epoch=0, runtime=SimpleNamespace(summary=lambda: {"closed": True}),
++                weights=SimpleNamespace(counters=lambda: {}, summary=lambda: {}, cache_alias_receipts=[]),
++                release_request=lambda dp, slot, generation: released.append((dp, slot, generation)),
++                close=lambda: None)
++
++            def result(chunk, phase):
++                phases.append(phase)
++                if phase == "accept":
++                    owner.epoch += 1
++                engines = chunk["inputs"]["input_contract"]["DP_engines"]
++                logits = [{} for _ in range(16)]
++                for rank in rank_plan.local_ranks:
++                    tokens = [token for request in engines[rank // 4]["requests"] for token in request["token_ids"]]
++                    rows = torch.zeros((len(tokens), 128))
++                    for row, token in enumerate(tokens):
++                        rows[row, token] = 1
++                    logits[rank]["fresh"] = rows
++                return dict(logits=logits, completed_layers=list(range(40)), timings={})
++
++            owner.advance = lambda chunk, **kwargs: result(chunk, kwargs["phase"])
++            owner.propose_candidates = lambda chunk, draft, **kwargs: result(chunk, "draft")
++            owner.verify_candidates = lambda chunk, **kwargs: result(chunk, "verify")
++            owner.commit_candidates = lambda chunk, **kwargs: result(chunk, "accept")
++            native = NativeSession.__new__(NativeSession)
++            native.cluster, native.local_ranks = dispatcher, tuple(rank_plan.local_ranks)
++            native.native, native.decode, native.host, native.hbm = owner, None, None, None
++            native.draft = SimpleNamespace(mask_token_id=98)
++            native.closed, native.calls, native.predecessor = False, 0, None
++            native.config, native.directory = config, tmp_path
++            native._record = lambda row: None
++            native._write = lambda name, row: None
++            native._prepare = lambda contract, payloads, phase: dict(inputs={"input_contract": contract},
++                contract={"input_contract_sha256": str(native.calls)})
++            serving = A3Runner(source, config, plan, native, 128, greedy_tokens=True)
++            prefilled = serving.run(prefill(plan, ["remote", "local"], [2, 0], tokens=[[9], [10]]), "prefill")
++            assert prefilled.sampled_token_ids.tolist() == [9, 10]
++            batch = DecodeBatch(request_ids=["local", "remote"], token_ids=torch.tensor([20, 30]),
++                hidden_states=None, seq_lens=torch.tensor([2, 2]), cache_partitions=[0, 2],
++                block_ids_by_group=[pages(plan), pages(plan)], sampling_params=[SamplingParams(0, 1)] * 2)
++            drafted = serving.run_orthrus(batch)
++            assert drafted.accepted_token_ids == [[20], [30]]
++            assert [serving.ledger.requests[name].history for name in ("local", "remote")] == [[10, 20], [9, 30]]
++            serving.close()
++        return phases, released
++
++    with ThreadPoolExecutor(2) as pool:
++        futures = [pool.submit(run, node, connection) for node, connection in enumerate(socket.socketpair())]
++        for future in futures:
++            phases, released = future.result(timeout=10)
++            assert phases == ["prefill", "draft", "verify", "accept"]
++            assert set(released) == {(0, 0, 1), (2, 0, 1)}
++
++
+ def test_hbm_parser_uses_physical_ids_and_ignores_process_table():
+     from pypto_serving_a3.telemetry import parse_hbm
+     text = """| 0 Ascend910 | OK | power |
+ | 0 7 | 0000:9D:00.0 | 0 0 / 0 7529 / 65536 |

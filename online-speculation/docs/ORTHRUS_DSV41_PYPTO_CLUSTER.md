@@ -69,7 +69,27 @@ python "$ORTHRUS_ROOT/online-speculation/scripts/validate_dsv41_pypto_cluster.py
 
 本机缓存分配通过 [Lib 缓存补丁](../runtime/pypto_dsv41_a3/lib-rank-cache.patch) 提供，应用在权重补丁之后。两端保留全局请求、页表和编译尺寸信息，各自只准备本机 rank 的 KV、索引缓冲和 Engram 历史。15 项 CPU 会话契约测试通过，覆盖全本地与仅 rank 8–15 持有缓存时的历史绑定和请求回滚。
 
-整模还需把本机权重和缓存接进 `GenerationSession`，按本机 rank 分配运行时张量，并把 `NetworkExecutor.exchange` 接到跨机通信。编译时保留全局 EP16，空 DP 也参与集合通信。接好后，使用真实 W8A8 基模的同一组输入跑 target-only 和 Orthrus，由[整模验收](ORTHRUS_DSV41_PYPTO.md#serving-入口与实机验收)检查实际投机阶段和逐 token 一致性。
+整模验收入口将本机权重和缓存接进 `GenerationSession`，`NetworkExecutor` 把 TP、DP 和 EP 的张量交给已验证的 HCCL 通信层。专家归属及编译尺寸仍按全局 EP16 计算，空闲 DP 也参加通信。Engram 从本机 checkpoint 文件映射，按需读取 CPU 行。两端同步 Serving 请求的页表和阶段，生成时只在控制连接上传输贪心 token ID。 [Lib 执行补丁](../runtime/pypto_dsv41_a3/lib-cluster-execution.patch) · [Serving 补丁](../runtime/pypto_dsv41_a3/serving-cluster.patch)
+
+### 双机整模验收
+
+两台机器拉取同一个 `feature/orthrus-dsv41-pypto` 提交，保留上次已通过 `cluster-check` 的离线镜像和密钥。模型默认使用 `/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8`。命令会在临时容器内应用补丁，无需重新构建镜像或联网下载依赖。
+
+```bash
+# node7
+CLUSTER_KEY_FILE=/root/.orthrus-cluster.key \
+  bash online-speculation/scripts/dsv41_pypto_env.sh cluster-accept node7
+
+# node8，在另一终端启动
+CLUSTER_KEY_FILE=/home/wangzili/.orthrus-cluster.key \
+  bash online-speculation/scripts/dsv41_pypto_env.sh cluster-accept node8
+```
+
+两端命令都默认使用已预留的卡 0–7。无训练 head 时，每台从同一份 W8A8 基模生成 BF16 初始化 head，用于验证推理链路。已有 head 时，在两端命令前设置 `DRAFT_HEAD=/绝对路径`，脚本会校验两份 head 的内容一致。`PYPTO_RESULTS_ROOT` 可指定结果盘，默认 `/workspace`。首次启动会读取 Engram、编译模型算子并加载权重。
+
+程序先运行 target-only 再运行 Orthrus，在两个节点的 DP 分区各运行一个请求。它检查全部 40 层、逐 token 的贪心一致性、K32 起草和验证、接受前缀提交、验证后的 KV 恢复及请求释放。两台各自记录 `orthrus-cluster-accept.*/acceptance/acceptance.json`，详细日志为同目录的 `cluster-accept.log`。先看两端的 `passed`，再看 `compared_tokens`、`draft_rounds` 和 `verifier_restored_bytes`。此入口用于离线推理验收。初始化 head 的接受数供诊断使用，性能结论需用训练 head。
+
+离线镜像已通过补丁和启动检查。CPU 测试覆盖全局 rank 到本机设备的映射、Engram 文件映射，以及两端通过控制连接同步起草、验证、提交和释放。真实 W8A8 双机整模结果待公司机验收。
 
 ## 精度验收
 
