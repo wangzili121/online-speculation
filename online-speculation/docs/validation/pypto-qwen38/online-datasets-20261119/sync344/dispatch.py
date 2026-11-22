@@ -35,7 +35,7 @@ if path.exists():assert path.read_bytes()==data
 else:path.write_bytes(data)
 with(r/(name+'.controller.log')).open('xb')as log:
  child=subprocess.Popen(['python3',str(controller),'--plan',name],cwd=r,stdout=log,stderr=subprocess.STDOUT,start_new_session=True,env=dict(os.environ,PYTHONUNBUFFERED='1'))
-out=dict(host=P['host'],root=str(r),pid=child.pid,controller=controller.name,plan=name,tag=c['tag'],registered_UTC=P['registered_UTC'],dispatched_UTC=datetime.datetime.now(datetime.timezone.utc).isoformat(),source_files_checked=len(files),controller_sha256=P['controller_sha256'],NN_code_changed=False,original_frozen_cases_changed=False,fresh_reserved_questions_used=False,requires_original_complete=c['requires'],plan_sha256=sha(data))
+out=dict(host=P['host'],root=str(r),pid=child.pid,controller=controller.name,plan=name,tag=c['tag'],registered_UTC=P['registered_UTC'],dispatched_UTC=datetime.datetime.now(datetime.timezone.utc).isoformat(),source_files_checked=len(files),controller_sha256=P['controller_sha256'],NN_code_changed=False,original_frozen_cases_changed=False,fresh_reserved_questions_used=P.get('fresh_reserved_questions_used',False),requires_original_complete=c['requires'],plan_sha256=sha(data))
 marker.write_text(json.dumps(out,indent=2)+'\n');print(json.dumps(out))
 '''
 

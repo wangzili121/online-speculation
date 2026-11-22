@@ -28,13 +28,14 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
-def collect(root, host, suite="sync344"):
+def collect(root, host, suite="sync344", case_tag=None):
     q = root / suite
     watch = module(root / "resource338/watch.py", "resource_watch_sync344")
     accounting = module(root / "rows255/audit_accounting.py", "accounting_sync344")
     schedule = module(root / "schedule326/audit_schedule.py", "schedule_sync344")
     launch = json.loads((q / f"launch-{host}.json").read_text())
-    case = json.loads((q / f"queue-{host}.json").read_text())["cases"][0]
+    cases = json.loads((q / f"queue-{host}.json").read_text())["cases"]
+    case = next(c for c in cases if c["tag"] == case_tag) if case_tag is not None else cases[0]
     tag = case["tag"]
     proof_path = q / (tag + ".audit.json")
     # 不重复读取已归档的大权重；失败证据也保留，不能自动重试模型。
@@ -96,7 +97,9 @@ def collect(root, host, suite="sync344"):
         proof.update(functional_only=gate,
                      performance_qualification=not gate and proof["online_vs_ar"] > .05 and proof["online_vs_fixed"] > .05,
                      resources_checked=binding is not None,
-                     fresh_reserved_questions_used=False, terminal=True)
+                     fresh_reserved_questions_used=protocol.get("fresh_reserved_questions_used", False), terminal=True)
+        if "evidence_scope" in protocol:
+            proof["scope"] = protocol["evidence_scope"]
     except Exception as error:
         proof = dict(completed=False, terminal=True, tag=tag, error=repr(error),
                      traceback=traceback.format_exc(), model_restarted=False,

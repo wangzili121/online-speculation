@@ -26,7 +26,7 @@ def main():
             return hashlib.sha256(path.read_bytes()).hexdigest()
 
         used = save(assets / "used.json", ["Question: Used question?  Explain."])
-        save(assets / "unlaunched.json", ["Never seen question?"])
+        unlaunched_sha = save(assets / "unlaunched.json", ["Never seen question?"])
         save(root / "done.json", dict(stage="completed", prompts_sha256=used))
         plan = root / "queue-later.json"
         save(plan, dict(cases=[dict(tag="not-launched", args=["--request-file", "unlaunched.json"])]))
@@ -44,6 +44,11 @@ def main():
 
         result = run()
         assert result["completed"] and {v["index"] for v in result["candidate_substring_hits"]} == {1}
+        save(root / "assignment.json", dict(schema="orthrus-reserved-requests-v1",
+                                             assigned_input_sha256={"unlaunched.json": unlaunched_sha}))
+        result = run()
+        assert result["completed"] and {v["index"] for v in result["candidate_substring_hits"]} == {1, 2}
+        (root / "assignment.json").unlink()
         result = run([str(plan)])
         assert result["completed"] and {v["index"] for v in result["candidate_substring_hits"]} == {1, 2}
         save(root / "unknown.json", dict(stage="starting", prompts_sha256="f" * 64))
@@ -62,6 +67,7 @@ def main():
     proof = dict(passed=True, wrapped_question_detected=True,
                  unlaunched_unassigned_assets_not_marked_used=True,
                  live_queued_assignment_excluded=True, unknown_input_invalidates_completeness=True,
+                 frozen_assignment_without_running_controller_excluded=True,
                  nontext_referenced_asset_invalidates_completeness=True,
                  unreadable_json_invalidates_completeness=True, NPU_or_model_calls=False,
                  scanner_sha256=hashlib.sha256(source.read_bytes()).hexdigest())

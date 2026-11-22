@@ -1,5 +1,6 @@
 """只读核对剩余GSM题的当前使用情况；不分配确认题，不调用模型。"""
 import argparse
+import base64
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
@@ -71,6 +72,10 @@ for r in sorted(p for p in base.glob('online-*')if p.is_dir()and(p/'assets').is_
  print(json.dumps(dict(stage='matching-inputs',root=str(r),assets=len(assets),metadata_files=len(files))),file=sys.stderr,flush=True)
  for path,d in files.items():
   if not isinstance(d,dict):continue
+  if d.get('schema')=='orthrus-reserved-requests-v1':
+   for name,value in d['assigned_input_sha256'].items():
+    if value not in by_hash:unknown.append(dict(root=str(r),assignment=path.name,asset=name,sha256=value,reason='Assigned input hash not found'))
+    else:names.update(by_hash[value])
   if path.name.startswith('queue')and isinstance(d.get('cases'),list):
    for c in d['cases']:
     if not isinstance(c,dict)or not isinstance(c.get('args'),list)or not isinstance(c.get('tag'),str):continue
@@ -114,6 +119,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--host-timeout", type=int, default=180)
+    parser.add_argument("--via-A-for-C", action="store_true")
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
@@ -141,17 +147,22 @@ def main():
     def scan(job):
         address, required = job
         payload = dict(base=base, required_roots=required, candidates=candidates)
+        script = "P=" + repr(payload) + "\n" + REMOTE
+        packed = base64.b64encode(zlib.compress(script.encode())).decode()
+        script = "import base64,zlib;exec(zlib.decompress(base64.b64decode(" + repr(packed) + ")))"
+        transport = ["-J", "wangzili@159.138.5.111"] if args.via_A_for_C and address == "159.138.54.61" else []
         try:
             call = subprocess.run(
                 ["ssh", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "BatchMode=yes",
-                 "-o", "ConnectTimeout=10", "wangzili@" + address, "python3 -"],
-                input=("P=" + repr(payload) + "\n" + REMOTE).encode(),
+                 "-o", "ConnectTimeout=10", *transport, "wangzili@" + address, "python3 -"],
+                input=script.encode(),
                 capture_output=True, timeout=args.host_timeout,
             )
             if call.returncode:
                 raise RuntimeError(call.stderr.decode()[-3000:])
             value = json.loads(zlib.decompress(call.stdout))
             value["scan_progress"] = call.stderr.decode()
+            value["transport"] = "SSH ProxyJump via 159.138.5.111" if transport else "direct SSH"
         except (subprocess.SubprocessError, RuntimeError, ValueError, zlib.error) as error:
             value = dict(completed=False, observation_error=repr(error), terminal=False,
                          observed_UTC=datetime.now(timezone.utc).isoformat(), roots=[], unknown_assets=[],
