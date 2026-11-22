@@ -1,6 +1,7 @@
 """Device-resident DSV4.1 Orthrus attention for the native A3 layer driver."""
 
 import importlib
+import hashlib
 from pathlib import Path
 from threading import Lock
 
@@ -16,10 +17,102 @@ from .pypto_dsv41_draft import (
 from .pypto_dsv41_indexer import INDEX_DIM, INDEX_HEADS, index_controls, make_indexer_program
 from .pypto_dsv41_sparse import TILE, TOPK, make_joined_attention, make_sparse_attention
 from .pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW, make_swa_attention, swa_spans
+from .dsv41_publication import AtomicHeadPublisher, PublicationReceipt
+from .dsv41_suffix import DSV41SuffixPlan
 
 
 def native(name):
     return importlib.import_module(f"models.deepseek_v4_1_flash_a3.{name}")
+
+
+def _head_digest(values):
+    """Stable digest of the unsharded suffix, identical on both nodes."""
+    digest = hashlib.sha256()
+    for name, value in sorted(values.items()):
+        if not torch.is_tensor(value) or value.device.type != "cpu" or not value.is_contiguous():
+            raise ValueError("published draft tensors must be contiguous CPU tensors")
+        digest.update(name.encode())
+        digest.update(str(value.dtype).encode())
+        digest.update(str(tuple(value.shape)).encode())
+        digest.update(value.view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
+
+
+class MutableDraftHeadBank:
+    """Two resident mutable slots switched only at a verifier boundary."""
+
+    def __init__(self, resident, rank_ids, initial, layers):
+        required = {(rank, layer) for rank in rank_ids for layer in layers}
+        if set(initial) != required:
+            raise ValueError("mutable head initialization must cover each local rank and selected layer")
+        for method in ("pin", "handle", "tensor"):
+            if not hasattr(resident, method):
+                raise TypeError(f"resident runtime lacks mutable draft method {method}")
+        self.resident, self.rank_ids, self.layers = resident, dict(rank_ids), tuple(layers)
+        self.host, self.handles = {}, {}
+        for (rank, layer), operands in initial.items():
+            local = self.rank_ids[rank]
+            for slot in (0, 1):
+                for name, value in operands.items():
+                    host = value.detach().cpu().contiguous().clone()
+                    resident.pin(
+                        host, (local,), readonly=False,
+                        name=f"online-draft/rank{rank}/layer{layer}/slot{slot}/{name}",
+                    )
+                    self.host[slot, rank, layer, name] = host
+                    self.handles[slot, rank, layer, name] = resident.handle(host, local)
+        self.active_slot, self.active_version = 0, 0
+        self.staged = None
+        self.previous = None
+
+    def operands(self, rank, layer, *, slot=None):
+        slot = self.active_slot if slot is None else slot
+        names = (key[3] for key in self.host if key[:3] == (slot, rank, layer))
+        return {name: self.handles[slot, rank, layer, name] for name in names}
+
+    def stage(self, values, version, prepare):
+        if self.staged is not None or self.previous is not None or version != self.active_version + 1:
+            raise ValueError("draft publication must stage exactly the next inactive version")
+        digest, slot = _head_digest(values), 1 - self.active_slot
+        for layer in self.layers:
+            prefix = f"layers.{layer}.attn."
+            full = {name.removeprefix(prefix): value for name, value in values.items()
+                    if name.startswith(prefix)}
+            if not full:
+                raise ValueError(f"published suffix has no layer {layer} tensors")
+            for rank, local in self.rank_ids.items():
+                operands = prepare(full, rank)
+                expected = {key[3] for key in self.host if key[:3] == (slot, rank, layer)}
+                if set(operands) != expected:
+                    raise ValueError(f"published layer {layer} has a different execution ABI")
+                for name, value in operands.items():
+                    host = self.host[slot, rank, layer, name]
+                    if value.shape != host.shape or value.dtype != host.dtype:
+                        raise ValueError(f"published operand changed shape or dtype: layer {layer} {name}")
+                    host.copy_(value)
+                    self.handles[slot, rank, layer, name] = self.resident.tensor(host, local)
+        self.staged = version, slot, digest
+        return PublicationReceipt("prepared", version, digest, tuple(sorted(self.rank_ids)))
+
+    def activate(self, version):
+        if self.staged is None or self.staged[0] != version:
+            raise ValueError("cannot activate an unstaged draft version")
+        self.previous = self.active_slot, self.active_version
+        _, self.active_slot, digest = self.staged
+        self.active_version, self.staged = version, None
+        return PublicationReceipt("activated", version, digest, tuple(sorted(self.rank_ids)))
+
+    def commit(self, version):
+        if self.active_version != version or self.previous is None:
+            raise ValueError("cannot commit a draft version that is not reversibly active")
+        self.previous = None
+
+    def rollback(self, version):
+        if self.staged is not None and self.staged[0] == version:
+            self.staged = None
+        elif self.active_version == version and self.previous is not None:
+            self.active_slot, self.active_version = self.previous
+            self.previous = None
 
 
 class ResidentDraftAttention:
@@ -34,7 +127,9 @@ class ResidentDraftAttention:
                 or any(type(rank) is not int or not 0 <= rank < topology["ep"] for rank in ranks)):
             raise ValueError("Draft ranks must map one-to-one to the node's resident devices")
         self.rank_ids = {rank: local for local, rank in enumerate(ranks)}
-        self.config, self.manifest, files = read_draft_artifact(Path(model), Path(head))
+        self.model_path, self.head_path = Path(model), Path(head)
+        self.config, self.manifest, files = read_draft_artifact(self.model_path, self.head_path)
+        self.files = files
         self.resident, self.topology = resident, topology
         self.joined_attention = joined_attention
         self.native = native_module
@@ -43,6 +138,7 @@ class ResidentDraftAttention:
         self.programs = {}
         self.compile_lock = Lock()
         self.operands = {}
+        self.online_bank = None
         self.max_context = self.native("decode_network").MAX_CONTEXT
         self.heads = self.config["num_attention_heads"] // topology["tp"]
         for layer, declared in enumerate(self.manifest["layers"]):
@@ -105,6 +201,70 @@ class ResidentDraftAttention:
         if any(rank not in self.rank_ids for rank, _, _ in histories):
             raise ValueError("Draft history includes a rank assigned to a different node")
         return DraftRound(self, histories)
+
+    def enable_online(self, last_layers):
+        """Allocate two device-resident suffix banks without changing values."""
+        if self.online_bank is not None:
+            raise RuntimeError("online draft bank is already enabled")
+        plan = DSV41SuffixPlan(last_layers)
+        tp_lanes = sorted({rank % self.topology["tp"] for rank in self.rank_ids})
+        initial = {}
+        # Reload from the artifact paths retained by the constructor.  Keeping
+        # only these selected host tensors bounds HOST memory for last-N.
+        for layer in plan.layers:
+            weights = read_draft_weights(self.head_path, self.manifest, self.files, layer)
+            lanes = {lane: prepare_draft_operands(weights, self.config, tp_rank=lane)
+                     for lane in tp_lanes}
+            for rank in self.rank_ids:
+                initial[rank, layer] = lanes[rank % self.topology["tp"]]
+        self.online_bank = MutableDraftHeadBank(self.resident, self.rank_ids, initial, plan.layers)
+        for rank in self.rank_ids:
+            for layer in plan.layers:
+                self.operands[rank, layer] = self.online_bank.operands(rank, layer)
+        return plan
+
+    def stage_online(self, learner, version):
+        if self.online_bank is None:
+            raise RuntimeError("online draft bank is not enabled")
+        values = learner.publication_state()
+        return self.online_bank.stage(
+            values, version,
+            lambda weights, rank: prepare_draft_operands(
+                weights, self.config, tp_rank=rank % self.topology["tp"],
+            ),
+        )
+
+    def activate_online(self, version):
+        receipt = self.online_bank.activate(version)
+        self._refresh_online_operands()
+        return receipt
+
+    def _refresh_online_operands(self):
+        for rank in self.rank_ids:
+            for layer in self.online_bank.layers:
+                self.operands[rank, layer] = self.online_bank.operands(rank, layer)
+
+    def commit_online(self, version):
+        self.online_bank.commit(version)
+
+    def rollback_online(self, version):
+        if self.online_bank is not None:
+            self.online_bank.rollback(version)
+            self._refresh_online_operands()
+
+    def online_publisher(self, exchange):
+        """Bind the generic two-node protocol to this resident draft bank."""
+        if self.online_bank is None:
+            raise RuntimeError("enable the online draft bank before creating its publisher")
+        return AtomicHeadPublisher(
+            exchange=exchange,
+            stage=self.stage_online,
+            activate=self.activate_online,
+            rollback=self.rollback_online,
+            commit=self.commit_online,
+            current_version=self.online_bank.active_version,
+            expected_ranks=range(self.topology["ep"]),
+        )
 
 
 class DraftRound:

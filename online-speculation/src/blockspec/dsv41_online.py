@@ -58,8 +58,8 @@ class DSV41OnlineConfig:
         )
         if any(type(value) is not int or value < 1 for value in integers):
             raise ValueError("positive integer DSV4.1 online dimensions required")
-        if self.last_layers != 1:
-            raise ValueError("the verified DSV4.1 replay currently supports last-1 only")
+        if self.last_layers > 40:
+            raise ValueError("DSV4.1 last-N cannot exceed the 40-layer text backbone")
         if not 1 <= self.teacher_rows < 32:
             raise ValueError("DSV4.1 teacher rows must fit inside the K32 draft block")
         if not math.isfinite(self.learning_rate) or self.learning_rate <= 0:
@@ -160,6 +160,8 @@ class DSV41OnlineController:
     def __init__(self, learner, config=DSV41OnlineConfig(), *, publisher: Callable | None = None):
         if not hasattr(learner, "update_rows"):
             raise TypeError("DSV4.1 online learner must implement update_rows")
+        if getattr(learner, "last_layers", config.last_layers) != config.last_layers:
+            raise ValueError("online policy and suffix learner select different last-N layers")
         self.learner = learner
         self.config = config
         self.publisher = publisher

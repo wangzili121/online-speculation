@@ -32,6 +32,11 @@ def test_dsv41_online_policy_has_two_stage_cadence_and_warmup():
     assert policy.should_publish(4) and not policy.should_publish(3)
 
 
+@pytest.mark.parametrize("last_layers", [1, 2, 4, 8, 40])
+def test_dsv41_online_policy_accepts_a_configurable_suffix(last_layers):
+    assert DSV41OnlineConfig(last_layers=last_layers).last_layers == last_layers
+
+
 def test_delayed_teacher_follows_corrected_prefix_and_stops_at_width():
     replay = SimpleNamespace(marker="snapshot")
     block = DSV41DelayedTeacherBlock("request", [10, 11], replay, width=4)
@@ -89,7 +94,7 @@ def test_controller_updates_only_after_corrected_rows_and_publishes_atomically()
 
 
 @pytest.mark.parametrize("kwargs", [
-    {"last_layers": 4}, {"teacher_rows": 32}, {"learning_rate": 0},
+    {"last_layers": 41}, {"teacher_rows": 32}, {"learning_rate": 0},
     {"objective": "cross_entropy"},
 ])
 def test_dsv41_online_policy_rejects_unverified_settings(kwargs):

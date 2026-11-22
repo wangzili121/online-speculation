@@ -15,18 +15,20 @@ bash online-speculation/scripts/dsv41_pypto_env.sh gsm8k-prepare \
 
 ## 在线监督
 
-推理仍使用 K32。一次更新默认最多监督 7 个未来位置，但拒绝后的行不能直接使用：系统保留原 anchor 的 draft 快照，沿主模型修正后的真实前缀继续收集验证分布，直到收齐 7 行或请求结束。last-1 只更新第 39 层 diffusion Attention；W8A8 主模型、共享 mHC、MoE、Norm 和 LM Head 均保持冻结。
+推理仍使用 K32。一次更新默认最多监督 7 个未来位置，但拒绝后的行不能直接使用：系统保留原 anchor 的 draft 快照，沿主模型修正后的真实前缀继续收集验证分布，直到收齐 7 行或请求结束。last-N 只更新连续后 N 层的 diffusion Attention；W8A8 主模型、indexer、共享 mHC、MoE、Norm 和 LM Head 均保持冻结。首轮在相同题目顺序下比较 N=1/2/4/8，不预设 Qwen3.8 的 last-1 也是 DSV4.1 最优值。
 
-当前 Torch 参考可对最后一层做可微重放、TV/KL 更新和 head 导出。它用于先验收反馈对齐与学习效果；PyPTO 服务侧的高性能反向和双机版本发布仍需接入。默认候选为 `lr=1e-5`、8 次线性 warmup、前 256 次更新每 16 个 verifier round 更新一次，之后每 128 轮一次、每 4 次更新发布。`teacher_rows`、学习率和频率均须在 tuning 集扫描，不能把 Qwen3.8 的数值直接当作 DSV4.1 结论。
+Torch 参考可对最后一层做可微重放、TV/KL 更新和 head 导出；通用及 C1A/mHC 的 PyPTO 反向叶子、last-N 连续重放契约和双机驻留双槽发布也已准备。默认候选为 `lr=1e-5`、8 次线性 warmup、前 256 次更新每 16 个 verifier round 更新一次，之后每 128 轮一次、每 4 次更新发布。`last_layers`、`teacher_rows`、学习率和频率均须在 tuning 集扫描，不能把 Qwen3.8 的数值直接当作 DSV4.1 结论。
 
 ## 明日双机执行
 
-先在任一空闲卡复验在线更新的通用 PyPTO kernel。该命令覆盖 DSV4.1 的 129280 维完整词表 TV/KL、投影输入与参数梯度、RMSNorm 前反向、SiLU 梯度、AdamW 和 BF16 发布：
+先在任一空闲卡复验在线更新 kernel。该命令覆盖 DSV4.1 的 129280 维完整词表 TV/KL、投影输入与参数梯度、RMSNorm 前反向、SiLU 梯度、C1A softmax/sink/KV 反向、mHC post 数据反向、AdamW 和 BF16 发布：
 
 ```bash
 NPU_DEVICE=0 PYPTO_VISIBLE_DEVICE=0 PYPTO_RUNTIME_DEVICE=0 \
   bash online-speculation/scripts/dsv41_pypto_env.sh online-kernel-check
 ```
+
+当前验收基线为：15 个设备数值用例通过，39 个生产形状程序完成编译；其中包含 TP4/K32 的 C1A softmax、sink、共享 KV 梯度汇总和 K32 临时块提取，以及 K32×5120 的 mHC post 反向。该结果验证算子叶子，不替代双机 serving 中的一次完整在线更新。
 
 先在两台机器放置相同的 `tuning.jsonl`，然后同时启动 4 题、每题 32 token 的固定 head smoke。这个入口先验证真实 GSM8K 输入、文本解码、greedy 一致性、接受率和吞吐；它不会伪装成已经在线更新。
 
@@ -54,7 +56,7 @@ bash online-speculation/scripts/dsv41_pypto_env.sh gsm8k-summary \
 
 ## 验收顺序
 
-1. 固定反馈重放：loss 下降、仅最后一层 draft 参数变化，教师和主模型参数不产生梯度。
+1. 固定反馈重放：loss 下降、仅配置的 last-N draft 参数变化，教师、indexer 和主模型参数不产生梯度。
 2. 16～32 题 smoke：确认延迟教师行连续、版本发布原子、greedy 输出与 target-only 相同。
 3. tuning 集选择配置：先看接受长度是否提高，再看计入更新后的吞吐；接受率不动时先排查反馈、梯度与初始化，不盲目增加更新频率。
 4. 384 题三种顺序正式比较。分别报告 AR、固定 head、直接在线和预热在线的总 token/总时间、接受长度、训练及发布成本；训练 head 的质量与加速结论不得由初始化 head 的 smoke 替代。

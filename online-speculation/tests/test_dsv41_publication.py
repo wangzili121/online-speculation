@@ -37,12 +37,14 @@ def test_atomic_publisher_stages_then_activates_and_rolls_back_failures():
         stage=lambda learner, version: events.append(("stage", version)) or receipt("prepared", version, range(8)),
         activate=lambda version: events.append(("activate", version)) or receipt("activated", version, range(8)),
         rollback=lambda version: events.append(("rollback", version)),
+        commit=lambda version: events.append(("commit", version)),
     )
     assert publisher(object(), 4) == 1
     assert publisher.current_version == 1
     assert events == [
         ("stage", 1), ("exchange", "online-head/1/prepared"),
         ("activate", 1), ("exchange", "online-head/1/activated"),
+        ("commit", 1),
     ]
 
     publisher.exchange = lambda tag, payload: receipt(
@@ -52,3 +54,24 @@ def test_atomic_publisher_stages_then_activates_and_rolls_back_failures():
         publisher(object(), 5)
     assert events[-2:] == [("stage", 2), ("rollback", 2)]
     assert publisher.current_version == 1
+
+
+def test_atomic_publisher_rolls_back_after_local_activation_if_peer_activation_fails():
+    events = []
+
+    def exchange(tag, payload):
+        if tag.endswith("/activated"):
+            raise TimeoutError("peer activation receipt missing")
+        return receipt("prepared", payload["version"], range(8, 16), payload["digest"]).payload()
+
+    publisher = AtomicHeadPublisher(
+        exchange=exchange,
+        stage=lambda learner, version: receipt("prepared", version, range(8)),
+        activate=lambda version: events.append(("activate", version)) or receipt("activated", version, range(8)),
+        rollback=lambda version: events.append(("rollback", version)),
+        commit=lambda version: events.append(("commit", version)),
+    )
+    with pytest.raises(TimeoutError, match="peer activation"):
+        publisher(object(), 1)
+    assert events == [("activate", 1), ("rollback", 1)]
+    assert publisher.current_version == 0

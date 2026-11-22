@@ -30,6 +30,14 @@ def main():
         make_tv,
     )
     from blockspec.pypto_dsv41_optimizer_programs import make_publish
+    from blockspec.pypto_dsv41_attention_vjp import (
+        C1AAttentionVJPGeometry,
+        make_block_extract,
+        make_head_reduce,
+        make_sink_reduce,
+        make_softmax_vjp,
+    )
+    from blockspec.pypto_dsv41_tail_vjp import make_hc_post_data_vjp, make_hc_post_gate_vjp
 
     torch.set_num_threads(4)
     torch.manual_seed(41)
@@ -40,6 +48,9 @@ def main():
     )
     empty = lambda shape, dtype=torch.bfloat16: torch.empty(shape, dtype=dtype, device="meta")
     vocabulary = args.vocabulary
+    attention_fixture = C1AAttentionVJPGeometry(
+        local_heads=1, swa=0, compressed=0, padded_columns=64,
+    )
     programs = {
         "tv": make_tv(32, vocabulary).compile(
             empty((32, vocabulary)), empty((32, vocabulary)), empty((32, vocabulary)),
@@ -80,8 +91,69 @@ def main():
         "publish": make_publish((64, 128)).compile(
             empty((64, 128), torch.float32), empty((64, 128)), config=config,
         ),
+        "c1a_softmax_vjp": make_softmax_vjp(attention_fixture).compile(
+            empty((attention_fixture.rows, attention_fixture.padded_columns), torch.float32),
+            empty((attention_fixture.rows, attention_fixture.padded_columns)),
+            empty((attention_fixture.rows, attention_fixture.padded_columns)),
+            empty((attention_fixture.rows, 16), torch.float32), config=config,
+        ),
+        "c1a_sink_reduce": make_sink_reduce(attention_fixture).compile(
+            empty((attention_fixture.rows, 16), torch.float32),
+            empty((attention_fixture.local_heads, 16), torch.float32), config=config,
+        ),
+        "c1a_block_extract": make_block_extract(attention_fixture).compile(
+            empty((attention_fixture.token_columns, attention_fixture.dimension)),
+            empty((attention_fixture.block, attention_fixture.dimension)), config=config,
+        ),
+        "c1a_head_reduce": make_head_reduce(attention_fixture).compile(
+            empty((attention_fixture.local_heads * attention_fixture.token_columns,
+                   attention_fixture.dimension), torch.float32),
+            empty((attention_fixture.token_columns, attention_fixture.dimension), torch.float32),
+            config=config,
+        ),
+        "hc_post_data_vjp": make_hc_post_data_vjp(32, 128).compile(
+            empty((32 * 4, 128)), empty((32, 4), torch.float32),
+            empty((32 * 4, 4), torch.float32), empty((32, 128)),
+            empty((32 * 4, 128)), config=config,
+        ),
+        "hc_post_gate_vjp": make_hc_post_gate_vjp(32, 128).compile(
+            empty((32, 128)), empty((32 * 4, 128)), empty((32 * 4, 128)),
+            empty((32, 16), torch.float32), empty((32 * 4, 16), torch.float32),
+            config=config,
+        ),
     }
     if not args.skip_full_shape_compile:
+        production_attention = C1AAttentionVJPGeometry()
+        programs["c1a_softmax_vjp_tp4_k32"] = make_softmax_vjp(production_attention).compile(
+            empty((production_attention.rows, production_attention.padded_columns), torch.float32),
+            empty((production_attention.rows, production_attention.padded_columns)),
+            empty((production_attention.rows, production_attention.padded_columns)),
+            empty((production_attention.rows, 16), torch.float32), config=config,
+        )
+        programs["c1a_sink_reduce_tp4_k32"] = make_sink_reduce(production_attention).compile(
+            empty((production_attention.rows, 16), torch.float32),
+            empty((production_attention.local_heads, 16), torch.float32), config=config,
+        )
+        programs["c1a_block_extract_tp4_k32"] = make_block_extract(production_attention).compile(
+            empty((production_attention.token_columns, production_attention.dimension)),
+            empty((production_attention.block, production_attention.dimension)), config=config,
+        )
+        programs["c1a_head_reduce_tp4_k32"] = make_head_reduce(production_attention).compile(
+            empty((production_attention.local_heads * production_attention.token_columns,
+                   production_attention.dimension), torch.float32),
+            empty((production_attention.token_columns, production_attention.dimension), torch.float32),
+            config=config,
+        )
+        programs["hc_post_data_vjp_k32x5120"] = make_hc_post_data_vjp().compile(
+            empty((32 * 4, 5120)), empty((32, 4), torch.float32),
+            empty((32 * 4, 4), torch.float32), empty((32, 5120)),
+            empty((32 * 4, 5120)), config=config,
+        )
+        programs["hc_post_gate_vjp_k32x5120"] = make_hc_post_gate_vjp().compile(
+            empty((32, 5120)), empty((32 * 4, 5120)), empty((32 * 4, 5120)),
+            empty((32, 16), torch.float32), empty((32 * 4, 16), torch.float32),
+            config=config,
+        )
         # The frozen LM head is not updated, but its transpose is required to
         # propagate dLogits into the final trainable draft layer. Compile the
         # real V4.1 shape so a small fixture cannot hide an ABI/tile failure.
@@ -110,6 +182,23 @@ def main():
                 gradient_weight=True, reduction_limit=32,
             ).compile(
                 empty((32, outputs)), empty((32, inputs)), empty((outputs, inputs), torch.float32), config=config,
+            )
+        # Frozen-tail input VJPs.  The target weights are never optimized, but
+        # their transposes are required to reach an earlier selected draft
+        # layer in a last-N replay.  mHC has 24 logical outputs padded to 32 in
+        # the native resident layout.
+        frozen_tail_linears = {
+            "mhc_projection_input_grad_32x20480": (32, 20480),
+            "moe_down_input_grad_5120x2304": (5120, 2304),
+            "moe_gate_input_grad_2304x5120": (2304, 5120),
+            "moe_up_input_grad_2304x5120": (2304, 5120),
+            "router_input_grad_384x5120": (384, 5120),
+        }
+        for name, (outputs, inputs) in frozen_tail_linears.items():
+            programs[name] = make_linear(
+                (32, outputs), (inputs, outputs), reduction_limit=64,
+            ).compile(
+                empty((32, outputs)), empty((inputs, outputs)), empty((32, inputs)), config=config,
             )
     report = {
         "format": "orthrus-dsv41-pypto-online-programs-v1",
@@ -224,6 +313,109 @@ def main():
         expected_silu_dx = (silu_dy.float() * sigmoid * (1 + silu_x.float() * (1 - sigmoid))).bfloat16()
         torch.testing.assert_close(read(silu_dx_handle, torch.empty_like(silu_x)), expected_silu_dx, atol=.016, rtol=.016)
         report["cases"].append({"operator": "silu_vjp", "shape": [32, 128]})
+
+        # C1A-specific softmax VJP. The fixture has 32 temporary token
+        # columns, one sink column and zero-probability padding to 64.
+        probability = torch.zeros(attention_fixture.rows, attention_fixture.padded_columns, dtype=torch.float32)
+        scores = torch.randn(attention_fixture.rows, attention_fixture.block + 1)
+        probability[:, :attention_fixture.block + 1] = scores.softmax(-1)
+        probability_gradient = torch.randn_like(probability).bfloat16()
+        score_gradient_handle = allocate(torch.zeros_like(probability_gradient))
+        sink_rows_handle = allocate(torch.zeros(attention_fixture.rows, 16, dtype=torch.float32))
+        worker.run(
+            programs["c1a_softmax_vjp"], allocate(probability), allocate(probability_gradient),
+            score_gradient_handle, sink_rows_handle, config=config,
+        )
+        expected_score_gradient = probability * (
+            probability_gradient.float()
+            - (probability * probability_gradient.float()).sum(-1, keepdim=True)
+        )
+        actual_score_gradient = read(score_gradient_handle, torch.empty_like(probability_gradient))
+        torch.testing.assert_close(
+            actual_score_gradient, expected_score_gradient.bfloat16(), atol=.002, rtol=.01,
+        )
+        sink_gradient_handle = allocate(torch.zeros(1, 16, dtype=torch.float32))
+        worker.run(
+            programs["c1a_sink_reduce"], sink_rows_handle, sink_gradient_handle, config=config,
+        )
+        torch.testing.assert_close(
+            read(sink_gradient_handle, torch.empty(1, 16))[:, :1],
+            expected_score_gradient[:, attention_fixture.sink_column].sum().reshape(1, 1),
+            atol=.01, rtol=.02,
+        )
+        joined_gradient = torch.randn(attention_fixture.token_columns, attention_fixture.dimension).bfloat16()
+        block_gradient_handle = allocate(torch.zeros(attention_fixture.block, attention_fixture.dimension,
+                                                     dtype=torch.bfloat16))
+        worker.run(
+            programs["c1a_block_extract"], allocate(joined_gradient), block_gradient_handle, config=config,
+        )
+        torch.testing.assert_close(
+            read(block_gradient_handle, torch.empty_like(joined_gradient[-attention_fixture.block:])),
+            joined_gradient[-attention_fixture.block:], atol=0, rtol=0,
+        )
+        per_head = torch.randn(
+            attention_fixture.local_heads * attention_fixture.token_columns,
+            attention_fixture.dimension,
+            dtype=torch.float32,
+        )
+        shared_handle = allocate(torch.zeros(
+            attention_fixture.token_columns, attention_fixture.dimension, dtype=torch.float32,
+        ))
+        worker.run(programs["c1a_head_reduce"], allocate(per_head), shared_handle, config=config)
+        expected_shared = per_head.view(
+            attention_fixture.local_heads, attention_fixture.token_columns,
+            attention_fixture.dimension,
+        ).sum(0)
+        torch.testing.assert_close(
+            read(shared_handle, torch.empty_like(expected_shared)), expected_shared, atol=1e-6, rtol=1e-6,
+        )
+        report["cases"].append({
+            "operator": "c1a_attention_vjp",
+            "block": attention_fixture.block,
+            "sink_column": attention_fixture.sink_column,
+            "padded_columns": attention_fixture.padded_columns,
+        })
+
+        hc_dy = torch.randn(32, 4, 128).bfloat16()
+        hc_value = torch.randn(32, 128).bfloat16()
+        hc_residual = torch.randn(32, 4, 128).bfloat16()
+        hc_post = torch.randn(32, 4, dtype=torch.float32)
+        hc_comb = torch.randn(32, 4, 4, dtype=torch.float32)
+        hc_value_grad_handle = allocate(torch.zeros(32, 128, dtype=torch.bfloat16))
+        hc_residual_grad_handle = allocate(torch.zeros(32 * 4, 128, dtype=torch.bfloat16))
+        worker.run(
+            programs["hc_post_data_vjp"], allocate(hc_dy.flatten(0, 1)), allocate(hc_post),
+            allocate(hc_comb.flatten(0, 1)), hc_value_grad_handle, hc_residual_grad_handle,
+            config=config,
+        )
+        expected_value_grad = torch.einsum("tjd,tj->td", hc_dy.float(), hc_post).bfloat16()
+        expected_residual_grad = torch.einsum("tjd,tij->tid", hc_dy.float(), hc_comb).bfloat16()
+        torch.testing.assert_close(
+            read(hc_value_grad_handle, torch.empty_like(expected_value_grad)),
+            expected_value_grad, atol=.016, rtol=.016,
+        )
+        torch.testing.assert_close(
+            read(hc_residual_grad_handle, torch.empty_like(expected_residual_grad.flatten(0, 1))),
+            expected_residual_grad.flatten(0, 1), atol=.016, rtol=.016,
+        )
+        hc_post_grad_handle = allocate(torch.zeros(32, 16, dtype=torch.float32))
+        hc_comb_grad_handle = allocate(torch.zeros(32 * 4, 16, dtype=torch.float32))
+        worker.run(
+            programs["hc_post_gate_vjp"], allocate(hc_value), allocate(hc_residual.flatten(0, 1)),
+            allocate(hc_dy.flatten(0, 1)), hc_post_grad_handle, hc_comb_grad_handle, config=config,
+        )
+        actual_post_grad = read(hc_post_grad_handle, torch.empty(32, 16))[:, :4]
+        actual_comb_grad = read(hc_comb_grad_handle, torch.empty(32 * 4, 16))[:, :4]
+        expected_post_grad = torch.einsum("tjd,td->tj", hc_dy.float(), hc_value.float())
+        expected_comb_grad = torch.einsum("tid,tjd->tij", hc_residual.float(), hc_dy.float())
+        torch.testing.assert_close(actual_post_grad, expected_post_grad, atol=.02, rtol=.002)
+        torch.testing.assert_close(
+            actual_comb_grad, expected_comb_grad.flatten(0, 1), atol=.02, rtol=.002,
+        )
+        report["cases"].extend((
+            {"operator": "hc_post_data_vjp", "shape": [32, 4, 128]},
+            {"operator": "hc_post_gate_vjp", "shape": [32, 4, 128]},
+        ))
 
         master = torch.nn.Parameter(torch.randn(64, 128))
         optimizer = torch.optim.AdamW([master], lr=1e-4, weight_decay=0, foreach=False)

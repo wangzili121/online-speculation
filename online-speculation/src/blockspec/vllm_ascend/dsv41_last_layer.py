@@ -349,6 +349,9 @@ class LastLayerLearner:
                     if index[name] == filename:
                         self.master[name.removeprefix(prefix)] = torch.nn.Parameter(source.get_tensor(name).float())
         self.optimizer = torch.optim.AdamW(self.master.values(), lr=learning_rate, weight_decay=0)
+        # Keep the engine-neutral online controller honest: this reference
+        # captures exactly layer 39 and must not be selected for last-N>1.
+        self.last_layers = 1
         self.version = 0
 
     @torch.inference_mode(False)

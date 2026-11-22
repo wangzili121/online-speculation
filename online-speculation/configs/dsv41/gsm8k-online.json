@@ -17,7 +17,7 @@
     "teacher_rows": [3, 7, 15],
     "learning_rates": [3e-06, 1e-05, 3e-05],
     "update_strides": [16, 32, 64],
-    "last_layers": [1]
+    "last_layers": [1, 2, 4, 8]
   },
   "candidate_default": {
     "teacher_rows": 7,
@@ -34,7 +34,7 @@
     {"name": "target", "speculation": false, "updates": false},
     {"name": "fixed_initialized", "speculation": true, "updates": false},
     {"name": "online_initialized", "speculation": true, "updates": true, "warmup_head": null},
-    {"name": "online_prewarmed", "speculation": true, "updates": true, "warmup_head": "warmup-last1"}
+    {"name": "online_prewarmed", "speculation": true, "updates": true, "warmup_head": "warmup-selected-suffix"}
   ],
   "final_evaluation": {
     "dataset": "online_eval.jsonl",

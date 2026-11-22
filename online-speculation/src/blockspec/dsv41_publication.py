@@ -67,12 +67,14 @@ class AtomicHeadPublisher:
         stage: Callable[[object, int], PublicationReceipt],
         activate: Callable[[int], PublicationReceipt],
         rollback: Callable[[int], None],
+        commit: Callable[[int], None] | None = None,
         current_version=0,
         expected_ranks: Iterable[int] = range(16),
     ):
         if type(current_version) is not int or current_version < 0:
             raise ValueError("current publication version must be nonnegative")
         self.exchange, self.stage, self.activate, self.rollback = exchange, stage, activate, rollback
+        self.commit = commit
         self.current_version = current_version
         self.expected_ranks = tuple(expected_ranks)
 
@@ -93,6 +95,8 @@ class AtomicHeadPublisher:
                 activated, peer, current_version=self.current_version,
                 expected_ranks=self.expected_ranks, phase="activated",
             )
+            if self.commit is not None:
+                self.commit(version)
         except BaseException:
             self.rollback(version)
             raise
