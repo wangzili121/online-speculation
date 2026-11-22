@@ -1,0 +1,450 @@
+diff --git a/models/deepseek_v4_1_flash_a3/cache.py b/models/deepseek_v4_1_flash_a3/cache.py
+index e068802..56fbb68 100644
+--- a/models/deepseek_v4_1_flash_a3/cache.py
++++ b/models/deepseek_v4_1_flash_a3/cache.py
+@@ -596,17 +596,20 @@ def validate_network_sparse_indices(indices, original, geometry, active):
+ def attach_network_cache_geometry(provider):
+     """Bind original compressed-role addressing without changing computation or owner versions."""
+     if provider.scheduler_capacity != 8192:
+         raise ValueError("The existing shared publication entries require the original8192-row ABI")
+-    for rank in range(provider.topology["ep"]):
+-        for case, layout in provider.layouts[rank].items():
+-            for layer in range(40):
+-                provider.state_handles_for_layer(layer)[rank][case]["shared"] = provider.shared[rank][case]
++    for rank, cases in enumerate(provider.layouts):
++        is_local = rank in provider.local_ranks
++        for case, layout in cases.items():
++            if is_local:
++                for layer in range(40):
++                    provider.state_handles_for_layer(layer)[rank][case]["shared"] = provider.shared[rank][case]
+             for layer in range(2, 40):
+                 role = resolve_layer_role(layer)
+                 blocks = layout["views"][f"model.layers.{layer}.self_attn.swa_cache"]["shape"][0]
+                 geometry = network_cache_geometry(layout, role, blocks)
+-                provider.state_handles_for_layer(layer)[rank][case]["network_geometry"] = deepcopy(geometry)
++                if is_local:
++                    provider.state_handles_for_layer(layer)[rank][case]["network_geometry"] = deepcopy(geometry)
+                 provider.geometry[rank][case][layer] = []
+     return dict(
+         attached_layers=list(range(2, 40)),
+         entry_ABI="distinct_actual_raw_cache_planes",
+diff --git a/models/deepseek_v4_1_flash_a3/network.py b/models/deepseek_v4_1_flash_a3/network.py
+index d5c5e41..4d1d456 100644
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -854,9 +854,9 @@ def _network_owner_snapshot(provider):
+                     result["arrays"][key] = record
+     return result
+
+
+-def prepare_network_provider(inputs, contract, allocation_id, *, geometry_only=False):
++def prepare_network_provider(inputs, contract, allocation_id, *, geometry_only=False, local_ranks=None):
+     """Allocate canonical cache owners and validate the complete original network ABI."""
+     topology = contract["topology"]
+     if (topology.get("ep") != 16 or topology.get("tp") not in (1, 2, 4)
+             or topology.get("dp") * topology.get("tp") != 16
+@@ -891,13 +891,14 @@ def prepare_network_provider(inputs, contract, allocation_id, *, geometry_only=F
+         allocation_id=allocation_id,
+         sources_by_case={"fresh": inputs["cache_ABI_sources"]},
+         geometry_only=geometry_only,
+         max_requests_per_partition=contract.get("max_requests_per_partition"),
++        local_ranks=local_ranks,
+     )
+     attach_network_cache_geometry(provider)
+     provider.require_network_geometry()
+-    for cases in provider.shared:
+-        cases["fresh"]["topk_indices"].fill_(-1)
++    for rank in provider.local_ranks:
++        provider.shared[rank]["fresh"]["topk_indices"].fill_(-1)
+     provider.begin_chunk(epoch=0, token_map_id=contract["input_contract_sha256"])
+     return provider
+
+
+@@ -947,8 +948,10 @@ class GenerationSession:
+         topology = self.contract["topology"]
+         tp = topology["tp"]
+         if not (0 <= dp_rank < topology["dp"] and dp_rank * tp <= rank < (dp_rank + 1) * tp):
+             raise ValueError("Draft rank must belong to the request's DP partition")
++        if rank not in self.provider.local_ranks:
++            raise ValueError("Draft history requires a local cache owner")
+         groups, committed = self.provider.request_history(dp_rank, request_slot, generation)
+         if anchor_position != committed:
+             raise ValueError("Draft anchor must immediately follow the committed target history")
+
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_network_engram.py b/models/deepseek_v4_1_flash_a3/prefill_network_engram.py
+index a427ad8..f955a13 100644
+--- a/models/deepseek_v4_1_flash_a3/prefill_network_engram.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_network_engram.py
+@@ -17,11 +17,12 @@ from .engram_host import engram_owner, load_rotation
+
+ class NetworkEngramHistory:
+     """Own one V1 first-SWA slot history per rank/request batch across chunks."""
+
+-    def __init__(self, bindings, initial_caches=None, *, geometry_only=False):
++    def __init__(self, bindings, initial_caches=None, *, geometry_only=False, local_ranks=None):
+         self.bindings = bindings
+         self.geometry_only = geometry_only
++        self.local_ranks = tuple(range(len(bindings)) if local_ranks is None else local_ranks)
+         self.caches = [{} for _ in bindings]
+         self.prepared = set()
+         rows = set()
+         for rank, records in enumerate(bindings):
+@@ -36,8 +37,11 @@ class NetworkEngramHistory:
+                     raise ValueError(
+                         "Network V1 history requires the bound physical1 SWA identity and 128-row pages"
+                     )
+                 count = binding["kv_blocks"] * binding["block_size"]
++                rows.add(count)
++                if rank not in self.local_ranks:
++                    continue
+                 device = "meta" if geometry_only else "cpu"
+                 cache = (
+                     torch.zeros(count, dtype=torch.int32, device=device)
+                     if initial_caches is None
+@@ -49,9 +53,8 @@ class NetworkEngramHistory:
+                     or tuple(cache.shape) != (count,)
+                 ):
+                     raise ValueError("Network history must retain the exact first-SWA INT32 slot extent")
+                 self.caches[rank][case] = cache
+-                rows.add(count)
+         if len(rows) != 1:
+             raise ValueError("Freeze a uniform bound first-SWA history extent for the current executable ABI")
+         self.cache_rows = rows.pop()
+
+@@ -251,9 +254,10 @@ def prepare_network_engram(contract, batch, history, layer_contracts, raw_for_la
+         states[layer_id] = [{} for _ in range(world)]
+     history.prepared.add(identity)
+     constants = contract["hash_constants"]
+     for case, records in batch["cases"].items():
+-        for rank, original in enumerate(records):
++        for rank in history.local_ranks:
++            original = records[rank]
+             ready = lookup["cases"][case][rank]
+             if write_history:
+                 cache = history.caches[rank][case]
+                 total = len(original["full_input_ids"])
+diff --git a/models/deepseek_v4_1_flash_a3/state.py b/models/deepseek_v4_1_flash_a3/state.py
+index d8dec0e..e31479a 100644
+--- a/models/deepseek_v4_1_flash_a3/state.py
++++ b/models/deepseek_v4_1_flash_a3/state.py
+@@ -156,8 +156,9 @@ class NetworkCacheProvider:
+         allocation_id,
+         sources_by_case,
+         geometry_only=False,
+         max_requests_per_partition=None,
++        local_ranks=None,
+     ):
+         _require(
+             topology["tp"] in (1, 2, 4)
+             and topology["ep"] == topology["dp"] * topology["tp"]
+@@ -191,8 +192,20 @@ class NetworkCacheProvider:
+         allocation_device = "meta" if geometry_only else "cpu"
+         self.scheduler_capacity, self.allocation_id = scheduler_capacity, allocation_id
+         self.sources = deepcopy(sources_by_case)
+         world = topology["ep"]
++        ranks = tuple(range(world) if local_ranks is None else local_ranks)
++        _require(
++            ranks and all(type(rank) is int and 0 <= rank < world for rank in ranks)
++            and tuple(sorted(set(ranks))) == ranks,
++            "Cache owners must be unique global ranks in ascending order",
++        )
++        tp = topology["tp"]
++        for start in range(0, world, tp):
++            partition = set(range(start, start + tp))
++            _require(not partition.intersection(ranks) or partition.issubset(ranks),
++                     "Local cache ownership requires complete TP partitions")
++        self.local_ranks = ranks
+         self.arenas, self.views = [{} for _ in range(world)], [{} for _ in range(world)]
+         self.layouts = [{} for _ in range(world)]
+         self.shared = [{} for _ in range(world)]
+         self.versions = [{} for _ in range(world)]
+@@ -223,8 +236,35 @@ class NetworkCacheProvider:
+                 _require(
+                     set(layout["views"]) == set(payload["metadata"]), "All typed views need original metadata"
+                 )
+                 self.layouts[rank][case] = layout
++                self._abi_by_case[case].append(
++                    {
++                        name: _metadata_copy(payload[name])
++                        for name in (
++                            "metadata",
++                            "groups",
++                            "positions",
++                            "lengths",
++                            "query_start_loc",
++                            "hash_constants",
++                        )
++                    }
++                )
++                self.geometry[rank][case] = {
++                    layer: core_geometry_issues(layout, resolve_layer_role(layer))
++                    for layer in range(40)
++                }
++                first = layout["views"]["model.layers.1.self_attn.swa_cache"]
++                self.bindings[rank][case] = dict(
++                    owner_layer=1,
++                    block_size=128,
++                    bound=True,
++                    kv_binding_id=f"{allocation_id}:r{rank}:{case}:{first['storage_key']}:L1",
++                    kv_blocks=first["shape"][0],
++                )
++                if rank not in self.local_ranks:
++                    continue
+                 raw = {
+                     key: torch.zeros(descriptor["shape"][0], dtype=torch.int8, device=allocation_device)
+                     for key, descriptor in layout["raw"].items()
+                 }
+@@ -246,18 +286,9 @@ class NetworkCacheProvider:
+                 )
+                 self.shared[rank][case] = complete
+                 shared = {name: value[:capacity] for name, value in complete.items()}
+                 versions = self.versions[rank][case] = {}
+-                first = layout["views"]["model.layers.1.self_attn.swa_cache"]
+-                self.bindings[rank][case] = dict(
+-                    owner_layer=1,
+-                    block_size=128,
+-                    bound=True,
+-                    kv_binding_id=f"{allocation_id}:r{rank}:{case}:{first['storage_key']}:L1",
+-                    kv_blocks=first["shape"][0],
+-                )
+                 for layer in range(40):
+-                    role = resolve_layer_role(layer)
+                     own = self.views[rank][case][f"model.layers.{layer}.self_attn.swa_cache"]
+                     self._states[layer][rank][case] = dict(
+                         raw=raw,
+                         layout=layout,
+@@ -268,23 +299,11 @@ class NetworkCacheProvider:
+                         allocation_id=allocation_id,
+                         own_swa_owner=layer,
+                         shared_history_owner=1,
+                     )
+-                    self.geometry[rank].setdefault(case, {})[layer] = core_geometry_issues(layout, role)
+-                self._abi_by_case[case].append(
+-                    {
+-                        name: _metadata_copy(payload[name])
+-                        for name in (
+-                            "metadata",
+-                            "groups",
+-                            "positions",
+-                            "lengths",
+-                            "query_start_loc",
+-                            "hash_constants",
+-                        )
+-                    }
+-                )
+-        self.history = NetworkEngramHistory(self.bindings, geometry_only=geometry_only)
++        self.history = NetworkEngramHistory(
++            self.bindings, geometry_only=geometry_only, local_ranks=self.local_ranks
++        )
+
+     def _input_coordinates(self, contract, rank):
+         _require(contract["topology"] == self.topology, "Real input and product topology differ")
+         _require(len(contract["DP_engines"]) == self.topology["dp"], "Missing an actual DP request engine")
+@@ -586,9 +605,9 @@ class NetworkCacheProvider:
+             json.dumps(token_maps, sort_keys=True, separators=(",", ":")).encode()
+         ).hexdigest()
+         for batch in batches.values():
+             batch["token_mapping_sha256"] = digest
+-        for rank in range(self.topology["ep"]):
++        for rank in self.local_ranks:
+             for case in payloads:
+                 self.versions[rank][case].clear()
+                 for layer in range(40):
+                     self._states[layer][rank][case].pop("network_engram", None)
+@@ -672,8 +691,9 @@ class NetworkCacheProvider:
+         return deepcopy(owned["groups"]), len(self._sequence_tokens.get(key, []))
+
+     def verification_ranges(self, rank, metadata):
+         """Translate admitted physical pages into target arena and Engram extents."""
++        _require(rank in self.local_ranks, "Verifier cache ranges require a local cache owner")
+         layout = self.layouts[rank]["fresh"]
+         intervals, history = {}, set()
+         for group in metadata["groups"]:
+             pages = set(group["live_block_ids"])
+@@ -790,9 +810,9 @@ class NetworkCacheProvider:
+             {"hidden", "pre_mix", "states"} <= set(result),
+             "The complete core did not return its required outputs",
+         )
+         role = resolve_layer_role(layer_id)
+-        for rank in range(self.topology["ep"]):
++        for rank in self.local_ranks:
+             for case in self._batches[layer_id]["cases"]:
+                 versions = self.versions[rank][case]
+                 for name, writes, owner in (
+                     ("kv", role["kv_write"], role["kv_source"]),
+diff --git a/tests/contract/test_ds41_resident_session.py b/tests/contract/test_ds41_resident_session.py
+index 24aa87f..93caa82 100644
+--- a/tests/contract/test_ds41_resident_session.py
++++ b/tests/contract/test_ds41_resident_session.py
+@@ -377,32 +377,36 @@ def test_verifier_preserves_only_bound_bytes_and_restores_on_error():
+             with runtime.preserve_cache_ranges(0, [(host, [(1, 3), (3, 4)])]):
+                 pytest.fail("overlapping ranges")
+
+
+-def test_request_pool_retains_inactive_history_rejects_aliases_and_retires_generations(tmp_path):
++@pytest.mark.parametrize("local_ranks", [None, tuple(range(8, 16))], ids=["all-ranks", "second-host"])
++def test_request_pool_retains_inactive_history_rejects_aliases_and_retires_generations(tmp_path, local_ranks):
+     from copy import deepcopy
+     from dataclasses import asdict
+     from types import SimpleNamespace
+     from models.deepseek_v4_1_flash_a3.config import FLASH
+-    from models.deepseek_v4_1_flash_a3.cache import resolve_layer_role
++    from models.deepseek_v4_1_flash_a3.cache import attach_network_cache_geometry, resolve_layer_role
+     from models.deepseek_v4_1_flash_a3.network import GenerationSession
+     from models.deepseek_v4_1_flash_a3.state import NetworkCacheProvider
+
+     checkpoint = tmp_path / "checkpoint"
+     checkpoint.mkdir()
+     model = json.loads(json.dumps(dict(text_config=asdict(FLASH))))
+     (checkpoint / "config.json").write_text(json.dumps(model))
+     topology = dict(dp=4, tp=4, ep=16, pp=1, pcp=1, dcp=1)
++    dp_rank = 0 if local_ranks is None else 2
++    first_rank = dp_rank * topology["tp"]
++    reader_rank = first_rank + 2
+     cache = dict(cache_ABI=cache_templates({"token_map": torch.arange(128)}), engram_contracts={})
+     config = dict(model_config=model, topology=topology)
+     inputs = TokenChunkInputs(checkpoint=checkpoint, cache=cache, config=config,
+                               output=tmp_path / "prepared", context_capacity=256)
+
+     def controls(chunk, slot, generation, page_shift=0):
+         actual = deepcopy(chunk["inputs"]["input_contract"])
+-        actual["DP_engines"][0]["requests"][0].update(request_slot=slot, generation=generation)
++        actual["DP_engines"][dp_rank]["requests"][0].update(request_slot=slot, generation=generation)
+         records = deepcopy(chunk["cache"]["cache_ABI"])
+-        for record in records[:4]:
++        for record in records[first_rank:first_rank + topology["tp"]]:
+             for group in record["groups"]:
+                 group["block_table"] = group["block_table"].clone()
+                 group["slot_mapping"] = group["slot_mapping"].clone()
+                 group["block_table"][:, 1:] = -1
+@@ -418,21 +422,30 @@ def test_request_pool_retains_inactive_history_rejects_aliases_and_retires_gener
+                 slots = full["slot_mapping"][:, 0]
+                 slots[slots >= 0] += page_shift
+         return actual, records
+
+-    first = inputs.chunk([3])
++    first = inputs.chunk([3], dp_rank=dp_rank)
+     actual, records = controls(first, 0, 1)
+     sources = [dict(rank=rank, payload_sha256="HOST", report_sha256="HOST") for rank in range(16)]
+     provider = NetworkCacheProvider({"fresh": records}, {"fresh": actual}, topology=topology,
+         model_config=model, capacity=16, scheduler_capacity=8192, allocation_id="host-pool",
+-        sources_by_case={"fresh": sources}, geometry_only=True, max_requests_per_partition=2)
++        sources_by_case={"fresh": sources}, geometry_only=True, max_requests_per_partition=2,
++        local_ranks=local_ranks)
++    attach_network_cache_geometry(provider)
++    provider.require_network_geometry()
++    assert len(provider.layouts) == 16 and all(provider.layouts)
++    for rank in range(16):
++        owns_cache = local_ranks is None or rank in local_ranks
++        for bank in (provider.arenas, provider.views, provider.shared, provider.versions,
++                     provider.history.caches, provider.state_handles_for_layer(2)):
++            assert bool(bank[rank]) is owns_cache
+
+     def complete_controls():
+         # Core publication double: no model computation or device acceptance.
+         for layer in range(40):
+             role = resolve_layer_role(layer)
+-            for rank in provider.state_handles_for_layer(layer):
+-                versions = rank["fresh"]["versions"]
++            for rank in provider.local_ranks:
++                versions = provider.state_handles_for_layer(layer)[rank]["fresh"]["versions"]
+                 for name, writes, owner in (("kv", role["kv_write"], role["kv_source"]),
+                         ("index", role["index_selection_write"], role["index_source"]),
+                         ("candidate", role["candidate_write"], role["candidate_source"])):
+                     if writes:
+@@ -440,9 +453,10 @@ def test_request_pool_retains_inactive_history_rejects_aliases_and_retires_gener
+             provider.observe_layer(layer, dict(hidden=None, pre_mix=None, states=None))
+
+     provider.begin_chunk(epoch=0, token_map_id="first")
+     complete_controls()
+-    layout = provider.layouts[2]["fresh"]
++    assert len(provider.batch_for_layer(0)["cases"]["fresh"]) == 16
++    layout = provider.layouts[reader_rank]["fresh"]
+     handles = {}
+
+     def resident_handle(matrix, rank, *, readonly):
+         assert readonly
+@@ -452,10 +466,12 @@ def test_request_pool_retains_inactive_history_rejects_aliases_and_retires_gener
+
+     session = SimpleNamespace(closed=False, failed=False, contract={"topology": topology},
+                               provider=provider, _draft_plane_handles={},
+                               resident=SimpleNamespace(handle=resident_handle))
+-    def bind(layer, anchor=1, rank=2):
+-        return GenerationSession.draft_history(session, 0, 0, 1, rank=rank, layer=layer, anchor_position=anchor)
++    def bind(layer, anchor=1, rank=reader_rank):
++        return GenerationSession.draft_history(
++            session, dp_rank, 0, 1, rank=rank, layer=layer, anchor_position=anchor
++        )
+
+     assert set(bind(0)["planes"]) == {"swa"}
+     source = bind(2)["planes"]
+     consumer = bind(3)["planes"]
+@@ -467,9 +483,9 @@ def test_request_pool_retains_inactive_history_rejects_aliases_and_retires_gener
+         descriptors = descriptors if isinstance(descriptors, list) else [descriptors]
+         assert len(source[key]) == len(descriptors)
+         for plane, descriptor in zip(source[key], descriptors, strict=True):
+             matrix, rank = handles[plane["handle"]]
+-            assert rank == 2
++            assert rank == reader_rank
+             raw = provider.arenas[rank]["fresh"][descriptor["storage_key"]]
+             assert matrix.untyped_storage()._cdata == raw.untyped_storage()._cdata
+             assert matrix.dtype == getattr(torch, descriptor["dtype"].split(".")[-1])
+             assert matrix.shape[1] == descriptor["shape"][-1]
+@@ -477,34 +493,39 @@ def test_request_pool_retains_inactive_history_rejects_aliases_and_retires_gener
+             assert plane["pages"] and all(page > 0 for page in plane["pages"])
+     with pytest.raises(ValueError, match="anchor"):
+         bind(2, anchor=2)
+     with pytest.raises(ValueError, match="partition"):
+-        bind(2, rank=4)
++        bind(2, rank=first_rank + topology["tp"])
++    if local_ranks is not None:
++        with pytest.raises(ValueError, match="local cache owner"):
++            GenerationSession.draft_history(session, 0, 0, 1, rank=0, layer=2, anchor_position=1)
++        with pytest.raises(ValueError, match="local cache owner"):
++            provider.verification_ranges(0, records[0])
+     replacement = {"fresh": [dict(rank=rank, metadata_sha256="HOST") for rank in range(16)]}
+     actual, records = controls(first, 1, 1, 1)
+     provider.begin_chunk(epoch=1, token_map_id="inactive-first", input_by_case={"fresh": actual},
+                          metadata_by_case={"fresh": records}, metadata_sources_by_case=replacement)
+     complete_controls()
+     assert provider.runtime_geometry()["requests"] == 2
+-    following = inputs.chunk([5])
++    following = inputs.chunk([5], dp_rank=dp_rank)
+     actual, records = controls(following, 0, 1)
+     with provider.provisional_dispatch():
+-        spans, history = provider.verification_ranges(0, records[0])
++        spans, history = provider.verification_ranges(first_rank, records[first_rank])
+         assert spans and history
+         provider.begin_chunk(epoch=2, token_map_id="candidate", input_by_case={"fresh": actual},
+                              metadata_by_case={"fresh": records}, metadata_sources_by_case=replacement)
+         complete_controls()
+-        assert provider.request_history(0, 0, 1)[1] == 2
+-    assert provider.request_history(0, 0, 1)[1] == 1
+-    assert provider.request_history(0, 1, 1)[1] == 1
++        assert provider.request_history(dp_rank, 0, 1)[1] == 2
++    assert provider.request_history(dp_rank, 0, 1)[1] == 1
++    assert provider.request_history(dp_rank, 1, 1)[1] == 1
+     provider.begin_chunk(epoch=2, token_map_id="resume-first", input_by_case={"fresh": actual},
+                          metadata_by_case={"fresh": records}, metadata_sources_by_case=replacement)
+     complete_controls()
+-    provider.release_request(0, 0, 1)
++    provider.release_request(dp_rank, 0, 1)
+     with pytest.raises(ValueError, match="Stale"):
+         bind(2)
+     with pytest.raises(ValueError, match="Stale"):
+-        provider.request_pages(0, 0, 1)
++        provider.request_pages(dp_rank, 0, 1)
+     actual, records = controls(first, 0, 1)
+     with pytest.raises(ValueError, match="generation"):
+         provider.begin_chunk(epoch=3, token_map_id="reuse", input_by_case={"fresh": actual},
+                              metadata_by_case={"fresh": records}, metadata_sources_by_case=replacement)
+@@ -515,7 +536,7 @@ def test_request_pool_retains_inactive_history_rejects_aliases_and_retires_gener
+     actual, records = controls(first, 0, 2)
+     provider.begin_chunk(epoch=3, token_map_id="reuse", input_by_case={"fresh": actual},
+                          metadata_by_case={"fresh": records}, metadata_sources_by_case=replacement)
+     complete_controls()
+-    assert provider.request_pages(0, 1, 1)
+-    assert provider.request_pages(0, 0, 2)
++    assert provider.request_pages(dp_rank, 1, 1)
++    assert provider.request_pages(dp_rank, 0, 2)
+     inputs.close()

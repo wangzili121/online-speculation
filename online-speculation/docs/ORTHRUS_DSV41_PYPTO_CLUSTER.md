@@ -55,7 +55,7 @@ python "$ORTHRUS_ROOT/online-speculation/scripts/validate_dsv41_pypto_cluster.py
 
 ## 实测边界
 
-公司内网 node7 和 node8 各使用一张卡，完成 HCCL 建链、AllReduce 和 AlltoAll。两端的会话 ID 一致，数据与参考逐元素一致。实际 8+8 卡的 EP16 硬件测试仍待执行。 [公司双机记录](validation/dsv41/pypto-fabric-company-ep2.json)
+公司内网 node7 和 node8 已通过 8+8 卡的 DP4/TP4/EP16 实卡验证。两端构建标识一致，全局 rank 0–15 执行了 TP/DP AllGather、EP AlltoAll、ReduceScatter 和 AllReduce，覆盖从 prefill 到 release 的六个调度阶段。这次使用测试张量验证调度和通信，整模 W8A8 验收见下一节。 [公司 16 卡记录](validation/dsv41/pypto-cluster-company-ep16.json) · [公司双卡记录](validation/dsv41/pypto-fabric-company-ep2.json)
 
 8+8 逻辑 rank 的控制流程通过了双进程和双离线容器的 TCP 回环。外部实验机上的单机双卡测试覆盖了驱动 25.5.1/CANN 9.0.0 与驱动 26.1.1/CANN 9.1.1，25.5.1 环境另复验了物理到运行时卡号映射。三卡 2+1 进入 EP AlltoAll 后报设备链路超时 `507048`，相同卡两两连接的用例通过。 [单机两卡记录](validation/dsv41/pypto-cluster-loopback-ep2.json)
 
@@ -67,7 +67,9 @@ python "$ORTHRUS_ROOT/online-speculation/scripts/validate_dsv41_pypto_cluster.py
 
 基模的本机权重加载通过独立的 [Lib 补丁](../runtime/pypto_dsv41_a3/lib-rank-weights.patch) 提供，应用在现有 `lib-serving.patch` 之后。CPU 契约测试验证了两个本机 worker 只读取 rank 8 和 9 的路由专家，静态句柄按全局 rank 保留。配对 Lib 的 14 项会话测试通过。现有离线镜像仍用原配对。
 
-整模还需把本机权重加载接进 `GenerationSession`，按本机 rank 分配 KV 和运行时张量，并把 `NetworkExecutor.exchange` 接到跨机通信。编译时保留全局 EP16，空 DP 也参与集合通信。接好后，使用真实 W8A8 基模的同一组输入跑 target-only 和 Orthrus，由[整模验收](ORTHRUS_DSV41_PYPTO.md#serving-入口与实机验收)检查实际投机阶段和逐 token 一致性。
+本机缓存分配通过 [Lib 缓存补丁](../runtime/pypto_dsv41_a3/lib-rank-cache.patch) 提供，应用在权重补丁之后。两端保留全局请求、页表和编译尺寸信息，各自只准备本机 rank 的 KV、索引缓冲和 Engram 历史。15 项 CPU 会话契约测试通过，覆盖全本地与仅 rank 8–15 持有缓存时的历史绑定和请求回滚。
+
+整模还需把本机权重和缓存接进 `GenerationSession`，按本机 rank 分配运行时张量，并把 `NetworkExecutor.exchange` 接到跨机通信。编译时保留全局 EP16，空 DP 也参与集合通信。接好后，使用真实 W8A8 基模的同一组输入跑 target-only 和 Orthrus，由[整模验收](ORTHRUS_DSV41_PYPTO.md#serving-入口与实机验收)检查实际投机阶段和逐 token 一致性。
 
 ## 精度验收
 

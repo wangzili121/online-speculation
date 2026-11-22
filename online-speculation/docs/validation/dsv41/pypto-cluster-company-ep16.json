@@ -1,0 +1,30 @@
+{
+  "date": "2026-11-22",
+  "command": "dsv41_pypto_env.sh cluster-check <node7|node8>",
+  "physical_hosts": 2,
+  "physical_devices": 16,
+  "reports": {
+    "node7": {
+      "passed": true,
+      "node": 0,
+      "global_ranks": [0, 1, 2, 3, 4, 5, 6, 7],
+      "epoch": 3,
+      "phases": ["prefill", "draft", "verify", "accept", "decode", "release"],
+      "topology": {"dp": 4, "tp": 4, "ep": 16},
+      "device_collectives": ["tp/all_gather", "ep/all_to_all", "dp/all_gather", "ep/reduce_scatter", "ep/all_reduce", "tp/all_gather"],
+      "physical_to_runtime": {"0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7},
+      "build_id": "device/f166e1286f0dd396"
+    },
+    "node8": {
+      "passed": true,
+      "node": 1,
+      "global_ranks": [8, 9, 10, 11, 12, 13, 14, 15],
+      "epoch": 3,
+      "phases": ["prefill", "draft", "verify", "accept", "decode", "release"],
+      "topology": {"dp": 4, "tp": 4, "ep": 16},
+      "device_collectives": ["tp/all_gather", "ep/all_to_all", "dp/all_gather", "ep/reduce_scatter", "ep/all_reduce", "tp/all_gather"],
+      "physical_to_runtime": {"0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7},
+      "build_id": "device/f166e1286f0dd396"
+    }
+  }
+}
