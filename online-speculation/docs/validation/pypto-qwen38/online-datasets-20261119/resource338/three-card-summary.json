@@ -1,5 +1,5 @@
 {
-  "completed": false,
+  "completed": true,
   "target_met": false,
   "groups": {
     "spoc": {
@@ -212,7 +212,7 @@
       }
     },
     "gsm": {
-      "completed": false,
+      "completed": true,
       "target_met": false,
       "completed_cases": [
         {
@@ -342,12 +342,83 @@
             "physical_cards": 3
           },
           "final_published_step": 568
+        },
+        {
+          "accounting_passed": true,
+          "requests": 384,
+          "arms": {
+            "ar": {
+              "tokens": 71820,
+              "seconds": 2214.1971394250286,
+              "tail_seconds": 0.0,
+              "tok_s": 32.436136205401226
+            },
+            "fixed": {
+              "tokens": 71820,
+              "seconds": 2132.531459916034,
+              "tail_seconds": 0.0,
+              "tok_s": 33.67828393154296
+            },
+            "online": {
+              "tokens": 71820,
+              "seconds": 1981.2789538910147,
+              "tail_seconds": 0.0,
+              "tok_s": 36.24931252560544
+            }
+          },
+          "timing_layout": "separate_streams",
+          "performance_run": true,
+          "updates": 443,
+          "publications": 110,
+          "last_update_round": 28033,
+          "rounds_after_last_update": 108,
+          "online_vs_ar": 0.11755951128264308,
+          "online_vs_fixed": 0.07634084323561585,
+          "final_seen_tok_s": 37.133657879440364,
+          "independent_holdout_tok_s": 37.26072453451711,
+          "scope": "Request/timing/update accounting only; frozen recipe, data and source audited separately.",
+          "tag": "b167-v308-resource339-gsm384-seed745",
+          "seed": 745,
+          "raw_sha256": "9eb0172f2defc00618d7af186656603dcdc27e98dc04313f8e5f5920efd1e810",
+          "physical_cards": [
+            0,
+            1,
+            2
+          ],
+          "event_audit": {
+            "completed": true,
+            "actual_schedule_checked": true,
+            "updates": 443,
+            "publications": 110,
+            "warmup_LR_checked": true,
+            "first_update_round": 16,
+            "last_update_round": 28033,
+            "final_optimizer_version": 443,
+            "actual_published_version": 440,
+            "final_exported_step": 568,
+            "tail_rounds": 108,
+            "nonoverlap_feedback_update_upload_seconds": 44.246003614,
+            "work_time_to_stream_wall_ratio": 0.022332041395334918,
+            "colocated_direct_cost_fraction": null,
+            "read_pack_already_in_update": true,
+            "cost_scope": "Colocated: nonoverlapping cost regions. Background learner: work duration may overlap generation; not a latency fraction.",
+            "background": true,
+            "physical_cards": 3
+          },
+          "final_published_step": 568
         }
       ],
-      "pending": [
-        "b167-v308-resource339-gsm384-seed745"
-      ],
-      "errors": []
+      "pending": [],
+      "errors": [],
+      "pooled_tok_s": {
+        "ar": 31.87094987376145,
+        "fixed": 33.31436835846363,
+        "online": 35.44650752831594
+      },
+      "pooled_gain": {
+        "ar": 0.11218861278741366,
+        "fixed": 0.06400058818196475
+      }
     }
   },
   "physical_cards_per_arm": 3,
