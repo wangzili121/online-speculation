@@ -4,6 +4,7 @@
 import argparse
 from contextlib import ExitStack
 import ctypes
+import hashlib
 import json
 import os
 import socket
@@ -12,30 +13,41 @@ import time
 
 
 ROOT_INFO_BYTES = 4108  # HcclRootInfo in the paired CANN headers.
+PEER_HELLO = b"ORTHRUS-FABRIC-1\n"
 HCCL_FP32 = 4
 HCCL_UINT8 = 7
 HCCL_SUM = 0
 
 
 def rendezvous(rank, address, get_root_info, wait):
+    deadline = time.monotonic() + wait
     if rank == 0:
         with socket.socket() as server:
             server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            server.settimeout(wait)
             server.bind(address)
             server.listen(1)
-            print("HCCL rendezvous ready", flush=True)
-            try:
-                connection, _ = server.accept()
-            except TimeoutError as error:
-                raise RuntimeError(f"No peer reached TCP rendezvous {address[0]}:{address[1]}") from error
-            with connection:
-                connection.settimeout(wait)
-                root_info = get_root_info()
-                connection.sendall(root_info)
-        return root_info
+            print(f"HCCL rendezvous ready at {address[0]}:{address[1]}", flush=True)
+            while (remaining := deadline - time.monotonic()) > 0:
+                server.settimeout(remaining)
+                try:
+                    connection, peer = server.accept()
+                except TimeoutError:
+                    break
+                with connection, connection.makefile("rb") as stream:
+                    connection.settimeout(min(2, remaining))
+                    try:
+                        hello = stream.read(len(PEER_HELLO))
+                    except OSError:
+                        continue
+                    if hello != PEER_HELLO:
+                        continue
+                    connection.settimeout(wait)
+                    root_info = get_root_info()
+                    connection.sendall(root_info)
+                    print(f"Rank 0 sent HCCL root info to peer {peer[0]}", flush=True)
+                    return root_info
+        raise RuntimeError(f"No fabric probe completed the TCP handshake at {address[0]}:{address[1]}")
 
-    deadline = time.monotonic() + wait
     while True:
         try:
             connection = socket.create_connection(address, timeout=min(5, wait))
@@ -46,6 +58,7 @@ def rendezvous(rank, address, get_root_info, wait):
             time.sleep(0.5)
     with connection:
         connection.settimeout(wait)
+        connection.sendall(PEER_HELLO)
         with connection.makefile("rb") as stream:
             result = stream.read(ROOT_INFO_BYTES)
     if len(result) != ROOT_INFO_BYTES:
@@ -78,6 +91,8 @@ def run(rank, device, address, wait):
         return root_info.raw
 
     root_info.raw = rendezvous(rank, address, get_root_info, wait)
+    session = hashlib.sha256(root_info.raw).hexdigest()[:12]
+    print(f"Rank {rank} entering HcclCommInitRootInfo, session={session}", flush=True)
 
     with ExitStack() as resources:
         comm, stream, source, target = ptr(), ptr(), ptr(), ptr()
@@ -89,6 +104,7 @@ def run(rank, device, address, wait):
             recent_error.restype = ctypes.c_char_p
             detail = (recent_error() or b"").decode(errors="replace").strip()
             summary = f"HcclCommInitRootInfo returned CANN/HCCL status {status}"
+            summary += f" (session={session})"
             raise RuntimeError(f"{summary}: {detail[:800]}" if detail else summary)
         resources.callback(_check_cleanup, hccl.HcclCommDestroy, comm)
         _check(acl.aclrtCreateStream(ctypes.byref(stream)), "aclrtCreateStream")
@@ -111,7 +127,7 @@ def run(rank, device, address, wait):
         exchanged = list(outputs)
         if reduced != [4, 6] or exchanged != [rank + 1, rank + 3]:
             raise RuntimeError(f"HCCL values differ on rank {rank}: sum {reduced}, exchange {exchanged}")
-    return dict(passed=True, rank=rank, device=device, all_reduce=reduced, all_to_all=exchanged)
+    return dict(passed=True, rank=rank, device=device, session=session, all_reduce=reduced, all_to_all=exchanged)
 
 
 def _check_cleanup(operation, handle):

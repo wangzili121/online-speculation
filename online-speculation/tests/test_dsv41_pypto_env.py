@@ -1,10 +1,14 @@
 """Verify device-free inspection and explicitly mapped single-card probes."""
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import runpy
+import socket
 import subprocess
 import sys
+from threading import Event
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/dsv41_pypto_env.sh"
@@ -142,7 +146,10 @@ def test_init_head_keeps_target_readonly_and_writes_output_without_npu(tmp_path)
 
 
 def test_fabric_check_uses_host_network_and_only_one_device(tmp_path):
-    env = environment(tmp_path) | {"NPU_DEVICE": "6", "HCCL_IF_IP": "192.0.2.7"}
+    env = environment(tmp_path) | {
+        "NPU_DEVICE": "6", "HCCL_IF_IP": "192.0.2.7", "HCCL_SOCKET_IFNAME": "eth0",
+        "HCCL_HOST_SOCKET_PORT_RANGE": "60000-60010",
+    }
     args = json.loads(subprocess.check_output(
         ["bash", str(SCRIPT), "fabric-check", "--rank", "0", "--master-address", "192.0.2.7"],
         text=True, env=env, cwd=tmp_path,
@@ -152,6 +159,8 @@ def test_fabric_check_uses_host_network_and_only_one_device(tmp_path):
     assert args[args.index("--network") + 1] == "host"
     assert "ASCEND_RT_VISIBLE_DEVICES=0" in args
     assert "HCCL_IF_IP=192.0.2.7" in args
+    assert "HCCL_SOCKET_IFNAME=eth0" in args
+    assert "HCCL_HOST_SOCKET_PORT_RANGE=60000-60010" in args
     (logs,) = tmp_path.glob("orthrus-fabric.*")
     assert f"{logs.resolve()}:/cann-logs" in args
     assert "ASCEND_PROCESS_LOG_PATH=/cann-logs" in args
@@ -182,3 +191,26 @@ def test_company_fabric_check_selects_node_defaults(tmp_path):
 
     result = subprocess.run(["bash", str(SCRIPT), "fabric-check", "node9"], capture_output=True, text=True, env=env)
     assert result.returncode == 2 and "fabric-check {node7|node8}" in result.stderr
+
+
+def test_fabric_rendezvous_ignores_plain_tcp_connections(tmp_path):
+    probe = runpy.run_path(str(SCRIPT.with_name("probe_dsv41_pypto_fabric.py")))
+    rendezvous = probe["rendezvous"]
+    ready = Event()
+
+    def log_progress(message, **_):
+        if message.startswith("HCCL rendezvous ready"):
+            ready.set()
+
+    rendezvous.__globals__["print"] = log_progress
+    root_info = b"a" * probe["ROOT_INFO_BYTES"]
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        address = reservation.getsockname()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        root = pool.submit(rendezvous, 0, address, lambda: root_info, 4)
+        assert ready.wait(timeout=2)
+        with socket.create_connection(address, timeout=2) as other:
+            other.sendall(b"other protocol\n")
+        assert rendezvous(1, address, None, 4) == root_info
+        assert root.result(timeout=4) == root_info

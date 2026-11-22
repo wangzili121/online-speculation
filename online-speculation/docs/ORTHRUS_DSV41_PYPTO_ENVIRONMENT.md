@@ -37,7 +37,7 @@ bash online-speculation/scripts/dsv41_pypto_env.sh fabric-check node8
 
 在其他节点上可用 `fabric-check --rank <0|1> --master-address <rank-0-ip>`，并通过 `HCCL_IF_IP` 指定本机通信地址。
 
-探针会只读挂载宿主机已有的 `/etc/hccn.conf`，每次运行会打印 `CANN logs` 目录。通信域初始化失败时，检查两端目录里的首条 HCCL 错误。TCP rendezvous 每次只接收一个 peer，重试时两端都重新启动。
+探针会只读挂载宿主机已有的 `/etc/hccn.conf`，每次运行会打印 `CANN logs` 目录。两端打印的 `session` 相同，表示已经交换同一份 HCCL root info。此后 HCCL 使用自己的端口建立通信域。初始化失败时，从两端日志核对 `Entry-HcclCommInitRootInfo`、`rootinfo: host ip` 和首条 HCCL 错误。重试时两端都重新启动。
 
 两端的 `passed: true` 表示跨机两卡的 HCCL AllReduce 和 AlltoAll 传回了预期数据。进一步可用双机调度探针检查 8+8 rank 分配、请求波次以及 TP、DP 和 EP 通信。完整模型服务仍由单进程分配设备、权重和缓存。 [双机调度与通信](ORTHRUS_DSV41_PYPTO_CLUSTER.md)
 
