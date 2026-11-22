@@ -234,33 +234,51 @@ def make_hc_pre_gate_vjp(rows=32, copies=4, iterations=20, eps=1e-6, *, inline=F
                     pl.tile.read(gate_gradient, [0, channel]),
                 )
 
-            # Native forward duplicates the logical 4x4 matrix into 8x8 so
-            # Vec row/column reductions remain hardware aligned.
+            # Native forward packs two independent 4x4 matrices into the
+            # diagonal quadrants of one 8x8 vector tile.  Replaying one token
+            # therefore duplicates its logits into the two diagonal blocks,
+            # masks both off-diagonal blocks, and seeds only the first block's
+            # output gradient.  This preserves the native reduction order
+            # without introducing cross-token Sinkhorn coupling.
             logits = pl.create_tile([tile, tile], dtype=pl.FP32)
+            diagonal = pl.tile.full([tile, tile], dtype=pl.FP32, value=0.)
             for row in pl.unroll(tile):
                 for column in pl.unroll(tile):
                     logical = 2 * copies + (row % copies) * copies + column % copies
                     value = (pl.tile.read(projected, [0, logical]) * scale2
                              + pl.read(base, [logical]))
                     pl.tile.write(logits, [row, column], value)
+            for block in pl.unroll(2):
+                for row in pl.unroll(copies):
+                    for column in pl.unroll(copies):
+                        pl.tile.write(
+                            diagonal,
+                            [block * copies + row, block * copies + column],
+                            1.,
+                        )
             scratch = pl.create_tile([tile, tile], dtype=pl.FP32)
             maximum = pl.row_max(logits, scratch)
-            exponential = pl.exp(pl.row_expand_sub(logits, maximum))
-            probability = pl.add(
-                pl.row_expand_div(exponential, pl.mul(pl.row_sum(exponential, scratch), .5)), eps,
+            exponential = pl.mul(
+                pl.exp(pl.row_expand_sub(logits, maximum)), diagonal,
+            )
+            probability = pl.mul(
+                pl.add(
+                    pl.row_expand_div(exponential, pl.row_sum(exponential, scratch)), eps,
+                ),
+                diagonal,
             )
             offset = token * stages * tile
             pl.store(probability, [offset, 0], states)
-            initial_column_denominator = pl.add(pl.mul(pl.col_sum(probability), .5), eps)
+            initial_column_denominator = pl.add(pl.col_sum(probability), eps)
             probability = pl.col_expand_div(probability, initial_column_denominator)
             pl.store(probability, [offset + tile, 0], states)
             stage = 2
             for _ in pl.unroll(iterations - 1):
-                row_denominator = pl.add(pl.mul(pl.row_sum(probability, scratch), .5), eps)
+                row_denominator = pl.add(pl.row_sum(probability, scratch), eps)
                 probability = pl.row_expand_div(probability, row_denominator)
                 pl.store(probability, [offset + stage * tile, 0], states)
                 stage = stage + 1
-                column_denominator = pl.add(pl.mul(pl.col_sum(probability), .5), eps)
+                column_denominator = pl.add(pl.col_sum(probability), eps)
                 probability = pl.col_expand_div(probability, column_denominator)
                 pl.store(probability, [offset + stage * tile, 0], states)
                 stage = stage + 1
@@ -281,8 +299,8 @@ def make_hc_pre_gate_vjp(rows=32, copies=4, iterations=20, eps=1e-6, *, inline=F
             for _ in pl.unroll(iterations - 1):
                 before = pl.load(states, [offset + (stage - 1) * tile, 0], [tile, tile])
                 after = pl.load(states, [offset + stage * tile, 0], [tile, tile])
-                reverse_column_denominator = pl.add(pl.mul(pl.col_sum(before), .5), eps)
-                reverse_column_correction = pl.mul(pl.col_sum(pl.mul(gradient, after)), .5)
+                reverse_column_denominator = pl.add(pl.col_sum(before), eps)
+                reverse_column_correction = pl.col_sum(pl.mul(gradient, after))
                 gradient = pl.col_expand_div(
                     pl.col_expand_sub(gradient, reverse_column_correction),
                     reverse_column_denominator,
@@ -290,10 +308,8 @@ def make_hc_pre_gate_vjp(rows=32, copies=4, iterations=20, eps=1e-6, *, inline=F
                 stage = stage - 1
                 before = pl.load(states, [offset + (stage - 1) * tile, 0], [tile, tile])
                 after = pl.load(states, [offset + stage * tile, 0], [tile, tile])
-                reverse_row_denominator = pl.add(pl.mul(pl.row_sum(before, scratch), .5), eps)
-                reverse_row_correction = pl.mul(
-                    pl.row_sum(pl.mul(gradient, after), scratch), .5,
-                )
+                reverse_row_denominator = pl.add(pl.row_sum(before, scratch), eps)
+                reverse_row_correction = pl.row_sum(pl.mul(gradient, after), scratch)
                 gradient = pl.row_expand_div(
                     pl.row_expand_sub(gradient, reverse_row_correction),
                     reverse_row_denominator,
@@ -301,13 +317,13 @@ def make_hc_pre_gate_vjp(rows=32, copies=4, iterations=20, eps=1e-6, *, inline=F
                 stage = stage - 1
             before = pl.load(states, [offset, 0], [tile, tile])
             after = pl.load(states, [offset + tile, 0], [tile, tile])
-            first_column_denominator = pl.add(pl.mul(pl.col_sum(before), .5), eps)
-            first_column_correction = pl.mul(pl.col_sum(pl.mul(gradient, after)), .5)
+            first_column_denominator = pl.add(pl.col_sum(before), eps)
+            first_column_correction = pl.col_sum(pl.mul(gradient, after))
             gradient = pl.col_expand_div(
                 pl.col_expand_sub(gradient, first_column_correction), first_column_denominator,
             )
 
-            softmax = pl.sub(before, eps)
+            softmax = pl.mul(pl.sub(before, eps), diagonal)
             softmax_correction = pl.row_sum(pl.mul(gradient, softmax), scratch)
             gradient = pl.mul(softmax, pl.row_expand_sub(gradient, softmax_correction))
             for row in pl.unroll(copies):
