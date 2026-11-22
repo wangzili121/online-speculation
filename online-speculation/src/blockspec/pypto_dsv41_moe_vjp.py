@@ -175,3 +175,72 @@ def make_normalized_route_vjp(rows=32, topk=6, *, inline=False):
         )
 
     return normalized_route_vjp if inline else entry
+
+
+def make_clipped_swiglu_vjp(rows=32, intermediate=2304, limit=10.0, *, inline=False):
+    """Differentiate the routed expert activation with fixed W8A8 values.
+
+    ``gate_up`` is the FP32 value reconstructed from the native INT32 GEMM,
+    token scale and channel scale.  The returned BF16 gradient feeds the
+    dequantized frozen gate/up input VJP; the activation requantizer is treated
+    as a straight-through boundary and no frozen parameter gradient is formed.
+    """
+    if (
+        type(rows) is not int or type(intermediate) is not int
+        or rows < 1 or intermediate < 64 or intermediate % 64
+        or not isinstance(limit, (int, float)) or limit <= 0
+    ):
+        raise ValueError("aligned routed-expert rows and a positive clamp limit required")
+    import pypto.language as pl
+
+    kernel = pl.jit.inline if inline else pl.jit
+    tile = 256 if intermediate % 256 == 0 else 128 if intermediate % 128 == 0 else 64
+
+    @kernel
+    def swiglu_vjp(
+        gate_up: pl.Tensor,
+        output_gradient: pl.Tensor,
+        gate_up_gradient: pl.Out[pl.Tensor],
+    ):
+        with pl.spmd(rows * (intermediate // tile), name_hint="orthrus_dsv41_clipped_swiglu_backward"):
+            task = pl.tile.get_block_idx()
+            token = task // (intermediate // tile)
+            column = task % (intermediate // tile) * tile
+            gate_raw = pl.slice(gate_up, [1, tile], [token, column])
+            up_raw = pl.slice(gate_up, [1, tile], [token, intermediate + column])
+            dy = pl.cast(pl.slice(output_gradient, [1, tile], [token, column]), pl.FP32)
+            gate = pl.minimum(gate_raw, limit)
+            up = pl.maximum(pl.minimum(up_raw, limit), -limit)
+            sigmoid = pl.recip(pl.add(pl.exp(pl.neg(gate)), 1.0))
+            silu = pl.mul(gate, sigmoid)
+            derivative = pl.mul(
+                sigmoid,
+                pl.add(pl.mul(gate, pl.add(pl.neg(sigmoid), 1.0)), 1.0),
+            )
+            dgate = pl.mul(pl.mul(dy, up), derivative)
+            dup = pl.mul(dy, silu)
+            # PyPTO cmp: 2 is < and 5 is >=.  The equality convention is
+            # irrelevant for normal floating values but follows Torch clamp.
+            gate_mask = pl.cmp(gate_raw, limit, cmp_type=5)
+            gate_mask = pl.add(pl.neg(gate_mask), 1.0)
+            up_low = pl.cmp(up_raw, -limit, cmp_type=5)
+            up_high = pl.add(pl.neg(pl.cmp(up_raw, limit, cmp_type=4)), 1.0)
+            dgate = pl.mul(dgate, gate_mask)
+            dup = pl.mul(dup, pl.mul(up_low, up_high))
+            gate_up_gradient[token:token + 1, column:column + tile] = pl.cast(
+                dgate, pl.BF16, mode="rint",
+            )
+            gate_up_gradient[
+                token:token + 1, intermediate + column:intermediate + column + tile
+            ] = pl.cast(dup, pl.BF16, mode="rint")
+        return gate_up_gradient
+
+    @pl.jit.host
+    def entry(
+        gate_up: pl.Tensor,
+        output_gradient: pl.Tensor,
+        gate_up_gradient: pl.Out[pl.Tensor],
+    ):
+        swiglu_vjp(gate_up, output_gradient, gate_up_gradient, device=0)
+
+    return swiglu_vjp if inline else entry
