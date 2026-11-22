@@ -128,6 +128,10 @@ PYTHONPATH=src python scripts/validate_dsv41_pypto_resident_draft.py \
 
 在单机四张 910B3 上，用公开 W8A8 checkpoint 导出的 BF16 初始化 head 完成了两个请求的 40 层 TP4 测试。所有 rank 的目标缓存逐字节一致，40 次层间 ReduceScatter 均通过 BF16 误差检查，head 只在启动时上传。单 rank 的 Reindex 另测到 anchor 16351，32 个查询的 Top-512 与参考一致。 [四卡实测记录](validation/dsv41/pypto-resident-w8a8-tp4.json)
 
+在上述 draft 脚本加 `--replay` 会交替执行两组请求，复用工作区后再重放第一组。使用同一份公开 W8A8 导出的 head 在单卡完成了三轮、每轮 40 层。第一组两次输出逐字节一致，缓存复读一致，期间没有重复上传 head。 [重放记录](validation/dsv41/pypto-resident-w8a8-replay.json)
+
+另使用公开 W8A8 的第 0 层真实 INT8 QKV 权重，在一个 TP4 分片上比较原生 Prefill K32 和逐行 Decode。构造的 32 行输入中，两条路径输出的 Q latent、带 RoPE 的 Q 和滑窗 KV 均逐字节一致。此检查覆盖投影子路径。 [基模 QKV 记录](validation/dsv41/pypto-target-w8a8-qkv-k32.json)
+
 在 Serving 所用的 Python 环境安装本仓库的 `online-speculation` 包，或在已准备好依赖的环境中设置 `PYTHONPATH="$ORTHRUS_ROOT/online-speculation/src${PYTHONPATH:+:$PYTHONPATH}"`。申请一个完整的 A3 16-rank 作业，在同一设备映射和相同提示下分别运行 target-only 和 Orthrus。Engram 仍按配对 Serving 的 HOST 路径分配。
 
 ```bash
@@ -142,26 +146,13 @@ common=(
   --prompt 'Continue the list of positive integers from 1.'
   --generate-config '{"max_new_tokens":64,"temperature":0,"ignore_eos":true}'
 )
-python -m pypto_serving_a3.offline "${common[@]}" --output "$RESULTS/target"
-python -m pypto_serving_a3.offline "${common[@]}" --output "$RESULTS/orthrus" \
+mkdir -p "$RESULTS"/{target-native,orthrus-native}
+TMPDIR="$RESULTS/target-native" python -m pypto_serving_a3.offline "${common[@]}" --output "$RESULTS/target"
+TMPDIR="$RESULTS/orthrus-native" python -m pypto_serving_a3.offline "${common[@]}" --output "$RESULTS/orthrus" \
   --speculative-config "$orthrus_config"
-
-python3 - "$RESULTS" <<'PYCOMPARE'
-import json
-from pathlib import Path
-import sys
-
-result = Path(sys.argv[1])
-target, orth = (
-    json.loads((result / mode / "result.json").read_text())["requests"]
-    for mode in ("target", "orthrus")
-)
-for baseline, draft in zip(target, orth, strict=True):
-    for field in ("prompt_ids", "token_ids", "finish_reason", "usage"):
-        if baseline[field] != draft[field]:
-            raise SystemExit(f"Greedy mismatch in request {baseline['index']} field {field}")
-print("Greedy parity passed")
-PYCOMPARE
+python "$ORTHRUS_ROOT/online-speculation/scripts/verify_dsv41_pypto_acceptance.py" "$RESULTS"
 ```
 
-`TARGET_WEIGHTS` 使用配套 A3 W8A8 导出，`DRAFT_HEAD` 使用与目标模型配置及权重索引哈希匹配的 BF16 head。预期公开模型为 `Eco-Tech/DeepSeek-V4.1-Flash-w8a8`。带 `1017` 的包将部分 Q/KV 投影保留为浮点，Engram scale 为 E8M0；此 Lib 的基模加载器要求相应投影使用带 scale/offset 的 INT8，并读取 FP32 Engram scale。整模仍待用配套权重验证逐 token 一致性、分页与拒绝回滚、并发及性能。 [公开 checkpoint](https://www.modelscope.cn/models/Eco-Tech/DeepSeek-V4.1-Flash-1017-w8a8)
+`RESULTS` 使用新的绝对路径。验收脚本同时对照生成 token 和原生 dispatch 记录，要求至少一轮起草、验证、提交实际完成，核对轮内请求归属、epoch、KV 快照恢复字节数和退出清理。报告给出首个分叉 token 的下标，全部走普通解码也会判为失败。
+
+`TARGET_WEIGHTS` 使用配套 A3 W8A8 导出，`DRAFT_HEAD` 使用与目标模型配置及权重索引哈希匹配的 BF16 head。预期公开模型为 `Eco-Tech/DeepSeek-V4.1-Flash-w8a8`。带 `1017` 的包将部分 Q/KV 投影保留为浮点，Engram scale 为 E8M0；此 Lib 的基模加载器要求相应投影使用带 scale/offset 的 INT8，并读取 FP32 Engram scale。整模仍待用配套权重验证逐 token 一致性、分页与拒绝回滚、并发及性能。 [公开 checkpoint](https://www.modelscope.cn/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8)

@@ -1,6 +1,7 @@
 """Check the 40-layer draft sequence with one or more real TP4 head shards."""
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -12,11 +13,11 @@ from blockspec.pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW
 from dsv41_pypto_indexer_fixture import fixture
 
 
-def histories(runtime, attention, anchor, ranks, slot):
+def histories(runtime, attention, anchor, ranks, slot, generation):
     pinned = []
 
     def bind(kind, ratio, value, stride, offset, table):
-        runtime.pin(value, ranks, readonly=False, name=f"raw/{slot}/{kind}/{ratio}")
+        runtime.pin(value, ranks, readonly=False, name=f"raw/{slot}/{generation}/{kind}/{ratio}")
         pinned.append(value)
         return [dict(handle=runtime.handle(value, rank, readonly=True), pages=table,
                      shape=(value.shape[0] // stride, WINDOW // ratio, 1, value.shape[1]),
@@ -35,7 +36,7 @@ def histories(runtime, attention, anchor, ranks, slot):
         scales = bind("scale", ratio, buffers["index_scales"], geometry.scale_stride, geometry.scale_offset, pages)
         planes[ratio] = {rank: dict(swa=(local[rank],), long=(long[rank],), index=(keys[rank], scales[rank]))
                          for rank in ranks}
-    owner = 0, slot, 1
+    owner = 0, slot, generation
     table = {}
     for layer in range(40):
         role = native("cache").resolve_layer_role(layer)
@@ -63,12 +64,83 @@ def check_rank_reduction(runtime, values, outputs, method, layer):
     return largest
 
 
+def prepare_round(runtime, attention, ranks, anchors, generation):
+    capacity = 128
+    table, pinned, items = {}, [], []
+    positions = torch.zeros(capacity)
+    for slot, anchor in enumerate(anchors):
+        history, caches = histories(runtime, attention, anchor, ranks, slot, generation)
+        table.update(history)
+        pinned.extend(caches)
+        begin, end = (slot + 1) * BLOCK, (slot + 2) * BLOCK
+        positions[begin:end] = torch.arange(anchor, anchor + BLOCK)
+        items.append(dict(request_slot=slot, token_begin=begin, token_end=end, initial_context_length=anchor))
+    active = items[-1]["token_end"]
+    record = dict(request_token_map=items)
+    width = attention.config["hidden_size"]
+    hidden = torch.randn((capacity, width)).bfloat16()
+    phase = positions[:, None] * torch.linspace(0.001, 0.11, 32)[None]
+    cos, sin = phase.cos(), phase.sin()
+    return table, pinned, active, record, width, hidden, cos, sin
+
+
+def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
+    table, pinned, active, record, width, hidden, cos, sin = prepared
+    capacity = hidden.shape[0]
+    draft = attention.start_round(table)
+    replay = args.replay
+    roles = []
+    collective_error = 0.0
+    fingerprint = hashlib.sha256() if replay else None
+    for layer in range(40):
+        role = native("cache").resolve_layer_role(layer)
+        roles.append(role["mode"])
+
+        def project(rank):
+            contribution = runtime.workspace(hidden.shape, hidden.dtype, rank)
+            draft.project_layer(rank, layer, record, hidden, cos, sin, contribution)
+            output = runtime.read_output(contribution, rank)
+            for block in output[BLOCK:active].split(BLOCK):
+                assert torch.isfinite(block).all() and block.abs().max() > 0, f"Invalid layer {layer}, rank {rank} output"
+            assert not output[:BLOCK].any() and not output[active:].any()
+            if role["index_source"] is not None and layer in (2, 3, 20, 21, 24, 25):
+                for slot, anchor in enumerate(anchors):
+                    rows = draft.selection[rank, (0, slot, generation), role["index_source"]][1]
+                    assert (runtime.read_control(rows["lengths"], rank) == anchor // role["ratio"]).all()
+            if args.cards == 4 or (args.cards == 1 and layer == 39):
+                physical = active // 4
+                packed = runtime.workspace((4 * capacity, width), hidden.dtype, rank)
+                draft.pack(rank, contribution, packed, physical=physical, total=active)
+                packed_output = runtime.read_output(packed, rank).view(4, capacity, width)
+                assert torch.equal(packed_output[:, :physical].reshape(active, width), output[:active])
+                assert not packed_output[:, physical:].any()
+                return [contribution, packed], packed_output.flatten(0, 1)
+            return [contribution], output
+
+        result = runtime.map_ranks(project)
+        values, outputs = zip(*result, strict=True)
+        if fingerprint is not None:
+            for output in outputs:
+                fingerprint.update(output.contiguous().view(torch.uint8).numpy())
+        if args.cards > 1:
+            method = "reduce_scatter" if args.cards == 4 else "all_reduce"
+            error = check_rank_reduction(runtime, [row[-1] for row in values], outputs, method, layer)
+            collective_error = max(collective_error, error)
+        runtime.release_values(draft.finish_layer(layer))
+    assert not draft.selection
+    for rank in ranks:
+        for value in pinned:
+            assert torch.equal(value.view(torch.uint8), runtime.read_output(value, rank).view(torch.uint8))
+    return roles, collective_error, fingerprint.hexdigest() if fingerprint is not None else None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("lib", "model", "head", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--cards", type=int, choices=(1, 2, 3, 4), default=1)
     parser.add_argument("--requests", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--replay", action="store_true", help="Interleave a second generation and replay the first")
     args = parser.parse_args()
     sys.path.insert(0, str(args.lib.resolve()))
     args.output.mkdir()
@@ -80,62 +152,20 @@ def main():
         attention = ResidentDraftAttention(
             args.model, args.head, runtime, dict(ep=args.cards, tp=4), args.output / "kernels",
         )
-        anchors, capacity = (257, 129)[:args.requests], 128
-        table, pinned, items = {}, [], []
-        positions = torch.zeros(capacity)
-        for slot, anchor in enumerate(anchors):
-            history, caches = histories(runtime, attention, anchor, ranks, slot)
-            table.update(history)
-            pinned.extend(caches)
-            begin, end = (slot + 1) * BLOCK, (slot + 2) * BLOCK
-            positions[begin:end] = torch.arange(anchor, anchor + BLOCK)
-            items.append(dict(request_slot=slot, token_begin=begin, token_end=end, initial_context_length=anchor))
-        draft = attention.start_round(table)
-        active = items[-1]["token_end"]
-        record = dict(request_token_map=items)
-        width = attention.config["hidden_size"]
-        hidden = torch.randn((capacity, width)).bfloat16()
-        phase = positions[:, None] * torch.linspace(0.001, 0.11, 32)[None]
-        cos, sin = phase.cos(), phase.sin()
+        anchors = (257, 129)[:args.requests]
+        primary = prepare_round(runtime, attention, ranks, anchors, 1)
         before = runtime.stats["device_weight_upload_calls"]
-        roles = []
-        collective_error = 0.0
-        for layer in range(40):
-            role = native("cache").resolve_layer_role(layer)
-            roles.append(role["mode"])
-
-            def project(rank):
-                contribution = runtime.workspace(hidden.shape, hidden.dtype, rank)
-                draft.project_layer(rank, layer, record, hidden, cos, sin, contribution)
-                output = runtime.read_output(contribution, rank)
-                for block in output[BLOCK:active].split(BLOCK):
-                    assert torch.isfinite(block).all() and block.abs().max() > 0, f"Invalid layer {layer}, rank {rank} output"
-                assert not output[:BLOCK].any() and not output[active:].any()
-                if role["index_source"] is not None and layer in (2, 3, 20, 21, 24, 25):
-                    for slot, anchor in enumerate(anchors):
-                        rows = draft.selection[rank, (0, slot, 1), role["index_source"]][1]
-                        assert (runtime.read_control(rows["lengths"], rank) == anchor // role["ratio"]).all()
-                if args.cards == 4 or (args.cards == 1 and layer == 39):
-                    physical = active // 4
-                    packed = runtime.workspace((4 * capacity, width), hidden.dtype, rank)
-                    draft.pack(rank, contribution, packed, physical=physical, total=active)
-                    packed_output = runtime.read_output(packed, rank).view(4, capacity, width)
-                    assert torch.equal(packed_output[:, :physical].reshape(active, width), output[:active])
-                    assert not packed_output[:, physical:].any()
-                    return [contribution, packed], packed_output.flatten(0, 1)
-                return [contribution], output
-
-            result = runtime.map_ranks(project)
-            if args.cards > 1:
-                values, outputs = zip(*result, strict=True)
-                method = "reduce_scatter" if args.cards == 4 else "all_reduce"
-                error = check_rank_reduction(runtime, [row[-1] for row in values], outputs, method, layer)
-                collective_error = max(collective_error, error)
-            runtime.release_values(draft.finish_layer(layer))
-        assert not draft.selection
-        for rank in ranks:
-            for value in pinned:
-                assert torch.equal(value.view(torch.uint8), runtime.read_output(value, rank).view(torch.uint8))
+        roles, collective_error, fingerprint = run_round(runtime, attention, args, ranks, anchors, 1, primary)
+        replay_passed = None
+        if args.replay:
+            other_anchors = (255, 127)[:args.requests]
+            other = prepare_round(runtime, attention, ranks, other_anchors, 2)
+            _, middle_error, other_fingerprint = run_round(runtime, attention, args, ranks, other_anchors, 2, other)
+            _, replay_error, replay_fingerprint = run_round(runtime, attention, args, ranks, anchors, 1, primary)
+            assert fingerprint != other_fingerprint, "Distinct generations produced identical draft contributions"
+            assert fingerprint == replay_fingerprint, "Interleaved generation changed repeated draft outputs"
+            collective_error = max(collective_error, middle_error, replay_error)
+            replay_passed = True
         assert before == runtime.stats["device_weight_upload_calls"]
         result = dict(physical_devices=args.cards, tp4_lanes=ranks, full_tp4=args.cards == 4,
                       anchors=list(anchors), layers=list(range(40)),
@@ -143,6 +173,8 @@ def main():
                       block=BLOCK, cache_unchanged=True, weights_reuploaded=False,
                       dispatches=runtime.stats["dispatches"], weight_bytes=runtime.stats["weight_bytes"],
                       collective_max_abs_error=collective_error, transport_calls=runtime.stats["transport_calls"])
+        if replay_passed:
+            result.update(rounds=3, replay_byte_exact=True, interleaved_anchors=list(other_anchors))
         (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         print(result, flush=True)
 
