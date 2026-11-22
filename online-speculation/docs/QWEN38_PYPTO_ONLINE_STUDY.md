@@ -14,7 +14,7 @@
 
 GSM8K三次相对AR为+9.23% /+10.13% /+9.61%，相对固定为+6.27% /+6.87% /+6.13%；SPoC三次为+14.22% /+13.41% /+12.75%和+10.72% /+9.51% /+8.77%。两组均通过逐请求greedy、计时、实际更新事件与真实导出权重核对，并保留最终实际发布head的同题冻结重跑和独立留出。资源按每次实际主机 /卡核对，不额外使用学习卡。
 
-原LongProc的三次完整负结果保留，不因SPoC通过而改写；SPoC是另外的补充请求流。配置、数据边界和原始证据分别见 [GSM8K](QWEN38_PYPTO_GSM8K_CONFIRMATION.md)、[SPoC](QWEN38_PYPTO_SPOC_CONFIRMATION.md)、[LongProc](QWEN38_PYPTO_CODEGEN_CONFIRMATION.md)。三卡独立学习器的256题SPoC辅助流已完成，在线相对同条件AR /固定为+13.35% /+9.95%；单列在SPoC摘要中，不能并入上述双卡结果。三卡SPoC、GSM的其余固定配方重复正在执行。
+原LongProc的三次完整负结果保留，不因SPoC通过而改写；SPoC是另外的补充请求流。配置、数据边界和原始证据分别见 [GSM8K](QWEN38_PYPTO_GSM8K_CONFIRMATION.md)、[SPoC](QWEN38_PYPTO_SPOC_CONFIRMATION.md)、[LongProc](QWEN38_PYPTO_CODEGEN_CONFIRMATION.md)。三卡独立学习器的SPoC资源重复也已完成三次，每次及合并均通过双+5%门槛；合并AR /固定 /在线为21.3590 /22.1840 /24.2961 tok/s，即+13.75% /+9.52%。它们复用已分配题池，扩展登记晚于第一次部分结果，单列在SPoC摘要中，不并入双卡证据，也不称为新问题确认。三卡GSM仍在执行。
 
 ## 11 月 21 日探索进展
 

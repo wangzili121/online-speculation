@@ -19,11 +19,14 @@ for old in P['process_instances']:
   ticks=None
  instances.append(dict(pid=old['pid'],recorded_start_ticks=old['start_ticks'],current_start_ticks=ticks,original_instance_live=ticks==old['start_ticks']))
 container=P.get('container')
-container_exists=None
+container_exists=None;container_error=None
 if container:
- ids=subprocess.check_output(['docker','ps','-aq','--no-trunc'],text=True).splitlines()
- container_exists=container['id']in ids
-print(json.dumps(dict(original_processes_gone=all(not x['original_instance_live']for x in instances),original_container_gone=not container_exists if container else None,instances=instances)))
+ try:
+  ids=subprocess.check_output(['docker','ps','-aq','--no-trunc'],text=True,timeout=6).splitlines()
+  container_exists=container['id']in ids
+ except subprocess.SubprocessError as error:
+  container_error=repr(error)
+print(json.dumps(dict(original_processes_gone=all(not x['original_instance_live']for x in instances),original_container_gone=not container_exists if container_exists is not None else None,container_observation_error=container_error,instances=instances)))
 '''
 
 
@@ -46,8 +49,12 @@ def main(root):
                                   input=("P=" + repr(binding) + "\n" + REMOTE).encode(),
                                   capture_output=True, timeout=40, check=True)
             proof = json.loads(call.stdout)
+            container_confirmed = proof["original_container_gone"] is True if binding.get("container") else True
+            released = proof["original_processes_gone"] and container_confirmed
+            if proof.get("container_observation_error") and proof["original_processes_gone"]:
+                released = None
             proof.update(tag=tag, host=binding["host"],
-                         released=proof["original_processes_gone"] and proof["original_container_gone"] is not False,
+                         released=released,
                          globally_idle_cards_not_asserted=True, actions_taken=[])
             return proof
         except (subprocess.SubprocessError, ValueError) as error:
