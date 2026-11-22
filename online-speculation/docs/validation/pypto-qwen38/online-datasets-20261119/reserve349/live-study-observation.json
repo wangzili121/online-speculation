@@ -1,0 +1,45 @@
+{
+  "observed_UTC": "2026-11-22T06:34:59.145877+00:00",
+  "rows": [
+    {
+      "host": "A",
+      "controller_pid": 2483420,
+      "controller_live": true,
+      "cmdline": "python3 /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-studies/study_queue_resource338.py --plan queue-sync346-A.json ",
+      "stage": null,
+      "completed": null,
+      "error": null,
+      "launcher_pids": [],
+      "progress": {},
+      "controller_tail": "\"available_bytes\": 90407731200, \"minimum_bytes\": 103079215104, \"other_own_startups\": []}\n{\"waiting_host_memory\": true, \"tag\": \"a111-v248-sync346-resource-gate\", \"available_bytes\": 89346121728, \"minimum_bytes\": 103079215104, \"other_own_startups\": []}\n"
+    },
+    {
+      "host": "B",
+      "controller_pid": 489903,
+      "controller_live": true,
+      "cmdline": "python3 /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/study_queue_resource338.py --plan queue-sync345-B.json ",
+      "stage": "measuring",
+      "completed": false,
+      "error": null,
+      "launcher_pids": [
+        492336
+      ],
+      "progress": {
+        "paired_128": {
+          "requests": 256,
+          "fixed_tok_s": 33.22934488888933,
+          "tok_s": 35.10850469175362,
+          "net_increment": 0.056551214270029515,
+          "accepted_per_round": 1.4940851944193942,
+          "updates": 371,
+          "publications": 92,
+          "ar_tok_s": 32.19379249616782,
+          "net_increment_vs_ar": 0.09053646587095177
+        }
+      },
+      "controller_tail": ""
+    }
+  ],
+  "NN_changes": false,
+  "read_only": true
+}
