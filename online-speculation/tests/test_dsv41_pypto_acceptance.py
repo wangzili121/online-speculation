@@ -207,6 +207,42 @@ class AcceptanceTest(unittest.TestCase):
         self.assertEqual(first["target"]["stage"], "layer-0/query")
         self.assertEqual(first["tensor_difference"]["max_abs"], 0.5)
 
+    def test_prefill_reduction_reconstructs_identical_tp_contributors(self):
+        session = self.root / "native" / "session-reduction"
+        session.mkdir(parents=True)
+        (session / "run-manifest.json").write_text(json.dumps(dict(topology=dict(tp=2))))
+        rows = []
+        for mode, output in (("target", torch.tensor([[3, 7]], dtype=torch.bfloat16)),
+                             ("orthrus", torch.tensor([[4, 6]], dtype=torch.bfloat16))):
+            directory = session / mode
+            directory.mkdir()
+            tensors = {}
+            for rank, value in enumerate((torch.tensor([[1, 2]], dtype=torch.bfloat16),
+                                          torch.tensor([[3, 4]], dtype=torch.bfloat16))):
+                tensors[f"layer-0/wo-b/rank-{rank}/case-fresh"] = value
+            tensors["layer-0/attention-scattered/rank-1/case-fresh"] = output
+            torch.save(tensors, directory / "prefill-tensors.pt")
+            trace = directory / "prefill-activations.json"
+            trace.write_text(json.dumps(dict(position=9, stages=[], tensors="prefill-tensors.pt")))
+            rows.append(dict(phase="prefill", owners=[dict(request_id=f"{mode}-request-0")],
+                             prefill_activation_trace=str(trace), seconds=1,
+                             timings=dict(chunk_seconds=1)))
+        (session / "serving-dispatches.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows)
+        )
+        stage = dict(stage="layer-0/attention-scattered", rank=1, case="fresh", layer=0)
+        divergence = dict(request=0, generated_index=0, phase="prefill", target_token=2,
+                          orthrus_token=3, native=dict(first_activation_difference=dict(target=stage)))
+        (self.root / "acceptance.json").write_text(json.dumps(dict(
+            passed=False, node=0, divergence=divergence,
+        )))
+        result = subprocess.run([sys.executable, str(SUMMARY), str(self.root), "--prefill-reduction"],
+                                check=True, capture_output=True)
+        report = json.loads(result.stdout)
+        self.assertTrue(report["fixed_order_reference"]["byte_exact"])
+        self.assertFalse(report["observed_output"]["byte_exact"])
+        self.assertTrue(all(item["byte_exact"] for item in report["contributor_differences"].values()))
+
 
 if __name__ == "__main__":
     unittest.main()

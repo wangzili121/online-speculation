@@ -210,6 +210,94 @@ def failure_diagnosis(directory):
     return report
 
 
+def _saved_path(directory, value):
+    """Map an in-container evidence path back into a mounted acceptance directory."""
+    path = Path(value)
+    if path.is_file():
+        return path
+    for marker in ("native", "target-native", "orthrus-native"):
+        if marker in path.parts:
+            candidate = directory.joinpath(*path.parts[path.parts.index(marker):])
+            if candidate.is_file():
+                return candidate
+    raise ValueError(f"Cannot locate saved evidence {value} below {directory}")
+
+
+def prefill_reduction(directory):
+    """Reconstruct the first differing TP Attention reduction from saved rows."""
+    import torch
+
+    status = json.loads((directory / "acceptance.json").read_text())
+    failure = status.get("divergence", {})
+    first = failure.get("native", {}).get("first_activation_difference", {})
+    target_stage = first.get("target") or {}
+    if failure.get("phase") != "prefill" or target_stage.get("stage", "").split("/")[-1] != "attention-scattered":
+        raise ValueError("The saved failure is not a prefill Attention reduction divergence")
+    layer, rank = target_stage["layer"], target_stage["rank"]
+    session, rows = read_receipts(directory)
+    traces = {}
+    request = failure["request"]
+    for mode in ("target", "orthrus"):
+        request_id = f"{mode}-request-{request}"
+        matches = [row for row in rows if row["phase"] == "prefill"
+                   and any(owner["request_id"] == request_id for owner in row["owners"])]
+        if not matches:
+            raise ValueError(f"No saved prefill receipt for {request_id}")
+        evidence_path = _saved_path(directory, matches[-1]["prefill_activation_trace"])
+        evidence = json.loads(evidence_path.read_text())
+        traces[mode] = torch.load(evidence_path.parent / evidence["tensors"], map_location="cpu",
+                                  weights_only=True)
+    manifest = json.loads((session / "run-manifest.json").read_text())
+    topology = manifest.get("topology", {})
+    tp = topology.get("tp", 4)
+    ranks = list(range(rank // tp * tp, rank // tp * tp + tp))
+
+    def key(name, member):
+        return f"layer-{layer}/{name}/rank-{member}/case-fresh"
+
+    contributors = {
+        mode: [traces[mode][key("wo-b", member)].float() for member in ranks]
+        for mode in traces
+    }
+    reference = {mode: torch.stack(values).sum(0).to(torch.bfloat16)
+                 for mode, values in contributors.items()}
+    outputs = {mode: traces[mode][key("attention-scattered", rank)] for mode in traces}
+
+    def difference(left, right):
+        delta = (left.float() - right.float()).abs()
+        values, indices = delta.flatten().topk(min(5, delta.numel()))
+        return dict(
+            byte_exact=bool(torch.equal(left, right)),
+            mismatched=int(torch.count_nonzero(left != right)),
+            elements=left.numel(),
+            max_abs=float(delta.max()) if delta.numel() else 0.0,
+            mean_abs=float(delta.mean()) if delta.numel() else 0.0,
+            largest_flat_indices=indices.tolist(),
+            largest_abs=values.tolist(),
+        )
+
+    contributor_differences = {
+        str(member): difference(contributors["target"][index], contributors["orthrus"][index])
+        for index, member in enumerate(ranks)
+    }
+    report = dict(
+        phase="prefill", layer=layer, rank=rank, tp_ranks=ranks,
+        contributor_differences=contributor_differences,
+        fixed_order_reference=difference(reference["target"], reference["orthrus"]),
+        observed_output=difference(outputs["target"], outputs["orthrus"]),
+        target_vs_fixed_order=difference(outputs["target"], reference["target"]),
+        orthrus_vs_fixed_order=difference(outputs["orthrus"], reference["orthrus"]),
+    )
+    if all(item["byte_exact"] for item in contributor_differences.values()):
+        report["conclusion"] = (
+            "All saved Wo-B contributors are byte-identical; the divergence is introduced by "
+            "reduce_pack or the TP BF16 collective, not Attention, weights, KV, or Orthrus."
+        )
+    else:
+        report["conclusion"] = "At least one TP Wo-B contributor already differs."
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path, help="The acceptance directory printed by cluster-accept")
@@ -217,11 +305,15 @@ def main():
                         help="Compare the saved target and verification logits on the request's host")
     parser.add_argument("--failure-diagnosis", action="store_true",
                         help="Diagnose whichever acceptance phase failed using evidence from the same run")
+    parser.add_argument("--prefill-reduction", action="store_true",
+                        help="Reconstruct the first differing TP Attention reduction from saved tensors")
     args = parser.parse_args()
-    if args.verifier_logits and args.failure_diagnosis:
+    if sum((args.verifier_logits, args.failure_diagnosis, args.prefill_reduction)) > 1:
         parser.error("Choose only one diagnostic mode")
     try:
-        if args.failure_diagnosis:
+        if args.prefill_reduction:
+            summary = prefill_reduction(args.directory)
+        elif args.failure_diagnosis:
             summary = failure_diagnosis(args.directory)
         elif args.verifier_logits:
             summary = verifier_logits(args.directory)
@@ -229,7 +321,8 @@ def main():
             summary = summarize(args.directory)
     except (OSError, ImportError, IndexError, KeyError, ValueError) as error:
         parser.exit(1, f"{error}\n")
-    print(json.dumps(summary, indent=None if args.verifier_logits or args.failure_diagnosis else 2))
+    compact = args.verifier_logits or args.failure_diagnosis or args.prefill_reduction
+    print(json.dumps(summary, indent=None if compact else 2))
 
 
 if __name__ == "__main__":
