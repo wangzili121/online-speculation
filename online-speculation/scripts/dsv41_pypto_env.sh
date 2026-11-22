@@ -186,9 +186,13 @@ case "$action" in
       echo "Report: $report_dir/online-kernels.json"
       options+=(-v "$root:/workspace/online-speculation:ro" -v "$report_dir:/results"
                 -e PYTHONPATH=/workspace/online-speculation/src)
-      exec docker run "${options[@]}" "$image" "${command_env[@]}" /opt/pypto/venv/bin/python \
-        /workspace/online-speculation/scripts/validate_dsv41_pypto_online_programs.py \
-        --device "$runtime_device" --vocabulary 129280 --output /results/online-kernels.json "$@"
+      # Older transferred images may contain the pinned PTO-ISA checkout only
+      # in the PyPTO source tree. Seed Simpler's managed path locally before
+      # assembly; this is offline and never substitutes a different revision.
+      exec docker run "${options[@]}" "$image" "${command_env[@]}" bash -lc \
+        'bash /workspace/online-speculation/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh && exec /opt/pypto/venv/bin/python \
+          /workspace/online-speculation/scripts/validate_dsv41_pypto_online_programs.py \
+          --device "$@"' _ "$runtime_device" --vocabulary 129280 --output /results/online-kernels.json "$@"
     fi
     if [[ "$action" == init-head ]]; then
       : "${DRAFT_HEAD:?Set DRAFT_HEAD to a new output directory on the host}"

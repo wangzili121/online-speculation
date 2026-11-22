@@ -42,7 +42,11 @@ def main():
         make_hc_post_gate_vjp,
         make_hc_pre_gate_vjp,
     )
-    from blockspec.pypto_dsv41_moe_vjp import make_moe_combine_vjp, make_normalized_route_vjp
+    from blockspec.pypto_dsv41_moe_vjp import (
+        make_dequantize_blocked_weight,
+        make_moe_combine_vjp,
+        make_normalized_route_vjp,
+    )
 
     torch.set_num_threads(4)
     torch.manual_seed(41)
@@ -141,6 +145,10 @@ def main():
             empty((4, 6), torch.float32), empty((4, 6), torch.float32),
             empty((4, 16), torch.float32), 2.5, config=config,
         ),
+        "w8a8_vjp_weight": make_dequantize_blocked_weight(256, 128).compile(
+            empty((256 * 2, 64), torch.int8), empty((128,), torch.float32),
+            empty((256, 128)), config=config,
+        ),
     }
     if not args.skip_full_shape_compile:
         production_attention = C1AAttentionVJPGeometry()
@@ -182,6 +190,18 @@ def main():
         programs["normalized_route_vjp_k32"] = make_normalized_route_vjp().compile(
             empty((32, 6), torch.float32), empty((32, 6), torch.float32),
             empty((32, 16), torch.float32), 2.5, config=config,
+        )
+        programs["moe_down_vjp_weight_2304x5120"] = make_dequantize_blocked_weight(
+            2304, 5120,
+        ).compile(
+            empty((2304 * (5120 // 64), 64), torch.int8),
+            empty((5120,), torch.float32), empty((2304, 5120)), config=config,
+        )
+        programs["moe_gate_up_vjp_weight_5120x4608"] = make_dequantize_blocked_weight(
+            5120, 4608,
+        ).compile(
+            empty((5120 * (4608 // 64), 64), torch.int8),
+            empty((4608,), torch.float32), empty((5120, 4608)), config=config,
         )
         # The frozen LM head is not updated, but its transpose is required to
         # propagate dLogits into the final trainable draft layer. Compile the
@@ -516,6 +536,23 @@ def main():
             expected_score_grad, atol=.01, rtol=.002,
         )
         report["cases"].append({"operator": "fixed_route_moe_vjp", "shape": [4, 6, 128]})
+
+        logical_weight = torch.randint(-127, 128, (256, 128), dtype=torch.int8)
+        packed_weight = logical_weight.reshape(256, 2, 64).permute(1, 0, 2).contiguous().view(512, 64)
+        channel_scale = torch.rand(128, dtype=torch.float32) * .02
+        logical_handle = allocate(torch.zeros(256, 128, dtype=torch.bfloat16))
+        worker.run(
+            programs["w8a8_vjp_weight"], allocate(packed_weight), allocate(channel_scale),
+            logical_handle, config=config,
+        )
+        expected_weight = (logical_weight.float() * channel_scale).bfloat16()
+        torch.testing.assert_close(
+            read(logical_handle, torch.empty_like(expected_weight)), expected_weight,
+            atol=0, rtol=0,
+        )
+        report["cases"].append({
+            "operator": "w8a8_frozen_input_vjp_weight", "shape": [256, 128],
+        })
 
         master = torch.nn.Parameter(torch.randn(64, 128))
         optimizer = torch.optim.AdamW([master], lr=1e-4, weight_decay=0, foreach=False)

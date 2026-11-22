@@ -27,8 +27,9 @@ deepseek_v4.1_flash_1122
 - last-N 计划、真实后缀边界与 Attention/mHC/MoE 精确状态捕获完成。
 - 双机全局只选一个在线反馈请求，其他 DP 参加零梯度同步。
 - TV/KL、C1A Attention、mHC、固定路由 MoE、AdamW 和发布所需 PyPTO 叶子已实现并独立验证。
+- 冻结 W8A8 MoE 权重的输入 VJP 已补齐：设备端按原生分块布局反量化，真实 `2304×5120` 与 `5120×4608` 尺寸编译通过，小形状数值在 NPU 上逐元素一致。
 - resident 反向的调用顺序和参数 ABI 已固化，last-1/2/4/8 均在支持的 C1A 后缀内。
 
 ## 下一步
 
-把冻结 W8A8 LM head/MoE 的输入 VJP、HCCL 梯度归并和 FP32 optimizer 状态绑定到真实 resident session，完成一次真实在线更新；随后在 GSM8K 上先跑小规模正确性，再扫描 last-N、学习率和更新频率。Qwen3.8 的设置只作为起点，不直接当作 DSV4.1 的最终参数。
+把已验证的 W8A8 输入 VJP、HCCL 梯度归并和 FP32 optimizer 状态绑定到真实 resident session，并补齐 selected expert 的前向中间量或等价重算，完成一次真实在线更新；随后在 GSM8K 上先跑小规模正确性，再扫描 last-N、学习率和更新频率。Qwen3.8 的设置只作为起点，不直接当作 DSV4.1 的最终参数。

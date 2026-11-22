@@ -1,6 +1,65 @@
 """PyPTO leaves for the fixed-route DSV4.1 MoE reverse pass."""
 
 
+def make_dequantize_blocked_weight(input_width, output_width, *, inline=False):
+    """Restore the BF16 weight used by a frozen W8A8 input VJP.
+
+    Native DSV4.1 stores an INT8 ``[K, N]`` matrix as
+    ``[N / 64, K, 64]``.  The frozen target weight needs no parameter
+    gradient; online learning only needs ``dY @ W.T``.  This leaf restores
+    ``W * channel_scale`` on device so the shared training GEMM can compute
+    that input VJP.  It also makes the activation-quantization derivative
+    explicit: forward values stay quantized, while the input VJP uses the
+    dequantized frozen weight (the usual straight-through boundary).
+    """
+    if (
+        type(input_width) is not int or type(output_width) is not int
+        or input_width <= 0 or output_width <= 0
+        or input_width % 256 or output_width % 64
+    ):
+        raise ValueError("blocked W8A8 weight requires K/256 and N/64 alignment")
+    import pypto.language as pl
+
+    blocks = output_width // 64
+    kernel = pl.jit.inline if inline else pl.jit
+
+    @kernel
+    def dequantize(
+        packed: pl.Tensor,
+        channel_scale: pl.Tensor,
+        logical: pl.Out[pl.Tensor],
+    ):
+        with pl.spmd(input_width * blocks, name_hint="orthrus_dsv41_w8a8_vjp_weight"):
+            task = pl.tile.get_block_idx()
+            row = task // blocks
+            block = task % blocks
+            # A2/A3 has no direct INT8->FP32 vector conversion.
+            codes = pl.cast(
+                pl.cast(
+                    pl.slice(packed, [1, 64], [block * input_width + row, 0]),
+                    pl.FP16,
+                ),
+                pl.FP32,
+            )
+            scales = pl.reshape(
+                pl.slice(channel_scale, [64], [block * 64]), [1, 64],
+            )
+            logical[row:row + 1, block * 64:block * 64 + 64] = pl.cast(
+                pl.mul(codes, scales), pl.BF16, mode="rint",
+            )
+        return logical
+
+    @pl.jit.host
+    def entry(
+        packed: pl.Tensor,
+        channel_scale: pl.Tensor,
+        logical: pl.Out[pl.Tensor],
+    ):
+        dequantize(packed, channel_scale, logical, device=0)
+
+    return dequantize if inline else entry
+
+
 def make_moe_combine_vjp(rows=32, hidden=5120, topk=6, *, inline=False):
     """Return gradients for shared output, selected expert rows and weights."""
     if rows < 1 or hidden < 64 or hidden % 64 or topk != 6:
