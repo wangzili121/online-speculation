@@ -27,6 +27,8 @@ PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline \
 
 公司内网的 node7 和 node8 可直接按节点名启动。默认使用离线镜像，node7 选物理卡 1，node8 选物理卡 0。确认卡已空闲，先在 node7 运行第一条，再在一分钟内在 node8 运行第二条。需要换卡时，在对应命令前设置 `NPU_DEVICE`。
 
+node7 使用 `7.150.6.33`。node8 用 `ip -4 route get 7.150.6.33` 取得本机的路由源地址作为 `HCCL_IF_IP`。
+
 ```bash
 # node7
 bash online-speculation/scripts/dsv41_pypto_env.sh fabric-check node7

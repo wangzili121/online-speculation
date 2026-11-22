@@ -19,10 +19,19 @@ if [[ "$action" == fabric-check && "${1:-}" == node* ]]; then
       ;;
     node8)
       rank=1
-      HCCL_IF_IP=7.150.6.37
+      if ! route="$(ip -4 route get "$master_address")"; then
+        echo "Cannot resolve the node8 route to $master_address" >&2
+        exit 2
+      fi
+      HCCL_IF_IP="$(awk '{for (i=1; i<NF; i++) if ($i == "src") {print $(i+1); exit}}' <<< "$route")"
+      if [[ -z "$HCCL_IF_IP" || "$HCCL_IF_IP" == "$master_address" ]]; then
+        echo "Run the node8 probe on the peer host with an IPv4 source route to $master_address" >&2
+        exit 2
+      fi
       NPU_DEVICE="${NPU_DEVICE:-0}"
       ;;
   esac
+  echo "Rank $rank HCCL host IP: $HCCL_IF_IP" >&2
   default_image+=-offline
   set -- --rank "$rank" --master-address "$master_address"
 fi

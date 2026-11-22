@@ -172,7 +172,14 @@ def test_company_fabric_check_selects_node_defaults(tmp_path):
     env = environment(tmp_path)
     for name in ("PYPTO_IMAGE", "NPU_DEVICE", "HCCL_IF_IP"):
         env.pop(name, None)
-    nodes = (("node7", "0", "1", "7.150.6.33"), ("node8", "1", "0", "7.150.6.37"))
+    ip = tmp_path / "ip"
+    ip.write_text(
+        "#!/bin/sh\n"
+        '[ "$*" = "-4 route get 7.150.6.33" ] || exit 2\n'
+        'echo "7.150.6.33 via 7.150.0.1 dev eth0 src 7.150.0.37 uid 0"\n'
+    )
+    ip.chmod(0o755)
+    nodes = (("node7", "0", "1", "7.150.6.33"), ("node8", "1", "0", "7.150.0.37"))
     for node, rank, card, address in nodes:
         args = json.loads(subprocess.check_output(
             ["bash", str(SCRIPT), "fabric-check", node], text=True, env=env, cwd=tmp_path,
@@ -191,6 +198,12 @@ def test_company_fabric_check_selects_node_defaults(tmp_path):
 
     result = subprocess.run(["bash", str(SCRIPT), "fabric-check", "node9"], capture_output=True, text=True, env=env)
     assert result.returncode == 2 and "fabric-check {node7|node8}" in result.stderr
+
+    ip.write_text('#!/bin/sh\necho "local 7.150.6.33 dev lo src 7.150.6.33"\n')
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "fabric-check", "node8"], capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 2 and "Run the node8 probe on the peer host" in result.stderr
 
 
 def test_fabric_rendezvous_ignores_plain_tcp_connections(tmp_path):
