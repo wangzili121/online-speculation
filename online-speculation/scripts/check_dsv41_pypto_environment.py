@@ -71,7 +71,7 @@ def device_probe(*, device=0, compile_only=False):
     b = torch.full((128, 128), 3.0)
     c = torch.zeros_like(a)
     config = RunConfig(
-        backend_type=BackendType.Ascend910B, execution_mode=ExecutionMode.ONBOARD,
+        backend_type=BackendType.Ascend910B, execution_mode=ExecutionMode.ONBOARD, device_id=device,
         distributed_config=DistributedConfig(device_ids=[device], num_sub_workers=0),
     )
     if config.execution_mode != ExecutionMode.ONBOARD:

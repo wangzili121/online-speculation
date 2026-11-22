@@ -126,7 +126,7 @@ def main():
     torch.set_num_threads(4)
     mode = ExecutionMode.SIM if args.simulate else ExecutionMode.ONBOARD
     config = RunConfig(
-        backend_type=BackendType.Ascend910B, execution_mode=mode,
+        backend_type=BackendType.Ascend910B, execution_mode=mode, device_id=args.device,
         distributed_config=DistributedConfig(device_ids=[args.device], num_sub_workers=0),
     )
     if config.execution_mode != mode:
