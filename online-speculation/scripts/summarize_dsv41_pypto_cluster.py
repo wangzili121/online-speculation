@@ -102,19 +102,34 @@ def verifier_logits(directory):
         path = session / forward / "actual-layer39-output" / f"rank-{rank}-fresh-network-logits.pt"
         saved = torch.load(path, map_location="cpu", weights_only=True)
         row = list(map(int, saved["positions"])).index(position)
-        return saved["logits"][row].float()
+        trace = session / forward / "verifier-activations.json"
+        stages = None
+        if trace.is_file():
+            evidence = json.loads(trace.read_text())
+            if evidence["position"] == position:
+                stages = evidence["stages"]
+        return saved["logits"][row].float(), stages
 
-    target = read_row(f"controls-{target_row['native_epoch']}", f"decode/step-{step}")
-    verify = read_row(f"controls-verify-{verify_call}", f"verify-{verify_call}")
+    target, target_stages = read_row(f"controls-{target_row['native_epoch']}", f"decode/step-{step}")
+    verify, verify_stages = read_row(f"controls-verify-{verify_call}", f"verify-{verify_call}")
     if (int(target.argmax()), int(verify.argmax())) != (failure["target_token"], failure["orthrus_token"]):
         raise ValueError("Saved argmax does not match the recorded divergence")
     difference = (target - verify).abs()
-    return dict(
+    report = dict(
         request=index, generated_index=offset, prefix_tokens=len(prefix),
         max_abs=float(difference.max()), mean_abs=float(difference.mean()),
         target_top5=dict(zip(target.topk(5).indices.tolist(), target.topk(5).values.tolist(), strict=True)),
         verify_top5=dict(zip(verify.topk(5).indices.tolist(), verify.topk(5).values.tolist(), strict=True)),
     )
+    if target_stages is not None and verify_stages is not None:
+        keys = ("hidden_sha256", "premix_sha256")
+        report["first_activation_difference"] = next(
+            (dict(stage=a["stage"], target_rank=a["rank"], verify_rank=b["rank"],
+                  tensors=[name for name in keys if a[name] != b[name]])
+             for a, b in zip(target_stages, verify_stages, strict=True)
+             if a["stage"] == b["stage"] and any(a[name] != b[name] for name in keys)), None,
+        )
+    return report
 
 
 def main():

@@ -188,7 +188,7 @@ def run(args):
         link.connection.settimeout(args.timeout)
         request = dict(build=identity, checkpoint=checkpoint_identity, head=head_identity,
                        prompts=prompts, partitions=assignments, tokens=args.tokens, context=args.context,
-                       trace_prefill=args.trace_prefill)
+                       trace_prefill=args.trace_prefill, trace_position=args.trace_position)
         if link.exchange("acceptance/configuration", request) != request:
             raise ValueError("Nodes must use the same checkout, model, head and workload")
         print(f"Node {args.node} preparing HOST Engram contracts", flush=True)
@@ -206,7 +206,7 @@ def run(args):
         cluster = ClusterDispatcher(plan, link, build_id=identity)
         session = NativeSession(source, args.model, devices, native_dir, config, checkpoint.text["vocab_size"],
                                 cache_plan, orthrus_head=str(args.head), cluster=cluster, prepared_cache=cache,
-                                defer_draft=True, trace_prefill=args.trace_prefill)
+                                defer_draft=True, trace_prefill=args.trace_prefill, trace_position=args.trace_position)
         runner = A3Runner(source, config, cache_plan, session, checkpoint.text["vocab_size"], greedy_tokens=True)
         try:
             for mode in modes:
@@ -260,12 +260,16 @@ def main():
     parser.add_argument("--host-threads", type=int, default=4)
     parser.add_argument("--trace-prefill", action=argparse.BooleanOptionalAction, default=True,
                         help="Record hashes of actual prefill layer outputs for first-divergence diagnosis")
+    parser.add_argument("--trace-position", type=int,
+                        help="Record one absolute token position (zero-based) in Decode and K32 Verify")
     parser.add_argument("--connect-timeout", type=int, default=900)
     parser.add_argument("--timeout", type=int, default=3600, help="Maximum seconds of peer inactivity")
     args = parser.parse_args()
     if (args.tokens < 2 or args.host_threads < 1 or args.timeout < 1
             or (args.prompt is not None and len(args.prompt) != 2)):
         parser.error("Require at least two output tokens, positive timeouts/threads and exactly two prompts")
+    if args.trace_position is not None and not 0 <= args.trace_position < args.context:
+        parser.error("--trace-position must be in the reserved context")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         summary = run(args)
