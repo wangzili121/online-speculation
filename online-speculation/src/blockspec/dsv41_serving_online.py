@@ -25,6 +25,7 @@ class DSV41CapturedLayer:
         attention = {
             "readonly_hidden", "hidden", "incoming", "pre", "post", "comb",
             "collapsed", "normed", "changed", "cos", "sin", "history", "selection",
+            "qkv", "contribution",
         }
         ffn = {
             "changed", "pre", "post", "comb", "collapsed", "normed",
