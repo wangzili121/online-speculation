@@ -27,3 +27,9 @@
 ## 本次派发
 
 2026-11-22 07:43:49 UTC完成冻结，07:44:09 UTC派发167控制器。完整旧探索相对AR为+10.71%、相对固定为+7.25%，全部资格证据已归档；新确认的384题与32题留出经当时三机使用记录检查后按登记顺序选取。三个种子743、744、745顺序运行，每次重新加载同一step128 head并初始化Adam。`frozen-recipe.json`、`assignment.json`、`protocol.json`和输入文件记录精确边界；`launch-B.json`记录控制器与计划哈希。派发不代表新确认达标，结果须待三个完整流分别审核。
+
+## 设备记录的本地留存
+
+网络监控曾中断，另部署`server_binding.py`在服务器上保存运行期间的设备绑定。它复用原来的只读采集代码，按真实worker PID、启动时间和`npu-smi`匹配三张物理卡；输出保存在实验目录的`resource-observations-confirm350/`。采齐三次绑定后自行退出，不调用模型、占卡或重启任何任务，也不更改冻结配方。
+
+本地收集器优先读取这份快照，核对采集程序SHA256、tag、目录、主机与三卡worker集合，再审核完整结果。这样即使worker已经正常退出，也能保留运行时证据。`server-binding-observer.json`记录实际采集进程与程序哈希，`server-binding-live-check.json`和`server-binding-consumer-check.json`记录首次实机采集及读取核对；CPU持久化检查另列，不代替实机结果。当前NN控制器、模型源文件和输入均保持原样。

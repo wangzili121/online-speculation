@@ -2,12 +2,14 @@
 from pathlib import Path
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import subprocess
+import textwrap
 import time
 
 
-REMOTE = r'''
+LIVE_REMOTE = r'''
 from pathlib import Path
 import json,os,subprocess,re,datetime
 r=Path(P['root']);p=r/(P['tag']+'.json')
@@ -53,6 +55,24 @@ if d.get('stage')=='measuring'and not d.get('completed'):
               workers=matched,process_instances=processes,no_other_users_rows_retained=True)
 print(json.dumps(out))
 '''
+
+# 服务器本地可保存同一段只读采集程序的结果。联网观察恢复后，先取这份
+# 原始快照；即使 worker 已正常退出，也不会丢掉运行时的真实设备绑定。
+REMOTE = '''
+from pathlib import Path
+import json
+saved=Path(P['root'])/'resource-observations-confirm350'/(P['tag']+'.resources.json')
+if saved.exists():
+ binding=json.loads(saved.read_text())
+ assert binding['capture_program_sha256']==''' + repr(hashlib.sha256(LIVE_REMOTE.encode()).hexdigest()) + '''
+ assert binding['captured'] and binding['tag']==P['tag'] and binding['root']==P['root'] and binding['host']==P['host']
+ assert binding['stage']=='measuring' and not binding['completed']
+ assert len(set(binding['physical_cards']))==3 and len(binding['workers'])==3
+ assert {v['physical_npu']for v in binding['workers']}==set(binding['physical_cards'])
+ assert binding['process_instances'] and all(v['start_ticks']is not None for v in binding['process_instances'])
+ print(json.dumps(binding))
+else:
+''' + textwrap.indent(LIVE_REMOTE, ' ')
 
 
 def main():
