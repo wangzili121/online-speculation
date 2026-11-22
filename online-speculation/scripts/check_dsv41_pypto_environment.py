@@ -52,7 +52,7 @@ def report():
     return result
 
 
-def device_probe(*, compile_only=False):
+def device_probe(*, device=0, compile_only=False):
     import pypto.language as pl
     from pypto.backend import BackendType
     from pypto.ir import DistributedConfig
@@ -72,7 +72,7 @@ def device_probe(*, compile_only=False):
     c = torch.zeros_like(a)
     config = RunConfig(
         backend_type=BackendType.Ascend910B, execution_mode=ExecutionMode.ONBOARD,
-        distributed_config=DistributedConfig(device_ids=[0], num_sub_workers=0),
+        distributed_config=DistributedConfig(device_ids=[device], num_sub_workers=0),
     )
     if config.execution_mode != ExecutionMode.ONBOARD:
         raise RuntimeError("device probe must execute on the NPU")
@@ -88,10 +88,11 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--device-probe", action="store_true")
     mode.add_argument("--compile-probe", action="store_true", help="Compile the device kernel without using an NPU")
+    parser.add_argument("--device", type=int, default=0, help="Device ID passed to the pinned runtime")
     args = parser.parse_args()
     result = report()
     if args.device_probe or args.compile_probe:
-        device_probe(compile_only=args.compile_probe)
+        device_probe(device=args.device, compile_only=args.compile_probe)
         result.update(kernel_compiled=True, kernel_executed=args.device_probe)
     print(json.dumps(result, indent=2))
 

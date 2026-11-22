@@ -97,6 +97,11 @@ case "$action" in
         options+=(-v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro)
       fi
     fi
+    if [[ "$action" == probe ]]; then
+      options+=(-v "$root:/workspace/online-speculation:ro")
+      exec docker run "${options[@]}" "$image" python \
+        /workspace/online-speculation/scripts/check_dsv41_pypto_environment.py --device-probe "$@" --device "$NPU_DEVICE"
+    fi
     if [[ "$action" == shell ]]; then
       options+=(-it -v "$root:/workspace/online-speculation:ro")
       exec docker run "${options[@]}" "$image" bash
@@ -118,7 +123,7 @@ case "$action" in
       if [[ -n "${HCCL_IF_IP:-}" ]]; then options+=(-e HCCL_IF_IP); fi
       options+=(-v "$root:/workspace/online-speculation:ro")
       exec docker run "${options[@]}" "$image" timeout -k 5s 180s python \
-        /workspace/online-speculation/scripts/probe_dsv41_pypto_fabric.py "$@"
+        /workspace/online-speculation/scripts/probe_dsv41_pypto_fabric.py "$@" --device "$NPU_DEVICE"
     fi
     if [[ "$action" == attention-check || "$action" == handoff-check ]]; then
       kind=handoff
@@ -126,6 +131,7 @@ case "$action" in
       report_dir="$(mktemp -d "$PWD/orthrus-$kind.XXXXXX")"
       echo "Reports: $report_dir"
       options+=(-v "$root:/workspace/online-speculation:ro" -v "$report_dir:/results")
+      if [[ -n "${NPU_DEVICE:-}" ]]; then set -- "$@" --device "$NPU_DEVICE"; fi
       if [[ "$action" == attention-check ]]; then
         exec docker run "${options[@]}" "$image" bash /workspace/online-speculation/scripts/compare_dsv41_pypto_swa.sh "$@"
       fi

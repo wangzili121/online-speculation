@@ -62,7 +62,7 @@ python3 online-speculation/scripts/preflight_dsv41_pypto.py --inspect --output c
 
 ## 验证设备执行
 
-确认所选卡空闲后执行。卡号使用宿主机的物理编号，脚本在容器中映射为可见设备 0。探针会编译并执行一个加法内核，再与 Torch 的结果精确对照。
+确认所选卡空闲后执行。卡号使用宿主机的物理编号，脚本只映射这张卡，并将同一个编号传给探针。探针会编译并执行一个加法内核，再与 Torch 的结果精确对照。
 
 ```bash
 NPU_DEVICE=0 bash online-speculation/scripts/dsv41_pypto_env.sh probe
