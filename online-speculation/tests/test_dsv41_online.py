@@ -8,6 +8,14 @@ from blockspec.dsv41_online import (
     DSV41OnlineConfig,
     DSV41OnlineController,
 )
+from blockspec.pypto_dsv41_online_programs import loss_vocabulary_tile
+
+
+def test_v41_full_vocabulary_uses_complete_1280_element_tiles():
+    assert loss_vocabulary_tile(129280) == 1280
+    assert loss_vocabulary_tile(248320) == 2560
+    with pytest.raises(ValueError):
+        loss_vocabulary_tile(129281)
 
 
 def test_dsv41_online_policy_has_two_stage_cadence_and_warmup():
