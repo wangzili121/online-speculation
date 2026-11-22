@@ -366,9 +366,11 @@ class DraftRound:
                     a, state = self.captured_attention[key], self.captured_tail[key]
                     attention[rank] = dict(
                         a,
+                        readonly_hidden=state["readonly_hidden"],
                         hidden=state["hidden"], incoming=state["incoming"],
                         pre=state["pre"], post=state["post"], comb=state["comb"],
-                        collapsed=state["attn_collapsed"],
+                        collapsed=state["attn_collapsed"], normed=state["full_norm"],
+                        changed=state["changed"],
                     )
                     ffn[rank] = {
                         "changed": state["changed"], "pre": state["ffn_pre"],
@@ -377,13 +379,26 @@ class DraftRound:
                         "router_input": state["router_input"], "router_logits": state["router_logits"],
                         "route_ids": state["route_ids"], "route_weights": state["weights"],
                         "shared": state["shared"], "combined": state["combined"],
+                        "output_hidden": state["padded_hidden"],
+                        "output_pre_mix": state["ffn_pre"],
                     }
                 if not attention:
                     raise RuntimeError(f"captured request has no local TP state at layer {layer}")
                 layers.append(DSV41CapturedLayer(layer, attention, ffn))
-            boundary = {rank: values["hidden"] for (rank, layer, captured_owner), values
-                        in self.captured_attention.items()
-                        if layer == plan.first_layer and captured_owner == owner}
+            # A last-N replay must start at the real layer boundary.  The
+            # normalized Attention input is sufficient only for last-1; an
+            # earlier updated layer changes both streams consumed by every
+            # downstream frozen Engram/mHC prelude.
+            boundary = {
+                rank: {
+                    "hidden": state["readonly_hidden"],
+                    "pre_mix": state["incoming"],
+                }
+                for (rank, layer, captured_owner), state in self.captured_tail.items()
+                if layer == plan.first_layer and captured_owner == owner
+            }
+            if set(boundary) != set(self.attention.rank_ids):
+                raise RuntimeError("captured suffix boundary does not cover every local rank")
             replays[owner] = DSV41ServingReplay(
                 request_id, prefix, owner, plan, boundary, tuple(layers),
             )

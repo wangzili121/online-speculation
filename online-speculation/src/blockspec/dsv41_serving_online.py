@@ -23,13 +23,13 @@ class DSV41CapturedLayer:
 
     def __post_init__(self):
         attention = {
-            "hidden", "incoming", "pre", "post", "comb", "collapsed",
-            "cos", "sin", "history", "selection",
+            "readonly_hidden", "hidden", "incoming", "pre", "post", "comb",
+            "collapsed", "normed", "changed", "cos", "sin", "history", "selection",
         }
         ffn = {
             "changed", "pre", "post", "comb", "collapsed", "normed",
             "router_input", "router_logits", "route_ids", "route_weights",
-            "shared", "combined",
+            "shared", "combined", "output_hidden", "output_pre_mix",
         }
         attention_rows = self.attention.values() if self.attention and all(
             isinstance(key, int) for key in self.attention

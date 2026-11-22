@@ -15,13 +15,13 @@ def layer_state(layer):
     return DSV41CapturedLayer(
         layer,
         {name: object() for name in (
-            "hidden", "incoming", "pre", "post", "comb", "collapsed",
-            "cos", "sin", "history", "selection",
+            "readonly_hidden", "hidden", "incoming", "pre", "post", "comb", "collapsed",
+            "normed", "changed", "cos", "sin", "history", "selection",
         )},
         {name: object() for name in (
             "changed", "pre", "post", "comb", "collapsed", "normed",
             "router_input", "router_logits", "route_ids", "route_weights",
-            "shared", "combined",
+            "shared", "combined", "output_hidden", "output_pre_mix",
         )},
     )
 
