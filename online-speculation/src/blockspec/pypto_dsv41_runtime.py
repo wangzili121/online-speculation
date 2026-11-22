@@ -397,8 +397,12 @@ class DraftRound:
                 for (rank, layer, captured_owner), state in self.captured_tail.items()
                 if layer == plan.first_layer and captured_owner == owner
             }
-            if set(boundary) != set(self.attention.rank_ids):
-                raise RuntimeError("captured suffix boundary does not cover every local rank")
+            expected_ranks = {
+                rank for rank in self.attention.rank_ids
+                if rank // self.attention.topology["tp"] == owner[0]
+            }
+            if set(boundary) != expected_ranks:
+                raise RuntimeError("captured suffix boundary does not cover the owner's TP ranks")
             replays[owner] = DSV41ServingReplay(
                 request_id, prefix, owner, plan, boundary, tuple(layers),
             )
