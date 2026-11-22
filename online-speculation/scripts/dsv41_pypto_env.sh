@@ -2,9 +2,31 @@
 # Build once with internet access, then export the image for offline deployment.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-image="${PYPTO_IMAGE:-orthrus-dsv41-pypto:72a62d1}"
 action="${1:-help}"
 if [[ $# -gt 0 ]]; then shift; fi
+default_image=orthrus-dsv41-pypto:72a62d1
+if [[ "$action" == fabric-check && "${1:-}" == node* ]]; then
+  if [[ $# -ne 1 || ( "$1" != node7 && "$1" != node8 ) ]]; then
+    echo "Usage: $0 fabric-check {node7|node8}" >&2
+    exit 2
+  fi
+  master_address=7.150.6.33
+  case "$1" in
+    node7)
+      rank=0
+      HCCL_IF_IP="$master_address"
+      NPU_DEVICE="${NPU_DEVICE:-1}"
+      ;;
+    node8)
+      rank=1
+      HCCL_IF_IP=7.150.6.37
+      NPU_DEVICE="${NPU_DEVICE:-0}"
+      ;;
+  esac
+  default_image+=-offline
+  set -- --rank "$rank" --master-address "$master_address"
+fi
+image="${PYPTO_IMAGE:-$default_image}"
 case "$action" in
   build)
     [[ "$(uname -s)/$(uname -m)" == Linux/aarch64 ]] || {
@@ -146,7 +168,7 @@ case "$action" in
         --output "/results/$(basename "$DRAFT_HEAD")" --from-target "$@"
     fi
     if [[ "$action" == fabric-check ]]; then
-      if [[ -n "${HCCL_IF_IP:-}" ]]; then options+=(-e HCCL_IF_IP); fi
+      if [[ -n "${HCCL_IF_IP:-}" ]]; then options+=(-e "HCCL_IF_IP=$HCCL_IF_IP"); fi
       options+=(-v "$root:/workspace/online-speculation:ro")
       exec docker run "${options[@]}" "$image" "${command_env[@]}" timeout -k 5s 180s python \
         /workspace/online-speculation/scripts/probe_dsv41_pypto_fabric.py "$@" --device "$runtime_device"
@@ -167,5 +189,6 @@ case "$action" in
     ;;
   *)
     echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|handoff-check|fabric-check|init-head}"
+    echo "Company fabric probe: $0 fabric-check {node7|node8}"
     ;;
 esac

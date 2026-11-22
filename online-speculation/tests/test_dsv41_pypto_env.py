@@ -151,6 +151,31 @@ def test_fabric_check_uses_host_network_and_only_one_device(tmp_path):
     assert "/dev/davinci6:/dev/davinci6" in args
     assert args[args.index("--network") + 1] == "host"
     assert "ASCEND_RT_VISIBLE_DEVICES=0" in args
-    assert "HCCL_IF_IP" in args
+    assert "HCCL_IF_IP=192.0.2.7" in args
     assert args[-7:] == ["/workspace/online-speculation/scripts/probe_dsv41_pypto_fabric.py",
                          "--rank", "0", "--master-address", "192.0.2.7", "--device", "0"]
+
+
+def test_company_fabric_check_selects_node_defaults(tmp_path):
+    env = environment(tmp_path)
+    for name in ("PYPTO_IMAGE", "NPU_DEVICE", "HCCL_IF_IP"):
+        env.pop(name, None)
+    nodes = (("node7", "0", "1", "7.150.6.33"), ("node8", "1", "0", "7.150.6.37"))
+    for node, rank, card, address in nodes:
+        args = json.loads(subprocess.check_output(
+            ["bash", str(SCRIPT), "fabric-check", node], text=True, env=env,
+        ))
+        assert f"/dev/davinci{card}:/dev/davinci{card}" in args
+        assert f"HCCL_IF_IP={address}" in args
+        assert "orthrus-dsv41-pypto:72a62d1-offline" in args
+        assert args[-6:] == ["--rank", rank, "--master-address", "7.150.6.33", "--device", "0"]
+
+    args = json.loads(subprocess.check_output(
+        ["bash", str(SCRIPT), "fabric-check", "node8"],
+        text=True, env=env | {"NPU_DEVICE": "4", "PYPTO_IMAGE": "image:custom"},
+    ))
+    assert "/dev/davinci4:/dev/davinci4" in args
+    assert "image:custom" in args
+
+    result = subprocess.run(["bash", str(SCRIPT), "fabric-check", "node9"], capture_output=True, text=True, env=env)
+    assert result.returncode == 2 and "fabric-check {node7|node8}" in result.stderr

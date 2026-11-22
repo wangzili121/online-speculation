@@ -25,17 +25,17 @@ PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline \
 
 ## 双机通信探针
 
-在两台机器各选择一张空闲卡，设置 `NODE7_IP`、`NODE8_IP` 为互通的内网网卡地址。两端均使用同一 rank 0 地址和端口；`HCCL_IF_IP` 使用各自本机地址。先在 node7 运行第一条，再在 node8 运行第二条。
+公司内网的 node7 和 node8 可直接按节点名启动。默认使用离线镜像，node7 选物理卡 1，node8 选物理卡 0。确认卡已空闲，先在 node7 运行第一条，再在一分钟内在 node8 运行第二条。需要换卡时，在对应命令前设置 `NPU_DEVICE`。
 
 ```bash
 # node7
-PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline NPU_DEVICE=0 HCCL_IF_IP="$NODE7_IP" \
-  bash online-speculation/scripts/dsv41_pypto_env.sh fabric-check --rank 0 --master-address "$NODE7_IP"
+bash online-speculation/scripts/dsv41_pypto_env.sh fabric-check node7
 
 # node8
-PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline NPU_DEVICE=0 HCCL_IF_IP="$NODE8_IP" \
-  bash online-speculation/scripts/dsv41_pypto_env.sh fabric-check --rank 1 --master-address "$NODE7_IP"
+bash online-speculation/scripts/dsv41_pypto_env.sh fabric-check node8
 ```
+
+在其他节点上可用 `fabric-check --rank <0|1> --master-address <rank-0-ip>`，并通过 `HCCL_IF_IP` 指定本机通信地址。
 
 两端的 `passed: true` 表示跨机两卡的 HCCL AllReduce 和 AlltoAll 传回了预期数据。进一步可用双机调度探针检查 8+8 rank 分配、请求波次以及 TP、DP 和 EP 通信。完整模型服务仍由单进程分配设备、权重和缓存。 [双机调度与通信](ORTHRUS_DSV41_PYPTO_CLUSTER.md)
 
