@@ -12,6 +12,7 @@ def main():
     parser.add_argument("--vocabulary", type=int, default=129280)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compile-only", action="store_true")
+    parser.add_argument("--skip-full-shape-compile", action="store_true")
     args = parser.parse_args()
     if args.output.exists() or args.vocabulary < 64 or args.vocabulary % 64:
         parser.error("fresh output and a 64-aligned vocabulary required")
@@ -80,6 +81,36 @@ def main():
             empty((64, 128), torch.float32), empty((64, 128)), config=config,
         ),
     }
+    if not args.skip_full_shape_compile:
+        # The frozen LM head is not updated, but its transpose is required to
+        # propagate dLogits into the final trainable draft layer. Compile the
+        # real V4.1 shape so a small fixture cannot hide an ABI/tile failure.
+        programs["lm_head_input_grad_129280x5120"] = make_linear(
+            (32, vocabulary), (5120, vocabulary), reduction_limit=64,
+        ).compile(
+            empty((32, vocabulary)), empty((5120, vocabulary)), empty((32, 5120)), config=config,
+        )
+        full_shape_linears = {
+            # name: (upstream columns, input columns). Each pair compiles the
+            # activation and parameter VJPs for one local TP4 projection.
+            "wq_a": (1280, 5120),
+            "wq_b": (8192, 1280),
+            "wkv": (512, 5120),
+            "wo_a_group": (1024, 4096),
+            "wo_b": (5120, 2048),
+        }
+        for name, (outputs, inputs) in full_shape_linears.items():
+            programs[f"{name}_input_grad"] = make_linear(
+                (32, outputs), (inputs, outputs), reduction_limit=64,
+            ).compile(
+                empty((32, outputs)), empty((inputs, outputs)), empty((32, inputs)), config=config,
+            )
+            programs[f"{name}_weight_grad"] = make_linear(
+                (32, outputs), (32, inputs), transpose_a=True, transpose_b=False,
+                gradient_weight=True, reduction_limit=32,
+            ).compile(
+                empty((32, outputs)), empty((32, inputs)), empty((outputs, inputs), torch.float32), config=config,
+            )
     report = {
         "format": "orthrus-dsv41-pypto-online-programs-v1",
         "passed": False,
