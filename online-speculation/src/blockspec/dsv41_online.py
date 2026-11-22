@@ -204,14 +204,18 @@ class DSV41OnlineController:
         self.prepared = None
         self.records = []
 
-    def begin_round(self, request_id, prefix, replay):
-        """Count one verifier round and optionally capture a fresh block."""
+    def begin_verifier_round(self):
+        """Advance the globally shared draft-round schedule once."""
         self.rounds += 1
-        # Keep one globally active snapshot until its delayed target rows are
-        # complete.  Otherwise an earlier optimizer step would make a second
-        # captured replay stale before it is consumed on every DP replica.
-        if self.blocks or self.prepared is not None or not self.config.should_capture(
+        return not self.blocks and self.prepared is None and self.config.should_capture(
             self.rounds, self.completed_updates,
+        )
+
+    def begin_round(self, request_id, prefix, replay):
+        """Register the single request selected for this verifier round."""
+        if (
+            self.rounds < 1 or self.blocks or self.prepared is not None
+            or not self.config.should_capture(self.rounds, self.completed_updates)
         ):
             return False
         self.blocks[request_id] = DSV41DelayedTeacherBlock(

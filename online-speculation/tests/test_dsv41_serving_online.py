@@ -71,6 +71,7 @@ def test_serving_bridge_rejects_teacher_rows_from_rejected_candidate_branch():
     )
     bridge = DSV41ServingOnline(DSV41OnlineController(learner, config, publisher=lambda *args: None))
     plan = DSV41SuffixPlan(1)
+    assert bridge.capture_due()
     bridge.register_replay(DSV41ServingReplay(
         "r", (4,), (0, 0, 1), plan, torch.zeros(32, 4), (layer_state(39),),
     ))
@@ -103,6 +104,7 @@ def test_serving_bridge_can_defer_update_until_cluster_rendezvous():
         "r", (4,), (0, 0, 1), DSV41SuffixPlan(1), torch.zeros(32, 4),
         (layer_state(39),),
     )
+    assert bridge.capture_due()
     assert bridge.register_replay(replay)
     prepared = bridge.verified(
         "r", (4,), (), (5,), torch.randn(1, 7), defer=True,
@@ -138,6 +140,7 @@ def test_serving_bridge_synchronizes_owner_and_zero_gradient_peer():
         "r", (4,), (0, 0, 1), DSV41SuffixPlan(1), torch.zeros(32, 4),
         (layer_state(39),),
     )
+    assert owner.capture_due() and peer.capture_due()
     assert owner.register_replay(replay)
     prepared = owner.verified(
         "r", (4,), (), (5,), torch.randn(1, 7), defer=True,
@@ -148,3 +151,21 @@ def test_serving_bridge_synchronizes_owner_and_zero_gradient_peer():
     assert owner_record["update"] == peer_record["update"] == 1
     assert owner_learner.calls == [("owner", 1)]
     assert peer_learner.calls == [("zero", 1)]
+
+
+def test_serving_bridge_selects_one_capture_across_hosts():
+    learner = SimpleNamespace(last_layers=1, update_rows=lambda *args, **kwargs: None)
+    config = DSV41OnlineConfig(
+        teacher_rows=1, warm_update_stride=1, warm_update_steps=1,
+        steady_update_stride=1, publish_every=2,
+    )
+    owner = DSV41ServingOnline(DSV41OnlineController(learner, config))
+    peer = DSV41ServingOnline(DSV41OnlineController(learner, config))
+    owner_requests = {(0, 0, 1): ("owner-request", (7, 8))}
+    peer_requests = {(2, 0, 1): ("peer-request", (9, 10))}
+    assert owner.capture_due() and peer.capture_due()
+    owner_rows = owner._capture_rows(owner_requests)
+    selected = owner.select_capture(owner_requests, lambda tag, rows: peer._capture_rows(peer_requests))
+    assert selected == owner_requests
+    assert peer.select_capture(peer_requests, lambda tag, rows: owner_rows) == {}
+    assert peer.remote_pending == {"owner": [0, 0, 1], "request_id": "owner-request"}

@@ -50,6 +50,7 @@ def test_controller_prepares_before_device_update_and_serializes_snapshots():
         steady_update_stride=1, publish_every=2,
     )
     controller = DSV41OnlineController(learner, policy)
+    assert controller.begin_verifier_round()
     assert controller.begin_round("first", (3,), "replay")
     assert not controller.begin_round("second", (4,), "stale")
     prepared = controller.prepare(
@@ -107,6 +108,7 @@ def test_controller_updates_only_after_corrected_rows_and_publishes_atomically()
         learner, config, publisher=lambda owner, version: published.append((owner, version)),
     )
     replay = object()
+    assert controller.begin_verifier_round()
     assert controller.begin_round("r", [7], replay)
     first = controller.observe("r", [7], [7, 8], [8, 9], torch.randn(2, 11))
     assert first is None and not learner.calls

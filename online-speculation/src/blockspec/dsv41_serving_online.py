@@ -87,18 +87,39 @@ class DSV41ServingOnline:
     def __init__(self, controller):
         self.controller = controller
         self.pending = {}
+        self.remote_pending = None
 
     @property
     def plan(self):
         return DSV41SuffixPlan(self.controller.config.last_layers)
 
     def capture_due(self):
-        if self.pending or self.controller.blocks or self.controller.prepared is not None:
-            return False
-        next_round = self.controller.rounds + 1
-        return self.controller.config.should_capture(
-            next_round, self.controller.completed_updates,
+        due = self.controller.begin_verifier_round()
+        return due and not self.pending and self.remote_pending is None
+
+    @staticmethod
+    def _capture_rows(requests):
+        return [
+            {"owner": list(owner), "request_id": request_id}
+            for owner, (request_id, _) in sorted(requests.items())
+        ]
+
+    def select_capture(self, requests, exchange=None):
+        """Select one globally ordered request and mark the peer snapshot busy."""
+        local = self._capture_rows(requests)
+        peer = [] if exchange is None else exchange(
+            f"online-capture/{self.controller.rounds}", local,
         )
+        candidates = [(*row["owner"], row["request_id"], "local") for row in local]
+        candidates += [(*row["owner"], row["request_id"], "peer") for row in peer]
+        if not candidates:
+            return {}
+        chosen = min(candidates)
+        owner, request_id, location = tuple(chosen[:3]), chosen[3], chosen[4]
+        if location == "peer":
+            self.remote_pending = {"owner": list(owner), "request_id": request_id}
+            return {}
+        return {owner: requests[owner]}
 
     def register_replay(self, replay: DSV41ServingReplay):
         if replay.plan != self.plan:
@@ -168,14 +189,19 @@ class DSV41ServingOnline:
         contract = local if local is not None else peer
         if contract["update_number"] != update_number:
             raise ValueError("cluster online update versions disagree")
-        return (
+        record = (
             self.controller.apply(prepared)
             if prepared is not None else self.controller.apply_remote(contract)
         )
+        self.remote_pending = None
+        return record
 
     def finish(self, request_id):
         self.pending.pop(request_id, None)
         return self.controller.finish_request(request_id)
 
     def summary(self):
-        return self.controller.summary() | {"pending_replays": len(self.pending)}
+        return self.controller.summary() | {
+            "pending_replays": len(self.pending),
+            "remote_pending": self.remote_pending,
+        }
