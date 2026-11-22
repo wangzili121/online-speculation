@@ -1,0 +1,50 @@
+[
+  {
+    "pid": 2842509,
+    "recorded_start_ticks": 54817583,
+    "current_start_ticks": 54817583,
+    "uid": 1022,
+    "cmdline": "python3 run_dense_v308.py --tag b167-v308-confirm350-gsm384-seed744 --devices 0,1,2,3,4,5,6,7 --head kl-prewarm-suffix-tp2 --learner-device 2 --last-layers 1 --tokens 192 --strides 128 --replay-blocks 1 --publish-every 4 --learning-rate 1e-05 --objective tv --candidates 7 --stop-on-eos --request-file confirm350-gsm-order744.json --holdout-file confirm350-gsm-holdout32.json --ar-check-requests 384 --wait 28800 --feedback-mode delayed --teacher-tokens 7 --warmup-updates 8 --temperature 0 --publication-backend device --teacher-temperature 1 --position-weighting uniform --seed 744 --draft-convolution parallel128 --teacher-scaling host --teacher-targets distribution --parameterization dense --adapter-rank 64 --adapter-seed 743 --draft-width 8 --feedback-timing early --gdn-valid-rows --warm-update-stride 16 --warm-update-steps 256 --compact-paired-rows --interleaved --interleave-ar ",
+    "original": true
+  },
+  {
+    "pid": 2842852,
+    "recorded_start_ticks": 54817650,
+    "current_start_ticks": 54817650,
+    "uid": 1022,
+    "cmdline": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10 -c from orthrus_bench_dense_v308 import main; from _guard_bootstrap import Guard;g=Guard();\ntry: main(guard=g)\nfinally: g.close() --model /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/inference-tuning-20261116/model-view --head /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/kl-prewarm-suffix-tp2 --prompts /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/assets/confirm350-gsm-order744.json --holdout /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/assets/confirm350-gsm-holdout32.json --output /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/b167-v308-confirm350-gsm384-seed744.json --export-heads /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/b167-v308-confirm350-gsm384-seed744-heads --tokens 192 --strides 128 --last-layers 1 --learner-device 2 --verify-chunk-size 4 --inner-steps 1 --replay-blocks 1 --publish-every 4 --ar-check-requests 384 --parameter-scope full --ring-heap-mib 512 --publication-backend device --gather-feedback --kv-pages 32 --learning-rate 1e-05 --objective tv --candidates 7 --parameterization dense --adapter-rank 64 --adapter-seed 743 --draft-width 8 --adapter-merge-backend chained --gdn-valid-rows --feedback-timing early --stream-window 2 --compact-paired-rows --stop-on-eos --feedback-mode delayed --teacher-tokens 7 --warm-update-stride 16 --warm-update-steps 256 --draft-convolution parallel128 --position-weighting uniform --teacher-scaling host --teacher-targets distribution --replay-learned-head --lr-schedule constant --warmup-updates 8 --seed 744 --teacher-temperature 1.0 --continuous-updates --temperature 0.0 --focus-weight 1 --interleaved --interleave-ar ",
+    "original": true
+  },
+  {
+    "pid": 2990623,
+    "recorded_start_ticks": 54831709,
+    "current_start_ticks": 54831709,
+    "uid": 1022,
+    "cmdline": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10 -c from multiprocessing.resource_tracker import main;main(60) ",
+    "original": true
+  },
+  {
+    "pid": 2990642,
+    "recorded_start_ticks": 54831710,
+    "current_start_ticks": 54831710,
+    "uid": 1022,
+    "cmdline": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10 -c from orthrus_bench_dense_v308 import main; from _guard_bootstrap import Guard;g=Guard();\ntry: main(guard=g)\nfinally: g.close() --model /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/inference-tuning-20261116/model-view --head /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/kl-prewarm-suffix-tp2 --prompts /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/assets/confirm350-gsm-order744.json --holdout /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/assets/confirm350-gsm-holdout32.json --output /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/b167-v308-confirm350-gsm384-seed744.json --export-heads /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/b167-v308-confirm350-gsm384-seed744-heads --tokens 192 --strides 128 --last-layers 1 --learner-device 2 --verify-chunk-size 4 --inner-steps 1 --replay-blocks 1 --publish-every 4 --ar-check-requests 384 --parameter-scope full --ring-heap-mib 512 --publication-backend device --gather-feedback --kv-pages 32 --learning-rate 1e-05 --objective tv --candidates 7 --parameterization dense --adapter-rank 64 --adapter-seed 743 --draft-width 8 --adapter-merge-backend chained --gdn-valid-rows --feedback-timing early --stream-window 2 --compact-paired-rows --stop-on-eos --feedback-mode delayed --teacher-tokens 7 --warm-update-stride 16 --warm-update-steps 256 --draft-convolution parallel128 --position-weighting uniform --teacher-scaling host --teacher-targets distribution --replay-learned-head --lr-schedule constant --warmup-updates 8 --seed 744 --teacher-temperature 1.0 --continuous-updates --temperature 0.0 --focus-weight 1 --interleaved --interleave-ar ",
+    "original": true
+  },
+  {
+    "pid": 2990658,
+    "recorded_start_ticks": 54831712,
+    "current_start_ticks": 54831712,
+    "uid": 1022,
+    "cmdline": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10 -c from orthrus_bench_dense_v308 import main; from _guard_bootstrap import Guard;g=Guard();\ntry: main(guard=g)\nfinally: g.close() --model /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/inference-tuning-20261116/model-view --head /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/kl-prewarm-suffix-tp2 --prompts /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/assets/confirm350-gsm-order744.json --holdout /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/assets/confirm350-gsm-holdout32.json --output /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/b167-v308-confirm350-gsm384-seed744.json --export-heads /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/b167-v308-confirm350-gsm384-seed744-heads --tokens 192 --strides 128 --last-layers 1 --learner-device 2 --verify-chunk-size 4 --inner-steps 1 --replay-blocks 1 --publish-every 4 --ar-check-requests 384 --parameter-scope full --ring-heap-mib 512 --publication-backend device --gather-feedback --kv-pages 32 --learning-rate 1e-05 --objective tv --candidates 7 --parameterization dense --adapter-rank 64 --adapter-seed 743 --draft-width 8 --adapter-merge-backend chained --gdn-valid-rows --feedback-timing early --stream-window 2 --compact-paired-rows --stop-on-eos --feedback-mode delayed --teacher-tokens 7 --warm-update-stride 16 --warm-update-steps 256 --draft-convolution parallel128 --position-weighting uniform --teacher-scaling host --teacher-targets distribution --replay-learned-head --lr-schedule constant --warmup-updates 8 --seed 744 --teacher-temperature 1.0 --continuous-updates --temperature 0.0 --focus-weight 1 --interleaved --interleave-ar ",
+    "original": true
+  },
+  {
+    "pid": 3406137,
+    "recorded_start_ticks": 54877813,
+    "current_start_ticks": 54877813,
+    "uid": 1022,
+    "cmdline": "/data/disk1/wangzili/orthrus-qwen38-pypto-20261105/host-runtime-1/python/bin/python3.10 -c from orthrus_bench_dense_v308 import main; from _guard_bootstrap import Guard;g=Guard();\ntry: main(guard=g)\nfinally: g.close() --model /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/inference-tuning-20261116/model-view --head /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/kl-prewarm-suffix-tp2 --prompts /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/assets/confirm350-gsm-order744.json --holdout /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/assets/confirm350-gsm-holdout32.json --output /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/b167-v308-confirm350-gsm384-seed744.json --export-heads /data/disk1/wangzili/orthrus-qwen38-pypto-20261105/oneserving-v109-b99e118/online-background/b167-v308-confirm350-gsm384-seed744-heads --tokens 192 --strides 128 --last-layers 1 --learner-device 2 --verify-chunk-size 4 --inner-steps 1 --replay-blocks 1 --publish-every 4 --ar-check-requests 384 --parameter-scope full --ring-heap-mib 512 --publication-backend device --gather-feedback --kv-pages 32 --learning-rate 1e-05 --objective tv --candidates 7 --parameterization dense --adapter-rank 64 --adapter-seed 743 --draft-width 8 --adapter-merge-backend chained --gdn-valid-rows --feedback-timing early --stream-window 2 --compact-paired-rows --stop-on-eos --feedback-mode delayed --teacher-tokens 7 --warm-update-stride 16 --warm-update-steps 256 --draft-convolution parallel128 --position-weighting uniform --teacher-scaling host --teacher-targets distribution --replay-learned-head --lr-schedule constant --warmup-updates 8 --seed 744 --teacher-temperature 1.0 --continuous-updates --temperature 0.0 --focus-weight 1 --interleaved --interleave-ar ",
+    "original": true
+  }
+]

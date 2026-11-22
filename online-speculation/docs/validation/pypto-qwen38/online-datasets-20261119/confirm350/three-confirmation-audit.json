@@ -1,0 +1,85 @@
+{
+  "completed": false,
+  "target_met": false,
+  "completed_cases": [
+    {
+      "accounting_passed": true,
+      "requests": 384,
+      "arms": {
+        "ar": {
+          "tokens": 71893,
+          "seconds": 2261.8687954307534,
+          "tail_seconds": 0.0,
+          "tok_s": 31.784779092948494
+        },
+        "fixed": {
+          "tokens": 71893,
+          "seconds": 2194.818968476844,
+          "tail_seconds": 0.0,
+          "tok_s": 32.75577668708238
+        },
+        "online": {
+          "tokens": 71893,
+          "seconds": 2036.7081523147644,
+          "tail_seconds": 0.0,
+          "tok_s": 35.29862632419475
+        }
+      },
+      "timing_layout": "interleaved_ar_frozen_online",
+      "performance_run": true,
+      "updates": 439,
+      "publications": 109,
+      "last_update_round": 27521,
+      "rounds_after_last_update": 84,
+      "online_vs_ar": 0.11055125539714106,
+      "online_vs_fixed": 0.07763057067473444,
+      "final_seen_tok_s": 36.808734217169935,
+      "independent_holdout_tok_s": 37.285275516774604,
+      "scope": "Request/timing/update accounting only; frozen recipe, data and source audited separately.",
+      "tag": "b167-v308-confirm350-gsm384-seed743",
+      "seed": 743,
+      "raw_sha256": "a906d5e591bcf80dd8d880bc669d771b473fb19ca21341b8242ceaac0fcd537a",
+      "final_published_step": 564,
+      "physical_cards": [
+        1,
+        2,
+        3
+      ],
+      "actual_event_audit": {
+        "completed": true,
+        "actual_schedule_checked": true,
+        "updates": 439,
+        "publications": 109,
+        "warmup_LR_checked": true,
+        "first_update_round": 16,
+        "last_update_round": 27521,
+        "final_optimizer_version": 439,
+        "actual_published_version": 436,
+        "final_exported_step": 564,
+        "tail_rounds": 84,
+        "nonoverlap_feedback_update_upload_seconds": 45.0848703,
+        "work_time_to_stream_wall_ratio": 0.02213614662894143,
+        "colocated_direct_cost_fraction": 0.02213614662894143,
+        "read_pack_already_in_update": true,
+        "cost_scope": "Colocated: nonoverlapping cost regions. Background learner: work duration may overlap generation; not a latency fraction.",
+        "background": false,
+        "physical_cards": 3
+      }
+    }
+  ],
+  "pending": [],
+  "errors": [
+    {
+      "tag": "b167-v308-confirm350-gsm384-seed744",
+      "error": "AssertionError('KeyboardInterrupt()')"
+    },
+    {
+      "tag": "b167-v308-confirm350-gsm384-seed745",
+      "error": "AssertionError(None)"
+    }
+  ],
+  "physical_cards_per_arm": 3,
+  "target_TP": 2,
+  "learner": "independent third card",
+  "scope": "New preassignment GSM384/holdout32; three independently reset/reordered streams on B. Original assigned-cohort three-card negative remains unchanged."
+}

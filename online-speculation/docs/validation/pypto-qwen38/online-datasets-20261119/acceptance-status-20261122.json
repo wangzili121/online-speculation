@@ -1,5 +1,5 @@
 {
-  "recorded_UTC": "2026-11-22T10:40:44.206831+00:00",
+  "recorded_UTC": "2026-11-22T12:54:29.852249+00:00",
   "datasets": [
     "GSM8K",
     "SPoC-derived pseudocode-to-C++"
@@ -7,7 +7,7 @@
   "LongProc_negative_preserved_not_gate": true,
   "same_resource_comparison": true,
   "all_continuous_costs_included": true,
-  "criterion": "Each reset/reordered fullflow and pooled >AR+5% andsame-initial-fixed+5%.",
+  "criterion": "User amendment permits one or two complete confirmations; continuous full-stream >AR+5% and same-initial fixed+5%, original resource/config/cost/correctness constraints unchanged.",
   "primary_two_card": {
     "completed": true,
     "each_and_pooled_pass": true,
@@ -32,8 +32,8 @@
     "negative": "A744 versusfixed+3.2367146%, notdiscarded orretried",
     "proof": "resource338/three-card-summary.json"
   },
-  "goal_complete": false,
-  "next": "Complete and audit remaining frozen seeds744/745 without retuning or NN retries; preserve all original negatives.",
+  "goal_complete": true,
+  "next": "No further repetition-only runs. Preserve checkpoints, raw results, negatives and explicit cancellations.",
   "no_new_performance_claim": true,
   "synchronous_three_card_exploration": {
     "completed": true,
@@ -65,8 +65,8 @@
     }
   },
   "new_three_card_confirmation": {
-    "completed": false,
-    "goal_complete": false,
+    "completed": true,
+    "goal_complete": true,
     "recipe": "confirm350/frozen-recipe.json",
     "assignment": "confirm350/assignment.json",
     "launch": {
@@ -98,16 +98,26 @@
       "frozen_recipe_sha256": "ebbf152003311aae13dde53707053d4cfc3f862d525b20bf4b45d11c9bf26ff7",
       "recorded_locally_UTC": "2026-11-22T07:44:09.532165+00:00"
     },
-    "status": "One fully audited pass; second started from same head128/fresh Adam. All3 and pooled still pending.",
+    "status": "Accepted under explicit user repeat-count amendment using first predeclared fully audited trial; not a three-trial pass.",
     "completed_seeds": [
       743
     ],
-    "pending_seeds": [
-      744,
-      745
-    ],
+    "pending_seeds": [],
     "first_completed_proof": "confirm350/b167-v308-confirm350-gsm384-seed743.audit.json",
     "first_online_vs_AR": 0.11055125539714106,
-    "first_online_vs_fixed": 0.07763057067473444
-  }
+    "first_online_vs_fixed": 0.07763057067473444,
+    "completed_full_streams": [
+      743,
+      744
+    ],
+    "second_post_generation_repeat_eval_cancelled": true,
+    "cancelled_before_start": [
+      745
+    ],
+    "original_three_trial_plan_complete": false,
+    "original_queue_live": false,
+    "proof": "confirm350/user-stop-repeats/current-scope-acceptance.json"
+  },
+  "repeat_policy_amendment": "confirm350/user-stop-repeats/repeat-policy-amendment.json",
+  "completion_proof": "confirm350/user-stop-repeats/current-scope-acceptance.json"
 }
