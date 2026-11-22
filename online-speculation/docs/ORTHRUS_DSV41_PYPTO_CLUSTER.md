@@ -110,7 +110,7 @@ docker run --rm --network none -v "$A:/a:ro" \
 
 若需定位当前分叉，双机启动时都加 `--trace-position 11 --tokens 3`。这里的 11 是已确认分叉的 12-token 前缀最后一个输入位置，从零开始计数。一次运行同时保留 prefill 最后一个 prompt token 和该 Verify 位置的完整子阶段证据；无论先在哪个阶段失败，`Automatic failure diagnosis` 都会给出本次运行可得到的最具体结论。该功能只读激活，不改变候选、验证或接受逻辑。
 
-离线镜像已通过补丁和启动检查。CPU 测试覆盖全局 rank 到本机设备的映射、Engram 文件映射，以及两端通过控制连接同步起草、验证、提交和释放。真实 W8A8 双机已分别完成 target-only 和 Orthrus 生成，首次验收发现两次独立基模 prefill 的 logits 有差异。共享基模会话的双机逐 token 结果仍需复验。
+离线镜像已通过补丁和启动检查。CPU 测试覆盖全局 rank 到本机设备的映射、Engram 文件映射，以及两端通过控制连接同步起草、验证、提交和释放。真实 W8A8 双机验收曾发现两次基模 prefill 在第 0 层 TP Attention 输出归约后首次出现差异：四个 Wo-B 输入逐字节一致，BF16 AllReduce 输出有 33/5120 个元素不同，最大差为 `0.015625`。当前路径改为 BF16 局部结果拓宽到 FP32、TP4 ReduceScatter、再一次性舍入回 BF16；四卡实测连续 30 次与固定顺序 FP32 参考逐元素一致。共享基模会话的双机逐 token 结果仍需复验。
 
 ## 精度验收
 
