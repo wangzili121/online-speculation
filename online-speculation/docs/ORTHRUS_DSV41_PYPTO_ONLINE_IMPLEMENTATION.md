@@ -23,9 +23,13 @@
 - 含 sink、历史和 K32 双向临时块的 C1A Attention VJP。
 - mHC post 数据/门控反向与 mHC pre 的 sigmoid、Sinkhorn 反向。
 - 固定 Top-6 路由下的 MoE combine 与归一化路由权重反向。
+- router logits 的 sigmoid、Top-6 归一化 VJP 和 384 维稀疏回填；Top-K 成员固定使用前向记录，不在反向重新选择专家。
+- EP16 固定路由编排：按专家 owner 发送六条 expert-output 梯度，回收 expert-input 梯度并恢复原 token/slot 顺序。
 - 原生 EP MoE combine 在在线 draft 模式下保存六个选中专家的未加权输出，供 route-weight VJP 精确使用；生产 EP16/K32 形状编译及小形状 NPU 数值对照均通过。
 - 冻结 W8A8 MoE 权重按原生分块布局在设备端反量化，供输入 VJP 使用；真实 `2304×5120` 和 `5120×4608` 尺寸已经编译通过，小形状 NPU 数值逐元素一致。
 - routed expert 的 clipped-SwiGLU VJP 支持上界/双边 clamp，并明确以 STE 穿过动态 INT8 激活边界；生产 `K32×2304` 形状编译通过，小形状 NPU 结果与 Torch golden 逐元素一致。
+
+完整的冻结 MoE Torch golden 已覆盖 routed experts、shared expert 和 router 三条输入梯度路径。当前生产规格共 51 个设备程序编译通过，包含 `K32×384` router、`K32×5120` MoE/mHC、真实 LM head 和 TP4 draft 投影；新增 MoE/router/EP 测试 9 项通过。
 
 `DSV41ResidentUpdateBackend` 将这些叶子组织成严格的一次更新：
 
@@ -47,9 +51,8 @@ TV/KL
 
 当前缺口不是算法或反向公式，而是将上述叶子绑定到真实 resident session：
 
-- 将已验证的 W8A8 输入 VJP 绑定到驻留 LM head、共享专家和选中专家句柄；权重冻结，不生成主模型参数梯度。
-- 六个选中专家的最终输出已经由原生前向保存；更新时需要用驻留 W8A8 句柄重算 gate/up 值，再依次执行 down 输入 VJP、clipped-SwiGLU VJP 和 gate/up 输入 VJP。
-- 把 TP4/DP4 的设备句柄接入 HCCL 梯度归并。
+- 将已验证的 W8A8 输入 VJP 绑定到驻留 LM head、共享专家和选中专家句柄；权重冻结，不生成主模型参数梯度。六个选中专家的最终输出已经由原生前向保存，更新时由驻留 W8A8 句柄重算 gate/up 值。
+- 将 EP16 固定路由计划接到实际 HCCL All-to-All，并把 TP4/DP4 的设备句柄接入梯度归并。
 - 将 FP32 master/moments 与 draft 双槽权重绑定，并把 controller/learner 注入真实 `NativeSession`。
 
 完成这些绑定后，才能称为“PyPTO 在线更新端到端打通”。Torch 参考学习器、原子 kernel 通过或推理链路通过，都不能代替这项验收。

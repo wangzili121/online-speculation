@@ -177,6 +177,73 @@ def make_normalized_route_vjp(rows=32, topk=6, *, inline=False):
     return normalized_route_vjp if inline else entry
 
 
+def make_router_logits_vjp(rows=32, experts=384, topk=6, *, inline=False):
+    """Fuse selected-score normalization VJP and scatter to router logits.
+
+    The forward Top-K IDs are immutable replay state.  The output is a dense
+    FP32 ``[rows, experts]`` tensor consumed directly by the frozen router
+    input-gradient GEMM; no host scatter or intermediate selected-gradient
+    tensor is required.
+    """
+    if (
+        type(rows) is not int or type(experts) is not int
+        or rows < 1 or experts < 64 or experts % 64 or topk != 6
+    ):
+        raise ValueError("expected aligned router logits and DSV4.1 Top-K=6")
+    import pypto.language as pl
+
+    kernel = pl.jit.inline if inline else pl.jit
+
+    @kernel
+    def router_logits_vjp(
+        router_logits: pl.Tensor,
+        route_ids: pl.Tensor,
+        weight_gradient: pl.Tensor,
+        router_gradient: pl.Out[pl.Tensor],
+        route_scale: pl.Scalar[pl.FP32],
+    ):
+        with pl.spmd(rows, name_hint="orthrus_dsv41_router_logits_backward"):
+            token = pl.tile.get_block_idx()
+            # Build the sparse row in UB and issue one aligned MTE3 store.
+            # Mixing a whole-row GM clear with six scalar GM writes is not
+            # coherent on A2/A3 when concurrent token blocks share cache lines.
+            dense = pl.tile.full([1, experts], dtype=pl.FP32, value=0.)
+            logits = pl.load(router_logits, [token, 0], [1, experts])
+            scores = pl.recip(pl.add(pl.exp(pl.neg(logits)), 1.))
+            total = pl.cast(0., pl.FP32)
+            weighted = pl.cast(0., pl.FP32)
+            for slot in pl.range(topk):
+                expert = pl.cast(pl.read(route_ids, [token, slot]), pl.INDEX)
+                score = pl.tile.read(scores, [0, expert])
+                total = total + score
+                weighted = weighted + score * pl.read(weight_gradient, [token, slot])
+            for slot in pl.range(topk):
+                expert = pl.cast(pl.read(route_ids, [token, slot]), pl.INDEX)
+                score = pl.tile.read(scores, [0, expert])
+                score_gradient = route_scale / total * (
+                    pl.read(weight_gradient, [token, slot]) - weighted / total
+                )
+                value = score_gradient * score * (1. - score)
+                pl.tile.write(dense, [0, expert], value)
+            pl.store(dense, [token, 0], router_gradient)
+        return router_gradient
+
+    @pl.jit.host
+    def entry(
+        router_logits: pl.Tensor,
+        route_ids: pl.Tensor,
+        weight_gradient: pl.Tensor,
+        router_gradient: pl.Out[pl.Tensor],
+        route_scale: pl.Scalar[pl.FP32],
+    ):
+        router_logits_vjp(
+            router_logits, route_ids, weight_gradient,
+            router_gradient, route_scale, device=0,
+        )
+
+    return router_logits_vjp if inline else entry
+
+
 def make_clipped_swiglu_vjp(rows=32, intermediate=2304, limit=10.0, *, inline=False):
     """Differentiate the routed expert activation with fixed W8A8 values.
 

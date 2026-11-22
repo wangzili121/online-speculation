@@ -46,7 +46,7 @@ def main():
         make_clipped_swiglu_vjp,
         make_dequantize_blocked_weight,
         make_moe_combine_vjp,
-        make_normalized_route_vjp,
+        make_normalized_route_vjp, make_router_logits_vjp,
     )
 
     torch.set_num_threads(4)
@@ -146,6 +146,11 @@ def main():
             empty((4, 6), torch.float32), empty((4, 6), torch.float32),
             empty((4, 16), torch.float32), 2.5, config=config,
         ),
+        "router_logits_vjp": make_router_logits_vjp(4).compile(
+            empty((4, 384), torch.float32), empty((4, 6), torch.int32),
+            empty((4, 6), torch.float32), empty((4, 384), torch.float32), 2.5,
+            config=config,
+        ),
         "w8a8_vjp_weight": make_dequantize_blocked_weight(256, 128).compile(
             empty((256 * 2, 64), torch.int8), empty((128,), torch.float32),
             empty((256, 128)), config=config,
@@ -195,6 +200,11 @@ def main():
         programs["normalized_route_vjp_k32"] = make_normalized_route_vjp().compile(
             empty((32, 6), torch.float32), empty((32, 6), torch.float32),
             empty((32, 16), torch.float32), 2.5, config=config,
+        )
+        programs["router_logits_vjp_k32x384"] = make_router_logits_vjp().compile(
+            empty((32, 384), torch.float32), empty((32, 6), torch.int32),
+            empty((32, 6), torch.float32), empty((32, 384), torch.float32), 2.5,
+            config=config,
         )
         programs["moe_down_vjp_weight_2304x5120"] = make_dequantize_blocked_weight(
             2304, 5120,
@@ -572,7 +582,27 @@ def main():
             read(score_grad_handle, torch.empty(4, 16))[:, :6],
             expected_score_grad, atol=.01, rtol=.002,
         )
+        router_logits = torch.randn(4, 384, dtype=torch.float32)
+        route_ids = torch.stack([torch.randperm(384)[:6] for _ in range(4)]).int()
+        sigmoid_scores = router_logits.sigmoid().gather(1, route_ids.long())
+        sigmoid_probability = sigmoid_scores / sigmoid_scores.sum(-1, keepdim=True)
+        expected_sigmoid_score_grad = 2.5 / sigmoid_scores.sum(-1, keepdim=True) * (
+            expected_weight_grad
+            - (expected_weight_grad * sigmoid_probability).sum(-1, keepdim=True)
+        )
+        expected_selected_logit_grad = expected_sigmoid_score_grad * sigmoid_scores * (1. - sigmoid_scores)
+        router_grad_handle = allocate(torch.full((4, 384), float("nan")))
+        worker.run(
+            programs["router_logits_vjp"], allocate(router_logits), allocate(route_ids),
+            allocate(actual_weight_grad.contiguous()), router_grad_handle, 2.5, config=config,
+        )
+        actual_router_grad = read(router_grad_handle, torch.empty(4, 384))
+        expected_router_grad = torch.zeros(4, 384).scatter(
+            1, route_ids.long(), expected_selected_logit_grad,
+        )
+        torch.testing.assert_close(actual_router_grad, expected_router_grad, atol=.01, rtol=.002)
         report["cases"].append({"operator": "fixed_route_moe_vjp", "shape": [4, 6, 128]})
+        report["cases"].append({"operator": "router_logits_vjp", "shape": [4, 384]})
 
         logical_weight = torch.randint(-127, 128, (256, 128), dtype=torch.int8)
         packed_weight = logical_weight.reshape(256, 2, 64).permute(1, 0, 2).contiguous().view(512, 64)
