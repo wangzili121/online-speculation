@@ -20,7 +20,15 @@ def main():
     from pypto.backend import BackendType
     from pypto.ir import DistributedConfig
     from pypto.runtime import DistributedWorker, ExecutionMode, RunConfig
-    from blockspec.pypto_dsv41_online_programs import make_adam, make_kl, make_linear, make_tv
+    from blockspec.pypto_dsv41_online_programs import (
+        make_adam,
+        make_element,
+        make_kl,
+        make_linear,
+        make_rms,
+        make_tv,
+    )
+    from blockspec.pypto_dsv41_optimizer_programs import make_publish
 
     torch.set_num_threads(4)
     torch.manual_seed(41)
@@ -46,6 +54,30 @@ def main():
         ),
         "linear": make_linear((32, 128), (64, 128)).compile(
             empty((32, 128)), empty((64, 128)), empty((32, 64)), config=config,
+        ),
+        "linear_input_grad": make_linear((32, 64), (128, 64)).compile(
+            empty((32, 64)), empty((128, 64)), empty((32, 128)), config=config,
+        ),
+        "linear_weight_grad": make_linear(
+            (32, 64), (32, 128), transpose_a=True, transpose_b=False, gradient_weight=True,
+        ).compile(empty((32, 64)), empty((32, 128)), empty((64, 128), torch.float32), config=config),
+        "rms_forward": make_rms(32, 128).compile(
+            empty((32, 128)), empty((1, 128), torch.float32), empty((32, 128)),
+            empty((32, 8), torch.float32), config=config,
+        ),
+        "rms_input_grad": make_rms(32, 128, mode="input").compile(
+            empty((32, 128)), empty((1, 128), torch.float32), empty((32, 8), torch.float32),
+            empty((32, 128)), empty((32, 128)), config=config,
+        ),
+        "rms_weight_grad": make_rms(32, 128, mode="weight").compile(
+            empty((32, 128)), empty((32, 8), torch.float32), empty((32, 128)),
+            empty((1, 128), torch.float32), config=config,
+        ),
+        "silu_grad": make_element((32, 128), "silu_grad").compile(
+            empty((32, 128)), empty((32, 128)), empty((32, 128)), config=config,
+        ),
+        "publish": make_publish((64, 128)).compile(
+            empty((64, 128), torch.float32), empty((64, 128)), config=config,
         ),
     }
     report = {
@@ -110,6 +142,58 @@ def main():
         )
         report["cases"].append({"operator": "linear", "shape": [32, 128, 64]})
 
+        dy, full_weight = torch.randn(32, 64).bfloat16(), torch.randn(128, 64).bfloat16()
+        dx_handle = allocate(torch.zeros(32, 128, dtype=torch.bfloat16))
+        worker.run(programs["linear_input_grad"], allocate(dy), allocate(full_weight), dx_handle, config=config)
+        torch.testing.assert_close(
+            read(dx_handle, torch.empty(32, 128, dtype=torch.bfloat16)),
+            dy @ full_weight.T, atol=.125, rtol=.015,
+        )
+        x = torch.randn(32, 128).bfloat16()
+        dw_handle = allocate(torch.zeros(64, 128, dtype=torch.float32))
+        worker.run(programs["linear_weight_grad"], allocate(dy), allocate(x), dw_handle, config=config)
+        # Parameter gradients preserve the BF16 reduction boundary before the FP32 master update.
+        expected_dw = (dy.T @ x).bfloat16().float()
+        torch.testing.assert_close(read(dw_handle, torch.empty_like(expected_dw)), expected_dw, atol=.125, rtol=.015)
+        report["cases"].append({"operator": "linear_vjp", "activation": [32, 128], "weight": [64, 128]})
+
+        rms_x = torch.randn(32, 128).bfloat16()
+        gamma = torch.randn(1, 128)
+        rms_y_handle = allocate(torch.zeros_like(rms_x))
+        inv_handle = allocate(torch.zeros(32, 8, dtype=torch.float32))
+        worker.run(programs["rms_forward"], allocate(rms_x), allocate(gamma), rms_y_handle, inv_handle, config=config)
+        rms_x32 = rms_x.float()
+        inverse = (rms_x32.square().mean(-1, keepdim=True) + 1e-6).rsqrt()
+        expected_y = (rms_x32 * inverse * gamma).bfloat16()
+        torch.testing.assert_close(read(rms_y_handle, torch.empty_like(rms_x)), expected_y, atol=.016, rtol=.016)
+        dy_rms = torch.randn_like(rms_x)
+        dx_rms_handle = allocate(torch.zeros_like(rms_x))
+        worker.run(
+            programs["rms_input_grad"], allocate(rms_x), allocate(gamma), inv_handle,
+            allocate(dy_rms), dx_rms_handle, config=config,
+        )
+        reference_x = rms_x.float().requires_grad_()
+        reference_gamma = gamma.detach().clone().requires_grad_()
+        reference_y = reference_x * (reference_x.square().mean(-1, keepdim=True) + 1e-6).rsqrt() * reference_gamma
+        reference_dx, reference_dg = torch.autograd.grad(reference_y, (reference_x, reference_gamma), dy_rms.float())
+        torch.testing.assert_close(
+            read(dx_rms_handle, torch.empty_like(rms_x)), reference_dx.bfloat16(), atol=.03125, rtol=.02,
+        )
+        dg_handle = allocate(torch.zeros(1, 128, dtype=torch.float32))
+        worker.run(programs["rms_weight_grad"], allocate(rms_x), inv_handle, allocate(dy_rms), dg_handle, config=config)
+        torch.testing.assert_close(
+            read(dg_handle, torch.empty_like(reference_dg)), reference_dg.bfloat16().float(), atol=.125, rtol=.02,
+        )
+        report["cases"].append({"operator": "rmsnorm_forward_vjp", "shape": [32, 128]})
+
+        silu_x, silu_dy = torch.randn(32, 128).bfloat16(), torch.randn(32, 128).bfloat16()
+        silu_dx_handle = allocate(torch.zeros_like(silu_x))
+        worker.run(programs["silu_grad"], allocate(silu_x), allocate(silu_dy), silu_dx_handle, config=config)
+        sigmoid = silu_x.float().sigmoid()
+        expected_silu_dx = (silu_dy.float() * sigmoid * (1 + silu_x.float() * (1 - sigmoid))).bfloat16()
+        torch.testing.assert_close(read(silu_dx_handle, torch.empty_like(silu_x)), expected_silu_dx, atol=.016, rtol=.016)
+        report["cases"].append({"operator": "silu_vjp", "shape": [32, 128]})
+
         master = torch.nn.Parameter(torch.randn(64, 128))
         optimizer = torch.optim.AdamW([master], lr=1e-4, weight_decay=0, foreach=False)
         state = [allocate(master.detach()), allocate(torch.zeros_like(master)), allocate(torch.zeros_like(master))]
@@ -129,6 +213,11 @@ def main():
                 torch.testing.assert_close(read(actual, torch.empty_like(reference)), reference, atol=2e-6, rtol=.003)
             state, next_state = next_state, state
         report["cases"].append({"operator": "adam", "steps": 4})
+        execution_handle = allocate(torch.zeros(64, 128, dtype=torch.bfloat16))
+        worker.run(programs["publish"], state[0], execution_handle, config=config)
+        published = read(execution_handle, torch.empty(64, 128, dtype=torch.bfloat16))
+        torch.testing.assert_close(published, expected[0].bfloat16(), atol=0, rtol=0)
+        report["cases"].append({"operator": "publish", "shape": [64, 128]})
         report["executed"] = report["passed"] = True
     except BaseException as error:
         report["error"] = repr(error)

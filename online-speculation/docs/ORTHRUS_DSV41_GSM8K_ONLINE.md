@@ -21,6 +21,13 @@ bash online-speculation/scripts/dsv41_pypto_env.sh gsm8k-prepare \
 
 ## 明日双机执行
 
+先在任一空闲卡复验在线更新的通用 PyPTO kernel。该命令覆盖 DSV4.1 的 129280 维完整词表 TV/KL、投影输入与参数梯度、RMSNorm 前反向、SiLU 梯度、AdamW 和 BF16 发布：
+
+```bash
+NPU_DEVICE=0 PYPTO_VISIBLE_DEVICE=0 PYPTO_RUNTIME_DEVICE=0 \
+  bash online-speculation/scripts/dsv41_pypto_env.sh online-kernel-check
+```
+
 先在两台机器放置相同的 `tuning.jsonl`，然后同时启动 4 题、每题 32 token 的固定 head smoke。这个入口先验证真实 GSM8K 输入、文本解码、greedy 一致性、接受率和吞吐；它不会伪装成已经在线更新。
 
 ```bash

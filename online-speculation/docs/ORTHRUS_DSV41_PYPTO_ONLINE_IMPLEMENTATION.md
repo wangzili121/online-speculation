@@ -18,7 +18,7 @@ GSM8K 数据固定、延迟教师反馈状态机、两阶段更新频率、学�
 | 参数梯度与 AdamW | `dQ/dKV/dO` → FP32 master/moments | Qwen 的统计、clip、AdamW、BF16 发布公式 | 按 DSV4.1 TP4 的 Q/KV/O shard 布局生成参数梯度 |
 | 双机版本发布 | 新 head → 16 个执行 rank | 已有双机控制链路和驻留权重句柄 | DP4 的同一 verifier 边界切换同一版本；失败时所有 rank 保留旧版本 |
 
-其中模型无关的完整词表 TV/KL、线性梯度、AdamW、梯度统计/裁剪和 BF16 发布 PyPTO kernel 已经放在 `pypto_dsv41_online_programs.py` 与 `pypto_dsv41_optimizer_programs.py`。它们不是占位接口：TV/KL、线性投影和四步 Adam 已在 910B3 上与 Torch 参考对照通过；词表分块额外适配了 DSV4.1 的 129280 维词表。剩余工作集中在上表中标明的 DSV4.1 模型专属反向与双机发布编排。
+其中模型无关的完整词表 TV/KL、线性梯度、RMSNorm 前反向、SiLU 梯度、AdamW、梯度统计/裁剪和 BF16 发布 PyPTO kernel 已经放在 `pypto_dsv41_online_programs.py` 与 `pypto_dsv41_optimizer_programs.py`。它们不是占位接口：上述路径已在 910B3 上与 Torch 参考对照通过；词表分块额外适配了 DSV4.1 的 129280 维词表。剩余工作集中在上表中标明的 DSV4.1 模型专属 Attention/C1A 反向与双机发布编排。
 
 因此，当前不能把 Torch/CPU 学习器称为“PyPTO 在线训练已完成”。它已经证明训练目标、梯度范围和权重格式可行；最终高性能版本仍需补 C1A/mHC/MoE 的模型专属反向，以及 TP4/DP4 原子发布。普通权重加载、数据下载和主模型推理不需要重写成训练算子。
 

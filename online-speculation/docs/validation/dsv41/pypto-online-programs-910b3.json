@@ -1,7 +1,19 @@
 {
   "format": "orthrus-dsv41-pypto-online-programs-v1",
   "passed": true,
-  "compiled": ["adam", "kl", "linear", "tv"],
+  "compiled": [
+    "adam",
+    "kl",
+    "linear",
+    "linear_input_grad",
+    "linear_weight_grad",
+    "publish",
+    "rms_forward",
+    "rms_input_grad",
+    "rms_weight_grad",
+    "silu_grad",
+    "tv"
+  ],
   "executed": true,
   "platform": "Ascend 910B3",
   "vocabulary": 129280,
@@ -13,8 +25,12 @@
     {"operator": "kl", "valid": 7, "loss": 0.969115674495697},
     {"operator": "kl", "valid": 31, "loss": 0.9703985452651978},
     {"operator": "linear", "shape": [32, 128, 64]},
-    {"operator": "adam", "steps": 4}
+    {"operator": "linear_vjp", "activation": [32, 128], "weight": [64, 128]},
+    {"operator": "rmsnorm_forward_vjp", "shape": [32, 128]},
+    {"operator": "silu_vjp", "shape": [32, 128]},
+    {"operator": "adam", "steps": 4},
+    {"operator": "publish", "shape": [64, 128]}
   ],
-  "reference": "Torch autograd for TV/KL, torch.matmul for linear, torch.optim.AdamW for four optimizer steps",
+  "reference": "Torch autograd for TV/KL/RMSNorm, Torch formulas for linear and SiLU VJPs, torch.optim.AdamW for four optimizer steps, and exact BF16 publication",
   "scope": "Reusable online-training primitives only; C1A/mHC/MoE reverse and TP4/DP4 publication are not covered"
 }
