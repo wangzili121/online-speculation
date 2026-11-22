@@ -81,9 +81,16 @@ def run(rank, device, address, wait):
 
     with ExitStack() as resources:
         comm, stream, source, target = ptr(), ptr(), ptr(), ptr()
-        _check(hccl.HcclCommInitRootInfo(2, root_info, rank, ctypes.byref(comm)), "HcclCommInitRootInfo")
-        resources.callback(_check_cleanup, hccl.HcclCommDestroy, comm)
         acl = memory.library
+        status = hccl.HcclCommInitRootInfo(2, root_info, rank, ctypes.byref(comm))
+        if status:
+            recent_error = acl.aclGetRecentErrMsg
+            recent_error.argtypes = []
+            recent_error.restype = ctypes.c_char_p
+            detail = (recent_error() or b"").decode(errors="replace").strip()
+            summary = f"HcclCommInitRootInfo returned CANN/HCCL status {status}"
+            raise RuntimeError(f"{summary}: {detail[:800]}" if detail else summary)
+        resources.callback(_check_cleanup, hccl.HcclCommDestroy, comm)
         _check(acl.aclrtCreateStream(ctypes.byref(stream)), "aclrtCreateStream")
         resources.callback(_check_cleanup, acl.aclrtDestroyStream, stream)
         inputs, outputs = (ctypes.c_float * 2)(rank * 2 + 1, rank * 2 + 2), (ctypes.c_float * 2)()

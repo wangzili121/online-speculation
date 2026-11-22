@@ -169,7 +169,11 @@ case "$action" in
     fi
     if [[ "$action" == fabric-check ]]; then
       if [[ -n "${HCCL_IF_IP:-}" ]]; then options+=(-e "HCCL_IF_IP=$HCCL_IF_IP"); fi
-      options+=(-v "$root:/workspace/online-speculation:ro")
+      if [[ -f /etc/hccn.conf ]]; then options+=(-v /etc/hccn.conf:/etc/hccn.conf:ro); fi
+      log_dir="$(mktemp -d "$PWD/orthrus-fabric.XXXXXX")"
+      echo "CANN logs: $log_dir" >&2
+      options+=(-v "$root:/workspace/online-speculation:ro"
+                -v "$log_dir:/cann-logs" -e ASCEND_PROCESS_LOG_PATH=/cann-logs)
       exec docker run "${options[@]}" "$image" "${command_env[@]}" timeout -k 5s 180s python \
         /workspace/online-speculation/scripts/probe_dsv41_pypto_fabric.py "$@" --device "$runtime_device"
     fi
