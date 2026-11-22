@@ -166,3 +166,141 @@ def make_hc_post_gate_vjp(rows=32, hidden=5120, copies=4, *, inline=False):
         )
 
     return hc_post_gate_vjp if inline else entry
+
+
+def make_hc_pre_gate_vjp(rows=32, copies=4, iterations=20, eps=1e-6, *, inline=False):
+    """Reverse mHC sigmoid gates and the native duplicated 8x8 Sinkhorn tile.
+
+    The large frozen projection and RMS-normalization input VJPs use the
+    generic linear/RMS kernels.  This leaf owns the nonstandard part that
+    cannot be replaced by a GEMM: the exact native 4-stream gate transform.
+    """
+    if rows < 1 or copies != 4 or iterations < 1 or eps <= 0:
+        raise ValueError("expected positive rows, hc_mult=4 and Sinkhorn iterations")
+    import pypto.language as pl
+
+    tile, channels = 8, (copies + 2) * copies
+    stages = 2 * iterations
+    kernel = pl.jit.inline if inline else pl.jit
+
+    @kernel
+    def hc_pre_gate_vjp(
+        projection: pl.Tensor,
+        scale: pl.Tensor,
+        base: pl.Tensor,
+        pre_gradient: pl.Tensor,
+        post_gradient: pl.Tensor,
+        combination_gradient: pl.Tensor,
+        projection_gradient: pl.Out[pl.Tensor],
+    ):
+        states = pl.create_tensor([rows * stages * tile, tile], dtype=pl.FP32)
+        with pl.spmd(rows, name_hint="orthrus_dsv41_hc_pre_sinkhorn_backward"):
+            token = pl.tile.get_block_idx()
+            projected = pl.load(projection, [token, 0], [1, channels])
+            scale0, scale1, scale2 = (pl.read(scale, [i]) for i in range(3))
+
+            # Sigmoid gate VJPs occupy channels [0:8].
+            for channel in pl.unroll(copies):
+                pre_logit = pl.tile.read(projected, [0, channel]) * scale0 + pl.read(base, [channel])
+                pre_sigmoid = pl.recip(pl.add(pl.exp(pl.neg(pre_logit)), 1.))
+                pre_grad = (pl.read(pre_gradient, [token, channel]) * scale0
+                            * pre_sigmoid * (1. - pre_sigmoid))
+                pl.write(projection_gradient, [token, channel], pre_grad)
+                post_logit = (pl.tile.read(projected, [0, copies + channel]) * scale1
+                              + pl.read(base, [copies + channel]))
+                post_sigmoid = pl.recip(pl.add(pl.exp(pl.neg(post_logit)), 1.))
+                post_grad = (pl.read(post_gradient, [token, channel]) * scale1
+                             * 2. * post_sigmoid * (1. - post_sigmoid))
+                pl.write(projection_gradient, [token, copies + channel], post_grad)
+
+            # Native forward duplicates the logical 4x4 matrix into 8x8 so
+            # Vec row/column reductions remain hardware aligned.
+            logits = pl.full([tile, tile], dtype=pl.FP32, value=0.)
+            for row in pl.unroll(tile):
+                for column in pl.unroll(tile):
+                    logical = 2 * copies + (row % copies) * copies + column % copies
+                    value = (pl.tile.read(projected, [0, logical]) * scale2
+                             + pl.read(base, [logical]))
+                    pl.tile.write(logits, [row, column], value)
+            scratch = pl.create_tile([tile, tile], dtype=pl.FP32)
+            maximum = pl.row_max(logits, scratch)
+            exponential = pl.exp(pl.row_expand_sub(logits, maximum))
+            probability = pl.add(
+                pl.row_expand_div(exponential, pl.mul(pl.row_sum(exponential, scratch), .5)), eps,
+            )
+            offset = token * stages * tile
+            pl.store(probability, [offset, 0], states)
+            denominator = pl.add(pl.mul(pl.col_sum(probability), .5), eps)
+            probability = pl.col_expand_div(probability, denominator)
+            pl.store(probability, [offset + tile, 0], states)
+            stage = 2
+            for _ in range(iterations - 1):
+                denominator = pl.add(pl.mul(pl.row_sum(probability, scratch), .5), eps)
+                probability = pl.row_expand_div(probability, denominator)
+                pl.store(probability, [offset + stage * tile, 0], states)
+                stage += 1
+                denominator = pl.add(pl.mul(pl.col_sum(probability), .5), eps)
+                probability = pl.col_expand_div(probability, denominator)
+                pl.store(probability, [offset + stage * tile, 0], states)
+                stage += 1
+
+            gradient = pl.full([tile, tile], dtype=pl.FP32, value=0.)
+            for row in pl.unroll(copies):
+                for column in pl.unroll(copies):
+                    pl.tile.write(
+                        gradient, [row, column],
+                        pl.read(combination_gradient, [token * copies + row, column]),
+                    )
+
+            # Reverse column/row normalizations in exact opposite order.
+            stage = stages - 1
+            for _ in range(iterations - 1):
+                before = pl.load(states, [offset + (stage - 1) * tile, 0], [tile, tile])
+                after = pl.load(states, [offset + stage * tile, 0], [tile, tile])
+                denominator = pl.add(pl.mul(pl.col_sum(before), .5), eps)
+                correction = pl.mul(pl.col_sum(pl.mul(gradient, after)), .5)
+                gradient = pl.col_expand_div(pl.col_expand_sub(gradient, correction), denominator)
+                stage -= 1
+                before = pl.load(states, [offset + (stage - 1) * tile, 0], [tile, tile])
+                after = pl.load(states, [offset + stage * tile, 0], [tile, tile])
+                denominator = pl.add(pl.mul(pl.row_sum(before, scratch), .5), eps)
+                correction = pl.mul(pl.row_sum(pl.mul(gradient, after), scratch), .5)
+                gradient = pl.row_expand_div(pl.row_expand_sub(gradient, correction), denominator)
+                stage -= 1
+            before = pl.load(states, [offset, 0], [tile, tile])
+            after = pl.load(states, [offset + tile, 0], [tile, tile])
+            denominator = pl.add(pl.mul(pl.col_sum(before), .5), eps)
+            correction = pl.mul(pl.col_sum(pl.mul(gradient, after)), .5)
+            gradient = pl.col_expand_div(pl.col_expand_sub(gradient, correction), denominator)
+
+            softmax = pl.sub(before, eps)
+            correction = pl.row_sum(pl.mul(gradient, softmax), scratch)
+            gradient = pl.mul(softmax, pl.row_expand_sub(gradient, correction))
+            for row in pl.unroll(copies):
+                for column in pl.unroll(copies):
+                    total = 0.
+                    for row_copy in pl.unroll(2):
+                        for column_copy in pl.unroll(2):
+                            total += pl.tile.read(
+                                gradient, [row + row_copy * copies, column + column_copy * copies],
+                            )
+                    logical = 2 * copies + row * copies + column
+                    pl.write(projection_gradient, [token, logical], total * scale2)
+        return projection_gradient
+
+    @pl.jit.host
+    def entry(
+        projection: pl.Tensor,
+        scale: pl.Tensor,
+        base: pl.Tensor,
+        pre_gradient: pl.Tensor,
+        post_gradient: pl.Tensor,
+        combination_gradient: pl.Tensor,
+        projection_gradient: pl.Out[pl.Tensor],
+    ):
+        hc_pre_gate_vjp(
+            projection, scale, base, pre_gradient, post_gradient,
+            combination_gradient, projection_gradient, device=0,
+        )
+
+    return hc_pre_gate_vjp if inline else entry

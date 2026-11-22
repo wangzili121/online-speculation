@@ -37,7 +37,11 @@ def main():
         make_sink_reduce,
         make_softmax_vjp,
     )
-    from blockspec.pypto_dsv41_tail_vjp import make_hc_post_data_vjp, make_hc_post_gate_vjp
+    from blockspec.pypto_dsv41_tail_vjp import (
+        make_hc_post_data_vjp,
+        make_hc_post_gate_vjp,
+        make_hc_pre_gate_vjp,
+    )
     from blockspec.pypto_dsv41_moe_vjp import make_moe_combine_vjp, make_normalized_route_vjp
 
     torch.set_num_threads(4)
@@ -121,6 +125,12 @@ def main():
             empty((32, 128)), empty((32 * 4, 128)), empty((32 * 4, 128)),
             empty((32, 16), torch.float32), empty((32 * 4, 16), torch.float32),
             config=config,
+        ),
+        "hc_pre_gate_vjp": make_hc_pre_gate_vjp().compile(
+            empty((32, 24), torch.float32), empty((3,), torch.float32),
+            empty((24,), torch.float32), empty((32, 4), torch.float32),
+            empty((32, 4), torch.float32), empty((32 * 4, 4), torch.float32),
+            empty((32, 24), torch.float32), config=config,
         ),
         "moe_combine_vjp": make_moe_combine_vjp(4, 128).compile(
             empty((4, 128)), empty((4 * 6, 128)), empty((4, 6), torch.float32),
@@ -435,6 +445,39 @@ def main():
             {"operator": "hc_post_data_vjp", "shape": [32, 4, 128]},
             {"operator": "hc_post_gate_vjp", "shape": [32, 4, 128]},
         ))
+
+        projection = torch.randn(32, 24, dtype=torch.float32, requires_grad=True)
+        hc_scale = torch.tensor([.7, 1.1, .9], dtype=torch.float32)
+        hc_base = torch.randn(24, dtype=torch.float32)
+        pre = torch.sigmoid(projection[:, :4] * hc_scale[0] + hc_base[:4]) + 1e-6
+        post = 2 * torch.sigmoid(projection[:, 4:8] * hc_scale[1] + hc_base[4:8])
+        probability = torch.softmax(
+            projection[:, 8:].reshape(32, 4, 4) * hc_scale[2] + hc_base[8:].reshape(4, 4), -1,
+        ) + 1e-6
+        probability = probability / (probability.sum(-2, keepdim=True) + 1e-6)
+        for _ in range(19):
+            probability = probability / (probability.sum(-1, keepdim=True) + 1e-6)
+            probability = probability / (probability.sum(-2, keepdim=True) + 1e-6)
+        pre_gradient = torch.randn_like(pre)
+        post_gradient = torch.randn_like(post)
+        combination_gradient = torch.randn_like(probability)
+        expected_projection_gradient, = torch.autograd.grad(
+            (pre, post, probability), projection,
+            (pre_gradient, post_gradient, combination_gradient),
+        )
+        projection_gradient_handle = allocate(torch.zeros(32, 24, dtype=torch.float32))
+        worker.run(
+            programs["hc_pre_gate_vjp"], allocate(projection.detach()), allocate(hc_scale),
+            allocate(hc_base), allocate(pre_gradient), allocate(post_gradient),
+            allocate(combination_gradient.flatten(0, 1)), projection_gradient_handle, config=config,
+        )
+        actual_projection_gradient = read(
+            projection_gradient_handle, torch.empty_like(expected_projection_gradient),
+        )
+        torch.testing.assert_close(
+            actual_projection_gradient, expected_projection_gradient, atol=2e-5, rtol=2e-5,
+        )
+        report["cases"].append({"operator": "hc_pre_gate_vjp", "shape": [32, 4, 4]})
 
         moe_dy = torch.randn(4, 128).bfloat16()
         expert_outputs = torch.randn(4, 6, 128).bfloat16()
