@@ -197,25 +197,46 @@ def make_hc_pre_gate_vjp(rows=32, copies=4, iterations=20, eps=1e-6, *, inline=F
         with pl.spmd(rows, name_hint="orthrus_dsv41_hc_pre_sinkhorn_backward"):
             token = pl.tile.get_block_idx()
             projected = pl.load(projection, [token, 0], [1, channels])
-            scale0, scale1, scale2 = (pl.read(scale, [i]) for i in range(3))
+            projected_gradient = pl.create_tile([1, channels], dtype=pl.FP32)
+            # PyPTO traces assignments, but deliberately does not lower a
+            # Python generator expression inside a device program.
+            scale0 = pl.read(scale, [0])
+            scale1 = pl.read(scale, [1])
+            scale2 = pl.read(scale, [2])
 
-            # Sigmoid gate VJPs occupy channels [0:8].
+            # Sigmoid gate VJPs occupy channels [0:8].  Keep all eight in one
+            # aligned FP32 vector: a 1x1 FP32 Vec tile is not representable on
+            # Ascend because its contiguous extent is smaller than 32 bytes.
+            gate_scales = pl.create_tile([1, 8], dtype=pl.FP32)
+            gate_upstream = pl.create_tile([1, 8], dtype=pl.FP32)
             for channel in pl.unroll(copies):
-                pre_logit = pl.tile.read(projected, [0, channel]) * scale0 + pl.read(base, [channel])
-                pre_sigmoid = pl.recip(pl.add(pl.exp(pl.neg(pre_logit)), 1.))
-                pre_grad = (pl.read(pre_gradient, [token, channel]) * scale0
-                            * pre_sigmoid * (1. - pre_sigmoid))
-                pl.write(projection_gradient, [token, channel], pre_grad)
-                post_logit = (pl.tile.read(projected, [0, copies + channel]) * scale1
-                              + pl.read(base, [copies + channel]))
-                post_sigmoid = pl.recip(pl.add(pl.exp(pl.neg(post_logit)), 1.))
-                post_grad = (pl.read(post_gradient, [token, channel]) * scale1
-                             * 2. * post_sigmoid * (1. - post_sigmoid))
-                pl.write(projection_gradient, [token, copies + channel], post_grad)
+                pl.tile.write(gate_scales, [0, channel], scale0)
+                pl.tile.write(gate_scales, [0, copies + channel], scale1)
+                pl.tile.write(
+                    gate_upstream, [0, channel], pl.read(pre_gradient, [token, channel]),
+                )
+                pl.tile.write(
+                    gate_upstream, [0, copies + channel],
+                    pl.read(post_gradient, [token, channel]) * 2.,
+                )
+            gate_logits = pl.add(
+                pl.mul(pl.slice(projected, [1, 8], [0, 0]), gate_scales),
+                pl.reshape(pl.load(base, [0], [8]), [1, 8]),
+            )
+            gate_sigmoid = pl.recip(pl.add(pl.exp(pl.neg(gate_logits)), 1.))
+            gate_gradient = pl.mul(
+                pl.mul(pl.mul(gate_upstream, gate_scales), gate_sigmoid),
+                pl.neg(pl.sub(gate_sigmoid, 1.)),
+            )
+            for channel in pl.unroll(2 * copies):
+                pl.tile.write(
+                    projected_gradient, [0, channel],
+                    pl.tile.read(gate_gradient, [0, channel]),
+                )
 
             # Native forward duplicates the logical 4x4 matrix into 8x8 so
             # Vec row/column reductions remain hardware aligned.
-            logits = pl.full([tile, tile], dtype=pl.FP32, value=0.)
+            logits = pl.create_tile([tile, tile], dtype=pl.FP32)
             for row in pl.unroll(tile):
                 for column in pl.unroll(tile):
                     logical = 2 * copies + (row % copies) * copies + column % copies
@@ -230,21 +251,24 @@ def make_hc_pre_gate_vjp(rows=32, copies=4, iterations=20, eps=1e-6, *, inline=F
             )
             offset = token * stages * tile
             pl.store(probability, [offset, 0], states)
-            denominator = pl.add(pl.mul(pl.col_sum(probability), .5), eps)
-            probability = pl.col_expand_div(probability, denominator)
+            initial_column_denominator = pl.add(pl.mul(pl.col_sum(probability), .5), eps)
+            probability = pl.col_expand_div(probability, initial_column_denominator)
             pl.store(probability, [offset + tile, 0], states)
             stage = 2
-            for _ in range(iterations - 1):
-                denominator = pl.add(pl.mul(pl.row_sum(probability, scratch), .5), eps)
-                probability = pl.row_expand_div(probability, denominator)
+            for _ in pl.unroll(iterations - 1):
+                row_denominator = pl.add(pl.mul(pl.row_sum(probability, scratch), .5), eps)
+                probability = pl.row_expand_div(probability, row_denominator)
                 pl.store(probability, [offset + stage * tile, 0], states)
-                stage += 1
-                denominator = pl.add(pl.mul(pl.col_sum(probability), .5), eps)
-                probability = pl.col_expand_div(probability, denominator)
+                stage = stage + 1
+                column_denominator = pl.add(pl.mul(pl.col_sum(probability), .5), eps)
+                probability = pl.col_expand_div(probability, column_denominator)
                 pl.store(probability, [offset + stage * tile, 0], states)
-                stage += 1
+                stage = stage + 1
 
-            gradient = pl.full([tile, tile], dtype=pl.FP32, value=0.)
+            gradient = pl.create_tile([tile, tile], dtype=pl.FP32)
+            for row in pl.unroll(tile):
+                for column in pl.unroll(tile):
+                    pl.tile.write(gradient, [row, column], 0.)
             for row in pl.unroll(copies):
                 for column in pl.unroll(copies):
                     pl.tile.write(
@@ -254,38 +278,49 @@ def make_hc_pre_gate_vjp(rows=32, copies=4, iterations=20, eps=1e-6, *, inline=F
 
             # Reverse column/row normalizations in exact opposite order.
             stage = stages - 1
-            for _ in range(iterations - 1):
+            for _ in pl.unroll(iterations - 1):
                 before = pl.load(states, [offset + (stage - 1) * tile, 0], [tile, tile])
                 after = pl.load(states, [offset + stage * tile, 0], [tile, tile])
-                denominator = pl.add(pl.mul(pl.col_sum(before), .5), eps)
-                correction = pl.mul(pl.col_sum(pl.mul(gradient, after)), .5)
-                gradient = pl.col_expand_div(pl.col_expand_sub(gradient, correction), denominator)
-                stage -= 1
+                reverse_column_denominator = pl.add(pl.mul(pl.col_sum(before), .5), eps)
+                reverse_column_correction = pl.mul(pl.col_sum(pl.mul(gradient, after)), .5)
+                gradient = pl.col_expand_div(
+                    pl.col_expand_sub(gradient, reverse_column_correction),
+                    reverse_column_denominator,
+                )
+                stage = stage - 1
                 before = pl.load(states, [offset + (stage - 1) * tile, 0], [tile, tile])
                 after = pl.load(states, [offset + stage * tile, 0], [tile, tile])
-                denominator = pl.add(pl.mul(pl.row_sum(before, scratch), .5), eps)
-                correction = pl.mul(pl.row_sum(pl.mul(gradient, after), scratch), .5)
-                gradient = pl.row_expand_div(pl.row_expand_sub(gradient, correction), denominator)
-                stage -= 1
+                reverse_row_denominator = pl.add(pl.mul(pl.row_sum(before, scratch), .5), eps)
+                reverse_row_correction = pl.mul(
+                    pl.row_sum(pl.mul(gradient, after), scratch), .5,
+                )
+                gradient = pl.row_expand_div(
+                    pl.row_expand_sub(gradient, reverse_row_correction),
+                    reverse_row_denominator,
+                )
+                stage = stage - 1
             before = pl.load(states, [offset, 0], [tile, tile])
             after = pl.load(states, [offset + tile, 0], [tile, tile])
-            denominator = pl.add(pl.mul(pl.col_sum(before), .5), eps)
-            correction = pl.mul(pl.col_sum(pl.mul(gradient, after)), .5)
-            gradient = pl.col_expand_div(pl.col_expand_sub(gradient, correction), denominator)
+            first_column_denominator = pl.add(pl.mul(pl.col_sum(before), .5), eps)
+            first_column_correction = pl.mul(pl.col_sum(pl.mul(gradient, after)), .5)
+            gradient = pl.col_expand_div(
+                pl.col_expand_sub(gradient, first_column_correction), first_column_denominator,
+            )
 
             softmax = pl.sub(before, eps)
-            correction = pl.row_sum(pl.mul(gradient, softmax), scratch)
-            gradient = pl.mul(softmax, pl.row_expand_sub(gradient, correction))
+            softmax_correction = pl.row_sum(pl.mul(gradient, softmax), scratch)
+            gradient = pl.mul(softmax, pl.row_expand_sub(gradient, softmax_correction))
             for row in pl.unroll(copies):
                 for column in pl.unroll(copies):
                     total = 0.
                     for row_copy in pl.unroll(2):
                         for column_copy in pl.unroll(2):
-                            total += pl.tile.read(
+                            total = total + pl.tile.read(
                                 gradient, [row + row_copy * copies, column + column_copy * copies],
                             )
                     logical = 2 * copies + row * copies + column
-                    pl.write(projection_gradient, [token, logical], total * scale2)
+                    pl.tile.write(projected_gradient, [0, logical], total * scale2)
+            pl.store(projected_gradient, [token, 0], projection_gradient)
         return projection_gradient
 
     @pl.jit.host
