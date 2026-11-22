@@ -86,6 +86,7 @@ def main():
             except Exception as error:
                 observations.append(dict(tag=tag, observation_error=repr(error), terminal=False,
                                          NN_restarted=False))
+                break  # 当前用例状态未知时，顺序队列后续项同样不能推进；避免额外连接重试。
         save("observing_three_frozen_confirmations", terminal=False, controller=launch,
              completed_cases=list(complete.values()), observations=observations,
              fresh_cohort_assigned=True)
