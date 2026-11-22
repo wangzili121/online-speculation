@@ -13,7 +13,7 @@ if [[ -n "$(git -C "$PYPTO_SERVING_ROOT" status --porcelain --untracked-files=no
 fi
 
 for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.patch \
-    lib-pypto72-compat.patch lib-cluster-retry.patch; do
+    lib-pypto72-compat.patch lib-cluster-retry.patch lib-cluster-prefill-trace.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done

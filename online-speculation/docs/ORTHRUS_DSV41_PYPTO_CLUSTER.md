@@ -89,9 +89,11 @@ CLUSTER_KEY_FILE=/home/wangzili/.orthrus-cluster.key \
 
 重跑会优先使用结果盘上最近一次导出且与基模匹配的初始化 head。Engram 分片的 SHA256 保存在结果盘的 `.orthrus-dsv41-state` 中，只有底层文件标识和时间戳一致时才复用。首次写入此缓存时，日志会逐分片打印校验进度。当前离线镜像通过 `pl.tile.rsqrt(x, tmp)` 保留基模所需的高精度倒平方根路径。
 
-程序先运行 target-only 再运行 Orthrus，在两个节点的 DP 分区各运行一个请求。它检查全部 40 层、逐 token 的贪心一致性、K32 起草和验证、接受前缀提交、验证后的 KV 恢复及请求释放。两台各自记录 `orthrus-cluster-accept.*/acceptance/acceptance.json`，详细日志为同目录的 `cluster-accept.log`。先看两端的 `passed`，再看 `compared_tokens`、`draft_rounds` 和 `verifier_restored_bytes`。此入口用于离线推理验收。初始化 head 的接受数供诊断使用，性能结论需用训练 head。
+程序先运行 target-only 再运行 Orthrus，在两个节点的 DP 分区各运行一个请求。两次生成复用同一份已加载的基模和通信组，各自重新分配并清理请求缓存。起草前先比较 prefill 生成的第一个 token，之后每轮验证立即比较新增 token。默认记录 prefill 每层激活的散列值。首 token 分叉时报告会附上本端最早的变化和候选分数，验证阶段分叉时会附上候选和目标判定。`--tokens 4` 可快速覆盖前四个输出位置，两端需传相同参数。两次独立冷启动的精度一致性仍需另起进程验证。
 
-离线镜像已通过补丁和启动检查。CPU 测试覆盖全局 rank 到本机设备的映射、Engram 文件映射，以及两端通过控制连接同步起草、验证、提交和释放。真实 W8A8 双机整模结果待公司机验收。
+程序检查全部 40 层、逐 token 的贪心一致性、K32 起草和验证、接受前缀提交、验证后的 KV 恢复及请求释放。两台各自记录 `orthrus-cluster-accept.*/acceptance/acceptance.json`，详细日志为同目录的 `cluster-accept.log`。先看两端的 `passed`，再看 `compared_tokens`、`draft_rounds` 和 `verifier_restored_bytes`。此入口用于离线推理验收。初始化 head 的接受数供诊断使用，性能结论需用训练 head。
+
+离线镜像已通过补丁和启动检查。CPU 测试覆盖全局 rank 到本机设备的映射、Engram 文件映射，以及两端通过控制连接同步起草、验证、提交和释放。真实 W8A8 双机已分别完成 target-only 和 Orthrus 生成，首次验收发现两次独立基模 prefill 的 logits 有差异。共享基模会话的双机逐 token 结果仍需复验。
 
 ## 精度验收
 

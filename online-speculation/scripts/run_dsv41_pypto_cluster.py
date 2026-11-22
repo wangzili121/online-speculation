@@ -12,7 +12,7 @@ import sys
 
 from blockspec.pypto_dsv41_cluster import ClusterDispatcher, ControlLink, RankPlan
 from validate_dsv41_pypto_cluster import check_visible_devices
-from verify_dsv41_pypto_acceptance import audit_session, request_parity
+from verify_dsv41_pypto_acceptance import TokenDivergence, audit_session, check_generated_prefix, request_parity
 
 
 PROMPTS = (
@@ -37,15 +37,18 @@ def fingerprint(paths):
     return digest.hexdigest()
 
 
-def generate(runner, prompts, steps, assignments, *, speculative):
+def generate(runner, prompts, steps, assignments, *, reference=None):
     import torch
     from pypto_serving.config.types import DecodeBatch, PrefillBatch, SamplingParams
 
     pages = {group.name: list(range(group.max_blocks_per_seq)) for group in runner.cache_plan.groups}
     generated = []
     counts = Counter()
+    speculative = reference is not None
+    mode = "orthrus" if speculative else "target"
     for index, (prompt, partition) in enumerate(zip(prompts, assignments, strict=True)):
-        request_id = f"request-{index}"
+        request_id = f"{mode}-request-{index}"
+        expected = reference[index]["token_ids"] if speculative else None
         # Exercise the native chunked-prefill path, including the left-over chunk.
         for start in range(0, len(prompt), runner.config.chunk_tokens):
             ids = prompt[start:start + runner.config.chunk_tokens]
@@ -55,6 +58,10 @@ def generate(runner, prompts, steps, assignments, *, speculative):
                 block_ids_by_group=[pages], cache_partitions=[partition])
             prefill = runner.run(batch, "prefill")
         output = [int(prefill.sampled_token_ids[0])]
+        if speculative:
+            check_generated_prefix(index, expected, output, phase="prefill")
+        print(json.dumps(dict(stage="prefill_token", mode=mode, request=index, dp=partition,
+                              token=output[0], compared=speculative)), flush=True)
         while len(output) < steps:
             committed = len(runner.ledger.requests[request_id].history)
             if committed != len(prompt) + len(output) - 1:
@@ -67,18 +74,67 @@ def generate(runner, prompts, steps, assignments, *, speculative):
             if result.accepted_token_ids is None:
                 emitted = result.sampled_token_ids.tolist()
                 counts["plain_decode_steps"] += 1
+                phase = "decode"
             else:
                 emitted = result.accepted_token_ids[0]
                 counts["draft_rounds"] += 1
                 counts["proposed_candidates"] += result.num_draft_tokens[0]
                 counts["accepted_candidates"] += len(emitted) - 1
+                phase = "verify/accept"
             if not emitted:
                 raise RuntimeError("A greedy decode step must emit at least one token")
             output.extend(emitted[:steps - len(output)])
+            if speculative:
+                check_generated_prefix(index, expected, output, phase=phase)
         runner.release_finished_requests([request_id])
         generated.append(dict(index=index, dp=partition, prompt_ids=prompt, token_ids=output,
             finish_reason="length", usage=dict(prompt_tokens=len(prompt), completion_tokens=len(output))))
     return generated, dict(counts)
+
+
+def request_receipts(receipt_path, mode, index, phase):
+    request_id = f"{mode}-request-{index}"
+    with receipt_path.open() as stream:
+        for line in stream:
+            row = json.loads(line)
+            if row["phase"] != phase:
+                continue
+            for position, owner in enumerate(row["owners"]):
+                if owner["request_id"] == request_id:
+                    yield row, position
+
+
+def prefill_difference(receipt_path, request_index):
+    """Summarize the first host-local activation mismatch without sharing tensor payloads."""
+    modes = ("target", "orthrus")
+    traces = {
+        mode: [row for row, _ in request_receipts(receipt_path, mode, request_index, "prefill")]
+        for mode in modes
+    }
+    if not all(traces.values()):
+        return {}
+    result = {mode: traces[mode][-1]["prefill_topk"] for mode in modes}
+    for chunk, (baseline, candidate) in enumerate(zip(*(traces[mode] for mode in modes), strict=True)):
+        paths = [row["prefill_activation_trace"] for row in (baseline, candidate)]
+        if not all(paths):
+            continue
+        left, right = (json.loads(Path(path).read_text()) for path in paths)
+        for a, b in zip(left, right, strict=True):
+            if a != b:
+                result["first_activation_difference"] = dict(chunk=chunk, target=a, orthrus=b)
+                return result
+    return result
+
+
+def verification_difference(receipt_path, request_index):
+    """Return the final candidate block and target decisions for the diverging request."""
+    result = {}
+    for phase in ("draft", "verify"):
+        receipts = list(request_receipts(receipt_path, "orthrus", request_index, phase))
+        if receipts:
+            row, position = receipts[-1]
+            result[phase] = dict(epoch=row["native_epoch"], tokens=row["greedy_rows"][position])
+    return result
 
 
 def run(args):
@@ -131,7 +187,8 @@ def run(args):
     with ControlLink.connect(plan.node, address, key, args.connect_timeout) as link:
         link.connection.settimeout(args.timeout)
         request = dict(build=identity, checkpoint=checkpoint_identity, head=head_identity,
-                       prompts=prompts, partitions=assignments, tokens=args.tokens, context=args.context)
+                       prompts=prompts, partitions=assignments, tokens=args.tokens, context=args.context,
+                       trace_prefill=args.trace_prefill)
         if link.exchange("acceptance/configuration", request) != request:
             raise ValueError("Nodes must use the same checkout, model, head and workload")
         print(f"Node {args.node} preparing HOST Engram contracts", flush=True)
@@ -144,23 +201,35 @@ def run(args):
             raise ValueError("Engram checkpoint payloads differ between nodes")
         cache_plan = CachePlan.from_native_templates(source, cache[0]["cache_ABI"], config)
         results, audits = {}, {}
-        for mode in ("target", "orthrus"):
-            speculative = mode == "orthrus"
-            print(f"Node {args.node} running {mode} on global ranks {list(plan.local_ranks)}", flush=True)
-            cluster = ClusterDispatcher(plan, link, build_id=f"{identity}/{mode}")
-            native_dir = args.output / f"{mode}-native"
-            session = NativeSession(source, args.model, devices, native_dir, config, checkpoint.text["vocab_size"],
-                                    cache_plan, orthrus_head=str(args.head) if speculative else None,
-                                    cluster=cluster, prepared_cache=cache)
-            runner = A3Runner(source, config, cache_plan, session, checkpoint.text["vocab_size"], greedy_tokens=True)
-            try:
-                rows, stats = generate(runner, prompts, args.tokens, assignments, speculative=speculative)
-            finally:
-                runner.close()
-            results[mode] = dict(status="executed", devices=devices, sampling=SAMPLING,
-                                 requests=rows, speculation=stats)
-            write_report(args.output / mode / "result.json", results[mode])
-            _, phases, restored = audit_session(native_dir, speculative=speculative, node_local=True)
+        modes = ("target", "orthrus")
+        native_dir = args.output / "native"
+        cluster = ClusterDispatcher(plan, link, build_id=identity)
+        session = NativeSession(source, args.model, devices, native_dir, config, checkpoint.text["vocab_size"],
+                                cache_plan, orthrus_head=str(args.head), cluster=cluster, prepared_cache=cache,
+                                defer_draft=True, trace_prefill=args.trace_prefill)
+        runner = A3Runner(source, config, cache_plan, session, checkpoint.text["vocab_size"], greedy_tokens=True)
+        try:
+            for mode in modes:
+                print(f"Node {args.node} running {mode} on global ranks {list(plan.local_ranks)}", flush=True)
+                expected = results["target"]["requests"] if mode == "orthrus" else None
+                rows, stats = generate(runner, prompts, args.tokens, assignments, reference=expected)
+                results[mode] = dict(status="executed", devices=devices, sampling=SAMPLING,
+                                     requests=rows, speculation=stats)
+                write_report(args.output / mode / "result.json", results[mode])
+        except TokenDivergence as error:
+            diagnostics = {"prefill": prefill_difference, "verify/accept": verification_difference}
+            collect = diagnostics.get(error.details["phase"])
+            if collect is not None:
+                try:
+                    error.details["native"] = collect(session.receipt_path, error.details["request"])
+                except (OSError, KeyError, ValueError, IndexError) as trace_error:
+                    error.details["native_trace_error"] = str(trace_error)
+            raise
+        finally:
+            runner.close()
+        for mode in modes:
+            _, phases, restored = audit_session(native_dir, speculative=mode == "orthrus", node_local=True,
+                                                request_prefix=f"{mode}-request-")
             audits[mode] = dict(phases=phases, verifier_restored_bytes=restored)
         tokens = request_parity(results["target"], results["orthrus"])
         summary = dict(passed=True, node=plan.node, global_ranks=list(plan.local_ranks), build_id=identity,
@@ -189,6 +258,8 @@ def main():
     parser.add_argument("--tokens", type=int, default=8)
     parser.add_argument("--context", type=int, default=512)
     parser.add_argument("--host-threads", type=int, default=4)
+    parser.add_argument("--trace-prefill", action=argparse.BooleanOptionalAction, default=True,
+                        help="Record hashes of actual prefill layer outputs for first-divergence diagnosis")
     parser.add_argument("--connect-timeout", type=int, default=900)
     parser.add_argument("--timeout", type=int, default=3600, help="Maximum seconds of peer inactivity")
     args = parser.parse_args()
@@ -200,6 +271,8 @@ def main():
         summary = run(args)
     except Exception as error:
         failure = dict(passed=False, node=args.node, error=f"{type(error).__name__}: {error}")
+        if isinstance(error, TokenDivergence):
+            failure["divergence"] = error.details
         write_report(args.output / "acceptance.json", failure)
         print(json.dumps(failure), file=sys.stderr, flush=True)
         raise

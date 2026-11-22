@@ -1,0 +1,60 @@
+diff --git a/models/deepseek_v4_1_flash_a3/network.py b/models/deepseek_v4_1_flash_a3/network.py
+index 7775299..58c38c4 100644
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -1418,8 +1418,23 @@ def run_network_chunk(
+     executor.precheck()
+     hidden, premix = embed_network_input(
+         inputs["input_contract"], weights, executor, text, output / "embedding"
+     )
++    prefill_trace = []
++
++    def capture_prefill(stage, activations, coefficients):
++        for case, records in provider.batch_for_layer(0)["cases"].items():
++            for rank, device in executor.rank_devices.items():
++                valid = records[rank]["SP_valid_rows"]
++                if valid:
++                    actual = resident.read_output(activations[rank][case][:valid], device)
++                    mixes = resident.read_output(coefficients[rank][case][:valid], device)
++                    prefill_trace.append(dict(stage=stage, rank=rank, case=case, rows=valid,
++                                              hidden_sha256=tensor_sha(actual), premix_sha256=tensor_sha(mixes)))
++
++    trace_prefill = phase == "prefill" and contract.get("trace_prefill", False)
++    if trace_prefill:
++        capture_prefill("embedding", hidden, premix)
+     hash_batch = provider.hash_batch()
+     common_engram = engram_contracts[1]
+     if progress is not None:
+         progress(dict(stage="preparing_engram", epoch=epoch))
+@@ -1488,8 +1503,10 @@ def run_network_chunk(
+                 if not bool(executor.read_control(status, rank).all()):
+                     raise RuntimeError(f"Non-finite {phase} state after layer {layer} on rank {rank}")
+         if draft is None:
+             provider.observe_layer(layer, result)
++        if trace_prefill:
++            capture_prefill(f"layer-{layer}", result["hidden"], result["pre_mix"])
+         extra = () if draft is None else draft.finish_layer(layer)
+         executor.retain_boundaries(result["hidden"], result["pre_mix"], extra)
+         completed_layers.append(layer)
+         layer_timings.append(dict(layer=layer, weight_load_seconds=0.0,
+@@ -1521,8 +1538,10 @@ def run_network_chunk(
+             output=output / "actual-layer39-output",
+         )
+         if any(not torch.isfinite(value).all() for row in output_result["logits"] for value in row.values()):
+             raise RuntimeError(f"Non-finite {phase} vocabulary logits")
++        if trace_prefill:
++            write_json(output / "prefill-activations.json", prefill_trace)
+         loaded_source_files(runtime)
+         runtime.update(
+             status="executed_full40_not_compared",
+             completed_layers=list(range(40)),
+@@ -1562,8 +1581,9 @@ def run_network_chunk(
+                 complete_network_acceptance="not_run",
+             ),
+         )
+         return dict(runtime, logits=output_result["logits"], compilation=program.summary(),
++                    prefill_activation_trace=str(output / "prefill-activations.json") if trace_prefill else None,
+                     timings=dict(layers=layer_timings, chunk_seconds=chunk_seconds,
+                                  weight_load_seconds=weights.load_seconds - initial_load_seconds,
+                                  checkpoint_read_calls=weights.reader.read_calls - initial_read_calls))
+     except BaseException as error:

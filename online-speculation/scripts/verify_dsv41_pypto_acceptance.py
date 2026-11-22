@@ -11,6 +11,22 @@ def read_json(path):
     return json.loads(path.read_text())
 
 
+class TokenDivergence(ValueError):
+    def __init__(self, index, offset, phase, expected, actual):
+        super().__init__(f"Request {index} diverged at generated token index {offset} during {phase} "
+                         f"(target={expected}, orthrus={actual})")
+        self.details = dict(request=index, generated_index=offset, phase=phase,
+                            target_token=expected, orthrus_token=actual)
+
+
+def check_generated_prefix(index, expected, actual, *, phase):
+    """Fail at the first available token difference, including an excess token."""
+    for offset, observed in enumerate(actual):
+        reference = expected[offset] if offset < len(expected) else None
+        if observed != reference:
+            raise TokenDivergence(index, offset, phase, reference, observed)
+
+
 def request_parity(target, draft):
     if target["status"] != "executed" or draft["status"] != "executed":
         raise ValueError("Both offline runs must finish successfully")
@@ -25,24 +41,25 @@ def request_parity(target, draft):
         for field in ("index", "prompt_ids", "finish_reason", "usage"):
             if a[field] != b[field]:
                 raise ValueError(f"Request {a['index']} differs in {field}")
-        if a["token_ids"] != b["token_ids"]:
-            offset = next((i for i, (x, y) in enumerate(zip(a["token_ids"], b["token_ids"])) if x != y),
-                          min(len(a["token_ids"]), len(b["token_ids"])))
-            raise ValueError(f"Request {a['index']} diverged at generated token index {offset}")
+        check_generated_prefix(a["index"], a["token_ids"], b["token_ids"], phase="final comparison")
+        if len(b["token_ids"]) < len(a["token_ids"]):
+            offset = len(b["token_ids"])
+            raise TokenDivergence(a["index"], offset, "final comparison", a["token_ids"][offset], None)
         tokens += len(a["token_ids"])
     if tokens == 0:
         raise ValueError("No generated tokens were compared")
     return tokens
 
 
-def audit_session(directory, *, speculative, node_local=False):
+def audit_session(directory, *, speculative, node_local=False, request_prefix=None):
     receipts = list(directory.rglob("serving-dispatches.jsonl"))
     if len(receipts) != 1:
         raise ValueError(f"Expected exactly one native session receipt in {directory}, found {len(receipts)}")
     session = receipts[0].parent
     manifest = read_json(session / "run-manifest.json")
     cleanup = read_json(session / "cleanup.json")
-    if bool(manifest["orthrus_head"]) != speculative:
+    if (request_prefix is None and bool(manifest["orthrus_head"]) != speculative
+            or request_prefix is not None and not manifest.get("deferred_draft")):
         raise ValueError(f"Unexpected Orthrus head configuration in {session}")
     if not cleanup["closed"] or not cleanup["runtime_closed"] or cleanup["errors"]:
         raise ValueError(f"Native runtime cleanup failed in {session}")
@@ -56,6 +73,15 @@ def audit_session(directory, *, speculative, node_local=False):
         for line in records:
             row = json.loads(line)
             phase = row["phase"]
+            if request_prefix is not None:
+                owners_on_row = [row["owner"]] if phase == "release" else row["owners"]
+                belongs = [item["request_id"].startswith(request_prefix) for item in owners_on_row]
+                if not any(belongs):
+                    continue
+                if not all(belongs) or (not speculative and row["draft_resident"]):
+                    raise ValueError("Mismatched request or resident draft during target-only acceptance")
+                if phase in sequence and not row["draft_resident"]:
+                    raise ValueError("Speculation ran without the resident draft head")
             phases[phase] += 1
             if phase not in sequence and position:
                 raise ValueError(f"Incomplete speculative round before {phase}")
@@ -100,8 +126,15 @@ def main():
     try:
         target, draft = (read_json(args.results / mode / "result.json") for mode in ("target", "orthrus"))
         tokens = request_parity(target, draft)
-        a, target_phases, _ = audit_session(args.results / "target-native", speculative=False)
-        b, draft_phases, restored = audit_session(args.results / "orthrus-native", speculative=True)
+        shared = args.results / "native"
+        if shared.is_dir():
+            a, target_phases, _ = audit_session(shared, speculative=False, node_local=True,
+                                                 request_prefix="target-request-")
+            b, draft_phases, restored = audit_session(shared, speculative=True, node_local=True,
+                                                       request_prefix="orthrus-request-")
+        else:
+            a, target_phases, _ = audit_session(args.results / "target-native", speculative=False)
+            b, draft_phases, restored = audit_session(args.results / "orthrus-native", speculative=True)
         if a != b:
             raise ValueError("Native sessions used different checkpoint identities")
     except (OSError, KeyError, ValueError) as error:

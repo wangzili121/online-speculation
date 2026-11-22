@@ -73,6 +73,30 @@ class AcceptanceTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("generated token index 1", report["error"])
 
+    def test_shared_runtime_audits_modes_without_allowing_an_early_draft(self):
+        session = self.root / "native" / "session-1"
+        session.mkdir(parents=True)
+        (session / "run-manifest.json").write_text(json.dumps(dict(
+            orthrus_head="head", deferred_draft=True, checkpoint={"config": "same"}, ranks=[{"dp_rank": 0}],
+        )))
+        (session / "cleanup.json").write_text(json.dumps(dict(closed=True, runtime_closed=True, errors=[])))
+        base_owner = dict(dp=0, slot=0, generation=1, request_id="target-request-0")
+        draft_owner = dict(dp=0, slot=0, generation=2, request_id="orthrus-request-0")
+        rows = [dict(phase=phase, owners=[base_owner], draft_resident=False) for phase in ("prefill", "decode")]
+        rows.append(dict(phase="release", owner=base_owner, draft_resident=False))
+        rows.extend(dict(row, owners=[draft_owner], draft_resident=row["phase"] != "prefill") for row in self.round)
+        rows.append(dict(phase="release", owner=draft_owner, draft_resident=True))
+        receipt = session / "serving-dispatches.jsonl"
+        receipt.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        code, report = self.run_acceptance()
+        self.assertEqual(code, 0, report)
+        self.assertEqual(report["target_phases"], dict(prefill=1, decode=1, release=1))
+        rows[0]["draft_resident"] = True
+        receipt.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        code, report = self.run_acceptance()
+        self.assertEqual(code, 1)
+        self.assertIn("resident draft", report["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
