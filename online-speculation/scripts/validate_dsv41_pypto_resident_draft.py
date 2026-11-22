@@ -17,11 +17,11 @@ def histories(runtime, attention, anchor, ranks, slot, generation):
     pinned = []
 
     def bind(kind, ratio, value, stride, offset, table):
-        runtime.pin(value, ranks, readonly=False, name=f"raw/{slot}/{generation}/{kind}/{ratio}")
+        runtime.pin(value, attention.rank_ids.values(), readonly=False, name=f"raw/{slot}/{generation}/{kind}/{ratio}")
         pinned.append(value)
-        return [dict(handle=runtime.handle(value, rank, readonly=True), pages=table,
+        return {rank: dict(handle=runtime.handle(value, attention.rank_ids[rank], readonly=True), pages=table,
                      shape=(value.shape[0] // stride, WINDOW // ratio, 1, value.shape[1]),
-                     stride_rows=stride, offset_rows=offset) for rank in ranks]
+                     stride_rows=stride, offset_rows=offset) for rank in ranks}
 
     swa = torch.randn((4 * WINDOW, HEAD_DIM)).bfloat16()
     local = bind("swa", 1, swa, WINDOW, 0, (1, 2, 3))
@@ -36,7 +36,7 @@ def histories(runtime, attention, anchor, ranks, slot, generation):
         scales = bind("scale", ratio, buffers["index_scales"], geometry.scale_stride, geometry.scale_offset, pages)
         planes[ratio] = {rank: dict(swa=(local[rank],), long=(long[rank],), index=(keys[rank], scales[rank]))
                          for rank in ranks}
-    owner = 0, slot, generation
+    owner = ranks[0] // attention.topology["tp"], slot, generation
     table = {}
     for layer in range(40):
         role = native("cache").resolve_layer_role(layer)
@@ -96,22 +96,24 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
         role = native("cache").resolve_layer_role(layer)
         roles.append(role["mode"])
 
-        def project(rank):
-            contribution = runtime.workspace(hidden.shape, hidden.dtype, rank)
+        def project(local):
+            rank = ranks[local]
+            contribution = runtime.workspace(hidden.shape, hidden.dtype, local)
             draft.project_layer(rank, layer, record, hidden, cos, sin, contribution)
-            output = runtime.read_output(contribution, rank)
+            output = runtime.read_output(contribution, local)
             for block in output[BLOCK:active].split(BLOCK):
                 assert torch.isfinite(block).all() and block.abs().max() > 0, f"Invalid layer {layer}, rank {rank} output"
             assert not output[:BLOCK].any() and not output[active:].any()
             if role["index_source"] is not None and layer in (2, 3, 20, 21, 24, 25):
                 for slot, anchor in enumerate(anchors):
-                    rows = draft.selection[rank, (0, slot, generation), role["index_source"]][1]
-                    assert (runtime.read_control(rows["lengths"], rank) == anchor // role["ratio"]).all()
+                    owner = rank // attention.topology["tp"], slot, generation
+                    rows = draft.selection[rank, owner, role["index_source"]][1]
+                    assert (runtime.read_control(rows["lengths"], local) == anchor // role["ratio"]).all()
             if args.cards == 4 or (args.cards == 1 and layer == 39):
                 physical = active // 4
-                packed = runtime.workspace((4 * capacity, width), hidden.dtype, rank)
+                packed = runtime.workspace((4 * capacity, width), hidden.dtype, local)
                 draft.pack(rank, contribution, packed, physical=physical, total=active)
-                packed_output = runtime.read_output(packed, rank).view(4, capacity, width)
+                packed_output = runtime.read_output(packed, local).view(4, capacity, width)
                 assert torch.equal(packed_output[:, :physical].reshape(active, width), output[:active])
                 assert not packed_output[:, physical:].any()
                 return [contribution, packed], packed_output.flatten(0, 1)
@@ -128,7 +130,7 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
             collective_error = max(collective_error, error)
         runtime.release_values(draft.finish_layer(layer))
     assert not draft.selection
-    for rank in ranks:
+    for rank in range(len(ranks)):
         for value in pinned:
             assert torch.equal(value.view(torch.uint8), runtime.read_output(value, rank).view(torch.uint8))
     return roles, collective_error, fingerprint.hexdigest() if fingerprint is not None else None
@@ -140,17 +142,21 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--cards", type=int, choices=(1, 2, 3, 4), default=1)
     parser.add_argument("--requests", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--rank-offset", type=int, choices=(0, 4, 8, 12), default=0,
+                        help="Global rank at the start of the local TP4 partition")
     parser.add_argument("--replay", action="store_true", help="Interleave a second generation and replay the first")
     args = parser.parse_args()
     sys.path.insert(0, str(args.lib.resolve()))
     args.output.mkdir()
     torch.set_num_threads(4)
     torch.manual_seed(23)
-    ranks = list(range(args.cards))
+    devices = list(range(args.cards))
+    ranks = list(range(args.rank_offset, args.rank_offset + args.cards))
     topology = dict(ep=args.cards, dp=1, tp=args.cards)
-    with native("prefill_resident").ResidentNetworkRuntime(ranks, topology) as runtime:
+    with native("prefill_resident").ResidentNetworkRuntime(devices, topology) as runtime:
         attention = ResidentDraftAttention(
-            args.model, args.head, runtime, dict(ep=args.cards, tp=4), args.output / "kernels",
+            args.model, args.head, runtime, dict(ep=16 if args.rank_offset else args.cards, tp=4),
+            args.output / "kernels", local_ranks=ranks,
         )
         anchors = (257, 129)[:args.requests]
         primary = prepare_round(runtime, attention, ranks, anchors, 1)
@@ -167,7 +173,7 @@ def main():
             collective_error = max(collective_error, middle_error, replay_error)
             replay_passed = True
         assert before == runtime.stats["device_weight_upload_calls"]
-        result = dict(physical_devices=args.cards, tp4_lanes=ranks, full_tp4=args.cards == 4,
+        result = dict(physical_devices=args.cards, global_ranks=ranks, tp4_lanes=devices, full_tp4=args.cards == 4,
                       anchors=list(anchors), layers=list(range(40)),
                       roles={role: roles.count(role) for role in sorted(set(roles))},
                       block=BLOCK, cache_unchanged=True, weights_reuploaded=False,

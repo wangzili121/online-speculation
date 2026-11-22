@@ -59,7 +59,15 @@ python "$ORTHRUS_ROOT/online-speculation/scripts/validate_dsv41_pypto_cluster.py
 
 8+8 逻辑 rank 的控制流程通过了双进程和双离线容器的 TCP 回环。外部实验机上的单机双卡测试覆盖了驱动 25.5.1/CANN 9.0.0 与驱动 26.1.1/CANN 9.1.1，25.5.1 环境另复验了物理到运行时卡号映射。三卡 2+1 进入 EP AlltoAll 后报设备链路超时 `507048`，相同卡两两连接的用例通过。 [单机两卡记录](validation/dsv41/pypto-cluster-loopback-ep2.json)
 
-现有整模入口 `run_network_runtime` 用全局 EP 数量配置本地设备，同时给所有 rank 分配 `A3ResidentWeights` 和 KV 缓存。双机接入需要让 `GenerationSession` 只持有本机权重、KV 页和运行时张量。模型编译仍保留全局 EP16，MoE 专家和收发桶继续按全局 rank 编号。层循环需要把 `NetworkExecutor.exchange` 接到跨机通信，两端执行相同阶段，空 DP 仍参与集合通信。真实 W8A8 基模用同一组输入跑 target-only 和 Orthrus，再由[整模验收](ORTHRUS_DSV41_PYPTO.md#serving-入口与实机验收)检查实际投机阶段和逐 token 一致性。
+## 整模接入
+
+原 A3 Serving 由一个 worker 持有 16 个逻辑设备。对应 Lib 的 `run_network_runtime` 用全局 EP 数量配置本地设备，集体通信调用 `HcclCommInitAll`。1121 配对更新了原生执行接口，启动仍要求单个任务分配 16 个设备。 [原 Serving](https://github.com/Adelaide999/pypto-serving/blob/cd818945c3c4e5454b8c259306d4e6f9e865e05c/models/deepseek_v41_a3/README.md) · [原 Lib 组网](https://github.com/Adelaide999/pypto-lib/blob/3de8339fdd60f7a4aae9f221c85dcdf3c7a17612/models/deepseek_v4_1_flash_a3/moe_transport.py) · [1121 启动说明](https://github.com/Adelaide999/pypto-serving/blob/27efbcb1cd3466547823955cb80fe09c63b3f754/models/deepseek_v41_a3/RUNBOOK.md)
+
+`ResidentDraftAttention` 可接收本机拥有的全局 rank，按全局 TP lane 选参数，映射到本地设备执行。使用目标 W8A8 checkpoint 导出的初始化 head，将全局 rank 8 映射到本机设备 0 完成 40 层 K32 draft。输入历史缓存逐字节一致，运行期间没有重复上传 head。 [实卡记录](validation/dsv41/pypto-resident-w8a8-rank8-910b3.json)
+
+基模的本机权重加载通过独立的 [Lib 补丁](../runtime/pypto_dsv41_a3/lib-rank-weights.patch) 提供，应用在现有 `lib-serving.patch` 之后。CPU 契约测试验证了两个本机 worker 只读取 rank 8 和 9 的路由专家，静态句柄按全局 rank 保留。配对 Lib 的 14 项会话测试通过。现有离线镜像仍用原配对。
+
+整模还需把本机权重加载接进 `GenerationSession`，按本机 rank 分配 KV 和运行时张量，并把 `NetworkExecutor.exchange` 接到跨机通信。编译时保留全局 EP16，空 DP 也参与集合通信。接好后，使用真实 W8A8 基模的同一组输入跑 target-only 和 Orthrus，由[整模验收](ORTHRUS_DSV41_PYPTO.md#serving-入口与实机验收)检查实际投机阶段和逐 token 一致性。
 
 ## 精度验收
 

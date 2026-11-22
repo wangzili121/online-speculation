@@ -25,10 +25,15 @@ def native(name):
 class ResidentDraftAttention:
     """Own static diffusion operands and share the native rank workers."""
 
-    def __init__(self, model, head, resident, topology, output, *, native_module=native):
-        self.config, self.manifest, files = read_draft_artifact(Path(model), Path(head))
+    def __init__(self, model, head, resident, topology, output, *, native_module=native, local_ranks=None):
         if topology["tp"] != 4:
             raise ValueError("DSV4.1 draft attention requires the verified TP4 shard geometry")
+        ranks = tuple(range(topology["ep"]) if local_ranks is None else local_ranks)
+        if (not ranks or len(ranks) != len(resident.devices) or len(set(ranks)) != len(ranks)
+                or any(type(rank) is not int or not 0 <= rank < topology["ep"] for rank in ranks)):
+            raise ValueError("Draft ranks must map one-to-one to the node's resident devices")
+        self.rank_ids = {rank: local for local, rank in enumerate(ranks)}
+        self.config, self.manifest, files = read_draft_artifact(Path(model), Path(head))
         self.resident, self.topology = resident, topology
         self.native = native_module
         self.output = Path(output)
@@ -45,13 +50,14 @@ class ResidentDraftAttention:
                 fields += ("candidate_source",)
             if any(declared[key] != role[key] for key in fields):
                 raise ValueError(f"Incompatible diffusion head role at layer {layer}")
+        tp_lanes = sorted({rank % topology["tp"] for rank in ranks})
         for layer in range(len(self.manifest["layers"])):
             weights = read_draft_weights(Path(head), self.manifest, files, layer)
-            lanes = [prepare_draft_operands(weights, self.config, tp_rank=lane)
-                     for lane in range(topology["tp"])]
-            for rank in range(topology["ep"]):
+            lanes = {lane: prepare_draft_operands(weights, self.config, tp_rank=lane)
+                     for lane in tp_lanes}
+            for rank, local in self.rank_ids.items():
                 self.operands[rank, layer] = {
-                    name: resident.weight(value, rank)
+                    name: resident.weight(value, local)
                     for name, value in lanes[rank % topology["tp"]].items()
                 }
         constants = {
@@ -60,10 +66,10 @@ class ResidentDraftAttention:
             **{f"index_zero_{ratio}": torch.zeros((WINDOW // ratio, INDEX_DIM), dtype=torch.int8)
                for ratio in (1, 2)},
         }
-        self.constants = [
-            {name: resident.weight(value, rank) for name, value in constants.items()}
-            for rank in range(topology["ep"])
-        ]
+        self.constants = {
+            rank: {name: resident.weight(value, local) for name, value in constants.items()}
+            for rank, local in self.rank_ids.items()
+        }
 
     @property
     def mask_token_id(self):
@@ -90,9 +96,11 @@ class ResidentDraftAttention:
                 compiled = kernel.compile(*arguments, config=options)
                 self.programs[key] = compiled, self.native("network").network_parameter_abi(compiled)
         compiled, abi = self.programs[key]
-        self.resident.execute(compiled, rank, [inputs[name] for name in compiled.param_names], abi)
+        self.resident.execute(compiled, self.rank_ids[rank], [inputs[name] for name in compiled.param_names], abi)
 
     def start_round(self, histories):
+        if any(rank not in self.rank_ids for rank, _, _ in histories):
+            raise ValueError("Draft history includes a rank assigned to a different node")
         return DraftRound(self, histories)
 
 
@@ -114,7 +122,7 @@ class DraftRound:
             if self.last_use[key[-1]] == layer:
                 del self.selection[key]
         return [
-            (key[0], value)
+            (self.attention.rank_ids[key[0]], value)
             for key, (_, controls) in self.selection.items()
             for value in controls.values()
         ]
@@ -147,7 +155,7 @@ class DraftRound:
         width, latent = heads * HEAD_DIM, config["q_lora_rank"]
 
         def workspace(shape, dtype=torch.bfloat16):
-            return runtime.workspace(shape, dtype, rank)
+            return runtime.workspace(shape, dtype, attention.rank_ids[rank])
 
         operands = attention.operands[rank, layer]
         values = dict(operands, hidden=hidden, cos=cos, sin=sin, active=BLOCK)

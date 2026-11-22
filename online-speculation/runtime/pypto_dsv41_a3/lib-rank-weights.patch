@@ -1,0 +1,305 @@
+diff --git a/models/deepseek_v4_1_flash_a3/resident_weights.py b/models/deepseek_v4_1_flash_a3/resident_weights.py
+index 48b743f..e673215 100644
+--- a/models/deepseek_v4_1_flash_a3/resident_weights.py
++++ b/models/deepseek_v4_1_flash_a3/resident_weights.py
+@@ -12,19 +12,21 @@ from pathlib import Path
+ from time import perf_counter
+
+ from .cache import decode_cache_views
+
+-from .weights import ResidentNetworkWeights
++from .weights import ResidentNetworkWeights, resident_rank_devices
+ from .utils import file_sha, write_json
+
+
+ class A3ResidentWeights:
+     """Own canonical operands and identical Prefill/Decode allocation mappings."""
+
+-    def __init__(self, checkpoint, topology, model_config, runtime):
++    def __init__(self, checkpoint, topology, model_config, runtime, *, local_ranks=None):
+         self.checkpoint, self.topology = str(checkpoint), dict(topology)
+         self.world, self.runtime = int(topology["ep"]), runtime
+-        self.prefill = ResidentNetworkWeights(checkpoint, topology, model_config, runtime)
++        self.rank_devices = resident_rank_devices(runtime, self.world, local_ranks)
++        scope = {} if local_ranks is None else {"local_ranks": tuple(self.rank_devices)}
++        self.prefill = ResidentNetworkWeights(checkpoint, topology, model_config, runtime, **scope)
+         self.decode = DecodeNetworkWeights(self)
+         self.prefill_handles = [dict() for _ in range(self.world)]
+         self.decode_handles = [dict() for _ in range(self.world)]
+         self.cache_handles = [dict() for _ in range(self.world)]
+@@ -81,14 +83,14 @@ class A3ResidentWeights:
+             file="optional/quarot.safetensors", read_calls=1, prepared_shape=[32, 32],
+             prepared_dtype=str(rotation.dtype), selected_rows=None,
+         )
+         self.reader.preparations["engram.rotation"] = 1
+-        self.runtime.pin(rotation, range(self.world), readonly=True, name="engram.rotation")
+-        for rank in range(self.world):
++        self.runtime.pin(rotation, tuple(self.rank_devices.values()), readonly=True, name="engram.rotation")
++        for rank, device in self.rank_devices.items():
+             handles = self.prefill_handles[rank]
+             for (owner_rank, _), owner in self.runtime.pinned.items():
+-                if owner_rank == rank and owner["readonly"]:
+-                    handles[owner["name"]] = self.runtime.handle(owner["source"], rank)
++                if owner_rank == device and owner["readonly"]:
++                    handles[owner["name"]] = self.runtime.handle(owner["source"], device)
+             for (layer, owner_rank, expert), values in self.prefill.experts.items():
+                 if owner_rank == rank:
+                     prefix = f"layers.{layer}.ffn.{expert if expert is not None else 'shared'}"
+                     for name, handle in zip(("gate_up", "gate_scale", "down", "down_scale"), values):
+@@ -139,10 +141,10 @@ class A3ResidentWeights:
+         """Keep the complete bank alive across physical layers and tokens."""
+
+     def bind_cache_views(self, rank, prefill_handles, source_map=None):
+         """Retain exact aliases of the source pools, including byte offsets and owners."""
+-        if not 0 <= rank < self.world:
+-            raise ValueError("Cache rank is outside the resident world")
++        if rank not in self.rank_devices:
++            raise ValueError("Cache rank does not belong to this resident weight bank")
+         views = decode_cache_views(prefill_handles, source_map)
+         self.cache_handles[rank].update(views)
+         mapping = source_map if source_map is not None else {}
+         for name, view in views.items():
+@@ -163,8 +165,9 @@ class A3ResidentWeights:
+                       for name, handle in handles.items())
+                   for rank, handles in enumerate(self.prefill_handles)]
+         return dict(
+             owner="A3ResidentWeights", checkpoint=self.checkpoint, topology=self.topology,
++            resident_global_ranks=list(self.rank_devices),
+             prefill_ready=self.ready, decode_ready=self.ready, **counts,
+             device_weight_upload_call_count=self.device_upload_calls,
+             device_weight_bytes=list(self.runtime.stats["weight_bytes"]),
+             initialization_timings=self.initialization_timings,
+@@ -200,10 +203,10 @@ class DecodeNetworkWeights:
+             raise RuntimeError("Decode operands require the session's completed preload")
+         return self.owner.for_layer(layer)
+
+     def handles(self, rank):
+-        if not 0 <= rank < self.world:
+-            raise ValueError("Decode rank is outside the session topology")
++        if rank not in self.owner.rank_devices:
++            raise ValueError("Decode rank does not belong to this resident weight bank")
+         return self.owner.decode_handles[rank]
+
+     def preload(self, runtime):
+         raise RuntimeError("Decode ABI adapters cannot read or upload a second weight bank")
+diff --git a/models/deepseek_v4_1_flash_a3/weights.py b/models/deepseek_v4_1_flash_a3/weights.py
+index 816bebc..35038b1 100644
+--- a/models/deepseek_v4_1_flash_a3/weights.py
++++ b/models/deepseek_v4_1_flash_a3/weights.py
+@@ -1105,14 +1105,25 @@ class ResidentCheckpointOperands(CheckpointOperands):
+         self.preparations[prefix] = self.preparations.get(prefix, 0) + 1
+         return super().expert(prefix, partitions=partitions)
+
+
++def resident_rank_devices(runtime, world, local_ranks=None):
++    """Bind local workers to global checkpoint rank IDs, without renumbering expert owners."""
++    ranks = tuple(range(world) if local_ranks is None else local_ranks)
++    if (not ranks or len(set(ranks)) != len(ranks)
++            or any(type(rank) is not int or not 0 <= rank < world for rank in ranks)
++            or len(ranks) != len(runtime.devices)):
++        raise ValueError("Static weight ranks must match the local resident devices")
++    return {rank: device for device, rank in enumerate(ranks)}
++
++
+ class ResidentNetworkWeights:
+     """Retain prepacked compute weights, with routed experts sharded by their actual EP owner."""
+
+-    def __init__(self, checkpoint, topology, model_config, runtime):
+-        self.reader = ResidentCheckpointOperands(checkpoint)
++    def __init__(self, checkpoint, topology, model_config, runtime, *, local_ranks=None):
+         self.layout = ExpertParallelConfig(topology["dp"], topology["tp"], topology["ep"], 384)
++        self.rank_devices = resident_rank_devices(runtime, self.layout.ep, local_ranks)
++        self.reader = ResidentCheckpointOperands(checkpoint)
+         self.model_config, self.runtime = model_config, runtime
+         self.layers, self.experts, self.heads = {}, {}, {}
+         self.grouped_experts = {}
+         self.layer_receipts = {}
+@@ -1123,10 +1134,10 @@ class ResidentNetworkWeights:
+         """Stream each checkpoint operand into its persistent compute owner before token execution."""
+         if self.ready or self.layers:
+             raise ValueError("Resident weight preload is a single generation-scoped operation")
+         begin = perf_counter()
+-        world, tp = self.layout.ep, self.layout.tp
+-        ranks = range(world)
++        tp = self.layout.tp
++        ranks, devices = self.rank_devices.keys(), tuple(self.rank_devices.values())
+         for layer in range(40):
+             if progress is not None:
+                 progress(dict(stage="loading_resident_weights", layer=layer, epoch=0))
+             prefix = f"layers.{layer}."
+@@ -1148,60 +1159,60 @@ class ResidentNetworkWeights:
+                 "ffn.gate.weight",
+                 "ffn.gate.bias",
+                 "ffn.gate.bias_vl",
+             ):
+-                self.runtime.pin(raw[prefix + name], ranks, readonly=True, name=prefix + name)
++                self.runtime.pin(raw[prefix + name], devices, readonly=True, name=prefix + name)
+             for name, value in operands.items():
+                 if name in ("wo_a", "wo_a_grouped_prefill", "wo_b"):
+                     continue
+-                self.runtime.pin(value, ranks, readonly=True, name=prefix + name)
++                self.runtime.pin(value, devices, readonly=True, name=prefix + name)
+             for rank in ranks:
+                 lane = rank % tp
+                 groups, width = 8 // tp, 8192 // tp
+                 for name, value in (
+                     ("wo_a", operands["wo_a_grouped_prefill"][lane * groups : (lane + 1) * groups]),
+                     ("wo_b", operands["wo_b"][lane * width : (lane + 1) * width]),
+                 ):
+-                    self.runtime.pin(value, [rank], readonly=True, name=prefix + name)
++                    self.runtime.pin(value, [self.rank_devices[rank]], readonly=True, name=prefix + name)
+             role = resolve_layer_role(layer)
+             if role["engram_slot"] is not None:
+                 engram = prefix + "engram"
+                 projection = raw[engram + ".wkv.weight"].T.contiguous()
+                 operands["engram_projection"] = projection
+-                self.runtime.pin(projection, ranks, readonly=True, name=engram + ".wkv.kn")
++                self.runtime.pin(projection, devices, readonly=True, name=engram + ".wkv.kn")
+                 for name in ("q_weight", "k_weight"):
+-                    self.runtime.pin(raw[engram + "." + name], ranks, readonly=True, name=engram + "." + name)
++                    self.runtime.pin(raw[engram + "." + name], devices, readonly=True, name=engram + "." + name)
+             self.layers[layer] = dict(
+                 raw=raw,
+                 operands=operands,
+                 expert=lambda rank, expert, layer=layer: self.expert(layer, rank, expert),
+                 grouped_expert=lambda rank, layer=layer: self.grouped_experts[layer, rank],
+             )
+             shared = self.reader.expert(prefix + "ffn.shared_experts", partitions=tp)
+-            for rank in ranks:
+-                self.experts[layer, rank, None] = tuple(self.runtime.weight(value, rank) for value in shared)
++            for rank, device in self.rank_devices.items():
++                self.experts[layer, rank, None] = tuple(self.runtime.weight(value, device) for value in shared)
+             del shared
+             for rank in ranks:
+                 self._preload_routed(layer, rank)
+             self.layer_receipts[layer] = dict(
+                 original_names=names,
+                 policy="generation-scoped resident compute weights",
+-                routed_experts=384,
+-                shared_replicas=world,
++                routed_experts=384 // self.layout.ep * len(ranks),
++                shared_replicas=len(ranks),
+             )
+         embedding, norm, head = (
+             self.reader.load(name) for name in ("embed.weight", "norm.weight", "head.weight")
+         )
+         rows = embedding.shape[0] // tp
+-        for rank in ranks:
++        for rank, device in self.rank_devices.items():
+             lane = rank % tp
+             self.runtime.pin(
+-                embedding.narrow(0, lane * rows, rows), [rank], readonly=True, name="embed.weight"
++                embedding.narrow(0, lane * rows, rows), [device], readonly=True, name="embed.weight"
+             )
+-            self.runtime.pin(norm, [rank], readonly=True, name="norm.weight")
++            self.runtime.pin(norm, [device], readonly=True, name="norm.weight")
+             if lane not in self.heads:
+                 self.heads[lane] = head.narrow(0, lane * rows, rows).T.contiguous()
+-            self.runtime.pin(self.heads[lane], [rank], readonly=True, name="head.weight.kn")
++            self.runtime.pin(self.heads[lane], [device], readonly=True, name="head.weight.kn")
+         self.ready = True
+         self.load_seconds = perf_counter() - begin
+         self.load_calls = self.reader.read_calls
+         self.runtime.stats.update(
+@@ -1211,8 +1222,9 @@ class ResidentNetworkWeights:
+         )
+
+     def _preload_routed(self, layer, rank):
+         """Upload four common owners and retain contiguous per-expert borrowed views."""
++        device = self.rank_devices[rank]
+         grouped = None
+         shapes = None
+         ownership = self.layout.ownership(rank)
+         for expert, local in ownership:
+@@ -1223,13 +1235,13 @@ class ResidentNetworkWeights:
+                                        dtype=value.dtype) for value in values]
+             for full, value in zip(grouped, values):
+                 full.narrow(0, local * value.shape[0], value.shape[0]).copy_(value)
+             del values
+-        owners = tuple(self.runtime.weight(value, rank) for value in grouped)
++        owners = tuple(self.runtime.weight(value, device) for value in grouped)
+         self.grouped_experts[layer, rank] = owners
+         for expert, local in ownership:
+             aliases = tuple(
+-                self.runtime.workers[rank].view_tensor(
++                self.runtime.workers[device].view_tensor(
+                     owner, shape, byte_offset=local * math.prod(shape) * owner.dtype.itemsize,
+                 ) for owner, shape in zip(owners, shapes)
+             )
+             self.runtime.alias_leases.update((id(value), value) for value in aliases)
+diff --git a/tests/contract/test_ds41_resident_session.py b/tests/contract/test_ds41_resident_session.py
+index 14e9dd7..24aa87f 100644
+--- a/tests/contract/test_ds41_resident_session.py
++++ b/tests/contract/test_ds41_resident_session.py
+@@ -45,8 +45,12 @@ class HostWorker:
+
+     def free_tensor(self, handle):
+         del self.live[handle.data_ptr]
+
++    def view_tensor(self, owner, shape, *, byte_offset=0):
++        return DeviceTensor(owner.data_ptr + byte_offset, shape, owner.dtype, buffer=owner.buffer,
++                            byte_offset=owner.byte_offset + byte_offset)
++
+     def copy_to(self, destination, source, nbytes):
+         ctypes.memmove(destination, source, nbytes)
+         self.uploads.append(nbytes)
+
+@@ -208,8 +212,58 @@ def test_generation_preload_is_idempotent_and_both_phases_share_static_pointers(
+         assert not any(worker.closed for worker in workers)
+     assert all(worker.closed for worker in workers)
+
+
++def test_node_local_weight_bank_uses_global_expert_ids_and_local_buffers(monkeypatch):
++    from models.deepseek_v4_1_flash_a3 import resident_weights, weights
++
++    class Checkpoint:
++        def __init__(self, _):
++            operands = ("hc_ffn_fn", "hc_ffn_scale", "hc_ffn_base", "ffn_norm.weight",
++                        "ffn.gate.weight", "ffn.gate.bias", "ffn.gate.bias_vl")
++            self.index = {f"layers.{layer}.{name}": None for layer in range(40) for name in operands}
++            self.consumed, self.preparations = {}, {}
++            self.read_calls = self.file_open_calls = self.read_seconds = 0
++            self.selected_experts = []
++
++        def load(self, _):
++            self.read_calls += 1
++            return torch.arange(8).view(4, 2)
++
++        def expert(self, name, partitions=None):
++            if partitions is None:
++                self.selected_experts.append(int(name.rsplit(".", 1)[-1]))
++            return tuple(torch.zeros(1, 2) for _ in range(4))
++
++        def seal(self):
++            pass
++
++        def close(self):
++            pass
++
++    monkeypatch.setattr(weights, "ResidentCheckpointOperands", Checkpoint)
++    monkeypatch.setattr(weights, "resolve_layer_role", lambda layer: {"engram_slot": None})
++    monkeypatch.setattr(weights, "prepare_product_operands", lambda *args, **kwargs: {
++        "wo_a_grouped_prefill": torch.zeros(8, 1, 1), "wo_b": torch.zeros(8192, 1),
++    })
++    local = dict(dp=1, tp=2, ep=2)
++    world = dict(dp=4, tp=4, ep=16)
++    workers = [HostWorker(), HostWorker()]
++    with ResidentNetworkRuntime([0, 1], local, worker_factory=workers.__getitem__) as runtime:
++        runtime.load_rotation = lambda *args: (torch.zeros(32, 32), {})
++        bank = resident_weights.A3ResidentWeights("checkpoint", world, {}, runtime, local_ranks=(8, 9))
++        bank.preload_once()
++        assert bank.reader.selected_experts == list(range(192, 240)) * 40
++        assert tuple(bank.rank_devices.items()) == ((8, 0), (9, 1))
++        assert all(bank.prefill_handles[rank] for rank in (8, 9))
++        assert not any(bank.prefill_handles[rank] for rank in [*range(8), *range(10, 16)])
++        assert bank.decode.handles(9)["head.weight.kn"] is bank.prefill_handles[9]["head.weight.kn"]
++        assert bank.summary()["resident_global_ranks"] == [8, 9]
++        with pytest.raises(ValueError, match="does not belong"):
++            bank.decode.handles(2)
++        bank.close()
++
++
+ def test_borrowed_decode_driver_validates_identity_and_leaves_session_open(tmp_path):
+     from models.deepseek_v4_1_flash_a3.decode_network import DecodeNetwork, TOPOLOGY
+
+     runtime = SimpleNamespace(devices=list(range(16)))
