@@ -25,7 +25,9 @@ def main():
             if host in finished:
                 return finished[host]
             try:
-                gate = collect.collect(q.parent, host)
+                protocol = json.loads((q / "protocol.json").read_text())
+                gate_suite = protocol.get("gate_suites", {}).get(host, "sync344")
+                gate = collect.collect(q.parent, host, suite=gate_suite)
                 if not gate.get("terminal"):
                     return dict(host=host, stage="waiting_functional_gate", gate=gate)
                 if not gate.get("completed") or not gate.get("resources_checked"):

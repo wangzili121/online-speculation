@@ -13,10 +13,12 @@ import json,os,subprocess,re,datetime
 r=Path(P['root']);p=r/(P['tag']+'.json')
 try:d=json.loads(p.read_text())if p.exists()else{}
 except json.JSONDecodeError:d={}
-out=dict(tag=P['tag'],observed_UTC=datetime.datetime.now(datetime.timezone.utc).isoformat(),captured=False)
+out=dict(tag=P['tag'],observed_UTC=datetime.datetime.now(datetime.timezone.utc).isoformat(),captured=False,
+         stage=d.get('stage'),completed=d.get('completed',False),error=d.get('error'))
 if d.get('stage')=='measuring'and not d.get('completed'):
  rows=subprocess.check_output(['ps','-u',str(os.getuid()),'-o','pid=,args='],text=True).splitlines()
  launchers=[int(x.split(None,1)[0])for x in rows if P['launcher']+' --tag '+P['tag']+' 'in x]
+ out['matching_launcher_count']=len(launchers)
  if len(launchers)==1:
   launcher=launchers[0];processes=[];container=None
   if P['launcher'].endswith('_docker.py'):
@@ -43,6 +45,8 @@ if d.get('stage')=='measuring'and not d.get('completed'):
    if len(cells)>=4 and re.fullmatch(r'\d+\s+\d+',cells[0])and cells[1].isdigit()and int(cells[1])in own:
     device,chip=map(int,cells[0].split());matched.append(dict(physical_npu=device,chip=chip,pid=int(cells[1]),process_memory_MB=int(cells[3])))
   visible=[int(v)for v in d.get('visible_devices','').split(',')if v]
+  out.update(declared_physical_cards=visible,matched_own_NPU_workers=matched,
+             process_count=len(processes),container_observed=container is not None)
   if len(visible)==3 and len(matched)==3 and {x['physical_npu']for x in matched}==set(visible):
    out.update(captured=True,host=P['host'],root=str(r),launcher_pid=launcher,container=container,
               physical_cards=visible,target_physical_cards=visible[:2],learner_physical_card=visible[2],

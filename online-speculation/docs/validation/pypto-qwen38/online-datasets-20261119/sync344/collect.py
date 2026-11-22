@@ -5,8 +5,10 @@ import argparse
 import gzip
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 import traceback
 import zlib
 
@@ -16,6 +18,14 @@ def module(path, name):
     value = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(value)
     return value
+
+
+def write_json(path, value):
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as handle:
+        json.dump(value, handle, indent=2)
+        handle.write("\n")
+        temporary = handle.name
+    os.replace(temporary, path)
 
 
 def collect(root, host, suite="sync344"):
@@ -44,8 +54,10 @@ def collect(root, host, suite="sync344"):
         if observation.returncode:
             raise RuntimeError(observation.stderr.decode()[-2000:])
         binding = json.loads(observation.stdout)
+        with (q / (tag + ".resource-observations.jsonl")).open("a") as history:
+            history.write(json.dumps(binding) + "\n")
         if binding.get("captured"):
-            binding_path.write_text(json.dumps(binding, indent=2) + "\n")
+            write_json(binding_path, binding)
     payload = launch | dict(cases=[case])
     call = subprocess.run(
         ["ssh", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "BatchMode=yes",
@@ -89,7 +101,7 @@ def collect(root, host, suite="sync344"):
         proof = dict(completed=False, terminal=True, tag=tag, error=repr(error),
                      traceback=traceback.format_exc(), model_restarted=False,
                      controller_tail=item.get("controller_tail"))
-    proof_path.write_text(json.dumps(proof, indent=2) + "\n")
+    write_json(proof_path, proof)
     return proof
 
 

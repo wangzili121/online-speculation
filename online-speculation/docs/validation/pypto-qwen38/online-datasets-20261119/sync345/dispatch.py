@@ -18,12 +18,13 @@ def module(path, name):
 def dispatch(host):
     q = Path(__file__).resolve().parent
     root = q.parent
-    gate_launch = json.loads((root / "sync344" / f"launch-{host}.json").read_text())
-    gate = json.loads((root / "sync344" / (gate_launch["tag"] + ".audit.json")).read_text())
+    protocol = json.loads((q / "protocol.json").read_text())
+    gate_suite = protocol.get("gate_suites", {}).get(host, "sync344")
+    gate_launch = json.loads((root / gate_suite / f"launch-{host}.json").read_text())
+    gate = json.loads((root / gate_suite / (gate_launch["tag"] + ".audit.json")).read_text())
     assert gate["completed"] and gate["functional_only"] and gate["resources_checked"]
     assert gate["accounting_passed"] and gate["frozen_source_head_assets_base_checked"]
     assert len(gate["actual_published_shards"]) == 2 and gate["first_feedback_replays"]
-    protocol = json.loads((q / "protocol.json").read_text())
     plan_raw = (q / f"queue-{host}.json").read_bytes()
     assert hashlib.sha256(plan_raw).hexdigest() == protocol["plans"][host]
     assert not protocol["NN_code_changed"] and not protocol["fresh_reserved_questions_used"]
