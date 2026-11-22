@@ -1,0 +1,92 @@
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_layer.py b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+index 1f3fc2d..13df7ed 100644
+--- a/models/deepseek_v4_1_flash_a3/prefill_layer.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+@@ -558,6 +558,12 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+             state.update(changed=changed, ffn_pre=pre, ffn_post=post, ffn_comb=comb, weights=weights,
+                          route_ids=ids, normed=normed, shared=zeros(rank, capacity, 5120), output_hidden=output,
+                          combined=zeros(rank, capacity, 5120))
++            if draft is not None:
++                # Exact fixed-route backward needs every selected expert's
++                # unweighted output to differentiate the normalized route
++                # weights.  Keep it only for a draft capture; target serving
++                # and ordinary draft rounds retain no extra full-layer state.
++                state["expert_outputs"] = zeros(rank, capacity * 6, 5120)
+         map_ranks(route_rank)
+     slab_work = [{} for _ in range(world)]
+     def allocate_rank_slab(rank):
+@@ -574,6 +580,7 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+                 packet_map=allocate_runtime_tensor(runtime, (packet_rows, MAP_PAD), torch.int32, rank, fill=-1),
+                 total=zeros(rank, MAP_PAD, dtype=torch.int32), sent=zeros(rank, packet_rows, 5120), routed=zeros(rank, slab, 5120),
+                 returned_routes=allocate_runtime_tensor(runtime, (routes, 4), torch.int64, rank, fill=-1),
++                expert_outputs=zeros(rank, routes, 5120),
+             )
+     map_ranks(allocate_rank_slab)
+     max_physical = max(record["SP_physical_rows"] for records in batch["cases"].values() for record in records)
+@@ -663,8 +670,17 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+                 validate_returned_routes(controls, rank, routes, route_ids, valid)
+                 arguments = [packet["routes"], packet["hidden"], packet["counts"],
+                              state["weights"][base:base + slab], state["shared"][base:base + slab], work["routed"],
+-                             state["combined"][base:base + slab], work["returned_routes"], physical]
+-                execute("combine", rank, case, arguments, {}, "combine")
++                             state["combined"][base:base + slab], work["returned_routes"],
++                             work["expert_outputs"], physical]
++                execute("combine", rank, case, arguments, {"expert_outputs": work["expert_outputs"]}, "combine")
++                if draft is not None:
++                    rows = physical * 6
++                    copy_runtime_tensor(
++                        runtime,
++                        state["expert_outputs"][base * 6:base * 6 + rows],
++                        work["expert_outputs"][:rows],
++                        rank,
++                    )
+         map_ranks(combine_rank_slab)
+         if runtime.get("release_tensors") is not None:
+             runtime["release_tensors"]([
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_moe.py b/models/deepseek_v4_1_flash_a3/prefill_moe.py
+index 250bdb4..541c5a6 100644
+--- a/models/deepseek_v4_1_flash_a3/prefill_moe.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_moe.py
+@@ -546,6 +546,7 @@ def make_moe_combine(capacity, hidden=COMBINE_D, topk=COMBINE_TOPK, world=2, *,
+         routed: pl.InOut[pl.Tensor[[capacity, hidden], pl.BF16]],
+         output: pl.InOut[pl.Tensor[[capacity, hidden], pl.BF16]],
+         returned_routes: pl.InOut[pl.Tensor[[routes, 4], pl.INT64]],
++        expert_outputs: pl.Out[pl.Tensor[[routes, hidden], pl.BF16]],
+         active: pl.Scalar[pl.INT32],
+     ):
+         rounded_weights = pl.create_tensor([capacity, 16], dtype=pl.FP32)
+@@ -579,7 +580,9 @@ def make_moe_combine(capacity, hidden=COMBINE_D, topk=COMBINE_TOPK, world=2, *,
+                 route_row = token * topk + slot
+                 packet = pl.cast(pl.read(route_map, [route_row, 0]), pl.INDEX)
+                 if packet >= 0:
+-                    value = pl.cast(packet_hidden[packet : packet + 1, :], pl.FP32)
++                    value_bf16 = packet_hidden[packet : packet + 1, :]
++                    expert_outputs[route_row : route_row + 1, :] = value_bf16
++                    value = pl.cast(value_bf16, pl.FP32)
+                     weight = pl.read(rounded_weights, [token, slot])
+                     weighted = pl.mul(value, weight)
+                     acc = pl.add(acc, weighted)
+@@ -588,6 +591,6 @@ def make_moe_combine(capacity, hidden=COMBINE_D, topk=COMBINE_TOPK, world=2, *,
+             shared_row = pl.cast(shared[token : token + 1, :], pl.FP32)
+             total = pl.add(pl.cast(narrowed, pl.FP32), shared_row)
+             output[token : token + 1, :] = pl.cast(total, pl.BF16, mode="rint")
+-        return routed, output, returned_routes
++        return routed, output, returned_routes, expert_outputs
+ 
+     return moe_combine
+@@ -1148,6 +1151,7 @@ def golden_moe_combine(tensors, *, weight_dtype=torch.float32):
+             original = token * topk + slot
+             mapping[original] = packet
+             tensors["returned_routes"][original] = tensors["packet_routes"][packet]
++            tensors["expert_outputs"][original] = tensors["packet_hidden"][packet]
+     for token in range(active):
+         acc = torch.zeros_like(tensors["shared"][token], dtype=torch.float32)
+         for slot in range(topk):
+@@ -1417,6 +1421,7 @@ def validate_moe_combine(*, device=0, compile_only=False, platform="a2a3", sim=F
+             TensorSpec("routed", [capacity, hidden], torch.bfloat16, init_value=-12.5),
+             TensorSpec("output", [capacity, hidden], torch.bfloat16, init_value=-12.5),
+             TensorSpec("returned_routes", [routes, 4], torch.int64, init_value=-1),
++            TensorSpec("expert_outputs", [routes, hidden], torch.bfloat16, init_value=-12.5),
+             ScalarSpec("active", torch.int32, active),
+         ]
+         result = run(

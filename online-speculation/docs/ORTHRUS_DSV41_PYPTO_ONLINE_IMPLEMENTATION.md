@@ -23,6 +23,7 @@
 - 含 sink、历史和 K32 双向临时块的 C1A Attention VJP。
 - mHC post 数据/门控反向与 mHC pre 的 sigmoid、Sinkhorn 反向。
 - 固定 Top-6 路由下的 MoE combine 与归一化路由权重反向。
+- 原生 EP MoE combine 在在线 draft 模式下保存六个选中专家的未加权输出，供 route-weight VJP 精确使用；生产 EP16/K32 形状编译及小形状 NPU 数值对照均通过。
 - 冻结 W8A8 MoE 权重按原生分块布局在设备端反量化，供输入 VJP 使用；真实 `2304×5120` 和 `5120×4608` 尺寸已经编译通过，小形状 NPU 数值逐元素一致。
 
 `DSV41ResidentUpdateBackend` 将这些叶子组织成严格的一次更新：
@@ -46,7 +47,7 @@ TV/KL
 当前缺口不是算法或反向公式，而是将上述叶子绑定到真实 resident session：
 
 - 将已验证的 W8A8 输入 VJP 绑定到驻留 LM head、共享专家和选中专家句柄；权重冻结，不生成主模型参数梯度。
-- 根据前向保存的 Top-6 ID 重算六个选中专家输出，供 route-weight VJP 使用。
+- 六个选中专家的最终输出已经由原生前向保存；还需保存 gate/up 激活或用驻留 W8A8 句柄等价重算，以完成每个选中专家的输入 VJP。
 - 把 TP4/DP4 的设备句柄接入 HCCL 梯度归并。
 - 将 FP32 master/moments 与 draft 双槽权重绑定，并把 controller/learner 注入真实 `NativeSession`。
 

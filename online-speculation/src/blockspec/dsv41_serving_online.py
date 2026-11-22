@@ -30,7 +30,7 @@ class DSV41CapturedLayer:
         ffn = {
             "changed", "pre", "post", "comb", "collapsed", "normed",
             "router_input", "router_logits", "route_ids", "route_weights",
-            "shared", "combined", "output_hidden", "output_pre_mix",
+            "shared", "expert_outputs", "combined", "output_hidden", "output_pre_mix",
         }
         attention_rows = self.attention.values() if self.attention and all(
             isinstance(key, int) for key in self.attention

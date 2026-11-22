@@ -22,7 +22,7 @@ def layer_state(layer):
         {name: object() for name in (
             "changed", "pre", "post", "comb", "collapsed", "normed",
             "router_input", "router_logits", "route_ids", "route_weights",
-            "shared", "combined", "output_hidden", "output_pre_mix",
+            "shared", "expert_outputs", "combined", "output_hidden", "output_pre_mix",
         )},
     )
 

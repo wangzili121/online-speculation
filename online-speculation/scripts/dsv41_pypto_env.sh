@@ -112,12 +112,12 @@ case "$action" in
     docker version --format '{{.Server.Version}}'
     docker info --format '{{json .Runtimes}}'
     ;;
-  doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head)
+  doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|expert-capture-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head)
     docker image inspect "$image" >/dev/null 2>&1 || {
       echo "Image missing. Build it on a networked host or load the transferred image.tar." >&2; exit 2;
     }
     network=host
-    if [[ "$action" == attention-check || "$action" == online-kernel-check || "$action" == handoff-check || "$action" == init-head || "$action" == device-map ]]; then network=none; fi
+    if [[ "$action" == attention-check || "$action" == online-kernel-check || "$action" == expert-capture-check || "$action" == handoff-check || "$action" == init-head || "$action" == device-map ]]; then network=none; fi
     options=(--rm --network "$network" --shm-size "${SHM_SIZE:-16g}")
     command_env=(env)
     if [[ "$action" == preflight || "$action" == handoff-check || "$action" == init-head ||
@@ -131,7 +131,7 @@ case "$action" in
         if [[ "$action" == preflight ]]; then set -- --head /workspace/draft-head "$@"; fi
       fi
     fi
-    if [[ "$action" == probe || "$action" == device-map || "$action" == shell || "$action" == attention-check || "$action" == online-kernel-check || "$action" == fabric-check ||
+    if [[ "$action" == probe || "$action" == device-map || "$action" == shell || "$action" == attention-check || "$action" == online-kernel-check || "$action" == expert-capture-check || "$action" == fabric-check ||
           ( "$action" == handoff-check && -n "${NPU_DEVICE:-}" ) ]]; then
       : "${NPU_DEVICE:?Set NPU_DEVICE to an available physical device number}"
       [[ "$NPU_DEVICE" =~ ^[0-9]+$ ]] || { echo "NPU_DEVICE must be a number" >&2; exit 2; }
@@ -193,6 +193,15 @@ case "$action" in
         'bash /workspace/online-speculation/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh && exec /opt/pypto/venv/bin/python \
           /workspace/online-speculation/scripts/validate_dsv41_pypto_online_programs.py \
           --device "$@"' _ "$runtime_device" --vocabulary 129280 --output /results/online-kernels.json "$@"
+    fi
+    if [[ "$action" == expert-capture-check ]]; then
+      report_dir="$(mktemp -d "$PWD/orthrus-expert-capture.XXXXXX")"
+      echo "Report: $report_dir/expert-capture.json"
+      options+=(-v "$root:/workspace/online-speculation:ro" -v "$report_dir:/results")
+      exec docker run "${options[@]}" "$image" "${command_env[@]}" bash -lc \
+        'bash /workspace/online-speculation/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh && exec /opt/pypto/venv/bin/python \
+          /workspace/online-speculation/scripts/validate_dsv41_pypto_expert_capture.py \
+          --device "$@" --output /results/expert-capture.json' _ "$runtime_device" "$@"
     fi
     if [[ "$action" == init-head ]]; then
       : "${DRAFT_HEAD:?Set DRAFT_HEAD to a new output directory on the host}"
@@ -332,7 +341,7 @@ case "$action" in
     exec docker run "${options[@]}" "$image" "$action" "$@"
     ;;
   *)
-    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
+    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|expert-capture-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
     echo "Company checks: $0 {fabric-check|cluster-check|cluster-accept} {node7|node8}"
     ;;
 esac

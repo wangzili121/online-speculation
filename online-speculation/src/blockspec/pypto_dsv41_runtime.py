@@ -378,7 +378,8 @@ class DraftRound:
                         "collapsed": state["ffn_collapsed"], "normed": state["ffn_normed"],
                         "router_input": state["router_input"], "router_logits": state["router_logits"],
                         "route_ids": state["route_ids"], "route_weights": state["weights"],
-                        "shared": state["shared"], "combined": state["combined"],
+                        "shared": state["shared"], "expert_outputs": state["expert_outputs"],
+                        "combined": state["combined"],
                         "output_hidden": state["padded_hidden"],
                         "output_pre_mix": state["ffn_pre"],
                     }

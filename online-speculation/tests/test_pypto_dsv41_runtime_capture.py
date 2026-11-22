@@ -30,7 +30,8 @@ def test_last_n_replay_starts_before_the_first_selected_layer():
             "ffn_pre": object(), "ffn_post": object(), "ffn_comb": object(),
             "ffn_collapsed": object(), "ffn_normed": object(), "router_input": object(),
             "router_logits": object(), "route_ids": object(), "weights": object(),
-            "shared": object(), "combined": object(), "padded_hidden": object(),
+            "shared": object(), "expert_outputs": object(), "combined": object(),
+            "padded_hidden": object(),
         }
 
     replay = round_.replays()[owner]

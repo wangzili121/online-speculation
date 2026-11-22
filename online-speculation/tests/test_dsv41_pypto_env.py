@@ -96,6 +96,33 @@ def test_attention_check_mounts_current_sources_and_writes_host_reports(tmp_path
                          "--heads", "16", "--device", "0"]
 
 
+def test_expert_capture_check_runs_the_patched_native_abi_on_one_card(tmp_path):
+    env = environment(tmp_path) | {"NPU_DEVICE": "6", "PYPTO_IMAGE": "image:offline"}
+    result = subprocess.check_output(
+        ["bash", str(SCRIPT), "expert-capture-check"], text=True, env=env, cwd=tmp_path,
+    )
+    location, command = result.splitlines()
+    output = Path(location.removeprefix("Report: "))
+    args = json.loads(command)
+    assert output.name == "expert-capture.json"
+    assert f"{output.parent}:/results" in args
+    assert f"{SCRIPT.parents[1]}:/workspace/online-speculation:ro" in args
+    assert args[args.index("--network") + 1] == "none"
+    assert "/dev/davinci6:/dev/davinci6" in args
+    assert "ASCEND_RT_VISIBLE_DEVICES=0" in args
+    assert any(
+        "/workspace/online-speculation/scripts/validate_dsv41_pypto_expert_capture.py" in argument
+        for argument in args
+    )
+
+
+def test_image_applies_online_expert_capture_after_the_serving_patch():
+    dockerfile = (SCRIPT.parents[1] / "runtime/pypto_dsv41_a3/docker/Dockerfile").read_text()
+    serving = dockerfile.index("/opt/orthrus/integration/lib-serving.patch")
+    capture = dockerfile.index("git -C pypto-lib apply /opt/orthrus/integration/lib-online-expert-capture.patch")
+    assert serving < capture
+
+
 def test_handoff_checks_checkpoint_and_head_without_npu_by_default(tmp_path):
     model, head = tmp_path / "model", tmp_path / "head"
     model.mkdir()

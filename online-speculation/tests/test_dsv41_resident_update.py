@@ -21,7 +21,7 @@ def captured(layer, ranks=(0, 1, 2, 3)):
         rank: {name: object() for name in (
             "changed", "pre", "post", "comb", "collapsed", "normed",
             "router_input", "router_logits", "route_ids", "route_weights",
-            "shared", "combined", "output_hidden", "output_pre_mix",
+            "shared", "expert_outputs", "combined", "output_hidden", "output_pre_mix",
         )} for rank in ranks
     }
     return DSV41CapturedLayer(layer, attention, ffn)
