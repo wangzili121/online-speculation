@@ -1,0 +1,203 @@
+diff --git a/models/deepseek_v4_1_flash_a3/engram_host.py b/models/deepseek_v4_1_flash_a3/engram_host.py
+index 8d50dcc..3957c29 100644
+--- a/models/deepseek_v4_1_flash_a3/engram_host.py
++++ b/models/deepseek_v4_1_flash_a3/engram_host.py
+@@ -109,17 +109,22 @@ class HostEngram:
+         key = layer, rank, kind
+         if key not in self.arrays:
+             suffix, width, dtype = {"codes": ("weight", 256, "I8"), "scales": ("scale", 8, "F32")}[kind]
+             shard = self.contracts[layer]["engram_shards"][rank]
++            name = f"layers.{layer}.engram.embed.{suffix}"
++            start, end = shard["row_range"]
++            element_bytes = 4 if dtype == "F32" else 1
++            cache_key = f"{name}:{start}:{end}:{width}:{element_bytes}"
+             array = SharedEngramArray(
+                 self.checkpoint,
+-                f"layers.{layer}.engram.embed.{suffix}",
++                name,
+                 shard["row_range"],
+                 width,
+                 dtype,
+                 shard["host_payload_sha256"][kind],
+                 f"{self.namespace}-L{layer}-tp{rank}-{kind}",
+                 checkpoint_mmap=self.checkpoint_mmap,
++                verification=self.contracts[layer].get("checkpoint_verification", {}).get(cache_key),
+             )
+             self._stack.callback(array.close)
+             self.arrays[key] = array
+         return self.arrays[key]
+@@ -722,12 +727,18 @@ def checkpoint_region(checkpoint, name):
+     item = header[name]
+     return path, 8 + header_size + item["data_offsets"][0], item
+
+
++def checkpoint_file_stamp(stat):
++    """Bind a verified digest to the exact local file revision."""
++    return [stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size]
++
++
+ class SharedEngramArray:
+     """Retain one complete TP array in a task-owned MAP_SHARED backing."""
+
+-    def __init__(self, checkpoint, name, row_range, width, dtype, expected_sha, owner, *, checkpoint_mmap=False):
++    def __init__(self, checkpoint, name, row_range, width, dtype, expected_sha, owner, *, checkpoint_mmap=False,
++                 verification=None):
+         path, payload, spec = checkpoint_region(checkpoint, name)
+         if spec["dtype"] != dtype or spec["shape"][1:] != [width]:
+             raise ValueError("Original Engram checkpoint dtype/shape differs: " + name)
+         begin, end = row_range
+@@ -746,12 +757,16 @@ class SharedEngramArray:
+             aligned = byte_offset // mmap.ALLOCATIONGRANULARITY * mmap.ALLOCATIONGRANULARITY
+             offset = byte_offset - aligned
+             try:
+                 with path.open("rb") as source:
++                    if verification is not None and verification != dict(
++                        stat=checkpoint_file_stamp(os.fstat(source.fileno())), sha256=expected_sha
++                    ):
++                        raise ValueError("Engram checkpoint file changed before mapping: " + name)
+                     self.mapping = mmap.mmap(source.fileno(), offset + self.byte_count,
+                                              access=mmap.ACCESS_COPY, offset=aligned)
+                 self.view = memoryview(self.mapping)[offset:offset + self.byte_count]
+-                actual_sha = hashlib.sha256(self.view).hexdigest()
++                actual_sha = expected_sha if verification is not None else hashlib.sha256(self.view).hexdigest()
+                 if actual_sha != expected_sha:
+                     raise ValueError("Complete assigned Engram bytes differ from frozen checkpoint: " + name)
+                 if hasattr(self.mapping, "madvise"):
+                     self.mapping.madvise(mmap.MADV_RANDOM)
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_prepare.py b/models/deepseek_v4_1_flash_a3/prefill_prepare.py
+index 4b34f98..ea1fc8b 100644
+--- a/models/deepseek_v4_1_flash_a3/prefill_prepare.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_prepare.py
+@@ -12,8 +12,9 @@ import json
+ import hashlib
+ import os
+ from copy import deepcopy
+ from pathlib import Path
++from tempfile import NamedTemporaryFile
+ import torch
+ from .cache import resolve_layer_role
+ from .utils import file_sha, write_json
+ from .runtime_config import MAX_CONTEXT_TOKENS as MAX_CONTEXT, prefill_execution_capacity
+@@ -21,11 +22,11 @@ from .runtime_config import MAX_CONTEXT_TOKENS as MAX_CONTEXT, prefill_execution
+
+ PAGE_ROWS = 128
+
+
+-def checkpoint_cache(checkpoint, topology, *, capacity=16):
++def checkpoint_cache(checkpoint, topology, *, capacity=16, progress=None):
+     """Build cache and host Engram contracts directly from checkpoint metadata."""
+-    from .engram_host import build_compressed_token_map, checkpoint_region, make_layout
++    from .engram_host import build_compressed_token_map, checkpoint_file_stamp, checkpoint_region, make_layout
+     checkpoint = Path(checkpoint).resolve()
+     model = json.loads((checkpoint / "config.json").read_text())
+     from tokenizers import Tokenizer
+
+@@ -53,32 +54,43 @@ def checkpoint_cache(checkpoint, topology, *, capacity=16):
+         digest_cache = {}
+     if digest_cache.get("identity") != identity.hexdigest():
+         digest_cache = {"identity": identity.hexdigest(), "payloads": {}}
+
++    verified = {}
++
+     def payload_sha256(name, row_range, *, width, element_bytes):
+         """Hash exactly one original Engram shard without materializing the table."""
+         path, payload, spec = checkpoint_region(checkpoint, name)
+         begin, end = row_range
+         if spec["shape"][1] != width:
+             raise ValueError(f"Unexpected Engram width for {name}")
+         cache_key = f"{name}:{row_range[0]}:{row_range[1]}:{width}:{element_bytes}"
+         cached = digest_cache["payloads"].get(cache_key)
+-        if cached:
+-            return cached
+         digest = hashlib.sha256()
+         byte_offset = payload + begin * width * element_bytes
+         byte_count = (end - begin) * width * element_bytes
+         with path.open("rb", buffering=0) as stream:
++            stat = checkpoint_file_stamp(os.fstat(stream.fileno()))
++            if stat[-1] < byte_offset + byte_count:
++                raise EOFError(f"Incomplete Engram payload for {name}")
++            if isinstance(cached, dict) and cached.get("stat") == stat and cached.get("sha256"):
++                verified[cache_key] = cached
++                return cached["sha256"]
++            if progress is not None:
++                progress(dict(stage="hashing_engram_shard", tensor=name, row_begin=begin, bytes=byte_count))
+             stream.seek(byte_offset)
+             remaining = byte_count
+             while remaining:
+                 chunk = stream.read(min(8 * 1024 * 1024, remaining))
+                 if not chunk:
+                     raise EOFError(f"Incomplete Engram payload while hashing {name}")
+                 digest.update(chunk)
+                 remaining -= len(chunk)
++            if checkpoint_file_stamp(os.fstat(stream.fileno())) != stat:
++                raise RuntimeError(f"Engram checkpoint file changed while hashing {name}")
+         value = digest.hexdigest()
+-        digest_cache["payloads"][cache_key] = value
++        receipt = dict(stat=stat, sha256=value)
++        digest_cache["payloads"][cache_key] = verified[cache_key] = receipt
+         return value
+
+     for slot, layer in enumerate((1, 14)):
+         _, _, spec = checkpoint_region(checkpoint, f"layers.{layer}.engram.embed.weight")
+@@ -109,17 +121,27 @@ def checkpoint_cache(checkpoint, topology, *, capacity=16):
+             engram_shards=shards, host_storage="checkpoint_file_mapping",
+             engram_storage_contract=dict(dtype="INT8", scale_dtype="FP32", group_size=32,
+                                          cpu_offload=True, dp_shared_memory=True, global_columns=24),
+         )
++    for contract in contracts.values():
++        contract["checkpoint_verification"] = verified
+     cache = dict(cache_ABI=cache_templates(constants, world=world), engram_contracts=contracts)
+     config = dict(
+         topology=deepcopy(topology), checkpoint=str(checkpoint), model_config=model,
+         required_modes=dict(enable_expert_parallel=True, enable_fused_mc2=True,
+                             enable_dsa_cp=True, enable_flashcomm1=True, enable_shared_expert_dp=True),
+         capacity=capacity, scheduler_capacity=8192, fresh_shared_initialization={"topk_indices": -1},
+         weight_residency="session",
+     )
+-    digest_cache_path.write_text(json.dumps(digest_cache, indent=2) + "\n")
++    with NamedTemporaryFile(mode="w", dir=cache_root, prefix=".engram-", delete=False) as stream:
++        temporary = Path(stream.name)
++        try:
++            json.dump(digest_cache, stream, indent=2)
++            stream.write("\n")
++            stream.close()
++            temporary.replace(digest_cache_path)
++        finally:
++            temporary.unlink(missing_ok=True)
+     return cache, config
+
+
+ def tokenize_prompt(inputs, checkpoint, vocabulary):
+diff --git a/tests/contract/test_ds41_resident_session.py b/tests/contract/test_ds41_resident_session.py
+index 3eff226..9fd4be4 100644
+--- a/tests/contract/test_ds41_resident_session.py
++++ b/tests/contract/test_ds41_resident_session.py
+@@ -579,9 +579,9 @@ def test_second_host_executor_maps_global_collective_and_cache_coordinates():
+
+
+ def test_checkpoint_engram_mapping_gathers_rows_without_tmpfs(tmp_path):
+     import hashlib
+-    from models.deepseek_v4_1_flash_a3.engram_host import SharedEngramArray
++    from models.deepseek_v4_1_flash_a3.engram_host import SharedEngramArray, checkpoint_file_stamp
+
+     name = "layers.1.engram.embed.weight"
+     shard = tmp_path / "engram.safetensors"
+     values = torch.arange(32, dtype=torch.int8).view(8, 4)
+@@ -598,4 +598,17 @@ def test_checkpoint_engram_mapping_gathers_rows_without_tmpfs(tmp_path):
+     finally:
+         owner.close()
+     with pytest.raises(ValueError, match="frozen checkpoint"):
+         SharedEngramArray(tmp_path, name, (2, 7), 4, "I8", "wrong", "test", checkpoint_mmap=True)
++    verified = dict(stat=checkpoint_file_stamp(shard.stat()), sha256=digest)
++    owner = SharedEngramArray(tmp_path, name, (2, 7), 4, "I8", digest, "test", checkpoint_mmap=True,
++                              verification=verified)
++    try:
++        assert torch.equal(owner.gather(torch.tensor([2, 6, 7])), expected)
++    finally:
++        owner.close()
++    replacement = tmp_path / "replacement.safetensors"
++    save_file({name: values + 1}, replacement)
++    replacement.replace(shard)
++    with pytest.raises(ValueError, match="changed before mapping"):
++        SharedEngramArray(tmp_path, name, (2, 7), 4, "I8", digest, "test", checkpoint_mmap=True,
++                          verification=verified)

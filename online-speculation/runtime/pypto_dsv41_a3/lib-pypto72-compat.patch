@@ -1,0 +1,17 @@
+diff --git a/models/deepseek_v4_1_flash_a3/hc.py b/models/deepseek_v4_1_flash_a3/hc.py
+index 7e74da2..ca5ec70 100644
+--- a/models/deepseek_v4_1_flash_a3/hc.py
++++ b/models/deepseek_v4_1_flash_a3/hc.py
+@@ -111,11 +111,11 @@ def make_hc_pre_inline(capacity, config):
+             argument_zero = pl.tile.full([1, TOKEN_TILE], dtype=pl.FP32, value=0.0)
+             square_sum_tile = pl.add(argument_zero, square_sum)
+             mean = pl.mul(square_sum_tile, 1.0 / flat_width)
+             argument = pl.add(mean, norm_eps)
+             rsqrt_tmp = pl.create_tile([1, TOKEN_TILE], dtype=pl.FP32)
+-            inverse_tile = pl.tile.rsqrt(argument, rsqrt_tmp, high_precision=True)
++            inverse_tile = pl.tile.rsqrt(argument, rsqrt_tmp)
+             pl.store(inverse_tile, [token, 0], inverse)
+
+         rounded_function = pl.create_tensor([channels, flat_width], dtype=pl.FP32)
+         function_flat = pl.reshape(function, [1, channels * flat_width])
+         rounded_flat = pl.reshape(rounded_function, [1, channels * flat_width])

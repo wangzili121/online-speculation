@@ -135,7 +135,9 @@ def run(args):
         if link.exchange("acceptance/configuration", request) != request:
             raise ValueError("Nodes must use the same checkout, model, head and workload")
         print(f"Node {args.node} preparing HOST Engram contracts", flush=True)
-        cache = source.module("prefill_prepare").checkpoint_cache(args.model, config.topology)
+        cache = source.module("prefill_prepare").checkpoint_cache(
+            args.model, config.topology, progress=lambda event: print(json.dumps(event), flush=True)
+        )
         digests = {str(layer): [item["host_payload_sha256"] for item in value["engram_shards"]]
                    for layer, value in cache[0]["engram_contracts"].items()}
         if link.exchange("acceptance/engram", digests) != digests:

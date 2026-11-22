@@ -87,6 +87,8 @@ CLUSTER_KEY_FILE=/home/wangzili/.orthrus-cluster.key \
 
 两端命令都默认使用已预留的卡 0–7。无训练 head 时，每台从同一份 W8A8 基模生成 BF16 初始化 head，用于验证推理链路。已有 head 时，在两端命令前设置 `DRAFT_HEAD=/绝对路径`，脚本会校验两份 head 的内容一致。`PYPTO_RESULTS_ROOT` 可指定结果盘，默认 `/workspace`。首次启动会读取 Engram、编译模型算子并加载权重。
 
+重跑会优先使用结果盘上最近一次导出且与基模匹配的初始化 head。Engram 分片的 SHA256 保存在结果盘的 `.orthrus-dsv41-state` 中，只有底层文件标识和时间戳一致时才复用。首次写入此缓存时，日志会逐分片打印校验进度。当前离线镜像通过 `pl.tile.rsqrt(x, tmp)` 保留基模所需的高精度倒平方根路径。
+
 程序先运行 target-only 再运行 Orthrus，在两个节点的 DP 分区各运行一个请求。它检查全部 40 层、逐 token 的贪心一致性、K32 起草和验证、接受前缀提交、验证后的 KV 恢复及请求释放。两台各自记录 `orthrus-cluster-accept.*/acceptance/acceptance.json`，详细日志为同目录的 `cluster-accept.log`。先看两端的 `passed`，再看 `compared_tokens`、`draft_rounds` 和 `verifier_restored_bytes`。此入口用于离线推理验收。初始化 head 的接受数供诊断使用，性能结论需用训练 head。
 
 离线镜像已通过补丁和启动检查。CPU 测试覆盖全局 rank 到本机设备的映射、Engram 文件映射，以及两端通过控制连接同步起草、验证、提交和释放。真实 W8A8 双机整模结果待公司机验收。

@@ -246,7 +246,23 @@ case "$action" in
       fi
       if [[ "$action" == cluster-accept ]]; then
         echo "Acceptance reports: $log_dir/acceptance/acceptance.json" >&2
-        options+=(-v "$log_dir:/results" -e PYPTO_A3_STATE_DIR=/results/state)
+        state_dir="${PYPTO_CLUSTER_STATE_DIR:-$logs_root/.orthrus-dsv41-state}"
+        mkdir -p "$state_dir"
+        state_dir="$(cd "$state_dir" && pwd -P)"
+        options+=(-v "$log_dir:/results" -v "$state_dir:/cluster-state" -e PYPTO_A3_STATE_DIR=/cluster-state)
+        if [[ -z "${DRAFT_HEAD:-}" ]]; then
+          previous_head=""
+          for previous in "$logs_root"/orthrus-cluster-accept.*/initialized-head; do
+            [[ -f "$previous/manifest.json" ]] || continue
+            if [[ -z "$previous_head" || "$previous/manifest.json" -nt "$previous_head/manifest.json" ]]; then
+              previous_head="$previous"
+            fi
+          done
+          if [[ -n "$previous_head" ]]; then
+            previous_head="$(cd "$previous_head" && pwd -P)"
+            options+=(-v "$previous_head:/previous-head:ro" -e PYPTO_PREVIOUS_HEAD=/previous-head)
+          fi
+        fi
         docker run "${options[@]}" "$image" bash \
           /workspace/online-speculation/scripts/run_dsv41_pypto_cluster.sh "$@" \
           --node "$rank" --master-address "$master_address" --key-file /run/orthrus-cluster.key \

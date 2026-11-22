@@ -12,7 +12,8 @@ if [[ -n "$(git -C "$PYPTO_SERVING_ROOT" status --porcelain --untracked-files=no
   exit 2
 fi
 
-for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.patch; do
+for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.patch \
+    lib-pypto72-compat.patch lib-cluster-retry.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -40,7 +41,31 @@ print(json.dumps(dict(passed=True, stage="offline-overlay", tree=os.environ["ORT
 PY
 fi
 
+if [[ "${1:-}" == --compile-only ]]; then
+  shift
+  exec python "$root/scripts/compile_dsv41_pypto_cluster.py" "$@"
+fi
+
 : "${TARGET_WEIGHTS:?Mount the paired W8A8 model}"
+if [[ -z "${DRAFT_HEAD:-}" && -n "${PYPTO_PREVIOUS_HEAD:-}" ]]; then
+  if python - "$TARGET_WEIGHTS" "$PYPTO_PREVIOUS_HEAD" <<'PY'
+from pathlib import Path
+import sys
+from blockspec.pypto_dsv41_draft import read_draft_artifact
+
+try:
+    _, manifest, _ = read_draft_artifact(Path(sys.argv[1]), Path(sys.argv[2]))
+    if manifest["artifact_role"] != "initialized-plumbing" or manifest["mask_token_id"] != 129279:
+        raise ValueError("Expected the default target-initialized head")
+except (OSError, ValueError) as error:
+    print(f"Previous initialized head could not be reused: {error}", file=sys.stderr)
+    raise SystemExit(1) from None
+PY
+  then
+    DRAFT_HEAD="$PYPTO_PREVIOUS_HEAD"
+    echo 'Reusing the validated initialized head from the previous run.'
+  fi
+fi
 if [[ -z "${DRAFT_HEAD:-}" ]]; then
   DRAFT_HEAD=/results/initialized-head
   echo 'Preparing a target-initialized BF16 Orthrus head for the inference smoke test.'
