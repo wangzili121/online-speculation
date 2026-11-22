@@ -119,10 +119,10 @@ def make_sparse_attention(*, head_major_swa=False):
     return attend
 
 
-def make_sparse_program():
+def make_sparse_program(*, head_major_swa=False):
     import pypto.language as pl
 
-    attend = make_sparse_attention()
+    attend = make_sparse_attention(head_major_swa=head_major_swa)
 
     @pl.jit.host
     def entry(

@@ -9,6 +9,7 @@ import unittest
 
 
 COMMAND = Path(__file__).resolve().parents[1] / "scripts/verify_dsv41_pypto_acceptance.py"
+SUMMARY = COMMAND.with_name("summarize_dsv41_pypto_cluster.py")
 
 
 class AcceptanceTest(unittest.TestCase):
@@ -96,6 +97,29 @@ class AcceptanceTest(unittest.TestCase):
         code, report = self.run_acceptance()
         self.assertEqual(code, 1)
         self.assertIn("resident draft", report["error"])
+
+    def test_timing_summary_separates_first_call_and_incomplete_receipt(self):
+        session = self.root / "native" / "session-1"
+        session.mkdir(parents=True)
+        rows = [
+            dict(phase="verify", owners=[dict(request_id="orthrus-request-0")], seconds=duration,
+                 timings=dict(chunk_seconds=duration / 2),
+                 runtime=dict(verify_backup_d2d_bytes=128 * (index + 1)))
+            for index, duration in enumerate((0.8, 0.1, 0.3))
+        ]
+        (session / "serving-dispatches.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows) + '{"phase":'
+        )
+        (self.root / "acceptance.json").write_text(json.dumps(dict(passed=False, node=0, error="phase failed")))
+        result = subprocess.run([sys.executable, str(SUMMARY), str(self.root)], check=True, capture_output=True)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["error"], "phase failed")
+        self.assertEqual(report["dispatches"]["orthrus"]["verify"], dict(
+            dispatch=dict(calls=3, first_ms=800.0, subsequent_median_ms=200.0),
+            native_chunk=dict(calls=3, first_ms=400.0, subsequent_median_ms=100.0),
+        ))
+        self.assertEqual(report["node_local_counters"]["verify_backup_d2d_bytes"], 384)
 
 
 if __name__ == "__main__":

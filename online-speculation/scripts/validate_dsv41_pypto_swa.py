@@ -111,12 +111,16 @@ def main():
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--compressed", action="store_true", help="verify selected C1A/C2A history and LSE merge")
+    parser.add_argument("--resident-chain", action="store_true",
+                        help="Chain SWA and compressed Attention through their production device layout")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.iterations < 1 or args.device < 0 or args.output.exists():
         parser.error("need positive iterations, a nonnegative device and a new output path")
     if args.compressed and args.heads > HEAD_TILE:
         parser.error("compressed history probe supports up to sixteen local heads")
+    if args.resident_chain and (not args.compressed or not args.serving_layout or args.heads != HEAD_TILE):
+        parser.error("resident chain requires --compressed --serving-layout --heads 16")
 
     from pypto import __version__ as pypto_version
     from pypto.backend import BackendType
@@ -149,6 +153,8 @@ def main():
 
     def refresh_swa(tensors):
         worker.run(swa_program, *swa_handles, config=config)
+        if args.resident_chain:
+            return
         download(worker, swa_resident[-2:], swa_handles[-2:])
         for host, segment in zip(tensors[-4:-2], swa_resident[-2:], strict=True):
             active = segment.reshape(args.heads, BLOCK, -1).transpose(0, 1)
@@ -159,9 +165,10 @@ def main():
         swa_resident[0] = serving_query(local_tensors[0]).share_memory_()
     if args.compressed:
         cases = ((0, 1), (31, 2), (129, 1), (257, 2), (1025, 1), (1025, 2))
-        program_entry = make_sparse_program()
+        program_entry = make_sparse_program(head_major_swa=args.resident_chain)
         report["shape"]["topk"] = TOPK
-        report["swa_input"] = "pypto_swa_output_with_host_layout_conversion"
+        report["swa_input"] = ("resident_head_major_alias" if args.resident_chain
+                               else "pypto_swa_output_with_host_layout_conversion")
     else:
         cases = tuple((anchor, None) for anchor in (0, 1, 31, 127, 128, 129, 255, 257, 8194))
     if args.anchor is not None and all(anchor != args.anchor for anchor, _ in cases):
@@ -183,12 +190,15 @@ def main():
             return
         host_tensors = swa_resident + resident if args.compressed else resident
         worker = DistributedWorker(programs, config=config, inherited_host_tensors=host_tensors)
-        for tensor in resident:
+        inputs = slice(None, -4 if args.resident_chain else -2)
+        allocations = resident[inputs] + resident[-2:]
+        for tensor in allocations:
             handles.append(worker.alloc_tensor(tuple(tensor.shape), tensor.dtype))
         if args.compressed:
             for tensor in swa_resident:
                 swa_handles.append(worker.alloc_tensor(tuple(tensor.shape), tensor.dtype))
-        before = [torch.empty_like(tensor).share_memory_() for tensor in resident[:-2]]
+        bindings = handles[:-2] + swa_handles[-2:] + handles[-2:] if args.resident_chain else handles
+        before = [torch.empty_like(tensor).share_memory_() for tensor in resident[inputs]]
         for index, (anchor, ratio) in enumerate(cases):
             if args.anchor is not None and anchor != args.anchor:
                 continue
@@ -203,22 +213,27 @@ def main():
             if args.compressed:
                 upload(worker, local[:-2], swa_resident[:-2], swa_handles[:-2])
                 refresh_swa(tensors)
-            upload(worker, tensors[:-2], resident[:-2], handles[:-2])
-            worker.run(program, *handles, config=config)
+            upload(worker, tensors[inputs], resident[inputs], handles[:-2])
+            worker.run(program, *bindings, config=config)
             output, lse = resident[-2:]
             if args.compressed:
                 output = output.unflatten(0, (BLOCK, HEAD_TILE))[:, :args.heads]
                 lse = lse.unflatten(0, (BLOCK, HEAD_TILE))[:, :args.heads]
-            elapsed = []
+            elapsed, swa_elapsed = [], []
             for _ in range(args.iterations):
-                if args.compressed and args.check_every_run:
+                if args.compressed and (args.check_every_run or args.resident_chain):
+                    start = time.perf_counter()
                     refresh_swa(tensors)
-                    upload(worker, tensors[-4:-2], resident[-4:-2], handles[-4:-2])
+                    swa_elapsed.append(time.perf_counter() - start)
+                    if not args.resident_chain:
+                        upload(worker, tensors[-4:-2], resident[-4:-2], handles[-4:-2])
                 start = time.perf_counter()
-                worker.run(program, *handles, config=config)
+                worker.run(program, *bindings, config=config)
                 elapsed.append(time.perf_counter() - start)
                 if args.check_every_run:
                     download(worker, resident[-2:], handles[-2:])
+                    if args.resident_chain:
+                        download(worker, swa_resident[-2:], swa_handles[-2:])
                     if args.compressed and (
                         not torch.allclose(swa_resident[-2], swa_expected[0], **report["output_tolerance"])
                         or not torch.allclose(swa_resident[-1], swa_expected[1], **report["lse_tolerance"])
@@ -229,6 +244,8 @@ def main():
                         break
             if not args.check_every_run:
                 download(worker, resident[-2:], handles[-2:])
+                if args.resident_chain:
+                    download(worker, swa_resident[-2:], swa_handles[-2:])
             report.update(npu_execution=not args.simulate, simulator_execution=args.simulate)
             if args.compressed:
                 swa_errors = dict(
@@ -239,7 +256,7 @@ def main():
                 for saved, original in zip(swa_resident[:-2], local[:-2], strict=True):
                     if not torch.equal(saved.view(torch.uint8), original.view(torch.uint8)):
                         raise AssertionError("SWA modified a read-only input")
-            for saved, tensor, handle in zip(before, resident[:-2], handles[:-2], strict=True):
+            for saved, tensor, handle in zip(before, resident[inputs], handles[:-2], strict=True):
                 worker.copy_from(saved.data_ptr(), handle.data_ptr, saved.nbytes)
                 if not torch.equal(saved.view(torch.uint8), tensor.view(torch.uint8)):
                     raise AssertionError("PyPTO modified a read-only input")
@@ -252,6 +269,9 @@ def main():
             }
             if args.compressed:
                 case.update(ratio=ratio, max_selected=min(anchor // ratio, TOPK), **swa_errors)
+            if args.resident_chain and not args.simulate:
+                case.update(swa_resident_call_median_us=statistics.median(swa_elapsed) * 1e6,
+                            chain_call_median_us=statistics.median(map(sum, zip(swa_elapsed, elapsed, strict=True))) * 1e6)
             report["cases"].append(case)
             try:
                 torch.testing.assert_close(output, expected[0], **report["output_tolerance"])

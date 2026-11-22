@@ -93,6 +93,21 @@ CLUSTER_KEY_FILE=/home/wangzili/.orthrus-cluster.key \
 
 程序检查全部 40 层、逐 token 的贪心一致性、K32 起草和验证、接受前缀提交、验证后的 KV 恢复及请求释放。两台各自记录 `orthrus-cluster-accept.*/acceptance/acceptance.json`，详细日志为同目录的 `cluster-accept.log`。先看两端的 `passed`，再看 `compared_tokens`、`draft_rounds` 和 `verifier_restored_bytes`。此入口用于离线推理验收。初始化 head 的接受数供诊断使用，性能结论需用训练 head。
 
+已有验收结果可在任一节点用下列命令汇总，无需重新运行模型。报告区分各阶段首次调用与后续中位数，并附上本机的验证缓存搬运量、draft 权重上传次数和耗时。首次调用可能包含编译，计时也含本次验收的诊断开销。
+
+```bash
+python3 online-speculation/scripts/summarize_dsv41_pypto_cluster.py /workspace/orthrus-cluster-accept.RUN/acceptance
+```
+
+如遇到 `verify/accept` 分叉，在持有该请求的节点用离线镜像读已有 logits。脚本会先比对两个输入直到待预测位置的前缀，再输出同一位置的最大误差、平均误差和两边的 Top-5。
+
+```bash
+A=$(ls -td /workspace/orthrus-cluster-accept.*/acceptance | head -1)
+docker run --rm --network none -v "$A:/a:ro" \
+  -v "$PWD/online-speculation/scripts:/tools:ro" orthrus-dsv41-pypto:72a62d1-offline \
+  python /tools/summarize_dsv41_pypto_cluster.py /a --verifier-logits
+```
+
 离线镜像已通过补丁和启动检查。CPU 测试覆盖全局 rank 到本机设备的映射、Engram 文件映射，以及两端通过控制连接同步起草、验证、提交和释放。真实 W8A8 双机已分别完成 target-only 和 Orthrus 生成，首次验收发现两次独立基模 prefill 的 logits 有差异。共享基模会话的双机逐 token 结果仍需复验。
 
 ## 精度验收
