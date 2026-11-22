@@ -30,7 +30,7 @@ def build_identity(lib):
              root / "src/blockspec/pypto_dsv41_cluster_transport.py"]
     if lib is not None:
         source = lib / "models/deepseek_v4_1_flash_a3"
-        files.extend((source / "prefill_resident.py", source / "moe_transport.py"))
+        files.extend((source / "prefill_resident.py", source / "moe_transport.py", source / "runtime_config.py"))
     fingerprint = hashlib.sha256()
     for file in files:
         fingerprint.update(hashlib.sha256(file.read_bytes()).digest())
@@ -42,6 +42,7 @@ def check_device(args, plan, link, dispatch):
 
     sys.path.insert(0, str(args.lib.resolve()))
     from models.deepseek_v4_1_flash_a3.prefill_resident import ResidentNetworkRuntime
+    from models.deepseek_v4_1_flash_a3.runtime_config import validate_devices
 
     os.environ.setdefault("HCCL_CONNECT_TIMEOUT", str(max(120, args.timeout)))
     os.environ.setdefault("HCCL_EXEC_TIMEOUT", str(args.timeout))
@@ -56,7 +57,8 @@ def check_device(args, plan, link, dispatch):
         card_map = check_visible_devices(cards)
         print(f"Node {plan.node} physical-to-runtime NPU mapping: {card_map}", file=sys.stderr, flush=True)
     topology = dict(ep=local_devices, tp=plan.tp, dp=local_devices // plan.tp)
-    with ResidentNetworkRuntime(list(range(local_devices)), topology) as runtime, ClusterCollectives(runtime, plan, link) as comm:
+    devices = validate_devices(list(range(local_devices)), world=local_devices)
+    with ResidentNetworkRuntime(devices, topology) as runtime, ClusterCollectives(runtime, plan, link) as comm:
         result = check_dispatch(dispatch, plan, runtime, comm)
     return dict(result, physical_to_runtime=card_map) if card_map is not None else result
 

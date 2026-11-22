@@ -13,7 +13,10 @@ class ClusterCollectives:
         if native is None:
             from models.deepseek_v4_1_flash_a3 import moe_transport as native
 
-        if tuple(runtime.devices) != tuple(range(len(plan.local_ranks))) or link.node != plan.node:
+        # The native Serving launcher returns canonical string IDs from configure_devices.
+        local_ids = tuple(str(device) for device in runtime.devices)
+        expected_ids = tuple(str(device) for device in range(len(plan.local_ranks)))
+        if local_ids != expected_ids or link.node != plan.node:
             raise ValueError("Runtime must use the plan's node-local logical device IDs starting at zero")
         self.runtime, self.plan, self.link = runtime, plan, link
         self.memory, self.channel_type, self.check = native.CANNMemory(), native.HCCLBytes, native._check

@@ -2,9 +2,12 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import socket
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from blockspec.pypto_dsv41_cluster import ClusterDispatcher, ControlLink, RankPlan
+from blockspec.pypto_dsv41_cluster_transport import ClusterCollectives
 
 
 class ClusterTest(unittest.TestCase):
@@ -30,6 +33,20 @@ class ClusterTest(unittest.TestCase):
         self.assertEqual(a.groups("ep"), (tuple(range(16)),))
         with self.assertRaises(ValueError):
             RankPlan((7, 9), 4, 0)
+
+    def test_transport_accepts_serving_string_device_ids(self):
+        plan = RankPlan((8, 8), 4, 1)
+        link = SimpleNamespace(node=1)
+        native = SimpleNamespace(CANNMemory=object, HCCLBytes=object, _check=None, _bind=lambda *_: None)
+        with patch("blockspec.pypto_dsv41_cluster_transport.C.CDLL"):
+            for devices in (tuple(map(str, range(8))), tuple(range(8))):
+                with self.subTest(devices=devices):
+                    runtime = SimpleNamespace(devices=devices)
+                    with ClusterCollectives(runtime, plan, link, native=native) as transport:
+                        self.assertIs(transport.runtime, runtime)
+            for devices in (tuple(range(8, 16)), tuple(reversed(range(8))), (False, *range(1, 8))):
+                with self.subTest(devices=devices), self.assertRaisesRegex(ValueError, "node-local logical"):
+                    ClusterCollectives(SimpleNamespace(devices=devices), plan, link, native=native)
 
     def test_wave_preserves_global_dp_and_empty_partitions(self):
         active = {"request_slot": 0, "generation": 7, "token_ids": [12, 13]}
