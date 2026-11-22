@@ -472,15 +472,17 @@ class DraftRound:
                               lambda: make_swa_attention(heads, token_major_query=True),
                               dict(swa_args, pages=swa_pages, zeros=swa_zeros, output=local, lse=local_lse))
             context = local
+            final_lse = local_lse
 
         if compressed:
             long, = planes["long"]
             selected = self.index_rows(rank, layer, owner, history, values, workspace)
             context = workspace(output_shape, torch.float32)
+            final_lse = workspace(lse_shape, torch.float32)
             sparse_args = dict(pages=long["handle"], rows=selected["physical_rows"],
                                lengths=selected["lengths"], bias=selected["bias"],
                                zeros=attention.constants[rank]["sparse_zero"], output=context,
-                               lse=workspace(lse_shape, torch.float32))
+                               lse=final_lse)
             flat_query = values["query"].view(-1, HEAD_DIM)
             if joined:
                 attention.execute(("joined_attention", swa_pages.shape[0], long["handle"].shape[0]), rank,
@@ -502,7 +504,7 @@ class DraftRound:
                 "pre": None, "post": None, "comb": None, "collapsed": hidden,
                 "cos": cos, "sin": sin, "history": history,
                 "selection": selected if compressed else None,
-                "qkv": values, "contribution": contribution,
+                "qkv": values, "contribution": contribution, "lse": final_lse,
             }
 
     def index_rows(self, rank, layer, owner, history, values, workspace):

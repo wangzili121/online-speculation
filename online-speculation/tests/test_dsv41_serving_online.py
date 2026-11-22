@@ -17,7 +17,7 @@ def layer_state(layer):
         {name: object() for name in (
             "readonly_hidden", "hidden", "incoming", "pre", "post", "comb", "collapsed",
             "normed", "changed", "cos", "sin", "history", "selection",
-            "qkv", "contribution",
+            "qkv", "contribution", "lse",
         )},
         {name: object() for name in (
             "changed", "pre", "post", "comb", "collapsed", "normed",

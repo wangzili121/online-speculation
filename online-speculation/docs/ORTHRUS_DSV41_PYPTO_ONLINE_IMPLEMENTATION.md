@@ -20,7 +20,7 @@
 
 - 完整词表 TV/KL 及 logits VJP，支持 DSV4.1 的 129280 维词表。
 - 线性、RMSNorm、SiLU、梯度统计/裁剪、AdamW 和 BF16 发布。
-- 含 sink、历史和 K32 双向临时块的 C1A Attention VJP。
+- 含 sink、每个 query 独立的 SWA128＋Top-K C512 历史以及共享 K32 双向临时块的 C1A Attention VJP。历史保持冻结，只返回 dQ、临时块 dK/dV 和 sink 梯度；生产 TP4/K32 实卡数值已经通过。
 - mHC post 数据/门控反向与 mHC pre 的 sigmoid、Sinkhorn 反向。
 - 固定 Top-6 路由下的 MoE combine 与归一化路由权重反向。
 - router logits 的 sigmoid、Top-6 归一化 VJP 和 384 维稀疏回填；Top-K 成员固定使用前向记录，不在反向重新选择专家。
@@ -29,7 +29,7 @@
 - 冻结 W8A8 MoE 权重按原生分块布局在设备端反量化，供输入 VJP 使用；真实 `2304×5120` 和 `5120×4608` 尺寸已经编译通过，小形状 NPU 数值逐元素一致。
 - routed expert 的 clipped-SwiGLU VJP 支持上界/双边 clamp，并明确以 STE 穿过动态 INT8 激活边界；生产 `K32×2304` 形状编译通过，小形状 NPU 结果与 Torch golden 逐元素一致。
 
-完整的冻结 MoE Torch golden 已覆盖 routed experts、shared expert 和 router 三条输入梯度路径。当前生产规格共 51 个设备程序编译通过，包含 `K32×384` router、`K32×5120` MoE/mHC、真实 LM head 和 TP4 draft 投影；新增 MoE/router/EP 测试 9 项通过。
+完整的冻结 MoE Torch golden 已覆盖 routed experts、shared expert 和 router 三条输入梯度路径。当前生产规格共 56 个设备程序编译通过，包含 C1A 每 query 历史重放、`K32×384` router、`K32×5120` MoE/mHC、真实 LM head 和 TP4 draft 投影；DSV4.1 CPU 回归为 116 项通过、5 组子测试通过。
 
 `DSV41ResidentUpdateBackend` 将这些叶子组织成严格的一次更新：
 

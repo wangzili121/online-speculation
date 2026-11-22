@@ -14,7 +14,7 @@ def captured(layer, ranks=(0, 1, 2, 3)):
         rank: {name: object() for name in (
             "readonly_hidden", "hidden", "incoming", "pre", "post", "comb",
             "collapsed", "normed", "changed", "cos", "sin", "history", "selection",
-            "qkv", "contribution",
+            "qkv", "contribution", "lse",
         )} for rank in ranks
     }
     ffn = {

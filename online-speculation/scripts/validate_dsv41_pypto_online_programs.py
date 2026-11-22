@@ -32,8 +32,9 @@ def main():
     from blockspec.pypto_dsv41_optimizer_programs import make_publish
     from blockspec.pypto_dsv41_attention_vjp import (
         C1AAttentionVJPGeometry,
+        c1a_vjp_factories,
         make_block_extract,
-        make_head_reduce,
+        make_probability_block_extract,
         make_sink_reduce,
         make_softmax_vjp,
     )
@@ -112,14 +113,8 @@ def main():
             empty((attention_fixture.local_heads, 16), torch.float32), config=config,
         ),
         "c1a_block_extract": make_block_extract(attention_fixture).compile(
-            empty((attention_fixture.token_columns, attention_fixture.dimension)),
-            empty((attention_fixture.block, attention_fixture.dimension)), config=config,
-        ),
-        "c1a_head_reduce": make_head_reduce(attention_fixture).compile(
-            empty((attention_fixture.local_heads * attention_fixture.token_columns,
-                   attention_fixture.dimension), torch.float32),
-            empty((attention_fixture.token_columns, attention_fixture.dimension), torch.float32),
-            config=config,
+            empty((attention_fixture.rows, attention_fixture.padded_columns)),
+            empty((attention_fixture.rows, attention_fixture.block)), config=config,
         ),
         "hc_post_data_vjp": make_hc_post_data_vjp(32, 128).compile(
             empty((32 * 4, 128)), empty((32, 4), torch.float32),
@@ -173,15 +168,56 @@ def main():
             empty((production_attention.local_heads, 16), torch.float32), config=config,
         )
         programs["c1a_block_extract_tp4_k32"] = make_block_extract(production_attention).compile(
-            empty((production_attention.token_columns, production_attention.dimension)),
-            empty((production_attention.block, production_attention.dimension)), config=config,
+            empty((production_attention.rows, production_attention.padded_columns)),
+            empty((production_attention.rows, production_attention.block)), config=config,
         )
-        programs["c1a_head_reduce_tp4_k32"] = make_head_reduce(production_attention).compile(
-            empty((production_attention.local_heads * production_attention.token_columns,
-                   production_attention.dimension), torch.float32),
-            empty((production_attention.token_columns, production_attention.dimension), torch.float32),
+        programs["c1a_probability_block_extract_tp4_k32"] = make_probability_block_extract(
+            production_attention,
+        ).compile(
+            empty((production_attention.rows, production_attention.padded_columns), torch.float32),
+            empty((production_attention.rows, production_attention.block)), config=config,
+        )
+        factories = c1a_vjp_factories(production_attention)
+        programs["c1a_joined_history_tp4_k32"] = factories["joined_history"]().compile(
+            empty((128, production_attention.dimension)), empty((2, 3), torch.int32),
+            empty((512, production_attention.dimension)),
+            empty((production_attention.block, production_attention.compressed), torch.int32),
+            empty((production_attention.block,), torch.int32),
+            empty((production_attention.block, production_attention.dimension)),
+            empty((128, production_attention.dimension)),
+            empty((production_attention.block * production_attention.padded_columns,
+                   production_attention.dimension)), config=config,
+        )
+        programs["c1a_probability_replay_tp4_k32"] = factories["probability_replay"]().compile(
+            empty((production_attention.rows, production_attention.dimension)),
+            empty((production_attention.block * production_attention.padded_columns,
+                   production_attention.dimension)),
+            empty((1, production_attention.swa), torch.float32),
+            empty((production_attention.block, production_attention.compressed), torch.float32),
+            empty((production_attention.local_heads,), torch.float32),
+            empty((production_attention.rows, 1), torch.float32),
+            empty((production_attention.rows, production_attention.padded_columns), torch.float32),
             config=config,
         )
+        programs["c1a_probability_gradient_tp4_k32"] = factories["d_probability"]().compile(
+            empty((production_attention.rows, production_attention.dimension)),
+            empty((production_attention.block * production_attention.padded_columns,
+                   production_attention.dimension)),
+            empty((production_attention.rows, production_attention.padded_columns)), config=config,
+        )
+        programs["c1a_query_gradient_tp4_k32"] = factories["d_query"]().compile(
+            empty((production_attention.rows, production_attention.padded_columns)),
+            empty((production_attention.block * production_attention.padded_columns,
+                   production_attention.dimension)),
+            empty((production_attention.rows, production_attention.dimension)), config=config,
+        )
+        for name in ("d_key_block", "d_value_block"):
+            programs[f"c1a_{name}_tp4_k32"] = factories[name]().compile(
+                empty((production_attention.rows, production_attention.block)),
+                empty((production_attention.rows, production_attention.dimension)),
+                empty((production_attention.block, production_attention.dimension), torch.float32),
+                config=config,
+            )
         programs["hc_post_data_vjp_k32x5120"] = make_hc_post_data_vjp().compile(
             empty((32 * 4, 5120)), empty((32, 4), torch.float32),
             empty((32 * 4, 4), torch.float32), empty((32, 5120)),
@@ -426,7 +462,9 @@ def main():
         )
         actual_score_gradient = read(score_gradient_handle, torch.empty_like(probability_gradient))
         torch.testing.assert_close(
-            actual_score_gradient, expected_score_gradient.bfloat16(), atol=.002, rtol=.01,
+            actual_score_gradient,
+            (expected_score_gradient * attention_fixture.dimension ** -.5).bfloat16(),
+            atol=.002, rtol=.01,
         )
         sink_gradient_handle = allocate(torch.zeros(1, 16, dtype=torch.float32))
         worker.run(
@@ -437,31 +475,22 @@ def main():
             expected_score_gradient[:, attention_fixture.sink_column].sum().reshape(1, 1),
             atol=.01, rtol=.02,
         )
-        joined_gradient = torch.randn(attention_fixture.token_columns, attention_fixture.dimension).bfloat16()
-        block_gradient_handle = allocate(torch.zeros(attention_fixture.block, attention_fixture.dimension,
-                                                     dtype=torch.bfloat16))
+        joined_gradient = torch.randn(
+            attention_fixture.rows, attention_fixture.padded_columns,
+        ).bfloat16()
+        block_gradient_handle = allocate(torch.zeros(
+            attention_fixture.rows, attention_fixture.block, dtype=torch.bfloat16,
+        ))
         worker.run(
             programs["c1a_block_extract"], allocate(joined_gradient), block_gradient_handle, config=config,
         )
         torch.testing.assert_close(
-            read(block_gradient_handle, torch.empty_like(joined_gradient[-attention_fixture.block:])),
-            joined_gradient[-attention_fixture.block:], atol=0, rtol=0,
-        )
-        per_head = torch.randn(
-            attention_fixture.local_heads * attention_fixture.token_columns,
-            attention_fixture.dimension,
-            dtype=torch.float32,
-        )
-        shared_handle = allocate(torch.zeros(
-            attention_fixture.token_columns, attention_fixture.dimension, dtype=torch.float32,
-        ))
-        worker.run(programs["c1a_head_reduce"], allocate(per_head), shared_handle, config=config)
-        expected_shared = per_head.view(
-            attention_fixture.local_heads, attention_fixture.token_columns,
-            attention_fixture.dimension,
-        ).sum(0)
-        torch.testing.assert_close(
-            read(shared_handle, torch.empty_like(expected_shared)), expected_shared, atol=1e-6, rtol=1e-6,
+            read(block_gradient_handle, torch.empty(
+                attention_fixture.rows, attention_fixture.block, dtype=torch.bfloat16,
+            )),
+            joined_gradient[:, attention_fixture.block_begin:
+                            attention_fixture.block_begin + attention_fixture.block],
+            atol=0, rtol=0,
         )
         report["cases"].append({
             "operator": "c1a_attention_vjp",

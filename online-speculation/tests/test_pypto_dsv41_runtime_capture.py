@@ -20,7 +20,7 @@ def test_last_n_replay_starts_before_the_first_selected_layer():
         normalized = object()
         round_.captured_attention[0, layer, owner] = {
             "rank": 0, "cos": object(), "sin": object(), "history": object(),
-            "selection": object(), "qkv": object(), "contribution": object(),
+            "selection": object(), "qkv": object(), "contribution": object(), "lse": object(),
         }
         round_.captured_tail[0, layer, owner] = {
             "readonly_hidden": f"layer-{layer}-input",

@@ -18,8 +18,10 @@ def test_c1a_vjp_rejects_unaligned_or_short_softmax_capacity(columns):
         C1AAttentionVJPGeometry(padded_columns=columns)
 
 
-def test_c1a_vjp_includes_shared_mqa_gradient_reduction():
+def test_c1a_vjp_includes_per_query_replay_and_shared_block_gradients():
     assert set(c1a_vjp_factories()) == {
-        "probability_vjp", "sink_reduce", "head_reduce", "block_extract",
-        "d_probability", "d_query", "d_key_per_head", "d_value_per_head",
+        "joined_history", "probability_replay",
+        "probability_vjp", "sink_reduce", "score_block_extract",
+        "probability_block_extract",
+        "d_probability", "d_query", "d_key_block", "d_value_block",
     }
