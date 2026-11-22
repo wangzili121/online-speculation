@@ -83,6 +83,26 @@ class DSV41DeviceSuffixLearner:
         self.backend.adamw(reduced, rate=rate, step=self.version, clip=clip)
         return float(self.backend.read_scalar(loss)), float(self.backend.read_scalar(norm)), self.version
 
+    def update_zero(self, *, learning_rate, update_number):
+        """Join the owner's DP reduction from a replica without teacher rows.
+
+        Every DP replica must enter the same HCCL calls.  Non-owning replicas
+        contribute exactly zero parameter gradients, then receive the owner's
+        reduced gradient and apply the identical FP32 optimizer step.
+        """
+        if update_number != self.version + 1:
+            raise ValueError("zero-gradient participant received an out-of-order update")
+        if not math.isfinite(learning_rate) or learning_rate <= 0:
+            raise ValueError("positive finite update rate required")
+        gradients = self.backend.zero_gradients(self.plan.layers)
+        if set(gradients) != set(self.plan.trainable_names()):
+            raise ValueError("zero-gradient participant has an incomplete suffix ABI")
+        reduced = self.backend.dp_all_reduce(gradients)
+        norm, clip = self.backend.gradient_norm_and_clip(reduced, maximum=1.)
+        self.version = update_number
+        self.backend.adamw(reduced, rate=learning_rate, step=self.version, clip=clip)
+        return 0., float(self.backend.read_scalar(norm)), self.version
+
     def publication_state(self):
         values = self.backend.publication_state(self.plan.layers)
         if set(values) != set(self.plan.trainable_names()):

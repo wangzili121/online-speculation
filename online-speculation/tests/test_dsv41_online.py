@@ -7,6 +7,7 @@ from blockspec.dsv41_online import (
     DSV41DelayedTeacherBlock,
     DSV41OnlineConfig,
     DSV41OnlineController,
+    DSV41PreparedUpdate,
 )
 from blockspec.pypto_dsv41_online_programs import loss_vocabulary_tile
 
@@ -30,6 +31,36 @@ def test_dsv41_online_policy_has_two_stage_cadence_and_warmup():
     assert policy.learning_rate_for(8) == pytest.approx(1e-5)
     assert policy.learning_rate_for(80) == pytest.approx(1e-5)
     assert policy.should_publish(4) and not policy.should_publish(3)
+
+
+def test_controller_prepares_before_device_update_and_serializes_snapshots():
+    class Learner:
+        last_layers = 1
+
+        def __init__(self):
+            self.calls = []
+
+        def update_rows(self, replay, teacher, **options):
+            self.calls.append((replay, teacher.clone(), options))
+            return .1, .2, len(self.calls)
+
+    learner = Learner()
+    policy = DSV41OnlineConfig(
+        teacher_rows=1, warm_update_stride=1, warm_update_steps=1,
+        steady_update_stride=1, publish_every=2,
+    )
+    controller = DSV41OnlineController(learner, policy)
+    assert controller.begin_round("first", (3,), "replay")
+    assert not controller.begin_round("second", (4,), "stale")
+    prepared = controller.prepare(
+        "first", (3,), (3,), (5,), torch.randn(1, 7),
+    )
+    assert isinstance(prepared, DSV41PreparedUpdate)
+    assert learner.calls == [] and controller.completed_updates == 0
+    record = controller.apply(prepared)
+    assert record["update"] == 1 and len(learner.calls) == 1
+    with pytest.raises(ValueError, match="stale"):
+        controller.apply(prepared)
 
 
 @pytest.mark.parametrize("last_layers", [1, 2, 4, 8, 40])
@@ -89,6 +120,7 @@ def test_controller_updates_only_after_corrected_rows_and_publishes_atomically()
         "updates": 1,
         "publications": 1,
         "active_feedback_blocks": 0,
+            "prepared_update": None,
         "last_update": record,
     }
 

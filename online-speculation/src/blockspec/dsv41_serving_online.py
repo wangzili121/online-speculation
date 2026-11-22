@@ -82,6 +82,8 @@ class DSV41ServingOnline:
         return DSV41SuffixPlan(self.controller.config.last_layers)
 
     def capture_due(self):
+        if self.pending or self.controller.blocks or self.controller.prepared is not None:
+            return False
         next_round = self.controller.rounds + 1
         return self.controller.config.should_capture(
             next_round, self.controller.completed_updates,
@@ -99,7 +101,10 @@ class DSV41ServingOnline:
             self.pending[replay.request_id] = replay
         return captured
 
-    def verified(self, request_id, prefix, candidate_inputs, delivered, logits, *, finished=False):
+    def verified(
+        self, request_id, prefix, candidate_inputs, delivered, logits, *,
+        finished=False, defer=False,
+    ):
         """Consume verifier logits for tokens actually committed to the target."""
         if request_id not in self.pending:
             return None
@@ -122,16 +127,40 @@ class DSV41ServingOnline:
         accepted = max(0, len(delivered) - 1)
         if candidate_inputs is not None and candidate_inputs[:accepted] != delivered[:accepted]:
             raise ValueError("delivered prefix is not the accepted candidate prefix")
-        record = self.controller.observe(
-            request_id, prefix, inputs, delivered, teacher, finished=finished,
-        )
+        method = self.controller.prepare if defer else self.controller.observe
+        record = method(request_id, prefix, inputs, delivered, teacher, finished=finished)
         if record is not None or finished:
             self.pending.pop(request_id, None)
         return record
 
-    def continued(self, request_id, prefix, delivered, logits, *, finished=False):
+    def continued(self, request_id, prefix, delivered, logits, *, finished=False, defer=False):
         """Add delayed teacher rows from later target-only decoding."""
-        return self.verified(request_id, prefix, None, delivered, logits, finished=finished)
+        return self.verified(
+            request_id, prefix, None, delivered, logits, finished=finished, defer=defer,
+        )
+
+    def apply(self, prepared):
+        """Apply a prepared update after the cluster synchronization point."""
+        return self.controller.apply(prepared)
+
+    def synchronize(self, prepared, exchange):
+        """Rendezvous both hosts before entering DP reduction and publication."""
+        if prepared is not None and prepared is not self.controller.prepared:
+            raise ValueError("serving tried to synchronize a foreign prepared update")
+        update_number = self.controller.completed_updates + 1
+        local = None if prepared is None else prepared.contract()
+        peer = exchange(f"online-update/{update_number}", local)
+        if local is None and peer is None:
+            return None
+        if local is not None and peer is not None:
+            raise ValueError("only one host may own an online feedback block")
+        contract = local if local is not None else peer
+        if contract["update_number"] != update_number:
+            raise ValueError("cluster online update versions disagree")
+        return (
+            self.controller.apply(prepared)
+            if prepared is not None else self.controller.apply_remote(contract)
+        )
 
     def finish(self, request_id):
         self.pending.pop(request_id, None)

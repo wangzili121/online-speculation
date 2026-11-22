@@ -93,6 +93,40 @@ class DSV41OnlineConfig:
         return completed_updates % self.publish_every == 0
 
 
+@dataclass(frozen=True)
+class DSV41PreparedUpdate:
+    """One authoritative feedback block, ready for a synchronized update."""
+
+    request_id: str
+    replay: object
+    teacher: torch.Tensor
+    update_number: int
+    learning_rate: float
+    objective: str
+
+    def __post_init__(self):
+        if (
+            not self.request_id or not torch.is_tensor(self.teacher)
+            or self.teacher.ndim != 2 or not self.teacher.is_floating_point()
+            or not self.teacher.isfinite().all()
+        ):
+            raise ValueError("prepared update requires finite full-vocabulary teacher rows")
+        if self.update_number < 1 or not math.isfinite(self.learning_rate):
+            raise ValueError("prepared update has an invalid optimizer step")
+
+    def contract(self):
+        replay_owner = getattr(self.replay, "owner", None)
+        return {
+            "request_id": self.request_id,
+            "owner": None if replay_owner is None else list(replay_owner),
+            "teacher_rows": self.teacher.shape[0],
+            "vocabulary": self.teacher.shape[1],
+            "update_number": self.update_number,
+            "learning_rate": self.learning_rate,
+            "objective": self.objective,
+        }
+
+
 class DSV41DelayedTeacherBlock:
     """Collect target rows along the corrected prefix for one K32 snapshot."""
 
@@ -167,19 +201,31 @@ class DSV41OnlineController:
         self.publisher = publisher
         self.rounds = self.completed_updates = self.publications = 0
         self.blocks = {}
+        self.prepared = None
         self.records = []
 
     def begin_round(self, request_id, prefix, replay):
         """Count one verifier round and optionally capture a fresh block."""
         self.rounds += 1
-        if request_id in self.blocks or not self.config.should_capture(self.rounds, self.completed_updates):
+        # Keep one globally active snapshot until its delayed target rows are
+        # complete.  Otherwise an earlier optimizer step would make a second
+        # captured replay stale before it is consumed on every DP replica.
+        if self.blocks or self.prepared is not None or not self.config.should_capture(
+            self.rounds, self.completed_updates,
+        ):
             return False
         self.blocks[request_id] = DSV41DelayedTeacherBlock(
             request_id, prefix, replay, width=self.config.teacher_rows + 1,
         )
         return True
 
-    def observe(self, request_id, prefix, inputs, delivered, teacher_rows, *, finished=False):
+    def prepare(self, request_id, prefix, inputs, delivered, teacher_rows, *, finished=False):
+        """Collect corrected rows without entering a device collective.
+
+        Serving calls this while processing verifier output.  The returned
+        object is deliberately side-effect free with respect to model weights,
+        so both hosts can rendezvous before either enters DP all-reduce.
+        """
         block = self.blocks.get(request_id)
         if block is None:
             return None
@@ -190,29 +236,97 @@ class DSV41OnlineController:
             return None
         del self.blocks[request_id]
         update_number = self.completed_updates + 1
-        rate = self.config.learning_rate_for(update_number)
-        loss, norm, learner_version = self.learner.update_rows(
-            block.replay, block.teacher(), kind=self.config.objective, learning_rate=rate,
+        self.prepared = DSV41PreparedUpdate(
+            request_id=request_id,
+            replay=block.replay,
+            teacher=block.teacher(),
+            update_number=update_number,
+            learning_rate=self.config.learning_rate_for(update_number),
+            objective=self.config.objective,
         )
-        self.completed_updates = update_number
+        return self.prepared
+
+    def apply(self, prepared: DSV41PreparedUpdate):
+        """Execute one update after every participating host is ready."""
+        if not isinstance(prepared, DSV41PreparedUpdate):
+            raise TypeError("DSV4.1 online apply requires a prepared update")
+        if prepared is not self.prepared:
+            raise ValueError("prepared DSV4.1 update is stale or foreign")
+        update_number = self.completed_updates + 1
+        if prepared.update_number != update_number:
+            raise ValueError("prepared DSV4.1 update is stale or out of order")
+        loss, norm, learner_version = self.learner.update_rows(
+            prepared.replay, prepared.teacher, kind=prepared.objective,
+            learning_rate=prepared.learning_rate,
+        )
         published = self.config.should_publish(update_number)
         if published:
             if self.publisher is None:
                 raise RuntimeError("an online publication boundary has no engine publisher")
             self.publisher(self.learner, update_number)
             self.publications += 1
+        self.completed_updates = update_number
         record = {
             "round": self.rounds,
             "update": update_number,
             "learner_version": learner_version,
-            "teacher_rows": len(block.rows),
-            "learning_rate": rate,
+            "teacher_rows": prepared.teacher.shape[0],
+            "learning_rate": prepared.learning_rate,
             "loss": loss,
             "gradient_norm": norm,
             "published": published,
         }
         self.records.append(record)
+        self.prepared = None
         return record
+
+    def apply_remote(self, contract):
+        """Apply the gradient received through DP all-reduce on a non-owner."""
+        required = {
+            "request_id", "owner", "teacher_rows", "vocabulary",
+            "update_number", "learning_rate", "objective",
+        }
+        if not isinstance(contract, dict) or set(contract) != required:
+            raise ValueError("remote DSV4.1 update contract has a different ABI")
+        update_number = self.completed_updates + 1
+        if (
+            contract["update_number"] != update_number
+            or not 1 <= contract["teacher_rows"] < 32
+            or contract["vocabulary"] < 1
+            or contract["objective"] != self.config.objective
+            or contract["learning_rate"] != self.config.learning_rate_for(update_number)
+        ):
+            raise ValueError("remote DSV4.1 update contract is stale or inconsistent")
+        loss, norm, learner_version = self.learner.update_zero(
+            learning_rate=contract["learning_rate"], update_number=update_number,
+        )
+        published = self.config.should_publish(update_number)
+        if published:
+            if self.publisher is None:
+                raise RuntimeError("an online publication boundary has no engine publisher")
+            self.publisher(self.learner, update_number)
+            self.publications += 1
+        self.completed_updates = update_number
+        record = {
+            "round": self.rounds,
+            "update": update_number,
+            "learner_version": learner_version,
+            "teacher_rows": contract["teacher_rows"],
+            "learning_rate": contract["learning_rate"],
+            "loss": loss,
+            "gradient_norm": norm,
+            "published": published,
+            "remote_owner": contract["owner"],
+        }
+        self.records.append(record)
+        return record
+
+    def observe(self, request_id, prefix, inputs, delivered, teacher_rows, *, finished=False):
+        """Compatibility path for a single process without cluster rendezvous."""
+        prepared = self.prepare(
+            request_id, prefix, inputs, delivered, teacher_rows, finished=finished,
+        )
+        return None if prepared is None else self.apply(prepared)
 
     def finish_request(self, request_id):
         block = self.blocks.get(request_id)
@@ -233,5 +347,6 @@ class DSV41OnlineController:
             "updates": self.completed_updates,
             "publications": self.publications,
             "active_feedback_blocks": len(self.blocks),
+            "prepared_update": None if self.prepared is None else self.prepared.update_number,
             "last_update": self.records[-1] if self.records else None,
         }

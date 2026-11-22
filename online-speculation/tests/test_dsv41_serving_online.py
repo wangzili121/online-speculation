@@ -79,3 +79,71 @@ def test_serving_bridge_rejects_teacher_rows_from_rejected_candidate_branch():
         assert "accepted candidate" in str(error)
     else:
         raise AssertionError("wrong-branch feedback was accepted")
+
+
+def test_serving_bridge_can_defer_update_until_cluster_rendezvous():
+    class Learner:
+        last_layers = 1
+
+        def __init__(self):
+            self.calls = 0
+
+        def update_rows(self, replay, teacher, **options):
+            self.calls += 1
+            return .3, .5, self.calls
+
+    learner = Learner()
+    config = DSV41OnlineConfig(
+        teacher_rows=1, warm_update_stride=1, warm_update_steps=1,
+        steady_update_stride=1, publish_every=2,
+    )
+    bridge = DSV41ServingOnline(DSV41OnlineController(learner, config))
+    replay = DSV41ServingReplay(
+        "r", (4,), (0, 0, 1), DSV41SuffixPlan(1), torch.zeros(32, 4),
+        (layer_state(39),),
+    )
+    assert bridge.register_replay(replay)
+    prepared = bridge.verified(
+        "r", (4,), (), (5,), torch.randn(1, 7), defer=True,
+    )
+    assert prepared.update_number == 1 and learner.calls == 0
+    assert not bridge.capture_due()
+    assert bridge.apply(prepared)["update"] == 1 and learner.calls == 1
+
+
+def test_serving_bridge_synchronizes_owner_and_zero_gradient_peer():
+    class Learner:
+        last_layers = 1
+
+        def __init__(self, owner):
+            self.owner, self.calls = owner, []
+
+        def update_rows(self, replay, teacher, **options):
+            self.calls.append(("owner", teacher.shape[0]))
+            return .4, .6, 1
+
+        def update_zero(self, **options):
+            self.calls.append(("zero", options["update_number"]))
+            return 0., .6, 1
+
+    config = DSV41OnlineConfig(
+        teacher_rows=1, warm_update_stride=1, warm_update_steps=1,
+        steady_update_stride=1, publish_every=2,
+    )
+    owner_learner, peer_learner = Learner(True), Learner(False)
+    owner = DSV41ServingOnline(DSV41OnlineController(owner_learner, config))
+    peer = DSV41ServingOnline(DSV41OnlineController(peer_learner, config))
+    replay = DSV41ServingReplay(
+        "r", (4,), (0, 0, 1), DSV41SuffixPlan(1), torch.zeros(32, 4),
+        (layer_state(39),),
+    )
+    assert owner.register_replay(replay)
+    prepared = owner.verified(
+        "r", (4,), (), (5,), torch.randn(1, 7), defer=True,
+    )
+    contract = prepared.contract()
+    owner_record = owner.synchronize(prepared, lambda tag, payload: None)
+    peer_record = peer.synchronize(None, lambda tag, payload: contract)
+    assert owner_record["update"] == peer_record["update"] == 1
+    assert owner_learner.calls == [("owner", 1)]
+    assert peer_learner.calls == [("zero", 1)]

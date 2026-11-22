@@ -1,5 +1,5 @@
 diff --git a/models/deepseek_v41_a3/session.py b/models/deepseek_v41_a3/session.py
-index 794ef00..fc81d88 100644
+index 794ef00..88cb669 100644
 --- a/models/deepseek_v41_a3/session.py
 +++ b/models/deepseek_v41_a3/session.py
 @@ -39,12 +39,13 @@ class NativeSession:
@@ -55,7 +55,16 @@ index 794ef00..fc81d88 100644
          elif phase == "verify":
              result = self.native.verify_candidates(chunk, output=self.directory / f"verify-{self.calls}",
                                                     progress=progress)
-@@ -249,6 +272,24 @@ class NativeSession:
+@@ -233,7 +256,7 @@ class NativeSession:
+             raise RuntimeError("Native dispatch did not execute all 40 layers")
+         if before is not None and before != self.native.weights.counters():
+             raise RuntimeError("Serving dispatch changed the resident static weight bank")
+-        rows, prefill_topk = {}, []
++        rows, prefill_topk, prepared_update = {}, [], None
+         for engine in input_contract["DP_engines"]:
+             dp, end = engine["dp_rank"], 0
+             if dp * self.config.tp not in self.local_ranks:
+@@ -249,6 +272,32 @@ class NativeSession:
                      row = logits[start:end - 1].argmax(dim=-1)
                  else:
                      row = logits[start:end] if phase == "verify" else logits[end - 1]
@@ -71,12 +80,29 @@ index 794ef00..fc81d88 100644
 +                            match = next((i for i, token in enumerate(candidates)
 +                                          if token != target[i]), len(candidates))
 +                            delivered = (*candidates[:match], target[match])
-+                            self.online.verified(
++                            ready = self.online.verified(
 +                                handle.request_id, prefix, candidates, delivered, row,
++                                defer=self.cluster is not None,
 +                            )
 +                        else:
 +                            delivered = (int(row.argmax()),)
-+                            self.online.continued(handle.request_id, prefix, delivered, row.unsqueeze(0))
++                            ready = self.online.continued(
++                                handle.request_id, prefix, delivered, row.unsqueeze(0),
++                                defer=self.cluster is not None,
++                            )
++                        if self.cluster is not None and ready is not None:
++                            if prepared_update is not None:
++                                raise RuntimeError("one dispatch produced multiple online updates")
++                            prepared_update = ready
                      if self.cluster is not None:
                          if phase == "prefill":
                              values, ids = row.float().topk(min(5, row.numel()))
+@@ -257,6 +306,8 @@ class NativeSession:
+                                 ids=ids.tolist(), logits=values.tolist()))
+                         row = row.argmax(dim=-1)
+                 rows[(dp, request["request_slot"], request["generation"])] = row
++        if self.online is not None and self.cluster is not None and phase in ("verify", "decode"):
++            self.online.synchronize(prepared_update, self.cluster.link.exchange)
+         if self.cluster is not None:
+             encoded = [[list(key), value.tolist()] for key, value in rows.items()]
+             peer = self.cluster.link.exchange(f"greedy-output/{phase}", encoded)

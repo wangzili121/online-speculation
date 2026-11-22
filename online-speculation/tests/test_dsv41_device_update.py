@@ -39,6 +39,10 @@ class Backend:
         self.events.append(("dp_all_reduce", len(gradients)))
         return gradients
 
+    def zero_gradients(self, layers):
+        self.events.append(("zero", tuple(layers)))
+        return {name: torch.zeros(1) for name in self.plan.trainable_names()}
+
     def gradient_norm_and_clip(self, gradients, maximum):
         self.events.append(("clip", maximum))
         return torch.tensor(.5), torch.tensor(1.)
@@ -67,3 +71,14 @@ def test_device_suffix_update_replays_forward_reverses_and_reduces_before_adam()
         ("dp_all_reduce", 16), ("clip", 1.), ("adamw", 1e-5, 1),
     ]
     assert learner.publication_state() == backend.values
+
+
+def test_non_owner_replica_contributes_zero_then_applies_reduced_update():
+    plan = DSV41SuffixPlan(4)
+    backend = Backend(plan)
+    learner = DSV41DeviceSuffixLearner(backend, last_layers=4)
+    assert learner.update_zero(learning_rate=2e-6, update_number=1) == (0., .5, 1)
+    assert backend.events == [
+        ("zero", plan.layers), ("dp_all_reduce", 32),
+        ("clip", 1.), ("adamw", 2e-6, 1),
+    ]
