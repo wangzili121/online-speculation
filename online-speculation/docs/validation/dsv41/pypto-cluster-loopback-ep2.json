@@ -1,0 +1,142 @@
+{
+  "physical_hosts_per_run": 1,
+  "physical_devices_per_run": 2,
+  "runs": [
+    {
+      "physical_cards": [
+        6,
+        7
+      ],
+      "driver": "26.1.1",
+      "cann": "9.1.1",
+      "processes": [
+        {
+          "passed": true,
+          "node": 0,
+          "global_ranks": [
+            0
+          ],
+          "epoch": 3,
+          "phases": [
+            "prefill",
+            "draft",
+            "verify",
+            "accept",
+            "decode",
+            "release"
+          ],
+          "topology": {
+            "dp": 2,
+            "tp": 1,
+            "ep": 2
+          },
+          "device_collectives": [
+            "tp/all_gather",
+            "ep/all_to_all",
+            "dp/all_gather",
+            "ep/reduce_scatter",
+            "ep/all_reduce",
+            "tp/all_gather"
+          ]
+        },
+        {
+          "passed": true,
+          "node": 1,
+          "global_ranks": [
+            1
+          ],
+          "epoch": 3,
+          "phases": [
+            "prefill",
+            "draft",
+            "verify",
+            "accept",
+            "decode",
+            "release"
+          ],
+          "topology": {
+            "dp": 2,
+            "tp": 1,
+            "ep": 2
+          },
+          "device_collectives": [
+            "tp/all_gather",
+            "ep/all_to_all",
+            "dp/all_gather",
+            "ep/reduce_scatter",
+            "ep/all_reduce",
+            "tp/all_gather"
+          ]
+        }
+      ]
+    },
+    {
+      "physical_cards": [
+        2,
+        5
+      ],
+      "driver": "25.5.1",
+      "cann": "9.0.0",
+      "processes": [
+        {
+          "passed": true,
+          "node": 0,
+          "global_ranks": [
+            0
+          ],
+          "epoch": 3,
+          "phases": [
+            "prefill",
+            "draft",
+            "verify",
+            "accept",
+            "decode",
+            "release"
+          ],
+          "topology": {
+            "dp": 2,
+            "tp": 1,
+            "ep": 2
+          },
+          "device_collectives": [
+            "tp/all_gather",
+            "ep/all_to_all",
+            "dp/all_gather",
+            "ep/reduce_scatter",
+            "ep/all_reduce",
+            "tp/all_gather"
+          ]
+        },
+        {
+          "passed": true,
+          "node": 1,
+          "global_ranks": [
+            1
+          ],
+          "epoch": 3,
+          "phases": [
+            "prefill",
+            "draft",
+            "verify",
+            "accept",
+            "decode",
+            "release"
+          ],
+          "topology": {
+            "dp": 2,
+            "tp": 1,
+            "ep": 2
+          },
+          "device_collectives": [
+            "tp/all_gather",
+            "ep/all_to_all",
+            "dp/all_gather",
+            "ep/reduce_scatter",
+            "ep/all_reduce",
+            "tp/all_gather"
+          ]
+        }
+      ]
+    }
+  ]
+}

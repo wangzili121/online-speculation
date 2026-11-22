@@ -51,7 +51,7 @@ PYTHONPATH="$ORTHRUS_ROOT/online-speculation/src${PYTHONPATH:+:$PYTHONPATH}" \
   python3 "$ORTHRUS_ROOT/online-speculation/scripts/preflight_dsv41_pypto.py" --model "$TARGET_WEIGHTS"
 ```
 
-当前 A3 服务入口使用单机设备上下文。两台各 8 张卡的内网部署还需实现跨机 rank 和 collective。
+当前 A3 服务入口使用单机设备上下文。双机 rank 布局、调度和 HCCL 通信可用独立探针验证，整模仍需接入按节点划分的权重和 KV 分配。 [双机调度与通信](ORTHRUS_DSV41_PYPTO_CLUSTER.md)
 
 
 ## K32 SWA

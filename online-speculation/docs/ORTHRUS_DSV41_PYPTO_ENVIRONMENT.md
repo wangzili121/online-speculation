@@ -37,7 +37,7 @@ PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline NPU_DEVICE=0 HCCL_IF_IP="$NODE8_
   bash online-speculation/scripts/dsv41_pypto_env.sh fabric-check --rank 1 --master-address "$NODE7_IP"
 ```
 
-两端的 `passed: true` 表示跨机两卡的 HCCL AllReduce 和 AlltoAll 传回了预期数据。Serving 仍需跨机 rank 分配、请求和设备执行编排，以及 EP16 通信验收。当前原生 session 在同一进程持有完整的 16 个本地设备和缓存，EP 通信域由 `HcclCommInitAll` 建立。
+两端的 `passed: true` 表示跨机两卡的 HCCL AllReduce 和 AlltoAll 传回了预期数据。进一步可用双机调度探针检查 8+8 rank 分配、请求波次以及 TP、DP 和 EP 通信。完整模型服务仍由单进程分配设备、权重和缓存。 [双机调度与通信](ORTHRUS_DSV41_PYPTO_CLUSTER.md)
 
 ## 内网安装
 
@@ -94,7 +94,7 @@ PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline NPU_DEVICE=0 \
 
 镜像使用官方 ARM A2/A3 开发镜像的固定 digest，其用户态 CANN 为 9.0.0。官方对该基础镜像给出的已验证驱动为 26.0.rc1。现有机器报告的 `npu-smi 25.5.1` 仍需结合 `host-info` 中的实际 driver/version.info 和设备探针判断兼容性。Docker 镜像提供用户态软件，驱动由宿主机提供。 [基础镜像说明](https://github.com/hw-native-sys/pypto/blob/72a62d13efabbb25d240e35944f68ba5bcc22b7f/docs/en/user/04-dev-container.md)
 
-已完成从固定基础镜像构建、正常容器启动导入、设备代码编译和 75 项 Serving CPU 测试。环境验证不等于模型验收：本镜像的 NPU 探针、真实权重完整模型执行和双机通信仍需分别验收，跨机运行时尚待适配。
+已完成从固定基础镜像构建、正常容器启动导入、设备代码编译和 75 项 Serving CPU 测试。设备探针、真实权重整模执行和双机通信有各自的验收入口。 [双机调度与通信](ORTHRUS_DSV41_PYPTO_CLUSTER.md)
 
 扩展 Lib 回归有 15 项通过，另有一项 Prefill 编译条目数断言失败。未应用 Orthrus 补丁的 `e32726b` 基线也复现同一失败：测试预期一个条目，原生实现另外包含有限值检查条目。该问题单独记录，未修改主模型或测试断言。
 
