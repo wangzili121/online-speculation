@@ -1,0 +1,57 @@
+{
+  "date": "2026-11-22",
+  "passed": true,
+  "scope": "dual-node DSV4.1 W8A8 target-versus-Orthrus greedy inference acceptance",
+  "command": "dsv41_pypto_env.sh cluster-accept <node7|node8>",
+  "physical_hosts": 2,
+  "physical_devices": 16,
+  "software": {
+    "branch": "feature/orthrus-dsv41-pypto",
+    "repository_commit": "3e478f2",
+    "build_id": "b05764b7bc4c6d1538cee2c3e00e2341611d665a9faa57719359bd15ce7f9355"
+  },
+  "topology": {
+    "dp": 4,
+    "tp": 4,
+    "ep": 16,
+    "node0_global_ranks": [0, 1, 2, 3, 4, 5, 6, 7],
+    "node1_global_ranks": [8, 9, 10, 11, 12, 13, 14, 15]
+  },
+  "checkpoint": {
+    "config.json": "1b2ed579c6a221f68f49222d470dab2068b23a3efc17d969b7a909e684e06316",
+    "quant_model_weights.safetensors.index.json": "0dc009ac93014cb0848acec2140223455b14733a82cfdbefc97c1b8c19559dfb",
+    "tokenizer.json": "c90dfa01249db1be4245780a052ede752e1361c612ac6d08e2bdada7d599476b",
+    "quant_model_description.json": "2006d73f44523ca9d5a1f5494b6351e04729ab9e5825d0fd43a75f6f4fcede8e",
+    "aurora_export_manifest.json": "5a9183ab5cf1b4e3c45b01332b1b4f67a3b5709bd2179d572df54ee32a9c80c1"
+  },
+  "draft_head": {
+    "sha256": "5f5ffd515381d2f481269243790cd6fcc82288c8805c8f0e4aee0efc63eff7ad",
+    "role": "initialized-plumbing"
+  },
+  "result": {
+    "greedy_token_parity": true,
+    "compared_tokens": 6,
+    "target_phases": {
+      "prefill": 2,
+      "decode": 4,
+      "release": 2
+    },
+    "orthrus_phases": {
+      "prefill": 2,
+      "draft": 2,
+      "verify": 2,
+      "accept": 2,
+      "release": 2
+    },
+    "draft_rounds": 2,
+    "proposed_candidates": 62,
+    "accepted_candidates": 2,
+    "verifier_restored_bytes": 100663296,
+    "both_nodes_reported_identical_result": true
+  },
+  "interpretation": {
+    "functional_acceptance": "passed",
+    "performance_acceptance": "not evaluated",
+    "note": "The target-initialized head validates inference plumbing, verification, prefix acceptance, rollback and release. Acceptance rate and speedup require a trained head."
+  }
+}

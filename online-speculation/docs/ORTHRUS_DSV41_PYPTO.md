@@ -103,7 +103,7 @@ PYTHONPATH=src python3 scripts/validate_dsv41_pypto_qkv.py \
 
 `A3Runner.verify_draft(batch, candidates)` 接收请求账本已分配页的 anchor 和最多 31 个候选。它用每 DP 128 行的原生因果 Prefill 程序验证整块，读取每个候选位置对应的 logits。验证期在设备端保存涉及的目标页，完成后原地恢复。CPU 上的 Engram 请求历史和已提交长度也恢复。runner 再用同一个主模型程序执行 anchor 和接受前缀，将其 KV 正式写入。目标补发的 token 留给下一轮处理。这个路径会重跑接受前缀，用于先验证缓存和输出语义，整模吞吐需要单独测。
 
-CPU 测试覆盖完整 K32、部分接受、零接受、跨 128 行分页以及多个 DP 的请求顺序。单张 910B3 验证了设备范围快照在正常返回和异常退出时均可逐字节恢复。该用例直接测试设备复制和恢复接口，16 卡整模验证仍待执行。
+CPU 测试覆盖完整 K32、部分接受、零接受、跨 128 行分页以及多个 DP 的请求顺序。单张 910B3 验证了设备范围快照在正常返回和异常退出时均可逐字节恢复。公司内网 8+8 卡进一步完成了真实 W8A8 整模 K32 验证、接受前缀提交和 `100663296` 字节缓存恢复。 [双机整模记录](validation/dsv41/pypto-cluster-company-ep16-acceptance.json)
 
 ## Serving 入口与实机验收
 
@@ -157,4 +157,4 @@ python "$ORTHRUS_ROOT/online-speculation/scripts/verify_dsv41_pypto_acceptance.p
 
 `RESULTS` 使用新的绝对路径。验收脚本同时对照生成 token 和原生 dispatch 记录，要求至少一轮起草、验证、提交实际完成，核对轮内请求归属、epoch、KV 快照恢复字节数和退出清理。报告给出首个分叉 token 的下标，全部走普通解码也会判为失败。
 
-`TARGET_WEIGHTS` 使用配套 A3 W8A8 导出，`DRAFT_HEAD` 使用与目标模型配置及权重索引哈希匹配的 BF16 head。预期公开模型为 `Eco-Tech/DeepSeek-V4.1-Flash-w8a8`。带 `1017` 的包将部分 Q/KV 投影保留为浮点，Engram scale 为 E8M0；此 Lib 的基模加载器要求相应投影使用带 scale/offset 的 INT8，并读取 FP32 Engram scale。整模仍待用配套权重验证逐 token 一致性、分页与拒绝回滚、并发及性能。 [公开 checkpoint](https://www.modelscope.cn/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8)
+`TARGET_WEIGHTS` 使用配套 A3 W8A8 导出，`DRAFT_HEAD` 使用与目标模型配置及权重索引哈希匹配的 BF16 head。预期公开模型为 `Eco-Tech/DeepSeek-V4.1-Flash-w8a8`。带 `1017` 的包将部分 Q/KV 投影保留为浮点，Engram scale 为 E8M0；此 Lib 的基模加载器要求相应投影使用带 scale/offset 的 INT8，并读取 FP32 Engram scale。配套权重已通过双机 EP16 的逐 token 一致性、K32 验证、接受与拒绝回滚；并发、长序列和训练 head 的性能仍需单独验收。 [公开 checkpoint](https://www.modelscope.cn/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8) · [双机整模记录](validation/dsv41/pypto-cluster-company-ep16-acceptance.json)

@@ -110,10 +110,12 @@ docker run --rm --network none -v "$A:/a:ro" \
 
 若需定位当前分叉，双机启动时都加 `--trace-position 11 --tokens 3`。这里的 11 是已确认分叉的 12-token 前缀最后一个输入位置，从零开始计数。一次运行同时保留 prefill 最后一个 prompt token 和该 Verify 位置的完整子阶段证据；无论先在哪个阶段失败，`Automatic failure diagnosis` 都会给出本次运行可得到的最具体结论。该功能只读激活，不改变候选、验证或接受逻辑。
 
-离线镜像已通过补丁和启动检查。CPU 测试覆盖全局 rank 到本机设备的映射、Engram 文件映射，以及两端通过控制连接同步起草、验证、提交和释放。真实 W8A8 双机验收曾发现两次基模 prefill 在第 0 层 TP Attention 输出归约后首次出现差异：四个 Wo-B 输入逐字节一致，BF16 AllReduce 输出有 33/5120 个元素不同，最大差为 `0.015625`。当前路径改为 BF16 局部结果拓宽到 FP32、TP4 ReduceScatter、再一次性舍入回 BF16；四卡实测连续 30 次与固定顺序 FP32 参考逐元素一致。共享基模会话的双机逐 token 结果仍需复验。
+离线镜像已通过补丁和启动检查。CPU 测试覆盖全局 rank 到本机设备的映射、Engram 文件映射，以及两端通过控制连接同步起草、验证、提交和释放。真实 W8A8 双机验收曾定位到第 0 层 TP Attention 的 BF16 集合归约不稳定：四个 Wo-B 输入逐字节一致，而两次归约有 33/5120 个元素不同，最大差为 `0.015625`。当前路径将 BF16 局部结果拓宽到 FP32，执行 TP4 ReduceScatter 后再一次性舍入回 BF16；四卡连续 30 次与固定顺序 FP32 参考逐元素一致。
+
+修复后，node7 和 node8 的 8+8 卡整模验收均通过。相同 W8A8 checkpoint 下，target-only 与 Orthrus 的 6 个贪心输出 token 逐 token 一致；Orthrus 实际执行了 2 轮 K32 起草与验证，提出 62 个候选、提交 2 个候选，并恢复 `100663296` 字节验证缓存，随后两端均完成请求释放。这证明了双机 EP16 上的 prefill、draft、verify、accept、回滚和清理链路。测试使用基模初始化 head，因此不用于判断接受率或加速收益。 [双机整模验收记录](validation/dsv41/pypto-cluster-company-ep16-acceptance.json)
 
 ## 精度验收
 
 - SWA 和压缩 Attention 的实卡门槛按 FP32 参考设定，使用绝对误差与相对误差的组合。例如六组 TP4 压缩历史测试的输出门槛为 `atol=1e-5`、`rtol=1.3e-6`，最大绝对误差为 `5.90e-6`。Indexer 另比较 Top-K 集合，KV 验证逐字节一致。 [参考对照记录](validation/dsv41/pypto-compressed-tp4-910b3.json)
 - BF16 集合归约按输入幅度与 BF16 舍入误差校验。四卡真实 head 的结果通过该门槛。两卡通信探针用可精确表示的小张量，结果要求逐元素相同。 [四卡归约记录](validation/dsv41/pypto-resident-w8a8-tp4.json)
-- CANN 的精度工具按张量类型和用途配置阈值，并提供绝对误差、相对误差及余弦相似度等指标。整模 greedy 验收使用同一量化基模和相同输入逐 token 对照，也检查缓存提交与回滚。真实 EP16 的全模型结果仍待测。 [CANN 算子精度配置](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/devaids/optool/atlasopdev_10_0091.html) · [CANN 比对结果分析](https://www.hiascend.com/document/detail/en/canncommercial/850/devaids/modelaccuracy/atlasaccuracy_16_0045.html)
+- CANN 的精度工具按张量类型和用途配置阈值，并提供绝对误差、相对误差及余弦相似度等指标。整模 greedy 验收使用同一量化基模和相同输入逐 token 对照，也检查缓存提交与回滚。真实 EP16 整模已通过 6-token 功能验收；长序列、并发及训练 head 的性能需单独验收。 [CANN 算子精度配置](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/devaids/optool/atlasopdev_10_0091.html) · [CANN 比对结果分析](https://www.hiascend.com/document/detail/en/canncommercial/850/devaids/modelaccuracy/atlasaccuracy_16_0045.html)
