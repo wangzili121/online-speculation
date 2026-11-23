@@ -15,6 +15,9 @@ a backend which would fail after a long dual-node model startup.
 
 from dataclasses import dataclass
 from types import MappingProxyType
+import hashlib
+import json
+import math
 
 import torch
 
@@ -52,6 +55,33 @@ class _ResidentScalar:
     rank: int
 
 
+@dataclass(frozen=True)
+class _HostScalar:
+    value: float
+
+
+@dataclass(frozen=True)
+class _RankGradient:
+    layer: int
+    values: dict
+
+
+@dataclass
+class _AdamState:
+    rank: int
+    layer: int
+    public_name: str
+    execution_name: str
+    execution_dtype: torch.dtype
+    master: torch.Tensor
+    first: torch.Tensor
+    second: torch.Tensor
+    candidate_master: torch.Tensor
+    candidate_first: torch.Tensor
+    candidate_second: torch.Tensor
+    execution: torch.Tensor
+
+
 def production_readiness():
     """Machine-readable gate used by preflight and deployment scripts."""
     return {
@@ -62,12 +92,13 @@ def production_readiness():
             "final RMSNorm input VJP",
             "final mHC-collapse VJP",
             "exact K32 token-span slicing",
+            "TP4/DP4 resident gradient collectives",
+            "persistent FP32 Adam state",
+            "D2D ResidentHeadState publication",
         ),
         "blockers": (
             "resident C1A draft-attention parameter/input VJP orchestration",
             "fixed-route mHC/MoE reverse with EP16 expert exchange",
-            "TP4 parameter-gradient assembly and DP4 all-reduce",
-            "persistent FP32 Adam state and D2D ResidentHeadState publication",
         ),
     }
 
@@ -102,6 +133,82 @@ class DSV41ResidentPrimitives:
         self.plan, self.ranks = plan, ranks
         self.resident = draft.resident
         self._scalar_reads = 0
+        self._adam = {}
+        self._last_step = 0
+        self._last_norm = None
+        self._publication_digest = None
+        # Focused terminal-kernel tests may deliberately bind only the loss
+        # and LM-head path.  A production bank always exposes both methods and
+        # is initialized eagerly, so malformed resident state still fails at
+        # bootstrap rather than at the first update.
+        bank = self.draft.online_bank
+        if hasattr(bank, "operands") and hasattr(bank, "host"):
+            self._initialize_optimizer_state()
+
+    @staticmethod
+    def _execution_names():
+        return {
+            "wq_a.weight": "wq_a", "q_norm.weight": "q_norm",
+            "wq_b.weight": "wq_b", "wkv.weight": "wkv",
+            "kv_norm.weight": "kv_norm", "attn_sink": "sink",
+            "wo_a.weight": "wo_a", "wo_b.weight": "wo_b",
+        }
+
+    @staticmethod
+    def _replicated_tp_parameters():
+        return {"wq_a.weight", "q_norm.weight", "wkv.weight", "kv_norm.weight"}
+
+    def _pin_mutable(self, rank, name, value):
+        value = value.detach().cpu().contiguous().clone()
+        self.resident.pin(
+            value, (self._local(rank),), readonly=False,
+            name=f"online-optimizer/rank{rank}/{name}",
+        )
+        return value
+
+    def _initialize_optimizer_state(self):
+        if self._adam:
+            return
+        names = self._execution_names()
+        bank = self.draft.online_bank
+        for rank in self.ranks:
+            for layer in self.plan.layers:
+                operands = bank.operands(rank, layer)
+                for public, execution_name in names.items():
+                    source = operands[execution_name]
+                    # Resolve the authoritative host descriptor retained by
+                    # MutableDraftHeadBank.  Optimizer state must never be
+                    # initialized by reading execution HBM back to the host.
+                    host = bank.host[
+                        bank.active_slot, rank, layer, execution_name
+                    ]
+                    if source.shape != host.shape or source.dtype != host.dtype:
+                        raise ValueError("active draft bank changed its execution ABI")
+                    prefix = f"layer{layer}/{execution_name}"
+                    master = self._pin_mutable(rank, prefix + "/master", host.float())
+                    first = self._pin_mutable(rank, prefix + "/first", torch.zeros_like(master))
+                    second = self._pin_mutable(rank, prefix + "/second", torch.zeros_like(master))
+                    candidate_master = self._pin_mutable(
+                        rank, prefix + "/candidate-master", torch.zeros_like(master),
+                    )
+                    candidate_first = self._pin_mutable(
+                        rank, prefix + "/candidate-first", torch.zeros_like(master),
+                    )
+                    candidate_second = self._pin_mutable(
+                        rank, prefix + "/candidate-second", torch.zeros_like(master),
+                    )
+                    execution = self._pin_mutable(
+                        rank, prefix + "/execution", torch.zeros_like(host),
+                    )
+                    self._adam[rank, layer, public] = _AdamState(
+                        rank, layer, public, execution_name, host.dtype,
+                        master, first, second, candidate_master,
+                        candidate_first, candidate_second, execution,
+                    )
+
+    def _require_optimizer_state(self):
+        if not self._adam:
+            raise RuntimeError("resident optimizer state is not initialized")
 
     def _local(self, rank):
         try:
@@ -317,26 +424,205 @@ class DSV41ResidentPrimitives:
         self._unfinished("C1A draft Attention reverse")
 
     def tp_assemble_gradients(self, layer, values):
-        self._unfinished("TP4 parameter-gradient assembly")
+        self._require_optimizer_state()
+        ranks = tuple(sorted(values))
+        if len(ranks) != 4 or ranks != tuple(range(ranks[0] // 4 * 4, ranks[0] // 4 * 4 + 4)):
+            raise ValueError("TP gradient assembly requires one complete TP4 group")
+        names = tuple(self._execution_names())
+        if any(set(values[rank]) != set(names) for rank in ranks):
+            raise ValueError("rank-local draft gradient changed the eight-parameter ABI")
+        result = {}
+        for name in names:
+            shards = {rank: values[rank][name] for rank in ranks}
+            for rank, value in shards.items():
+                state = self._adam[rank, layer, name]
+                if value.shape != state.master.shape or value.dtype not in (torch.bfloat16, torch.float32):
+                    raise ValueError(f"gradient shape differs for layer {layer} {name}")
+            if name in self._replicated_tp_parameters():
+                shards = self._tp_all_reduce(
+                    shards, stage=f"layer{layer}-{name.replace('.', '-')}-gradient",
+                )
+            result[name] = _RankGradient(layer, shards)
+        return result
 
     def dp_all_reduce(self, values):
-        self._unfinished("DP4 parameter-gradient all-reduce")
+        self._require_optimizer_state()
+        if set(values) != set(self.plan.trainable_names()):
+            raise ValueError("DP reduction requires the complete selected suffix")
+        packets = []
+        for rank in self.ranks:
+            row = {}
+            for full_name, gradient in values.items():
+                layer = int(full_name.split(".")[1])
+                short = full_name.split(".attn.", 1)[1]
+                if not isinstance(gradient, _RankGradient) or gradient.layer != layer:
+                    raise TypeError("DP reduction received a foreign gradient descriptor")
+                value = gradient.values.get(rank)
+                if value is None:
+                    value = self._workspace(
+                        rank, self._adam[rank, layer, short].master.shape, torch.float32,
+                    )
+                row[full_name] = {"value": value}
+            packets.append(row)
+
+        transport = getattr(self.native, "transport", None)
+        if transport is None:
+            output, _ = self.resident.exchange(
+                f"online-dp-step-{self._last_step + 1}", packets,
+                "all_reduce", "dp",
+            )
+        else:
+            output, _ = transport.exchange(
+                f"online-dp-step-{self._last_step + 1}", packets,
+                "all_reduce", "dp",
+            )
+        result = {}
+        for full_name in values:
+            layer = int(full_name.split(".")[1])
+            result[full_name] = _RankGradient(
+                layer,
+                {rank: output[index][full_name]["value"]
+                 for index, rank in enumerate(self.ranks)},
+            )
+        return result
 
     def gradient_norm_and_clip(self, values, maximum):
-        self._unfinished("resident global gradient norm")
+        self._require_optimizer_state()
+        if not math.isfinite(maximum) or maximum <= 0:
+            raise ValueError("positive finite clipping maximum required")
+        if set(values) != set(self.plan.trainable_names()):
+            raise ValueError("gradient norm requires the complete selected suffix")
+        # DP all-reduce makes every replica equal. Use one complete local TP
+        # group and count replicated operands once; this avoids multiplying
+        # the mathematical norm by the number of DP replicas.
+        first_dp = min(self.ranks) // 4
+        group = tuple(range(first_dp * 4, first_dp * 4 + 4))
+        squared, finite = 0., True
+        for full_name, gradient in values.items():
+            short = full_name.split(".attn.", 1)[1]
+            selected = group[:1] if short in self._replicated_tp_parameters() else group
+            for rank in selected:
+                part, good = self._tensor_statistics(rank, gradient.values[rank], full_name)
+                squared += part
+                finite = finite and good
+        norm = math.sqrt(squared)
+        if not finite or not math.isfinite(norm):
+            raise FloatingPointError("non-finite DSV4.1 online gradient")
+        clip = min(1., maximum / (norm + 1e-6))
+        self._last_norm = norm
+        return _HostScalar(norm), _HostScalar(clip)
+
+    def _tensor_statistics(self, rank, value, name):
+        from .pypto_dsv41_optimizer_programs import make_reduce, make_stats
+
+        shape = tuple(value.shape)
+        stats, count = make_stats(shape)
+        sums = self._workspace(rank, (count, 8), torch.float32)
+        flags = self._workspace(rank, (count, 8), torch.float32)
+        self._execute(
+            ("gradient-stats", shape), rank, lambda: make_stats(shape)[0],
+            value=value, sums=sums, flags=flags,
+        )
+        level = 0
+        while count > 1:
+            reduce, next_count = make_reduce(count)
+            next_sums = self._workspace(rank, (next_count, 8), torch.float32)
+            next_flags = self._workspace(rank, (next_count, 8), torch.float32)
+            self._execute(
+                ("gradient-reduce", count), rank, lambda count=count: make_reduce(count)[0],
+                sums=sums, flags=flags, out_sums=next_sums, out_flags=next_flags,
+            )
+            sums, flags, count, level = next_sums, next_flags, next_count, level + 1
+        local = self._local(rank)
+        host_sums = self.resident.read_output(sums, local)
+        host_flags = self.resident.read_output(flags, local)
+        return float(host_sums.sum()), bool((host_flags == 1).all())
 
     def adamw(self, values, **options):
-        self._unfinished("persistent FP32 Adam")
+        self._require_optimizer_state()
+        from .pypto_dsv41_online_programs import make_adam
+        from .pypto_dsv41_optimizer_programs import make_publish
+
+        rate, step, clip = options["rate"], options["step"], options["clip"]
+        clip = clip.value if isinstance(clip, _HostScalar) else float(clip)
+        if step != self._last_step + 1 or not math.isfinite(rate) or rate <= 0:
+            raise ValueError("Adam step/rate is out of order or invalid")
+        for full_name, gradient in values.items():
+            layer = int(full_name.split(".")[1])
+            short = full_name.split(".attn.", 1)[1]
+            for rank in self.ranks:
+                state = self._adam[rank, layer, short]
+                grad = gradient.values[rank]
+                self._execute(
+                    ("adam", tuple(state.master.shape)), rank,
+                    lambda shape=tuple(state.master.shape): make_adam(shape),
+                    master=state.master, gradient=grad, first=state.first, second=state.second,
+                    next_master=state.candidate_master,
+                    next_first=state.candidate_first,
+                    next_second=state.candidate_second,
+                    rate=rate, correction1=1. - .9 ** step,
+                    correction2=1. - .999 ** step, clip=clip,
+                )
+                if state.execution_dtype == torch.bfloat16:
+                    self._execute(
+                        ("publish", tuple(state.master.shape)), rank,
+                        lambda shape=tuple(state.master.shape): make_publish(shape),
+                        master=state.candidate_master, execution=state.execution,
+                    )
+                elif state.execution_dtype == torch.float32:
+                    self.resident.copy_tensor(
+                        state.execution, state.candidate_master, self._local(rank),
+                    )
+                else:
+                    raise TypeError("unsupported draft execution dtype")
+                state.master, state.candidate_master = state.candidate_master, state.master
+                state.first, state.candidate_first = state.candidate_first, state.first
+                state.second, state.candidate_second = state.candidate_second, state.second
+        self._last_step = step
+        digest = json.dumps(
+            {"step": step, "last_layers": self.plan.last_layers,
+             "rate": rate, "norm": self._last_norm},
+            sort_keys=True, separators=(",", ":"),
+        ).encode()
+        self._publication_digest = hashlib.sha256(digest).hexdigest()
 
     def zero_gradients(self, layers, names):
-        self._unfinished("resident zero-gradient participant")
+        self._require_optimizer_state()
+        if tuple(layers) != self.plan.layers or tuple(names) != self.plan.trainable_names():
+            raise ValueError("zero-gradient participant changed the suffix ABI")
+        result = {}
+        for full_name in names:
+            layer = int(full_name.split(".")[1])
+            short = full_name.split(".attn.", 1)[1]
+            result[full_name] = _RankGradient(layer, {
+                rank: self._workspace(rank, self._adam[rank, layer, short].master.shape, torch.float32)
+                for rank in self.ranks
+            })
+        return result
 
     def publication_state(self, layers):
-        self._unfinished("D2D ResidentHeadState publication")
+        self._require_optimizer_state()
+        from .pypto_dsv41_runtime import ResidentHeadState
+
+        if tuple(layers) != self.plan.layers or self._publication_digest is None:
+            raise RuntimeError("publication requires one completed optimizer step")
+        operands = {}
+        for rank in self.ranks:
+            for layer in self.plan.layers:
+                operands[rank, layer] = {
+                    state.execution_name: state.execution
+                    for (owner, selected, _), state in self._adam.items()
+                    if owner == rank and selected == layer
+                }
+        return ResidentHeadState(
+            operands, self.plan.trainable_names(), self._publication_digest,
+        )
 
     def read_scalar(self, value):
         if isinstance(value, _DeferredLoss):
             value = value.value
+        if isinstance(value, _HostScalar):
+            return value.value
         if not isinstance(value, _ResidentScalar):
             raise TypeError("only resident scalar summaries may cross the host boundary")
         host = self.resident.read_output(value.value, self._local(value.rank))
