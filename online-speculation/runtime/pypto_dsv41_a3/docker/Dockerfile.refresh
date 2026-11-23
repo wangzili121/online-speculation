@@ -1,0 +1,17 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+COPY online-speculation/runtime/pypto_dsv41_a3/lib-online-expert-capture.patch \
+     /tmp/orthrus-lib-online-expert-capture.patch
+RUN set -e; \
+    if git -C /opt/orthrus/pypto-lib apply --reverse --check \
+         /tmp/orthrus-lib-online-expert-capture.patch >/dev/null 2>&1; then \
+      echo 'DSV4.1 expert capture patch is already present'; \
+    else \
+      git -C /opt/orthrus/pypto-lib apply --check \
+        /tmp/orthrus-lib-online-expert-capture.patch; \
+      git -C /opt/orthrus/pypto-lib apply \
+        /tmp/orthrus-lib-online-expert-capture.patch; \
+    fi; \
+    rm -f /tmp/orthrus-lib-online-expert-capture.patch
+COPY online-speculation /opt/orthrus/online-speculation

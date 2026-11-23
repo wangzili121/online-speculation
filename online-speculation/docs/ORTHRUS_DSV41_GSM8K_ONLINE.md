@@ -28,6 +28,13 @@ Torch 参考可对最后一层做可微重放、TV/KL 更新和 head 导出；�
 
 ## 明日双机执行
 
+先在两台机器各刷新一次本地镜像。该命令不访问网络，也不重编 PyPTO/CANN；它只把当前仓库的专家状态 ABI 和 Python 编排叠加到已经固定的镜像上：
+
+```bash
+PYPTO_IMAGE=orthrus-dsv41-pypto:72a62d1-offline \
+  bash online-speculation/scripts/dsv41_pypto_env.sh refresh-image
+```
+
 先在任一空闲卡运行单机 readiness gate。它会执行全部 DSV4.1 回归、在固定 serving 源码上实际应用 online patch 并做 Python 编译，然后复验 129280 维完整词表 TV/KL、投影输入与参数梯度、RMSNorm 前反向、C1A Attention、mHC、MoE、AdamW 和发布 kernel：
 
 ```bash

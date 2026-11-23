@@ -92,6 +92,25 @@ case "$action" in
     exec docker build "${build_options[@]}" \
       -t "$image" -f "$recipe" "$root/.."
     ;;
+  refresh-image)
+    docker image inspect "$image" >/dev/null 2>&1 || {
+      echo "Base image is missing: $image" >&2; exit 2;
+    }
+    image_id="$(docker image inspect --format '{{.Id}}' "$image")"
+    image_hex="${image_id#sha256:}"
+    base_image="${image%:*}:base-${image_hex:0:12}"
+    docker tag "$image" "$base_image"
+    recipe="$root/runtime/pypto_dsv41_a3/docker/Dockerfile.refresh"
+    # This refresh is deliberately offline: it only layers the current
+    # repository's model patch and Python sources over the pinned image.
+    DOCKER_BUILDKIT=0 docker build \
+      --build-arg "BASE_IMAGE=$base_image" \
+      -t "$image" -f "$recipe" "$root/.."
+    docker run --rm --network none --entrypoint /bin/bash "$image" -lc \
+      'git -C /opt/orthrus/pypto-lib apply --reverse --check \
+        /opt/orthrus/online-speculation/runtime/pypto_dsv41_a3/lib-online-expert-capture.patch'
+    echo "Refreshed $image from pinned base $base_image"
+    ;;
   save)
     destination="${1:?Usage: dsv41_pypto_env.sh save /path/to/image.tar}"
     if [[ "$destination" == *.tar.gz || "$destination" == *.tgz ]]; then
@@ -433,7 +452,7 @@ case "$action" in
     exec docker run "${options[@]}" "$image" "$action" "$@"
     ;;
   *)
-    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
+    echo "Usage: $0 {build|refresh-image|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
     echo "Company checks: $0 {fabric-check|cluster-check|cluster-accept} {node7|node8}"
     ;;
 esac
