@@ -25,6 +25,10 @@ for path in "$workload" "$study" "$factory"; do
   [[ -r "$path" ]] || { echo "required online-update input is missing: $path" >&2; exit 2; }
 done
 
+# Do not pay the multi-minute checkpoint/compile cost for a partial backend.
+PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" \
+  python3 "$root/scripts/check_dsv41_online_factory.py"
+
 export ORTHRUS_WORKLOAD="$workload"
 export CLUSTER_KEY_FILE="${CLUSTER_KEY_FILE:-/root/.orthrus-cluster.key}"
 export NPU_DEVICES="${NPU_DEVICES:-0,1,2,3,4,5,6,7}"
