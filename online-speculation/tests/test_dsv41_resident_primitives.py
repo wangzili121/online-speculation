@@ -8,6 +8,7 @@ from blockspec.pypto_dsv41_resident_primitives import (
     ProductionFactoryIncomplete,
     _HostScalar,
     _RankGradient,
+    _FrozenMoEEnvelope,
     create_primitives,
     production_readiness,
 )
@@ -114,6 +115,63 @@ class ExecutingDraft(Draft):
             inputs["execution"].copy_(inputs["master"].to(inputs["execution"].dtype))
         else:
             raise AssertionError(f"unexpected fake execution {key}")
+
+
+class TailDraft(Draft):
+    """Fake device runtime for the exact frozen-tail envelope."""
+
+    def __init__(self):
+        super().__init__(ranks=range(4))
+        self.resident = FakeResident(4)
+        self.events = []
+
+    def execute(self, key, rank, factory, inputs):
+        del factory
+        operation = key[1]
+        self.events.append((operation, rank))
+        if operation == "ffn-hc-post-data-vjp":
+            dy = inputs["output_gradient"].view(32, 4, 5120).float()
+            inputs["value_gradient"].copy_(
+                torch.einsum("tjd,tj->td", dy, inputs["post"].float()).bfloat16()
+            )
+            inputs["residual_gradient"].copy_(
+                torch.einsum("tjd,tij->tid", dy, inputs["combination"].view(32, 4, 4).float())
+                .bfloat16().view(128, 5120)
+            )
+        elif operation == "ffn-hc-post-gate-vjp":
+            dy = inputs["output_gradient"].view(32, 4, 5120).float()
+            inputs["post_gradient"][:, :4].copy_(
+                torch.einsum("tjd,td->tj", dy, inputs["value"].float())
+            )
+            inputs["combination_gradient"][:, :4].copy_(
+                torch.einsum(
+                    "tid,tjd->tij", inputs["residual"].view(32, 4, 5120).float(), dy,
+                ).view(128, 4)
+            )
+        elif operation == "moe-combine-vjp":
+            dy = inputs["output_gradient"].float()
+            experts = inputs["expert_outputs"].view(32, 6, 5120).float()
+            inputs["shared_gradient"].copy_(dy.bfloat16())
+            inputs["expert_gradient"].copy_(
+                (dy[:, None] * inputs["route_weights"].float()[..., None])
+                .bfloat16().view(192, 5120)
+            )
+            inputs["weight_gradient"][:, :6].copy_(
+                torch.einsum("td,trd->tr", dy, experts)
+            )
+        elif operation == "router-logits-vjp":
+            logits = inputs["router_logits"].float()
+            ids = inputs["route_ids"].long()
+            scores = logits.sigmoid().gather(1, ids)
+            upstream = inputs["weight_gradient"][:, :6]
+            total = scores.sum(1, keepdim=True)
+            selected = inputs["route_scale"] / total * (
+                upstream - (upstream * scores).sum(1, keepdim=True) / total
+            )
+            selected = selected * scores * (1 - scores)
+            inputs["router_gradient"].zero_().scatter_(1, ids, selected)
+        else:
+            raise AssertionError(f"unexpected fake tail execution {key}")
 
 
 def config(last_layers=1):
@@ -242,3 +300,64 @@ def test_tp4_and_dp4_collectives_keep_replication_and_sharding_exact():
         for rank in range(16):
             expected = 10. if short in replicated else rank % 4 + 1.
             torch.testing.assert_close(gradient.values[rank], torch.full((64,), expected))
+
+
+def test_frozen_tail_envelope_uses_captured_routes_and_exact_k32_state():
+    torch.manual_seed(7)
+    draft = TailDraft()
+    value = DSV41ResidentPrimitives(
+        draft=draft, native=native(), cluster=None, config=config(),
+    )
+    captured = {
+        "token_begin": 0, "token_end": 32,
+        "changed": torch.randn(128, 5120).bfloat16(),
+        "post": torch.randn(32, 4),
+        "comb": torch.randn(128, 4),
+        "combined": torch.randn(32, 5120).bfloat16(),
+        "expert_outputs": torch.randn(192, 5120).bfloat16(),
+        "route_weights": torch.softmax(torch.randn(32, 6), -1),
+        "route_ids": torch.stack([torch.randperm(384)[:6] for _ in range(32)]).int(),
+        "router_logits": torch.randn(32, 384),
+    }
+    output = SuffixGradient(
+        torch.randn(128, 5120).bfloat16(), torch.randn(32, 4),
+    )
+    result = value._reverse_frozen_moe_envelope(
+        layer=39, rank=0, captured=captured, state=None, output_gradient=output,
+    )
+    assert isinstance(result, _FrozenMoEEnvelope)
+    assert result.shared.shape == (32, 5120)
+    assert result.expert.shape == (192, 5120)
+    assert result.router.shape == (32, 384)
+    assert result.residual.shape == (128, 5120)
+    assert result.post.shape == (32, 4)
+    assert result.combination.shape == (128, 4)
+    assert result.pre is output.pre_mix
+    assert draft.events == [
+        ("ffn-hc-post-data-vjp", 0), ("ffn-hc-post-gate-vjp", 0),
+        ("moe-combine-vjp", 0), ("router-logits-vjp", 0),
+    ]
+
+
+def test_public_frozen_tail_never_returns_a_partial_gradient():
+    draft = TailDraft()
+    value = DSV41ResidentPrimitives(
+        draft=draft, native=native(), cluster=None, config=config(),
+    )
+    captured = {
+        "token_begin": 0, "token_end": 32,
+        "changed": torch.zeros(128, 5120, dtype=torch.bfloat16),
+        "post": torch.zeros(32, 4), "comb": torch.zeros(128, 4),
+        "combined": torch.zeros(32, 5120, dtype=torch.bfloat16),
+        "expert_outputs": torch.zeros(192, 5120, dtype=torch.bfloat16),
+        "route_weights": torch.full((32, 6), 1 / 6),
+        "route_ids": torch.arange(6, dtype=torch.int32).repeat(32, 1),
+        "router_logits": torch.zeros(32, 384),
+    }
+    gradient = SuffixGradient(
+        torch.zeros(128, 5120, dtype=torch.bfloat16), torch.zeros(32, 4),
+    )
+    with pytest.raises(ProductionFactoryIncomplete, match="EP16 expert"):
+        value.reverse_frozen_tail(
+            layer=39, rank=0, captured=captured, state=None, output_gradient=gradient,
+        )

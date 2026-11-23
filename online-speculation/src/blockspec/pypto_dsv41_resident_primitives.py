@@ -66,6 +66,26 @@ class _RankGradient:
     values: dict
 
 
+@dataclass(frozen=True)
+class _FrozenMoEEnvelope:
+    """Resident gradients at the fixed-route expert boundary.
+
+    Every value is a device descriptor.  The envelope deliberately contains
+    no host tensor math: EP16 dispatch consumes ``expert``, while the shared
+    expert and router branches consume ``shared`` and ``router``.  The mHC
+    fields are retained for the exact FFN hc-pre reverse after those three
+    branches have been reduced to the normalized FFN input.
+    """
+
+    shared: object
+    expert: object
+    router: object
+    residual: object
+    post: object
+    combination: object
+    pre: object
+
+
 @dataclass
 class _AdamState:
     rank: int
@@ -95,6 +115,7 @@ def production_readiness():
             "TP4/DP4 resident gradient collectives",
             "persistent FP32 Adam state",
             "D2D ResidentHeadState publication",
+            "FFN mHC-post and fixed-route MoE combine/router VJP",
         ),
         "blockers": (
             "resident C1A draft-attention parameter/input VJP orchestration",
@@ -418,7 +439,100 @@ class DSV41ResidentPrimitives:
         raise ProductionFactoryIncomplete(f"{stage} is not production-wired: {'; '.join(blockers)}")
 
     def reverse_frozen_tail(self, **options):
-        self._unfinished("fixed-route mHC/MoE reverse")
+        # Build the exact resident boundary first.  The remaining EP16 expert
+        # VJP and FFN hc-pre reverse are intentionally still gated below; do
+        # not return a partial SuffixGradient to the learner.
+        self._reverse_frozen_moe_envelope(**options)
+        self._unfinished("EP16 expert and FFN mHC-pre reverse")
+
+    def _reverse_frozen_moe_envelope(
+        self, *, layer, rank, captured, state, output_gradient,
+    ):
+        """Reverse FFN hc-post and the immutable combine/router decisions.
+
+        This is the first exact half of ``reverse_frozen_tail``.  It consumes
+        only state captured by the same K32 forward: no Top-K recomputation,
+        no changed expert order and no current-version model state.
+        """
+        del state
+        if layer not in self.plan.layers or rank not in self.ranks:
+            raise ValueError("frozen-tail replay is outside the selected resident suffix")
+        begin, end = self._span(captured)
+        if not isinstance(output_gradient, SuffixGradient):
+            raise TypeError("frozen tail requires a suffix gradient")
+        hidden_gradient, pre_gradient = output_gradient.hidden, output_gradient.pre_mix
+        if hidden_gradient.shape != (ROWS * HC_COPIES, HIDDEN):
+            raise ValueError("FFN output gradient changed the K32 four-stream geometry")
+        if pre_gradient.shape != (ROWS, HC_COPIES):
+            raise ValueError("FFN pre-mix gradient changed the exact four-column ABI")
+
+        changed = captured["changed"][begin * HC_COPIES:end * HC_COPIES]
+        post = captured["post"][begin:end]
+        combination = captured["comb"][begin * HC_COPIES:end * HC_COPIES]
+        combined = captured["combined"][begin:end]
+        experts = captured["expert_outputs"][begin * 6:end * 6]
+        route_weights = captured["route_weights"][begin:end]
+        route_ids = captured["route_ids"][begin:end]
+        router_logits = captured["router_logits"][begin:end]
+        expected = {
+            "changed": (changed, (ROWS * HC_COPIES, HIDDEN), torch.bfloat16),
+            "post": (post, (ROWS, HC_COPIES), torch.float32),
+            "comb": (combination, (ROWS * HC_COPIES, HC_COPIES), torch.float32),
+            "combined": (combined, (ROWS, HIDDEN), torch.bfloat16),
+            "expert_outputs": (experts, (ROWS * 6, HIDDEN), torch.bfloat16),
+            "route_weights": (route_weights, (ROWS, 6), torch.float32),
+            "route_ids": (route_ids, (ROWS, 6), torch.int32),
+            "router_logits": (router_logits, (ROWS, 384), torch.float32),
+        }
+        for label, (value, shape, dtype) in expected.items():
+            if value.shape != shape or value.dtype != dtype:
+                raise ValueError(f"captured {label} changed the fixed K32 ABI")
+
+        from .pypto_dsv41_moe_vjp import make_moe_combine_vjp, make_router_logits_vjp
+        from .pypto_dsv41_tail_vjp import make_hc_post_data_vjp, make_hc_post_gate_vjp
+
+        moe_gradient = self._workspace(rank, (ROWS, HIDDEN))
+        residual_gradient = self._workspace(rank, (ROWS * HC_COPIES, HIDDEN))
+        post_gradient = self._workspace(rank, (ROWS, 16), torch.float32)
+        combination_gradient = self._workspace(
+            rank, (ROWS * HC_COPIES, 16), torch.float32,
+        )
+        self._execute(
+            ("ffn-hc-post-data-vjp", layer), rank,
+            lambda: make_hc_post_data_vjp(ROWS, HIDDEN),
+            output_gradient=hidden_gradient, post=post, combination=combination,
+            value_gradient=moe_gradient, residual_gradient=residual_gradient,
+        )
+        self._execute(
+            ("ffn-hc-post-gate-vjp", layer), rank,
+            lambda: make_hc_post_gate_vjp(ROWS, HIDDEN),
+            value=combined, residual=changed, output_gradient=hidden_gradient,
+            post_gradient=post_gradient, combination_gradient=combination_gradient,
+        )
+
+        shared_gradient = self._workspace(rank, (ROWS, HIDDEN))
+        expert_gradient = self._workspace(rank, (ROWS * 6, HIDDEN))
+        weight_gradient = self._workspace(rank, (ROWS, 16), torch.float32)
+        self._execute(
+            ("moe-combine-vjp", layer), rank,
+            lambda: make_moe_combine_vjp(ROWS, HIDDEN),
+            output_gradient=moe_gradient, expert_outputs=experts,
+            route_weights=route_weights, shared_gradient=shared_gradient,
+            expert_gradient=expert_gradient, weight_gradient=weight_gradient,
+        )
+        router_gradient = self._workspace(rank, (ROWS, 384), torch.float32)
+        self._execute(
+            ("router-logits-vjp", layer), rank,
+            lambda: make_router_logits_vjp(ROWS, 384),
+            router_logits=router_logits, route_ids=route_ids,
+            weight_gradient=weight_gradient, router_gradient=router_gradient,
+            route_scale=2.5,
+        )
+        return _FrozenMoEEnvelope(
+            shared_gradient, expert_gradient, router_gradient,
+            residual_gradient, post_gradient[:, :HC_COPIES],
+            combination_gradient[:, :HC_COPIES], pre_gradient,
+        )
 
     def reverse_draft_attention(self, **options):
         self._unfinished("C1A draft Attention reverse")
