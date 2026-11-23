@@ -289,12 +289,14 @@ case "$action" in
     fi
     if [[ "$action" == multicard-check ]]; then
       report_dir="$(mktemp -d "$PWD/orthrus-multicard.XXXXXX")"
-      echo "Report: $report_dir/multicard.json" >&2
+      echo "Reports: $report_dir" >&2
       options+=(-v "$root:/workspace/online-speculation:ro" -v "$report_dir:/results"
                 -e PYTHONPATH=/workspace/online-speculation/src)
-      exec docker run "${options[@]}" "$image" /opt/pypto/venv/bin/python \
-        /workspace/online-speculation/scripts/validate_dsv41_pypto_multicard.py \
-        --lib /opt/orthrus/pypto-lib --cards 4 --tp 4 --output /results/multicard.json
+      exec docker run "${options[@]}" "$image" bash -lc \
+        '/opt/pypto/venv/bin/python /workspace/online-speculation/scripts/validate_dsv41_pypto_multicard.py \
+           --lib /opt/orthrus/pypto-lib --cards 4 --tp 4 --output /results/tp4.json && \
+         /opt/pypto/venv/bin/python /workspace/online-speculation/scripts/validate_dsv41_pypto_multicard.py \
+           --lib /opt/orthrus/pypto-lib --cards 4 --tp 1 --output /results/dp4.json'
     fi
     if [[ "$action" == c1a-vjp-check ]]; then
       report_dir="$(mktemp -d "$PWD/orthrus-c1a-vjp.XXXXXX")"

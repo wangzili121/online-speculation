@@ -57,7 +57,7 @@ def test_probe_requires_a_device_and_maps_only_that_device(tmp_path):
                          "--device-probe", "--device", "0"]
 
 
-def test_multicard_check_maps_one_complete_tp4_partition(tmp_path):
+def test_multicard_check_maps_tp4_and_dp4_partitions(tmp_path):
     env = environment(tmp_path) | {
         "NPU_DEVICES": "4,5,6,7", "PYPTO_IMAGE": "image:offline",
     }
@@ -67,19 +67,19 @@ def test_multicard_check_maps_one_complete_tp4_partition(tmp_path):
     )
     location = result.stderr.strip().splitlines()[-1]
     command = result.stdout.strip()
-    output = Path(location.removeprefix("Report: "))
+    output = Path(location.removeprefix("Reports: "))
     args = json.loads(command)
-    assert output.name == "multicard.json"
+    assert output.name.startswith("orthrus-multicard.")
     assert args[args.index("--network") + 1] == "none"
     assert args.count("--device") == 7
     for card in range(4, 8):
         assert f"/dev/davinci{card}:/dev/davinci{card}" in args
     assert "ASCEND_RT_VISIBLE_DEVICES=0,1,2,3" in args
-    assert args[-9:] == [
-        "/workspace/online-speculation/scripts/validate_dsv41_pypto_multicard.py",
-        "--lib", "/opt/orthrus/pypto-lib", "--cards", "4", "--tp", "4",
-        "--output", "/results/multicard.json",
-    ]
+    assert args[-2] == "-lc"
+    command = args[-1]
+    assert command.count("validate_dsv41_pypto_multicard.py") == 2
+    assert "--cards 4 --tp 4 --output /results/tp4.json" in command
+    assert "--cards 4 --tp 1 --output /results/dp4.json" in command
 
 
 def test_device_map_keeps_the_physical_mount_in_all_three_probes(tmp_path):
