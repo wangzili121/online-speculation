@@ -118,30 +118,30 @@ def make_ep_vjp_dispatch_pack():
                 pl.write(sent_counts, [peer, 0], pl.cast(count, pl.INT32))
 
         with pl.spmd(
-            PACKET_ROWS * (HIDDEN // HIDDEN_TILE),
+            PACKET_ROWS,
             name_hint="orthrus_ep_vjp_pack_payload",
             deps=[metadata_ready],
         ):
-            task = pl.tile.get_block_idx()
-            zero = pl.tile.full([1, HIDDEN_TILE], dtype=pl.BF16, value=0.)
-            packet = task // (HIDDEN // HIDDEN_TILE)
-            column = task % (HIDDEN // HIDDEN_TILE) * HIDDEN_TILE
+            packet = pl.tile.get_block_idx()
             peer = packet // ROUTES
             bucket_row = packet % ROUTES
             peer_count = pl.read(sent_counts, [peer, 0])
-            if bucket_row < peer_count:
-                token = pl.cast(pl.read(sent_metadata, [packet, 1]), pl.INDEX)
-                slot = pl.cast(pl.read(sent_metadata, [packet, 2]), pl.INDEX)
-                route = token * TOPK + slot
-                sent_x[packet:packet + 1, column:column + HIDDEN_TILE] = normalized_x[
-                    token:token + 1, column:column + HIDDEN_TILE
-                ]
-                sent_dy[packet:packet + 1, column:column + HIDDEN_TILE] = route_output_gradient[
-                    route:route + 1, column:column + HIDDEN_TILE
-                ]
-            else:
-                pl.store(zero, [packet, column], sent_x)
-                pl.store(zero, [packet, column], sent_dy)
+            for part in pl.range(HIDDEN // HIDDEN_TILE):
+                column = part * HIDDEN_TILE
+                if bucket_row < peer_count:
+                    token = pl.cast(pl.read(sent_metadata, [packet, 1]), pl.INDEX)
+                    slot = pl.cast(pl.read(sent_metadata, [packet, 2]), pl.INDEX)
+                    route = token * TOPK + slot
+                    sent_x[packet:packet + 1, column:column + HIDDEN_TILE] = normalized_x[
+                        token:token + 1, column:column + HIDDEN_TILE
+                    ]
+                    sent_dy[packet:packet + 1, column:column + HIDDEN_TILE] = route_output_gradient[
+                        route:route + 1, column:column + HIDDEN_TILE
+                    ]
+                else:
+                    zero = pl.tile.full([1, HIDDEN_TILE], dtype=pl.BF16, value=0.)
+                    pl.store(zero, [packet, column], sent_x)
+                    pl.store(zero, [packet, column], sent_dy)
         return sent_metadata, sent_x, sent_dy, sent_counts
 
     return ep_vjp_dispatch_pack
@@ -196,33 +196,33 @@ def make_ep_vjp_dispatch_unpack():
             pl.write(received_total, [0], pl.cast(total, pl.INT32))
 
         with pl.spmd(
-            SLAB_ROWS * (HIDDEN // HIDDEN_TILE),
+            SLAB_ROWS,
             name_hint="orthrus_ep_vjp_zero_slabs",
             deps=[metadata_ready],
         ) as slabs_zeroed:
-            task = pl.tile.get_block_idx()
+            slab = pl.tile.get_block_idx()
             zero = pl.tile.full([1, HIDDEN_TILE], dtype=pl.BF16, value=0.)
-            slab = task // (HIDDEN // HIDDEN_TILE)
-            column = task % (HIDDEN // HIDDEN_TILE) * HIDDEN_TILE
-            pl.store(zero, [slab, column], expert_x)
-            pl.store(zero, [slab, column], expert_dy)
+            for part in pl.range(HIDDEN // HIDDEN_TILE):
+                column = part * HIDDEN_TILE
+                pl.store(zero, [slab, column], expert_x)
+                pl.store(zero, [slab, column], expert_dy)
 
         with pl.spmd(
-            PACKET_ROWS * (HIDDEN // HIDDEN_TILE),
+            PACKET_ROWS,
             name_hint="orthrus_ep_vjp_unpack_payload",
             deps=[slabs_zeroed],
         ):
-            task = pl.tile.get_block_idx()
-            packet = task // (HIDDEN // HIDDEN_TILE)
-            column = task % (HIDDEN // HIDDEN_TILE) * HIDDEN_TILE
+            packet = pl.tile.get_block_idx()
             if pl.read(packet_map, [packet, 1]) != 0:
                 slab = pl.cast(pl.read(packet_map, [packet, 0]), pl.INDEX)
-                expert_x[slab:slab + 1, column:column + HIDDEN_TILE] = packet_x[
-                    packet:packet + 1, column:column + HIDDEN_TILE
-                ]
-                expert_dy[slab:slab + 1, column:column + HIDDEN_TILE] = packet_dy[
-                    packet:packet + 1, column:column + HIDDEN_TILE
-                ]
+                for part in pl.range(HIDDEN // HIDDEN_TILE):
+                    column = part * HIDDEN_TILE
+                    expert_x[slab:slab + 1, column:column + HIDDEN_TILE] = packet_x[
+                        packet:packet + 1, column:column + HIDDEN_TILE
+                    ]
+                    expert_dy[slab:slab + 1, column:column + HIDDEN_TILE] = packet_dy[
+                        packet:packet + 1, column:column + HIDDEN_TILE
+                    ]
         return expert_x, expert_dy, expert_counts, packet_map, received_total
 
     return ep_vjp_dispatch_unpack
@@ -240,25 +240,25 @@ def make_ep_vjp_return_pack():
         sent_dx: pl.InOut[pl.Tensor[[PACKET_ROWS, HIDDEN], pl.BF16]],
     ):
         with pl.spmd(
-            PACKET_ROWS * (HIDDEN // HIDDEN_TILE),
+            PACKET_ROWS,
             name_hint="orthrus_ep_vjp_return_pack",
         ):
-            task = pl.tile.get_block_idx()
-            zero = pl.tile.full([1, HIDDEN_TILE], dtype=pl.BF16, value=0.)
-            packet = task // (HIDDEN // HIDDEN_TILE)
-            column = task % (HIDDEN // HIDDEN_TILE) * HIDDEN_TILE
+            packet = pl.tile.get_block_idx()
             source = packet // ROUTES
             bucket_row = packet % ROUTES
-            if (
-                bucket_row < pl.read(packet_counts, [source, 0])
-                and pl.read(packet_map, [packet, 1]) != 0
-            ):
-                slab = pl.cast(pl.read(packet_map, [packet, 0]), pl.INDEX)
-                sent_dx[packet:packet + 1, column:column + HIDDEN_TILE] = expert_dx[
-                    slab:slab + 1, column:column + HIDDEN_TILE
-                ]
-            else:
-                pl.store(zero, [packet, column], sent_dx)
+            for part in pl.range(HIDDEN // HIDDEN_TILE):
+                column = part * HIDDEN_TILE
+                if (
+                    bucket_row < pl.read(packet_counts, [source, 0])
+                    and pl.read(packet_map, [packet, 1]) != 0
+                ):
+                    slab = pl.cast(pl.read(packet_map, [packet, 0]), pl.INDEX)
+                    sent_dx[packet:packet + 1, column:column + HIDDEN_TILE] = expert_dx[
+                        slab:slab + 1, column:column + HIDDEN_TILE
+                    ]
+                else:
+                    zero = pl.tile.full([1, HIDDEN_TILE], dtype=pl.BF16, value=0.)
+                    pl.store(zero, [packet, column], sent_dx)
         return sent_dx
 
     return ep_vjp_return_pack

@@ -114,12 +114,12 @@ case "$action" in
     docker version --format '{{.Server.Version}}'
     docker info --format '{{json .Runtimes}}'
     ;;
-  doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head)
+  doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head)
     docker image inspect "$image" >/dev/null 2>&1 || {
       echo "Image missing. Build it on a networked host or load the transferred image.tar." >&2; exit 2;
     }
     network=host
-    if [[ "$action" == attention-check || "$action" == online-kernel-check || "$action" == hc-collapse-vjp-check || "$action" == hc-pre-vjp-check || "$action" == resident-publish-check || "$action" == online-factory-check || "$action" == online-ready || "$action" == c1a-vjp-check || "$action" == expert-capture-check || "$action" == expert-vjp-check || "$action" == expert-input-vjp-check || "$action" == handoff-check || "$action" == init-head || "$action" == device-map ]]; then network=none; fi
+    if [[ "$action" == attention-check || "$action" == online-kernel-check || "$action" == hc-collapse-vjp-check || "$action" == hc-pre-vjp-check || "$action" == resident-publish-check || "$action" == online-factory-check || "$action" == online-ready || "$action" == c1a-vjp-check || "$action" == expert-capture-check || "$action" == expert-vjp-check || "$action" == expert-input-vjp-check || "$action" == ep-vjp-check || "$action" == handoff-check || "$action" == init-head || "$action" == device-map ]]; then network=none; fi
     options=(--rm --network "$network" --shm-size "${SHM_SIZE:-16g}")
     command_env=(env)
     if [[ "$action" == preflight || "$action" == handoff-check || "$action" == init-head ||
@@ -133,7 +133,7 @@ case "$action" in
         if [[ "$action" == preflight ]]; then set -- --head /workspace/draft-head "$@"; fi
       fi
     fi
-    if [[ "$action" == probe || "$action" == device-map || "$action" == shell || "$action" == attention-check || "$action" == online-kernel-check || "$action" == hc-collapse-vjp-check || "$action" == hc-pre-vjp-check || "$action" == resident-publish-check || "$action" == online-ready || "$action" == c1a-vjp-check || "$action" == expert-capture-check || "$action" == expert-vjp-check || "$action" == expert-input-vjp-check || "$action" == fabric-check ||
+    if [[ "$action" == probe || "$action" == device-map || "$action" == shell || "$action" == attention-check || "$action" == online-kernel-check || "$action" == hc-collapse-vjp-check || "$action" == hc-pre-vjp-check || "$action" == resident-publish-check || "$action" == online-ready || "$action" == c1a-vjp-check || "$action" == expert-capture-check || "$action" == expert-vjp-check || "$action" == expert-input-vjp-check || "$action" == ep-vjp-check || "$action" == fabric-check ||
           ( "$action" == handoff-check && -n "${NPU_DEVICE:-}" ) ]]; then
       : "${NPU_DEVICE:?Set NPU_DEVICE to an available physical device number}"
       [[ "$NPU_DEVICE" =~ ^[0-9]+$ ]] || { echo "NPU_DEVICE must be a number" >&2; exit 2; }
@@ -284,6 +284,17 @@ case "$action" in
           --device "$@" --output /results/expert-input-vjp.json; status=$?; \
           cat /results/expert-input-vjp.json 2>/dev/null || true; exit $status' _ "$runtime_device" "$@"
     fi
+    if [[ "$action" == ep-vjp-check ]]; then
+      report_dir="$(mktemp -d "$PWD/orthrus-ep-vjp.XXXXXX")"
+      echo "Report: $report_dir/ep-vjp.json"
+      options+=(-v "$root:/workspace/online-speculation:ro" -v "$report_dir:/results"
+                -e PYTHONPATH=/workspace/online-speculation/src)
+      exec docker run "${options[@]}" "$image" "${command_env[@]}" bash -lc \
+        'bash /workspace/online-speculation/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh && /opt/pypto/venv/bin/python \
+          /workspace/online-speculation/scripts/validate_dsv41_pypto_ep_vjp.py \
+          --device "$@" --output /results/ep-vjp.json; status=$?; \
+          cat /results/ep-vjp.json 2>/dev/null || true; exit $status' _ "$runtime_device" "$@"
+    fi
     if [[ "$action" == init-head ]]; then
       : "${DRAFT_HEAD:?Set DRAFT_HEAD to a new output directory on the host}"
       [[ ! -e "$DRAFT_HEAD" ]] || { echo "Head output already exists: $DRAFT_HEAD" >&2; exit 2; }
@@ -422,7 +433,7 @@ case "$action" in
     exec docker run "${options[@]}" "$image" "$action" "$@"
     ;;
   *)
-    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
+    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
     echo "Company checks: $0 {fabric-check|cluster-check|cluster-accept} {node7|node8}"
     ;;
 esac
