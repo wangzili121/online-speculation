@@ -173,9 +173,7 @@ case "$action" in
           echo 'NPU_DEVICES must contain four distinct device numbers.' >&2; exit 2;
         }
         seen+="$card,"
-        # Sparse free cards must appear contiguous inside the container;
-        # ResidentNetworkRuntime addresses the selected devices as 0..N-1.
-        options+=(--device "/dev/davinci$card:/dev/davinci$index")
+        options+=(--device "/dev/davinci$card:/dev/davinci$card")
         visible="${visible:+$visible,}$index"
       done
       options+=(--device /dev/davinci_manager --device /dev/devmm_svm --device /dev/hisi_hdc
