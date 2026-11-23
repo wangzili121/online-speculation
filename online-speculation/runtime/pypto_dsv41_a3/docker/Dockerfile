@@ -18,6 +18,7 @@ ARG BUILD_JOBS=4
 WORKDIR /opt/orthrus
 COPY online-speculation/runtime/pypto_dsv41_a3/lib-serving.patch /opt/orthrus/integration/lib-serving.patch
 COPY online-speculation/runtime/pypto_dsv41_a3/lib-online-expert-capture.patch /opt/orthrus/integration/lib-online-expert-capture.patch
+COPY online-speculation/runtime/pypto_dsv41_a3/lib-online-state-capture.patch /opt/orthrus/integration/lib-online-state-capture.patch
 COPY online-speculation/runtime/pypto_dsv41_a3/serving-pair.patch /opt/orthrus/integration/serving-pair.patch
 COPY online-speculation/runtime/pypto_dsv41_a3/runtime-release.patch /opt/orthrus/integration/runtime-release.patch
 
@@ -43,6 +44,8 @@ RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca set -e; \
         /opt/orthrus/integration/lib-serving.patch; \
     git -C pypto-lib apply --check /opt/orthrus/integration/lib-online-expert-capture.patch; \
     git -C pypto-lib apply /opt/orthrus/integration/lib-online-expert-capture.patch; \
+    git -C pypto-lib apply --check /opt/orthrus/integration/lib-online-state-capture.patch; \
+    git -C pypto-lib apply /opt/orthrus/integration/lib-online-state-capture.patch; \
     git init pypto-serving; \
     git -C pypto-serving fetch --depth 1 https://github.com/Adelaide999/pypto-serving.git cd818945c3c4e5454b8c259306d4e6f9e865e05c; \
     git -C pypto-serving checkout --detach FETCH_HEAD; \

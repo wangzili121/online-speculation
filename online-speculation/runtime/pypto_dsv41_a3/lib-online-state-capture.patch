@@ -1,0 +1,15 @@
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_layer.py b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+--- a/models/deepseek_v4_1_flash_a3/prefill_layer.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+@@ -558,6 +558,8 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+-            state.update(changed=changed, ffn_pre=pre, ffn_post=post, ffn_comb=comb, weights=weights,
+-                         route_ids=ids, normed=normed, shared=zeros(rank, capacity, 5120), output_hidden=output,
+-                         combined=zeros(rank, capacity, 5120))
++            state.update(changed=changed, ffn_pre=pre, ffn_post=post, ffn_comb=comb,
++                         ffn_collapsed=collapsed, ffn_normed=normed, router_input=router_input,
++                         router_logits=logits, weights=weights, route_ids=ids, normed=normed,
++                         shared=zeros(rank, capacity, 5120), output_hidden=output,
++                         combined=zeros(rank, capacity, 5120))
+             if draft is not None:
+                 # Exact fixed-route backward needs every selected expert's
+                 # unweighted output to differentiate the normalized route

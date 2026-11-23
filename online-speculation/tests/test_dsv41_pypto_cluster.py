@@ -118,6 +118,23 @@ class ClusterTest(unittest.TestCase):
 
         self.assertEqual(self.pair(task), [1, 1])
 
+    def test_nested_exchange_does_not_mask_the_original_dispatch_error(self):
+        def task(node, link):
+            dispatch = ClusterDispatcher(RankPlan((1, 1), 1, node), link, build_id="same")
+            dispatch.execute("prefill", lambda _: None)
+
+            def draft(_):
+                if node == 0:
+                    raise RuntimeError("online replay capture failed")
+                link.exchange("greedy-output/draft", [])
+
+            message = "online replay capture failed" if node == 0 else "Peer aborted draft"
+            with self.assertRaisesRegex(RuntimeError, message):
+                dispatch.execute("draft", draft)
+            return dispatch.failed
+
+        self.assertEqual(self.pair(task), [True, True])
+
     def test_token_rows_merge_in_scheduler_order(self):
         contract = dict(topology={"dp": 4, "tp": 4, "ep": 16},
                         DP_engines=[dict(dp_rank=dp, active=1,

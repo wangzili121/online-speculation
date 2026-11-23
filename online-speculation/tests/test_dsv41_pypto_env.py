@@ -160,7 +160,8 @@ def test_image_applies_online_expert_capture_after_the_serving_patch():
     dockerfile = (SCRIPT.parents[1] / "runtime/pypto_dsv41_a3/docker/Dockerfile").read_text()
     serving = dockerfile.index("/opt/orthrus/integration/lib-serving.patch")
     capture = dockerfile.index("git -C pypto-lib apply /opt/orthrus/integration/lib-online-expert-capture.patch")
-    assert serving < capture
+    state = dockerfile.index("git -C pypto-lib apply /opt/orthrus/integration/lib-online-state-capture.patch")
+    assert serving < capture < state
 
 
 def test_handoff_checks_checkpoint_and_head_without_npu_by_default(tmp_path):

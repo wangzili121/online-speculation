@@ -67,21 +67,20 @@ def fingerprint(paths):
 
 
 def generate(runner, prompts, steps, assignments, *, identities=None, metadata=None,
-             decoder=None, reference=None):
+             decoder=None, reference=None, speculative=False):
     import torch
     from pypto_serving.config.types import DecodeBatch, PrefillBatch, SamplingParams
 
     pages = {group.name: list(range(group.max_blocks_per_seq)) for group in runner.cache_plan.groups}
     generated = []
     counts = Counter()
-    speculative = reference is not None
     mode = "orthrus" if speculative else "target"
     identities = list(range(len(prompts))) if identities is None else identities
     metadata = [{} for _ in prompts] if metadata is None else metadata
     for index, (prompt, partition, identity, attributes) in enumerate(
             zip(prompts, assignments, identities, metadata, strict=True)):
         request_id = f"{mode}-request-{index}"
-        expected = reference[index]["token_ids"] if speculative else None
+        expected = None if reference is None else reference[index]["token_ids"]
         # Exercise the native chunked-prefill path, including the left-over chunk.
         for start in range(0, len(prompt), runner.config.chunk_tokens):
             ids = prompt[start:start + runner.config.chunk_tokens]
@@ -91,7 +90,7 @@ def generate(runner, prompts, steps, assignments, *, identities=None, metadata=N
                 block_ids_by_group=[pages], cache_partitions=[partition])
             prefill = runner.run(batch, "prefill")
         output = [int(prefill.sampled_token_ids[0])]
-        if speculative:
+        if expected is not None:
             check_generated_prefix(index, expected, output, phase="prefill")
         print(json.dumps(dict(stage="prefill_token", mode=mode, request=index, dp=partition,
                               token=output[0], compared=speculative)), flush=True)
@@ -117,7 +116,7 @@ def generate(runner, prompts, steps, assignments, *, identities=None, metadata=N
             if not emitted:
                 raise RuntimeError("A greedy decode step must emit at least one token")
             output.extend(emitted[:steps - len(output)])
-            if speculative:
+            if expected is not None:
                 check_generated_prefix(index, expected, output, phase=phase)
         runner.release_finished_requests([request_id])
         generated.append(dict(
@@ -277,7 +276,7 @@ def run(args):
             raise ValueError("Engram checkpoint payloads differ between nodes")
         cache_plan = CachePlan.from_native_templates(source, cache[0]["cache_ABI"], config)
         results, audits = {}, {}
-        modes = ("target", "orthrus")
+        modes = ("orthrus",) if args.orthrus_only else ("target", "orthrus")
         native_dir = args.output / "native"
         cluster = ClusterDispatcher(plan, link, build_id=identity)
         session = NativeSession(source, args.model, devices, native_dir, config, checkpoint.text["vocab_size"],
@@ -288,11 +287,12 @@ def run(args):
         try:
             for mode in modes:
                 print(f"Node {args.node} running {mode} on global ranks {list(plan.local_ranks)}", flush=True)
-                expected = results["target"]["requests"] if mode == "orthrus" else None
+                expected = results.get("target", {}).get("requests") if mode == "orthrus" else None
                 started = time.perf_counter()
                 rows, stats = generate(
                     runner, prompts, args.tokens, assignments,
                     identities=identities, metadata=entries, decoder=decoder, reference=expected,
+                    speculative=mode == "orthrus",
                 )
                 elapsed = time.perf_counter() - started
                 results[mode] = dict(status="executed", devices=devices, sampling=SAMPLING,
@@ -316,13 +316,19 @@ def run(args):
             _, phases, restored = audit_session(native_dir, speculative=mode == "orthrus", node_local=True,
                                                 request_prefix=f"{mode}-request-")
             audits[mode] = dict(phases=phases, verifier_restored_bytes=restored)
-        tokens = request_parity(results["target"], results["orthrus"])
+        tokens = (request_parity(results["target"], results["orthrus"])
+                  if "target" in results else 0)
+        online_summary = None if online is None else online.summary()
+        if args.require_online_update and (
+            online_summary is None or online_summary.get("updates", 0) < 1
+        ):
+            raise RuntimeError("online capture gate completed without applying an update")
         summary = dict(passed=True, node=plan.node, global_ranks=list(plan.local_ranks), build_id=identity,
                        topology=dict(dp=4, tp=4, ep=16), physical_to_runtime=mapping, compared_tokens=tokens,
                        checkpoint=checkpoint_identity, head_sha256=head_identity, head_role=head["artifact_role"],
-                       target=audits["target"], orthrus=audits["orthrus"],
+                       target=audits.get("target"), orthrus=audits["orthrus"],
                        speculation=results["orthrus"]["speculation"],
-                       online=None if online is None else online.summary())
+                       online=online_summary)
         peer = link.exchange("acceptance/results", summary)
         if (peer["node"] != 1 - plan.node or peer["global_ranks"] != list(RankPlan((8, 8), 4, 1 - plan.node).local_ranks)
                 or not peer["passed"] or peer["compared_tokens"] != tokens or peer["build_id"] != identity):
@@ -357,6 +363,10 @@ def main():
                         help="Production resident primitives factory; required with --online-study")
     parser.add_argument("--online-overrides",
                         help="Strict JSON object overriding fields in candidate_default")
+    parser.add_argument("--orthrus-only", action="store_true",
+                        help="Skip the target parity pass for a short integration gate")
+    parser.add_argument("--require-online-update", action="store_true",
+                        help="Fail unless the workload captures and applies an online update")
     parser.add_argument("--connect-timeout", type=int, default=900)
     parser.add_argument("--timeout", type=int, default=3600, help="Maximum seconds of peer inactivity")
     args = parser.parse_args()
@@ -364,7 +374,8 @@ def main():
             or args.max_requests is not None and args.max_requests < 1
             or args.workload is not None and args.prompt is not None
             or args.workload is None and args.prompt is not None and len(args.prompt) != 2
-            or args.online_study is not None and args.online_primitives is None):
+            or args.online_study is not None and args.online_primitives is None
+            or args.require_online_update and args.online_study is None):
         parser.error("Require valid dimensions and exactly one prompt source")
     if args.trace_position is not None and not 0 <= args.trace_position < args.context:
         parser.error("--trace-position must be in the reserved context")

@@ -10,6 +10,10 @@ import struct
 import time
 
 
+class PeerDispatchError(RuntimeError):
+    """A peer left the current dispatch after preserving its original error."""
+
+
 @dataclass(frozen=True)
 class RankPlan:
     """Place entire TP partitions on each host and span them with EP and DP."""
@@ -130,11 +134,40 @@ class ControlLink:
             peer = self._receive()
         else:
             peer = self._receive()
+            if peer.get("phase") == "abort":
+                self._send(dict(
+                    step=self.step, sender=self.node, phase="abort",
+                    payload={"acknowledged": True},
+                ))
+                raise PeerDispatchError(
+                    f"Peer aborted {peer['payload']['phase']}: {peer['payload']['error']}"
+                )
             self._send(frame)
+        if peer.get("phase") == "abort":
+            raise PeerDispatchError(
+                f"Peer aborted {peer['payload']['phase']}: {peer['payload']['error']}"
+            )
         if (peer["step"], peer["sender"], peer["phase"]) != (self.step, 1 - self.node, phase):
-            raise ValueError("Hosts disagreed on the next cluster operation")
+            raise ValueError(
+                "Hosts disagreed on the next cluster operation: "
+                f"local step={self.step} phase={phase!r}, "
+                f"peer step={peer.get('step')!r} phase={peer.get('phase')!r}"
+            )
         self.step += 1
         return peer["payload"]
+
+    def abort(self, phase, error):
+        """Interrupt a peer blocked in any nested exchange without masking ``error``."""
+        frame = dict(
+            step=self.step, sender=self.node, phase="abort",
+            payload={"phase": phase, "error": f"{type(error).__name__}: {error}"},
+        )
+        if self.node == 0:
+            self._send(frame)
+            self._receive()
+        else:
+            self._receive()
+            self._send(frame)
 
 
 class ClusterDispatcher:
@@ -166,10 +199,13 @@ class ClusterDispatcher:
                 detail = local_handler(payload)
             except Exception as error:
                 local_error = error
+            if local_error is not None:
+                if not isinstance(local_error, PeerDispatchError):
+                    with suppress(Exception):
+                        self.link.abort(phase, local_error)
+                raise local_error
             status = dict(ok=local_error is None, error=str(local_error) if local_error else None)
             peer = self.link.exchange(f"finish/{phase}", status)
-            if local_error is not None:
-                raise local_error
             if not peer["ok"]:
                 raise RuntimeError(f"Peer failed {phase}: {peer['error']}")
             self.next_phase = {"draft": "verify", "verify": "accept"}.get(phase)

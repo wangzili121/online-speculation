@@ -31,6 +31,11 @@ if ! grep -q 'state\["expert_outputs"\]' \
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/lib-online-expert-capture.patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/lib-online-expert-capture.patch"
 fi
+if ! grep -q 'ffn_collapsed=collapsed' \
+    "$PYPTO_LIB_ROOT/models/deepseek_v4_1_flash_a3/prefill_layer.py"; then
+  git -C "$PYPTO_LIB_ROOT" apply --check "$patches/lib-online-state-capture.patch"
+  git -C "$PYPTO_LIB_ROOT" apply "$patches/lib-online-state-capture.patch"
+fi
 if [[ -n "$(git -C "$PYPTO_SERVING_ROOT" status --porcelain --untracked-files=no)" ]]; then
   echo 'Use a fresh offline image with the paired Serving adapter.' >&2
   exit 2

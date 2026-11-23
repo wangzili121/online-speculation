@@ -457,7 +457,7 @@ class DraftRound:
                         "route_ids": state["route_ids"], "route_weights": state["weights"],
                         "shared": state["shared"], "expert_outputs": state["expert_outputs"],
                         "combined": state["combined"],
-                        "output_hidden": state["padded_hidden"],
+                        "output_hidden": state["output_hidden"],
                         "output_pre_mix": state["ffn_pre"],
                         **span,
                     }

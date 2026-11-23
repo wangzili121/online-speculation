@@ -2,7 +2,7 @@
 # Launch the paired DSV4.1 resident online-update study with one stable command.
 set -euo pipefail
 
-[[ $# -ge 1 ]] || { echo "usage: $0 <node7|node8> <smoke|tuning|eval> [last-N]" >&2; exit 2; }
+[[ $# -ge 1 ]] || { echo "usage: $0 <node7|node8> <capture|smoke|tuning|eval> [last-N]" >&2; exit 2; }
 node="$1"
 mode="${2:-smoke}"
 last_layers="${3:-1}"
@@ -13,10 +13,11 @@ case "$node" in node7|node8) ;; *) echo "node must be node7 or node8" >&2; exit 
 case "$last_layers" in 1|2|4|8) ;; *) echo "last-N must be one of 1, 2, 4 or 8" >&2; exit 2 ;; esac
 
 case "$mode" in
+  capture) split=tuning; requests=1; tokens=2 ;;
   smoke) split=tuning; requests=4; tokens=32 ;;
   tuning) split=tuning; requests=32; tokens=192 ;;
   eval) split=online_eval; requests=384; tokens=192 ;;
-  *) echo "mode must be smoke, tuning or eval" >&2; exit 2 ;;
+  *) echo "mode must be capture, smoke, tuning or eval" >&2; exit 2 ;;
 esac
 
 workload="$data_root/$split.jsonl"
@@ -36,8 +37,16 @@ export ORTHRUS_WORKLOAD="$workload"
 export CLUSTER_KEY_FILE="${CLUSTER_KEY_FILE:-/root/.orthrus-cluster.key}"
 export NPU_DEVICES="${NPU_DEVICES:-0,1,2,3,4,5,6,7}"
 
+if [[ "$mode" == capture ]]; then
+  online_overrides="{\"last_layers\":$last_layers,\"teacher_rows\":1,\"warm_update_stride\":1,\"warm_update_steps\":1,\"steady_update_stride\":1,\"publish_every\":1}"
+  short_gate=(--orthrus-only --require-online-update)
+else
+  online_overrides="{\"last_layers\":$last_layers}"
+  short_gate=()
+fi
+
 exec bash "$root/scripts/dsv41_pypto_env.sh" cluster-accept "$node" \
   --max-requests "$requests" --tokens "$tokens" --no-trace-prefill \
   --online-study /workspace/online-speculation/configs/dsv41/gsm8k-online.json \
   --online-primitives blockspec.pypto_dsv41_resident_primitives:create_primitives \
-  --online-overrides "{\"last_layers\":$last_layers}"
+  --online-overrides "$online_overrides" "${short_gate[@]}"

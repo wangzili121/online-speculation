@@ -1,4 +1,6 @@
 from types import SimpleNamespace
+import inspect
+from pathlib import Path
 
 from blockspec.dsv41_suffix import DSV41SuffixPlan
 from blockspec.pypto_dsv41_runtime import DraftRound
@@ -32,7 +34,7 @@ def test_last_n_replay_starts_before_the_first_selected_layer():
             "ffn_collapsed": object(), "ffn_normed": object(), "router_input": object(),
             "router_logits": object(), "route_ids": object(), "weights": object(),
             "shared": object(), "expert_outputs": object(), "combined": object(),
-            "padded_hidden": object(),
+            "output_hidden": object(),
         }
 
     replay = round_.replays()[owner]
@@ -68,7 +70,7 @@ def test_real_capture_preserves_the_exact_k32_token_span():
         "ffn_post": object(), "ffn_comb": object(), "ffn_collapsed": object(),
         "ffn_normed": object(), "router_input": object(), "router_logits": object(),
         "route_ids": object(), "weights": object(), "shared": object(),
-        "expert_outputs": object(), "combined": object(), "padded_hidden": object(),
+        "expert_outputs": object(), "combined": object(), "output_hidden": object(),
         "original": {"request_token_map": [{
             "request_slot": 3, "token_begin": 16, "token_end": 48,
         }]},
@@ -79,3 +81,11 @@ def test_real_capture_preserves_the_exact_k32_token_span():
     assert captured.attention[0]["token_end"] == 48
     assert captured.ffn[0]["token_begin"] == 16
     assert captured.ffn[0]["token_end"] == 48
+
+
+def test_replay_uses_the_real_serving_ffn_state_names():
+    source = (Path(__file__).parents[1] / "runtime" / "pypto_dsv41_a3" /
+              "lib-online-state-capture.patch").read_text()
+    for name in ("ffn_collapsed", "ffn_normed", "router_input", "router_logits", "output_hidden"):
+        assert f"{name}=" in source
+    assert 'state["padded_hidden"]' not in inspect.getsource(DraftRound.replays)
