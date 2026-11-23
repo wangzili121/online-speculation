@@ -1,12 +1,12 @@
 """Resident PyPTO primitives for Orthrus-DSV4.1 online continuation.
 
 This module is deliberately strict: serving never falls back to Torch autograd
-or to host-side model math.  The first production slice implemented here owns
-the complete terminal reverse path
+or to host-side model math.  The implemented resident reverse path owns
 
     full-vocabulary TV/KL -> TP4 LM head -> final RMSNorm -> final mHC collapse.
 
-All intermediate gradients are resident tensors.  CPU tensors are used only
+and the complete TP4 C1A draft-Attention VJP. All intermediate gradients are
+resident tensors.  CPU tensors are used only
 for the verifier/student logits which the current serving patch already makes
 an explicit host boundary.  The C1A layer/MoE reverse is not wired here yet;
 ``create_primitives`` therefore refuses production binding instead of exposing
@@ -29,6 +29,99 @@ ROWS = 32
 HIDDEN = 5120
 HC_COPIES = 4
 SUPPORTED_LAST_N = (1, 2, 4, 8)
+
+
+def _make_group_layout(rows, groups, width, *, split):
+    """Transpose between token-major and group-major matrices on device."""
+    import pypto.language as pl
+
+    if rows != ROWS or groups < 1 or width % 64:
+        raise ValueError("grouped projection layout is not aligned")
+
+    if split:
+        @pl.jit
+        def layout(source: pl.Tensor, output: pl.Out[pl.Tensor]):
+            with pl.spmd(rows * groups, name_hint="orthrus_dsv41_group_split"):
+                task = pl.tile.get_block_idx()
+                token = task // groups
+                group = task % groups
+                for part in pl.range(width // 64):
+                    value = pl.slice(
+                        source, [1, 64],
+                        [token, group * width + part * 64],
+                    )
+                    output[
+                        group * rows + token:group * rows + token + 1,
+                        part * 64:(part + 1) * 64,
+                    ] = value
+            return output
+    else:
+        @pl.jit
+        def layout(source: pl.Tensor, output: pl.Out[pl.Tensor]):
+            with pl.spmd(rows * groups, name_hint="orthrus_dsv41_group_merge"):
+                task = pl.tile.get_block_idx()
+                token = task // groups
+                group = task % groups
+                for part in pl.range(width // 64):
+                    value = pl.slice(
+                        source, [1, 64],
+                        [group * rows + token, part * 64],
+                    )
+                    output[
+                        token:token + 1,
+                        group * width + part * 64:group * width + (part + 1) * 64,
+                    ] = value
+            return output
+
+    @pl.jit.host
+    def entry(source: pl.Tensor, output: pl.Out[pl.Tensor]):
+        layout(source, output, device=0)
+
+    return entry
+
+
+def _make_rope_vjp(native_module, heads, *, inverse):
+    """Wrap the native adjacent-pair RoPE as a resident backward leaf."""
+    import pypto.language as pl
+
+    rotate = native_module("qkv_proj_rope").make_rope(
+        heads, inverse=inverse, head_dim=512, rope_dim=64,
+        name_hint="orthrus_dsv41_rope_backward",
+    )
+
+    @pl.jit
+    def kernel(x: pl.Tensor, cos: pl.Tensor, sin: pl.Tensor,
+               output: pl.Out[pl.Tensor], active: pl.Scalar[pl.INT32]):
+        rotate(x, cos, sin, output, active)
+        return output
+
+    @pl.jit.host
+    def entry(x: pl.Tensor, cos: pl.Tensor, sin: pl.Tensor,
+              output: pl.Out[pl.Tensor], active: pl.Scalar[pl.INT32]):
+        kernel(x, cos, sin, output, active, device=0)
+
+    return entry
+
+
+def _make_sink_compact(heads=16):
+    """Compact cache-line-padded sink rows into the public parameter shape."""
+    import pypto.language as pl
+
+    @pl.jit
+    def compact(source: pl.Tensor, output: pl.Out[pl.Tensor]):
+        with pl.spmd(1, name_hint="orthrus_dsv41_sink_compact"):
+            _block = pl.tile.get_block_idx()
+            row = pl.tile.full([1, heads], dtype=pl.FP32, value=0.)
+            for head in pl.range(heads):
+                pl.tile.write(row, [0, head], pl.read(source, [head, 0]))
+            pl.store(row, [0, 0], output)
+        return output
+
+    @pl.jit.host
+    def entry(source: pl.Tensor, output: pl.Out[pl.Tensor]):
+        compact(source, output, device=0)
+
+    return entry
 
 
 class ProductionFactoryIncomplete(RuntimeError):
@@ -117,9 +210,9 @@ def production_readiness():
             "D2D ResidentHeadState publication",
             "FFN mHC-post and fixed-route MoE combine/router VJP",
             "synchronized dual-node owner/peer reverse orchestration",
+            "TP4 C1A draft-attention parameter/input VJP orchestration",
         ),
         "blockers": (
-            "resident C1A draft-attention parameter/input VJP orchestration",
             "grouped W8A8 shared/routed expert input VJP with EP16 owner/peer binding",
         ),
     }
@@ -238,8 +331,11 @@ class DSV41ResidentPrimitives:
         except KeyError as error:
             raise ValueError(f"rank {rank} belongs to the peer host") from error
 
-    def _workspace(self, rank, shape, dtype=torch.bfloat16):
-        return self.resident.workspace(tuple(shape), dtype, self._local(rank))
+    def _workspace(self, rank, shape, dtype=torch.bfloat16, *, fill=None):
+        options = {} if fill is None else {"fill": fill}
+        return self.resident.workspace(
+            tuple(shape), dtype, self._local(rank), **options,
+        )
 
     def _execute(self, key, rank, factory, **inputs):
         self.draft.execute(("online", *key), rank, factory, inputs)
@@ -304,8 +400,8 @@ class DSV41ResidentPrimitives:
         )
         return gradient, losses
 
-    def _tp_all_reduce(self, values, *, stage):
-        """Sum one complete local TP4 group without a host tensor boundary.
+    def _tp_collective(self, values, collective, *, stage):
+        """Run one complete local TP4 collective without a host boundary.
 
         In the two-host topology every TP group is node-local.  Calling the
         cluster-wide scheduling wrapper here would incorrectly require the
@@ -316,9 +412,19 @@ class DSV41ResidentPrimitives:
         ranks = tuple(sorted(values))
         if len(ranks) != 4 or ranks != tuple(range(ranks[0] // 4 * 4, ranks[0] // 4 * 4 + 4)):
             raise ValueError("TP all-reduce requires one contiguous TP4 group")
+        if collective not in ("all_gather", "reduce_scatter", "all_reduce"):
+            raise ValueError("unsupported TP reverse collective")
         shape, dtype = values[ranks[0]].shape, values[ranks[0]].dtype
         if any(value.shape != shape or value.dtype != dtype for value in values.values()):
-            raise ValueError("TP all-reduce operands changed shape or dtype")
+            raise ValueError("TP collective operands changed shape or dtype")
+        output_shape = list(shape)
+        if collective == "all_gather":
+            output_shape[0] *= len(ranks)
+        elif collective == "reduce_scatter":
+            if output_shape[0] % len(ranks):
+                raise ValueError("TP reduce-scatter rows do not divide by four")
+            output_shape[0] //= len(ranks)
+        output_shape = tuple(output_shape)
 
         transport = getattr(self.native, "transport", None)
         if transport is None:
@@ -326,7 +432,7 @@ class DSV41ResidentPrimitives:
                 {stage: {"value": values[rank]}}
                 for rank in ranks
             ]
-            result, _ = self.resident.exchange(stage, packets, "all_reduce", "tp")
+            result, _ = self.resident.exchange(stage, packets, collective, "tp")
             return {rank: result[index][stage]["value"] for index, rank in enumerate(ranks)}
 
         channels = transport._channels("tp")
@@ -337,17 +443,20 @@ class DSV41ResidentPrimitives:
         for rank in ranks:
             local = self._local(rank)
             channel = channels[local]
-            output = self._workspace(rank, shape, dtype)
+            output = self._workspace(rank, output_shape, dtype)
             source = self.resident.tensor(values[rank], local)
             destination = self.resident.tensor(output, local)
-            channel._validate_device_transfer(source, destination, "all_reduce")
+            channel._validate_device_transfer(source, destination, collective)
             prepared[rank] = output, (source, destination, f"online/{stage}/rank{rank}")
         def transfer(local):
             rank = local_ranks[local]
             if rank in prepared:
-                channels[local].exchange_device_batch([prepared[rank][1]], "all_reduce")
+                channels[local].exchange_device_batch([prepared[rank][1]], collective)
         self.resident.map_ranks(transfer)
         return {rank: prepared[rank][0] for rank in ranks}
+
+    def _tp_all_reduce(self, values, *, stage):
+        return self._tp_collective(values, "all_reduce", stage=stage)
 
     def lm_head_vjp(self, gradient, rows):
         """Run the terminal reverse on every TP owner without host gradients."""
@@ -871,8 +980,551 @@ class DSV41ResidentPrimitives:
         )
         return SuffixGradient(hidden_gradient, incoming_gradient[:, :HC_COPIES])
 
-    def reverse_draft_attention(self, **options):
-        self._unfinished("C1A draft Attention reverse")
+    @staticmethod
+    def _attention_record(captured):
+        record = captured.get("record")
+        if not isinstance(record, dict):
+            raise ValueError("C1A reverse requires the native SP record")
+        physical = record.get("SP_physical_rows")
+        positions = record.get("positions")
+        if type(physical) is not int or physical < 1 or positions is None:
+            raise ValueError("C1A reverse has invalid SP physical-row metadata")
+        return physical, len(positions)
+
+    def _reverse_attention_post(self, layer, rank, captured, output_gradient):
+        """Reverse the frozen mHC-post shell around the draft contribution."""
+        from .pypto_dsv41_tail_vjp import make_hc_post_data_vjp, make_hc_post_gate_vjp
+
+        begin, end = self._span(captured)
+        if not isinstance(output_gradient, SuffixGradient):
+            raise TypeError("draft Attention reverse requires a suffix gradient")
+        hidden_gradient, pre_gradient = output_gradient.hidden, output_gradient.pre_mix
+        scattered = captured["attention_scattered"][begin:end]
+        residual = captured["hidden"][begin * HC_COPIES:end * HC_COPIES]
+        post = captured["post"][begin:end]
+        combination = captured["comb"][begin * HC_COPIES:end * HC_COPIES]
+        if (
+            hidden_gradient.shape != (ROWS * HC_COPIES, HIDDEN)
+            or pre_gradient.shape != (ROWS, HC_COPIES)
+            or scattered.shape != (ROWS, HIDDEN)
+            or residual.shape != (ROWS * HC_COPIES, HIDDEN)
+            or post.shape != (ROWS, HC_COPIES)
+            or combination.shape != (ROWS * HC_COPIES, HC_COPIES)
+        ):
+            raise ValueError("captured Attention mHC-post changed its K32 ABI")
+
+        value_gradient = self._workspace(rank, (ROWS, HIDDEN))
+        residual_gradient = self._workspace(rank, (ROWS * HC_COPIES, HIDDEN))
+        post_gradient = self._workspace(rank, (ROWS, 16), torch.float32)
+        combination_gradient = self._workspace(
+            rank, (ROWS * HC_COPIES, 16), torch.float32,
+        )
+        self._execute(
+            ("attn-hc-post-data-vjp", layer), rank,
+            lambda: make_hc_post_data_vjp(ROWS, HIDDEN),
+            output_gradient=hidden_gradient, post=post, combination=combination,
+            value_gradient=value_gradient, residual_gradient=residual_gradient,
+        )
+        self._execute(
+            ("attn-hc-post-gate-vjp", layer), rank,
+            lambda: make_hc_post_gate_vjp(ROWS, HIDDEN),
+            value=scattered, residual=residual, output_gradient=hidden_gradient,
+            post_gradient=post_gradient,
+            combination_gradient=combination_gradient,
+        )
+        return {
+            "value": value_gradient,
+            "residual": residual_gradient,
+            "post": post_gradient[:, :HC_COPIES],
+            "combination": combination_gradient[:, :HC_COPIES],
+            "pre": pre_gradient,
+        }
+
+    def _reverse_c1a_rank(self, layer, rank, captured, contribution_gradient):
+        """Run the rank-local projection and exact selected-history C1A VJP."""
+        from .pypto_dsv41_attention_vjp import (
+            C1AAttentionVJPGeometry, c1a_vjp_factories,
+        )
+        from .pypto_dsv41_online_programs import make_element, make_linear, make_rms
+        from .pypto_dsv41_swa import swa_spans
+
+        geometry = C1AAttentionVJPGeometry()
+        qkv = captured["qkv"]
+        selection = captured.get("selection")
+        history = captured["history"]
+        if selection is None or history["role"].get("ratio") != 1:
+            raise ValueError("resident draft reverse only supports selected C1A history")
+        operands = self.draft.online_bank.operands(rank, layer)
+        required = {"wq_a", "q_norm", "wq_b", "wkv", "kv_norm", "sink", "wo_a", "wo_b"}
+        if set(operands) & required != required:
+            raise ValueError("resident draft bank changed the C1A operand ABI")
+        if contribution_gradient.shape != (ROWS, HIDDEN):
+            raise ValueError("local contribution gradient changed shape")
+
+        # Wo-B and grouped Wo-A VJPs. Group-major staging lets the generic
+        # batched GEMM preserve the native two-group ownership exactly.
+        grouped = qkv["grouped"]
+        unrotated = qkv["unrotated"]
+        dwo_b = self._workspace(rank, operands["wo_b"].shape, torch.float32)
+        self._execute(
+            ("attn-wo-b-weight-vjp", layer), rank,
+            lambda: make_linear(
+                (ROWS, 2048), (ROWS, HIDDEN), transpose_a=True,
+                transpose_b=False, gradient_weight=True,
+            ),
+            a=grouped, b=contribution_gradient, output=dwo_b,
+        )
+        dgrouped = self._workspace(rank, (ROWS, 2048))
+        self._execute(
+            ("attn-wo-b-input-vjp", layer), rank,
+            lambda: make_linear((ROWS, HIDDEN), (2048, HIDDEN)),
+            a=contribution_gradient, b=operands["wo_b"], output=dgrouped,
+        )
+        grouped_gradient = self._workspace(rank, (2 * ROWS, 1024))
+        grouped_input = self._workspace(rank, (2 * ROWS, 4096))
+        self._execute(
+            ("attn-grouped-gradient-split", layer), rank,
+            lambda: _make_group_layout(ROWS, 2, 1024, split=True),
+            source=dgrouped, output=grouped_gradient,
+        )
+        self._execute(
+            ("attn-grouped-input-split", layer), rank,
+            lambda: _make_group_layout(ROWS, 2, 4096, split=True),
+            source=unrotated, output=grouped_input,
+        )
+        dwo_a_flat = self._workspace(rank, (2 * 1024, 4096), torch.float32)
+        self._execute(
+            ("attn-wo-a-weight-vjp", layer), rank,
+            lambda: make_linear(
+                (ROWS, 1024), (ROWS, 4096), transpose_a=True,
+                transpose_b=False, gradient_weight=True, batches=2,
+            ),
+            a=grouped_gradient, b=grouped_input, output=dwo_a_flat,
+        )
+        dunrotated_grouped = self._workspace(rank, (2 * ROWS, 4096))
+        self._execute(
+            ("attn-wo-a-input-vjp", layer), rank,
+            lambda: make_linear(
+                (ROWS, 1024), (1024, 4096), transpose_b=False, batches=2,
+            ),
+            a=grouped_gradient, b=operands["wo_a"].view(2 * 1024, 4096),
+            output=dunrotated_grouped,
+        )
+        dunrotated = self._workspace(rank, (ROWS, 8192))
+        self._execute(
+            ("attn-grouped-input-merge", layer), rank,
+            lambda: _make_group_layout(ROWS, 2, 4096, split=False),
+            source=dunrotated_grouped, output=dunrotated,
+        )
+        context_gradient = self._workspace(rank, (ROWS, 8192))
+        self._execute(
+            ("attn-output-rope-vjp", layer), rank,
+            lambda: _make_rope_vjp(self.draft.native, 16, inverse=False),
+            x=dunrotated, cos=captured["cos"], sin=captured["sin"],
+            output=context_gradient, active=ROWS,
+        )
+
+        # Exact selected-history probability replay and temporary-block VJP.
+        swa, = history["planes"]["swa"]
+        long, = history["planes"]["long"]
+        anchor = history["committed_tokens"]
+        spans = torch.tensor(
+            swa_spans(
+                swa["pages"], anchor, swa["shape"][0],
+                stride_rows=swa["stride_rows"], offset_rows=swa["offset_rows"],
+            ),
+            dtype=torch.int32,
+        )
+        history_bias = torch.full((1, 128), -torch.inf, dtype=torch.float32)
+        history_bias[:, :min(anchor, 128)] = 0
+        factories = c1a_vjp_factories(geometry)
+        joined = self._workspace(rank, (ROWS * geometry.padded_columns, 512))
+        self._execute(
+            ("attn-c1a-joined-history", layer), rank, factories["joined_history"],
+            swa_pages=swa["handle"], spans=spans,
+            compressed_pages=long["handle"],
+            selected_rows=selection["physical_rows"],
+            selected_lengths=selection["lengths"],
+            temporary=qkv["temporary"], zeros=self.draft.constants[rank]["swa_zero"],
+            joined=joined,
+        )
+        query = qkv["query"].view(geometry.rows, 512)
+        probability = self._workspace(
+            rank, (geometry.rows, geometry.padded_columns), torch.float32,
+        )
+        self._execute(
+            ("attn-c1a-probability-replay", layer), rank,
+            factories["probability_replay"],
+            query=query, joined_key=joined, history_bias=history_bias,
+            compressed_bias=selection["bias"], sink=operands["sink"],
+            final_lse=captured["lse"], probability=probability,
+        )
+        probability_gradient = self._workspace(
+            rank, (geometry.rows, geometry.padded_columns),
+        )
+        self._execute(
+            ("attn-c1a-probability-gradient", layer), rank,
+            factories["d_probability"],
+            a=context_gradient.view(geometry.rows, 512), b=joined,
+            output=probability_gradient,
+        )
+        score_gradient = self._workspace(
+            rank, (geometry.rows, geometry.padded_columns),
+        )
+        sink_rows = self._workspace(rank, (geometry.rows, 8), torch.float32)
+        self._execute(
+            ("attn-c1a-softmax-vjp", layer), rank,
+            factories["probability_vjp"],
+            probability=probability, probability_gradient=probability_gradient,
+            score_gradient=score_gradient, sink_rows=sink_rows,
+        )
+        query_gradient = self._workspace(rank, (geometry.rows, 512))
+        self._execute(
+            ("attn-c1a-query-vjp", layer), rank, factories["d_query"],
+            a=score_gradient, b=joined, output=query_gradient,
+        )
+        block_score = self._workspace(rank, (geometry.rows, ROWS))
+        block_probability = self._workspace(rank, (geometry.rows, ROWS))
+        self._execute(
+            ("attn-c1a-score-block", layer), rank,
+            factories["score_block_extract"],
+            joined=score_gradient, block_gradient=block_score,
+        )
+        self._execute(
+            ("attn-c1a-probability-block", layer), rank,
+            factories["probability_block_extract"],
+            probability=probability, block_probability=block_probability,
+        )
+        key_gradient = self._workspace(rank, (ROWS, 512), torch.float32)
+        value_gradient = self._workspace(rank, (ROWS, 512), torch.float32)
+        self._execute(
+            ("attn-c1a-key-block-vjp", layer), rank, factories["d_key_block"],
+            a=block_score, b=query, output=key_gradient,
+        )
+        self._execute(
+            ("attn-c1a-value-block-vjp", layer), rank, factories["d_value_block"],
+            a=block_probability, b=context_gradient.view(geometry.rows, 512),
+            output=value_gradient,
+        )
+        temporary_gradient = self._workspace(rank, (ROWS, 512))
+        self._execute(
+            ("attn-c1a-temporary-add", layer), rank,
+            lambda: make_element(
+                (ROWS, 512), "add", input_fp32=(True, True),
+            ),
+            a=key_gradient, b=value_gradient, output=temporary_gradient,
+        )
+        sink_padded = self._workspace(rank, (16, 8), torch.float32)
+        sink_gradient = self._workspace(rank, (1, 16), torch.float32)
+        self._execute(
+            ("attn-c1a-sink-reduce", layer), rank, factories["sink_reduce"],
+            sink_rows=sink_rows, sink_gradient=sink_padded,
+        )
+        self._execute(
+            ("attn-c1a-sink-compact", layer), rank, _make_sink_compact,
+            source=sink_padded, output=sink_gradient,
+        )
+
+        # Reverse query and temporary RoPE, then both low-rank Q/KV branches.
+        query_projection_gradient = self._workspace(rank, (ROWS, 8192))
+        temporary_norm_gradient = self._workspace(rank, (ROWS, 512))
+        self._execute(
+            ("attn-query-rope-vjp", layer), rank,
+            lambda: _make_rope_vjp(self.draft.native, 16, inverse=True),
+            x=query_gradient.view(ROWS, 8192), cos=captured["cos"],
+            sin=captured["sin"], output=query_projection_gradient, active=ROWS,
+        )
+        self._execute(
+            ("attn-kv-rope-vjp", layer), rank,
+            lambda: _make_rope_vjp(self.draft.native, 1, inverse=True),
+            x=temporary_gradient, cos=captured["cos"], sin=captured["sin"],
+            output=temporary_norm_gradient, active=ROWS,
+        )
+
+        dlatent = self._workspace(rank, (ROWS, 1280))
+        dwq_b = self._workspace(rank, operands["wq_b"].shape, torch.float32)
+        self._execute(
+            ("attn-wq-b-input-vjp", layer), rank,
+            lambda: make_linear((ROWS, 8192), (1280, 8192)),
+            a=query_projection_gradient, b=operands["wq_b"], output=dlatent,
+        )
+        self._execute(
+            ("attn-wq-b-weight-vjp", layer), rank,
+            lambda: make_linear(
+                (ROWS, 1280), (ROWS, 8192), transpose_a=True,
+                transpose_b=False, gradient_weight=True,
+            ),
+            a=qkv["latent"], b=query_projection_gradient, output=dwq_b,
+        )
+        q_inverse = self._workspace(rank, (ROWS, 8), torch.float32)
+        q_replay = self._workspace(rank, (ROWS, 1280))
+        q_gamma = operands["q_norm"].view(1, 1280)
+        self._execute(
+            ("attn-q-norm-replay", layer), rank,
+            lambda: make_rms(ROWS, 1280, epsilon=1e-20),
+            x=qkv["qa"], gamma=q_gamma, y=q_replay, inv=q_inverse,
+        )
+        dqa = self._workspace(rank, (ROWS, 1280))
+        dq_norm = self._workspace(rank, (1, 1280), torch.float32)
+        self._execute(
+            ("attn-q-norm-input-vjp", layer), rank,
+            lambda: make_rms(ROWS, 1280, mode="input", epsilon=1e-20),
+            x=qkv["qa"], gamma=q_gamma, inv=q_inverse, dy=dlatent, dx=dqa,
+        )
+        self._execute(
+            ("attn-q-norm-weight-vjp", layer), rank,
+            lambda: make_rms(ROWS, 1280, mode="weight", epsilon=1e-20),
+            x=qkv["qa"], inv=q_inverse, dy=dlatent, dg=dq_norm,
+        )
+        dwq_a = self._workspace(rank, operands["wq_a"].shape, torch.float32)
+        query_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
+        self._execute(
+            ("attn-wq-a-weight-vjp", layer), rank,
+            lambda: make_linear(
+                (ROWS, HIDDEN), (ROWS, 1280), transpose_a=True,
+                transpose_b=False, gradient_weight=True,
+            ),
+            a=qkv["hidden"], b=dqa, output=dwq_a,
+        )
+        self._execute(
+            ("attn-wq-a-input-vjp", layer), rank,
+            lambda: make_linear((ROWS, 1280), (HIDDEN, 1280)),
+            a=dqa, b=operands["wq_a"], output=query_input_gradient,
+        )
+
+        kv_inverse = self._workspace(rank, (ROWS, 8), torch.float32)
+        kv_replay = self._workspace(rank, (ROWS, 512))
+        kv_gamma = operands["kv_norm"].view(1, 512)
+        self._execute(
+            ("attn-kv-norm-replay", layer), rank,
+            lambda: make_rms(ROWS, 512, epsilon=1e-20),
+            x=qkv["kv"], gamma=kv_gamma, y=kv_replay, inv=kv_inverse,
+        )
+        dkv = self._workspace(rank, (ROWS, 512))
+        dkv_norm = self._workspace(rank, (1, 512), torch.float32)
+        self._execute(
+            ("attn-kv-norm-input-vjp", layer), rank,
+            lambda: make_rms(ROWS, 512, mode="input", epsilon=1e-20),
+            x=qkv["kv"], gamma=kv_gamma, inv=kv_inverse,
+            dy=temporary_norm_gradient, dx=dkv,
+        )
+        self._execute(
+            ("attn-kv-norm-weight-vjp", layer), rank,
+            lambda: make_rms(ROWS, 512, mode="weight", epsilon=1e-20),
+            x=qkv["kv"], inv=kv_inverse, dy=temporary_norm_gradient,
+            dg=dkv_norm,
+        )
+        dwkv = self._workspace(rank, operands["wkv"].shape, torch.float32)
+        kv_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
+        self._execute(
+            ("attn-wkv-weight-vjp", layer), rank,
+            lambda: make_linear(
+                (ROWS, HIDDEN), (ROWS, 512), transpose_a=True,
+                transpose_b=False, gradient_weight=True,
+            ),
+            a=qkv["hidden"], b=dkv, output=dwkv,
+        )
+        self._execute(
+            ("attn-wkv-input-vjp", layer), rank,
+            lambda: make_linear((ROWS, 512), (HIDDEN, 512)),
+            a=dkv, b=operands["wkv"], output=kv_input_gradient,
+        )
+        input_gradient = self._workspace(rank, (ROWS, HIDDEN))
+        self._execute(
+            ("attn-q-kv-input-add", layer), rank,
+            lambda: make_element((ROWS, HIDDEN), "add"),
+            a=query_input_gradient, b=kv_input_gradient, output=input_gradient,
+        )
+        parameters = {
+            "wq_a.weight": dwq_a,
+            "q_norm.weight": dq_norm.view(1280),
+            "wq_b.weight": dwq_b,
+            "wkv.weight": dwkv,
+            "kv_norm.weight": dkv_norm.view(512),
+            "attn_sink": sink_gradient.view(16),
+            "wo_a.weight": dwo_a_flat.view(2, 1024, 4096),
+            "wo_b.weight": dwo_b,
+        }
+        return input_gradient, parameters
+
+    def _reverse_attention_pre(
+        self, layer, rank, captured, shell, normalized_gradient,
+    ):
+        """Reverse frozen Attention norm and exact mHC-pre replay."""
+        from .pypto_dsv41_online_programs import make_rms
+        from .pypto_dsv41_tail_vjp import (
+            make_hc_pre_data_vjp, make_hc_pre_gate_vjp,
+            make_hc_pre_projection_forward,
+        )
+
+        begin, end = self._span(captured)
+        collapsed = captured["collapsed"][begin:end]
+        residual = captured["hidden"][begin * HC_COPIES:end * HC_COPIES]
+        incoming = captured["incoming"][begin:end]
+        norm = self._pinned(rank, f"layers.{layer}.attn_norm.weight").view(1, HIDDEN)
+        replay = self._workspace(rank, (ROWS, HIDDEN))
+        inverse = self._workspace(rank, (ROWS, 8), torch.float32)
+        self._execute(
+            ("attn-rms-replay", layer), rank,
+            lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20),
+            x=collapsed, gamma=norm, y=replay, inv=inverse,
+        )
+        collapsed_gradient = self._workspace(rank, (ROWS, HIDDEN))
+        self._execute(
+            ("attn-rms-input-vjp", layer), rank,
+            lambda: make_rms(ROWS, HIDDEN, mode="input", epsilon=1e-20),
+            x=collapsed, gamma=norm, inv=inverse,
+            dy=normalized_gradient, dx=collapsed_gradient,
+        )
+
+        function = self._pinned(rank, f"layers.{layer}.hc_attn_fn")
+        scale = self._pinned(rank, f"layers.{layer}.hc_attn_scale")
+        base = self._pinned(rank, f"layers.{layer}.hc_attn_base")
+        projection = self._workspace(rank, (ROWS, 32), torch.float32)
+        hc_inverse = self._workspace(rank, (ROWS, 16), torch.float32)
+        self._execute(
+            ("attn-hc-pre-projection", layer), rank,
+            lambda: make_hc_pre_projection_forward(ROWS, HIDDEN),
+            residual=residual, function=function,
+            projection=projection, inverse=hc_inverse,
+        )
+        projection_gradient = self._workspace(rank, (ROWS, 32), torch.float32)
+        self._execute(
+            ("attn-hc-pre-gate-vjp", layer), rank,
+            lambda: make_hc_pre_gate_vjp(ROWS),
+            projection=projection, scale=scale, base=base,
+            pre_gradient=shell["pre"], post_gradient=shell["post"],
+            combination_gradient=shell["combination"],
+            projection_gradient=projection_gradient,
+        )
+        hidden_gradient = self._workspace(rank, (ROWS * HC_COPIES, HIDDEN))
+        incoming_gradient = self._workspace(rank, (ROWS, 16), torch.float32)
+        self._execute(
+            ("attn-hc-pre-data-vjp", layer), rank,
+            lambda: make_hc_pre_data_vjp(ROWS, HIDDEN),
+            residual=residual, incoming=incoming, function=function,
+            inverse=hc_inverse, projection_gradient=projection_gradient,
+            collapsed_gradient=collapsed_gradient,
+            residual_passthrough=shell["residual"],
+            residual_gradient=hidden_gradient,
+            incoming_gradient=incoming_gradient,
+        )
+        return SuffixGradient(hidden_gradient, incoming_gradient[:, :HC_COPIES])
+
+    def reverse_draft_attention_owner_batch(
+        self, *, layer, ranks, captured, output_gradients,
+    ):
+        """Reverse one complete node-local TP4 C1A draft-Attention batch."""
+        from .pypto_dsv41_online_programs import make_element
+
+        ranks = tuple(ranks)
+        if (
+            len(ranks) != 4
+            or ranks != tuple(range(ranks[0] // 4 * 4, ranks[0] // 4 * 4 + 4))
+            or not set(ranks) <= set(self.ranks)
+            or set(captured) != set(ranks)
+            or set(output_gradients) != set(ranks)
+        ):
+            raise ValueError("draft Attention reverse requires one complete local TP4 group")
+        shells = {
+            rank: self._reverse_attention_post(
+                layer, rank, captured[rank], output_gradients[rank],
+            )
+            for rank in ranks
+        }
+
+        # Reverse the native FP32 reduce-scatter: place each request gradient
+        # back into its physical owner slab, all-gather slabs, then apply the
+        # same SP unpack permutation used by the forward input gather.
+        scattered = {}
+        geometry = {}
+        for rank in ranks:
+            row = captured[rank]
+            begin, end = self._span(row)
+            capacity = row["attention_scattered"].shape[0]
+            physical, total = self._attention_record(row)
+            if not 0 <= begin < end <= capacity or not 0 < physical <= capacity:
+                raise ValueError("captured Attention span is outside the SP slab")
+            slab = self._workspace(rank, (capacity, HIDDEN), fill=0)
+            self._execute(
+                ("attn-output-gradient-scatter", layer), rank,
+                lambda: make_element((ROWS, HIDDEN), "copy"),
+                a=shells[rank]["value"], b=shells[rank]["value"],
+                output=slab[begin:end],
+            )
+            scattered[rank] = slab
+            geometry[rank] = begin, end, capacity, physical, total
+        gathered = self._tp_collective(
+            scattered, "all_gather", stage=f"layer{layer}-attn-output-vjp",
+        )
+        contribution_gradients = {}
+        for rank in ranks:
+            begin, end, capacity, physical, total = geometry[rank]
+            full = self._workspace(rank, (capacity, HIDDEN), fill=0)
+            self._execute(
+                ("attn-output-gradient-unpack", layer, capacity), rank,
+                lambda capacity=capacity: self.draft.native("input_pack").make_sp_gather_unpack(
+                    capacity, HIDDEN, 4,
+                ),
+                packet=gathered[rank], output=full,
+                physical=physical, active=total,
+            )
+            contribution_gradients[rank] = full[begin:end]
+
+        local = {
+            rank: self._reverse_c1a_rank(
+                layer, rank, captured[rank], contribution_gradients[rank],
+            )
+            for rank in ranks
+        }
+
+        # Reverse the native normalized-input all-gather: pack each rank's
+        # full-token gradient, reduce in FP32 and narrow once to BF16.
+        widened = {}
+        for rank in ranks:
+            begin, end, capacity, physical, total = geometry[rank]
+            full = self._workspace(rank, (capacity, HIDDEN), fill=0)
+            self._execute(
+                ("attn-input-gradient-scatter", layer), rank,
+                lambda: make_element((ROWS, HIDDEN), "copy"),
+                a=local[rank][0], b=local[rank][0], output=full[begin:end],
+            )
+            packed = self._workspace(rank, (4 * capacity, HIDDEN))
+            self._execute(
+                ("attn-input-gradient-pack", layer, capacity), rank,
+                lambda capacity=capacity: self.draft.native("input_pack").make_sp_reduce_pack(
+                    capacity, HIDDEN, 4,
+                ),
+                value=full, packed=packed, physical=physical, active=total,
+            )
+            wide = self._workspace(rank, (4 * capacity, HIDDEN), torch.float32)
+            self._execute(
+                ("attn-input-gradient-widen", layer, capacity), rank,
+                lambda capacity=capacity: self.draft.native("input_pack").make_sp_reduce_widen(
+                    4 * capacity, HIDDEN,
+                ),
+                value=packed, output=wide,
+            )
+            widened[rank] = wide
+        reduced = self._tp_collective(
+            widened, "reduce_scatter", stage=f"layer{layer}-attn-input-vjp",
+        )
+        result = {}
+        for rank in ranks:
+            begin, end, capacity, _physical, _total = geometry[rank]
+            narrowed = self._workspace(rank, (capacity, HIDDEN))
+            self._execute(
+                ("attn-input-gradient-narrow", layer, capacity), rank,
+                lambda capacity=capacity: self.draft.native("input_pack").make_sp_reduce_narrow(
+                    capacity, HIDDEN,
+                ),
+                value=reduced[rank], output=narrowed,
+            )
+            incoming = self._reverse_attention_pre(
+                layer, rank, captured[rank], shells[rank], narrowed[begin:end],
+            )
+            result[rank] = incoming, local[rank][1]
+        return result
 
     def tp_assemble_gradients(self, layer, values):
         self._require_optimizer_state()

@@ -364,6 +364,105 @@ def test_public_frozen_tail_never_returns_a_partial_gradient():
         )
 
 
+class AttentionBatchHarness(DSV41ResidentPrimitives):
+    """Exercise the TP4 orchestration while replacing only device launches."""
+
+    def __init__(self):
+        self.ranks = (0, 1, 2, 3)
+        self.events = []
+        self.draft = SimpleNamespace(native=lambda _name: SimpleNamespace())
+
+    @staticmethod
+    def _workspace(_rank, shape, dtype=torch.bfloat16, *, fill=None):
+        return torch.full(shape, 0 if fill is None else fill, dtype=dtype)
+
+    def _execute(self, key, rank, factory, **inputs):
+        del factory
+        self.events.append((key[0], rank))
+        if "scatter" in key[0]:
+            inputs["output"].copy_(inputs["a"])
+        elif key[0] == "attn-output-gradient-unpack":
+            inputs["output"].copy_(inputs["packet"][:len(inputs["output"])])
+        elif key[0] == "attn-input-gradient-pack":
+            inputs["packed"].zero_()
+            inputs["packed"][:len(inputs["value"])].copy_(inputs["value"])
+        elif key[0] == "attn-input-gradient-widen":
+            inputs["output"].copy_(inputs["value"].float())
+        elif key[0] == "attn-input-gradient-narrow":
+            inputs["output"].copy_(inputs["value"].bfloat16())
+        else:
+            raise AssertionError(key)
+
+    def _reverse_attention_post(self, layer, rank, captured, output_gradient):
+        del layer, captured
+        self.events.append(("post", rank))
+        return {
+            "value": torch.full((32, 5120), rank + 1, dtype=torch.bfloat16),
+            "residual": output_gradient.hidden,
+            "post": output_gradient.pre_mix,
+            "combination": output_gradient.pre_mix,
+            "pre": output_gradient.pre_mix,
+        }
+
+    def _tp_collective(self, values, collective, *, stage):
+        del stage
+        self.events.append((collective, tuple(values)))
+        if collective == "all_gather":
+            joined = torch.cat([values[rank] for rank in sorted(values)])
+            return {rank: joined.clone() for rank in values}
+        if collective == "reduce_scatter":
+            total = sum(value.float() for value in values.values())
+            chunks = total.chunk(4)
+            return {rank: chunks[index] for index, rank in enumerate(values)}
+        raise AssertionError(collective)
+
+    def _reverse_c1a_rank(self, layer, rank, captured, contribution_gradient):
+        del layer, captured
+        self.events.append(("c1a", rank, tuple(contribution_gradient.shape)))
+        names = self._execution_names()
+        return torch.full((32, 5120), rank + 1, dtype=torch.bfloat16), {
+            name: torch.ones(1) for name in names
+        }
+
+    def _reverse_attention_pre(self, layer, rank, captured, shell, normalized_gradient):
+        del layer, captured, shell
+        self.events.append(("pre", rank, tuple(normalized_gradient.shape)))
+        return SuffixGradient(
+            torch.full((128, 5120), rank + 1, dtype=torch.bfloat16),
+            torch.full((32, 4), rank + 1, dtype=torch.float32),
+        )
+
+
+def test_c1a_owner_batch_reverses_both_tp_collectives_once():
+    value = AttentionBatchHarness()
+    captures = {
+        rank: {
+            "token_begin": 0, "token_end": 32,
+            "record": {"SP_physical_rows": 32, "positions": list(range(32))},
+            "attention_scattered": torch.zeros(32, 5120, dtype=torch.bfloat16),
+        }
+        for rank in value.ranks
+    }
+    gradients = {
+        rank: SuffixGradient(
+            torch.ones(128, 5120, dtype=torch.bfloat16),
+            torch.ones(32, 4),
+        )
+        for rank in value.ranks
+    }
+    result = value.reverse_draft_attention_owner_batch(
+        layer=39, ranks=value.ranks, captured=captures,
+        output_gradients=gradients,
+    )
+    assert set(result) == set(value.ranks)
+    assert [event[0] for event in value.events].count("all_gather") == 1
+    assert [event[0] for event in value.events].count("reduce_scatter") == 1
+    assert [event[:2] for event in value.events if event[0] == "c1a"] == [
+        ("c1a", rank) for rank in value.ranks
+    ]
+    assert all(set(result[rank][1]) == set(value._execution_names()) for rank in value.ranks)
+
+
 class SymbolicTensor:
     """Shape-only resident descriptor used to test EP16 orchestration."""
 

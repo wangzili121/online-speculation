@@ -32,7 +32,7 @@ class Primitives:
     def __getattr__(self, name):
         if name in {
             "loss_vjp", "lm_head_vjp", "reverse_frozen_tail",
-            "reverse_draft_attention", "tp_assemble_gradients", "dp_all_reduce",
+            "reverse_draft_attention_owner_batch", "tp_assemble_gradients", "dp_all_reduce",
             "gradient_norm_and_clip", "adamw", "zero_gradients",
             "publication_state", "read_scalar",
         }:

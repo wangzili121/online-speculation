@@ -52,13 +52,19 @@ class Primitives:
     def participate_frozen_tail_peer(self, **options):
         self.events.append(("tail-peer", options["layer"], options["synchronization"]["reverse"]["protocol"]))
 
-    def reverse_draft_attention(self, **options):
-        layer, rank = options["layer"], options["rank"]
-        self.events.append(("attention", layer, rank, options["captured"]["selection"]))
+    def reverse_draft_attention_owner_batch(self, **options):
+        layer, ranks = options["layer"], options["ranks"]
+        self.events.append(("attention-owner-batch", layer, ranks))
         prefix = f"layers.{layer}.attn."
         names = [name.removeprefix(prefix) for name in self.plan.trainable_names()
                  if name.startswith(prefix)]
-        return options["output_gradient"], {name: torch.ones(1) for name in names}
+        return {
+            rank: (
+                options["output_gradients"][rank],
+                {name: torch.ones(1) for name in names},
+            )
+            for rank in ranks
+        }
 
     def tp_assemble_gradients(self, layer, values):
         self.events.append(("tp-assemble", layer, tuple(sorted(values))))
@@ -101,9 +107,7 @@ def test_resident_backend_consumes_exact_routes_mhc_and_attention_capture():
     assert [event[:3] for event in primitives.events if event[0] == "tail"] == [
         ("tail", 39, rank) for rank in range(4)
     ]
-    assert [event[:3] for event in primitives.events if event[0] == "attention"] == [
-        ("attention", 39, rank) for rank in range(4)
-    ]
+    assert ("attention-owner-batch", 39, (0, 1, 2, 3)) in primitives.events
     assert ("tp-assemble", 39, (0, 1, 2, 3)) in primitives.events
     assert primitives.events[-3:] == [("dp", 8), ("clip", 1.0), ("adam", 1)]
 
@@ -156,9 +160,9 @@ def test_synchronized_owner_batches_tp_ranks_before_attention_reverse():
         synchronization=contract,
     )
     assert primitives.events[0] == ("tail-owner-batch", 39, (0, 1, 2, 3))
-    assert [event[:3] for event in primitives.events if event[0] == "attention"] == [
-        ("attention", 39, rank) for rank in range(4)
-    ]
+    assert primitives.events[1] == (
+        "attention-owner-batch", 39, (0, 1, 2, 3),
+    )
 
 
 def test_peer_enters_every_layer_in_reverse_order_and_requires_hook():

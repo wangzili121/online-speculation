@@ -36,7 +36,7 @@ class DSV41ResidentUpdateBackend:
             raise ValueError("resident online update currently supports the C1A suffix (last-N <= 20)")
         required = {
             "loss_vjp", "lm_head_vjp", "reverse_frozen_tail",
-            "reverse_draft_attention", "tp_assemble_gradients",
+            "reverse_draft_attention_owner_batch", "tp_assemble_gradients",
             "dp_all_reduce", "gradient_norm_and_clip", "adamw",
             "zero_gradients", "publication_state", "read_scalar",
         }
@@ -154,15 +154,20 @@ class DSV41ResidentUpdateBackend:
             if not isinstance(tails, Mapping) or set(tails) != set(ranks):
                 raise ValueError("owner frozen-tail batch must return every TP rank")
 
+        if any(not isinstance(tails[rank], SuffixGradient) for rank in ranks):
+            raise TypeError("frozen-tail VJP must return a suffix gradient")
+        reversed_attention = self.primitives.reverse_draft_attention_owner_batch(
+            layer=layer, ranks=ranks, captured=attention,
+            output_gradients=tails,
+        )
+        if not isinstance(reversed_attention, Mapping) or set(reversed_attention) != set(ranks):
+            raise ValueError("owner draft-Attention batch must return every TP rank")
         rank_inputs, rank_parameters = {}, {}
         for rank in ranks:
-            tail = tails[rank]
-            if not isinstance(tail, SuffixGradient):
-                raise TypeError("frozen-tail VJP must return a suffix gradient")
-            incoming, parameters = self.primitives.reverse_draft_attention(
-                layer=layer, rank=rank, captured=attention[rank],
-                output_gradient=tail,
-            )
+            row = reversed_attention[rank]
+            if not isinstance(row, tuple) or len(row) != 2:
+                raise TypeError("draft Attention VJP returned an invalid rank row")
+            incoming, parameters = row
             if not isinstance(incoming, SuffixGradient) or not isinstance(parameters, Mapping):
                 raise TypeError("draft Attention VJP returned an invalid result")
             rank_inputs[rank], rank_parameters[rank] = incoming, dict(parameters)
