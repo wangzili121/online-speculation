@@ -114,12 +114,12 @@ case "$action" in
     docker version --format '{{.Server.Version}}'
     docker info --format '{{json .Runtimes}}'
     ;;
-  doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|resident-publish-check|online-ready|c1a-vjp-check|expert-capture-check|expert-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head)
+  doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|resident-publish-check|online-factory-check|online-ready|c1a-vjp-check|expert-capture-check|expert-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head)
     docker image inspect "$image" >/dev/null 2>&1 || {
       echo "Image missing. Build it on a networked host or load the transferred image.tar." >&2; exit 2;
     }
     network=host
-    if [[ "$action" == attention-check || "$action" == online-kernel-check || "$action" == hc-collapse-vjp-check || "$action" == resident-publish-check || "$action" == online-ready || "$action" == c1a-vjp-check || "$action" == expert-capture-check || "$action" == expert-vjp-check || "$action" == handoff-check || "$action" == init-head || "$action" == device-map ]]; then network=none; fi
+    if [[ "$action" == attention-check || "$action" == online-kernel-check || "$action" == hc-collapse-vjp-check || "$action" == resident-publish-check || "$action" == online-factory-check || "$action" == online-ready || "$action" == c1a-vjp-check || "$action" == expert-capture-check || "$action" == expert-vjp-check || "$action" == handoff-check || "$action" == init-head || "$action" == device-map ]]; then network=none; fi
     options=(--rm --network "$network" --shm-size "${SHM_SIZE:-16g}")
     command_env=(env)
     if [[ "$action" == preflight || "$action" == handoff-check || "$action" == init-head ||
@@ -215,6 +215,12 @@ case "$action" in
         'bash /workspace/online-speculation/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh && exec /opt/pypto/venv/bin/python \
           /workspace/online-speculation/scripts/validate_dsv41_resident_publication.py \
           --device "$@" --output /results/resident-publication.json' _ "$runtime_device"
+    fi
+    if [[ "$action" == online-factory-check ]]; then
+      options+=(-v "$root:/workspace/online-speculation:ro"
+                -e PYTHONPATH=/workspace/online-speculation/src)
+      exec docker run "${options[@]}" "$image" /opt/pypto/venv/bin/python \
+        /workspace/online-speculation/scripts/check_dsv41_online_factory.py
     fi
     if [[ "$action" == online-ready ]]; then
       report_dir="$(mktemp -d "$PWD/orthrus-online-readiness.XXXXXX")"
@@ -394,7 +400,7 @@ case "$action" in
     exec docker run "${options[@]}" "$image" "$action" "$@"
     ;;
   *)
-    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|resident-publish-check|online-ready|c1a-vjp-check|expert-capture-check|expert-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
+    echo "Usage: $0 {build|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|resident-publish-check|online-factory-check|online-ready|c1a-vjp-check|expert-capture-check|expert-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
     echo "Company checks: $0 {fabric-check|cluster-check|cluster-accept} {node7|node8}"
     ;;
 esac

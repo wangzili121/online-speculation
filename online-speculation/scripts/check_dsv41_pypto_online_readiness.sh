@@ -30,6 +30,12 @@ bash "$root/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh"
 "$python" "$root/scripts/validate_dsv41_resident_publication.py" \
   --device "$device" --output "$output/resident-publication.json"
 
+# Keep this as the final gate: the device kernels and D2D publication above
+# still produce useful evidence while the full resident reverse is being
+# developed, but a readiness report must never pass a partial factory.
+"$python" "$root/scripts/check_dsv41_online_factory.py" \
+  > "$output/online-factory.json"
+
 "$python" - "$output" <<'PY'
 import json
 from pathlib import Path
@@ -50,9 +56,13 @@ else:
     }
 kernels = json.loads((root / "online-kernels.json").read_text())
 publication = json.loads((root / "resident-publication.json").read_text())
+factory = json.loads((root / "online-factory.json").read_text())
 report = {
     "format": "orthrus-dsv41-pypto-online-readiness-v1",
-    "passed": bool(kernels.get("passed") and publication.get("passed")),
+    "passed": bool(
+        kernels.get("passed") and publication.get("passed")
+        and factory.get("production_ready")
+    ),
     "scope": "all single-node gates; dual-node resident update not included",
     "tests": tests,
     "serving_patch": {"applied": True, "python_compiled": True},
@@ -66,6 +76,7 @@ report = {
         "host_round_trip": publication.get("host_round_trip"),
         "d2d_bytes": publication.get("d2d_bytes"),
     },
+    "factory": factory,
 }
 (root / "readiness.json").write_text(json.dumps(report, indent=2) + "\n")
 print(json.dumps(report, indent=2))
@@ -74,4 +85,5 @@ PY
 # The container runs as root while the report directory belongs to the host
 # caller. Keep the evidence readable without a second privileged container.
 chmod a+r "$output/tests.log" "$output/online-kernels.json" \
-  "$output/resident-publication.json" "$output/readiness.json"
+  "$output/resident-publication.json" "$output/online-factory.json" \
+  "$output/readiness.json"
