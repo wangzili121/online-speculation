@@ -204,7 +204,7 @@ case "$action" in
       exec docker run "${options[@]}" "$image" "${command_env[@]}" bash -lc \
         'bash /workspace/online-speculation/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh && \
           /opt/pypto/venv/bin/python /workspace/online-speculation/scripts/validate_dsv41_pypto_hc_collapse_vjp.py \
-          --device "$@" | tee /results/hc-collapse-vjp.json' _ "$runtime_device" "$@"
+          --device "$@" --production | tee /results/hc-collapse-vjp.json' _ "$runtime_device" "$@"
     fi
     if [[ "$action" == hc-pre-vjp-check ]]; then
       report_dir="$(mktemp -d "$PWD/orthrus-hc-pre-vjp.XXXXXX")"

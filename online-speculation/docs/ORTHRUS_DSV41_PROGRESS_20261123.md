@@ -13,10 +13,10 @@
 ```text
 Adelaide999/pypto-lib
 deepseek_v4.1_flash_1122
-13f75e54adb82bf6118258f368fd4182f7a91b07
+db6ecee0bc76e60e3e039b954b2f3d6f5d4ad90f
 ```
 
-该分支也采用 FP32 顺序累加，因此数值处理方向一致。但它同时重写了整图、权重驻留和 Attention/TP 编排，并删除或替换了当前 resident serving 依赖的 `network.py`、`state.py`、`prefill_layer.py` 等接口，不是可直接替换的补丁。
+该分支也采用 FP32 顺序累加，因此数值处理方向一致。但它同时重写了整图、权重驻留和 Attention/TP 编排，并删除或替换了当前 resident serving 依赖的 `network.py`、`state.py`、`prefill_layer.py` 等接口，不是可直接替换的补丁。这里记录的是 2026-11-23 检查到的最新提交；后续以配套 serving 接口是否稳定为迁移条件，而不是只按分支日期切换。
 
 当前继续使用已经通过双机验收的固定 serving 基线，并保留等价的确定性归并修复。等 `1122` 或后续版本提供匹配的 serving 接口后，再迁移 Orthrus 的独立契约、kernel 和测试，而不是现在冒险更换整个底座。
 
@@ -41,4 +41,4 @@ deepseek_v4.1_flash_1122
 
 ## 下一步
 
-剩余工作集中在设备执行 owner：把上述 VJP 的输入输出逐一绑定到 resident 句柄，把 EP16 通信、FP32 optimizer 状态和双槽发布接进已经具备延迟初始化能力的 online learner，完成一次 16 卡真实更新。之后在 GSM8K 上先做小规模正确性，再扫描 last-N、学习率和更新频率；Qwen3.8 的设置只作为起点，不直接当作 DSV4.1 的最终参数。
+设备执行 owner、EP16 通信、FP32 optimizer 状态和双槽发布已经接入 resident online learner。剩余工作是先通过单机 readiness 门禁，再完成一次 16 卡真实更新；之后在 GSM8K 上先做小规模正确性，再扫描 last-N、学习率和更新频率。Qwen3.8 的设置只作为起点，不直接当作 DSV4.1 的最终参数。

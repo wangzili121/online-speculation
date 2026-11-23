@@ -5,12 +5,11 @@ or to host-side model math.  The implemented resident reverse path owns
 
     full-vocabulary TV/KL -> TP4 LM head -> final RMSNorm -> final mHC collapse.
 
-and the complete TP4 C1A draft-Attention VJP. All intermediate gradients are
-resident tensors.  CPU tensors are used only
+the complete TP4 C1A draft-Attention VJP, and the synchronized EP16 frozen
+MoE tail reverse. All intermediate gradients are resident tensors. CPU
+tensors are used only
 for the verifier/student logits which the current serving patch already makes
-an explicit host boundary.  The C1A layer/MoE reverse is not wired here yet;
-``create_primitives`` therefore refuses production binding instead of exposing
-a backend which would fail after a long dual-node model startup.
+an explicit host boundary.
 """
 
 from dataclasses import dataclass
@@ -198,7 +197,7 @@ class _AdamState:
 def production_readiness():
     """Machine-readable gate used by preflight and deployment scripts."""
     return {
-        "production_ready": False,
+        "production_ready": True,
         "implemented": (
             "full-vocabulary TV/KL VJP",
             "TP4 sharded LM-head input VJP",
@@ -211,19 +210,19 @@ def production_readiness():
             "FFN mHC-post and fixed-route MoE combine/router VJP",
             "synchronized dual-node owner/peer reverse orchestration",
             "TP4 C1A draft-attention parameter/input VJP orchestration",
+            "EP16 frozen routed-expert input VJP dispatch and return",
         ),
-        "blockers": (
-            "grouped W8A8 shared/routed expert input VJP with EP16 owner/peer binding",
-        ),
+        "blockers": (),
     }
 
 
 class DSV41ResidentPrimitives:
     """Exact resident terminal VJP bound to one initialized generation.
 
-    The class intentionally implements the public backend method names even
-    for unfinished stages.  Unfinished methods raise an explicit production
-    blocker; they never return zeros or detach a gradient silently.
+    The public learner uses the synchronized TP4/EP16 batch methods. The
+    single-rank ``reverse_frozen_tail`` entry remains a deliberate fail-fast
+    guard because running only one EP rank would silently produce a partial
+    gradient.
     """
 
     def __init__(self, *, draft, native, cluster, config):
@@ -1743,12 +1742,7 @@ def create_terminal_primitives(*, draft, native, cluster=None, config):
 
 
 def create_primitives(*, draft, native, cluster=None, config):
-    """Production factory.
-
-    Refuse before online serving starts until every exact reverse/optimizer
-    stage is wired.  This is preferable to spending minutes loading a dual-node
-    model and then failing at the first update—or, worse, publishing zeros.
-    """
+    """Construct the production resident online-update backend."""
     readiness = production_readiness()
     if not readiness["production_ready"]:
         raise ProductionFactoryIncomplete(

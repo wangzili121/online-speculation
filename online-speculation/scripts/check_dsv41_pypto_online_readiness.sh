@@ -30,6 +30,23 @@ bash "$root/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh"
 "$python" "$root/scripts/validate_dsv41_resident_publication.py" \
   --device "$device" --output "$output/resident-publication.json"
 
+# Exercise every production reverse boundary on a real device before the
+# factory is allowed to advertise online-update readiness. These checks cover
+# the exact K32/hidden=5120 geometry; compact numerical fixtures are used only
+# where allocating a second full golden tensor would obscure the device gate.
+"$python" "$root/scripts/validate_dsv41_pypto_hc_collapse_vjp.py" \
+  --device "$device" --production > "$output/hc-collapse-vjp.json"
+"$python" "$root/scripts/validate_dsv41_pypto_hc_pre_vjp.py" \
+  --device "$device" --output "$output/hc-pre-vjp.json"
+"$python" "$root/scripts/validate_dsv41_pypto_c1a_vjp.py" \
+  --device "$device" --output "$output/c1a-vjp.json"
+"$python" "$root/scripts/validate_dsv41_pypto_expert_capture.py" \
+  --device "$device" --output "$output/expert-capture.json"
+"$python" "$root/scripts/validate_dsv41_pypto_expert_input_vjp.py" \
+  --device "$device" --output "$output/expert-input-vjp.json"
+"$python" "$root/scripts/validate_dsv41_pypto_ep_vjp.py" \
+  --device "$device" --output "$output/ep-vjp.json"
+
 # Keep this as the final gate: the device kernels and D2D publication above
 # still produce useful evidence while the full resident reverse is being
 # developed, but a readiness report must never pass a partial factory.
@@ -56,11 +73,20 @@ else:
     }
 kernels = json.loads((root / "online-kernels.json").read_text())
 publication = json.loads((root / "resident-publication.json").read_text())
+reverse_names = (
+    "hc-collapse-vjp", "hc-pre-vjp", "c1a-vjp", "expert-capture",
+    "expert-input-vjp", "ep-vjp",
+)
+reverse = {
+    name: json.loads((root / f"{name}.json").read_text())
+    for name in reverse_names
+}
 factory = json.loads((root / "online-factory.json").read_text())
 report = {
     "format": "orthrus-dsv41-pypto-online-readiness-v1",
     "passed": bool(
         kernels.get("passed") and publication.get("passed")
+        and all(item.get("passed") for item in reverse.values())
         and factory.get("production_ready")
     ),
     "scope": "all single-node gates; dual-node resident update not included",
@@ -76,6 +102,14 @@ report = {
         "host_round_trip": publication.get("host_round_trip"),
         "d2d_bytes": publication.get("d2d_bytes"),
     },
+    "resident_reverse": {
+        name: {
+            "passed": item.get("passed", False),
+            "compiled": item.get("compiled", False),
+            "executed": item.get("executed", item.get("npu_execution", False)),
+        }
+        for name, item in reverse.items()
+    },
     "factory": factory,
 }
 (root / "readiness.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -86,4 +120,7 @@ PY
 # caller. Keep the evidence readable without a second privileged container.
 chmod a+r "$output/tests.log" "$output/online-kernels.json" \
   "$output/resident-publication.json" "$output/online-factory.json" \
+  "$output/hc-collapse-vjp.json" "$output/hc-pre-vjp.json" \
+  "$output/c1a-vjp.json" "$output/expert-capture.json" \
+  "$output/expert-input-vjp.json" "$output/ep-vjp.json" \
   "$output/readiness.json"

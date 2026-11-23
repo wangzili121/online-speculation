@@ -183,12 +183,11 @@ def native():
     return SimpleNamespace(weights=object(), runtime=object())
 
 
-def test_production_factory_fails_before_a_long_serving_run():
+def test_production_factory_reports_the_complete_synchronized_path():
     report = production_readiness()
-    assert report["production_ready"] is False
-    assert any("grouped W8A8" in blocker for blocker in report["blockers"])
-    with pytest.raises(ProductionFactoryIncomplete, match="factory is incomplete"):
-        create_primitives(draft=Draft(), native=native(), config=config())
+    assert report["production_ready"] is True
+    assert report["blockers"] == ()
+    assert "EP16 frozen routed-expert input VJP dispatch and return" in report["implemented"]
 
 
 @pytest.mark.parametrize("last_n", [1, 2, 4, 8])
