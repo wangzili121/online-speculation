@@ -14,7 +14,8 @@ def main():
 
     import torch
     from pypto.backend import BackendType
-    from pypto.runtime import ChipWorker, ExecutionMode, RunConfig
+    from pypto.ir import DistributedConfig
+    from pypto.runtime import DistributedWorker, ExecutionMode, RunConfig
     from blockspec.pypto_dsv41_tail_vjp import (
         make_hc_collapse_forward,
         make_hc_collapse_vjp,
@@ -22,9 +23,11 @@ def main():
 
     rows, hidden = (32, 5120) if args.production else (4, 128)
     config = RunConfig(
-        arch=BackendType.Ascend910,
+        backend_type=BackendType.Ascend910B,
         execution_mode=ExecutionMode.ONBOARD,
-        device_id=args.device,
+        distributed_config=DistributedConfig(
+            device_ids=[args.device], num_sub_workers=0,
+        ),
     )
     meta = lambda shape, dtype=torch.bfloat16: torch.empty(shape, dtype=dtype, device="meta")
     forward = make_hc_collapse_forward(rows, hidden).compile(
@@ -46,9 +49,12 @@ def main():
     streams = torch.randn(rows, 4, hidden, generator=generator).bfloat16()
     premix = torch.randn(rows, 4, generator=generator, dtype=torch.float32)
     gradient = torch.randn(rows, hidden, generator=generator).bfloat16()
-    with ChipWorker(config=config) as worker:
+    worker = DistributedWorker([forward, backward], config=config)
+    try:
         def allocate(value):
-            return worker.alloc_tensor(value.shape, value.dtype, init=value.contiguous())
+            return worker.alloc_tensor(
+                tuple(value.shape), value.dtype, init=value.contiguous(),
+            )
 
         handles = []
         try:
@@ -66,12 +72,23 @@ def main():
             actual_collapsed = torch.empty(rows, hidden, dtype=torch.bfloat16)
             actual_stream = torch.empty(rows * 4, hidden, dtype=torch.bfloat16)
             actual_premix = torch.empty(rows, 16, dtype=torch.float32)
-            worker.copy_from_device(actual_collapsed, collapsed_out)
-            worker.copy_from_device(actual_stream, stream_out)
-            worker.copy_from_device(actual_premix, premix_out)
+            worker.copy_from(
+                actual_collapsed.data_ptr(), collapsed_out.data_ptr,
+                actual_collapsed.nbytes,
+            )
+            worker.copy_from(
+                actual_stream.data_ptr(), stream_out.data_ptr,
+                actual_stream.nbytes,
+            )
+            worker.copy_from(
+                actual_premix.data_ptr(), premix_out.data_ptr,
+                actual_premix.nbytes,
+            )
         finally:
             for handle in reversed(handles):
                 worker.free_tensor(handle)
+    finally:
+        worker.close()
 
     expected_stream = (
         gradient.float().unsqueeze(1) * premix.unsqueeze(-1)
