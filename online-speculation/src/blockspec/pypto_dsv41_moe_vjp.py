@@ -298,10 +298,11 @@ def make_clipped_swiglu_vjp(rows=32, intermediate=2304, limit=10.0, *, inline=Fa
             )
             dgate = pl.mul(pl.mul(dy, up), derivative)
             dup = pl.mul(dy, silu)
-            # PyPTO cmp: 2 is < and 5 is >=.  The equality convention is
-            # irrelevant for normal floating values but follows Torch clamp.
-            gate_mask = pl.cmp(gate_raw, limit, cmp_type=5)
-            gate_mask = pl.add(pl.neg(gate_mask), 1.0)
+            # PyPTO cmp: 4 is > and 5 is >=. Torch clamp propagates the
+            # gradient at both endpoints, so the upper masks are ``<=``.
+            gate_mask = pl.add(
+                pl.neg(pl.cmp(gate_raw, limit, cmp_type=4)), 1.0,
+            )
             up_low = pl.cmp(up_raw, -limit, cmp_type=5)
             up_high = pl.add(pl.neg(pl.cmp(up_raw, limit, cmp_type=4)), 1.0)
             dgate = pl.mul(dgate, gate_mask)

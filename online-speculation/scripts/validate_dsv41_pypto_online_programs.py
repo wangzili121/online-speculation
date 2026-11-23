@@ -446,6 +446,12 @@ def main():
         report["cases"].append({"operator": "silu_vjp", "shape": [32, 128]})
 
         gate_up = (torch.randn(4, 256) * 7).bfloat16()
+        # Clamp endpoints are representable in BF16 and must keep their
+        # derivative, matching torch.clamp/autograd exactly.
+        gate_up[0, 0] = 10
+        gate_up[0, 128] = -10
+        gate_up[1, 1] = 10
+        gate_up[1, 129] = 10
         expert_dy = torch.randn(4, 128).bfloat16()
         gate_up_gradient_handle = allocate(torch.zeros(4, 256, dtype=torch.bfloat16))
         worker.run(
