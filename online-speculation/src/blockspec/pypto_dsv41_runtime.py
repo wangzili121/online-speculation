@@ -44,7 +44,10 @@ def _head_digest(values):
 class ResidentHeadState:
     """Sharded execution weights already resident on their owning ranks.
 
-    ``operands`` uses the same execution ABI as ``ResidentDraftAttention``.
+    ``operands`` uses the same execution ABI as ``ResidentDraftAttention`` but
+    stores the resident runtime's owning Torch identities, not raw device
+    pointers.  ``ResidentNetworkRuntime.copy_tensor`` resolves those identities
+    to a device-to-device copy.
     The optimizer supplies a deterministic digest computed from globally
     reduced update statistics; both hosts compare it before activating the
     inactive bank.  No updated tensor is copied through HOST memory.
@@ -138,7 +141,7 @@ class MutableDraftHeadBank:
                 raise ValueError(f"resident publication changed layer {layer} execution ABI")
             local = self.rank_ids[rank]
             for name, source in operands.items():
-                destination = self.handles[slot, rank, layer, name]
+                destination = self.host[slot, rank, layer, name]
                 if source.shape != destination.shape or source.dtype != destination.dtype:
                     raise ValueError(f"resident operand changed shape or dtype: layer {layer} {name}")
                 self.resident.copy_tensor(destination, source, local)

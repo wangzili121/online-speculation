@@ -27,6 +27,8 @@ git -C "$serving" apply "$root/runtime/pypto_dsv41_a3/serving-online.patch"
 bash "$root/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh"
 "$python" "$root/scripts/validate_dsv41_pypto_online_programs.py" \
   --device "$device" --vocabulary 129280 --output "$output/online-kernels.json"
+"$python" "$root/scripts/validate_dsv41_resident_publication.py" \
+  --device "$device" --output "$output/resident-publication.json"
 
 "$python" - "$output" <<'PY'
 import json
@@ -47,9 +49,10 @@ else:
         "subtests_passed": int(match.group(3)),
     }
 kernels = json.loads((root / "online-kernels.json").read_text())
+publication = json.loads((root / "resident-publication.json").read_text())
 report = {
     "format": "orthrus-dsv41-pypto-online-readiness-v1",
-    "passed": bool(kernels.get("passed")),
+    "passed": bool(kernels.get("passed") and publication.get("passed")),
     "scope": "all single-node gates; dual-node resident update not included",
     "tests": tests,
     "serving_patch": {"applied": True, "python_compiled": True},
@@ -58,6 +61,11 @@ report = {
         "executed": kernels.get("executed", False),
         "numerical_cases": len(kernels.get("cases", [])),
     },
+    "resident_publication": {
+        "passed": publication.get("passed", False),
+        "host_round_trip": publication.get("host_round_trip"),
+        "d2d_bytes": publication.get("d2d_bytes"),
+    },
 }
 (root / "readiness.json").write_text(json.dumps(report, indent=2) + "\n")
 print(json.dumps(report, indent=2))
@@ -65,4 +73,5 @@ PY
 
 # The container runs as root while the report directory belongs to the host
 # caller. Keep the evidence readable without a second privileged container.
-chmod a+r "$output/tests.log" "$output/online-kernels.json" "$output/readiness.json"
+chmod a+r "$output/tests.log" "$output/online-kernels.json" \
+  "$output/resident-publication.json" "$output/readiness.json"
