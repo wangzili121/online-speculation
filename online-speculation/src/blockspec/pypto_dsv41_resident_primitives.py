@@ -535,6 +535,127 @@ class DSV41ResidentPrimitives:
             combination_gradient[:, :HC_COPIES], pre_gradient,
         )
 
+    def _reverse_frozen_tail_finish(
+        self, *, layer, rank, captured, envelope, routed_input_gradient,
+    ):
+        """Finish one rank after EP16 returns the six routed-expert dX rows."""
+        if not isinstance(envelope, _FrozenMoEEnvelope):
+            raise TypeError("frozen MoE finish requires its resident envelope")
+        begin, end = self._span(captured)
+        normed = captured["normed"][begin:end]
+        collapsed = captured["collapsed"][begin:end]
+        changed = captured["changed"][begin * HC_COPIES:end * HC_COPIES]
+        incoming = captured["pre"][begin:end]
+        if (
+            normed.shape != (ROWS, HIDDEN) or normed.dtype != torch.bfloat16
+            or collapsed.shape != (ROWS, HIDDEN) or collapsed.dtype != torch.bfloat16
+            or changed.shape != (ROWS * HC_COPIES, HIDDEN)
+            or incoming.shape != (ROWS, HC_COPIES)
+            or routed_input_gradient.shape != (ROWS, HIDDEN)
+        ):
+            raise ValueError("captured FFN reverse boundary changed its K32 ABI")
+
+        from .pypto_dsv41_moe_vjp import make_frozen_w8a8_expert_input_vjp
+        from .pypto_dsv41_online_programs import make_element, make_linear, make_rms
+        from .pypto_dsv41_tail_vjp import (
+            make_hc_pre_data_vjp,
+            make_hc_pre_gate_vjp,
+            make_hc_pre_projection_forward,
+        )
+
+        # Frozen shared expert.  It uses the same W8A8 boundary as each
+        # routed expert, but receives the unweighted MoE output gradient.
+        shared_weights = self.native.weights.for_layer(layer)["expert"](rank, None)
+        shared_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
+        self._execute(
+            ("shared-expert-input-vjp", layer), rank,
+            lambda: make_frozen_w8a8_expert_input_vjp(ROWS, HIDDEN, 2304),
+            value=normed, output_gradient=envelope.shared,
+            gate_up_packed=shared_weights[0], gate_up_scale=shared_weights[1],
+            down_packed=shared_weights[2], down_scale=shared_weights[3],
+            input_gradient=shared_input_gradient,
+        )
+
+        # Fixed Top-K router membership is not differentiated.  The selected
+        # sigmoid-score VJP already lives in ``envelope.router``; only the
+        # frozen full-precision gate projection remains here.
+        gate = self._pinned(rank, f"layers.{layer}.ffn.gate.weight")
+        router_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
+        self._execute(
+            ("router-input-vjp", layer), rank,
+            lambda: make_linear(
+                (ROWS, 384), (384, HIDDEN), transpose_b=False,
+            ),
+            a=envelope.router, b=gate, output=router_input_gradient,
+        )
+        moe_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
+        partial = self._workspace(rank, (ROWS, HIDDEN))
+        self._execute(
+            ("moe-input-add-routed-shared", layer), rank,
+            lambda: make_element((ROWS, HIDDEN), "add"),
+            a=routed_input_gradient, b=shared_input_gradient, output=partial,
+        )
+        self._execute(
+            ("moe-input-add-router", layer), rank,
+            lambda: make_element((ROWS, HIDDEN), "add"),
+            a=partial, b=router_input_gradient, output=moe_input_gradient,
+        )
+
+        # Reverse the frozen FFN RMSNorm with the model's actual 1e-20 eps.
+        norm = self._pinned(rank, f"layers.{layer}.ffn_norm.weight").view(1, HIDDEN)
+        replay_normed = self._workspace(rank, (ROWS, HIDDEN))
+        inverse = self._workspace(rank, (ROWS, 8), torch.float32)
+        self._execute(
+            ("ffn-rms-forward", layer), rank,
+            lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20),
+            x=collapsed, gamma=norm, y=replay_normed, inv=inverse,
+        )
+        collapsed_gradient = self._workspace(rank, (ROWS, HIDDEN))
+        self._execute(
+            ("ffn-rms-input-vjp", layer), rank,
+            lambda: make_rms(
+                ROWS, HIDDEN, mode="input", epsilon=1e-20,
+            ),
+            x=collapsed, gamma=norm, inv=inverse,
+            dy=moe_input_gradient, dx=collapsed_gradient,
+        )
+
+        # Recompute only the small frozen mHC projection.  The exact forward
+        # pre/post/Sinkhorn decisions are otherwise taken from this capture.
+        function = self._pinned(rank, f"layers.{layer}.hc_ffn_fn")
+        scale = self._pinned(rank, f"layers.{layer}.hc_ffn_scale")
+        base = self._pinned(rank, f"layers.{layer}.hc_ffn_base")
+        projection = self._workspace(rank, (ROWS, 32), torch.float32)
+        hc_inverse = self._workspace(rank, (ROWS, 16), torch.float32)
+        self._execute(
+            ("ffn-hc-pre-projection", layer), rank,
+            lambda: make_hc_pre_projection_forward(ROWS, HIDDEN),
+            residual=changed, function=function,
+            projection=projection, inverse=hc_inverse,
+        )
+        projection_gradient = self._workspace(rank, (ROWS, 32), torch.float32)
+        self._execute(
+            ("ffn-hc-pre-gate-vjp", layer), rank,
+            lambda: make_hc_pre_gate_vjp(ROWS),
+            projection=projection, scale=scale, base=base,
+            pre_gradient=envelope.pre, post_gradient=envelope.post,
+            combination_gradient=envelope.combination,
+            projection_gradient=projection_gradient,
+        )
+        hidden_gradient = self._workspace(rank, (ROWS * HC_COPIES, HIDDEN))
+        incoming_gradient = self._workspace(rank, (ROWS, 16), torch.float32)
+        self._execute(
+            ("ffn-hc-pre-data-vjp", layer), rank,
+            lambda: make_hc_pre_data_vjp(ROWS, HIDDEN),
+            residual=changed, incoming=incoming, function=function,
+            inverse=hc_inverse, projection_gradient=projection_gradient,
+            collapsed_gradient=collapsed_gradient,
+            residual_passthrough=envelope.residual,
+            residual_gradient=hidden_gradient,
+            incoming_gradient=incoming_gradient,
+        )
+        return SuffixGradient(hidden_gradient, incoming_gradient[:, :HC_COPIES])
+
     def reverse_draft_attention(self, **options):
         self._unfinished("C1A draft Attention reverse")
 
