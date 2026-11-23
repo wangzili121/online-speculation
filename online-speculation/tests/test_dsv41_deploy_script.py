@@ -127,6 +127,9 @@ def test_hc_collapse_validator_is_a_bounded_single_leaf_check():
 def test_cluster_source_pairing_tracks_the_fully_patched_kernel_tree():
     launcher = (ROOT / "scripts" / "run_dsv41_pypto_cluster.sh").read_text()
     patch = (ROOT / "runtime" / "pypto_dsv41_a3" / "serving-cluster.patch").read_text()
+    assert "from pypto_serving_a3.source import A3_COMMIT, A3_TREE" in launcher
+    assert "apply --reverse --check" in launcher
+    assert "changes beyond the reviewed expert-capture patch" in launcher
     assert 'export ORTHRUS_CLUSTER_LIB_TREE="$(git -C "$PYPTO_LIB_ROOT" rev-parse' in launcher
     assert 'os.environ.get("ORTHRUS_CLUSTER_LIB_TREE", A3_CLUSTER_TREE)' in patch
 

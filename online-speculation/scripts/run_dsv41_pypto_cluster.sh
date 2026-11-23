@@ -6,7 +6,39 @@ patches="$root/runtime/pypto_dsv41_a3"
 : "${PYPTO_LIB_ROOT:?Use the paired A3 offline image}"
 : "${PYPTO_SERVING_ROOT:?Use the paired A3 offline image}"
 
-python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolve()'
+# Verify the pinned base without requiring a pristine worktree: refreshed
+# images intentionally carry the reviewed expert-capture patch uncommitted.
+python - "$PYPTO_LIB_ROOT" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+
+from pypto_serving_a3.source import A3_COMMIT, A3_TREE
+
+root = Path(sys.argv[1])
+git = lambda *args: subprocess.check_output(
+    ["git", "-C", str(root), *args], text=True,
+).strip()
+commit, tree = git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}")
+if commit != A3_COMMIT and tree != A3_TREE:
+    raise SystemExit(
+        f"Unverified A3 base source: expected {A3_COMMIT}/{A3_TREE}, "
+        f"found {commit}/{tree}"
+    )
+PY
+capture_patch="$patches/lib-online-expert-capture.patch"
+if [[ -n "$(git -C "$PYPTO_LIB_ROOT" status --porcelain --untracked-files=no)" ]]; then
+  # Prove that the only base-tree modification is exactly the tracked capture
+  # patch: remove it, require a clean tree, then restore it.
+  git -C "$PYPTO_LIB_ROOT" apply --reverse --check "$capture_patch"
+  git -C "$PYPTO_LIB_ROOT" apply --reverse "$capture_patch"
+  if [[ -n "$(git -C "$PYPTO_LIB_ROOT" status --porcelain --untracked-files=no)" ]]; then
+    echo 'A3 base contains changes beyond the reviewed expert-capture patch.' >&2
+    exit 2
+  fi
+  git -C "$PYPTO_LIB_ROOT" apply --check "$capture_patch"
+  git -C "$PYPTO_LIB_ROOT" apply "$capture_patch"
+fi
 if [[ -n "$(git -C "$PYPTO_SERVING_ROOT" status --porcelain --untracked-files=no)" ]]; then
   echo 'Use a fresh offline image with the paired Serving adapter.' >&2
   exit 2
