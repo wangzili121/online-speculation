@@ -26,18 +26,34 @@ if commit != A3_COMMIT and tree != A3_TREE:
         f"found {commit}/{tree}"
     )
 PY
-capture_patch="$patches/lib-online-expert-capture.patch"
 if [[ -n "$(git -C "$PYPTO_LIB_ROOT" status --porcelain --untracked-files=no)" ]]; then
-  # Prove that the only base-tree modification is exactly the tracked capture
-  # patch: remove it, require a clean tree, then restore it.
-  git -C "$PYPTO_LIB_ROOT" apply --reverse --check "$capture_patch"
-  git -C "$PYPTO_LIB_ROOT" apply --reverse "$capture_patch"
-  if [[ -n "$(git -C "$PYPTO_LIB_ROOT" status --porcelain --untracked-files=no)" ]]; then
-    echo 'A3 base contains changes beyond the reviewed expert-capture patch.' >&2
-    exit 2
-  fi
-  git -C "$PYPTO_LIB_ROOT" apply --check "$capture_patch"
-  git -C "$PYPTO_LIB_ROOT" apply "$capture_patch"
+  # Docker's patch application can preserve equivalent changes with different
+  # hunk metadata. Verify the exact final files rather than reverse-applying a
+  # context-sensitive patch.
+  python - "$PYPTO_LIB_ROOT" <<'PY'
+from hashlib import sha256
+from pathlib import Path
+import subprocess
+import sys
+
+root = Path(sys.argv[1])
+expected = {
+    "models/deepseek_v4_1_flash_a3/prefill_layer.py":
+        "1d97dd78bdc0a5451fe65e8dd3e8a06ee71db37c36b38a2447109fe7a0d95715",
+    "models/deepseek_v4_1_flash_a3/prefill_moe.py":
+        "557f139449c96abc5d32c9bff54f97411aa9f30906c2a13d546ba696866a0437",
+}
+changed = set(subprocess.check_output(
+    ["git", "-C", str(root), "diff", "--name-only", "--diff-filter=ACMRTUXB"],
+    text=True,
+).splitlines())
+actual = {name: sha256((root / name).read_bytes()).hexdigest() for name in changed}
+if changed != set(expected) or actual != expected:
+    raise SystemExit(
+        f"A3 base contains changes beyond the reviewed expert-capture files: "
+        f"changed={sorted(changed)}, hashes={actual}"
+    )
+PY
 fi
 if [[ -n "$(git -C "$PYPTO_SERVING_ROOT" status --porcelain --untracked-files=no)" ]]; then
   echo 'Use a fresh offline image with the paired Serving adapter.' >&2
