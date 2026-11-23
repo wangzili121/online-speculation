@@ -137,6 +137,15 @@ def test_company_online_launcher_keeps_site_paths_in_one_entrypoint():
     assert 'run_dsv41_pypto_online_gsm8k.sh" "$@"' in text
 
 
+def test_capture_does_not_reuse_node_local_head_history():
+    study = (ROOT / "scripts" / "run_dsv41_pypto_online_gsm8k.sh").read_text()
+    environment = (ROOT / "scripts" / "dsv41_pypto_env.sh").read_text()
+    cluster = (ROOT / "scripts" / "run_dsv41_pypto_cluster.sh").read_text()
+    assert "export PYPTO_REUSE_PREVIOUS_HEAD=0" in study
+    assert 'PYPTO_REUSE_PREVIOUS_HEAD=$PYPTO_REUSE_PREVIOUS_HEAD' in environment
+    assert '"${PYPTO_REUSE_PREVIOUS_HEAD:-1}" == 1' in cluster
+
+
 def test_cluster_source_pairing_tracks_the_fully_patched_kernel_tree():
     launcher = (ROOT / "scripts" / "run_dsv41_pypto_cluster.sh").read_text()
     patch = (ROOT / "runtime" / "pypto_dsv41_a3" / "serving-cluster.patch").read_text()

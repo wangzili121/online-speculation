@@ -38,6 +38,10 @@ export CLUSTER_KEY_FILE="${CLUSTER_KEY_FILE:-/root/.orthrus-cluster.key}"
 export NPU_DEVICES="${NPU_DEVICES:-0,1,2,3,4,5,6,7}"
 
 if [[ "$mode" == capture ]]; then
+  # Each host has a different set of historical result directories.  Reusing
+  # the locally newest head can therefore make the cluster identities differ.
+  # A capture gate starts from the deterministic target initialization instead.
+  export PYPTO_REUSE_PREVIOUS_HEAD=0
   online_overrides="{\"last_layers\":$last_layers,\"teacher_rows\":1,\"warm_update_stride\":1,\"warm_update_steps\":1,\"steady_update_stride\":1,\"publish_every\":1}"
   short_gate=(--orthrus-only --require-online-update)
 else

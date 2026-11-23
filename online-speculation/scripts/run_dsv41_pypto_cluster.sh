@@ -135,7 +135,7 @@ if [[ "${1:-}" == --compile-only ]]; then
 fi
 
 : "${TARGET_WEIGHTS:?Mount the paired W8A8 model}"
-if [[ -z "${DRAFT_HEAD:-}" && -n "${PYPTO_PREVIOUS_HEAD:-}" ]]; then
+if [[ "${PYPTO_REUSE_PREVIOUS_HEAD:-1}" == 1 && -z "${DRAFT_HEAD:-}" && -n "${PYPTO_PREVIOUS_HEAD:-}" ]]; then
   if python - "$TARGET_WEIGHTS" "$PYPTO_PREVIOUS_HEAD" <<'PY'
 from pathlib import Path
 import sys

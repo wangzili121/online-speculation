@@ -264,8 +264,12 @@ def run(args):
                        tokens=args.tokens, context=args.context,
                        trace_prefill=args.trace_prefill, trace_position=args.trace_position,
                        online=None if online is None else online.config.contract())
-        if link.exchange("acceptance/configuration", request) != request:
-            raise ValueError("Nodes must use the same checkout, model, head and workload")
+        peer_request = link.exchange("acceptance/configuration", request)
+        if peer_request != request:
+            mismatched = [name for name in request if peer_request.get(name) != request[name]]
+            raise ValueError(
+                "Nodes differ in acceptance configuration: " + ", ".join(mismatched)
+            )
         print(f"Node {args.node} preparing HOST Engram contracts", flush=True)
         cache = source.module("prefill_prepare").checkpoint_cache(
             args.model, config.topology, progress=lambda event: print(json.dumps(event), flush=True)

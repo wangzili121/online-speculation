@@ -388,6 +388,9 @@ case "$action" in
       key_dir="$(cd "$(dirname "$key_file")" && pwd -P)"
       options+=(-v "$key_dir/$(basename "$key_file"):/run/orthrus-cluster.key:ro"
                 -e PYTHONPATH=/workspace/online-speculation/src)
+      if [[ -n "${PYPTO_REUSE_PREVIOUS_HEAD:-}" ]]; then
+        options+=(-e "PYPTO_REUSE_PREVIOUS_HEAD=$PYPTO_REUSE_PREVIOUS_HEAD")
+      fi
       control_only=false
       for arg in "$@"; do
         if [[ "$arg" == --control-only ]]; then control_only=true; fi
