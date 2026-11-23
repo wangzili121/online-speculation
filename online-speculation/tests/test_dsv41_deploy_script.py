@@ -93,7 +93,7 @@ def test_experimental_single_a2_launcher_maps_one_eight_card_node():
     assert "scripts/serve_dsv41_single_a2.sh" in docker_exec[-1]
 
 
-def test_online_gsm8k_launcher_is_strict_and_uses_resident_factory():
+def test_online_gsm8k_launcher_is_strict_and_uses_resident_factory(tmp_path):
     script = ROOT / "scripts" / "run_dsv41_pypto_online_gsm8k.sh"
     text = script.read_text()
     assert "set -euo pipefail" in text
@@ -101,6 +101,17 @@ def test_online_gsm8k_launcher_is_strict_and_uses_resident_factory():
     assert "--online-study" in text and "--online-overrides" in text
     assert "last-N must be one of 1, 2, 4 or 8" in text
     assert "--no-trace-prefill" in text
+    environment = os.environ.copy()
+    environment["DSV41_GSM8K_ROOT"] = str(tmp_path / "missing-data")
+    result = subprocess.run(
+        [script, "node7", "smoke", "1"],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert result.returncode == 2
+    assert "required online-update input is missing" in result.stderr
+    assert "node must be node7 or node8" not in result.stderr
 
 
 def test_hc_collapse_validator_is_a_bounded_single_leaf_check():

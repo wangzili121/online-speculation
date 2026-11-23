@@ -2,7 +2,8 @@
 # Launch the paired DSV4.1 resident online-update study with one stable command.
 set -euo pipefail
 
-node="${1:?usage: $0 {node7|node8} {smoke|tuning|eval} [last-N]}"
+[[ $# -ge 1 ]] || { echo "usage: $0 <node7|node8> <smoke|tuning|eval> [last-N]" >&2; exit 2; }
+node="$1"
 mode="${2:-smoke}"
 last_layers="${3:-1}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
