@@ -11,6 +11,13 @@ bash online-speculation/scripts/dsv41_pypto_env.sh gsm8k-prepare \
 
 脚本从 GSM8K 官方仓库下载并校验固定 SHA256，生成互不重叠的 128 题预热集、128 题调参集、384 题在线评测集和官方质量测试集。标准答案只用于最后的正确率统计；draft 更新只使用主模型在真实修正前缀上的 logits，避免把答案标签混入在线教师反馈。
 
+内网机器不能联网时，可在联网机器保存官方的 `train.jsonl`、`test.jsonl`，把目录作为第二个参数传入；脚本仍执行同一组 SHA256 校验。失效的 `127.0.0.1/localhost` 隧道代理会自动绕过，不影响普通公司代理。
+
+```bash
+bash online-speculation/scripts/dsv41_pypto_env.sh gsm8k-prepare \
+  /workspace/data/orthrus-dsv41-gsm8k /workspace/data/gsm8k-source
+```
+
 四个实验臂使用相同题目顺序和 greedy 生成：target-only、固定初始化 head、初始化 head 直接在线更新、短预热 head 继续在线更新。每个在线实验重新初始化优化器，训练和权重发布时间计入总耗时。配置见 [`gsm8k-online.json`](../configs/dsv41/gsm8k-online.json)。
 
 ## 在线监督

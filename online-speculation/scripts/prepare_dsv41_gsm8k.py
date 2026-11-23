@@ -4,9 +4,11 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import random
-from urllib.request import urlopen
+from urllib.parse import urlparse
+from urllib.request import ProxyHandler, build_opener, urlopen
 
 
 ROOT = "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data"
@@ -32,7 +34,15 @@ def acquire(name, directory, source_directory=None):
     elif path.exists() and sha256(path) == expected:
         return path
     else:
-        with urlopen(url, timeout=60) as response:
+        # Long-lived NPU hosts often retain an SSH-tunnel proxy such as
+        # 127.0.0.1:3128 after the tunnel has gone away. Bypass only a local
+        # proxy; keep ordinary corporate proxy settings intact.
+        proxy = next((os.environ.get(key) for key in (
+            "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
+        ) if os.environ.get(key)), None)
+        host = urlparse(proxy).hostname if proxy else None
+        opener = build_opener(ProxyHandler({})) if host in {"127.0.0.1", "localhost", "::1"} else None
+        with (opener.open(url, timeout=60) if opener is not None else urlopen(url, timeout=60)) as response:
             data = response.read()
     if hashlib.sha256(data).hexdigest() != expected:
         raise ValueError(f"GSM8K {name} SHA256 does not match the pinned public file")

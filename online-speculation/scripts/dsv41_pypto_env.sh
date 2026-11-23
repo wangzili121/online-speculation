@@ -48,7 +48,9 @@ image="${PYPTO_IMAGE:-$default_image}"
 case "$action" in
   gsm8k-prepare)
     destination="${1:-/workspace/data/orthrus-dsv41-gsm8k}"
-    exec python3 "$root/scripts/prepare_dsv41_gsm8k.py" --output "$destination"
+    arguments=(--output "$destination")
+    if [[ -n "${2:-}" ]]; then arguments+=(--source-directory "$2"); fi
+    exec python3 "$root/scripts/prepare_dsv41_gsm8k.py" "${arguments[@]}"
     ;;
   gsm8k-summary)
     [[ $# -gt 0 ]] || { echo "Usage: $0 gsm8k-summary RESULT..." >&2; exit 2; }
