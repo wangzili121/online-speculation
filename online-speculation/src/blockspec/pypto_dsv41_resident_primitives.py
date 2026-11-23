@@ -147,8 +147,8 @@ class DSV41ResidentPrimitives:
         return begin, end
 
     def loss_vjp(self, logits, teacher, valid, kind):
-        if kind not in ("tv", "kl") or not 1 <= valid < ROWS:
-            raise ValueError("resident loss requires TV/KL and 1..31 authoritative rows")
+        if kind not in ("tv", "forward_kl") or not 1 <= valid < ROWS:
+            raise ValueError("resident loss requires TV/forward_kl and 1..31 authoritative rows")
         if logits.shape[0] < valid or teacher.shape != (valid, logits.shape[1]):
             raise ValueError("student and teacher full-vocabulary rows are not aligned")
         token = _DeferredLoss(
@@ -166,7 +166,7 @@ class DSV41ResidentPrimitives:
         teacher = self._padded_logits(token.teacher, token.valid, vocabulary)
         gradient = self._workspace(rank, (ROWS, vocabulary))
         losses = self._workspace(rank, (ROWS, 8), torch.float32)
-        factory = (make_tv if token.kind == "tv" else make_kl)
+        factory = make_tv if token.kind == "tv" else make_kl
         self._execute(
             ("loss", token.kind, vocabulary), rank,
             lambda: factory(ROWS, vocabulary),
@@ -174,6 +174,51 @@ class DSV41ResidentPrimitives:
             valid=token.valid, normalizer=token.valid,
         )
         return gradient, losses
+
+    def _tp_all_reduce(self, values, *, stage):
+        """Sum one complete local TP4 group without a host tensor boundary.
+
+        In the two-host topology every TP group is node-local.  Calling the
+        cluster-wide scheduling wrapper here would incorrectly require the
+        non-owning host to enter a collective that belongs only to the owner
+        replay.  We therefore use the already-created local TP communicators
+        directly; DP/EP collectives still use the global transport later.
+        """
+        ranks = tuple(sorted(values))
+        if len(ranks) != 4 or ranks != tuple(range(ranks[0] // 4 * 4, ranks[0] // 4 * 4 + 4)):
+            raise ValueError("TP all-reduce requires one contiguous TP4 group")
+        shape, dtype = values[ranks[0]].shape, values[ranks[0]].dtype
+        if any(value.shape != shape or value.dtype != dtype for value in values.values()):
+            raise ValueError("TP all-reduce operands changed shape or dtype")
+
+        transport = getattr(self.native, "transport", None)
+        if transport is None:
+            packets = [
+                {stage: {"value": values[rank]}}
+                for rank in ranks
+            ]
+            result, _ = self.resident.exchange(stage, packets, "all_reduce", "tp")
+            return {rank: result[index][stage]["value"] for index, rank in enumerate(ranks)}
+
+        channels = transport._channels("tp")
+        local_ranks = tuple(transport.plan.local_ranks)
+        if not set(ranks) <= set(local_ranks):
+            raise ValueError("a TP group may not cross hosts")
+        prepared = {}
+        for rank in ranks:
+            local = self._local(rank)
+            channel = channels[local]
+            output = self._workspace(rank, shape, dtype)
+            source = self.resident.tensor(values[rank], local)
+            destination = self.resident.tensor(output, local)
+            channel._validate_device_transfer(source, destination, "all_reduce")
+            prepared[rank] = output, (source, destination, f"online/{stage}/rank{rank}")
+        def transfer(local):
+            rank = local_ranks[local]
+            if rank in prepared:
+                channels[local].exchange_device_batch([prepared[rank][1]], "all_reduce")
+        self.resident.map_ranks(transfer)
+        return {rank: prepared[rank][0] for rank in ranks}
 
     def lm_head_vjp(self, gradient, rows):
         """Run the terminal reverse on every TP owner without host gradients."""
@@ -189,7 +234,8 @@ class DSV41ResidentPrimitives:
         from .pypto_dsv41_online_programs import make_linear, make_rms
         from .pypto_dsv41_tail_vjp import make_hc_collapse_forward, make_hc_collapse_vjp
 
-        hidden_gradients, premix_gradients = {}, {}
+        hidden_gradients, premix_gradients, normalized_gradients = {}, {}, {}
+        terminal_states = {}
         local_vocabulary = vocabulary // 4
         for rank in ranks:
             row = rows[rank]
@@ -213,6 +259,7 @@ class DSV41ResidentPrimitives:
                 lambda: make_rms(ROWS, HIDDEN),
                 x=collapsed, gamma=norm, y=normalized, inv=inverse,
             )
+            terminal_states[rank] = streams, premix, collapsed, norm, inverse
 
             dlogits, losses = self._loss_on_rank(rank, gradient.loss)
             if gradient.loss.value is None:
@@ -232,11 +279,19 @@ class DSV41ResidentPrimitives:
                 a=dlocal, b=self.resident.handle(head, self._local(rank), readonly=True),
                 output=dnormalized,
             )
+            normalized_gradients[rank] = dnormalized
+
+        normalized_gradients = self._tp_all_reduce(
+            normalized_gradients, stage="lm-head-input-vjp",
+        )
+        for rank in ranks:
+            streams, premix, collapsed, norm, inverse = terminal_states[rank]
             dcollapsed = self._workspace(rank, (ROWS, HIDDEN))
             self._execute(
                 ("final-rms-input-vjp",), rank,
                 lambda: make_rms(ROWS, HIDDEN, mode="input"),
-                x=collapsed, gamma=norm, inv=inverse, dy=dnormalized, dx=dcollapsed,
+                x=collapsed, gamma=norm, inv=inverse,
+                dy=normalized_gradients[rank], dx=dcollapsed,
             )
             dstreams = self._workspace(rank, (ROWS * HC_COPIES, HIDDEN))
             dpremix = self._workspace(rank, (ROWS, 16), torch.float32)
@@ -246,7 +301,8 @@ class DSV41ResidentPrimitives:
                 streams=streams, premix=premix, output_gradient=dcollapsed,
                 stream_gradient=dstreams, premix_gradient=dpremix,
             )
-            hidden_gradients[rank], premix_gradients[rank] = dstreams, dpremix
+            hidden_gradients[rank] = dstreams
+            premix_gradients[rank] = dpremix[:, :HC_COPIES]
         return SuffixGradient(hidden_gradients, premix_gradients)
 
     @staticmethod

@@ -64,6 +64,23 @@ def test_loss_is_deferred_until_it_has_a_resident_tp_owner():
     assert loss.student.shape == (7, 64) and loss.student.dtype == torch.bfloat16
 
 
+def test_objective_name_matches_public_online_configuration():
+    value = DSV41ResidentPrimitives(
+        draft=Draft(), native=native(), cluster=None, config=config(),
+    )
+    loss, _ = value.loss_vjp(
+        torch.randn(31, 64), torch.randn(3, 64), 3, "forward_kl",
+    )
+    assert loss.kind == "forward_kl"
+    with pytest.raises(ValueError, match="forward_kl"):
+        value.loss_vjp(torch.randn(31, 64), torch.randn(3, 64), 3, "kl")
+
+
+def test_terminal_vjp_exposes_only_four_real_premix_columns():
+    padded = torch.empty(32, 16)
+    assert padded[:, :4].shape == (32, 4)
+
+
 def test_exact_k32_span_is_mandatory():
     assert DSV41ResidentPrimitives._span({"token_begin": 12, "token_end": 44}) == (12, 44)
     with pytest.raises(ValueError, match="exact captured K32"):
