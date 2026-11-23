@@ -59,6 +59,10 @@ class DSV41ResidentUpdateBackend:
             rank: {
                 "hidden": row["output_hidden"],
                 "pre_mix": row["output_pre_mix"],
+                **({
+                    "token_begin": row["token_begin"],
+                    "token_end": row["token_end"],
+                } if "token_begin" in row else {}),
             }
             for rank, row in rows.items()
         }

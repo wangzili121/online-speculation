@@ -419,13 +419,33 @@ class DraftRound:
                     if key not in self.captured_attention or key not in self.captured_tail:
                         continue
                     a, state = self.captured_attention[key], self.captured_tail[key]
+                    span = {}
+                    record = state.get("original")
+                    if record is not None:
+                        matches = []
+                        for item in record["request_token_map"]:
+                            mapped = self.owners[
+                                rank // self.attention.topology["tp"], item["request_slot"]
+                            ]
+                            if mapped == owner:
+                                matches.append(item)
+                        if len(matches) != 1:
+                            raise RuntimeError(
+                                "captured suffix state has no unique request token span"
+                            )
+                        begin, end = (
+                            int(matches[0]["token_begin"]), int(matches[0]["token_end"]),
+                        )
+                        if end - begin != BLOCK:
+                            raise RuntimeError("online suffix replay requires one complete K32 row span")
+                        span = {"token_begin": begin, "token_end": end}
                     attention[rank] = dict(
                         a,
                         readonly_hidden=state["readonly_hidden"],
                         hidden=state["hidden"], incoming=state["incoming"],
                         pre=state["pre"], post=state["post"], comb=state["comb"],
                         collapsed=state["attn_collapsed"], normed=state["full_norm"],
-                        changed=state["changed"],
+                        changed=state["changed"], **span,
                     )
                     ffn[rank] = {
                         "changed": state["changed"], "pre": state["ffn_pre"],
@@ -437,6 +457,7 @@ class DraftRound:
                         "combined": state["combined"],
                         "output_hidden": state["padded_hidden"],
                         "output_pre_mix": state["ffn_pre"],
+                        **span,
                     }
                 if not attention:
                     raise RuntimeError(f"captured request has no local TP state at layer {layer}")
