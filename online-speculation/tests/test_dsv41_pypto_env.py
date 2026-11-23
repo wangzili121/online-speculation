@@ -61,10 +61,12 @@ def test_multicard_check_maps_one_complete_tp4_partition(tmp_path):
     env = environment(tmp_path) | {
         "NPU_DEVICES": "4,5,6,7", "PYPTO_IMAGE": "image:offline",
     }
-    result = subprocess.check_output(
+    result = subprocess.run(
         ["bash", str(SCRIPT), "multicard-check"], text=True, env=env, cwd=tmp_path,
+        capture_output=True, check=True,
     )
-    location, command = result.splitlines()
+    location = result.stderr.strip().splitlines()[-1]
+    command = result.stdout.strip()
     output = Path(location.removeprefix("Report: "))
     args = json.loads(command)
     assert output.name == "multicard.json"
