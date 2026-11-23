@@ -482,3 +482,251 @@ def make_hc_pre_gate_vjp(rows=32, copies=4, iterations=20, eps=1e-6, *, inline=F
         )
 
     return hc_pre_gate_vjp if inline else entry
+
+
+def make_hc_pre_projection_forward(
+    rows=32, hidden=5120, copies=4, *, norm_eps=1e-20, inline=False,
+):
+    """Recompute the exact frozen mHC projection and saved inverse RMS.
+
+    Native DSV4.1 projects the *FP32-normalized* concatenated four-stream
+    residual directly to 24 FP32 gate channels.  A generic RMSNorm followed
+    by a BF16 GEMM would insert a rounding boundary that is absent from the
+    target forward, so online reverse uses this small dedicated replay leaf.
+    """
+    import math
+    if (
+        type(rows) is not int or rows < 1 or type(hidden) is not int
+        or hidden < 64 or hidden % 64 or copies != 4
+        or not isinstance(norm_eps, (int, float))
+        or not math.isfinite(norm_eps) or norm_eps <= 0
+    ):
+        raise ValueError("expected aligned DSV4.1 mHC projection geometry")
+    import pypto.language as pl
+
+    flat, channels, tile = copies * hidden, (copies + 2) * copies, 64
+    kernel = pl.jit.inline if inline else pl.jit
+
+    @kernel
+    def projection_forward(
+        residual: pl.Tensor,
+        function: pl.Tensor,
+        projection: pl.Out[pl.Tensor],
+        inverse: pl.Out[pl.Tensor],
+    ):
+        flattened = pl.reshape(residual, [rows, flat])
+        with pl.spmd(rows, name_hint="orthrus_dsv41_hc_pre_inverse"):
+            token = pl.tile.get_block_idx()
+            total = pl.full([8, 8], dtype=pl.FP32, value=0.)
+            for part in pl.range(flat // tile):
+                value = pl.reshape(
+                    pl.cast(
+                        pl.slice(flattened, [1, tile], [token, part * tile]),
+                        pl.FP32,
+                    ),
+                    [8, 8],
+                )
+                square = pl.mul(value, value)
+                partial = pl.row_expand_mul(
+                    pl.full([8, 8], dtype=pl.FP32, value=1.),
+                    pl.row_sum(square),
+                )
+                total = pl.add(
+                    total,
+                    pl.row_expand_mul(
+                        pl.full([8, 8], dtype=pl.FP32, value=1.),
+                        pl.row_sum(pl.transpose(partial, 0, 1)),
+                    ),
+                )
+            inverse_tile = pl.rsqrt(
+                pl.add(pl.mul(total, 1. / flat), norm_eps),
+                high_precision=True,
+            )
+            inv = pl.tile.read(inverse_tile, [0, 0])
+            for lane in pl.unroll(8):
+                pl.write(inverse, [token, lane], inv)
+
+        with pl.spmd(rows * channels, name_hint="orthrus_dsv41_hc_pre_projection_replay"):
+            task = pl.tile.get_block_idx()
+            token, channel = task // channels, task % channels
+            total = pl.full([8, 8], dtype=pl.FP32, value=0.)
+            for part in pl.range(flat // tile):
+                value = pl.reshape(
+                    pl.cast(
+                        pl.slice(flattened, [1, tile], [token, part * tile]),
+                        pl.FP32,
+                    ),
+                    [8, 8],
+                )
+                weight = pl.reshape(
+                    pl.slice(function, [1, tile], [channel, part * tile]),
+                    [8, 8],
+                )
+                product = pl.mul(value, weight)
+                partial = pl.row_expand_mul(
+                    pl.full([8, 8], dtype=pl.FP32, value=1.),
+                    pl.row_sum(product),
+                )
+                total = pl.add(
+                    total,
+                    pl.row_expand_mul(
+                        pl.full([8, 8], dtype=pl.FP32, value=1.),
+                        pl.row_sum(pl.transpose(partial, 0, 1)),
+                    ),
+                )
+            pl.write(
+                projection, [token, channel],
+                pl.read(total, [0, 0]) * pl.read(inverse, [token, 0]),
+            )
+        return projection, inverse
+
+    @pl.jit.host
+    def entry(
+        residual: pl.Tensor,
+        function: pl.Tensor,
+        projection: pl.Out[pl.Tensor],
+        inverse: pl.Out[pl.Tensor],
+    ):
+        projection_forward(residual, function, projection, inverse, device=0)
+
+    return projection_forward if inline else entry
+
+
+def make_hc_pre_data_vjp(
+    rows=32, hidden=5120, copies=4, *, inline=False,
+):
+    """Reverse the frozen mHC projection/RMS and premix collapse.
+
+    ``residual_gradient`` already contains the direct residual branch from
+    the matching mHC-post VJP.  This leaf adds the projection and collapse
+    contributions in FP32 and narrows once to the native BF16 boundary.
+    ``incoming_gradient`` is padded to sixteen columns for race-free stores.
+    """
+    if (
+        type(rows) is not int or rows < 1 or type(hidden) is not int
+        or hidden < 64 or hidden % 64 or copies != 4
+    ):
+        raise ValueError("expected aligned DSV4.1 mHC data-VJP geometry")
+    import pypto.language as pl
+
+    flat, channels, tile = copies * hidden, (copies + 2) * copies, 64
+    kernel = pl.jit.inline if inline else pl.jit
+
+    @kernel
+    def data_vjp(
+        residual: pl.Tensor,
+        incoming: pl.Tensor,
+        function: pl.Tensor,
+        inverse: pl.Tensor,
+        projection_gradient: pl.Tensor,
+        collapsed_gradient: pl.Tensor,
+        residual_passthrough: pl.Tensor,
+        residual_gradient: pl.Out[pl.Tensor],
+        incoming_gradient: pl.Out[pl.Tensor],
+    ):
+        flattened = pl.reshape(residual, [rows, flat])
+        passthrough = pl.reshape(residual_passthrough, [rows, flat])
+        output = pl.reshape(residual_gradient, [rows, flat])
+        with pl.spmd(rows, name_hint="orthrus_dsv41_hc_pre_data_backward"):
+            token = pl.tile.get_block_idx()
+            inv = pl.read(inverse, [token, 0])
+            dot = pl.full([8, 8], dtype=pl.FP32, value=0.)
+            # First pass computes <d(normalized), residual>, required by the
+            # exact RMS input VJP over all four streams.
+            for part in pl.range(flat // tile):
+                begin = part * tile
+                normalized_gradient = pl.full([1, tile], dtype=pl.FP32, value=0.)
+                for channel in pl.range(channels):
+                    normalized_gradient = pl.add(
+                        normalized_gradient,
+                        pl.mul(
+                            pl.slice(function, [1, tile], [channel, begin]),
+                            pl.read(projection_gradient, [token, channel]),
+                        ),
+                    )
+                value = pl.cast(
+                    pl.slice(flattened, [1, tile], [token, begin]), pl.FP32,
+                )
+                product = pl.reshape(pl.mul(normalized_gradient, value), [8, 8])
+                partial = pl.row_expand_mul(
+                    pl.full([8, 8], dtype=pl.FP32, value=1.),
+                    pl.row_sum(product),
+                )
+                dot = pl.add(
+                    dot,
+                    pl.row_expand_mul(
+                        pl.full([8, 8], dtype=pl.FP32, value=1.),
+                        pl.row_sum(pl.transpose(partial, 0, 1)),
+                    ),
+                )
+            correction = pl.read(dot, [0, 0]) * inv * inv / flat
+
+            for stream in pl.range(copies):
+                incoming_total = pl.full([8, 8], dtype=pl.FP32, value=0.)
+                coefficient = pl.read(incoming, [token, stream])
+                for part in pl.range(hidden // tile):
+                    column = part * tile
+                    begin = stream * hidden + column
+                    normalized_gradient = pl.full([1, tile], dtype=pl.FP32, value=0.)
+                    for channel in pl.range(channels):
+                        normalized_gradient = pl.add(
+                            normalized_gradient,
+                            pl.mul(
+                                pl.slice(function, [1, tile], [channel, begin]),
+                                pl.read(projection_gradient, [token, channel]),
+                            ),
+                        )
+                    value = pl.cast(
+                        pl.slice(flattened, [1, tile], [token, begin]), pl.FP32,
+                    )
+                    collapsed = pl.cast(
+                        pl.slice(collapsed_gradient, [1, tile], [token, column]),
+                        pl.FP32,
+                    )
+                    direct = pl.mul(collapsed, coefficient)
+                    rms = pl.mul(
+                        pl.sub(normalized_gradient, pl.mul(value, correction)), inv,
+                    )
+                    prior = pl.cast(
+                        pl.slice(passthrough, [1, tile], [token, begin]), pl.FP32,
+                    )
+                    output[token:token + 1, begin:begin + tile] = pl.cast(
+                        pl.add(pl.add(rms, direct), prior), pl.BF16, mode="rint",
+                    )
+                    product = pl.reshape(pl.mul(value, collapsed), [8, 8])
+                    partial = pl.row_expand_mul(
+                        pl.full([8, 8], dtype=pl.FP32, value=1.),
+                        pl.row_sum(product),
+                    )
+                    incoming_total = pl.add(
+                        incoming_total,
+                        pl.row_expand_mul(
+                            pl.full([8, 8], dtype=pl.FP32, value=1.),
+                            pl.row_sum(pl.transpose(partial, 0, 1)),
+                        ),
+                    )
+                pl.write(
+                    incoming_gradient, [token, stream],
+                    pl.read(incoming_total, [0, 0]),
+                )
+        return residual_gradient, incoming_gradient
+
+    @pl.jit.host
+    def entry(
+        residual: pl.Tensor,
+        incoming: pl.Tensor,
+        function: pl.Tensor,
+        inverse: pl.Tensor,
+        projection_gradient: pl.Tensor,
+        collapsed_gradient: pl.Tensor,
+        residual_passthrough: pl.Tensor,
+        residual_gradient: pl.Out[pl.Tensor],
+        incoming_gradient: pl.Out[pl.Tensor],
+    ):
+        data_vjp(
+            residual, incoming, function, inverse, projection_gradient,
+            collapsed_gradient, residual_passthrough, residual_gradient,
+            incoming_gradient, device=0,
+        )
+
+    return data_vjp if inline else entry
