@@ -103,7 +103,7 @@ class DSV41ResidentUpdateBackend:
             raise TypeError("LM-head VJP must return hidden and pre-mix gradients")
         return result
 
-    def reverse_layer(self, layer, captured, state, boundary):
+    def reverse_layer(self, layer, captured, state, boundary, *, synchronization=None):
         """Reverse one complete C1A layer with fixed forward decisions.
 
         The frozen tail consumes captured mHC and MoE state first.  Its input
@@ -131,12 +131,32 @@ class DSV41ResidentUpdateBackend:
         else:
             gradients = {rank: boundary for rank in attention}
 
-        rank_inputs, rank_parameters = {}, {}
-        for rank in sorted(attention):
-            tail = self.primitives.reverse_frozen_tail(
-                layer=layer, rank=rank, captured=ffn[rank],
-                state=states[rank], output_gradient=gradients[rank],
+        ranks = tuple(sorted(attention))
+        if synchronization is None:
+            tails = {
+                rank: self.primitives.reverse_frozen_tail(
+                    layer=layer, rank=rank, captured=ffn[rank],
+                    state=states[rank], output_gradient=gradients[rank],
+                )
+                for rank in ranks
+            }
+        else:
+            reverse = getattr(self.primitives, "reverse_frozen_tail_owner_batch", None)
+            if not callable(reverse):
+                raise RuntimeError(
+                    "synchronized DSV4.1 reverse requires the resident primitive "
+                    "hook reverse_frozen_tail_owner_batch"
+                )
+            tails = reverse(
+                layer=layer, ranks=ranks, captured=ffn, states=states,
+                output_gradients=gradients, synchronization=synchronization,
             )
+            if not isinstance(tails, Mapping) or set(tails) != set(ranks):
+                raise ValueError("owner frozen-tail batch must return every TP rank")
+
+        rank_inputs, rank_parameters = {}, {}
+        for rank in ranks:
+            tail = tails[rank]
             if not isinstance(tail, SuffixGradient):
                 raise TypeError("frozen-tail VJP must return a suffix gradient")
             incoming, parameters = self.primitives.reverse_draft_attention(
@@ -162,6 +182,20 @@ class DSV41ResidentUpdateBackend:
             {rank: value.hidden for rank, value in rank_inputs.items()},
             {rank: value.pre_mix for rank, value in rank_inputs.items()},
         ), assembled
+
+    def participate_reverse(self, layers, synchronization):
+        """Enter remote routed-expert VJPs in the owner's exact layer order."""
+        layers = tuple(layers)
+        if layers != self.plan.layers:
+            raise ValueError("reverse participant received a different last-N suffix")
+        participate = getattr(self.primitives, "participate_frozen_tail_peer", None)
+        if not callable(participate):
+            raise RuntimeError(
+                "synchronized DSV4.1 reverse requires the resident primitive "
+                "hook participate_frozen_tail_peer"
+            )
+        for layer in reversed(layers):
+            participate(layer=layer, synchronization=synchronization)
 
     def dp_all_reduce(self, gradients):
         return self.primitives.dp_all_reduce(gradients)

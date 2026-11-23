@@ -190,7 +190,7 @@ class DSV41ServingOnline:
         if contract["update_number"] != update_number:
             raise ValueError("cluster online update versions disagree")
         record = (
-            self.controller.apply(prepared)
+            self.controller.apply(prepared, synchronization=contract)
             if prepared is not None else self.controller.apply_remote(contract)
         )
         self.remote_pending = None

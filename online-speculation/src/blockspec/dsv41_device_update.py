@@ -50,7 +50,10 @@ class DSV41DeviceSuffixLearner:
         logits, output_state = self.backend.project_logits(hidden)
         return logits, output_state, states
 
-    def update_rows(self, replay: DSV41SuffixReplay, teacher, *, kind="tv", learning_rate=None):
+    def update_rows(
+        self, replay: DSV41SuffixReplay, teacher, *, kind="tv",
+        learning_rate=None, synchronization=None,
+    ):
         if replay.plan != self.plan:
             raise ValueError("device learner received a different last-N replay plan")
         if (
@@ -71,7 +74,15 @@ class DSV41DeviceSuffixLearner:
             # ``reverse_layer`` launches, in order, final/next-layer input VJP,
             # FFN hc_post, fixed-route MoE, FFN norm, hc_pre/Sinkhorn,
             # Attention hc_post, and C1A Attention VJP.
-            boundary, gradients = self.backend.reverse_layer(layer, captured, state, boundary)
+            if synchronization is None:
+                boundary, gradients = self.backend.reverse_layer(
+                    layer, captured, state, boundary,
+                )
+            else:
+                boundary, gradients = self.backend.reverse_layer(
+                    layer, captured, state, boundary,
+                    synchronization=synchronization,
+                )
             prefix = f"layers.{layer}.attn."
             expected = {name.removeprefix(prefix) for name in self.plan.trainable_names()
                         if name.startswith(prefix)}
@@ -89,12 +100,34 @@ class DSV41DeviceSuffixLearner:
         self.backend.adamw(reduced, rate=rate, step=self.version, clip=clip)
         return float(self.backend.read_scalar(loss)), float(self.backend.read_scalar(norm)), self.version
 
-    def update_zero(self, *, learning_rate, update_number):
-        """Join the owner's DP reduction from a replica without teacher rows.
+    def update_participant(self, contract, *, learning_rate, update_number):
+        """Join a synchronized reverse on a host without the feedback block.
 
-        Every DP replica must enter the same HCCL calls.  Non-owning replicas
-        contribute exactly zero parameter gradients, then receive the owner's
-        reduced gradient and apply the identical FP32 optimizer step.
+        A remote host may own routed experts even though it owns no verifier
+        rows.  It must therefore enter every selected layer's EP reverse before
+        contributing zero *draft-parameter* gradients to the DP reduction.
+        The backend hook is mandatory: silently skipping it would drop remote
+        expert input gradients and can deadlock the owner's collectives.
+        """
+        if update_number != self.version + 1:
+            raise ValueError("reverse participant received an out-of-order update")
+        if not math.isfinite(learning_rate) or learning_rate <= 0:
+            raise ValueError("positive finite update rate required")
+        self.backend.participate_reverse(self.plan.layers, contract)
+        gradients = self.backend.zero_gradients(self.plan.layers)
+        if set(gradients) != set(self.plan.trainable_names()):
+            raise ValueError("reverse participant has an incomplete suffix ABI")
+        reduced = self.backend.dp_all_reduce(gradients)
+        norm, clip = self.backend.gradient_norm_and_clip(reduced, maximum=1.)
+        self.version = update_number
+        self.backend.adamw(reduced, rate=learning_rate, step=self.version, clip=clip)
+        return 0., float(self.backend.read_scalar(norm)), self.version
+
+    def update_zero(self, *, learning_rate, update_number):
+        """Join a same-host DP reduction from a replica without teacher rows.
+
+        This compatibility path is valid only when no cross-host EP reverse is
+        required.  Dual-node serving must call :meth:`update_participant`.
         """
         if update_number != self.version + 1:
             raise ValueError("zero-gradient participant received an out-of-order update")

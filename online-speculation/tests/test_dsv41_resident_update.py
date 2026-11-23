@@ -45,6 +45,13 @@ class Primitives:
         self.events.append(("tail", options["layer"], options["rank"], options["captured"]["route_ids"]))
         return options["output_gradient"]
 
+    def reverse_frozen_tail_owner_batch(self, **options):
+        self.events.append(("tail-owner-batch", options["layer"], options["ranks"]))
+        return options["output_gradients"]
+
+    def participate_frozen_tail_peer(self, **options):
+        self.events.append(("tail-peer", options["layer"], options["synchronization"]["reverse"]["protocol"]))
+
     def reverse_draft_attention(self, **options):
         layer, rank = options["layer"], options["rank"]
         self.events.append(("attention", layer, rank, options["captured"]["selection"]))
@@ -129,3 +136,47 @@ def test_resident_backend_trains_only_available_corrected_prefix_rows():
     assert loss.item() == pytest.approx(.2)
     assert gradient.shape == (7, 17)
     assert primitives.events == [("loss", 7, "tv")]
+
+
+def test_synchronized_owner_batches_tp_ranks_before_attention_reverse():
+    plan = DSV41SuffixPlan(1)
+    primitives = Primitives(plan)
+    backend = DSV41ResidentUpdateBackend(primitives, last_layers=1)
+    layer = captured(39)
+    state = backend.captured_output_state(layer)
+    values = {rank: torch.ones(32, 4) for rank in range(4)}
+    contract = {
+        "reverse": {
+            "protocol": "dsv41-synchronized-reverse-v1",
+            "layers": [39],
+        },
+    }
+    backend.reverse_layer(
+        39, layer, state, SuffixGradient(values, values),
+        synchronization=contract,
+    )
+    assert primitives.events[0] == ("tail-owner-batch", 39, (0, 1, 2, 3))
+    assert [event[:3] for event in primitives.events if event[0] == "attention"] == [
+        ("attention", 39, rank) for rank in range(4)
+    ]
+
+
+def test_peer_enters_every_layer_in_reverse_order_and_requires_hook():
+    plan = DSV41SuffixPlan(2)
+    primitives = Primitives(plan)
+    backend = DSV41ResidentUpdateBackend(primitives, last_layers=2)
+    contract = {
+        "reverse": {
+            "protocol": "dsv41-synchronized-reverse-v1",
+            "layers": list(plan.layers),
+        },
+    }
+    backend.participate_reverse(plan.layers, contract)
+    assert primitives.events == [
+        ("tail-peer", 39, "dsv41-synchronized-reverse-v1"),
+        ("tail-peer", 38, "dsv41-synchronized-reverse-v1"),
+    ]
+
+    primitives.participate_frozen_tail_peer = None
+    with pytest.raises(RuntimeError, match="participate_frozen_tail_peer"):
+        backend.participate_reverse(plan.layers, contract)

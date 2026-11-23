@@ -39,6 +39,9 @@ class Backend:
                  if name.startswith(prefix)]
         return boundary, {name: torch.ones(1) for name in names}
 
+    def participate_reverse(self, layers, contract):
+        self.events.append(("participate", tuple(layers), contract["reverse"]["protocol"]))
+
     def dp_all_reduce(self, gradients):
         self.events.append(("dp_all_reduce", len(gradients)))
         return gradients
@@ -84,6 +87,26 @@ def test_non_owner_replica_contributes_zero_then_applies_reduced_update():
     assert learner.update_zero(learning_rate=2e-6, update_number=1) == (0., .5, 1)
     assert backend.events == [
         ("zero", plan.layers), ("dp_all_reduce", 32),
+        ("clip", 1.), ("adamw", 2e-6, 1),
+    ]
+
+
+def test_remote_host_participates_in_reverse_before_dp_reduction():
+    plan = DSV41SuffixPlan(2)
+    backend = Backend(plan)
+    learner = DSV41DeviceSuffixLearner(backend, last_layers=2)
+    contract = {
+        "reverse": {
+            "protocol": "dsv41-synchronized-reverse-v1",
+            "layers": list(plan.layers),
+        },
+    }
+    assert learner.update_participant(
+        contract, learning_rate=2e-6, update_number=1,
+    ) == (0., .5, 1)
+    assert backend.events == [
+        ("participate", plan.layers, "dsv41-synchronized-reverse-v1"),
+        ("zero", plan.layers), ("dp_all_reduce", 16),
         ("clip", 1.), ("adamw", 2e-6, 1),
     ]
 

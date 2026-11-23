@@ -14,6 +14,8 @@ from time import perf_counter
 
 import torch
 
+from .dsv41_suffix import DSV41SuffixPlan
+
 
 def read_workload(path, limit=None):
     """Read unique JSONL request IDs while preserving scoring metadata."""
@@ -144,6 +146,9 @@ class DSV41PreparedUpdate:
 
     def contract(self):
         replay_owner = getattr(self.replay, "owner", None)
+        plan = getattr(self.replay, "plan", None)
+        if plan is None:
+            raise RuntimeError("prepared update has no synchronized suffix plan")
         return {
             "request_id": self.request_id,
             "owner": None if replay_owner is None else list(replay_owner),
@@ -152,6 +157,10 @@ class DSV41PreparedUpdate:
             "update_number": self.update_number,
             "learning_rate": self.learning_rate,
             "objective": self.objective,
+            "reverse": {
+                "protocol": "dsv41-synchronized-reverse-v1",
+                "layers": list(plan.layers),
+            },
         }
 
 
@@ -279,7 +288,7 @@ class DSV41OnlineController:
         )
         return self.prepared
 
-    def apply(self, prepared: DSV41PreparedUpdate):
+    def apply(self, prepared: DSV41PreparedUpdate, *, synchronization=None):
         """Execute one update after every participating host is ready."""
         if not isinstance(prepared, DSV41PreparedUpdate):
             raise TypeError("DSV4.1 online apply requires a prepared update")
@@ -288,10 +297,17 @@ class DSV41OnlineController:
         update_number = self.completed_updates + 1
         if prepared.update_number != update_number:
             raise ValueError("prepared DSV4.1 update is stale or out of order")
+        if synchronization is not None and synchronization != prepared.contract():
+            raise ValueError("owner synchronized reverse contract does not match its replay")
         started = perf_counter()
+        options = {
+            "kind": prepared.objective,
+            "learning_rate": prepared.learning_rate,
+        }
+        if synchronization is not None:
+            options["synchronization"] = synchronization
         loss, norm, learner_version = self.learner.update_rows(
-            prepared.replay, prepared.teacher, kind=prepared.objective,
-            learning_rate=prepared.learning_rate,
+            prepared.replay, prepared.teacher, **options,
         )
         update_seconds = perf_counter() - started
         publication_seconds = 0.0
@@ -323,24 +339,37 @@ class DSV41OnlineController:
         return record
 
     def apply_remote(self, contract):
-        """Apply the gradient received through DP all-reduce on a non-owner."""
+        """Participate in remote EP reverse, then apply the DP-reduced update."""
         required = {
             "request_id", "owner", "teacher_rows", "vocabulary",
-            "update_number", "learning_rate", "objective",
+            "update_number", "learning_rate", "objective", "reverse",
         }
         if not isinstance(contract, dict) or set(contract) != required:
             raise ValueError("remote DSV4.1 update contract has a different ABI")
         update_number = self.completed_updates + 1
+        reverse = contract["reverse"]
+        expected_layers = list(DSV41SuffixPlan(self.config.last_layers).layers)
         if (
             contract["update_number"] != update_number
             or not 1 <= contract["teacher_rows"] < 32
             or contract["vocabulary"] < 1
             or contract["objective"] != self.config.objective
             or contract["learning_rate"] != self.config.learning_rate_for(update_number)
+            or not isinstance(reverse, dict)
+            or set(reverse) != {"protocol", "layers"}
+            or reverse["protocol"] != "dsv41-synchronized-reverse-v1"
+            or reverse["layers"] != expected_layers
         ):
             raise ValueError("remote DSV4.1 update contract is stale or inconsistent")
+        participate = getattr(self.learner, "update_participant", None)
+        if not callable(participate):
+            raise RuntimeError(
+                "dual-node DSV4.1 online update requires learner.update_participant; "
+                "zero-gradient remote shortcuts are not allowed"
+            )
         started = perf_counter()
-        loss, norm, learner_version = self.learner.update_zero(
+        loss, norm, learner_version = participate(
+            contract,
             learning_rate=contract["learning_rate"], update_number=update_number,
         )
         update_seconds = perf_counter() - started

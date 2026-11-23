@@ -114,7 +114,7 @@ def test_serving_bridge_can_defer_update_until_cluster_rendezvous():
     assert bridge.apply(prepared)["update"] == 1 and learner.calls == 1
 
 
-def test_serving_bridge_synchronizes_owner_and_zero_gradient_peer():
+def test_serving_bridge_synchronizes_owner_and_reverse_participant_peer():
     class Learner:
         last_layers = 1
 
@@ -122,11 +122,17 @@ def test_serving_bridge_synchronizes_owner_and_zero_gradient_peer():
             self.owner, self.calls = owner, []
 
         def update_rows(self, replay, teacher, **options):
-            self.calls.append(("owner", teacher.shape[0]))
+            self.calls.append((
+                "owner", teacher.shape[0],
+                options["synchronization"]["reverse"]["protocol"],
+            ))
             return .4, .6, 1
 
-        def update_zero(self, **options):
-            self.calls.append(("zero", options["update_number"]))
+        def update_participant(self, contract, **options):
+            self.calls.append((
+                "participant", options["update_number"],
+                tuple(contract["reverse"]["layers"]),
+            ))
             return 0., .6, 1
 
     config = DSV41OnlineConfig(
@@ -149,8 +155,42 @@ def test_serving_bridge_synchronizes_owner_and_zero_gradient_peer():
     owner_record = owner.synchronize(prepared, lambda tag, payload: None)
     peer_record = peer.synchronize(None, lambda tag, payload: contract)
     assert owner_record["update"] == peer_record["update"] == 1
-    assert owner_learner.calls == [("owner", 1)]
-    assert peer_learner.calls == [("zero", 1)]
+    assert owner_learner.calls == [
+        ("owner", 1, "dsv41-synchronized-reverse-v1"),
+    ]
+    assert peer_learner.calls == [("participant", 1, (39,))]
+
+
+def test_serving_bridge_rejects_remote_zero_gradient_shortcut():
+    class Learner:
+        last_layers = 1
+
+        def update_rows(self, *args, **kwargs):
+            return .4, .6, 1
+
+        def update_zero(self, **options):
+            raise AssertionError("remote serving must not use update_zero")
+
+    config = DSV41OnlineConfig(
+        teacher_rows=1, warm_update_stride=1, warm_update_steps=1,
+        steady_update_stride=1, publish_every=2,
+    )
+    bridge = DSV41ServingOnline(DSV41OnlineController(Learner(), config))
+    contract = {
+        "request_id": "r", "owner": [0, 0, 1], "teacher_rows": 1,
+        "vocabulary": 7, "update_number": 1,
+        "learning_rate": config.learning_rate_for(1),
+        "objective": "tv",
+        "reverse": {
+            "protocol": "dsv41-synchronized-reverse-v1", "layers": [39],
+        },
+    }
+    try:
+        bridge.synchronize(None, lambda tag, payload: contract)
+    except RuntimeError as error:
+        assert "update_participant" in str(error)
+    else:
+        raise AssertionError("remote zero-gradient shortcut was accepted")
 
 
 def test_serving_bridge_selects_one_capture_across_hosts():
