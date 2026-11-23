@@ -1,0 +1,36 @@
+{
+  "format": "orthrus-dsv41-pypto-online-readiness-v1",
+  "passed": true,
+  "scope": "all single-node gates; dual-node resident update not included",
+  "tests": {
+    "passed": 157,
+    "skipped": 4,
+    "subtests_passed": 5
+  },
+  "serving_patch": {
+    "applied": true,
+    "python_compiled": true
+  },
+  "kernels": {
+    "compiled": 61,
+    "executed": true,
+    "numerical_cases": 22
+  },
+  "resident_publication": {
+    "passed": true,
+    "host_round_trip": false,
+    "d2d_bytes": 16384
+  },
+  "resident_reverse": {
+    "hc-collapse-vjp": {"passed": true, "compiled": true, "executed": true},
+    "hc-pre-vjp": {"passed": true, "compiled": true, "executed": true},
+    "c1a-vjp": {"passed": true, "compiled": true, "executed": true},
+    "expert-capture": {"passed": true, "compiled": true, "executed": true},
+    "expert-input-vjp": {"passed": true, "compiled": true, "executed": true},
+    "ep-vjp": {"passed": true, "compiled": true, "executed": true}
+  },
+  "factory": {
+    "production_ready": true,
+    "blockers": []
+  }
+}

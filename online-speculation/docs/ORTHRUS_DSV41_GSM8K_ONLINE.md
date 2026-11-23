@@ -26,7 +26,7 @@ bash online-speculation/scripts/dsv41_pypto_env.sh gsm8k-prepare \
 
 Torch 参考可对最后一层做可微重放、TV/KL 更新和 head 导出；通用及 C1A/mHC 的 PyPTO 反向叶子、last-N 连续重放契约和双机驻留双槽发布也已准备。默认候选为 `lr=1e-5`、8 次线性 warmup、前 256 次更新每 16 个 verifier round 更新一次，之后每 128 轮一次、每 4 次更新发布。`last_layers`、`teacher_rows`、学习率和频率均须在 tuning 集扫描，不能把 Qwen3.8 的数值直接当作 DSV4.1 结论。
 
-## 明日双机执行
+## 双机执行
 
 先在两台机器各刷新一次本地镜像。该命令不访问网络，也不重编 PyPTO/CANN；它只把当前仓库的专家状态 ABI 和 Python 编排叠加到已经固定的镜像上：
 
@@ -42,21 +42,18 @@ NPU_DEVICE=0 PYPTO_VISIBLE_DEVICE=0 PYPTO_RUNTIME_DEVICE=0 \
   bash online-speculation/scripts/dsv41_pypto_env.sh online-ready
 ```
 
-当前验收基线为：126 项 DSV4.1 测试、4 项跳过和 5 组子测试通过，21 个设备数值用例通过，57 个生产形状程序完成编译；其中包含 TP4/K32 的逐 query C1A 历史重放、sink、临时块 K/V 梯度，K32×5120 的 mHC 反向，以及固定 Top-6 路由、冻结 W8A8 专家输入 VJP、AdamW 和发布。inactive head bank 的设备到设备发布也已实卡通过，完整 head 不经 CPU 往返。`readiness.json` 汇总测试、serving 补丁 dry-run 和实卡 kernel 证据，并保留为宿主用户可读；它不替代双机 serving 中的一次完整在线更新。
+当前验收基线为：157 项 DSV4.1 测试、4 项跳过和 5 组子测试通过，22 个设备数值用例通过，61 个生产形状程序完成编译；其中包含 TP4/K32 的逐 query C1A 历史重放、sink、临时块 K/V 梯度，K32×5120 的 mHC 反向，以及固定 Top-6 路由、冻结 W8A8 专家输入 VJP、EP16 编排、AdamW 和发布。inactive head bank 的设备到设备发布也已实卡通过，完整 head 不经 CPU 往返。`readiness.json` 汇总测试、serving 补丁和实卡 kernel 证据，并保留为宿主用户可读；它不替代双机 serving 中的一次完整在线更新。
 
-先在两台机器放置相同的 `tuning.jsonl`，然后同时启动 4 题、每题 32 token 的固定 head smoke。这个入口先验证真实 GSM8K 输入、文本解码、greedy 一致性、接受率和吞吐；它不会伪装成已经在线更新。
+先在两台机器放置相同的 `tuning.jsonl`。固定 head 推理链路已经通过双机验收；在线更新应直接使用统一入口同时启动 4 题、每题 32 token 的 smoke。它会加载在线策略，执行真实反馈收集、last-N 反向、同步更新与安全发布：
 
 ```bash
-export ORTHRUS_WORKLOAD=/workspace/data/orthrus-dsv41-gsm8k/tuning.jsonl
 export CLUSTER_KEY_FILE=/root/.orthrus-cluster.key
 
 # node7
-bash online-speculation/scripts/dsv41_pypto_env.sh cluster-accept node7 \
-  --max-requests 4 --tokens 32 --no-trace-prefill
+bash online-speculation/scripts/run_dsv41_pypto_online_gsm8k.sh node7 smoke 1
 
 # node8（与 node7 同时执行）
-bash online-speculation/scripts/dsv41_pypto_env.sh cluster-accept node8 \
-  --max-requests 4 --tokens 32 --no-trace-prefill
+bash online-speculation/scripts/run_dsv41_pypto_online_gsm8k.sh node8 smoke 1
 ```
 
 结果目录会在启动时打印。任一节点可汇总 Orthrus 结果：

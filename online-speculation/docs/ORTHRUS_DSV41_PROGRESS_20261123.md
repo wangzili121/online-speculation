@@ -36,9 +36,9 @@ db6ecee0bc76e60e3e039b954b2f3d6f5d4ad90f
 - 冻结专家的 clipped-SwiGLU 反向已经实现：生产 `K32×2304` 形状编译通过，小形状实卡与 Torch 参考逐元素一致。它与 down/gate-up 两个冻结 W8A8 输入 VJP 共同构成 selected-expert 的完整输入反向，不更新专家权重。
 - resident 反向的调用顺序和参数 ABI 已固化，last-1/2/4/8 均在支持的 C1A 后缀内。TP4 梯度契约已经区分复制参数求和与分片参数拼接，并恢复八个公开 head tensor 的方向和 lane 顺序。
 - online learner 改为在首轮 prefill 建立 resident runtime、目标权重和 draft 后再绑定，避免初始化阶段拿不到真实设备句柄。K32 的 31 行 student logits 可只监督已经沿修正前缀收齐的 1–7 行 verifier logits；请求提前结束时，已有真实短块也会通过双机同步更新，不补造教师行。
-- 一键单机 readiness 已在 910B3 通过：126 项测试通过、4 项跳过、5 组子测试通过；固定 serving 补丁可应用且可编译；57 个生产规格 PyPTO 程序编译、21 个实卡数值用例执行通过。
+- 一键单机 readiness 已在 910B3 通过：157 项测试通过、4 项跳过、5 组子测试通过；固定 serving 补丁可应用且可编译；61 个生产规格 PyPTO 程序编译、22 个实卡数值用例执行通过。C1A、mHC、MoE、EP16 反向和设备到设备权重发布均包含在同一次完整门禁中。
 - resident head 发布已实卡通过：更新结果直接从设备 optimizer 状态复制到 inactive draft bank，`host_round_trip=false`；版本仍只在 verifier 安全边界原子切换。
 
 ## 下一步
 
-设备执行 owner、EP16 通信、FP32 optimizer 状态和双槽发布已经接入 resident online learner。剩余工作是先通过单机 readiness 门禁，再完成一次 16 卡真实更新；之后在 GSM8K 上先做小规模正确性，再扫描 last-N、学习率和更新频率。Qwen3.8 的设置只作为起点，不直接当作 DSV4.1 的最终参数。
+设备执行 owner、EP16 通信、FP32 optimizer 状态和双槽发布已经接入 resident online learner，单机完整 readiness 门禁已经通过。下一步是在双机 16 卡真实 serving 中完成一次在线更新 smoke；通过后再在 GSM8K tuning 集扫描 last-N、学习率、教师行数和更新频率。Qwen3.8 的设置只作为起点，不直接当作 DSV4.1 的最终参数。

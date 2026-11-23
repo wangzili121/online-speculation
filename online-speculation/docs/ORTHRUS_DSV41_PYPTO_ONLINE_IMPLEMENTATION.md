@@ -29,7 +29,7 @@
 - 冻结 W8A8 MoE 权重按原生分块布局在设备端反量化，供输入 VJP 使用；真实 `2304×5120` 和 `5120×4608` 尺寸已经编译通过，小形状 NPU 数值逐元素一致。
 - routed expert 的 clipped-SwiGLU VJP 支持上界/双边 clamp，并明确以 STE 穿过动态 INT8 激活边界；生产 `K32×2304` 形状编译通过，小形状 NPU 结果与 Torch golden 逐元素一致。
 
-完整的冻结 MoE Torch golden 已覆盖 routed experts、shared expert 和 router 三条输入梯度路径。当前生产规格共 57 个设备程序编译通过，包含 C1A 每 query 历史重放、`K32×384` router、`K32×5120` MoE/mHC、真实 LM head 和 TP4 draft 投影；21 组在线反向/优化器实卡数值用例全部通过。单机 readiness gate 还会在固定 serving 基线上实际应用补丁并做 Python 编译；当前证据为 126 项 DSV4.1 测试通过、4 项跳过、5 组子测试通过。
+完整的冻结 MoE Torch golden 已覆盖 routed experts、shared expert 和 router 三条输入梯度路径。当前生产规格共 61 个设备程序编译通过，包含 C1A 每 query 历史重放、`K32×384` router、`K32×5120` MoE/mHC、真实 LM head、TP4 draft 投影和 EP16 路由编排；22 组在线反向/优化器实卡数值用例全部通过。单机 readiness gate 同时在固定 serving 基线上实际应用补丁并做 Python 编译；当前证据为 157 项 DSV4.1 测试通过、4 项跳过、5 组子测试通过。
 
 更新后的 draft 权重发布也已通过单卡实机验证：FP32 optimizer 候选状态在设备上转换为执行权重，并直接复制到 inactive resident head bank；验证记录显示 `host_round_trip=false`，不会在每次发布时把完整 head 绕回 CPU。
 
@@ -51,15 +51,11 @@ TV/KL
 
 服务中不允许隐式回退到 Torch autograd，也不允许用新一轮前向重建路由、Sinkhorn 或 Attention 选择。冻结 W8A8 主模型仍按原路径前向；只有反向传播到更早 draft 层时，才用反量化后的冻结权重计算输入梯度，不为这些权重创建梯度或 optimizer 状态。
 
-## 尚未完成的最后一层集成
+## Resident 集成状态
 
-当前缺口不是算法或反向公式，而是将上述叶子绑定到真实 resident session：
+上述叶子已经绑定到真实 resident session：W8A8 LM head 与专家权重只参与输入 VJP，不生成主模型参数梯度；EP16 固定路由、TP4/DP4 梯度归并、FP32 Adam 状态和 draft 双槽发布均已接入。单卡完整门禁验证了这些绑定能够编译、执行并满足数值契约，且发布不经过 CPU 往返。
 
-- 将已验证的 W8A8 输入 VJP 绑定到驻留 LM head、共享专家和选中专家句柄；权重冻结，不生成主模型参数梯度。六个选中专家的最终输出已经由原生前向保存，更新时由驻留 W8A8 句柄重算 gate/up 值。
-- 将 EP16 固定路由计划接到实际 HCCL All-to-All，并把 TP4/DP4 的设备句柄接入梯度归并。
-- 将 FP32 master/moments 与 draft 双槽权重绑定。controller/learner 的 `NativeSession` 延迟注入入口已经完成，待设备执行 owner 接入后启用。
-
-完成这些绑定后，才能称为“PyPTO 在线更新端到端打通”。Torch 参考学习器、原子 kernel 通过或推理链路通过，都不能代替这项验收。
+尚未完成的是双机 16 卡真实 serving 中的一次在线更新验收。它不是新的算子开发，而是验证两个节点在同一 verifier 安全边界选择反馈、完成 EP16/TP4/DP4 同步并切换到相同 head 版本。通过后才能把“独立算子和单机 resident 更新已打通”提升为“双机在线更新端到端已验收”。
 
 ## 验收标准
 
