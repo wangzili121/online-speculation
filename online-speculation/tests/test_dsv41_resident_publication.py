@@ -1,6 +1,6 @@
 import torch
 
-from blockspec.pypto_dsv41_runtime import MutableDraftHeadBank
+from blockspec.pypto_dsv41_runtime import MutableDraftHeadBank, ResidentHeadState
 
 
 class Resident:
@@ -18,6 +18,10 @@ class Resident:
     def tensor(self, value, rank):
         self.syncs.append((rank, value.detach().clone()))
         return value
+
+    def copy_tensor(self, destination, source, rank):
+        destination.copy_(source)
+        self.syncs.append((rank, source.detach().clone()))
 
 
 def test_mutable_bank_stages_suffix_then_switches_all_layers_atomically():
@@ -61,3 +65,27 @@ def test_mutable_bank_can_reverse_an_activation_before_cluster_commit():
     bank.rollback(1)
     assert bank.active_version == 0 and bank.active_slot == 0
     assert bank.operands(0, 39)["weight"] is old
+
+
+def test_mutable_bank_publishes_resident_shards_without_host_staging():
+    resident = Resident()
+    ranks, layers = {0: 0, 1: 1}, (39,)
+    initial = {
+        (rank, 39): {"weight": torch.zeros((2, 2), dtype=torch.bfloat16)}
+        for rank in ranks
+    }
+    bank = MutableDraftHeadBank(resident, ranks, initial, layers)
+    state = ResidentHeadState(
+        operands={
+            (rank, 39): {"weight": torch.full((2, 2), rank + 3, dtype=torch.bfloat16)}
+            for rank in ranks
+        },
+        public_names=("layers.39.attn.weight",),
+        digest="a" * 64,
+    )
+
+    receipt = bank.stage_resident(state, 1)
+    assert receipt.digest == "a" * 64 and bank.active_version == 0
+    bank.activate(1)
+    assert bank.operands(0, 39)["weight"].eq(3).all()
+    assert bank.operands(1, 39)["weight"].eq(4).all()

@@ -2,6 +2,7 @@
 
 import importlib
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 
@@ -37,6 +38,32 @@ def _head_digest(values):
         digest.update(str(tuple(value.shape)).encode())
         digest.update(value.view(torch.uint8).numpy().tobytes())
     return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class ResidentHeadState:
+    """Sharded execution weights already resident on their owning ranks.
+
+    ``operands`` uses the same execution ABI as ``ResidentDraftAttention``.
+    The optimizer supplies a deterministic digest computed from globally
+    reduced update statistics; both hosts compare it before activating the
+    inactive bank.  No updated tensor is copied through HOST memory.
+    """
+
+    operands: dict
+    public_names: tuple[str, ...]
+    digest: str
+
+    def __post_init__(self):
+        if not self.operands or any(
+            not isinstance(key, tuple) or len(key) != 2 or not isinstance(value, dict)
+            for key, value in self.operands.items()
+        ):
+            raise ValueError("resident head state must map rank/layer to execution operands")
+        if not self.public_names or len(set(self.public_names)) != len(self.public_names):
+            raise ValueError("resident head state requires the complete public parameter ABI")
+        if len(self.digest) != 64 or any(character not in "0123456789abcdef" for character in self.digest):
+            raise ValueError("resident head state requires a lowercase SHA256 digest")
 
 
 class MutableDraftHeadBank:
@@ -94,6 +121,29 @@ class MutableDraftHeadBank:
                     self.handles[slot, rank, layer, name] = self.resident.tensor(host, local)
         self.staged = version, slot, digest
         return PublicationReceipt("prepared", version, digest, tuple(sorted(self.rank_ids)))
+
+    def stage_resident(self, state, version):
+        """Copy sharded device weights into the inactive execution bank."""
+        if not isinstance(state, ResidentHeadState):
+            raise TypeError("resident publication requires ResidentHeadState")
+        if self.staged is not None or self.previous is not None or version != self.active_version + 1:
+            raise ValueError("draft publication must stage exactly the next inactive version")
+        expected_rows = {(rank, layer) for rank in self.rank_ids for layer in self.layers}
+        if set(state.operands) != expected_rows:
+            raise ValueError("resident publication does not cover every local rank and layer")
+        slot = 1 - self.active_slot
+        for (rank, layer), operands in state.operands.items():
+            expected = {key[3] for key in self.handles if key[:3] == (slot, rank, layer)}
+            if set(operands) != expected:
+                raise ValueError(f"resident publication changed layer {layer} execution ABI")
+            local = self.rank_ids[rank]
+            for name, source in operands.items():
+                destination = self.handles[slot, rank, layer, name]
+                if source.shape != destination.shape or source.dtype != destination.dtype:
+                    raise ValueError(f"resident operand changed shape or dtype: layer {layer} {name}")
+                self.resident.copy_tensor(destination, source, local)
+        self.staged = version, slot, state.digest
+        return PublicationReceipt("prepared", version, state.digest, tuple(sorted(self.rank_ids)))
 
     def activate(self, version):
         if self.staged is None or self.staged[0] != version:
@@ -246,6 +296,8 @@ class ResidentDraftAttention:
         if self.online_bank is None:
             raise RuntimeError("online draft bank is not enabled")
         values = learner.publication_state()
+        if isinstance(values, ResidentHeadState):
+            return self.online_bank.stage_resident(values, version)
         return self.online_bank.stage(
             values, version,
             lambda weights, rank: prepare_draft_operands(

@@ -111,6 +111,7 @@ class DSV41DeviceSuffixLearner:
 
     def publication_state(self):
         values = self.backend.publication_state(self.plan.layers)
-        if set(values) != set(self.plan.trainable_names()):
+        names = getattr(values, "public_names", values)
+        if set(names) != set(self.plan.trainable_names()):
             raise ValueError("device publication is not the complete selected suffix")
         return values
