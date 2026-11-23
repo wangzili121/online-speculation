@@ -21,14 +21,14 @@ Torch 参考可对最后一层做可微重放、TV/KL 更新和 head 导出；�
 
 ## 明日双机执行
 
-先在任一空闲卡复验在线更新 kernel。该命令覆盖 DSV4.1 的 129280 维完整词表 TV/KL、投影输入与参数梯度、RMSNorm 前反向、SiLU 梯度、C1A softmax/sink/KV 反向、mHC post 数据反向、AdamW 和 BF16 发布：
+先在任一空闲卡运行单机 readiness gate。它会执行全部 DSV4.1 回归、在固定 serving 源码上实际应用 online patch 并做 Python 编译，然后复验 129280 维完整词表 TV/KL、投影输入与参数梯度、RMSNorm 前反向、C1A Attention、mHC、MoE、AdamW 和发布 kernel：
 
 ```bash
 NPU_DEVICE=0 PYPTO_VISIBLE_DEVICE=0 PYPTO_RUNTIME_DEVICE=0 \
-  bash online-speculation/scripts/dsv41_pypto_env.sh online-kernel-check
+  bash online-speculation/scripts/dsv41_pypto_env.sh online-ready
 ```
 
-当前验收基线为：16 个设备数值用例通过，43 个生产形状程序完成编译；其中包含 TP4/K32 的 C1A softmax、sink、共享 KV 梯度汇总和 K32 临时块提取，K32×5120 的 mHC post 反向，以及固定 Top-6 路由下的 MoE 合并与路由归一化反向。该结果验证算子叶子，不替代双机 serving 中的一次完整在线更新。
+当前验收基线为：124 项 DSV4.1 测试和 5 组子测试通过，20 个设备数值用例通过，56 个生产形状程序完成编译；其中包含 TP4/K32 的逐 query C1A 历史重放、sink、临时块 K/V 梯度，K32×5120 的 mHC 反向，以及固定 Top-6 路由、冻结 W8A8 专家输入 VJP、AdamW 和发布。`readiness.json` 汇总测试、serving 补丁 dry-run 和实卡 kernel 证据，并保留为宿主用户可读；它不替代双机 serving 中的一次完整在线更新。
 
 先在两台机器放置相同的 `tuning.jsonl`，然后同时启动 4 题、每题 32 token 的固定 head smoke。这个入口先验证真实 GSM8K 输入、文本解码、greedy 一致性、接受率和吞吐；它不会伪装成已经在线更新。
 

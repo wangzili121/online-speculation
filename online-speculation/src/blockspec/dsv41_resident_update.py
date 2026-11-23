@@ -13,6 +13,7 @@ import torch
 
 from .dsv41_device_update import SuffixGradient
 from .dsv41_suffix import DSV41SuffixPlan
+from .dsv41_tp_gradient_layout import DSV41TPGradientLayout
 
 
 class DSV41ResidentUpdateBackend:
@@ -27,6 +28,7 @@ class DSV41ResidentUpdateBackend:
     def __init__(self, primitives, *, last_layers):
         self.primitives = primitives
         self.plan = DSV41SuffixPlan(last_layers)
+        self.tp_layout = DSV41TPGradientLayout()
         # The implemented reverse kernel is C1A (ratio-1), which covers layers
         # 20..39.  Do not silently apply it to C2A or the two initial SWA
         # layers; the first GSM8K scan (last 1/2/4/8) is wholly inside C1A.
@@ -141,6 +143,9 @@ class DSV41ResidentUpdateBackend:
                 raise TypeError("draft Attention VJP returned an invalid result")
             rank_inputs[rank], rank_parameters[rank] = incoming, dict(parameters)
 
+        # Validate complete lane ownership and the public eight-parameter ABI
+        # before a backend performs device collectives/concatenation.
+        self.tp_layout.lanes(rank_parameters)
         assembled = self.primitives.tp_assemble_gradients(layer, rank_parameters)
         prefix = f"layers.{layer}.attn."
         expected = {
