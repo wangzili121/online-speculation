@@ -311,3 +311,75 @@ def make_clipped_swiglu_vjp(rows=32, intermediate=2304, limit=10.0, *, inline=Fa
         swiglu_vjp(gate_up, output_gradient, gate_up_gradient, device=0)
 
     return swiglu_vjp if inline else entry
+
+
+def make_frozen_w8a8_expert_input_vjp(
+    rows=64, hidden=5120, intermediate=2304, limit=10.0,
+):
+    """Recompute one frozen expert and return only its input gradient.
+
+    Orthrus does not update target MoE weights, but a draft-Attention gradient
+    still has to pass through the frozen shared/routed expert.  The native
+    forward narrows the dequantized gate/up result to BF16 before SwiGLU, so
+    this entry deliberately follows the same boundary.  Packed INT8 weights
+    remain read-only; their channel scales are applied while reconstructing
+    the two logical BF16 matrices on device.  No weight gradient or host-side
+    model math is formed.
+
+    ``rows`` is the fixed expert receive slab (normally 64).  Inactive rows
+    must be zero in both ``value`` and ``output_gradient``; linearity then
+    keeps their returned input gradient exactly zero without host control.
+    """
+    if (
+        type(rows) is not int or type(hidden) is not int
+        or type(intermediate) is not int or rows < 1 or rows % 16
+        or hidden < 256 or hidden % 256
+        or intermediate < 256 or intermediate % 256
+        or not isinstance(limit, (int, float)) or limit <= 0
+    ):
+        raise ValueError("aligned frozen W8A8 expert geometry required")
+
+    import pypto.language as pl
+    from .pypto_dsv41_online_programs import make_linear
+
+    gate_width = 2 * intermediate
+    dequant_gate = make_dequantize_blocked_weight(hidden, gate_width, inline=True)
+    dequant_down = make_dequantize_blocked_weight(intermediate, hidden, inline=True)
+    gate_forward = make_linear(
+        (rows, hidden), (hidden, gate_width), transpose_b=False, inline=True,
+    )
+    down_input_vjp = make_linear(
+        (rows, hidden), (intermediate, hidden), transpose_b=True, inline=True,
+    )
+    activation_vjp = make_clipped_swiglu_vjp(
+        rows, intermediate, limit, inline=True,
+    )
+    gate_input_vjp = make_linear(
+        (rows, gate_width), (hidden, gate_width), transpose_b=True, inline=True,
+    )
+
+    @pl.jit
+    def expert_input_vjp(
+        value: pl.Tensor,
+        output_gradient: pl.Tensor,
+        gate_up_packed: pl.Tensor,
+        gate_up_scale: pl.Tensor,
+        down_packed: pl.Tensor,
+        down_scale: pl.Tensor,
+        input_gradient: pl.Out[pl.Tensor],
+    ):
+        gate_up_weight = pl.create_tensor([hidden, gate_width], dtype=pl.BF16)
+        down_weight = pl.create_tensor([intermediate, hidden], dtype=pl.BF16)
+        gate_up = pl.create_tensor([rows, gate_width], dtype=pl.BF16)
+        activation_gradient = pl.create_tensor([rows, intermediate], dtype=pl.BF16)
+        gate_up_gradient = pl.create_tensor([rows, gate_width], dtype=pl.BF16)
+
+        dequant_gate(gate_up_packed, gate_up_scale, gate_up_weight)
+        dequant_down(down_packed, down_scale, down_weight)
+        gate_forward(value, gate_up_weight, gate_up)
+        down_input_vjp(output_gradient, down_weight, activation_gradient)
+        activation_vjp(gate_up, activation_gradient, gate_up_gradient)
+        gate_input_vjp(gate_up_gradient, gate_up_weight, input_gradient)
+        return input_gradient
+
+    return expert_input_vjp
