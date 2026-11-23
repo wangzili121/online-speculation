@@ -92,3 +92,23 @@ def test_experimental_single_a2_launcher_maps_one_eight_card_node():
     assert "MODE=target" in docker_exec
     assert "scripts/serve_dsv41_single_a2.sh" in docker_exec[-1]
 
+
+def test_online_gsm8k_launcher_is_strict_and_uses_resident_factory():
+    script = ROOT / "scripts" / "run_dsv41_pypto_online_gsm8k.sh"
+    text = script.read_text()
+    assert "set -euo pipefail" in text
+    assert "pypto_dsv41_resident_primitives:create_primitives" in text
+    assert "--online-study" in text and "--online-overrides" in text
+    assert "last-N must be one of 1, 2, 4 or 8" in text
+    assert "--no-trace-prefill" in text
+
+
+def test_hc_collapse_validator_is_a_bounded_single_leaf_check():
+    script = ROOT / "scripts" / "validate_dsv41_pypto_hc_collapse_vjp.py"
+    text = script.read_text()
+    assert "make_hc_collapse_vjp" in text
+    assert "--compile-only" in text and "--production" in text
+    assert "validate_dsv41_pypto_online_programs" not in text
+    environment = (ROOT / "scripts" / "dsv41_pypto_env.sh").read_text()
+    assert "hc-collapse-vjp-check" in environment
+

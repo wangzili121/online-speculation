@@ -29,7 +29,9 @@
 - 冻结 W8A8 MoE 权重按原生分块布局在设备端反量化，供输入 VJP 使用；真实 `2304×5120` 和 `5120×4608` 尺寸已经编译通过，小形状 NPU 数值逐元素一致。
 - routed expert 的 clipped-SwiGLU VJP 支持上界/双边 clamp，并明确以 STE 穿过动态 INT8 激活边界；生产 `K32×2304` 形状编译通过，小形状 NPU 结果与 Torch golden 逐元素一致。
 
-完整的冻结 MoE Torch golden 已覆盖 routed experts、shared expert 和 router 三条输入梯度路径。当前生产规格共 56 个设备程序编译通过，包含 C1A 每 query 历史重放、`K32×384` router、`K32×5120` MoE/mHC、真实 LM head 和 TP4 draft 投影；20 组在线反向/优化器实卡数值用例全部通过。单机 readiness gate 还会在固定 serving 基线上实际应用补丁并做 Python 编译；当前证据为 124 项 DSV4.1 测试通过、4 项跳过、5 组子测试通过。
+完整的冻结 MoE Torch golden 已覆盖 routed experts、shared expert 和 router 三条输入梯度路径。当前生产规格共 57 个设备程序编译通过，包含 C1A 每 query 历史重放、`K32×384` router、`K32×5120` MoE/mHC、真实 LM head 和 TP4 draft 投影；21 组在线反向/优化器实卡数值用例全部通过。单机 readiness gate 还会在固定 serving 基线上实际应用补丁并做 Python 编译；当前证据为 126 项 DSV4.1 测试通过、4 项跳过、5 组子测试通过。
+
+更新后的 draft 权重发布也已通过单卡实机验证：FP32 optimizer 候选状态在设备上转换为执行权重，并直接复制到 inactive resident head bank；验证记录显示 `host_round_trip=false`，不会在每次发布时把完整 head 绕回 CPU。
 
 serving 生命周期也已补齐：online bootstrap 在首轮 prefill 创建 resident runtime、目标权重和 draft 后才构造 learner；一份 K32 capture 可以只训练当前已经到达的真实教师前缀；EOS 时不足目标宽度的短块仍可更新，但不会填充虚假行。TP4 梯度契约显式区分复制参数的求和和分片参数的拼接，并在 collective 前检查四条 lane 及八参数公开 ABI，避免 rank 顺序或权重方向错误。
 

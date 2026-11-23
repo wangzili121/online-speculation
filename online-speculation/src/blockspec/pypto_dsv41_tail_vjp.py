@@ -1,6 +1,85 @@
 """PyPTO leaves for the frozen DSV4.1 suffix reverse pass."""
 
 
+def make_hc_collapse_vjp(rows=32, hidden=5120, copies=4, *, inline=False):
+    """Reverse the final four-stream mHC collapse used before the LM head.
+
+    The final model head computes ``sum_i streams[i] * premix[i]`` in FP32
+    and rounds the result to BF16.  Online learning keeps both inputs frozen,
+    but must propagate gradients through them to the selected draft suffix.
+    ``premix_gradient`` is padded to sixteen FP32 columns so every token owns
+    a complete cache line and no two device blocks race on scalar stores.
+    """
+    if rows < 1 or hidden < 64 or hidden % 64 or copies != 4:
+        raise ValueError("expected DSV4.1 rows, 64-aligned hidden and hc_mult=4")
+    import pypto.language as pl
+
+    kernel = pl.jit.inline if inline else pl.jit
+    tile = 64
+
+    @kernel
+    def hc_collapse_vjp(
+        streams: pl.Tensor,
+        premix: pl.Tensor,
+        output_gradient: pl.Tensor,
+        stream_gradient: pl.Out[pl.Tensor],
+        premix_gradient: pl.Out[pl.Tensor],
+    ):
+        with pl.spmd(rows, name_hint="orthrus_dsv41_final_hc_collapse_backward"):
+            token = pl.tile.get_block_idx()
+            for stream in pl.range(copies):
+                coefficient = pl.read(premix, [token, stream])
+                total = pl.full([8, 8], dtype=pl.FP32, value=0.)
+                for part in pl.range(hidden // tile):
+                    column = part * tile
+                    dy = pl.cast(
+                        pl.slice(output_gradient, [1, tile], [token, column]),
+                        pl.FP32,
+                    )
+                    value = pl.cast(
+                        pl.slice(
+                            streams, [1, tile],
+                            [token * copies + stream, column],
+                        ),
+                        pl.FP32,
+                    )
+                    stream_gradient[
+                        token * copies + stream:token * copies + stream + 1,
+                        column:column + tile,
+                    ] = pl.cast(pl.mul(dy, coefficient), pl.BF16, mode="rint")
+                    product = pl.reshape(pl.mul(dy, value), [8, 8])
+                    partial = pl.row_expand_mul(
+                        pl.full([8, 8], dtype=pl.FP32, value=1.),
+                        pl.row_sum(product),
+                    )
+                    total = pl.add(
+                        total,
+                        pl.row_expand_mul(
+                            pl.full([8, 8], dtype=pl.FP32, value=1.),
+                            pl.row_sum(pl.transpose(partial, 0, 1)),
+                        ),
+                    )
+                pl.write(
+                    premix_gradient, [token, stream], pl.read(total, [0, 0]),
+                )
+        return stream_gradient, premix_gradient
+
+    @pl.jit.host
+    def entry(
+        streams: pl.Tensor,
+        premix: pl.Tensor,
+        output_gradient: pl.Tensor,
+        stream_gradient: pl.Out[pl.Tensor],
+        premix_gradient: pl.Out[pl.Tensor],
+    ):
+        hc_collapse_vjp(
+            streams, premix, output_gradient,
+            stream_gradient, premix_gradient, device=0,
+        )
+
+    return hc_collapse_vjp if inline else entry
+
+
 def make_hc_post_data_vjp(rows=32, hidden=5120, copies=4, *, inline=False):
     """Backpropagate through mHC post mixing to value and residual streams.
 
