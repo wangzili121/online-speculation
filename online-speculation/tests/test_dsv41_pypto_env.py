@@ -72,8 +72,8 @@ def test_multicard_check_maps_tp4_and_dp4_partitions(tmp_path):
     assert output.name.startswith("orthrus-multicard.")
     assert args[args.index("--network") + 1] == "none"
     assert args.count("--device") == 7
-    for card in range(4, 8):
-        assert f"/dev/davinci{card}:/dev/davinci{card}" in args
+    for logical, card in enumerate(range(4, 8)):
+        assert f"/dev/davinci{card}:/dev/davinci{logical}" in args
     assert "ASCEND_RT_VISIBLE_DEVICES=0,1,2,3" in args
     assert args[-2] == "-lc"
     command = args[-1]
