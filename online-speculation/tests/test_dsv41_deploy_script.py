@@ -127,7 +127,8 @@ def test_hc_collapse_validator_is_a_bounded_single_leaf_check():
 def test_company_online_launcher_keeps_site_paths_in_one_entrypoint():
     script = ROOT / "scripts" / "run_dsv41_pypto_company_online.sh"
     text = script.read_text()
-    assert "/home/wangzili/.orthrus-cluster.key" in text
+    assert "export CLUSTER_KEY_FILE=/home/wangzili/.orthrus-cluster.key" in text
+    assert 'CLUSTER_KEY_FILE:-' not in text
     assert "/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8" in text
     assert "/workspace/data/orthrus-dsv41-gsm8k" in text
     assert "0,1,2,3,4,5,6,7" in text
