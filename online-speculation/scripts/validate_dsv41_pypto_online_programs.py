@@ -39,6 +39,7 @@ def main():
         make_softmax_vjp,
     )
     from blockspec.pypto_dsv41_tail_vjp import (
+        make_hc_collapse_forward,
         make_hc_collapse_vjp,
         make_hc_post_data_vjp,
         make_hc_post_gate_vjp,
@@ -123,6 +124,10 @@ def main():
         "c1a_block_extract": make_block_extract(attention_fixture).compile(
             empty((attention_fixture.rows, attention_fixture.padded_columns)),
             empty((attention_fixture.rows, attention_fixture.block)), config=config,
+        ),
+        "hc_collapse_forward": make_hc_collapse_forward(32, 128).compile(
+            empty((32 * 4, 128)), empty((32, 4), torch.float32),
+            empty((32, 128)), config=config,
         ),
         "hc_collapse_vjp": make_hc_collapse_vjp(32, 128).compile(
             empty((32 * 4, 128)), empty((32, 4), torch.float32),
@@ -235,6 +240,10 @@ def main():
             empty((32 * 4, 5120)), empty((32, 4), torch.float32),
             empty((32 * 4, 4), torch.float32), empty((32, 5120)),
             empty((32 * 4, 5120)), config=config,
+        )
+        programs["hc_collapse_forward_k32x5120"] = make_hc_collapse_forward().compile(
+            empty((32 * 4, 5120)), empty((32, 4), torch.float32),
+            empty((32, 5120)), config=config,
         )
         programs["hc_collapse_vjp_k32x5120"] = make_hc_collapse_vjp().compile(
             empty((32 * 4, 5120)), empty((32, 4), torch.float32),
@@ -520,6 +529,18 @@ def main():
         collapse_streams = torch.randn(32, 4, 128).bfloat16()
         collapse_premix = torch.randn(32, 4, dtype=torch.float32)
         collapse_dy = torch.randn(32, 128).bfloat16()
+        collapse_output = allocate(torch.zeros(32, 128, dtype=torch.bfloat16))
+        worker.run(
+            programs["hc_collapse_forward"], allocate(collapse_streams.flatten(0, 1)),
+            allocate(collapse_premix), collapse_output, config=config,
+        )
+        expected_collapse = torch.einsum(
+            "ti,tid->td", collapse_premix, collapse_streams.float(),
+        ).bfloat16()
+        torch.testing.assert_close(
+            read(collapse_output, torch.empty_like(expected_collapse)),
+            expected_collapse, atol=.016, rtol=.016,
+        )
         collapse_stream_gradient = allocate(torch.zeros(32 * 4, 128, dtype=torch.bfloat16))
         collapse_premix_gradient = allocate(torch.zeros(32, 16, dtype=torch.float32))
         worker.run(
@@ -541,7 +562,7 @@ def main():
             read(collapse_premix_gradient, torch.empty(32, 16))[:, :4],
             expected_premix_gradient, atol=.02, rtol=.002,
         )
-        report["cases"].append({"operator": "hc_collapse_vjp", "shape": [32, 4, 128]})
+        report["cases"].append({"operator": "hc_collapse_forward_vjp", "shape": [32, 4, 128]})
 
         hc_dy = torch.randn(32, 4, 128).bfloat16()
         hc_value = torch.randn(32, 128).bfloat16()

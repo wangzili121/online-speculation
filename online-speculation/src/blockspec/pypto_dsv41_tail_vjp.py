@@ -1,6 +1,54 @@
 """PyPTO leaves for the frozen DSV4.1 suffix reverse pass."""
 
 
+def make_hc_collapse_forward(rows=32, hidden=5120, copies=4, *, inline=False):
+    """Rebuild the final FP32-accumulated mHC collapse before RMSNorm."""
+    if rows < 1 or hidden < 64 or hidden % 64 or copies != 4:
+        raise ValueError("expected DSV4.1 rows, 64-aligned hidden and hc_mult=4")
+    import pypto.language as pl
+
+    kernel = pl.jit.inline if inline else pl.jit
+    tile = 64
+
+    @kernel
+    def hc_collapse_forward(
+        streams: pl.Tensor,
+        premix: pl.Tensor,
+        collapsed: pl.Out[pl.Tensor],
+    ):
+        with pl.spmd(rows, name_hint="orthrus_dsv41_final_hc_collapse_forward"):
+            token = pl.tile.get_block_idx()
+            for part in pl.range(hidden // tile):
+                column = part * tile
+                total = pl.full([1, tile], dtype=pl.FP32, value=0.)
+                for stream in pl.range(copies):
+                    value = pl.cast(
+                        pl.slice(
+                            streams, [1, tile],
+                            [token * copies + stream, column],
+                        ),
+                        pl.FP32,
+                    )
+                    total = pl.add(
+                        total,
+                        pl.mul(value, pl.read(premix, [token, stream])),
+                    )
+                collapsed[token:token + 1, column:column + tile] = pl.cast(
+                    total, pl.BF16, mode="rint",
+                )
+        return collapsed
+
+    @pl.jit.host
+    def entry(
+        streams: pl.Tensor,
+        premix: pl.Tensor,
+        collapsed: pl.Out[pl.Tensor],
+    ):
+        hc_collapse_forward(streams, premix, collapsed, device=0)
+
+    return hc_collapse_forward if inline else entry
+
+
 def make_hc_collapse_vjp(rows=32, hidden=5120, copies=4, *, inline=False):
     """Reverse the final four-stream mHC collapse used before the LM head.
 
