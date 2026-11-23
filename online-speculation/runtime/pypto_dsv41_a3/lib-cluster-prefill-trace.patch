@@ -316,7 +316,7 @@
      map_ranks(select_rank_output)
      slab = runtime.get("moe_slab_rows", capacity)
      routes, packet_rows = slab * 6, world * slab * 6
-@@ -556,12 +573,14 @@
+@@ -556,13 +573,15 @@
                   dict(logits=logits, route_ids=ids, route_weights=weights), "router"),
              ])
              state.update(changed=changed, ffn_pre=pre, ffn_post=post, ffn_comb=comb, weights=weights,
