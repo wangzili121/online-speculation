@@ -186,7 +186,7 @@ def native():
 def test_production_factory_fails_before_a_long_serving_run():
     report = production_readiness()
     assert report["production_ready"] is False
-    assert "fixed-route mHC/MoE reverse with EP16 expert exchange" in report["blockers"]
+    assert any("grouped W8A8" in blocker for blocker in report["blockers"])
     with pytest.raises(ProductionFactoryIncomplete, match="factory is incomplete"):
         create_primitives(draft=Draft(), native=native(), config=config())
 

@@ -116,10 +116,11 @@ def production_readiness():
             "persistent FP32 Adam state",
             "D2D ResidentHeadState publication",
             "FFN mHC-post and fixed-route MoE combine/router VJP",
+            "synchronized dual-node owner/peer reverse orchestration",
         ),
         "blockers": (
             "resident C1A draft-attention parameter/input VJP orchestration",
-            "fixed-route mHC/MoE reverse with EP16 expert exchange",
+            "grouped W8A8 shared/routed expert input VJP with EP16 owner/peer binding",
         ),
     }
 
