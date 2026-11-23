@@ -169,7 +169,7 @@ def main():
             empty((256, 128)), config=config,
         ),
         "clipped_swiglu_vjp": make_clipped_swiglu_vjp(4, 128).compile(
-            empty((4, 256), torch.float32), empty((4, 128)),
+            empty((4, 256)), empty((4, 128)),
             empty((4, 256)), config=config,
         ),
     }
@@ -282,7 +282,7 @@ def main():
             empty((4608,), torch.float32), empty((5120, 4608)), config=config,
         )
         programs["clipped_swiglu_vjp_k32x2304"] = make_clipped_swiglu_vjp().compile(
-            empty((32, 4608), torch.float32), empty((32, 2304)),
+            empty((32, 4608)), empty((32, 2304)),
             empty((32, 4608)), config=config,
         )
         # The frozen LM head is not updated, but its transpose is required to
@@ -445,14 +445,14 @@ def main():
         torch.testing.assert_close(read(silu_dx_handle, torch.empty_like(silu_x)), expected_silu_dx, atol=.016, rtol=.016)
         report["cases"].append({"operator": "silu_vjp", "shape": [32, 128]})
 
-        gate_up = (torch.randn(4, 256) * 7).float()
+        gate_up = (torch.randn(4, 256) * 7).bfloat16()
         expert_dy = torch.randn(4, 128).bfloat16()
         gate_up_gradient_handle = allocate(torch.zeros(4, 256, dtype=torch.bfloat16))
         worker.run(
             programs["clipped_swiglu_vjp"], allocate(gate_up), allocate(expert_dy),
             gate_up_gradient_handle, config=config,
         )
-        gate, up = gate_up.chunk(2, dim=-1)
+        gate, up = gate_up.float().chunk(2, dim=-1)
         gate_clamped = gate.clamp(max=10.)
         up_clamped = up.clamp(-10., 10.)
         sigmoid = gate_clamped.sigmoid()

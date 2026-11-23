@@ -28,10 +28,10 @@ def main():
     )
     empty = lambda shape, dtype=torch.bfloat16: torch.empty(shape, dtype=dtype, device="meta")
     small = make_clipped_swiglu_vjp(4, 128).compile(
-        empty((4, 256), torch.float32), empty((4, 128)), empty((4, 256)), config=config,
+        empty((4, 256)), empty((4, 128)), empty((4, 256)), config=config,
     )
     make_clipped_swiglu_vjp().compile(
-        empty((32, 4608), torch.float32), empty((32, 2304)), empty((32, 4608)), config=config,
+        empty((32, 4608)), empty((32, 2304)), empty((32, 4608)), config=config,
     )
     report = {
         "passed": False,
@@ -48,14 +48,14 @@ def main():
             handles.append(handle)
             return handle
 
-        gate_up = (torch.randn(4, 256) * 7).float()
+        gate_up = (torch.randn(4, 256) * 7).bfloat16()
         output_gradient = torch.randn(4, 128).bfloat16()
         result = torch.zeros(4, 256, dtype=torch.bfloat16)
         result_handle = allocate(result)
         worker.run(small, allocate(gate_up), allocate(output_gradient), result_handle, config=config)
         worker.copy_from(result.data_ptr(), result_handle.data_ptr, result.nbytes)
 
-        gate, up = gate_up.chunk(2, dim=-1)
+        gate, up = gate_up.float().chunk(2, dim=-1)
         gate_clamped = gate.clamp(max=10.)
         up_clamped = up.clamp(-10., 10.)
         sigmoid = gate_clamped.sigmoid()

@@ -244,10 +244,7 @@ def make_router_logits_vjp(rows=32, experts=384, topk=6, *, inline=False):
     return router_logits_vjp if inline else entry
 
 
-def make_clipped_swiglu_vjp(
-    rows=32, intermediate=2304, limit=10.0, *, inline=False,
-    gate_up_fp32=True,
-):
+def make_clipped_swiglu_vjp(rows=32, intermediate=2304, limit=10.0, *, inline=False):
     """Differentiate the routed expert activation with fixed W8A8 values.
 
     ``gate_up`` is the FP32 value reconstructed from the native INT32 GEMM,
@@ -259,7 +256,6 @@ def make_clipped_swiglu_vjp(
         type(rows) is not int or type(intermediate) is not int
         or rows < 1 or intermediate < 64 or intermediate % 64
         or not isinstance(limit, (int, float)) or limit <= 0
-        or type(gate_up_fp32) is not bool
     ):
         raise ValueError("aligned routed-expert rows and a positive clamp limit required")
     import pypto.language as pl
@@ -281,19 +277,16 @@ def make_clipped_swiglu_vjp(
             # fused frozen-expert path deliberately reproduces the native
             # BF16 gate/up boundary.  Normalize both call sites before clamp:
             # A2/A3 tmins/tmaxs do not accept BF16 operands.
-            gate_input = pl.slice(gate_up, [1, tile], [token, column])
-            up_input = pl.slice(
-                gate_up, [1, tile], [token, intermediate + column],
+            # The native expert narrows gate/up to BF16 before SwiGLU.  Keep
+            # one production ABI here and widen exactly once for derivative
+            # arithmetic; PyPTO rejects redundant same-dtype casts.
+            gate_raw = pl.cast(
+                pl.slice(gate_up, [1, tile], [token, column]), pl.FP32,
             )
-            # PyPTO rejects a same-dtype cast.  The standalone validator owns
-            # an FP32 activation boundary, while the fused frozen-expert path
-            # intentionally reproduces the native BF16 boundary.
-            if gate_up_fp32:
-                gate_raw = gate_input
-                up_raw = up_input
-            else:
-                gate_raw = pl.cast(gate_input, pl.FP32)
-                up_raw = pl.cast(up_input, pl.FP32)
+            up_raw = pl.cast(
+                pl.slice(gate_up, [1, tile], [token, intermediate + column]),
+                pl.FP32,
+            )
             dy = pl.cast(pl.slice(output_gradient, [1, tile], [token, column]), pl.FP32)
             gate = pl.minimum(gate_raw, limit)
             up = pl.maximum(pl.minimum(up_raw, limit), -limit)
@@ -371,7 +364,7 @@ def make_frozen_w8a8_expert_input_vjp(
         (rows, hidden), (intermediate, hidden), transpose_b=True, inline=True,
     )
     activation_vjp = make_clipped_swiglu_vjp(
-        rows, intermediate, limit, inline=True, gate_up_fp32=False,
+        rows, intermediate, limit, inline=True,
     )
     gate_input_vjp = make_linear(
         (rows, gate_width), (hidden, gate_width), transpose_b=True, inline=True,
