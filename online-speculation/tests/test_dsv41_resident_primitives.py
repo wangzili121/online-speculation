@@ -362,3 +362,165 @@ def test_public_frozen_tail_never_returns_a_partial_gradient():
         value.reverse_frozen_tail(
             layer=39, rank=0, captured=captured, state=None, output_gradient=gradient,
         )
+
+
+class SymbolicTensor:
+    """Shape-only resident descriptor used to test EP16 orchestration."""
+
+    def __init__(self, shape, dtype=torch.bfloat16, name="tensor"):
+        self.shape, self.dtype, self.name = tuple(shape), dtype, name
+
+    def __getitem__(self, item):
+        first = item[0] if isinstance(item, tuple) else item
+        if not isinstance(first, slice) or first.step not in (None, 1):
+            raise AssertionError(f"unsupported symbolic slice {item!r}")
+        begin = 0 if first.start is None else first.start
+        end = self.shape[0] if first.stop is None else first.stop
+        return SymbolicTensor((end - begin, *self.shape[1:]), self.dtype, self.name)
+
+
+class SymbolicTransport:
+    def __init__(self):
+        self.events = []
+
+    def exchange(self, stage, packets, collective, group):
+        self.events.append((stage, collective, group, len(packets)))
+        return packets, []
+
+
+class SymbolicExpertWeights:
+    def __init__(self):
+        self.calls = []
+
+    def for_layer(self, layer):
+        def expert(owner, expert_id):
+            self.calls.append((layer, owner, expert_id))
+            return tuple(SymbolicTensor((1,), name=f"weight-{index}") for index in range(4))
+        return {"expert": expert}
+
+
+class SymbolicEPPrimitives(DSV41ResidentPrimitives):
+    """Exercise the real owner/peer scheduler without allocating packet slabs."""
+
+    def __init__(self, ranks):
+        draft = Draft(ranks=ranks)
+        draft.resident = SimpleNamespace()
+        self.transport = SymbolicTransport()
+        self.weights = SymbolicExpertWeights()
+        super().__init__(
+            draft=draft,
+            native=SimpleNamespace(
+                weights=self.weights, runtime=object(), transport=self.transport,
+            ),
+            cluster=None,
+            config=config(),
+        )
+        self.events = []
+        self.workspace_number = 0
+
+    def _workspace(self, rank, shape, dtype=torch.bfloat16):
+        self.workspace_number += 1
+        return SymbolicTensor(shape, dtype, f"workspace-{rank}-{self.workspace_number}")
+
+    def _execute(self, key, rank, factory, **inputs):
+        del factory
+        self.events.append((key[0], rank, inputs))
+
+    def _reverse_frozen_moe_envelope(self, **options):
+        rank = options["rank"]
+        self.events.append(("envelope", rank, options))
+        return _FrozenMoEEnvelope(
+            SymbolicTensor((32, 5120)), SymbolicTensor((192, 5120)),
+            SymbolicTensor((32, 384), torch.float32),
+            SymbolicTensor((128, 5120)),
+            SymbolicTensor((32, 4), torch.float32),
+            SymbolicTensor((128, 4), torch.float32),
+            SymbolicTensor((32, 4), torch.float32),
+        )
+
+    def _reverse_frozen_tail_finish(self, **options):
+        rank = options["rank"]
+        assert options["routed_input_gradient"].shape == (32, 5120)
+        self.events.append(("finish", rank, options))
+        return SuffixGradient(
+            SymbolicTensor((128, 5120)),
+            SymbolicTensor((32, 4), torch.float32),
+        )
+
+
+def symbolic_capture(rank):
+    return {
+        "token_begin": 0, "token_end": 32,
+        "normed": SymbolicTensor((32, 5120), name=f"normed-{rank}"),
+        "route_ids": SymbolicTensor((32, 6), torch.int32, f"routes-{rank}"),
+    }
+
+
+def reverse_contract():
+    return {
+        "update_number": 7,
+        "reverse": {
+            "protocol": "dsv41-synchronized-reverse-v1",
+            "layers": [39],
+        },
+    }
+
+
+def test_owner_batch_runs_fixed_ep16_packets_and_all_local_experts():
+    value = SymbolicEPPrimitives(range(8))
+    ranks = tuple(range(4))
+    captured = {rank: symbolic_capture(rank) for rank in ranks}
+    gradients = {
+        rank: SuffixGradient(
+            SymbolicTensor((128, 5120)), SymbolicTensor((32, 4), torch.float32),
+        )
+        for rank in ranks
+    }
+    result = value.reverse_frozen_tail_owner_batch(
+        layer=39, ranks=ranks, captured=captured,
+        states={rank: object() for rank in ranks},
+        output_gradients=gradients, synchronization=reverse_contract(),
+    )
+
+    assert set(result) == set(ranks)
+    assert value.transport.events == [
+        ("online-frozen-tail-step7-layer39-dispatch-v1", "all_to_all", "ep", 8),
+        ("online-frozen-tail-step7-layer39-return-v1", "all_to_all", "ep", 8),
+    ]
+    packs = [event for event in value.events if event[0] == "ep-vjp-dispatch-pack"]
+    assert [event[2]["active"] for event in packs] == [32] * 4 + [0] * 4
+    assert len([event for event in value.events if event[0] == "ep-vjp-dispatch-unpack"]) == 8
+    assert len([event for event in value.events if event[0] == "routed-expert-input-vjp"]) == 8 * 24
+    assert len([event for event in value.events if event[0] == "ep-vjp-return-pack"]) == 8
+    assert len([event for event in value.events if event[0] == "ep-vjp-source-restore"]) == 4
+    assert [(owner, expert) for _, owner, expert in value.weights.calls] == [
+        (owner, owner * 24 + local) for owner in range(8) for local in range(24)
+    ]
+
+
+def test_peer_participates_in_both_collectives_and_all_owned_experts():
+    value = SymbolicEPPrimitives(range(8, 16))
+    value.participate_frozen_tail_peer(
+        layer=39, synchronization=reverse_contract(),
+    )
+
+    assert value.transport.events == [
+        ("online-frozen-tail-step7-layer39-dispatch-v1", "all_to_all", "ep", 8),
+        ("online-frozen-tail-step7-layer39-return-v1", "all_to_all", "ep", 8),
+    ]
+    packs = [event for event in value.events if event[0] == "ep-vjp-dispatch-pack"]
+    assert [event[2]["active"] for event in packs] == [0] * 8
+    assert len([event for event in value.events if event[0] == "routed-expert-input-vjp"]) == 8 * 24
+    assert not [event for event in value.events if event[0] in {"ep-vjp-source-restore", "finish"}]
+    assert [(owner, expert) for _, owner, expert in value.weights.calls] == [
+        (owner, owner * 24 + local) for owner in range(8, 16) for local in range(24)
+    ]
+
+
+def test_ep16_reverse_rejects_a_stale_or_partial_contract():
+    value = SymbolicEPPrimitives(range(8))
+    with pytest.raises(ValueError, match="contract is inconsistent"):
+        value.participate_frozen_tail_peer(
+            layer=39,
+            synchronization={"reverse": {"protocol": "old", "layers": [39]}},
+        )

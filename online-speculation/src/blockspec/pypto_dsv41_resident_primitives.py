@@ -446,6 +446,221 @@ class DSV41ResidentPrimitives:
         self._reverse_frozen_moe_envelope(**options)
         self._unfinished("EP16 expert and FFN mHC-pre reverse")
 
+    def _reverse_sync_stage(self, layer, synchronization, phase):
+        """Validate the cluster contract and derive a peer-stable stage tag."""
+        if not isinstance(synchronization, dict):
+            raise ValueError("synchronized frozen-tail reverse requires a contract")
+        reverse = synchronization.get("reverse")
+        if (
+            not isinstance(reverse, dict)
+            or reverse.get("protocol") != "dsv41-synchronized-reverse-v1"
+            or tuple(reverse.get("layers", ())) != self.plan.layers
+            or layer not in self.plan.layers
+        ):
+            raise ValueError("synchronized frozen-tail reverse contract is inconsistent")
+        step = synchronization.get("update_number", 0)
+        if type(step) is not int or step < 0:
+            raise ValueError("synchronized frozen-tail reverse has an invalid update number")
+        return f"online-frozen-tail-step{step}-layer{layer}-{phase}-v1"
+
+    def _ep_exchange(self, stage, packets):
+        """Run one fixed-packet EP16 all-to-all on every node-local rank."""
+        transport = getattr(self.native, "transport", None)
+        exchange = self.resident.exchange if transport is None else transport.exchange
+        output, _ = exchange(stage, packets, "all_to_all", "ep")
+        if len(output) != len(self.ranks):
+            raise RuntimeError("EP16 exchange did not return every node-local rank")
+        return output
+
+    def _ep_dispatch_packets(self, layer, sources):
+        """Create the same fixed dispatch ABI on owner and participant nodes."""
+        from .pypto_dsv41_ep_vjp import (
+            EXPERTS, MAP_PAD, PACKET_FIELDS, PACKET_ROWS, ROUTES,
+            make_ep_vjp_dispatch_pack,
+        )
+
+        packets, originals = [], {}
+        for rank in self.ranks:
+            source = sources.get(rank)
+            if source is None:
+                normalized = self._workspace(rank, (ROWS, HIDDEN))
+                expert_gradient = self._workspace(rank, (ROUTES, HIDDEN))
+                route_ids = self._workspace(rank, (ROWS, 6), torch.int32)
+                active = 0
+            else:
+                captured, envelope = source
+                begin, end = self._span(captured)
+                normalized = captured["normed"][begin:end]
+                route_ids = captured["route_ids"][begin:end]
+                expert_gradient = envelope.expert
+                if (
+                    normalized.shape != (ROWS, HIDDEN)
+                    or normalized.dtype != torch.bfloat16
+                    or route_ids.shape != (ROWS, 6)
+                    or route_ids.dtype != torch.int32
+                    or expert_gradient.shape != (ROUTES, HIDDEN)
+                    or expert_gradient.dtype != torch.bfloat16
+                ):
+                    raise ValueError("captured EP dispatch boundary changed its K32 ABI")
+                active = ROWS
+
+            sent_metadata = self._workspace(
+                rank, (PACKET_ROWS, PACKET_FIELDS), torch.int64,
+            )
+            sent_x = self._workspace(rank, (PACKET_ROWS, HIDDEN))
+            sent_dy = self._workspace(rank, (PACKET_ROWS, HIDDEN))
+            sent_counts = self._workspace(rank, (EXPERTS // 24, MAP_PAD), torch.int32)
+            self._execute(
+                ("ep-vjp-dispatch-pack", layer), rank,
+                make_ep_vjp_dispatch_pack,
+                normalized_x=normalized, route_output_gradient=expert_gradient,
+                route_ids=route_ids, sent_metadata=sent_metadata,
+                sent_x=sent_x, sent_dy=sent_dy, sent_counts=sent_counts,
+                active=active, source_rank=rank,
+            )
+            originals[rank] = sent_metadata, sent_counts
+            packets.append({
+                "frozen-tail": {
+                    "metadata": sent_metadata, "x": sent_x,
+                    "dy": sent_dy, "counts": sent_counts,
+                },
+            })
+        return packets, originals
+
+    def _ep_owner_expert_packets(self, layer, received):
+        """Run all 24 frozen W8A8 expert input VJPs owned by each local rank."""
+        from .pypto_dsv41_ep_vjp import (
+            EXPERT_CAPACITY, LOCAL_EXPERTS, MAP_PAD, PACKET_ROWS,
+            SLAB_ROWS, make_ep_vjp_dispatch_unpack, make_ep_vjp_return_pack,
+        )
+        from .pypto_dsv41_moe_vjp import make_frozen_w8a8_expert_input_vjp
+
+        layer_weights = self.native.weights.for_layer(layer)["expert"]
+        packets = []
+        for index, rank in enumerate(self.ranks):
+            packet = received[index]["frozen-tail"]
+            expert_x = self._workspace(rank, (SLAB_ROWS, HIDDEN))
+            expert_dy = self._workspace(rank, (SLAB_ROWS, HIDDEN))
+            expert_counts = self._workspace(rank, (LOCAL_EXPERTS,), torch.int32)
+            packet_map = self._workspace(rank, (PACKET_ROWS, MAP_PAD), torch.int32)
+            received_total = self._workspace(rank, (MAP_PAD,), torch.int32)
+            self._execute(
+                ("ep-vjp-dispatch-unpack", layer), rank,
+                make_ep_vjp_dispatch_unpack,
+                packet_metadata=packet["metadata"], packet_x=packet["x"],
+                packet_dy=packet["dy"], packet_counts=packet["counts"],
+                expert_x=expert_x, expert_dy=expert_dy,
+                expert_counts=expert_counts, packet_map=packet_map,
+                received_total=received_total, owner_rank=rank,
+            )
+
+            expert_dx = self._workspace(rank, (SLAB_ROWS, HIDDEN))
+            for local_expert in range(LOCAL_EXPERTS):
+                begin = local_expert * EXPERT_CAPACITY
+                end = begin + EXPERT_CAPACITY
+                global_expert = rank * LOCAL_EXPERTS + local_expert
+                weights = layer_weights(rank, global_expert)
+                if not isinstance(weights, (tuple, list)) or len(weights) != 4:
+                    raise RuntimeError("resident routed expert changed its W8A8 weight ABI")
+                self._execute(
+                    ("routed-expert-input-vjp", layer), rank,
+                    lambda: make_frozen_w8a8_expert_input_vjp(
+                        EXPERT_CAPACITY, HIDDEN, 2304,
+                    ),
+                    value=expert_x[begin:end],
+                    output_gradient=expert_dy[begin:end],
+                    gate_up_packed=weights[0], gate_up_scale=weights[1],
+                    down_packed=weights[2], down_scale=weights[3],
+                    input_gradient=expert_dx[begin:end],
+                )
+
+            sent_dx = self._workspace(rank, (PACKET_ROWS, HIDDEN))
+            self._execute(
+                ("ep-vjp-return-pack", layer), rank,
+                make_ep_vjp_return_pack,
+                expert_dx=expert_dx, packet_counts=packet["counts"],
+                packet_map=packet_map, sent_dx=sent_dx,
+            )
+            packets.append({"frozen-tail": {"dx": sent_dx}})
+        return packets
+
+    def _ep_routed_input_gradients(self, layer, returned, originals, sources):
+        """Restore route order only for the TP ranks that originated K32 rows."""
+        from .pypto_dsv41_ep_vjp import PACKET_ROWS, ROUTES, make_ep_vjp_source_restore
+
+        result = {}
+        positions = {rank: index for index, rank in enumerate(self.ranks)}
+        for rank in sources:
+            if rank not in positions:
+                raise ValueError("owner TP rank is not resident on this host")
+            metadata, counts = originals[rank]
+            route_dx = self._workspace(rank, (ROUTES, HIDDEN))
+            token_dx = self._workspace(rank, (ROWS, HIDDEN))
+            self._execute(
+                ("ep-vjp-source-restore", layer), rank,
+                make_ep_vjp_source_restore,
+                returned_dx=returned[positions[rank]]["frozen-tail"]["dx"],
+                sent_metadata=metadata, sent_counts=counts,
+                route_dx=route_dx, token_dx=token_dx,
+                active=ROWS, source_rank=rank,
+            )
+            result[rank] = token_dx
+        return result
+
+    def reverse_frozen_tail_owner_batch(
+        self, *, layer, ranks, captured, states, output_gradients,
+        synchronization,
+    ):
+        """Reverse one owner TP4 batch while every EP16 rank participates."""
+        dispatch_stage = self._reverse_sync_stage(
+            layer, synchronization, "dispatch",
+        )
+        return_stage = self._reverse_sync_stage(layer, synchronization, "return")
+        ranks = tuple(ranks)
+        if (
+            len(ranks) != 4
+            or ranks != tuple(range(ranks[0] // 4 * 4, ranks[0] // 4 * 4 + 4))
+            or not set(ranks) <= set(self.ranks)
+            or set(captured) != set(ranks)
+            or set(states) != set(ranks)
+            or set(output_gradients) != set(ranks)
+        ):
+            raise ValueError("owner frozen-tail reverse requires one complete local TP4 group")
+
+        envelopes = {
+            rank: self._reverse_frozen_moe_envelope(
+                layer=layer, rank=rank, captured=captured[rank],
+                state=states[rank], output_gradient=output_gradients[rank],
+            )
+            for rank in ranks
+        }
+        sources = {rank: (captured[rank], envelopes[rank]) for rank in ranks}
+        packets, originals = self._ep_dispatch_packets(layer, sources)
+        received = self._ep_exchange(dispatch_stage, packets)
+        return_packets = self._ep_owner_expert_packets(layer, received)
+        returned = self._ep_exchange(return_stage, return_packets)
+        routed = self._ep_routed_input_gradients(
+            layer, returned, originals, sources,
+        )
+        return {
+            rank: self._reverse_frozen_tail_finish(
+                layer=layer, rank=rank, captured=captured[rank],
+                envelope=envelopes[rank], routed_input_gradient=routed[rank],
+            )
+            for rank in ranks
+        }
+
+    def participate_frozen_tail_peer(self, *, layer, synchronization):
+        """Enter the same two EP16 collectives without inventing source rows."""
+        dispatch_stage = self._reverse_sync_stage(
+            layer, synchronization, "dispatch",
+        )
+        return_stage = self._reverse_sync_stage(layer, synchronization, "return")
+        packets, _ = self._ep_dispatch_packets(layer, {})
+        received = self._ep_exchange(dispatch_stage, packets)
+        return_packets = self._ep_owner_expert_packets(layer, received)
+        self._ep_exchange(return_stage, return_packets)
+
     def _reverse_frozen_moe_envelope(
         self, *, layer, rank, captured, state, output_gradient,
     ):
