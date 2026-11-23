@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +32,32 @@ def test_dsv41_online_policy_has_two_stage_cadence_and_warmup():
     assert policy.learning_rate_for(8) == pytest.approx(1e-5)
     assert policy.learning_rate_for(80) == pytest.approx(1e-5)
     assert policy.should_publish(4) and not policy.should_publish(3)
+
+
+def test_dsv41_online_policy_loads_the_versioned_study_contract(tmp_path):
+    candidate = DSV41OnlineConfig(last_layers=4, objective="forward_kl").contract()
+    study = tmp_path / "study.json"
+    study.write_text(json.dumps({
+        "format": "orthrus-dsv41-gsm8k-study-v1",
+        "candidate_default": candidate,
+    }))
+
+    loaded = DSV41OnlineConfig.from_study(
+        study, overrides={"last_layers": 2, "objective": "tv"},
+    )
+    assert loaded.contract() == {
+        **candidate, "last_layers": 2, "objective": "tv",
+    }
+
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({
+        "format": "orthrus-dsv41-gsm8k-study-v1",
+        "candidate_default": {**candidate, "typo": 1},
+    }))
+    with pytest.raises(ValueError, match="complete online policy"):
+        DSV41OnlineConfig.from_study(bad)
+    with pytest.raises(ValueError, match="unknown DSV4.1 online overrides"):
+        DSV41OnlineConfig.from_study(study, overrides={"typo": 1})
 
 
 def test_controller_prepares_before_device_update_and_serializes_snapshots():
@@ -145,8 +172,10 @@ def test_controller_updates_only_after_corrected_rows_and_publishes_atomically()
         "verifier_rounds": 1,
         "updates": 1,
         "publications": 1,
+        "update_seconds": record["update_seconds"],
+        "publication_seconds": record["publication_seconds"],
         "active_feedback_blocks": 0,
-            "prepared_update": None,
+        "prepared_update": None,
         "last_update": record,
     }
 

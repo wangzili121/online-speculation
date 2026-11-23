@@ -4,6 +4,7 @@
 import argparse
 from collections import Counter
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -22,6 +23,32 @@ PROMPTS = (
     "The capital city of France is",
 )
 SAMPLING = dict(temperature=0, ignore_eos=True)
+
+
+def load_callable(specification):
+    """Load an explicit production extension without an implicit fallback."""
+    if not specification or ":" not in specification:
+        raise ValueError("online updates require MODULE:CALLABLE resident primitives")
+    module, name = specification.rsplit(":", 1)
+    value = getattr(importlib.import_module(module), name)
+    if not callable(value):
+        raise TypeError(f"{specification} is not callable")
+    return value
+
+
+def online_bootstrap(args):
+    if args.online_study is None:
+        if args.online_primitives is not None or args.online_overrides is not None:
+            raise ValueError("online primitives/overrides require --online-study")
+        return None
+    from blockspec.dsv41_online import DSV41OnlineConfig
+    from blockspec.dsv41_online_bootstrap import DSV41OnlineBootstrap
+
+    overrides = None if args.online_overrides is None else json.loads(args.online_overrides)
+    if overrides is not None and not isinstance(overrides, dict):
+        raise ValueError("--online-overrides must be a JSON object")
+    config = DSV41OnlineConfig.from_study(args.online_study, overrides=overrides)
+    return DSV41OnlineBootstrap(load_callable(args.online_primitives), config)
 
 
 def write_report(path, data):
@@ -190,6 +217,7 @@ def run(args):
     from blockspec.vllm_ascend.head_contract import find_weight_index
 
     torch.set_num_threads(args.host_threads)
+    online = online_bootstrap(args)
     os.environ.setdefault("HCCL_CONNECT_TIMEOUT", "180")
     os.environ.setdefault("HCCL_EXEC_TIMEOUT", "180")
     plan = RankPlan(counts=(8, 8), tp=4, node=args.node)
@@ -235,7 +263,8 @@ def run(args):
         request = dict(build=identity, checkpoint=checkpoint_identity, head=head_identity,
                        prompts=prompts, workload_ids=identities, partitions=assignments,
                        tokens=args.tokens, context=args.context,
-                       trace_prefill=args.trace_prefill, trace_position=args.trace_position)
+                       trace_prefill=args.trace_prefill, trace_position=args.trace_position,
+                       online=None if online is None else online.config.contract())
         if link.exchange("acceptance/configuration", request) != request:
             raise ValueError("Nodes must use the same checkout, model, head and workload")
         print(f"Node {args.node} preparing HOST Engram contracts", flush=True)
@@ -253,7 +282,8 @@ def run(args):
         cluster = ClusterDispatcher(plan, link, build_id=identity)
         session = NativeSession(source, args.model, devices, native_dir, config, checkpoint.text["vocab_size"],
                                 cache_plan, orthrus_head=str(args.head), cluster=cluster, prepared_cache=cache,
-                                defer_draft=True, trace_prefill=args.trace_prefill, trace_position=args.trace_position)
+                                defer_draft=True, trace_prefill=args.trace_prefill,
+                                trace_position=args.trace_position, online=online)
         runner = A3Runner(source, config, cache_plan, session, checkpoint.text["vocab_size"], greedy_tokens=True)
         try:
             for mode in modes:
@@ -268,7 +298,8 @@ def run(args):
                 results[mode] = dict(status="executed", devices=devices, sampling=SAMPLING,
                                      requests=rows, speculation=stats, elapsed_seconds=elapsed,
                                      output_tokens=sum(len(row["token_ids"]) for row in rows),
-                                     output_tokens_per_second=sum(len(row["token_ids"]) for row in rows) / elapsed)
+                                     output_tokens_per_second=sum(len(row["token_ids"]) for row in rows) / elapsed,
+                                     online=None if online is None else online.summary())
                 write_report(args.output / mode / "result.json", results[mode])
         except TokenDivergence as error:
             diagnostics = {"prefill": prefill_difference, "verify/accept": verification_difference}
@@ -290,7 +321,8 @@ def run(args):
                        topology=dict(dp=4, tp=4, ep=16), physical_to_runtime=mapping, compared_tokens=tokens,
                        checkpoint=checkpoint_identity, head_sha256=head_identity, head_role=head["artifact_role"],
                        target=audits["target"], orthrus=audits["orthrus"],
-                       speculation=results["orthrus"]["speculation"])
+                       speculation=results["orthrus"]["speculation"],
+                       online=None if online is None else online.summary())
         peer = link.exchange("acceptance/results", summary)
         if (peer["node"] != 1 - plan.node or peer["global_ranks"] != list(RankPlan((8, 8), 4, 1 - plan.node).local_ranks)
                 or not peer["passed"] or peer["compared_tokens"] != tokens or peer["build_id"] != identity):
@@ -319,13 +351,20 @@ def main():
                         help="Record hashes of actual prefill layer outputs for first-divergence diagnosis")
     parser.add_argument("--trace-position", type=int,
                         help="Record one absolute token position (zero-based) in Decode and K32 Verify")
+    parser.add_argument("--online-study", type=Path,
+                        help="Versioned GSM8K online policy; enables resident last-N updates")
+    parser.add_argument("--online-primitives", metavar="MODULE:CALLABLE",
+                        help="Production resident primitives factory; required with --online-study")
+    parser.add_argument("--online-overrides",
+                        help="Strict JSON object overriding fields in candidate_default")
     parser.add_argument("--connect-timeout", type=int, default=900)
     parser.add_argument("--timeout", type=int, default=3600, help="Maximum seconds of peer inactivity")
     args = parser.parse_args()
     if (args.tokens < 2 or args.host_threads < 1 or args.timeout < 1
             or args.max_requests is not None and args.max_requests < 1
             or args.workload is not None and args.prompt is not None
-            or args.workload is None and args.prompt is not None and len(args.prompt) != 2):
+            or args.workload is None and args.prompt is not None and len(args.prompt) != 2
+            or args.online_study is not None and args.online_primitives is None):
         parser.error("Require valid dimensions and exactly one prompt source")
     if args.trace_position is not None and not 0 <= args.trace_position < args.context:
         parser.error("--trace-position must be in the reserved context")

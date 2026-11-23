@@ -102,6 +102,13 @@ def main():
         "publish": make_publish((64, 128)).compile(
             empty((64, 128), torch.float32), empty((64, 128)), config=config,
         ),
+        # A small but genuinely linked resident update.  These four programs
+        # share device handles in the validator, so the loss gradient is never
+        # copied back to the host before the parameter VJP, Adam and publish.
+        "linked_tv": make_tv(32, 64).compile(
+            empty((32, 64)), empty((32, 64)), empty((32, 64)),
+            empty((32, 8), torch.float32), 7, 7, config=config,
+        ),
         "c1a_softmax_vjp": make_softmax_vjp(attention_fixture).compile(
             empty((attention_fixture.rows, attention_fixture.padded_columns), torch.float32),
             empty((attention_fixture.rows, attention_fixture.padded_columns)),
@@ -674,6 +681,60 @@ def main():
         published = read(execution_handle, torch.empty(64, 128, dtype=torch.bfloat16))
         torch.testing.assert_close(published, expected[0].bfloat16(), atol=0, rtol=0)
         report["cases"].append({"operator": "publish", "shape": [64, 128]})
+
+        # Exercise the production hand-off pattern without host materializing
+        # any intermediate: TV dLogits -> projection dWeight -> Adam candidate
+        # -> BF16 execution bank.  The final readback is validation only.
+        linked_student = torch.randn(32, 64, dtype=torch.bfloat16)
+        linked_teacher = torch.randn_like(linked_student)
+        linked_input = torch.randn(32, 128, dtype=torch.bfloat16)
+        linked_master = torch.randn(64, 128, dtype=torch.float32)
+        linked_gradient = allocate(torch.zeros(32, 64, dtype=torch.bfloat16))
+        linked_losses = allocate(torch.zeros(32, 8, dtype=torch.float32))
+        linked_parameter_gradient = allocate(torch.zeros(64, 128, dtype=torch.float32))
+        linked_state = [
+            allocate(linked_master),
+            allocate(torch.zeros_like(linked_master)),
+            allocate(torch.zeros_like(linked_master)),
+        ]
+        linked_next = [allocate(torch.zeros_like(linked_master)) for _ in range(3)]
+        linked_execution = allocate(torch.zeros(64, 128, dtype=torch.bfloat16))
+        worker.run(
+            programs["linked_tv"], allocate(linked_student), allocate(linked_teacher),
+            linked_gradient, linked_losses, 7, 7, config=config,
+        )
+        worker.run(
+            programs["linear_weight_grad"], linked_gradient, allocate(linked_input),
+            linked_parameter_gradient, config=config,
+        )
+        worker.run(
+            programs["adam"], linked_state[0], linked_parameter_gradient,
+            linked_state[1], linked_state[2], *linked_next,
+            1e-4, .1, .001, 1., config=config,
+        )
+        worker.run(programs["publish"], linked_next[0], linked_execution, config=config)
+
+        linked_student_reference = linked_student.float().requires_grad_()
+        linked_teacher_log = linked_teacher.float().log_softmax(-1)
+        linked_loss_reference = .5 * (
+            linked_student_reference.log_softmax(-1).exp() - linked_teacher_log.exp()
+        ).abs().sum(-1)[:7].mean()
+        linked_dlogits, = torch.autograd.grad(linked_loss_reference, linked_student_reference)
+        linked_dw = (linked_dlogits.bfloat16().T @ linked_input).bfloat16().float()
+        linked_mean = .1 * linked_dw
+        linked_variance = .001 * linked_dw.square()
+        linked_expected = linked_master - 1e-4 * (linked_mean / .1) / (
+            (linked_variance / .001).sqrt() + 1e-8
+        )
+        torch.testing.assert_close(
+            read(linked_execution, torch.empty(64, 128, dtype=torch.bfloat16)),
+            linked_expected.bfloat16(), atol=.016, rtol=.004,
+        )
+        report["cases"].append({
+            "operator": "linked_loss_vjp_adam_publish",
+            "device_intermediates": ["dlogits", "parameter_gradient", "adam_state"],
+            "valid": 7,
+        })
         report["executed"] = report["passed"] = True
     except BaseException as error:
         report["error"] = repr(error)
@@ -685,6 +746,7 @@ def main():
             worker.close()
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2) + "\n")
+        args.output.chmod(0o644)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import json
 import math
 from collections.abc import Callable
 from pathlib import Path
+from time import perf_counter
 
 import torch
 
@@ -91,6 +92,33 @@ class DSV41OnlineConfig:
         if type(completed_updates) is not int or completed_updates < 1:
             raise ValueError("completed update count must be positive")
         return completed_updates % self.publish_every == 0
+
+    @classmethod
+    def from_study(cls, path, *, overrides=None):
+        """Load the candidate policy from the versioned GSM8K study file.
+
+        Serving must not silently accept misspelled or newly added knobs: a
+        configuration drift on only one host would deadlock collectives or
+        publish a different head version.
+        """
+        document = json.loads(Path(path).read_text())
+        if document.get("format") != "orthrus-dsv41-gsm8k-study-v1":
+            raise ValueError("unsupported DSV4.1 online study format")
+        values = document.get("candidate_default")
+        expected = set(cls.__dataclass_fields__)
+        if not isinstance(values, dict) or set(values) != expected:
+            raise ValueError("candidate_default must define the complete online policy")
+        values = dict(values)
+        if overrides:
+            unknown = set(overrides) - expected
+            if unknown:
+                raise ValueError(f"unknown DSV4.1 online overrides: {sorted(unknown)}")
+            values.update(overrides)
+        return cls(**values)
+
+    def contract(self):
+        """Stable cluster-visible policy used in startup identity checks."""
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
 
 
 @dataclass(frozen=True)
@@ -200,6 +228,7 @@ class DSV41OnlineController:
         self.config = config
         self.publisher = publisher
         self.rounds = self.completed_updates = self.publications = 0
+        self.update_seconds = self.publication_seconds = 0.0
         self.blocks = {}
         self.prepared = None
         self.records = []
@@ -259,17 +288,24 @@ class DSV41OnlineController:
         update_number = self.completed_updates + 1
         if prepared.update_number != update_number:
             raise ValueError("prepared DSV4.1 update is stale or out of order")
+        started = perf_counter()
         loss, norm, learner_version = self.learner.update_rows(
             prepared.replay, prepared.teacher, kind=prepared.objective,
             learning_rate=prepared.learning_rate,
         )
+        update_seconds = perf_counter() - started
+        publication_seconds = 0.0
         published = self.config.should_publish(update_number)
         if published:
             if self.publisher is None:
                 raise RuntimeError("an online publication boundary has no engine publisher")
+            started = perf_counter()
             self.publisher(self.learner, update_number)
+            publication_seconds = perf_counter() - started
             self.publications += 1
         self.completed_updates = update_number
+        self.update_seconds += update_seconds
+        self.publication_seconds += publication_seconds
         record = {
             "round": self.rounds,
             "update": update_number,
@@ -279,6 +315,8 @@ class DSV41OnlineController:
             "loss": loss,
             "gradient_norm": norm,
             "published": published,
+            "update_seconds": update_seconds,
+            "publication_seconds": publication_seconds,
         }
         self.records.append(record)
         self.prepared = None
@@ -301,16 +339,23 @@ class DSV41OnlineController:
             or contract["learning_rate"] != self.config.learning_rate_for(update_number)
         ):
             raise ValueError("remote DSV4.1 update contract is stale or inconsistent")
+        started = perf_counter()
         loss, norm, learner_version = self.learner.update_zero(
             learning_rate=contract["learning_rate"], update_number=update_number,
         )
+        update_seconds = perf_counter() - started
+        publication_seconds = 0.0
         published = self.config.should_publish(update_number)
         if published:
             if self.publisher is None:
                 raise RuntimeError("an online publication boundary has no engine publisher")
+            started = perf_counter()
             self.publisher(self.learner, update_number)
+            publication_seconds = perf_counter() - started
             self.publications += 1
         self.completed_updates = update_number
+        self.update_seconds += update_seconds
+        self.publication_seconds += publication_seconds
         record = {
             "round": self.rounds,
             "update": update_number,
@@ -321,6 +366,8 @@ class DSV41OnlineController:
             "gradient_norm": norm,
             "published": published,
             "remote_owner": contract["owner"],
+            "update_seconds": update_seconds,
+            "publication_seconds": publication_seconds,
         }
         self.records.append(record)
         return record
@@ -365,6 +412,8 @@ class DSV41OnlineController:
             "verifier_rounds": self.rounds,
             "updates": self.completed_updates,
             "publications": self.publications,
+            "update_seconds": self.update_seconds,
+            "publication_seconds": self.publication_seconds,
             "active_feedback_blocks": len(self.blocks),
             "prepared_update": None if self.prepared is None else self.prepared.update_number,
             "last_update": self.records[-1] if self.records else None,
