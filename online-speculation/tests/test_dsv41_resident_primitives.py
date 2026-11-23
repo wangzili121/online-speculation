@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from blockspec.dsv41_device_update import SuffixGradient
 from blockspec.pypto_dsv41_resident_primitives import (
     DSV41ResidentPrimitives,
     ProductionFactoryIncomplete,
