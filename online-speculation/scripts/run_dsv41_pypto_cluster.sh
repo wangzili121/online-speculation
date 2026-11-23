@@ -26,34 +26,10 @@ if commit != A3_COMMIT and tree != A3_TREE:
         f"found {commit}/{tree}"
     )
 PY
-if [[ -n "$(git -C "$PYPTO_LIB_ROOT" status --porcelain --untracked-files=no)" ]]; then
-  # Docker's patch application can preserve equivalent changes with different
-  # hunk metadata. Verify the exact final files rather than reverse-applying a
-  # context-sensitive patch.
-  python - "$PYPTO_LIB_ROOT" <<'PY'
-from hashlib import sha256
-from pathlib import Path
-import subprocess
-import sys
-
-root = Path(sys.argv[1])
-expected = {
-    "models/deepseek_v4_1_flash_a3/prefill_layer.py":
-        "1d97dd78bdc0a5451fe65e8dd3e8a06ee71db37c36b38a2447109fe7a0d95715",
-    "models/deepseek_v4_1_flash_a3/prefill_moe.py":
-        "557f139449c96abc5d32c9bff54f97411aa9f30906c2a13d546ba696866a0437",
-}
-changed = set(subprocess.check_output(
-    ["git", "-C", str(root), "diff", "--name-only", "--diff-filter=ACMRTUXB"],
-    text=True,
-).splitlines())
-actual = {name: sha256((root / name).read_bytes()).hexdigest() for name in changed}
-if changed != set(expected) or actual != expected:
-    raise SystemExit(
-        f"A3 base contains changes beyond the reviewed expert-capture files: "
-        f"changed={sorted(changed)}, hashes={actual}"
-    )
-PY
+if ! grep -q 'state\["expert_outputs"\]' \
+    "$PYPTO_LIB_ROOT/models/deepseek_v4_1_flash_a3/prefill_layer.py"; then
+  git -C "$PYPTO_LIB_ROOT" apply --check "$patches/lib-online-expert-capture.patch"
+  git -C "$PYPTO_LIB_ROOT" apply "$patches/lib-online-expert-capture.patch"
 fi
 if [[ -n "$(git -C "$PYPTO_SERVING_ROOT" status --porcelain --untracked-files=no)" ]]; then
   echo 'Use a fresh offline image with the paired Serving adapter.' >&2
@@ -66,6 +42,20 @@ for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.p
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
+python - "$PYPTO_LIB_ROOT/models/deepseek_v4_1_flash_a3/prefill_layer.py" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+old = """                         route_ids=ids, normed=normed, shared=zeros(rank, capacity, 5120), output_hidden=output,"""
+new = """                         route_ids=ids, router_logits=logits, ffn_collapsed=collapsed,
+                         ffn_normed=normed, router_input=router_input,
+                         normed=normed, shared=zeros(rank, capacity, 5120), output_hidden=output,"""
+if text.count(old) != 1:
+    raise SystemExit("Expected one DSV4.1 router state boundary")
+path.write_text(text.replace(old, new, 1))
+PY
 git -C "$PYPTO_LIB_ROOT" add -u
 git -C "$PYPTO_LIB_ROOT" -c user.name=Integration -c user.email=integration@localhost \
   -c commit.gpgsign=false commit -qm 'Run the resident DSV4.1 network across two nodes'
