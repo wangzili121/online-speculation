@@ -1,0 +1,50 @@
+{
+  "format": "orthrus-dsv41-pypto-multicard-v1",
+  "date": "2026-11-23",
+  "host": "159.138.5.111",
+  "source_commit": "958df02",
+  "image": "orthrus-dsv41-pypto:72a62d1-offline",
+  "physical_devices": [
+    0,
+    1,
+    2,
+    5
+  ],
+  "runs": [
+    {
+      "passed": true,
+      "topology": {
+        "ep": 4,
+        "dp": 1,
+        "tp": 4
+      },
+      "collectives": [
+        "tp/all_gather",
+        "tp/all_reduce",
+        "tp/reduce_scatter",
+        "ep/all_to_all",
+        "dp/all_gather"
+      ],
+      "cache_rollback_byte_exact": true,
+      "restored_bytes": 1536
+    },
+    {
+      "passed": true,
+      "topology": {
+        "ep": 4,
+        "dp": 4,
+        "tp": 1
+      },
+      "collectives": [
+        "tp/all_gather",
+        "tp/all_reduce",
+        "tp/reduce_scatter",
+        "ep/all_to_all",
+        "dp/all_gather"
+      ],
+      "cache_rollback_byte_exact": true,
+      "restored_bytes": 1536
+    }
+  ],
+  "scope": "Device collectives and cache rollback with synthetic tensors; no model weights loaded"
+}

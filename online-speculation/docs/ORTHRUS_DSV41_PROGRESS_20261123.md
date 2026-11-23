@@ -36,8 +36,9 @@ db6ecee0bc76e60e3e039b954b2f3d6f5d4ad90f
 - 冻结专家的 clipped-SwiGLU 反向已经实现：生产 `K32×2304` 形状编译通过，小形状实卡与 Torch 参考逐元素一致。它与 down/gate-up 两个冻结 W8A8 输入 VJP 共同构成 selected-expert 的完整输入反向，不更新专家权重。
 - resident 反向的调用顺序和参数 ABI 已固化，last-1/2/4/8 均在支持的 C1A 后缀内。TP4 梯度契约已经区分复制参数求和与分片参数拼接，并恢复八个公开 head tensor 的方向和 lane 顺序。
 - online learner 改为在首轮 prefill 建立 resident runtime、目标权重和 draft 后再绑定，避免初始化阶段拿不到真实设备句柄。K32 的 31 行 student logits 可只监督已经沿修正前缀收齐的 1–7 行 verifier logits；请求提前结束时，已有真实短块也会通过双机同步更新，不补造教师行。
-- 一键单机 readiness 已在 910B3 通过：157 项测试通过、4 项跳过、5 组子测试通过；固定 serving 补丁可应用且可编译；61 个生产规格 PyPTO 程序编译、22 个实卡数值用例执行通过。C1A、mHC、MoE、EP16 反向和设备到设备权重发布均包含在同一次完整门禁中。
+- 一键单机 readiness 已在 910B3 通过：158 项测试通过、4 项跳过、5 组子测试通过；固定 serving 补丁可应用且可编译；61 个生产规格 PyPTO 程序编译、22 个实卡数值用例执行通过。C1A、mHC、MoE、EP16 反向和设备到设备权重发布均包含在同一次完整门禁中。
 - resident head 发布已实卡通过：更新结果直接从设备 optimizer 状态复制到 inactive draft bank，`host_round_trip=false`；版本仍只在 verifier 安全边界原子切换。
+- 四张 910B3 上分别以 TP4×DP1 和 TP1×DP4 执行了 all-gather、all-reduce、reduce-scatter、all-to-all；两种布局均通过，拒绝区间恢复逐字节一致。[四卡通信与回滚记录](validation/dsv41/pypto-online-multicard-20261123.json)
 
 ## 下一步
 
