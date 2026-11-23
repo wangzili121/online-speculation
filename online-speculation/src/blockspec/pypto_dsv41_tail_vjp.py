@@ -543,41 +543,45 @@ def make_hc_pre_projection_forward(
                 high_precision=True,
             )
             inv = pl.read(inverse_tile, [0, 0])
-            for lane in pl.unroll(8):
-                pl.write(inverse, [token, lane], inv)
+            inverse_row = pl.tile.full([1, 16], dtype=pl.FP32, value=0.)
+            for lane in pl.unroll(16):
+                pl.tile.write(inverse_row, [0, lane], inv)
+            pl.store(inverse_row, [token, 0], inverse)
 
-        with pl.spmd(rows * channels, name_hint="orthrus_dsv41_hc_pre_projection_replay"):
-            task = pl.tile.get_block_idx()
-            token, channel = task // channels, task % channels
-            total = pl.full([8, 8], dtype=pl.FP32, value=0.)
-            for part in pl.range(flat // tile):
-                value = pl.reshape(
-                    pl.cast(
-                        pl.slice(flattened, [1, tile], [token, part * tile]),
-                        pl.FP32,
-                    ),
-                    [8, 8],
-                )
-                weight = pl.reshape(
-                    pl.slice(function, [1, tile], [channel, part * tile]),
-                    [8, 8],
-                )
-                product = pl.mul(value, weight)
-                partial = pl.row_expand_mul(
-                    pl.full([8, 8], dtype=pl.FP32, value=1.),
-                    pl.row_sum(product),
-                )
-                total = pl.add(
-                    total,
-                    pl.row_expand_mul(
+        with pl.spmd(rows, name_hint="orthrus_dsv41_hc_pre_projection_replay"):
+            token = pl.tile.get_block_idx()
+            # One block owns the complete 128-byte padded row.  Scalar stores
+            # from 24 independent blocks would race at the 64-byte DDR line.
+            for channel in pl.range(channels):
+                total = pl.full([8, 8], dtype=pl.FP32, value=0.)
+                for part in pl.range(flat // tile):
+                    value = pl.reshape(
+                        pl.cast(
+                            pl.slice(flattened, [1, tile], [token, part * tile]),
+                            pl.FP32,
+                        ),
+                        [8, 8],
+                    )
+                    weight = pl.reshape(
+                        pl.slice(function, [1, tile], [channel, part * tile]),
+                        [8, 8],
+                    )
+                    product = pl.mul(value, weight)
+                    partial = pl.row_expand_mul(
                         pl.full([8, 8], dtype=pl.FP32, value=1.),
-                        pl.row_sum(pl.transpose(partial, 0, 1)),
-                    ),
+                        pl.row_sum(product),
+                    )
+                    total = pl.add(
+                        total,
+                        pl.row_expand_mul(
+                            pl.full([8, 8], dtype=pl.FP32, value=1.),
+                            pl.row_sum(pl.transpose(partial, 0, 1)),
+                        ),
+                    )
+                pl.write(
+                    projection, [token, channel],
+                    pl.read(total, [0, 0]) * pl.read(inverse, [token, 0]),
                 )
-            pl.write(
-                projection, [token, channel],
-                pl.read(total, [0, 0]) * pl.read(inverse, [token, 0]),
-            )
         return projection, inverse
 
     @pl.jit.host
@@ -659,7 +663,7 @@ def make_hc_pre_data_vjp(
                         pl.row_sum(pl.transpose(partial, 0, 1)),
                     ),
                 )
-            correction = pl.read(dot, [0, 0]) * inv * inv / flat
+            correction = pl.read(dot, [0, 0]) * inv * inv * (1. / flat)
 
             for stream in pl.range(copies):
                 incoming_total = pl.full([8, 8], dtype=pl.FP32, value=0.)

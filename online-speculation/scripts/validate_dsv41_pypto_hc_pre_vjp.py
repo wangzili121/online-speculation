@@ -38,13 +38,13 @@ def main():
     # a fast numerical oracle and does not weaken this production ABI gate.
     make_hc_pre_projection_forward().compile(
         meta((32 * 4, 5120)), meta((24, 4 * 5120), torch.float32),
-        meta((32, 24), torch.float32), meta((32, 8), torch.float32),
+        meta((32, 32), torch.float32), meta((32, 16), torch.float32),
         config=config,
     )
     make_hc_pre_data_vjp().compile(
         meta((32 * 4, 5120)), meta((32, 4), torch.float32),
-        meta((24, 4 * 5120), torch.float32), meta((32, 8), torch.float32),
-        meta((32, 24), torch.float32), meta((32, 5120)),
+        meta((24, 4 * 5120), torch.float32), meta((32, 16), torch.float32),
+        meta((32, 32), torch.float32), meta((32, 5120)),
         meta((32 * 4, 5120)), meta((32 * 4, 5120)),
         meta((32, 16), torch.float32), config=config,
     )
@@ -53,13 +53,13 @@ def main():
     channels, flat = 24, copies * hidden
     forward = make_hc_pre_projection_forward(rows, hidden).compile(
         meta((rows * copies, hidden)), meta((channels, flat), torch.float32),
-        meta((rows, channels), torch.float32), meta((rows, 8), torch.float32),
+        meta((rows, 32), torch.float32), meta((rows, 16), torch.float32),
         config=config,
     )
     backward = make_hc_pre_data_vjp(rows, hidden).compile(
         meta((rows * copies, hidden)), meta((rows, copies), torch.float32),
-        meta((channels, flat), torch.float32), meta((rows, 8), torch.float32),
-        meta((rows, channels), torch.float32), meta((rows, hidden)),
+        meta((channels, flat), torch.float32), meta((rows, 16), torch.float32),
+        meta((rows, 32), torch.float32), meta((rows, hidden)),
         meta((rows * copies, hidden)), meta((rows * copies, hidden)),
         meta((rows, 16), torch.float32), config=config,
     )
@@ -69,6 +69,8 @@ def main():
     incoming = torch.randn(rows, copies, dtype=torch.float32) * .2
     function = torch.randn(channels, flat, dtype=torch.float32) * .02
     dprojection = torch.randn(rows, channels, dtype=torch.float32) * .1
+    dprojection_padded = torch.zeros(rows, 32, dtype=torch.float32)
+    dprojection_padded[:, :channels] = dprojection
     dcollapsed = (torch.randn(rows, hidden) * .1).bfloat16()
     passthrough = (torch.randn_like(residual.float()) * .05).bfloat16()
 
@@ -108,8 +110,8 @@ def main():
             handles.append(handle)
             return handle
 
-        projection_output = torch.zeros(rows, channels, dtype=torch.float32)
-        inverse_output = torch.zeros(rows, 8, dtype=torch.float32)
+        projection_output = torch.zeros(rows, 32, dtype=torch.float32)
+        inverse_output = torch.zeros(rows, 16, dtype=torch.float32)
         residual_output = torch.zeros_like(residual.flatten(0, 1))
         incoming_output = torch.zeros(rows, 16, dtype=torch.float32)
         projection_handle, inverse_handle = (
@@ -121,7 +123,7 @@ def main():
         )
         worker.run(
             backward, allocate(residual.flatten(0, 1)), allocate(incoming),
-            allocate(function), inverse_handle, allocate(dprojection),
+            allocate(function), inverse_handle, allocate(dprojection_padded),
             allocate(dcollapsed), allocate(passthrough.flatten(0, 1)),
             allocate(residual_output), allocate(incoming_output), config=config,
         )
@@ -144,7 +146,8 @@ def main():
             incoming_output.nbytes,
         )
         torch.testing.assert_close(
-            projection_output, expected_projection, atol=3e-4, rtol=3e-4,
+            projection_output[:, :channels], expected_projection,
+            atol=3e-4, rtol=3e-4,
         )
         torch.testing.assert_close(
             inverse_output[:, 0], expected_inverse[:, 0], atol=2e-6, rtol=2e-6,
@@ -160,7 +163,7 @@ def main():
         report.update(
             passed=True, executed=True, fixture=[rows, copies, hidden],
             projection_max_abs=float(
-                (projection_output - expected_projection).abs().max()
+                (projection_output[:, :channels] - expected_projection).abs().max()
             ),
             residual_max_abs=float(
                 (residual_output.float() - expected_residual.flatten(0, 1).float())
