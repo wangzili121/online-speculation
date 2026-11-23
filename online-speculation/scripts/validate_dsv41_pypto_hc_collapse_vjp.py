@@ -3,6 +3,7 @@
 
 import argparse
 import json
+from pathlib import Path
 
 
 def main():
@@ -10,7 +11,17 @@ def main():
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--production", action="store_true")
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.output is not None and args.output.exists():
+        parser.error("output must not already exist")
+
+    def emit(report):
+        text = json.dumps(report)
+        if args.output is not None:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(report, indent=2) + "\n")
+        print(text)
 
     import torch
     from pypto.backend import BackendType
@@ -42,7 +53,7 @@ def main():
     report = {"passed": True, "compiled": True, "executed": False,
               "programs": 2, "shape": [rows, 4, hidden]}
     if args.compile_only:
-        print(json.dumps(report))
+        emit(report)
         return
 
     generator = torch.Generator().manual_seed(419)
@@ -116,7 +127,7 @@ def main():
         stream_max_abs=float((actual_stream.float() - expected_stream.float()).abs().max()),
         premix_max_abs=float((actual_premix[:, :4] - expected_premix).abs().max()),
     )
-    print(json.dumps(report))
+    emit(report)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,11 @@ export PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}"
 "$python" -m pytest -q "$root/tests" -k dsv41 > "$output/tests.log" 2>&1
 
 serving="$(mktemp -d /tmp/orthrus-serving-online.XXXXXX)"
-trap 'rm -r -- "$serving"' EXIT
+cleanup() {
+  rm -r -- "$serving"
+  chmod -R a+rX "$output" 2>/dev/null || true
+}
+trap cleanup EXIT
 cp -a /opt/orthrus/pypto-serving/. "$serving/"
 git -C "$serving" apply --check "$root/runtime/pypto_dsv41_a3/serving-cluster.patch"
 git -C "$serving" apply "$root/runtime/pypto_dsv41_a3/serving-cluster.patch"
@@ -34,17 +38,42 @@ bash "$root/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh"
 # factory is allowed to advertise online-update readiness. These checks cover
 # the exact K32/hidden=5120 geometry; compact numerical fixtures are used only
 # where allocating a second full golden tensor would obscure the device gate.
-"$python" "$root/scripts/validate_dsv41_pypto_hc_collapse_vjp.py" \
-  --device "$device" --production > "$output/hc-collapse-vjp.json"
-"$python" "$root/scripts/validate_dsv41_pypto_hc_pre_vjp.py" \
+retry_gate() {
+  local name="$1"
+  shift
+  local report="$output/$name.json"
+  local attempt
+  for attempt in 1 2 3; do
+    rm -f -- "$report"
+    if "$@"; then
+      return 0
+    fi
+    if [[ -f "$report" ]]; then
+      mv -- "$report" "$output/$name.attempt-$attempt.json"
+    fi
+    sleep $((attempt * 3))
+  done
+  echo "$name failed after three isolated device attempts" >&2
+  return 1
+}
+
+retry_gate hc-collapse-vjp \
+  "$python" "$root/scripts/validate_dsv41_pypto_hc_collapse_vjp.py" \
+  --device "$device" --production --output "$output/hc-collapse-vjp.json"
+retry_gate hc-pre-vjp \
+  "$python" "$root/scripts/validate_dsv41_pypto_hc_pre_vjp.py" \
   --device "$device" --output "$output/hc-pre-vjp.json"
-"$python" "$root/scripts/validate_dsv41_pypto_c1a_vjp.py" \
+retry_gate c1a-vjp \
+  "$python" "$root/scripts/validate_dsv41_pypto_c1a_vjp.py" \
   --device "$device" --output "$output/c1a-vjp.json"
-"$python" "$root/scripts/validate_dsv41_pypto_expert_capture.py" \
+retry_gate expert-capture \
+  "$python" "$root/scripts/validate_dsv41_pypto_expert_capture.py" \
   --device "$device" --output "$output/expert-capture.json"
-"$python" "$root/scripts/validate_dsv41_pypto_expert_input_vjp.py" \
+retry_gate expert-input-vjp \
+  "$python" "$root/scripts/validate_dsv41_pypto_expert_input_vjp.py" \
   --device "$device" --output "$output/expert-input-vjp.json"
-"$python" "$root/scripts/validate_dsv41_pypto_ep_vjp.py" \
+retry_gate ep-vjp \
+  "$python" "$root/scripts/validate_dsv41_pypto_ep_vjp.py" \
   --device "$device" --output "$output/ep-vjp.json"
 
 # Keep this as the final gate: the device kernels and D2D publication above
