@@ -445,13 +445,15 @@ class DraftRound:
                         hidden=state["hidden"], incoming=state["incoming"],
                         pre=state["pre"], post=state["post"], comb=state["comb"],
                         collapsed=state["attn_collapsed"], normed=state["full_norm"],
-                        changed=state["changed"], **span,
+                        changed=state["changed"],
+                        attention_scattered=state["attention_scattered"], **span,
                     )
                     ffn[rank] = {
                         "changed": state["changed"], "pre": state["ffn_pre"],
                         "post": state["ffn_post"], "comb": state["ffn_comb"],
                         "collapsed": state["ffn_collapsed"], "normed": state["ffn_normed"],
                         "router_input": state["router_input"], "router_logits": state["router_logits"],
+                        "normed": state["ffn_normed"],
                         "route_ids": state["route_ids"], "route_weights": state["weights"],
                         "shared": state["shared"], "expert_outputs": state["expert_outputs"],
                         "combined": state["combined"],

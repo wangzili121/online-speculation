@@ -431,9 +431,18 @@ def make_element(shape, kind, *, scale=1., inline=False, tile=128, task_group=1,
     return entry
 
 
-def make_rms(rows, dimension, *, mode="forward", inline=False, accumulate=False):
+def make_rms(
+    rows, dimension, *, mode="forward", inline=False, accumulate=False,
+    epsilon=1e-6,
+):
     """RMSNorm 前向、输入梯度或共享 Q/K norm 参数梯度。gamma 已包含 1。"""
-    if dimension % 64 or rows < 16 or rows % 16 or mode not in {"forward", "input", "weight"}:
+    import math
+    if (
+        dimension % 64 or rows < 16 or rows % 16
+        or mode not in {"forward", "input", "weight"}
+        or not isinstance(epsilon, (int, float))
+        or not math.isfinite(epsilon) or epsilon <= 0
+    ):
         raise ValueError("aligned RMSNorm shape and a supported mode required")
     import pypto.language as pl
     kernel = pl.jit.inline if inline else pl.jit
@@ -449,7 +458,7 @@ def make_rms(rows, dimension, *, mode="forward", inline=False, accumulate=False)
             partial = pl.row_sum(pl.mul(z, z))
             repeated = pl.row_expand_mul(pl.full([8, 8], dtype=pl.FP32, value=1.), partial)
             total = pl.row_sum(pl.transpose(repeated, 0, 1))
-            r = pl.rsqrt(pl.add(pl.mul(total, 1. / D), 1e-6), high_precision=True)
+            r = pl.rsqrt(pl.add(pl.mul(total, 1. / D), epsilon), high_precision=True)
             g = pl.reshape(pl.slice(gamma, [1, D], [0, 0]), [8, D // 8])
             normalized = pl.reshape(pl.mul(pl.row_expand_mul(z, r), g), [1, D])
             y[row:row + 1, 0:D] = pl.cast(normalized, pl.BF16, mode="rint")

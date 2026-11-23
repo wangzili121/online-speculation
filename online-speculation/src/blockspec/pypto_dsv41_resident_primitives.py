@@ -385,7 +385,7 @@ class DSV41ResidentPrimitives:
             inverse = self._workspace(rank, (ROWS, 8), torch.float32)
             self._execute(
                 ("final-rms-forward",), rank,
-                lambda: make_rms(ROWS, HIDDEN),
+                lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20),
                 x=collapsed, gamma=norm, y=normalized, inv=inverse,
             )
             terminal_states[rank] = streams, premix, collapsed, norm, inverse
@@ -418,7 +418,7 @@ class DSV41ResidentPrimitives:
             dcollapsed = self._workspace(rank, (ROWS, HIDDEN))
             self._execute(
                 ("final-rms-input-vjp",), rank,
-                lambda: make_rms(ROWS, HIDDEN, mode="input"),
+                lambda: make_rms(ROWS, HIDDEN, mode="input", epsilon=1e-20),
                 x=collapsed, gamma=norm, inv=inverse,
                 dy=normalized_gradients[rank], dx=dcollapsed,
             )
