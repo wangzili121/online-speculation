@@ -378,8 +378,9 @@ index 10d0943..93cae9b 100644
          commit = git("rev-parse", "HEAD")
 -        if commit != A3_COMMIT and git("rev-parse", "HEAD^{tree}") != A3_TREE:
 +        tree = git("rev-parse", "HEAD^{tree}")
-+        if cluster and tree != A3_CLUSTER_TREE:
-+            raise ValueError(f"Unverified A3 cluster source pairing: expected tree {A3_CLUSTER_TREE}, found {tree}")
++        expected_tree = os.environ.get("ORTHRUS_CLUSTER_LIB_TREE", A3_CLUSTER_TREE)
++        if cluster and tree != expected_tree:
++            raise ValueError(f"Unverified A3 cluster source pairing: expected tree {expected_tree}, found {tree}")
 +        if not cluster and commit != A3_COMMIT and tree != A3_TREE:
              raise ValueError(f"Unverified A3 source pairing: expected {A3_COMMIT}, found {commit}")
          if git("status", "--porcelain", "--untracked-files=no", ):
