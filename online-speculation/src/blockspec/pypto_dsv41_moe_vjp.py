@@ -390,4 +390,19 @@ def make_frozen_w8a8_expert_input_vjp(
         gate_input_vjp(gate_up_gradient, gate_up_weight, input_gradient)
         return input_gradient
 
-    return expert_input_vjp
+    @pl.jit.host
+    def entry(
+        value: pl.Tensor,
+        output_gradient: pl.Tensor,
+        gate_up_packed: pl.Tensor,
+        gate_up_scale: pl.Tensor,
+        down_packed: pl.Tensor,
+        down_scale: pl.Tensor,
+        input_gradient: pl.Out[pl.Tensor],
+    ):
+        expert_input_vjp(
+            value, output_gradient, gate_up_packed, gate_up_scale,
+            down_packed, down_scale, input_gradient, device=0,
+        )
+
+    return entry
