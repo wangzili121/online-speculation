@@ -47,20 +47,6 @@ for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.p
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
-python - "$PYPTO_LIB_ROOT/models/deepseek_v4_1_flash_a3/prefill_layer.py" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-text = path.read_text()
-old = """                         route_ids=ids, normed=normed, shared=zeros(rank, capacity, 5120), output_hidden=output,"""
-new = """                         route_ids=ids, router_logits=logits, ffn_collapsed=collapsed,
-                         ffn_normed=normed, router_input=router_input,
-                         normed=normed, shared=zeros(rank, capacity, 5120), output_hidden=output,"""
-if text.count(old) != 1:
-    raise SystemExit("Expected one DSV4.1 router state boundary")
-path.write_text(text.replace(old, new, 1))
-PY
 git -C "$PYPTO_LIB_ROOT" add -u
 git -C "$PYPTO_LIB_ROOT" -c user.name=Integration -c user.email=integration@localhost \
   -c commit.gpgsign=false commit -qm 'Run the resident DSV4.1 network across two nodes'

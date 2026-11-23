@@ -143,7 +143,8 @@ def test_cluster_source_pairing_tracks_the_fully_patched_kernel_tree():
     assert "from pypto_serving_a3.source import A3_COMMIT, A3_TREE" in launcher
     assert "lib-online-expert-capture.patch" in launcher
     assert "lib-online-state-capture.patch" in launcher
-    assert "Expected one DSV4.1 router state boundary" in launcher
+    assert "Expected one DSV4.1 router state boundary" not in launcher
+    assert "path.write_text" not in launcher
     assert 'export ORTHRUS_CLUSTER_LIB_TREE="$(git -C "$PYPTO_LIB_ROOT" rev-parse' in launcher
     assert 'os.environ.get("ORTHRUS_CLUSTER_LIB_TREE", A3_CLUSTER_TREE)' in patch
 
