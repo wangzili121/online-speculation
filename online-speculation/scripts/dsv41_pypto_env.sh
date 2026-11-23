@@ -100,16 +100,25 @@ case "$action" in
     image_hex="${image_id#sha256:}"
     base_image="${image%:*}:base-${image_hex:0:12}"
     docker tag "$image" "$base_image"
-    recipe="$root/runtime/pypto_dsv41_a3/docker/Dockerfile.refresh"
+    refresh_context="$(mktemp -d /tmp/orthrus-dsv41-refresh.XXXXXX)"
+    trap 'rm -rf -- "$refresh_context"' EXIT
+    # Build from tracked files only. PyPTO compilation may leave root-owned
+    # build_output directories in the checkout, which Docker cannot stat and
+    # which are neither inputs nor safe to copy into the refreshed image.
+    git -C "$root/.." archive --format=tar HEAD online-speculation | \
+      tar -C "$refresh_context" -xf -
+    recipe="$refresh_context/online-speculation/runtime/pypto_dsv41_a3/docker/Dockerfile.refresh"
     # This refresh is deliberately offline: it only layers the current
     # repository's model patch and Python sources over the pinned image.
     DOCKER_BUILDKIT=0 docker build \
       --build-arg "BASE_IMAGE=$base_image" \
-      -t "$image" -f "$recipe" "$root/.."
+      -t "$image" -f "$recipe" "$refresh_context"
     docker run --rm --network none --entrypoint /bin/bash "$image" -lc \
       'git -C /opt/orthrus/pypto-lib apply --reverse --check \
         /opt/orthrus/online-speculation/runtime/pypto_dsv41_a3/lib-online-expert-capture.patch'
     echo "Refreshed $image from pinned base $base_image"
+    rm -rf -- "$refresh_context"
+    trap - EXIT
     ;;
   save)
     destination="${1:?Usage: dsv41_pypto_env.sh save /path/to/image.tar}"
