@@ -42,19 +42,21 @@ NPU_DEVICE=0 PYPTO_VISIBLE_DEVICE=0 PYPTO_RUNTIME_DEVICE=0 \
   bash online-speculation/scripts/dsv41_pypto_env.sh online-ready
 ```
 
-当前验收基线为：157 项 DSV4.1 测试、4 项跳过和 5 组子测试通过，22 个设备数值用例通过，61 个生产形状程序完成编译；其中包含 TP4/K32 的逐 query C1A 历史重放、sink、临时块 K/V 梯度，K32×5120 的 mHC 反向，以及固定 Top-6 路由、冻结 W8A8 专家输入 VJP、EP16 编排、AdamW 和发布。inactive head bank 的设备到设备发布也已实卡通过，完整 head 不经 CPU 往返。`readiness.json` 汇总测试、serving 补丁和实卡 kernel 证据，并保留为宿主用户可读；它不替代双机 serving 中的一次完整在线更新。
+当前验收基线为：158 项 DSV4.1 测试、4 项跳过和 5 组子测试通过，22 个设备数值用例通过，61 个生产形状程序完成编译；其中包含 TP4/K32 的逐 query C1A 历史重放、sink、临时块 K/V 梯度，K32×5120 的 mHC 反向，以及固定 Top-6 路由、冻结 W8A8 专家输入 VJP、EP16 编排、AdamW 和发布。inactive head bank 的设备到设备发布也已实卡通过，完整 head 不经 CPU 往返。`readiness.json` 汇总测试、serving 补丁和实卡 kernel 证据，并保留为宿主用户可读；它不替代双机 serving 中的一次完整在线更新。
 
 先在两台机器放置相同的 `tuning.jsonl`。固定 head 推理链路已经通过双机验收；在线更新应直接使用统一入口同时启动 4 题、每题 32 token 的 smoke。它会加载在线策略，执行真实反馈收集、last-N 反向、同步更新与安全发布：
 
-```bash
-export CLUSTER_KEY_FILE=/root/.orthrus-cluster.key
+公司环境的镜像、模型、数据、八卡列表、结果目录和密钥路径统一保存在一个入口中。两边只需同时运行短命令：
 
+```bash
 # node7
-bash online-speculation/scripts/run_dsv41_pypto_online_gsm8k.sh node7 smoke 1
+bash online-speculation/scripts/run_dsv41_pypto_company_online.sh node7 smoke 1
 
 # node8（与 node7 同时执行）
-bash online-speculation/scripts/run_dsv41_pypto_online_gsm8k.sh node8 smoke 1
+bash online-speculation/scripts/run_dsv41_pypto_company_online.sh node8 smoke 1
 ```
+
+默认密钥为 `/home/wangzili/.orthrus-cluster.key`。需要临时覆盖某个路径时，再通过同名环境变量覆盖，无需修改通用执行逻辑。
 
 结果目录会在启动时打印。任一节点可汇总 Orthrus 结果：
 
