@@ -316,7 +316,7 @@
      map_ranks(select_rank_output)
      slab = runtime.get("moe_slab_rows", capacity)
      routes, packet_rows = slab * 6, world * slab * 6
-@@ -556,7 +573,9 @@
+@@ -556,12 +573,14 @@
                   dict(logits=logits, route_ids=ids, route_weights=weights), "router"),
              ])
              state.update(changed=changed, ffn_pre=pre, ffn_post=post, ffn_comb=comb, weights=weights,
@@ -325,6 +325,12 @@
 +                         ffn_normed=normed, router_input=router_input,
 +                         normed=normed, shared=zeros(rank, capacity, 5120), output_hidden=output,
                           combined=zeros(rank, capacity, 5120))
+             if draft is not None:
+                 # Exact fixed-route backward needs every selected expert's
+                 # unweighted output to differentiate the normalized route
+                 # weights.  Keep it only for a draft capture; target serving
+                 # and ordinary draft rounds retain no extra full-layer state.
+                 state["expert_outputs"] = zeros(rank, capacity * 6, 5120)
          map_ranks(route_rank)
      slab_work = [{} for _ in range(world)]
 --- a/models/deepseek_v4_1_flash_a3/prefill_compressed_runtime.py
