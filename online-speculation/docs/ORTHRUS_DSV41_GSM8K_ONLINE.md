@@ -56,7 +56,7 @@ bash online-speculation/scripts/run_dsv41_pypto_company_online.sh node7 smoke 1
 bash online-speculation/scripts/run_dsv41_pypto_company_online.sh node8 smoke 1
 ```
 
-默认密钥为 `/home/wangzili/.orthrus-cluster.key`。需要临时覆盖某个路径时，再通过同名环境变量覆盖，无需修改通用执行逻辑。
+公司入口按节点选择同一份密钥的实际位置：node7 使用 `/root/.orthrus-cluster.key`，node8 使用 `/home/wangzili/.orthrus-cluster.key`。
 
 结果目录会在启动时打印。任一节点可汇总 Orthrus 结果：
 
