@@ -36,7 +36,7 @@ index 794ef00..b6d1f69 100644
                  raise RuntimeError("No diffusion head was configured")
 +            local_dp = {rank // self.config.tp for rank in self.local_ranks}
 +            requests = {}
-+            if self.online is not None:
++            if self.online is not None and self.online.bound:
 +                capture_due = self.online.capture_due()
 +            else:
 +                capture_due = False
@@ -51,7 +51,7 @@ index 794ef00..b6d1f69 100644
 +                                   and item["generation"] == handle.generation)
 +                    prefix = (*state.history, request["token_ids"][0])
 +                    requests[(handle.dp, handle.slot, handle.generation)] = (handle.request_id, prefix)
-+            if self.online is not None:
++            if self.online is not None and self.online.bound:
 +                requests = self.online.select_capture(
 +                    requests,
 +                    None if self.cluster is None else self.cluster.link.exchange,
@@ -60,7 +60,7 @@ index 794ef00..b6d1f69 100644
 +                    self.draft.arm_online_capture(requests, self.online.plan)
              result = self.native.propose_candidates(chunk, self.draft,
                  output=self.directory / f"draft-{self.calls}", progress=progress)
-+            if self.online is not None:
++            if self.online is not None and self.online.bound:
 +                draft_logits = {}
 +                for engine in input_contract["DP_engines"]:
 +                    dp, end = engine["dp_rank"], 0
@@ -93,7 +93,7 @@ index 794ef00..b6d1f69 100644
                      row = logits[start:end - 1].argmax(dim=-1)
                  else:
                      row = logits[start:end] if phase == "verify" else logits[end - 1]
-+                    if self.online is not None and phase in ("verify", "decode"):
++                    if self.online is not None and self.online.bound and phase in ("verify", "decode"):
 +                        handle = next(handle for handle in handles
 +                                      if (handle.dp, handle.slot, handle.generation)
 +                                      == (dp, request["request_slot"], request["generation"]))
@@ -122,18 +122,19 @@ index 794ef00..b6d1f69 100644
                      if self.cluster is not None:
                          if phase == "prefill":
                              values, ids = row.float().topk(min(5, row.numel()))
-@@ -257,6 +327,8 @@ class NativeSession:
+@@ -257,6 +327,9 @@ class NativeSession:
                                  ids=ids.tolist(), logits=values.tolist()))
                          row = row.argmax(dim=-1)
                  rows[(dp, request["request_slot"], request["generation"])] = row
-+        if self.online is not None and self.cluster is not None and phase in ("verify", "decode"):
++        if (self.online is not None and self.online.bound and self.cluster is not None
++                and phase in ("verify", "decode")):
 +            self.online.synchronize(prepared_update, self.cluster.link.exchange)
          if self.cluster is not None:
              encoded = [[list(key), value.tolist()] for key, value in rows.items()]
              peer = self.cluster.link.exchange(f"greedy-output/{phase}", encoded)
-@@ -283,2 +359,6 @@ class NativeSession:
+@@ -283,2 +360,6 @@ class NativeSession:
      def clear_request(self, handle):
-+        if self.online is not None:
++        if self.online is not None and self.online.bound:
 +            prepared = self.online.finish(handle.request_id, defer=self.cluster is not None)
 +            if self.cluster is not None:
 +                self.online.synchronize(prepared, self.cluster.link.exchange)
