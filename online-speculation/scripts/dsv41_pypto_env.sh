@@ -142,12 +142,12 @@ case "$action" in
     docker version --format '{{.Server.Version}}'
     docker info --format '{{json .Runtimes}}'
     ;;
-  doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head)
+  doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|multicard-check|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head)
     docker image inspect "$image" >/dev/null 2>&1 || {
       echo "Image missing. Build it on a networked host or load the transferred image.tar." >&2; exit 2;
     }
     network=host
-    if [[ "$action" == attention-check || "$action" == online-kernel-check || "$action" == hc-collapse-vjp-check || "$action" == hc-pre-vjp-check || "$action" == resident-publish-check || "$action" == online-factory-check || "$action" == online-ready || "$action" == c1a-vjp-check || "$action" == expert-capture-check || "$action" == expert-vjp-check || "$action" == expert-input-vjp-check || "$action" == ep-vjp-check || "$action" == handoff-check || "$action" == init-head || "$action" == device-map ]]; then network=none; fi
+    if [[ "$action" == attention-check || "$action" == online-kernel-check || "$action" == hc-collapse-vjp-check || "$action" == hc-pre-vjp-check || "$action" == resident-publish-check || "$action" == online-factory-check || "$action" == online-ready || "$action" == multicard-check || "$action" == c1a-vjp-check || "$action" == expert-capture-check || "$action" == expert-vjp-check || "$action" == expert-input-vjp-check || "$action" == ep-vjp-check || "$action" == handoff-check || "$action" == init-head || "$action" == device-map ]]; then network=none; fi
     options=(--rm --network "$network" --shm-size "${SHM_SIZE:-16g}")
     command_env=(env)
     if [[ "$action" == preflight || "$action" == handoff-check || "$action" == init-head ||
@@ -161,7 +161,25 @@ case "$action" in
         if [[ "$action" == preflight ]]; then set -- --head /workspace/draft-head "$@"; fi
       fi
     fi
-    if [[ "$action" == probe || "$action" == device-map || "$action" == shell || "$action" == attention-check || "$action" == online-kernel-check || "$action" == hc-collapse-vjp-check || "$action" == hc-pre-vjp-check || "$action" == resident-publish-check || "$action" == online-ready || "$action" == c1a-vjp-check || "$action" == expert-capture-check || "$action" == expert-vjp-check || "$action" == expert-input-vjp-check || "$action" == ep-vjp-check || "$action" == fabric-check ||
+    if [[ "$action" == multicard-check ]]; then
+      : "${NPU_DEVICES:?Set NPU_DEVICES to four reserved physical cards, e.g. 4,5,6,7}"
+      IFS=, read -ra cards <<< "$NPU_DEVICES"
+      [[ "${#cards[@]}" == 4 ]] || { echo 'multicard-check requires exactly four cards.' >&2; exit 2; }
+      visible=""
+      seen=","
+      for index in "${!cards[@]}"; do
+        card="${cards[$index]}"
+        [[ "$card" =~ ^[0-9]+$ && "$seen" != *",$card,"* ]] || {
+          echo 'NPU_DEVICES must contain four distinct device numbers.' >&2; exit 2;
+        }
+        seen+="$card,"
+        options+=(--device "/dev/davinci$card:/dev/davinci$card")
+        visible="${visible:+$visible,}$index"
+      done
+      options+=(--device /dev/davinci_manager --device /dev/devmm_svm --device /dev/hisi_hdc
+                -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
+                -e "ASCEND_RT_VISIBLE_DEVICES=$visible")
+    elif [[ "$action" == probe || "$action" == device-map || "$action" == shell || "$action" == attention-check || "$action" == online-kernel-check || "$action" == hc-collapse-vjp-check || "$action" == hc-pre-vjp-check || "$action" == resident-publish-check || "$action" == online-ready || "$action" == c1a-vjp-check || "$action" == expert-capture-check || "$action" == expert-vjp-check || "$action" == expert-input-vjp-check || "$action" == ep-vjp-check || "$action" == fabric-check ||
           ( "$action" == handoff-check && -n "${NPU_DEVICE:-}" ) ]]; then
       : "${NPU_DEVICE:?Set NPU_DEVICE to an available physical device number}"
       [[ "$NPU_DEVICE" =~ ^[0-9]+$ ]] || { echo "NPU_DEVICE must be a number" >&2; exit 2; }
@@ -268,6 +286,15 @@ case "$action" in
       exec docker run "${options[@]}" "$image" "${command_env[@]}" bash \
         /workspace/online-speculation/scripts/check_dsv41_pypto_online_readiness.sh \
         "$runtime_device" /results
+    fi
+    if [[ "$action" == multicard-check ]]; then
+      report_dir="$(mktemp -d "$PWD/orthrus-multicard.XXXXXX")"
+      echo "Report: $report_dir/multicard.json" >&2
+      options+=(-v "$root:/workspace/online-speculation:ro" -v "$report_dir:/results"
+                -e PYTHONPATH=/workspace/online-speculation/src)
+      exec docker run "${options[@]}" "$image" /opt/pypto/venv/bin/python \
+        /workspace/online-speculation/scripts/validate_dsv41_pypto_multicard.py \
+        --lib /opt/orthrus/pypto-lib --cards 4 --tp 4 --output /results/multicard.json
     fi
     if [[ "$action" == c1a-vjp-check ]]; then
       report_dir="$(mktemp -d "$PWD/orthrus-c1a-vjp.XXXXXX")"
@@ -461,7 +488,7 @@ case "$action" in
     exec docker run "${options[@]}" "$image" "$action" "$@"
     ;;
   *)
-    echo "Usage: $0 {build|refresh-image|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
+    echo "Usage: $0 {build|refresh-image|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|multicard-check|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
     echo "Company checks: $0 {fabric-check|cluster-check|cluster-accept} {node7|node8}"
     ;;
 esac
