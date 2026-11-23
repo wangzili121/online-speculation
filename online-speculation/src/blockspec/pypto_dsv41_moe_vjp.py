@@ -273,8 +273,16 @@ def make_clipped_swiglu_vjp(rows=32, intermediate=2304, limit=10.0, *, inline=Fa
             task = pl.tile.get_block_idx()
             token = task // (intermediate // tile)
             column = task % (intermediate // tile) * tile
-            gate_raw = pl.slice(gate_up, [1, tile], [token, column])
-            up_raw = pl.slice(gate_up, [1, tile], [token, intermediate + column])
+            # The standalone activation validator feeds FP32, while the
+            # fused frozen-expert path deliberately reproduces the native
+            # BF16 gate/up boundary.  Normalize both call sites before clamp:
+            # A2/A3 tmins/tmaxs do not accept BF16 operands.
+            gate_raw = pl.cast(
+                pl.slice(gate_up, [1, tile], [token, column]), pl.FP32,
+            )
+            up_raw = pl.cast(
+                pl.slice(gate_up, [1, tile], [token, intermediate + column]), pl.FP32,
+            )
             dy = pl.cast(pl.slice(output_gradient, [1, tile], [token, column]), pl.FP32)
             gate = pl.minimum(gate_raw, limit)
             up = pl.maximum(pl.minimum(up_raw, limit), -limit)
