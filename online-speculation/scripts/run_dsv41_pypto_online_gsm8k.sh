@@ -26,8 +26,10 @@ for path in "$workload" "$study" "$factory"; do
 done
 
 # Do not pay the multi-minute checkpoint/compile cost for a partial backend.
-PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" \
-  python3 "$root/scripts/check_dsv41_online_factory.py"
+# Run the check in the pinned container so a clean serving host does not need
+# the project's Python dependencies installed globally.
+PYPTO_IMAGE="${PYPTO_IMAGE:-orthrus-dsv41-pypto:72a62d1-offline}" \
+  bash "$root/scripts/dsv41_pypto_env.sh" online-factory-check
 
 export ORTHRUS_WORKLOAD="$workload"
 export CLUSTER_KEY_FILE="${CLUSTER_KEY_FILE:-/root/.orthrus-cluster.key}"
