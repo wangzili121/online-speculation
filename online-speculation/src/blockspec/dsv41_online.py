@@ -333,6 +333,12 @@ class DSV41OnlineController:
         return None if prepared is None else self.apply(prepared)
 
     def finish_request(self, request_id):
+        """Close a short real feedback block and prepare its device update.
+
+        No row is fabricated at EOS.  Rows already observed on the corrected
+        target branch remain valid supervision and are applied through the
+        same synchronized path as a full block.
+        """
         block = self.blocks.get(request_id)
         if block is None:
             return None
@@ -340,10 +346,19 @@ class DSV41OnlineController:
         if not block.ready:
             del self.blocks[request_id]
             return None
-        # No new teacher row is fabricated at request completion.  The caller
-        # should have passed the final real row to observe before this method.
         del self.blocks[request_id]
-        return block
+        if self.prepared is not None:
+            raise RuntimeError("request completion collided with another prepared update")
+        update_number = self.completed_updates + 1
+        self.prepared = DSV41PreparedUpdate(
+            request_id=request_id,
+            replay=block.replay,
+            teacher=block.teacher(),
+            update_number=update_number,
+            learning_rate=self.config.learning_rate_for(update_number),
+            objective=self.config.objective,
+        )
+        return self.prepared
 
     def summary(self):
         return {

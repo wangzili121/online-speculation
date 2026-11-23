@@ -17,12 +17,16 @@ index 794ef00..b6d1f69 100644
          self.draft = None
          self.ledger = self.native = self.decode = self.host = self.hbm = None
          self.closed, self.calls, self.predecessor = False, 0, None
-@@ -161,6 +162,8 @@ class NativeSession:
+@@ -161,6 +162,12 @@ class NativeSession:
              self.config.topology, self.directory / "compiled-draft", native_module=self.source.module,
              local_ranks=self.local_ranks,
          )
 +        if self.online is not None:
-+            self.draft.enable_online(self.online.plan.last_layers)
++            bind = getattr(self.online, "bind", None)
++            if callable(bind):
++                bind(self.draft, self.native, self.cluster)
++            else:
++                self.draft.enable_online(self.online.plan.last_layers)
  
      def execute(self, phase, input_contract, rank_payloads, handles):
          if self.closed:
@@ -127,3 +131,10 @@ index 794ef00..b6d1f69 100644
          if self.cluster is not None:
              encoded = [[list(key), value.tolist()] for key, value in rows.items()]
              peer = self.cluster.link.exchange(f"greedy-output/{phase}", encoded)
+@@ -283,2 +359,6 @@ class NativeSession:
+     def clear_request(self, handle):
++        if self.online is not None:
++            prepared = self.online.finish(handle.request_id, defer=self.cluster is not None)
++            if self.cluster is not None:
++                self.online.synchronize(prepared, self.cluster.link.exchange)
+         if not self.closed and self.native is not None:

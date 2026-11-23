@@ -196,9 +196,12 @@ class DSV41ServingOnline:
         self.remote_pending = None
         return record
 
-    def finish(self, request_id):
+    def finish(self, request_id, *, defer=False):
         self.pending.pop(request_id, None)
-        return self.controller.finish_request(request_id)
+        prepared = self.controller.finish_request(request_id)
+        if prepared is None or defer:
+            return prepared
+        return self.controller.apply(prepared)
 
     def summary(self):
         return self.controller.summary() | {

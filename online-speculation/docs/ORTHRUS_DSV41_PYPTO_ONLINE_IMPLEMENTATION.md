@@ -31,6 +31,8 @@
 
 完整的冻结 MoE Torch golden 已覆盖 routed experts、shared expert 和 router 三条输入梯度路径。当前生产规格共 56 个设备程序编译通过，包含 C1A 每 query 历史重放、`K32×384` router、`K32×5120` MoE/mHC、真实 LM head 和 TP4 draft 投影；20 组在线反向/优化器实卡数值用例全部通过，DSV4.1 CPU 回归为 116 项通过、5 组子测试通过。
 
+serving 生命周期也已补齐：online bootstrap 在首轮 prefill 创建 resident runtime、目标权重和 draft 后才构造 learner；一份 K32 capture 可以只训练当前已经到达的真实教师前缀；EOS 时不足目标宽度的短块仍可更新，但不会填充虚假行。固定 serving 基线上的 patch apply、Python 编译和 121 项 DSV4.1 回归均通过。
+
 `DSV41ResidentUpdateBackend` 将这些叶子组织成严格的一次更新：
 
 ```text
@@ -53,7 +55,7 @@ TV/KL
 
 - 将已验证的 W8A8 输入 VJP 绑定到驻留 LM head、共享专家和选中专家句柄；权重冻结，不生成主模型参数梯度。六个选中专家的最终输出已经由原生前向保存，更新时由驻留 W8A8 句柄重算 gate/up 值。
 - 将 EP16 固定路由计划接到实际 HCCL All-to-All，并把 TP4/DP4 的设备句柄接入梯度归并。
-- 将 FP32 master/moments 与 draft 双槽权重绑定，并把 controller/learner 注入真实 `NativeSession`。
+- 将 FP32 master/moments 与 draft 双槽权重绑定。controller/learner 的 `NativeSession` 延迟注入入口已经完成，待设备执行 owner 接入后启用。
 
 完成这些绑定后，才能称为“PyPTO 在线更新端到端打通”。Torch 参考学习器、原子 kernel 通过或推理链路通过，都不能代替这项验收。
 

@@ -169,3 +169,34 @@ def test_serving_bridge_selects_one_capture_across_hosts():
     assert selected == owner_requests
     assert peer.select_capture(peer_requests, lambda tag, rows: owner_rows) == {}
     assert peer.remote_pending == {"owner": [0, 0, 1], "request_id": "owner-request"}
+
+
+def test_serving_bridge_applies_short_feedback_when_request_finishes():
+    class Learner:
+        last_layers = 1
+
+        def __init__(self):
+            self.teacher = None
+
+        def update_rows(self, replay, teacher, **options):
+            self.teacher = teacher.clone()
+            return .3, .4, 1
+
+    learner = Learner()
+    config = DSV41OnlineConfig(
+        teacher_rows=7, warm_update_stride=1, warm_update_steps=1,
+        steady_update_stride=1, publish_every=2,
+    )
+    bridge = DSV41ServingOnline(DSV41OnlineController(learner, config))
+    replay = DSV41ServingReplay(
+        "short", (4,), (0, 0, 1), DSV41SuffixPlan(1), torch.zeros(32, 4),
+        (layer_state(39),),
+    )
+    assert bridge.capture_due() and bridge.register_replay(replay)
+    assert bridge.verified(
+        "short", (4,), (5,), (5, 6), torch.randn(2, 9), defer=True,
+    ) is None
+    prepared = bridge.finish("short", defer=True)
+    assert prepared.teacher.shape == (2, 9)
+    record = bridge.apply(prepared)
+    assert record["teacher_rows"] == 2 and learner.teacher.shape == (2, 9)

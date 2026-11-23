@@ -35,7 +35,8 @@ deepseek_v4.1_flash_1122
 - 原生 MoE 前向在在线 draft 模式下会保存 Top-6 每个选中专家的未加权输出；普通 target/draft 推理不增加这份状态。EP16、K32、hidden=5120 的生产形状编译通过，小形状实卡结果与 Torch golden 逐元素一致。
 - 冻结专家的 clipped-SwiGLU 反向已经实现：生产 `K32×2304` 形状编译通过，小形状实卡与 Torch 参考逐元素一致。它与 down/gate-up 两个冻结 W8A8 输入 VJP 共同构成 selected-expert 的完整输入反向，不更新专家权重。
 - resident 反向的调用顺序和参数 ABI 已固化，last-1/2/4/8 均在支持的 C1A 后缀内。当前完整生产规格共 56 个 PyPTO 程序编译通过；DSV4.1 CPU 回归为 116 项通过、5 组子测试通过。
+- online learner 改为在首轮 prefill 建立 resident runtime、目标权重和 draft 后再绑定，避免初始化阶段拿不到真实设备句柄。K32 的 31 行 student logits 可只监督已经沿修正前缀收齐的 1–7 行 verifier logits；请求提前结束时，已有真实短块也会通过双机同步更新，不补造教师行。serving 补丁已在固定 PyPTO 源码上完成 apply/语法检查，DSV4.1 回归更新为 121 项通过、5 组子测试通过。
 
 ## 下一步
 
-剩余工作集中在 serving 运行时：把上述 VJP、EP16 通信、FP32 optimizer 状态和双槽发布绑定到真实 resident session，完成一次 16 卡真实更新。之后在 GSM8K 上先做小规模正确性，再扫描 last-N、学习率和更新频率；Qwen3.8 的设置只作为起点，不直接当作 DSV4.1 的最终参数。
+剩余工作集中在设备执行 owner：把上述 VJP 的输入输出逐一绑定到 resident 句柄，把 EP16 通信、FP32 optimizer 状态和双槽发布接进已经具备延迟初始化能力的 online learner，完成一次 16 卡真实更新。之后在 GSM8K 上先做小规模正确性，再扫描 last-N、学习率和更新频率；Qwen3.8 的设置只作为起点，不直接当作 DSV4.1 的最终参数。

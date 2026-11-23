@@ -90,6 +90,30 @@ def test_delayed_teacher_rejects_wrong_branch_and_keeps_real_short_block():
     assert block.finish() and block.teacher().shape == (2, 7)
 
 
+def test_request_finish_prepares_real_short_block_without_padding():
+    class Learner:
+        last_layers = 1
+
+        def update_rows(self, replay, teacher, **options):
+            return .1, .2, 1
+
+    controller = DSV41OnlineController(
+        Learner(),
+        DSV41OnlineConfig(
+            teacher_rows=7, warm_update_stride=1, warm_update_steps=1,
+            steady_update_stride=1, publish_every=2,
+        ),
+    )
+    assert controller.begin_verifier_round()
+    assert controller.begin_round("short", (4,), "snapshot")
+    assert controller.prepare(
+        "short", (4,), (4, 5), (5, 6), torch.randn(2, 13),
+    ) is None
+    prepared = controller.finish_request("short")
+    assert prepared.teacher.shape == (2, 13)
+    assert prepared.replay == "snapshot" and prepared.update_number == 1
+
+
 def test_controller_updates_only_after_corrected_rows_and_publishes_atomically():
     class Learner:
         def __init__(self):

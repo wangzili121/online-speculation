@@ -79,10 +79,16 @@ class DSV41ResidentUpdateBackend:
         if (
             not torch.is_tensor(logits) or not torch.is_tensor(teacher)
             or logits.ndim != 2 or teacher.ndim != 2
-            or logits.shape != teacher.shape or valid != teacher.shape[0]
+            or logits.shape[1] != teacher.shape[1]
+            or logits.shape[0] < teacher.shape[0]
+            or valid != teacher.shape[0]
         ):
             raise ValueError("student and verifier logits must be aligned full-vocabulary rows")
-        return self.primitives.loss_vjp(logits, teacher, valid, kind)
+        # A captured K32 draft owns 31 student rows, while delayed online
+        # feedback deliberately supervises only the authoritative prefix that
+        # has become available (normally 1..7 rows).  Never pad the teacher or
+        # train rows beyond that corrected prefix.
+        return self.primitives.loss_vjp(logits[:valid], teacher, valid, kind)
 
     def project_logits_vjp(self, gradient, state):
         rows = self._rank_rows(state, label="LM-head replay state")
