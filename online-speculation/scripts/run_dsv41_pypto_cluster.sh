@@ -68,17 +68,73 @@ python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolv
 
 if [[ "${1:-}" == --prepare-only ]]; then
   exec python - <<'PY'
+from dataclasses import dataclass
 import json
 import os
+from pathlib import Path
+from types import SimpleNamespace
+
+import blockspec.pypto_dsv41_runtime as draft_runtime
 from pypto_serving_a3.session import NativeSession
 from pypto_serving_a3.source import KernelSource
 
 source = KernelSource.resolve(cluster=True)
 source.require_generation()
-from inspect import signature
+from inspect import getsource, signature
 assert "transport_factory" in signature(source.module("prefill_fwd").prefill_fwd).parameters
 assert "cluster" in signature(NativeSession).parameters
-print(json.dumps(dict(passed=True, stage="offline-overlay", tree=os.environ["ORTHRUS_CLUSTER_LIB_TREE"])))
+
+# Target-only runs precede deferred draft loading. They must neither call nor
+# clean up an online learner before the first draft has bound resident state.
+execute_source = getsource(NativeSession._execute)
+assert "self.online is not None and self.online.bound and phase" in execute_source
+
+@dataclass
+class Handle:
+    request_id: str = "target-only"
+    dp: int = 0
+    slot: int = 0
+    generation: int = 1
+
+class Unbound:
+    bound = False
+    def finish(self, *args, **kwargs):
+        raise AssertionError("unbound target cleanup called online learner")
+
+released = []
+session = NativeSession.__new__(NativeSession)
+session.online, session.closed, session.cluster, session.ledger = Unbound(), False, None, None
+session.native = SimpleNamespace(release_request=lambda *owner: released.append(owner))
+session.clear_request(Handle())
+assert released == [(0, 0, 1)]
+
+class Binding:
+    bound = False
+    def bind(self, draft, native, cluster):
+        self.bound = draft is marker and native is session.native and cluster is None
+
+marker, binding = object(), Binding()
+session.online = binding
+session.checkpoint = session.orthrus_head = "fixture"
+session.native = SimpleNamespace(runtime=object())
+session.config = SimpleNamespace(topology={})
+session.directory = Path("/tmp")
+session.source = SimpleNamespace(module=lambda name: None)
+session.local_ranks = (0,)
+original = draft_runtime.ResidentDraftAttention
+draft_runtime.ResidentDraftAttention = lambda *args, **kwargs: marker
+try:
+    session._load_draft()
+finally:
+    draft_runtime.ResidentDraftAttention = original
+assert session.draft is marker and binding.bound
+
+print(json.dumps(dict(
+    passed=True,
+    stage="offline-overlay",
+    tree=os.environ["ORTHRUS_CLUSTER_LIB_TREE"],
+    lifecycle={"target_unbound": True, "draft_bind": True, "unbound_cleanup": True},
+)))
 PY
 fi
 
