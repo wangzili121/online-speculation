@@ -542,7 +542,7 @@ def make_hc_pre_projection_forward(
                 pl.add(pl.mul(total, 1. / flat), norm_eps),
                 high_precision=True,
             )
-            inv = pl.tile.read(inverse_tile, [0, 0])
+            inv = pl.read(inverse_tile, [0, 0])
             for lane in pl.unroll(8):
                 pl.write(inverse, [token, lane], inv)
 
