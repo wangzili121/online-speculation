@@ -741,7 +741,7 @@ class DSV41ResidentPrimitives:
     def _ep_owner_expert_packets(self, layer, received, bucket_rows):
         """Run frozen expert input VJPs for the populated slabs on each local rank."""
         from .pypto_dsv41_ep_vjp import (
-            EXPERT_CAPACITY, LOCAL_EXPERTS, MAP_PAD,
+            EXPERT_CAPACITY, EXPERT_SMALL_ROWS, LOCAL_EXPERTS, MAP_PAD,
             SLAB_ROWS, make_ep_vjp_dispatch_unpack, make_ep_vjp_return_pack,
         )
         from .pypto_dsv41_moe_vjp import make_frozen_w8a8_expert_input_vjp
@@ -773,6 +773,10 @@ class DSV41ResidentPrimitives:
             expert_dx = self._workspace(rank, (SLAB_ROWS, HIDDEN), fill=None)
             with timed_stage("expert_route_control_d2h"):
                 counts = self.resident.read_control(expert_counts, self._local(rank)).tolist()
+            active_experts = [
+                (local, EXPERT_SMALL_ROWS if count <= EXPERT_SMALL_ROWS else EXPERT_CAPACITY)
+                for local, count in enumerate(counts) if count
+            ]
             if measured:
                 with profile.lock:
                     experts = profile.current["counts"]
@@ -781,16 +785,11 @@ class DSV41ResidentPrimitives:
                     experts["peak_routed_rows_per_ep_rank"] = max(
                         experts["peak_routed_rows_per_ep_rank"], received_rows,
                     )
-                    experts["active_routed_expert_calls"] += sum(count > 0 for count in counts)
-                    experts["expert_padded_rows"] += sum(
-                        16 if count <= 16 else EXPERT_CAPACITY for count in counts if count
-                    )
+                    experts["active_routed_expert_calls"] += len(active_experts)
+                    experts["expert_padded_rows"] += sum(rows for _, rows in active_experts)
                     experts[f"expert_rows_rank_{rank}"] += received_rows
-            for local_expert, count in enumerate(counts):
-                if count == 0:
-                    continue
+            for local_expert, rows in active_experts:
                 begin = local_expert * EXPERT_CAPACITY
-                rows = 16 if count <= 16 else EXPERT_CAPACITY
                 end = begin + rows
                 global_expert = rank * LOCAL_EXPERTS + local_expert
                 weights = layer_weights(rank, global_expert)
@@ -844,24 +843,31 @@ class DSV41ResidentPrimitives:
         """Restore route order only for the TP ranks that originated K32 rows."""
         from .pypto_dsv41_ep_vjp import make_ep_vjp_source_restore
 
-        result = {}
-        positions = {rank: index for index, rank in enumerate(self.ranks)}
-        for rank in sources:
-            if rank not in positions:
-                raise ValueError("owner TP rank is not resident on this host")
+        if not set(sources).issubset(self.ranks):
+            raise ValueError("owner TP rank is not resident on this host")
+
+        def restore_rank(index):
+            rank = self.ranks[index]
+            if rank not in sources:
+                return None
+            active = self._local_span(sources[rank][0]).rows
+            if not active:
+                return self._workspace(rank, (ROWS, HIDDEN))
             metadata, counts = originals[rank]
-            route_dx = self._workspace(rank, (ROUTES, HIDDEN))
-            token_dx = self._workspace(rank, (ROWS, HIDDEN))
+            route_dx = self._workspace(rank, (ROUTES, HIDDEN), fill=None)
+            token_dx = self._workspace(rank, (ROWS, HIDDEN), fill=None)
             self._execute(
                 ("ep-vjp-source-restore", bucket_rows), rank,
                 lambda: make_ep_vjp_source_restore(bucket_rows),
-                returned_dx=returned[positions[rank]]["frozen-tail"]["dx"],
+                returned_dx=returned[index]["frozen-tail"]["dx"],
                 sent_metadata=metadata, sent_counts=counts,
                 route_dx=route_dx, token_dx=token_dx,
-                active=self._local_span(sources[rank][0]).rows, source_rank=rank,
+                active=active, source_rank=rank,
             )
-            result[rank] = token_dx
-        return result
+            return token_dx
+
+        gradients = self._map_online_ranks(restore_rank)
+        return {rank: tensor for rank, tensor in zip(self.ranks, gradients, strict=True) if tensor is not None}
 
     def reverse_frozen_tail_owner_batch(
         self, *, layer, ranks, captured, states, output_gradients,

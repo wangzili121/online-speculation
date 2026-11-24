@@ -777,6 +777,19 @@ def test_ep16_dispatch_rejects_overlapping_replay_spans():
         value._ep_dispatch_packets(captures)
 
 
+def test_ep16_source_restore_skips_empty_owner_ranks():
+    value = SymbolicEPPrimitives(range(8))
+    sources = {rank: ({"sp_span": DSV41SequenceSpan(0, 0, 32 if rank == 1 else 0)}, None)
+               for rank in range(4)}
+    returned = tuple({"frozen-tail": {"dx": SymbolicTensor((512, 5120))}} for _ in value.ranks)
+    originals = {rank: (object(), object()) for rank in sources}
+    gradients = value._ep_routed_input_gradients(returned, originals, sources, 32)
+    assert set(gradients) == set(sources)
+    assert all(tensor.shape == (32, 5120) for tensor in gradients.values())
+    restores = [event for event in value.events if event[0] == "ep-vjp-source-restore"]
+    assert [(rank, operands["active"]) for _, rank, operands in restores] == [(1, 32)]
+
+
 def test_ep16_peer_looks_up_each_wire_width_by_layer_in_reverse_order():
     value = SymbolicEPPrimitives(range(8, 16), last_n=2)
     contract = reverse_contract()

@@ -21,6 +21,7 @@ EP_BUCKET_WIDTHS = (32, 64, 128, ROUTES)
 # One online update routes a single K32 replay, partitioned over the owner TP
 # group. Top-K selects each expert at most once per token.
 EXPERT_CAPACITY = K32_ROWS
+EXPERT_SMALL_ROWS = 16
 SLAB_ROWS = LOCAL_EXPERTS * EXPERT_CAPACITY
 PACKET_FIELDS = 4
 MAP_PAD = 8
@@ -164,7 +165,7 @@ def make_ep_vjp_dispatch_pack(bucket_rows=ROUTES):
 
 
 def make_ep_vjp_dispatch_unpack(bucket_rows=ROUTES):
-    """Regroup received packets into fixed slabs for 24 owned experts."""
+    """Regroup received packets and initialize only rows read by the expert VJP."""
     import pypto.language as pl
     P = EPVJPGeometry(bucket_rows=bucket_rows).packet_rows
 
@@ -189,27 +190,30 @@ def make_ep_vjp_dispatch_unpack(bucket_rows=ROUTES):
             for packet in pl.range(P):
                 for field in pl.range(MAP_PAD):
                     pl.write(packet_map, [packet, field], pl.cast(0, pl.INT32))
+            counts = pl.tile.full([1, LOCAL_EXPERTS], dtype=pl.INT32, value=0)
             total = pl.cast(0, pl.INDEX)
+            owner_begin = owner_rank * LOCAL_EXPERTS
+            # Scanning in source/bucket order preserves the order inside every expert.
+            for source in pl.range(EP_WORLD):
+                source_count = pl.cast(pl.read(packet_counts, [source, 0]), pl.INDEX)
+                for row in pl.range(source_count):
+                    packet = source * bucket_rows + row
+                    expert = pl.cast(pl.read(packet_metadata, [packet, 3]), pl.INDEX) - owner_begin
+                    if expert >= 0 and expert < LOCAL_EXPERTS:
+                        count = pl.cast(pl.read(counts, [0, expert]), pl.INDEX)
+                        slab = expert * EXPERT_CAPACITY + count
+                        pl.write(slab_packet, [expert, count], pl.cast(packet, pl.INT32))
+                        pl.write(packet_map, [packet, 0], pl.cast(slab, pl.INT32))
+                        pl.write(packet_map, [packet, 1], pl.cast(1, pl.INT32))
+                        for field in pl.range(PACKET_FIELDS):
+                            value = pl.read(packet_metadata, [packet, field])
+                            pl.write(packet_map, [packet, field + 2], pl.cast(value, pl.INT32))
+                        pl.write(packet_map, [packet, 6], pl.cast(source, pl.INT32))
+                        pl.write(packet_map, [packet, 7], pl.cast(row, pl.INT32))
+                        pl.write(counts, [0, expert], pl.cast(count + 1, pl.INT32))
+                        total = total + 1
             for local in pl.range(LOCAL_EXPERTS):
-                expert = owner_rank * LOCAL_EXPERTS + local
-                count = pl.cast(0, pl.INDEX)
-                for source in pl.range(EP_WORLD):
-                    source_count = pl.cast(pl.read(packet_counts, [source, 0]), pl.INDEX)
-                    for row in pl.range(source_count):
-                        packet = source * bucket_rows + row
-                        if pl.read(packet_metadata, [packet, 3]) == expert:
-                            slab = local * EXPERT_CAPACITY + count
-                            pl.write(slab_packet, [local, count], pl.cast(packet, pl.INT32))
-                            pl.write(packet_map, [packet, 0], pl.cast(slab, pl.INT32))
-                            pl.write(packet_map, [packet, 1], pl.cast(1, pl.INT32))
-                            for field in pl.range(PACKET_FIELDS):
-                                value = pl.read(packet_metadata, [packet, field])
-                                pl.write(packet_map, [packet, field + 2], pl.cast(value, pl.INT32))
-                            pl.write(packet_map, [packet, 6], pl.cast(source, pl.INT32))
-                            pl.write(packet_map, [packet, 7], pl.cast(row, pl.INT32))
-                            count = count + 1
-                pl.write(expert_counts, [local], pl.cast(count, pl.INT32))
-                total = total + count
+                pl.write(expert_counts, [local], pl.read(counts, [0, local]))
             for field in pl.range(MAP_PAD):
                 pl.write(received_total, [field], pl.cast(0, pl.INT32))
             pl.write(received_total, [0], pl.cast(total, pl.INT32))
@@ -221,23 +225,17 @@ def make_ep_vjp_dispatch_unpack(bucket_rows=ROUTES):
         ):
             slab = pl.tile.get_block_idx()
             local, row = slab // EXPERT_CAPACITY, slab % EXPERT_CAPACITY
-            # Only populated inverse-map entries were written by the metadata task.
-            if row < pl.read(expert_counts, [local]):
+            live_rows = pl.read(expert_counts, [local])
+            if row < live_rows:
                 packet = pl.cast(pl.read(slab_packet, [local, row]), pl.INDEX)
-                for part in pl.range(HIDDEN // HIDDEN_TILE):
-                    column = part * HIDDEN_TILE
-                    expert_x[slab:slab + 1, column:column + HIDDEN_TILE] = packet_x[
-                        packet:packet + 1, column:column + HIDDEN_TILE
-                    ]
-                    expert_dy[slab:slab + 1, column:column + HIDDEN_TILE] = packet_dy[
-                        packet:packet + 1, column:column + HIDDEN_TILE
-                    ]
-            else:
-                zero = pl.tile.full([1, HIDDEN_TILE], dtype=pl.BF16, value=0.)
-                for part in pl.range(HIDDEN // HIDDEN_TILE):
-                    column = part * HIDDEN_TILE
-                    pl.store(zero, [slab, column], expert_x)
-                    pl.store(zero, [slab, column], expert_dy)
+                x = pl.load(packet_x, [packet, 0], [1, HIDDEN])
+                dy = pl.load(packet_dy, [packet, 0], [1, HIDDEN])
+                pl.store(x, [slab, 0], expert_x)
+                pl.store(dy, [slab, 0], expert_dy)
+            elif live_rows > 0 and (row < EXPERT_SMALL_ROWS or live_rows > EXPERT_SMALL_ROWS):
+                zero = pl.tile.full([1, HIDDEN], dtype=pl.BF16, value=0.)
+                pl.store(zero, [slab, 0], expert_x)
+                pl.store(zero, [slab, 0], expert_dy)
         return expert_x, expert_dy, expert_counts, packet_map, received_total
 
     return ep_vjp_dispatch_unpack

@@ -1,0 +1,294 @@
+{
+  "format": "orthrus-dsv41-ep-expert-slab-and-restore-910b3-v1",
+  "baseline": "d9c56e9",
+  "host": "167",
+  "kernels": {
+    "baseline": {
+      "routing": "mixed",
+      "active": 32,
+      "shape": {
+        "rows": 32,
+        "topk": 6,
+        "hidden": 5120,
+        "experts": 384,
+        "world": 16,
+        "packet_rows": 1024,
+        "expert_capacity": 32,
+        "bucket_rows": 64
+      },
+      "owners": [
+        {
+          "owner": 1,
+          "routes": 64
+        },
+        {
+          "owner": 7,
+          "routes": 32
+        },
+        {
+          "owner": 8,
+          "routes": 64
+        },
+        {
+          "owner": 15,
+          "routes": 32
+        }
+      ],
+      "steady_kernel_ms": {
+        "dispatch_pack": {
+          "median": 1.1782104847952724,
+          "calls": 14
+        },
+        "dispatch_unpack": {
+          "median": 1.0715049575082958,
+          "calls": 56
+        },
+        "return_pack": {
+          "median": 0.9770950418896973,
+          "calls": 56
+        },
+        "source_restore": {
+          "median": 0.903509499039501,
+          "calls": 14
+        }
+      },
+      "route_max_abs": 0.0,
+      "token_max_abs": 0.0
+    },
+    "mixed": {
+      "routing": "mixed",
+      "active": 32,
+      "shape": {
+        "rows": 32,
+        "topk": 6,
+        "hidden": 5120,
+        "experts": 384,
+        "world": 16,
+        "packet_rows": 1024,
+        "expert_capacity": 32,
+        "bucket_rows": 64
+      },
+      "owners": [
+        {
+          "owner": 1,
+          "routes": 64,
+          "expert_input_rows_written": 128
+        },
+        {
+          "owner": 7,
+          "routes": 32,
+          "expert_input_rows_written": 64
+        },
+        {
+          "owner": 8,
+          "routes": 64,
+          "expert_input_rows_written": 128
+        },
+        {
+          "owner": 15,
+          "routes": 32,
+          "expert_input_rows_written": 64
+        }
+      ],
+      "steady_kernel_ms": {
+        "dispatch_pack": {
+          "median": 1.16962002357468,
+          "calls": 14
+        },
+        "dispatch_unpack": {
+          "median": 1.112350495532155,
+          "calls": 56
+        },
+        "return_pack": {
+          "median": 0.9633395820856094,
+          "calls": 56
+        },
+        "source_restore": {
+          "median": 0.8772640721872449,
+          "calls": 14
+        }
+      },
+      "route_max_abs": 0.0,
+      "token_max_abs": 0.0
+    },
+    "expert_boundaries": {
+      "routing": "expert-boundaries",
+      "active": 32,
+      "shape": {
+        "rows": 32,
+        "topk": 6,
+        "hidden": 5120,
+        "experts": 384,
+        "world": 16,
+        "packet_rows": 3072,
+        "expert_capacity": 32,
+        "bucket_rows": 192
+      },
+      "owners": [
+        {
+          "owner": 9,
+          "routes": 192,
+          "expert_input_rows_written": 208
+        }
+      ],
+      "steady_kernel_ms": {
+        "dispatch_pack": {
+          "median": 1.776643970515579,
+          "calls": 14
+        },
+        "dispatch_unpack": {
+          "median": 1.110905024688691,
+          "calls": 14
+        },
+        "return_pack": {
+          "median": 1.373271457850933,
+          "calls": 14
+        },
+        "source_restore": {
+          "median": 0.8493845816701651,
+          "calls": 14
+        }
+      },
+      "route_max_abs": 0.0,
+      "token_max_abs": 0.0
+    },
+    "empty": {
+      "routing": "balanced",
+      "active": 0,
+      "shape": {
+        "rows": 32,
+        "topk": 6,
+        "hidden": 5120,
+        "experts": 384,
+        "world": 16,
+        "packet_rows": 512,
+        "expert_capacity": 32,
+        "bucket_rows": 32
+      },
+      "owners": [
+        {
+          "owner": 1,
+          "routes": 0,
+          "expert_input_rows_written": 0
+        },
+        {
+          "owner": 3,
+          "routes": 0,
+          "expert_input_rows_written": 0
+        },
+        {
+          "owner": 7,
+          "routes": 0,
+          "expert_input_rows_written": 0
+        },
+        {
+          "owner": 8,
+          "routes": 0,
+          "expert_input_rows_written": 0
+        },
+        {
+          "owner": 12,
+          "routes": 0,
+          "expert_input_rows_written": 0
+        },
+        {
+          "owner": 15,
+          "routes": 0,
+          "expert_input_rows_written": 0
+        }
+      ],
+      "steady_kernel_ms": {
+        "dispatch_pack": {
+          "median": 0.9058440336957574,
+          "calls": 14
+        },
+        "dispatch_unpack": {
+          "median": 0.9406289900653064,
+          "calls": 84
+        },
+        "return_pack": {
+          "median": 0.7683539879508317,
+          "calls": 84
+        },
+        "source_restore": {
+          "median": 0.870718969963491,
+          "calls": 14
+        }
+      },
+      "route_max_abs": 0.0,
+      "token_max_abs": 0.0
+    }
+  },
+  "resident_unpack": {
+    "bucket_64": {
+      "passed": true,
+      "component": "ep-unpack",
+      "byte_exact": true,
+      "cases": {
+        "empty": {
+          "routes": 0,
+          "baseline_ms": 1.1510454933159053,
+          "fused_ms": 1.1454449850134552
+        },
+        "sparse_remote": {
+          "routes": 6,
+          "baseline_ms": 1.2193505535833538,
+          "fused_ms": 1.1977310059592128
+        },
+        "single_expert_full": {
+          "routes": 32,
+          "baseline_ms": 1.22366554569453,
+          "fused_ms": 1.1981709394603968
+        },
+        "same_owner_full": {
+          "routes": 192,
+          "baseline_ms": 1.280101016163826,
+          "fused_ms": 1.2479209690354764
+        }
+      }
+    },
+    "bucket_192": {
+      "passed": true,
+      "component": "ep-unpack",
+      "byte_exact": true,
+      "cases": {
+        "empty": {
+          "routes": 0,
+          "baseline_ms": 1.2843915028497577,
+          "fused_ms": 1.2640560162253678
+        },
+        "sparse_remote": {
+          "routes": 6,
+          "baseline_ms": 1.2853959924541414,
+          "fused_ms": 1.255211012903601
+        },
+        "single_expert_full": {
+          "routes": 32,
+          "baseline_ms": 1.334861502982676,
+          "fused_ms": 1.272666035220027
+        },
+        "same_owner_full": {
+          "routes": 192,
+          "baseline_ms": 1.3445810182020068,
+          "fused_ms": 1.265105966012925
+        }
+      }
+    }
+  },
+  "resident_restore": {
+    "passed": true,
+    "component": "ep-source-restore-scheduling",
+    "physical_cards": 2,
+    "byte_exact": true,
+    "cases": {
+      "one-active-lane": {
+        "old_ms": 3.3357610227540135,
+        "new_ms": 1.302556018345058
+      },
+      "striped": {
+        "old_ms": 3.280016011558473,
+        "new_ms": 1.7426630365662277
+      }
+    }
+  }
+}

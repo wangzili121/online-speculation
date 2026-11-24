@@ -17,7 +17,9 @@ def main():
     parser.add_argument("--iterations", type=int, default=0, help="Timed repeats after each correctness launch")
     parser.add_argument("--active", type=int, default=3, help="Number of active source rows in the K32 block")
     parser.add_argument("--bucket-rows", type=int, help="Override the selected EP wire width")
-    parser.add_argument("--routing", choices=("mixed", "balanced", "skewed", "concentrated"), default="mixed")
+    parser.add_argument("--routing",
+                        choices=("mixed", "balanced", "skewed", "concentrated", "expert-boundaries"),
+                        default="mixed")
     args = parser.parse_args()
     if args.output.exists():
         parser.error("output must not already exist")
@@ -33,6 +35,7 @@ def main():
         EP_BUCKET_WIDTHS,
         EP_WORLD,
         EXPERT_CAPACITY,
+        EXPERT_SMALL_ROWS,
         HIDDEN,
         K32_ROWS,
         LOCAL_EXPERTS,
@@ -56,13 +59,18 @@ def main():
         "balanced": (1, 3, 7, 8, 12, 15),
         "skewed": (1, 1, 1, 1, 7, 8),
         "concentrated": (9,) * TOPK,
+        "expert-boundaries": (9,) * TOPK,
     }[args.routing]
     route_ids = torch.zeros(K32_ROWS, TOPK, dtype=torch.int32)
     for token in range(active):
         for slot in range(TOPK):
             route = token * TOPK + slot
             owner = owners[route % len(owners)]
-            route_ids[token, slot] = owner * LOCAL_EXPERTS + route % LOCAL_EXPERTS
+            if args.routing == "expert-boundaries":
+                expert = slot + 8 if slot < 2 and token >= EXPERT_SMALL_ROWS + slot else slot
+            else:
+                expert = route % LOCAL_EXPERTS
+            route_ids[token, slot] = owner * LOCAL_EXPERTS + expert
     selected = route_bucket_width([route_ids[:active]])
     bucket_rows = args.bucket_rows if args.bucket_rows is not None else ROUTES
     if bucket_rows not in EP_BUCKET_WIDTHS or bucket_rows < selected:
@@ -226,6 +234,7 @@ def main():
         recv_counts_h = allocate((EP_WORLD, MAP_PAD), torch.int32)
         expert_x_h = dirty((SLAB_ROWS, HIDDEN), torch.bfloat16)
         expert_dy_h = dirty((SLAB_ROWS, HIDDEN), torch.bfloat16)
+        untouched_slab = torch.full((SLAB_ROWS, HIDDEN), 7, dtype=torch.bfloat16)
         expert_counts_h = dirty((LOCAL_EXPERTS,), torch.int32)
         packet_map_h = dirty((PACKET_ROWS, MAP_PAD), torch.int32)
         received_total_h = dirty((MAP_PAD,), torch.int32)
@@ -256,6 +265,8 @@ def main():
             upload(recv_counts_h, received_counts)
             upload(recv_x_h, received_x)
             upload(recv_dy_h, received_dy)
+            upload(expert_x_h, untouched_slab)
+            upload(expert_dy_h, untouched_slab)
             run(
                 "dispatch_unpack", recv_meta_h, recv_x_h, recv_dy_h,
                 recv_counts_h, expert_x_h, expert_dy_h, expert_counts_h,
@@ -268,6 +279,12 @@ def main():
             expert_dy = download(expert_dy_h, (SLAB_ROWS, HIDDEN), torch.bfloat16)
             if total != count or int(expert_counts.sum()) != count:
                 raise AssertionError("unpack lost an owner route")
+            computed = torch.zeros(SLAB_ROWS, dtype=torch.bool)
+            for local_expert, rows in enumerate(expert_counts.tolist()):
+                if rows:
+                    start = local_expert * EXPERT_CAPACITY
+                    capacity = EXPERT_SMALL_ROWS if rows <= EXPERT_SMALL_ROWS else EXPERT_CAPACITY
+                    computed[start:start + capacity] = True
             unused = torch.ones(SLAB_ROWS, dtype=torch.bool)
             for row in range(count):
                 source_packet = source_begin + row
@@ -286,8 +303,11 @@ def main():
                 torch.testing.assert_close(slab_dy, packet_rows[source_packet][1], atol=0, rtol=0)
                 token, slot = sent_meta[source_packet, 1:3].tolist()
                 route = token * TOPK + slot
-            if expert_x[unused].any() or expert_dy[unused].any():
-                raise AssertionError("unpopulated expert slab rows were not zero")
+            padding = unused & computed
+            if expert_x[padding].any() or expert_dy[padding].any():
+                raise AssertionError("padding read by expert VJP was not zero")
+            if not (expert_x[~computed].eq(7).all() and expert_dy[~computed].eq(7).all()):
+                raise AssertionError("unread expert slab rows were modified")
             expert_dx = torch.zeros_like(expert_x)
             for row in range(count):
                 source_packet = source_begin + row
@@ -314,7 +334,8 @@ def main():
                     value, expected_route_dx[token * TOPK + slot], atol=0, rtol=0,
                 )
                 assembled_return[source_packet] = value
-            owner_reports.append({"owner": owner, "routes": count})
+            owner_reports.append({"owner": owner, "routes": count,
+                                  "expert_input_rows_written": int(computed.sum())})
 
         returned_h = allocate((PACKET_ROWS, HIDDEN), torch.bfloat16)
         upload(returned_h, assembled_return)
