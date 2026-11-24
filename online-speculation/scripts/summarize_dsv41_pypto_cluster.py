@@ -2,7 +2,8 @@
 """Read existing DSV4.1 cluster receipts and summarize dispatch cost on one node."""
 
 import argparse
-from collections import defaultdict
+from bisect import bisect_right
+from collections import Counter, defaultdict
 import json
 from pathlib import Path
 from statistics import median
@@ -26,6 +27,111 @@ def read_receipts(directory):
                 break  # The Serving process may still be writing the final receipt.
             rows.append(json.loads(line))
     return receipt_paths[0].parent, rows
+
+
+def online_kernels(directory):
+    """Match resident update calls with already enabled Simpler runtime spans."""
+    dispatch_path = directory / "online-profile-dispatches.jsonl"
+    with dispatch_path.open() as stream:
+        calls = sorted((json.loads(line) for line in stream), key=lambda row: row["start_ns"])
+    starts = [row["start_ns"] for row in calls]
+    traces = [Counter() for _ in calls]
+    pending = {}
+
+    def containing(timestamp, duration=0):
+        index = bisect_right(starts, timestamp) - 1
+        return index if index >= 0 and timestamp + duration <= calls[index]["end_ns"] else None
+
+    with (directory.parent / "cluster-accept.log").open() as stream:
+        for line in stream:
+            if "[STRACE]" in line:
+                _, _, fields = line.partition("[STRACE]")
+                span = dict(part.split("=", 1) for part in fields.split() if "=" in part)
+                name = span.get("name")
+                if name not in ("chip.run", "chip.run.runner_run.device_wall"):
+                    continue
+                identity = tuple(span.get(key) for key in ("pid", "tid", "inv", "hid"))
+                if name == "chip.run.runner_run.device_wall":
+                    pending[identity] = int(span["dur"])
+                else:
+                    host_ns = int(span["dur"])
+                    device_ns = pending.pop(identity, None)
+                    index = containing(int(span["ts"]), host_ns)
+                    if index is not None:
+                        traces[index]["host_run_ns"] += host_ns
+                        traces[index]["host_runs"] += 1
+                        if device_ns is not None:
+                            traces[index]["device_ns"] += device_ns
+                            traces[index]["device_runs"] += 1
+            elif "Callable image: device=" in line and "[mono_ns=" in line:
+                timestamp = int(line.split("[mono_ns=", 1)[1].split("]", 1)[0])
+                index = containing(timestamp)
+                if index is not None:
+                    upload = line.split("upload_bytes=", 1)[1].split()[0]
+                    traces[index]["callable_upload_bytes"] += int(upload)
+                    traces[index]["callable_uploads"] += 1
+
+    groups = defaultdict(Counter)
+    for call, trace in zip(calls, traces):
+        item = groups[call["update"], call["operator"], call["rank"]]
+        item.update(call["counters"])
+        item.update(trace)
+        item["calls"] += 1
+        item["first_dispatches"] += call["first"]
+        item["calls_with_device_span"] += bool(trace["device_runs"])
+        item["dispatch_ns"] += call["end_ns"] - call["start_ns"]
+
+    phases = {}
+    phase_by_request = {}
+    for path in directory.glob("online-profile-*.json"):
+        if path.name in ("online-profile-summary.json", "online-profile-kernels.json"):
+            continue
+        for row in json.loads(path.read_text())["timing"]:
+            phase_by_request[row["request_id"]] = row["phase"]
+    _, receipts = read_receipts(directory)
+    dispatches = defaultdict(list)
+    native = defaultdict(list)
+    for row in receipts:
+        if row["phase"] not in PHASES:
+            continue
+        for owner in row["owners"]:
+            phase = phase_by_request.get(owner["request_id"])
+            if phase is not None:
+                key = phase, row["phase"]
+                dispatches[key].append(row["seconds"])
+                native[key].append(row["timings"]["chunk_seconds"])
+    for (phase, operation), values in sorted(dispatches.items()):
+        phases.setdefault(phase, {})[operation] = dict(
+            calls=len(values), wall_seconds=sum(values), wall_median_seconds=median(values),
+            native_chunk_seconds=sum(native[phase, operation]),
+        )
+
+    return dict(
+        calls=len(calls), calls_with_device_span=sum(bool(trace["device_runs"]) for trace in traces),
+        operators=[dict(update=update, operator=operator, rank=rank, **counts)
+                   for (update, operator, rank), counts in sorted(groups.items())],
+        serving_phases=phases,
+    )
+
+
+def online_kernel_summary(report):
+    last_update = max((row["update"] for row in report["operators"]), default=None)
+    by_operator = defaultdict(Counter)
+    for row in report["operators"]:
+        if row["update"] == last_update:
+            by_operator[row["operator"]].update({
+                key: row.get(key, 0) for key in ("dispatch_ns", "device_ns", "device_runs", "callable_upload_bytes")
+            })
+    top = sorted(by_operator.items(), key=lambda entry: entry[1]["dispatch_ns"], reverse=True)[:5]
+    return dict(
+        stage="online_kernel_summary", calls=report["calls"], calls_with_device_span=report["calls_with_device_span"],
+        update=last_update, top_operators=[
+            dict(operator=name, dispatch_ms=round(row["dispatch_ns"] / 1e6, 3),
+                 device_ms=round(row["device_ns"] / 1e6, 3) if row["device_runs"] else None,
+                 callable_upload_bytes=row["callable_upload_bytes"])
+            for name, row in top
+        ],
+    )
 
 
 def summarize(directory):
@@ -307,9 +413,14 @@ def main():
                         help="Diagnose whichever acceptance phase failed using evidence from the same run")
     parser.add_argument("--prefill-reduction", action="store_true",
                         help="Reconstruct the first differing TP Attention reduction from saved tensors")
+    parser.add_argument("--online-kernels", action="store_true",
+                        help="Attribute online operator dispatches to the saved runtime trace")
+    parser.add_argument("--output", type=Path, help="Save the full online operator report and print a compact summary")
     args = parser.parse_args()
-    if sum((args.verifier_logits, args.failure_diagnosis, args.prefill_reduction)) > 1:
+    if sum((args.verifier_logits, args.failure_diagnosis, args.prefill_reduction, args.online_kernels)) > 1:
         parser.error("Choose only one diagnostic mode")
+    if args.output is not None and not args.online_kernels:
+        parser.error("--output requires --online-kernels")
     try:
         if args.prefill_reduction:
             summary = prefill_reduction(args.directory)
@@ -317,6 +428,12 @@ def main():
             summary = failure_diagnosis(args.directory)
         elif args.verifier_logits:
             summary = verifier_logits(args.directory)
+        elif args.online_kernels:
+            summary = online_kernels(args.directory)
+            if args.output is not None:
+                args.output.write_text(json.dumps(summary, indent=2) + "\n")
+                print(json.dumps(online_kernel_summary(summary)))
+                return
         else:
             summary = summarize(args.directory)
     except (OSError, ImportError, IndexError, KeyError, ValueError) as error:

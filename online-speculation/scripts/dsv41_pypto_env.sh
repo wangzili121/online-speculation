@@ -471,6 +471,11 @@ case "$action" in
           2>&1 | tee "$log_dir/cluster-accept.log"
         acceptance_status="${PIPESTATUS[0]}"
         set -e
+        if [[ -s "$log_dir/acceptance/online-profile-dispatches.jsonl" ]]; then
+          python3 "$root/scripts/summarize_dsv41_pypto_cluster.py" "$log_dir/acceptance" --online-kernels \
+            --output "$log_dir/acceptance/online-profile-kernels.json" \
+            || echo "Operator trace summary unavailable. Raw dispatch timings are saved." >&2
+        fi
         if [[ -f "$log_dir/acceptance/acceptance.json" ]] && \
            grep -q '"divergence"' "$log_dir/acceptance/acceptance.json"; then
           echo "Automatic failure diagnosis:" >&2

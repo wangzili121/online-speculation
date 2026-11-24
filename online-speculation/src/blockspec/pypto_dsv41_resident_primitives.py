@@ -753,11 +753,17 @@ class DSV41ResidentPrimitives:
             )
 
             expert_dx = self._workspace(rank, (SLAB_ROWS, HIDDEN))
-            counts = self.resident.read_control(expert_counts, self._local(rank)).tolist()
+            with timed_stage("expert_route_control_d2h"):
+                counts = self.resident.read_control(expert_counts, self._local(rank)).tolist()
             profile = active_profile()
             if profile is not None and profile.current is not None:
-                profile.current["counts"]["expert_rows_received"] += sum(counts)
-                profile.current["counts"]["active_routed_expert_calls"] += sum(count > 0 for count in counts)
+                experts = profile.current["counts"]
+                experts["expert_rows_received"] += sum(counts)
+                experts["active_routed_expert_calls"] += sum(count > 0 for count in counts)
+                experts["expert_padded_rows"] += sum(
+                    16 if count <= 16 else EXPERT_CAPACITY for count in counts if count
+                )
+                experts[f"expert_rows_rank_{rank}"] += sum(counts)
             for local_expert, count in enumerate(counts):
                 if count == 0:
                     continue

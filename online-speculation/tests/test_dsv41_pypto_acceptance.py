@@ -88,6 +88,39 @@ def test_profile_runs_matched_probes_around_bounded_updates(tmp_path, monkeypatc
     assert phases["fixed_after"]["mean_accepted_candidates"] > phases["fixed_before"]["mean_accepted_candidates"]
 
 
+def test_online_kernel_report_correlates_host_and_device_spans(tmp_path):
+    acceptance = tmp_path / "acceptance"
+    session = acceptance / "native/session-test"
+    session.mkdir(parents=True)
+    request = {"request_id": "orthrus-request-8", "phase": "update"}
+    (acceptance / "online-profile-update.json").write_text(json.dumps({"timing": [request]}))
+    receipt = dict(phase="verify", owners=[request], seconds=0.31, timings={"chunk_seconds": 0.21})
+    (session / "serving-dispatches.jsonl").write_text(json.dumps(receipt) + "\n")
+    calls = [
+        dict(start_ns=100, end_ns=200, update=2, operator="attention", rank=8, first=True, counters={}),
+        dict(start_ns=210, end_ns=315, update=2, operator="attention", rank=9, first=False, counters={}),
+    ]
+    (acceptance / "online-profile-dispatches.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in calls)
+    )
+    (tmp_path / "cluster-accept.log").write_text(
+        "[mono_ns=107] Callable image: device=0 upload_bytes=1024 children=3\n"
+        "[STRACE] pid=1 tid=1 inv=6 hid=aa name=chip.run.runner_run.device_wall ts=0 dur=16 clk=dev\n"
+        "[STRACE] pid=1 tid=1 inv=6 hid=aa name=chip.run ts=110 dur=40\n"
+        "[STRACE] pid=1 tid=1 inv=7 hid=bb name=chip.run ts=230 dur=40\n"
+    )
+    target = acceptance / "online-profile-kernels.json"
+    result = subprocess.run([sys.executable, str(SUMMARY), str(acceptance), "--online-kernels",
+                             "--output", str(target)], check=True, capture_output=True, text=True)
+    compact = json.loads(result.stdout)
+    report = json.loads(target.read_text())
+    first, second = report["operators"]
+    assert (first["device_ns"], first["host_run_ns"], first["callable_upload_bytes"]) == (16, 40, 1024)
+    assert second["calls_with_device_span"] == 0 and "device_ns" not in second
+    assert report["serving_phases"]["update"]["verify"]["wall_seconds"] == 0.31
+    assert compact["calls"] == 2 and compact["calls_with_device_span"] == 1
+
+
 class AcceptanceTest(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()

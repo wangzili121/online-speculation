@@ -54,6 +54,8 @@ class OnlineUpdateProfile:
     def __init__(self, path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.dispatch_path = path.with_name("online-profile-dispatches.jsonl")
+        self.dispatches = []
         self.current = None
         self.request_id = None
         self.capture = False
@@ -95,6 +97,10 @@ class OnlineUpdateProfile:
             self.updated_request = contract["request_id"]
             with self.path.open("a") as stream:
                 stream.write(json.dumps(record) + "\n")
+            if self.dispatches:
+                with self.dispatch_path.open("a") as stream:
+                    stream.writelines(json.dumps(call) + "\n" for call in self.dispatches)
+                self.dispatches.clear()
             print(json.dumps({
                 "stage": "online_profile_update", "update": record["update"],
                 "owner_dp": record["owner_dp"], "teacher_rows": record["teacher_rows"],

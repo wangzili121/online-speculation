@@ -2,7 +2,7 @@
 
 import ctypes as C
 
-from .dsv41_online_profile import timed_stage
+from .dsv41_online_profile import active_profile, timed_stage
 
 
 ROOT_INFO_BYTES = 4108
@@ -113,6 +113,14 @@ class ClusterCollectives:
                             or not value.is_contiguous() or value.ndim == 0 or value.numel() == 0):
                         raise ValueError("Collectives require nonempty contiguous resident tensor descriptors")
         groups = self.plan.groups(group)
+        profile = active_profile()
+        if profile is not None and profile.current is not None:
+            counters = profile.current["counts"]
+            counters[f"{group}_{collective}_calls"] += 1
+            counters[f"{group}_{collective}_logical_send_bytes"] += sum(
+                value.numel() * value.element_size()
+                for packet in packets for fields in packet.values() for value in fields.values()
+            )
         signatures = [{"rank": rank, "fields": [
             [case, field, list(value.shape), str(value.dtype)]
             for case, values in packet.items() for field, value in values.items()

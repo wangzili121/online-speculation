@@ -5,7 +5,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from time import perf_counter
+from time import monotonic_ns, perf_counter
 
 import torch
 
@@ -261,16 +261,29 @@ class ResidentDraftAttention:
                     timing["compiled"].append({"operator": key, "seconds": perf_counter() - started})
         compiled, abi = self.programs[key]
         first = timing is not None and not profile.dispatch_seen(rank, key)
-        if timing is not None:
-            started = perf_counter()
-            stats = getattr(self.resident, "stats", {})
-            evictions_before = stats.get("program_evictions", 0)
-        self.resident.execute(compiled, self.rank_ids[rank], [inputs[name] for name in compiled.param_names], abi)
-        if timing is not None:
-            elapsed = perf_counter() - started
+        local_rank = self.rank_ids[rank]
+        arguments = [inputs[name] for name in compiled.param_names]
+        if timing is None:
+            self.resident.execute(compiled, local_rank, arguments, abi)
+            return
+
+        stats = self.resident.stats
+        tracked_counters = ("program_evictions", "h2d_bytes", "d2h_bytes", "d2d_bytes")
+        before = {name: stats.get(name, 0) for name in tracked_counters}
+        started = monotonic_ns()
+        try:
+            self.resident.execute(compiled, local_rank, arguments, abi)
+        finally:
+            ended = monotonic_ns()
+            changes = {name: stats.get(name, 0) - before[name] for name in tracked_counters}
             operator = key[1] if isinstance(key, tuple) and key[0] == "online" else str(key)
+            elapsed = (ended - started) / 1e9
             timing["kernel_dispatch_seconds"][operator] += elapsed
-            timing["counts"]["device_callable_evictions"] += stats.get("program_evictions", 0) - evictions_before
+            timing["counts"]["device_callable_evictions"] += changes["program_evictions"]
+            profile.dispatches.append(dict(
+                update=timing["update"], operator=operator, program=key, rank=rank,
+                start_ns=started, end_ns=ended, first=first, counters=changes,
+            ))
             if first:
                 timing["first_dispatch"].append({"operator": key, "rank": rank, "seconds": elapsed})
 

@@ -100,6 +100,7 @@ def generate(runner, prompts, steps, assignments, *, identities=None, metadata=N
         if profile is not None:
             profile.requests[-1]["prefill_seconds"] = time.perf_counter() - phase_started
         output = [int(prefill.sampled_token_ids[0])]
+        acceptance_histogram = Counter()
         if expected is not None:
             check_generated_prefix(index, expected, output, phase="prefill")
         print(json.dumps(dict(stage="prefill_token", mode=mode, request=index, dp=partition,
@@ -126,6 +127,7 @@ def generate(runner, prompts, steps, assignments, *, identities=None, metadata=N
                 counts["draft_rounds"] += 1
                 counts["proposed_candidates"] += result.num_draft_tokens[0]
                 counts["accepted_candidates"] += len(emitted) - 1
+                acceptance_histogram[len(emitted) - 1] += 1
                 phase = "verify/accept"
             if not emitted:
                 raise RuntimeError("A greedy decode step must emit at least one token")
@@ -142,6 +144,7 @@ def generate(runner, prompts, steps, assignments, *, identities=None, metadata=N
             index=index, workload_id=identity, dp=partition,
             prompt_ids=prompt, token_ids=output,
             output_text=decoder(output) if decoder is not None else None,
+            acceptance_histogram=dict(acceptance_histogram),
             reference_answer=attributes.get("reference_answer"),
             finish_reason="length",
             usage=dict(prompt_tokens=len(prompt), completion_tokens=len(output)),
