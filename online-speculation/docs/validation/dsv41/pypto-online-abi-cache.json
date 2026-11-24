@@ -1,0 +1,221 @@
+{
+  "passed": true,
+  "host": "167",
+  "scope": "Offline Docker startup gate. Compiled resident Serving ABI and reran the numerical expert VJP simulator fixtures on every invocation. No model weights read and no NPU used.",
+  "reference_checkout": "b9c674e",
+  "native_overlay_tree": "5ed1c797aae4096b52c081195fc734b136cbf84c",
+  "arms": {
+    "baseline": {
+      "resident-online-abi": {
+        "stage": "resident-online-abi",
+        "passed": true,
+        "compiled": 90,
+        "npu_execution": false,
+        "resident_c1a_dispatches": 32
+      },
+      "expert-input-vjp": {
+        "stage": "expert-input-vjp",
+        "passed": true,
+        "compiled": true,
+        "executed": true,
+        "npu_execution": false,
+        "simulator_execution": true,
+        "cases": [
+          {
+            "shape": [
+              16,
+              5120,
+              2304
+            ],
+            "active_rows": 3,
+            "max_abs": 0.00048828125
+          },
+          {
+            "shape": [
+              32,
+              5120,
+              2304
+            ],
+            "active_rows": 19,
+            "max_abs": 0.0009765625
+          },
+          {
+            "shape": [
+              32,
+              5120,
+              768
+            ],
+            "active_rows": 31,
+            "max_abs": 0.00048828125
+          }
+        ]
+      },
+      "wall_seconds": 200.15
+    },
+    "fill": {
+      "resident-online-abi": {
+        "stage": "resident-online-abi",
+        "passed": true,
+        "compiled": 91,
+        "npu_execution": false,
+        "teacher_rows": 7,
+        "artifact_cache": {
+          "generation_builds": 108,
+          "binary_builds": 32,
+          "ready_hits": 1,
+          "generated_hits": 15,
+          "bypasses": 0
+        },
+        "resident_c1a_dispatches": 32
+      },
+      "expert-input-vjp": {
+        "stage": "expert-input-vjp",
+        "passed": true,
+        "compiled": true,
+        "executed": true,
+        "npu_execution": false,
+        "simulator_execution": true,
+        "cases": [
+          {
+            "shape": [
+              16,
+              5120,
+              2304
+            ],
+            "active_rows": 3,
+            "max_abs": 0.00048828125
+          },
+          {
+            "shape": [
+              32,
+              5120,
+              2304
+            ],
+            "active_rows": 19,
+            "max_abs": 0.0009765625
+          },
+          {
+            "shape": [
+              32,
+              5120,
+              768
+            ],
+            "active_rows": 31,
+            "max_abs": 0.00048828125
+          }
+        ]
+      },
+      "wall_seconds": 210.651
+    },
+    "reopen": {
+      "resident-online-abi": {
+        "stage": "resident-online-abi",
+        "passed": true,
+        "compiled": 91,
+        "npu_execution": false,
+        "teacher_rows": 7,
+        "artifact_cache": {
+          "generation_builds": 0,
+          "binary_builds": 0,
+          "ready_hits": 46,
+          "generated_hits": 78,
+          "bypasses": 0
+        },
+        "resident_c1a_dispatches": 32
+      },
+      "expert-input-vjp": {
+        "stage": "expert-input-vjp",
+        "passed": true,
+        "compiled": true,
+        "executed": true,
+        "npu_execution": false,
+        "simulator_execution": true,
+        "cases": [
+          {
+            "shape": [
+              16,
+              5120,
+              2304
+            ],
+            "active_rows": 3,
+            "max_abs": 0.00048828125
+          },
+          {
+            "shape": [
+              32,
+              5120,
+              2304
+            ],
+            "active_rows": 19,
+            "max_abs": 0.0009765625
+          },
+          {
+            "shape": [
+              32,
+              5120,
+              768
+            ],
+            "active_rows": 31,
+            "max_abs": 0.00048828125
+          }
+        ]
+      },
+      "wall_seconds": 18.839
+    },
+    "teacher1": {
+      "resident-online-abi": {
+        "stage": "resident-online-abi",
+        "passed": true,
+        "compiled": 91,
+        "npu_execution": false,
+        "teacher_rows": 1,
+        "artifact_cache": {
+          "generation_builds": 3,
+          "binary_builds": 0,
+          "ready_hits": 46,
+          "generated_hits": 75,
+          "bypasses": 0
+        },
+        "resident_c1a_dispatches": 32
+      },
+      "expert-input-vjp": {
+        "stage": "expert-input-vjp",
+        "passed": true,
+        "compiled": true,
+        "executed": true,
+        "npu_execution": false,
+        "simulator_execution": true,
+        "cases": [
+          {
+            "shape": [
+              16,
+              5120,
+              2304
+            ],
+            "active_rows": 3,
+            "max_abs": 0.00048828125
+          },
+          {
+            "shape": [
+              32,
+              5120,
+              2304
+            ],
+            "active_rows": 19,
+            "max_abs": 0.0009765625
+          },
+          {
+            "shape": [
+              32,
+              5120,
+              768
+            ],
+            "active_rows": 31,
+            "max_abs": 0.00048828125
+          }
+        ]
+      },
+      "wall_seconds": 22.97
+    }
+  }
+}

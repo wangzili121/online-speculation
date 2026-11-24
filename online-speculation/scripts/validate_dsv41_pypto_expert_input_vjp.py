@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from blockspec.pypto_dsv41_moe_vjp import EXPERT_DEQUANT_TILE
+from blockspec.pypto_dsv41_resident_abi import kernel_cache_options
 
 
 def pack_kn(value):
@@ -82,6 +83,7 @@ def main():
     config = RunConfig(
         arch=BackendType.Ascend910, device_id=args.device,
         execution_mode=ExecutionMode.SIM if args.simulate else ExecutionMode.ONBOARD,
+        **kernel_cache_options(),
     )
     shapes = ((16, 5120, 2304, 3), (32, 5120, 2304, 19), (32, 5120, 768, 31))
     if not args.production:

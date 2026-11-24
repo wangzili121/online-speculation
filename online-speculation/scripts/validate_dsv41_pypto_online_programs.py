@@ -177,6 +177,8 @@ def main():
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--resident-abi", action="store_true",
                         help="Compile and check the exact L2 Serving ABI without weights or devices")
+    parser.add_argument("--teacher-rows", type=int, choices=range(1, 32), default=7,
+                        help="Teacher window used by the resident ABI check")
     parser.add_argument("--skip-full-shape-compile", action="store_true")
     args = parser.parse_args()
     if args.output.exists() or args.vocabulary < 64 or args.vocabulary % 64:
@@ -185,6 +187,7 @@ def main():
         parser.error("--resident-abi requires --compile-only and production shapes")
 
     import torch
+    from pypto import cache_stats
     from pypto.backend import BackendType
     from pypto.ir import DistributedConfig
     from pypto.runtime import DistributedWorker, ExecutionMode, RunConfig
@@ -196,6 +199,7 @@ def main():
         make_linear,
         make_rms,
         make_tv,
+        make_vocab_gradient_shard,
     )
     from blockspec.pypto_dsv41_optimizer_programs import make_publish
     from blockspec.pypto_dsv41_attention_vjp import (
@@ -232,7 +236,7 @@ def main():
         if not args.resident_abi:
             return program.compile(*arguments, config=config)
 
-        from blockspec.pypto_dsv41_resident_abi import compile_resident_entry, resident_entry
+        from blockspec.pypto_dsv41_resident_abi import compile_resident_entry, kernel_cache_options, resident_entry
         from blockspec.pypto_dsv41_runtime import native
 
         chip = resident_entry(program)
@@ -241,7 +245,7 @@ def main():
         with TemporaryDirectory(prefix="dsv41-resident-abi-") as directory:
             options = RunConfig(
                 arch=BackendType.Ascend910, execution_mode=ExecutionMode.ONBOARD,
-                save_kernels=True, save_kernels_dir=directory,
+                save_kernels=True, **kernel_cache_options(directory),
             )
             compiled, _ = compile_resident_entry(
                 chip, arguments, options, abi=native("network").network_parameter_abi,
@@ -251,17 +255,19 @@ def main():
 
     empty = lambda shape, dtype=torch.bfloat16: torch.empty(shape, dtype=dtype, device="meta")
     vocabulary = args.vocabulary
+    loss_rows = args.teacher_rows if args.resident_abi else 32
+    valid = min(7, loss_rows)
     attention_fixture = C1AAttentionVJPGeometry(
         local_heads=1, swa=0, compressed=0, padded_columns=64,
     )
     programs = {
-        "tv": compile_program(make_tv(32, vocabulary),
-            empty((32, vocabulary)), empty((32, vocabulary)), empty((32, vocabulary)),
-            empty((32, 8), torch.float32), 7, 7, config=config,
+        "tv": compile_program(make_tv(loss_rows, vocabulary),
+            empty((loss_rows, vocabulary)), empty((loss_rows, vocabulary)), empty((loss_rows, vocabulary)),
+            empty((loss_rows, 8), torch.float32), valid, valid, config=config,
         ),
-        "kl": compile_program(make_kl(32, vocabulary),
-            empty((32, vocabulary)), empty((32, vocabulary)), empty((32, vocabulary)),
-            empty((32, 8), torch.float32), 7, 7, config=config,
+        "kl": compile_program(make_kl(loss_rows, vocabulary),
+            empty((loss_rows, vocabulary)), empty((loss_rows, vocabulary)), empty((loss_rows, vocabulary)),
+            empty((loss_rows, 8), torch.float32), valid, valid, config=config,
         ),
         "adam": compile_program(make_adam((64, 128)),
             *[empty((64, 128), torch.float32) for _ in range(7)],
@@ -542,6 +548,10 @@ def main():
             )
     if args.resident_abi:
         programs.update(compile_resident_update_extras(compile_program, empty, config))
+        programs["vocab_gradient_shard"] = compile_program(
+            make_vocab_gradient_shard(32, vocabulary, source_rows=loss_rows),
+            empty((loss_rows, vocabulary)), empty((32, vocabulary // 4)), 0, config=config,
+        )
     report = {
         "format": "orthrus-dsv41-pypto-online-programs-v1",
         "passed": False,
@@ -552,13 +562,21 @@ def main():
     }
     if args.resident_abi:
         report["entry"] = "resident-l2"
+        report["teacher_rows"] = loss_rows
         report["resident_c1a_dispatches"] = check_c1a_resident_dispatch(empty)
+        stats = cache_stats()
+        report["artifact_cache"] = {
+            "generation_builds": stats.generation_builds, "binary_builds": stats.binary_builds,
+            "ready_hits": stats.ready_hits, "generated_hits": stats.generated_hits,
+            "bypasses": stats.bypasses,
+        }
     if args.compile_only:
         report["passed"] = True
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         if args.resident_abi:
             print(json.dumps({"stage": "resident-online-abi", "passed": True,
                               "compiled": len(programs), "npu_execution": False,
+                              "teacher_rows": report["teacher_rows"], "artifact_cache": report["artifact_cache"],
                               "resident_c1a_dispatches": report["resident_c1a_dispatches"]}))
         return
 

@@ -2,7 +2,6 @@
 
 import importlib
 import hashlib
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock, get_native_id
@@ -20,7 +19,7 @@ from .pypto_dsv41_draft import (
 )
 from .pypto_dsv41_ep_vjp import ROUTES, route_bucket_width
 from .pypto_dsv41_indexer import INDEX_DIM, INDEX_HEADS, index_controls, make_indexer_program
-from .pypto_dsv41_resident_abi import compile_resident_entry, resident_entry
+from .pypto_dsv41_resident_abi import compile_resident_entry, kernel_cache_options, resident_entry
 from .pypto_dsv41_sparse import TILE, TOPK, make_joined_attention, make_sparse_attention
 from .pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW, make_swa_attention, swa_spans
 from .dsv41_publication import AtomicHeadPublisher, PublicationReceipt
@@ -253,18 +252,13 @@ class ResidentDraftAttention:
         return self.manifest["mask_token_id"]
 
     def _compile_program(self, key, factory, inputs, timing):
-        from pypto import CacheConfig, cache_stats
+        from pypto import cache_stats
         from pypto.backend import BackendType
         from pypto.runtime import ExecutionMode, RunConfig
 
         online = isinstance(key, tuple) and key[0] == "online"
-        cache_dir = os.environ.get("PYPTO_DSV41_JIT_CACHE_DIR")
-        if cache_dir:
-            cache_options = dict(cache_config=CacheConfig(
-                enabled=True, root=Path(cache_dir), extra_fingerprint=os.environ.get("ORTHRUS_CLUSTER_LIB_TREE"),
-            ))
-        else:
-            cache_options = dict(save_kernels_dir=str(self.output / f"entry-{len(self.programs):03d}"))
+        cache_options = kernel_cache_options(self.output / f"entry-{len(self.programs):03d}")
+        assemble = online or "cache_config" in cache_options
         options = RunConfig(arch=BackendType.Ascend910, execution_mode=ExecutionMode.ONBOARD,
                             save_kernels=True, **cache_options)
         started = perf_counter()
@@ -281,13 +275,13 @@ class ResidentDraftAttention:
             kernel, arguments, options, abi=self.native("network").network_parameter_abi, name=key,
         )
         generated = perf_counter()
-        if online or cache_dir:
+        if assemble:
             compiled.load()
         if timing is not None:
             cache = cache_stats()
             timing["compiled"].append({
                 "operator": key, "seconds": generated - started,
-                "assemble_seconds": perf_counter() - generated if online or cache_dir else 0.0,
+                "assemble_seconds": perf_counter() - generated if assemble else 0.0,
                 "ready_cache_hits": cache.ready_hits - prior_cache.ready_hits,
                 "generation_builds": cache.generation_builds - prior_cache.generation_builds,
                 "binary_builds": cache.binary_builds - prior_cache.binary_builds,

@@ -575,21 +575,38 @@ if [[ "${1:-}" == --compile-only ]]; then
 fi
 
 check_online_abi() {
+  local teacher_rows=7
+  if [[ $# -gt 0 ]]; then
+    teacher_rows="$(python - "$@" <<'PY'
+import argparse
+import json
+
+from blockspec.dsv41_online import DSV41OnlineConfig
+
+parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+parser.add_argument("--online-study", required=True)
+parser.add_argument("--online-overrides", type=json.loads)
+args, _ = parser.parse_known_args()
+print(DSV41OnlineConfig.from_study(args.online_study, overrides=args.online_overrides).teacher_rows)
+PY
+)"
+  fi
   echo 'Checking resident online kernel signatures before loading model weights.'
   bash "$patches/docker/cache-pto-isa.sh"
   PYTHONPATH="$PYPTO_LIB_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
     python "$root/scripts/validate_dsv41_pypto_online_programs.py" \
-    --compile-only --resident-abi --output /results/resident-online-abi.json
+    --compile-only --resident-abi --teacher-rows "$teacher_rows" --output /results/resident-online-abi.json
   python "$root/scripts/validate_dsv41_pypto_expert_input_vjp.py" \
     --production --simulate --output /results/resident-expert-vjp.json
 }
 if [[ "${1:-}" == --online-abi-only ]]; then
-  check_online_abi
+  shift
+  check_online_abi "$@"
   exit
 fi
 for option in "$@"; do
-  if [[ "$option" == --online-study ]]; then
-    check_online_abi
+  if [[ "$option" == --online-study || "$option" == --online-study=* ]]; then
+    check_online_abi "$@"
     break
   fi
 done
