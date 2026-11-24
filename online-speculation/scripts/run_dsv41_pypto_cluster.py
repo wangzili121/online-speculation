@@ -70,7 +70,8 @@ def fingerprint(paths):
 
 
 def generate(runner, prompts, steps, assignments, *, identities=None, metadata=None,
-             decoder=None, reference=None, speculative=False):
+             decoder=None, reference=None, speculative=False,
+             request_start=0, profile_phase="update", capture_online=True):
     import torch
     from pypto_serving.config.types import DecodeBatch, PrefillBatch, SamplingParams
 
@@ -83,9 +84,9 @@ def generate(runner, prompts, steps, assignments, *, identities=None, metadata=N
     profile = active_profile()
     for index, (prompt, partition, identity, attributes) in enumerate(
             zip(prompts, assignments, identities, metadata, strict=True)):
-        request_id = f"{mode}-request-{index}"
+        request_id = f"{mode}-request-{request_start + index}"
         if profile is not None:
-            profile.begin_request(request_id)
+            profile.begin_request(request_id, phase=profile_phase, capture=capture_online)
             phase_started = time.perf_counter()
         expected = None if reference is None else reference[index]["token_ids"]
         # Exercise the native chunked-prefill path, including the left-over chunk.
@@ -146,6 +147,86 @@ def generate(runner, prompts, steps, assignments, *, identities=None, metadata=N
             usage=dict(prompt_tokens=len(prompt), completion_tokens=len(output)),
         ))
     return generated, dict(counts)
+
+
+def profile_workload(runner, link, profile, prompts, entries, steps, decoder, output):
+    """Use one resident session for matched greedy probes and bounded updates."""
+    probes = (3, 4)
+    probe_tokens = 16
+    optional_seconds_per_update = 60
+    results = {}
+
+    def phase(name, indices, partitions, *, speculative=True, capture=False, tokens=steps):
+        first = len(profile.requests)
+        print(json.dumps(dict(stage="online_profile_phase", phase=name)), flush=True)
+        started = time.perf_counter()
+        metadata = [entries[i] for i in indices]
+        rows, stats = generate(
+            runner, [prompts[i] for i in indices], tokens, partitions,
+            identities=[row["id"] for row in metadata], metadata=metadata, decoder=decoder,
+            speculative=speculative, request_start=first, profile_phase=name, capture_online=capture,
+        )
+        requests = profile.requests[first:]
+        decode = sum(row["decode_seconds"] for row in requests)
+        generated = sum(len(row["token_ids"]) for row in rows)
+        rounds = stats.get("draft_rounds", 0)
+        candidates = stats.get("proposed_candidates", 0)
+        accepted = stats.get("accepted_candidates", 0)
+        results[name] = {
+            "requests": rows, "timing": requests, "speculation": stats,
+            "wall_seconds": time.perf_counter() - started,
+            "decode_seconds": decode, "decode_tokens_per_second": (generated - len(rows)) / decode if decode else None,
+            "mean_accepted_candidates": accepted / rounds if rounds else None,
+            "candidate_acceptance_rate": accepted / candidates if candidates else None,
+        }
+        write_report(output / f"online-profile-{name}.json", results[name])
+
+    with profile_online(profile):
+        phase("ar", probes, (0, 2), speculative=False, tokens=probe_tokens)
+        phase("fixed_before", probes, (0, 2), tokens=probe_tokens)
+        phase("update", (0, 0, 0, 0), (0, 2, 0, 0), capture=True)
+        # Both nodes must make the same decision. Use the slower host and only
+        # the final two repeat requests, where the DP owner is already warm.
+        repeat = profile.records[2:4]
+        affordable = len(repeat) == 2 and all(
+            row["update_seconds"] <= optional_seconds_per_update for row in repeat
+        )
+        peer_affordable = link.exchange("acceptance/online-profile-extra", affordable)
+        if affordable and peer_affordable:
+            phase("update_extra", (1, 2), (0, 0), capture=True)
+        phase("fixed_after", probes, (0, 2), tokens=probe_tokens)
+
+    comparisons = {}
+    for name in ("fixed_before", "fixed_after"):
+        matched = 0
+        divergence = None
+        for baseline, trial in zip(results["ar"]["requests"], results[name]["requests"], strict=True):
+            try:
+                check_generated_prefix(trial["index"], baseline["token_ids"], trial["token_ids"], phase=name)
+            except TokenDivergence as error:
+                divergence = error.details
+                break
+            matched += len(baseline["token_ids"])
+        comparisons[name] = dict(matched_tokens=matched, divergence=divergence)
+    return results, comparisons
+
+
+def profile_head_versions(receipt_path, requests):
+    fixed = {
+        row["request_id"]: row["phase"] for row in requests
+        if row["phase"] in ("fixed_before", "fixed_after")
+    }
+    versions = {phase: set() for phase in fixed.values()}
+    with receipt_path.open() as stream:
+        for line in stream:
+            row = json.loads(line)
+            if row["phase"] != "draft":
+                continue
+            for owner in row["owners"]:
+                phase = fixed.get(owner["request_id"])
+                if phase is not None:
+                    versions[phase].add(row.get("draft_head_version") or 0)
+    return {phase: sorted(values) for phase, values in versions.items()}
 
 
 def request_receipts(receipt_path, mode, index, phase):
@@ -246,22 +327,18 @@ def run(args):
     tokenize = source.module("prefill_prepare").tokenize_prompt
     entries = (read_workload(args.workload, args.max_requests) if args.workload is not None
                else [dict(id=f"prompt-{i}", prompt=text) for i, text in enumerate(args.prompt or PROMPTS)])
-    if args.online_profile:
-        # Both hosts warm their owner path. Reuse DP0 and the exact same prompt
-        # thereafter to keep router work and input/cache shapes comparable.
-        sample = entries[0]
-        entries = [dict(sample, id=f"{sample['id']}-profile-{index}") for index in range(4)]
     identities = [row["id"] for row in entries]
     raw_prompts = [row["prompt"] for row in entries]
     prompts = [tokenize(text, args.model, checkpoint.text["vocab_size"]) for text in raw_prompts]
     from tokenizers import Tokenizer
     decoder = Tokenizer.from_file(str(args.model / "tokenizer.json")).decode
-    if any(len(prompt) + args.tokens + 31 > args.context for prompt in prompts):
+    required_tokens = max(args.tokens, 16) if args.online_profile else args.tokens
+    if any(len(prompt) + required_tokens + 31 > args.context for prompt in prompts):
         raise ValueError("Context must cover the prompt, requested output and the full K32 draft block")
+    if args.online_profile and (len(prompts) != 5 or len(set(map(tuple, prompts))) != 5):
+        raise ValueError("Online profiling needs five distinct GSM8K prompts")
     assignments = [index % config.topology["dp"] for index in range(len(prompts))]
-    if args.online_profile:
-        assignments = [0, 2, 0, 0]
-    elif args.orthrus_only and args.require_online_update:
+    if args.orthrus_only and args.require_online_update and not args.online_profile:
         # The short capture gate exercises feedback ownership on both hosts.
         assignments = [(0, 2, 1, 3)[index % 4] for index in range(len(prompts))]
     _, head, head_files = read_draft_artifact(args.model, args.head)
@@ -302,6 +379,7 @@ def run(args):
                 "Nodes differ in acceptance configuration: " + ", ".join(mismatched)
             )
         print(f"Node {args.node} preparing HOST Engram contracts", flush=True)
+        engram_started = time.perf_counter()
         cache = source.module("prefill_prepare").checkpoint_cache(
             args.model, config.topology, progress=lambda event: print(json.dumps(event), flush=True)
         )
@@ -309,9 +387,10 @@ def run(args):
                    for layer, value in cache[0]["engram_contracts"].items()}
         if link.exchange("acceptance/engram", digests) != digests:
             raise ValueError("Engram checkpoint payloads differ between nodes")
+        engram_seconds = time.perf_counter() - engram_started
         cache_plan = CachePlan.from_native_templates(source, cache[0]["cache_ABI"], config)
         results, audits = {}, {}
-        modes = ("orthrus",) if args.orthrus_only else ("target", "orthrus")
+        modes = ("orthrus",) if args.orthrus_only and not args.online_profile else ("target", "orthrus")
         native_dir = args.output / "native"
         cluster = ClusterDispatcher(plan, link, build_id=identity)
         session = NativeSession(source, args.model, devices, native_dir, config, checkpoint.text["vocab_size"],
@@ -321,23 +400,28 @@ def run(args):
         runner = A3Runner(source, config, cache_plan, session, checkpoint.text["vocab_size"], greedy_tokens=True)
         profile = OnlineUpdateProfile(args.output / "online-profile.jsonl") if args.online_profile else None
         try:
-            for mode in modes:
-                print(f"Node {args.node} running {mode} on global ranks {list(plan.local_ranks)}", flush=True)
-                expected = results.get("target", {}).get("requests") if mode == "orthrus" else None
-                started = time.perf_counter()
-                with profile_online(profile):
+            if profile is not None:
+                phases, comparisons = profile_workload(
+                    runner, link, profile, prompts, entries, args.tokens, decoder, args.output,
+                )
+                versions = profile_head_versions(session.receipt_path, profile.requests)
+            else:
+                for mode in modes:
+                    print(f"Node {args.node} running {mode} on global ranks {list(plan.local_ranks)}", flush=True)
+                    expected = results.get("target", {}).get("requests") if mode == "orthrus" else None
+                    started = time.perf_counter()
                     rows, stats = generate(
                         runner, prompts, args.tokens, assignments,
                         identities=identities, metadata=entries, decoder=decoder, reference=expected,
                         speculative=mode == "orthrus",
                     )
-                elapsed = time.perf_counter() - started
-                results[mode] = dict(status="executed", devices=devices, sampling=SAMPLING,
-                                     requests=rows, speculation=stats, elapsed_seconds=elapsed,
-                                     output_tokens=sum(len(row["token_ids"]) for row in rows),
-                                     output_tokens_per_second=sum(len(row["token_ids"]) for row in rows) / elapsed,
-                                     online=None if online is None else online.summary())
-                write_report(args.output / mode / "result.json", results[mode])
+                    elapsed = time.perf_counter() - started
+                    results[mode] = dict(status="executed", devices=devices, sampling=SAMPLING,
+                                         requests=rows, speculation=stats, elapsed_seconds=elapsed,
+                                         output_tokens=sum(len(row["token_ids"]) for row in rows),
+                                         output_tokens_per_second=sum(len(row["token_ids"]) for row in rows) / elapsed,
+                                         online=None if online is None else online.summary())
+                    write_report(args.output / mode / "result.json", results[mode])
         except TokenDivergence as error:
             diagnostics = {"prefill": prefill_difference, "verify/accept": verification_difference}
             collect = diagnostics.get(error.details["phase"])
@@ -357,15 +441,27 @@ def run(args):
         tokens = (request_parity(results["target"], results["orthrus"])
                   if "target" in results else 0)
         online_summary = None if online is None else online.summary()
-        summary = dict(passed=True, node=plan.node, global_ranks=list(plan.local_ranks), build_id=identity,
+        passed = True
+        if profile is not None:
+            tokens = sum(row["matched_tokens"] for row in comparisons.values())
+            expected_updates = 6 if "update_extra" in phases else 4
+            passed = (all(row["divergence"] is None for row in comparisons.values())
+                      and len(profile.records) == expected_updates
+                      and all(row["teacher_rows"] == online.config.teacher_rows for row in profile.records)
+                      and versions.get("fixed_before") == [0]
+                      and versions.get("fixed_after") == [online_summary["publications"]])
+        speculation = results["orthrus"]["speculation"] if profile is None else dict(
+            sum((Counter(arm["speculation"]) for arm in phases.values()), Counter())
+        )
+        summary = dict(passed=passed, node=plan.node, global_ranks=list(plan.local_ranks), build_id=identity,
                        topology=dict(dp=4, tp=4, ep=16), physical_to_runtime=mapping, compared_tokens=tokens,
                        checkpoint=checkpoint_identity, head_sha256=head_identity, head_role=head["artifact_role"],
                        target=audits.get("target"), orthrus=audits["orthrus"],
-                       speculation=results["orthrus"]["speculation"],
+                       speculation=speculation,
                        online=online_summary)
         peer = link.exchange("acceptance/results", summary)
         if (peer["node"] != 1 - plan.node or peer["global_ranks"] != list(RankPlan((8, 8), 4, 1 - plan.node).local_ranks)
-                or not peer["passed"] or peer["compared_tokens"] != tokens or peer["build_id"] != identity):
+                or peer["passed"] != passed or peer["compared_tokens"] != tokens or peer["build_id"] != identity):
             raise ValueError("The peer did not complete the matching eight-rank acceptance")
         if online is not None:
             audit_online_update(online_summary, peer["online"],
@@ -376,7 +472,18 @@ def run(args):
             node0, node1 = (profile.records, peer_records) if plan.node == 0 else (peer_records, profile.records)
             report = OnlineUpdateProfile.summary(node0, node1)
             report["local_requests"] = profile.requests
-            rows = results["orthrus"]["requests"]
+            report["engram_seconds"] = engram_seconds
+            report["first_prefill_seconds"] = profile.requests[0]["prefill_seconds"]
+            report["expected_updates"] = expected_updates
+            report["greedy_comparison"] = comparisons
+            report["probe_head_versions"] = versions
+            report["probe_metrics"] = {
+                name: {key: phases[name][key] for key in (
+                    "decode_tokens_per_second", "mean_accepted_candidates", "candidate_acceptance_rate",
+                )}
+                for name in ("ar", "fixed_before", "fixed_after")
+            }
+            rows = phases["update"]["requests"]
             report["repeat_greedy_outputs_match"] = all(row["token_ids"] == rows[0]["token_ids"] for row in rows)
             write_report(args.output / "online-profile-summary.json", report)
             summary["online_profile"] = {
@@ -388,7 +495,13 @@ def run(args):
             if not stages and report["updates"]:
                 stages = report["updates"][-1]["owner_stage_seconds"]
             print(json.dumps({
-                "stage": "online_profile_summary", **summary["online_profile"],
+                "stage": "online_profile_summary", "passed": passed, **summary["online_profile"],
+                "expected_updates": expected_updates,
+                "engram_seconds": round(engram_seconds, 3),
+                "first_prefill_seconds": round(report["first_prefill_seconds"], 3),
+                "greedy_comparison": comparisons,
+                "probe_head_versions": versions,
+                "probe_metrics": report["probe_metrics"],
                 "updates": [{
                     "dp": row["owner_dp"], "teacher_rows": row["teacher_rows"],
                     "seconds": round(row["update_seconds"], 3),
@@ -441,7 +554,7 @@ def main():
     parser.add_argument("--require-online-update", action="store_true",
                         help="Fail unless the workload captures and applies an online update")
     parser.add_argument("--online-profile", action="store_true",
-                        help="Profile four updates in one session, repeating the first workload prompt")
+                        help="Run matched greedy probes and profile four to six updates in one session")
     parser.add_argument("--connect-timeout", type=int, default=900)
     parser.add_argument("--timeout", type=int, default=3600, help="Maximum seconds of peer inactivity")
     args = parser.parse_args()
@@ -467,6 +580,8 @@ def main():
         raise
     write_report(args.output / "acceptance.json", summary)
     print(json.dumps(summary), flush=True)
+    if not summary["passed"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

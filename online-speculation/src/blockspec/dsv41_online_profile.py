@@ -56,17 +56,19 @@ class OnlineUpdateProfile:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.current = None
         self.request_id = None
+        self.capture = False
         self.updated_request = None
         self.records = []
         self.requests = []
         self.dispatched = set()
 
-    def begin_request(self, request_id):
+    def begin_request(self, request_id, *, phase="update", capture=True):
         self.request_id = request_id
-        self.requests.append({"request_id": request_id, "decode_seconds": 0.0})
+        self.capture = capture
+        self.requests.append({"request_id": request_id, "phase": phase, "decode_seconds": 0.0})
 
     def can_capture(self):
-        return self.request_id != self.updated_request
+        return self.capture and self.request_id != self.updated_request
 
     @contextmanager
     def update(self, contract, *, owner_is_local):

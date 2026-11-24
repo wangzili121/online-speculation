@@ -166,7 +166,7 @@ def test_profile_launcher_uses_seven_teacher_rows_and_a_single_session(tmp_path)
     )
     factory_call, cluster_call = result.stdout.splitlines()
     assert factory_call == "online-factory-check"
-    assert cluster_call.startswith("cluster-accept node7 --max-requests 1 --tokens 8 ")
+    assert cluster_call.startswith("cluster-accept node7 --max-requests 5 --tokens 8 ")
     assert '"teacher_rows":7' in cluster_call
     assert "--orthrus-only --require-online-update --online-profile" in cluster_call
 

@@ -6,13 +6,86 @@ import runpy
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 
+import pytest
 import torch
 
 
 COMMAND = Path(__file__).resolve().parents[1] / "scripts/verify_dsv41_pypto_acceptance.py"
 SUMMARY = COMMAND.with_name("summarize_dsv41_pypto_cluster.py")
+
+
+@pytest.mark.parametrize(("peer_affordable", "expected_updates"), [(True, 6), (False, 4)])
+def test_profile_runs_matched_probes_around_bounded_updates(tmp_path, monkeypatch, peer_affordable, expected_updates):
+    from blockspec.dsv41_online_profile import OnlineUpdateProfile, active_profile
+
+    monkeypatch.syspath_prepend(str(COMMAND.parent))
+    monkeypatch.setitem(sys.modules, "pypto_serving.config.types", SimpleNamespace(
+        DecodeBatch=SimpleNamespace, PrefillBatch=SimpleNamespace, SamplingParams=SimpleNamespace,
+    ))
+    entry = runpy.run_path(str(COMMAND.with_name("run_dsv41_pypto_cluster.py")))
+    profile = OnlineUpdateProfile(tmp_path / "online-profile.jsonl")
+    receipts = tmp_path / "dispatches.jsonl"
+
+    class Runner:
+        cache_plan = SimpleNamespace(groups=[])
+        config = SimpleNamespace(chunk_tokens=16)
+        ledger = SimpleNamespace(requests={})
+        version = 0
+
+        def run(self, batch, phase):
+            name, = batch.request_ids
+            if phase == "prefill":
+                self.ledger.requests[name] = SimpleNamespace(history=batch.token_ids.tolist())
+                self.partition = batch.cache_partitions[0]
+                self.steps = 0
+                return SimpleNamespace(sampled_token_ids=[1])
+            self.ledger.requests[name].history.extend(batch.token_ids.tolist())
+            return SimpleNamespace(accepted_token_ids=None, sampled_token_ids=batch.token_ids + 1)
+
+        def run_orthrus(self, batch):
+            name, = batch.request_ids
+            with receipts.open("a") as stream:
+                stream.write(json.dumps(dict(phase="draft", draft_head_version=self.version,
+                                            owners=[{"request_id": name}])) + "\n")
+            tokens = batch.token_ids.tolist()
+            accepted = self.version > 0 and self.steps % 2 == 0
+            self.ledger.requests[name].history.extend([*tokens, tokens[0] + 1] if accepted else tokens)
+            self.steps += 1 + int(accepted)
+            if self.steps >= 7 and active_profile().can_capture():
+                self.version += 1
+                contract = dict(update_number=self.version, request_id=name, owner=[self.partition, 0, 1], teacher_rows=7)
+                with profile.update(contract, owner_is_local=self.partition == 0) as row:
+                    row["update_seconds"] = 2.0
+            return SimpleNamespace(accepted_token_ids=[[tokens[0] + i for i in range(1, 2 + accepted)]],
+                                   num_draft_tokens=[31])
+
+        def release_finished_requests(self, names):
+            for name in names:
+                self.ledger.requests.pop(name)
+
+    def exchange(tag, local):
+        assert tag == "acceptance/online-profile-extra" and local is True
+        return peer_affordable
+
+    runner = Runner()
+    phases, comparisons = entry["profile_workload"](
+        runner, SimpleNamespace(exchange=exchange), profile, [[100 + i] for i in range(5)],
+        [{"id": str(i)} for i in range(5)], 8, None, tmp_path,
+    )
+    assert list(phases) == ["ar", "fixed_before", "update", *(
+        ["update_extra"] if peer_affordable else []
+    ), "fixed_after"]
+    assert comparisons == {phase: {"matched_tokens": 32, "divergence": None}
+                           for phase in ("fixed_before", "fixed_after")}
+    assert [row["owner_dp"] for row in profile.records] == ([0, 2, 0, 0, 0, 0] if peer_affordable else [0, 2, 0, 0])
+    assert len({row["request_id"] for row in profile.requests}) == len(profile.requests)
+    assert entry["profile_head_versions"](receipts, profile.requests) == {
+        "fixed_before": [0], "fixed_after": [expected_updates],
+    }
+    assert phases["fixed_after"]["mean_accepted_candidates"] > phases["fixed_before"]["mean_accepted_candidates"]
 
 
 class AcceptanceTest(unittest.TestCase):

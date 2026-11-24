@@ -14,7 +14,7 @@ case "$last_layers" in 1|2|4|8) ;; *) echo "last-N must be one of 1, 2, 4 or 8" 
 
 case "$mode" in
   capture) split=tuning; requests=2; tokens=2 ;;
-  profile) split=tuning; requests=1; tokens=8 ;;
+  profile) split=tuning; requests=5; tokens=8 ;;
   smoke) split=tuning; requests=4; tokens=32 ;;
   tuning) split=tuning; requests=32; tokens=192 ;;
   eval) split=online_eval; requests=384; tokens=192 ;;
