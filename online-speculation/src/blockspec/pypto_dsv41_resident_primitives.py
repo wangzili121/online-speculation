@@ -437,14 +437,12 @@ class DSV41ResidentPrimitives:
         )
         return token, _DeferredLogitsGradient(token)
 
-    def _loss_on_rank(self, rank, token):
+    def _loss_on_rank(self, rank, token, student, teacher):
         from .pypto_dsv41_online_programs import make_kl, make_tv
 
         vocabulary = token.student.shape[1]
-        student = self._padded_logits(token.student, token.valid, vocabulary)
-        teacher = self._padded_logits(token.teacher, token.valid, vocabulary)
-        gradient = self._workspace(rank, (ROWS, vocabulary))
-        losses = self._workspace(rank, (ROWS, 8), torch.float32)
+        gradient = self._workspace(rank, (ROWS, vocabulary), fill=None)
+        losses = self._workspace(rank, (ROWS, 8), torch.float32, fill=None)
         factory = make_tv if token.kind == "tv" else make_kl
         self._execute(
             ("loss", token.kind, vocabulary), rank,
@@ -525,13 +523,22 @@ class DSV41ResidentPrimitives:
         if vocabulary % 4 or vocabulary // 4 % 64:
             raise ValueError("vocabulary must split into four aligned TP shards")
 
-        from .pypto_dsv41_online_programs import make_linear, make_rms
+        from .pypto_dsv41_online_programs import make_linear, make_rms, make_vocab_gradient_shard
         from .pypto_dsv41_tail_vjp import make_hc_collapse_forward, make_hc_collapse_vjp
 
-        hidden_gradients, premix_gradients, normalized_gradients = {}, {}, {}
-        terminal_states, collapsed_packets = {}, {}
         local_vocabulary = vocabulary // 4
-        for rank in ranks:
+        norms = {rank: self._pinned(rank, "norm.weight", (1, HIDDEN)) for rank in ranks}
+
+        def map_owner(function):
+            def run_rank(index):
+                rank = self.ranks[index]
+                if rank in rows:
+                    return function(rank)
+
+            result = self._map_online_ranks(run_rank)
+            return {rank: value for rank, value in zip(self.ranks, result, strict=True) if rank in rows}
+
+        def collapse(rank):
             row = rows[rank]
             span = self._local_span(row)
             streams = self._local_rows(rank, row, row["hidden"], HC_COPIES)
@@ -547,15 +554,23 @@ class DSV41ResidentPrimitives:
             )
             packet = self._workspace(rank, (ROWS, HIDDEN))
             self._copy_rows(rank, packet, collapsed[:span.rows], destination=span.block_start)
-            collapsed_packets[rank] = packet
-            terminal_states[rank] = streams, premix
+            return streams, premix, packet
 
         # The forward concatenates local SP collapses before applying the
         # final norm and each vocabulary shard. The request rows are disjoint.
+        terminal_states = map_owner(collapse)
+        collapsed_packets = {rank: state[2] for rank, state in terminal_states.items()}
         collapsed_rows = self._tp_all_reduce(collapsed_packets, stage="lm-head-sp-collapse")
-        for rank in ranks:
+
+        # Rank threads share read-only host inputs. Padding them per rank
+        # duplicates the full vocabulary allocation and contends for CPU workers.
+        loss = gradient.loss
+        student = self._padded_logits(loss.student, loss.valid, vocabulary)
+        teacher = self._padded_logits(loss.teacher, loss.valid, vocabulary)
+
+        def reverse_head(rank):
             collapsed = collapsed_rows[rank]
-            norm = self._pinned(rank, "norm.weight", (1, HIDDEN))
+            norm = norms[rank]
             normalized = self._workspace(rank, (ROWS, HIDDEN))
             inverse = self._workspace(rank, (ROWS, 8), torch.float32)
             self._execute(
@@ -563,13 +578,13 @@ class DSV41ResidentPrimitives:
                 lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
                 x=collapsed, gamma=norm, y=normalized, inv=inverse,
             )
-            terminal_states[rank] += (collapsed, norm, inverse)
-
-            dlogits, losses = self._loss_on_rank(rank, gradient.loss)
-            if gradient.loss.value is None:
-                gradient.loss.value = _ResidentScalar(losses, rank)
-            lane = rank % 4
-            dlocal = self._compact_columns(rank, dlogits, lane * local_vocabulary, local_vocabulary)
+            dlogits, losses = self._loss_on_rank(rank, loss, student, teacher)
+            dlocal = self._workspace(rank, (ROWS, local_vocabulary), fill=None)
+            self._execute(
+                ("vocab-gradient-shard", vocabulary), rank,
+                lambda: make_vocab_gradient_shard(ROWS, vocabulary),
+                gradient=dlogits, output=dlocal, offset=rank % 4 * local_vocabulary,
+            )
             head = self.native.weights.head_for_rank(rank)
             if head.shape != (HIDDEN, local_vocabulary):
                 raise ValueError("native TP vocabulary head changed shape")
@@ -583,18 +598,24 @@ class DSV41ResidentPrimitives:
                 a=dlocal, b=self.resident.handle(head, self._local(rank), readonly=True),
                 output=dnormalized,
             )
-            normalized_gradients[rank] = dnormalized
+            return inverse, losses, dnormalized
 
+        terminal_reverse = map_owner(reverse_head)
+        if loss.value is None:
+            loss.value = _ResidentScalar(terminal_reverse[ranks[0]][1], ranks[0])
         normalized_gradients = self._tp_all_reduce(
-            normalized_gradients, stage="lm-head-input-vjp",
+            {rank: state[2] for rank, state in terminal_reverse.items()}, stage="lm-head-input-vjp",
         )
-        for rank in ranks:
-            streams, premix, collapsed, norm, inverse = terminal_states[rank]
+
+        def reverse_collapse(rank):
+            streams, premix, _ = terminal_states[rank]
+            inverse, _, _ = terminal_reverse[rank]
+            norm = norms[rank]
             dcollapsed = self._workspace(rank, (ROWS, HIDDEN))
             self._execute(
                 ("final-rms-input-vjp",), rank,
                 lambda: make_rms(ROWS, HIDDEN, mode="input", epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
-                x=collapsed, gamma=norm, inv=inverse,
+                x=collapsed_rows[rank], gamma=norm, inv=inverse,
                 dy=normalized_gradients[rank], dx=dcollapsed,
             )
             dstreams = self._workspace(rank, (ROWS * HC_COPIES, HIDDEN))
@@ -607,8 +628,11 @@ class DSV41ResidentPrimitives:
                     self._local_span(rows[rank]).block_start, self._local_span(rows[rank]).rows),
                 stream_gradient=dstreams, premix_gradient=dpremix,
             )
-            hidden_gradients[rank] = dstreams
-            premix_gradients[rank] = self._compact_columns(rank, dpremix, 0, HC_COPIES)
+            return dstreams, self._compact_columns(rank, dpremix, 0, HC_COPIES)
+
+        output = map_owner(reverse_collapse)
+        hidden_gradients = {rank: value[0] for rank, value in output.items()}
+        premix_gradients = {rank: value[1] for rank, value in output.items()}
         return SuffixGradient(hidden_gradients, premix_gradients)
 
     @staticmethod

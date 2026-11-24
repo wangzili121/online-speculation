@@ -537,8 +537,9 @@ class TerminalHarness(AttentionBatchHarness):
         assert name == "norm.weight"
         return torch.ones(shape, dtype=torch.bfloat16)
 
-    def _loss_on_rank(self, rank, token):
-        return token.student, torch.zeros(32, 8)
+    def _loss_on_rank(self, rank, token, student, teacher):
+        assert student.shape == teacher.shape == (32, 256)
+        return student, torch.zeros(32, 8)
 
     def _tp_collective(self, values, collective, *, stage):
         assert collective == "all_reduce"
@@ -556,6 +557,9 @@ class TerminalHarness(AttentionBatchHarness):
             inputs["collapsed"].copy_((values * inputs["premix"].unsqueeze(-1)).sum(1))
         elif op == "final-rms-forward":
             inputs["y"].copy_(inputs["x"])
+        elif op == "vocab-gradient-shard":
+            start = inputs["offset"]
+            inputs["output"].copy_(inputs["gradient"][:, start:start + inputs["output"].shape[1]])
         elif op == "lm-head-input-vjp":
             inputs["output"].copy_(inputs["a"].float() @ inputs["b"].float().T)
         elif op == "final-rms-input-vjp":
@@ -585,13 +589,19 @@ def test_lm_head_vjp_routes_all_vocab_shards_back_to_the_owning_sp_rows():
     logits = torch.zeros(32, 256, dtype=torch.bfloat16)
     for lane in terminal.ranks:
         logits[lane * 8:(lane + 1) * 8, lane * 64] = 1.
-    gradient = _DeferredLogitsGradient(SimpleNamespace(student=logits, value=None))
+    gradient = _DeferredLogitsGradient(
+        SimpleNamespace(student=logits[:31], teacher=logits[:31], valid=31, value=None),
+    )
     result = terminal.lm_head_vjp(gradient, rows)
+    assert gradient.loss.value.rank == 0
     for rank in terminal.ranks:
+        selected_rows = min(8, 31 - rank * 8)
         assert result.pre_mix[rank].is_contiguous()
-        assert result.pre_mix[rank][:8].eq(rank + 1).all()
-        assert not result.pre_mix[rank][8:].any()
-        assert result.hidden[rank].view(32, 4, 5120)[:8, 0].eq(rank + 1).all()
+        assert result.pre_mix[rank][:selected_rows].eq(rank + 1).all()
+        assert not result.pre_mix[rank][selected_rows:].any()
+        hidden_gradient = result.hidden[rank].view(32, 4, 5120)
+        assert hidden_gradient[:selected_rows, 0].eq(rank + 1).all()
+        assert not hidden_gradient[selected_rows:].any()
 
 
 class SymbolicTensor:

@@ -15,6 +15,28 @@ def loss_vocabulary_tile(vocabulary):
                if tile <= vocabulary and vocabulary % tile == 0)
 
 
+def make_vocab_gradient_shard(rows, vocabulary):
+    """Copy one contiguous TP lane from every full-vocabulary gradient row."""
+    import pypto.language as pl
+
+    width = vocabulary // 4
+    tile = next(size for size in (6464, 4096, 2048, 1024, 512, 256, 128, 64)
+                if width % size == 0)
+
+    @pl.jit
+    def shard(gradient: pl.Tensor[[rows, vocabulary], pl.BF16],
+              output: pl.Out[pl.Tensor[[rows, width], pl.BF16]],
+              offset: pl.Scalar[pl.INT32]):
+        for task in pl.spmd(rows * (width // tile), name_hint="orthrus_vocab_gradient_shard"):
+            row = task // (width // tile)
+            column = task % (width // tile) * tile
+            values = pl.slice(gradient, [1, tile], [row, offset + column])
+            output[row:row + 1, column:column + tile] = values
+        return output
+
+    return shard
+
+
 def _loss_entry(compute, *, inline, position_weighted):
     """保留普通损失的六参数 ABI；加权图额外传入每个反馈块自己的行权重。"""
     import pypto.language as pl

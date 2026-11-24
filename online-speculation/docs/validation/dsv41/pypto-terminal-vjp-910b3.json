@@ -1,0 +1,106 @@
+{
+  "passed": true,
+  "device": "Ascend 910B3",
+  "physical_devices": [
+    4,
+    5,
+    6,
+    7
+  ],
+  "tp": 4,
+  "width": 5120,
+  "vocabulary": 129280,
+  "block": 32,
+  "baseline": "77f68b1",
+  "evidence": "synthetic matched terminal VJP with local HCCL",
+  "cases": {
+    "tv/7": {
+      "loss": 0.14000628888607025,
+      "exact_collective_inputs": true,
+      "collective_outputs": {
+        "lm-head-sp-collapse": {
+          "before_after_max_abs": 0.0,
+          "before_repeat_max_abs": 0.0
+        },
+        "lm-head-input-vjp": {
+          "before_after_max_abs": 0.0,
+          "before_repeat_max_abs": 4.76837158203125e-07
+        }
+      },
+      "gradient_max_abs": 0.0,
+      "baseline_repeat_max_abs": 1.403869828209281e-05,
+      "baseline_median_ms": 149.5824345620349,
+      "optimized_median_ms": 91.66316199116409,
+      "repetitions": 12,
+      "sequence_rows": [
+        8,
+        8,
+        8,
+        8
+      ],
+      "timings": {
+        "before": 149.5824345620349,
+        "after": 91.66316199116409
+      }
+    },
+    "forward_kl/7": {
+      "loss": 0.061243586242198944,
+      "exact_collective_inputs": true,
+      "collective_outputs": {
+        "lm-head-sp-collapse": {
+          "before_after_max_abs": 0.0,
+          "before_repeat_max_abs": 0.0
+        },
+        "lm-head-input-vjp": {
+          "before_after_max_abs": 4.76837158203125e-07,
+          "before_repeat_max_abs": 4.76837158203125e-07
+        }
+      },
+      "gradient_max_abs": 1.1902418918907642e-05,
+      "baseline_repeat_max_abs": 8.969800546765327e-06,
+      "baseline_median_ms": 141.99041348183528,
+      "optimized_median_ms": 88.55410700198263,
+      "repetitions": 12,
+      "sequence_rows": [
+        8,
+        8,
+        8,
+        8
+      ],
+      "timings": {
+        "before": 141.99041348183528,
+        "after": 88.55410700198263
+      }
+    },
+    "tv/1": {
+      "loss": 0.13642854988574982,
+      "exact_collective_inputs": true,
+      "collective_outputs": {
+        "lm-head-sp-collapse": {
+          "before_after_max_abs": 0.0,
+          "before_repeat_max_abs": 0.0
+        },
+        "lm-head-input-vjp": {
+          "before_after_max_abs": 1.9073486328125e-06,
+          "before_repeat_max_abs": 1.9073486328125e-06
+        }
+      },
+      "gradient_max_abs": 1.763179898262024e-05,
+      "baseline_repeat_max_abs": 2.1064653992652893e-05,
+      "baseline_median_ms": 135.88469004025683,
+      "optimized_median_ms": 79.84553597634658,
+      "repetitions": 12,
+      "sequence_rows": [
+        32,
+        0,
+        0,
+        0
+      ],
+      "timings": {
+        "before": 135.88469004025683,
+        "after": 79.84553597634658
+      }
+    }
+  },
+  "server": "167"
+}
