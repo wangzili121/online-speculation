@@ -125,10 +125,11 @@ Orthrus 专用前向与在线反向算子默认复用本机 `PYPTO_CLUSTER_STATE
 python3 online-speculation/scripts/summarize_dsv41_pypto_cluster.py \
   /workspace/候选运行/acceptance \
   --compare-gsm8k /workspace/基线运行/acceptance \
+  --require-matched-dispatch \
   --output dsv41-gsm8k-comparison.json
 ```
 
-工具会核对硬件映射、初始 head、模型权重、题目顺序、生成结果和在线策略，再输出吞吐、发布成本和各阶段搬运量。较早的报告可从保存的 Serving 回执恢复阶段数据。新版报告单列 verifier 快照与恢复耗时、实际使用的执行容量，以及每轮提交的最大 DP token 数，包含 anchor。
+工具会核对硬件映射、初始 head、模型权重、题目顺序、生成结果和在线策略。版本对照同时要求验证窗口和短宽度调度设置一致。报告分开记录启动、在线更新、发布、吞吐和各阶段搬运量。较早的报告可从保存的 Serving 回执恢复阶段数据。验证窗口消融可使用同一工具直接比较，报告会标出窗口差异。
 
 双机 `cluster-accept` 可在两端同时加 `--short-speculative-dispatch` 做整模对照。GSM8K 启动脚本可用 `DSV41_SHORT_SPECULATIVE_DISPATCH=1` 开启相同选项。当所有 DP 分区的 verify 或 accept 行数都不超过 16 时，该阶段复用基模的 16 行程序。起草仍执行 K32，提交超过 16 行时仍走 128 行程序。默认使用已验收的 128 行路径。
 

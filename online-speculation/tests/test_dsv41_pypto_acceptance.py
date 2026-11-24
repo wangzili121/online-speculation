@@ -520,8 +520,9 @@ def test_gsm8k_revision_comparison_recovers_old_phase_receipts_and_requires_matc
         ]
         (path / "serving-dispatches.jsonl").write_text("".join(json.dumps(row) + "\n" for row in receipts))
 
-    report = compare(*dirs)
+    report = compare(*dirs, require_matched_dispatch=True)
     assert report["compared_greedy"] and report["arms"]["initial"]["wall_throughput_ratio"] == 2
+    assert report["matched_dispatch"] and report["verify_candidate_limits"] == [31, 31]
     phases = report["arms"]["initial"]["local_serving"]
     assert [p["draft"]["output_d2h_bytes"] for p in phases] == [10, 9]
     assert [p["draft"]["native_seconds"] for p in phases] == [1.0, 0.5]
@@ -532,6 +533,15 @@ def test_gsm8k_revision_comparison_recovers_old_phase_receipts_and_requires_matc
     assert phases[1]["verify"]["teacher_logit_rows"] == 2
     assert phases[1]["accept"]["max_commit_tokens_per_dp"] == 17
     assert phases[1]["accept"]["accept_calls_fitting_capacity16"] == 1
+    configuration = dirs[1] / "gsm8k-online-report.json"
+    different_window = json.loads(configuration.read_text())
+    different_window["verify_candidate_limit"] = 7
+    configuration.write_text(json.dumps(different_window))
+    with pytest.raises(ValueError, match="same verifier window"):
+        compare(*dirs, require_matched_dispatch=True)
+    assert not compare(*dirs)["matched_dispatch"]
+    del different_window["verify_candidate_limit"]
+    configuration.write_text(json.dumps(different_window))
     candidate = dirs[1] / "gsm8k-online-online.json"
     data = json.loads(candidate.read_text())
     data["requests"][0]["token_ids"][-1] = 4

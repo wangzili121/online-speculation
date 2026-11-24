@@ -552,7 +552,7 @@ def _gsm8k_serving_phases(directory):
     return arms
 
 
-def compare_gsm8k_reports(baseline, candidate):
+def compare_gsm8k_reports(baseline, candidate, *, require_matched_dispatch=False):
     """Compare completed identical workloads and recover local timings on older builds."""
     def load(path, filename):
         return json.loads((path / filename).read_text())
@@ -567,6 +567,11 @@ def compare_gsm8k_reports(baseline, candidate):
     fields = ("training_requests", "heldout_requests", "max_concurrent_requests", "max_new_tokens", "updates_policy")
     if not left["complete"] or not right["complete"] or not all(left[key] == right[key] for key in fields):
         raise ValueError("GSM8K comparison requires the same completed workload and update policy")
+    limits = [report.get("verify_candidate_limit", 31) for report in (left, right)]
+    short_dispatch = [report.get("short_speculative_dispatch", False) for report in (left, right)]
+    dispatch_matched = limits[0] == limits[1] and short_dispatch[0] == short_dispatch[1]
+    if require_matched_dispatch and not dispatch_matched:
+        raise ValueError("Matched GSM8K comparison requires the same verifier window and dispatch capacity policy")
 
     receipts = [_gsm8k_serving_phases(path) for path in (baseline, candidate)]
     comparisons = {}
@@ -594,8 +599,10 @@ def compare_gsm8k_reports(baseline, candidate):
         stats["local_serving"] = [rows[name] for rows in receipts]
         comparisons[name] = stats
     return dict(node=after["node"], build_ids=[before["build_id"], after["build_id"]],
-                verify_candidate_limits=[report.get("verify_candidate_limit", 31) for report in (left, right)],
-                short_speculative_dispatch=[report.get("short_speculative_dispatch", False) for report in (left, right)],
+                verify_candidate_limits=limits, short_speculative_dispatch=short_dispatch,
+                matched_dispatch=dispatch_matched,
+                orthrus_jit_cache=[report.get("orthrus_jit_cache") for report in (before, after)],
+                startup_seconds=[report.get("startup_seconds", {}) for report in (left, right)],
                 compared_greedy=True, order=["baseline", "candidate"], arms=comparisons)
 
 
@@ -614,6 +621,8 @@ def main():
                         help="Recover the saved greedy probes and update timings without running the model")
     parser.add_argument("--compare-gsm8k", type=Path, metavar="BASELINE",
                         help="Compare this completed GSM8K report with the baseline acceptance directory")
+    parser.add_argument("--require-matched-dispatch", action="store_true",
+                        help="Require the same verifier window and capacity policy in a revision comparison")
     parser.add_argument("--output", type=Path, help="Save the full online-kernel or GSM8K comparison report")
     args = parser.parse_args()
     if sum((args.verifier_logits, args.failure_diagnosis, args.prefill_reduction,
@@ -621,6 +630,8 @@ def main():
         parser.error("Choose only one diagnostic mode")
     if args.output is not None and not (args.online_kernels or args.compare_gsm8k is not None):
         parser.error("--output requires --online-kernels or --compare-gsm8k")
+    if args.require_matched_dispatch and args.compare_gsm8k is None:
+        parser.error("--require-matched-dispatch requires --compare-gsm8k")
     try:
         if args.prefill_reduction:
             summary = prefill_reduction(args.directory)
@@ -631,7 +642,8 @@ def main():
         elif args.online_profile:
             summary = recover_online_profile(args.directory)
         elif args.compare_gsm8k is not None:
-            summary = compare_gsm8k_reports(args.compare_gsm8k, args.directory)
+            summary = compare_gsm8k_reports(args.compare_gsm8k, args.directory,
+                                           require_matched_dispatch=args.require_matched_dispatch)
             if args.output is not None:
                 args.output.write_text(json.dumps(summary, indent=2) + "\n")
         elif args.online_kernels:
