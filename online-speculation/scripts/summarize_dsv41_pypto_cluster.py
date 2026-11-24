@@ -36,9 +36,12 @@ def profile_comparisons(arms):
     baseline = arms["ar"]["requests"]
     comparisons = {}
     for name in ("fixed_before", "fixed_after"):
+        probes = arms[name]["requests"]
+        if len(baseline) != len(probes):
+            raise ValueError(f"{name} has {len(probes)} probes; AR has {len(baseline)}")
         matched = 0
         divergence = None
-        for a, b in zip(baseline, arms[name]["requests"], strict=True):
+        for a, b in zip(baseline, probes):
             if (a["prompt_ids"], a["workload_id"]) != (b["prompt_ids"], b["workload_id"]):
                 raise ValueError(f"{name} uses different probes from AR")
             try:

@@ -145,6 +145,10 @@ def test_profile_runs_matched_probes_around_bounded_updates(tmp_path, monkeypatc
     assert recovered["hot_update_median_seconds"] == 2.0
     assert recovered["probes"]["fixed_after"]["accepted"] > recovered["probes"]["fixed_before"]["accepted"]
     assert not json.loads(failure.read_text())["passed"]
+    with pytest.raises(ValueError, match="fixed_after has 1 probes; AR has 2"):
+        entry["profile_comparisons"]({
+            **phases, "fixed_after": {"requests": phases["fixed_after"]["requests"][:1]},
+        })
 
 
 def test_online_kernel_report_correlates_host_and_device_spans(tmp_path):
