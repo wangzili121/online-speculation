@@ -524,6 +524,9 @@ def _gsm8k_serving_phases(directory):
         phase = arms[name][row["phase"]]
         phase.update(deltas)
         phase["calls"] += 1
+        vocabulary = row.get("vocabulary_layout")
+        if vocabulary is not None:
+            phase[f"{vocabulary}_calls"] += 1
         timings = row.get("timings", {})
         phase["native_seconds"] += timings.get("chunk_seconds", 0.0)
         commit_tokens = row.get("commit_tokens_per_dp")

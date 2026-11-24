@@ -1,0 +1,86 @@
+diff --git a/models/deepseek_v41_a3/session.py b/models/deepseek_v41_a3/session.py
+index 36d1019..a710044 100644
+--- a/models/deepseek_v41_a3/session.py
++++ b/models/deepseek_v41_a3/session.py
+@@ -39,13 +39,14 @@ class NativeSession:
+ 
+     def __init__(self, source, checkpoint, devices, directory, config, vocabulary, cache_plan, *,
+                  orthrus_head=None, cluster=None, prepared_cache=None, defer_draft=False, trace_prefill=False,
+-                 trace_position=None, online=None):
++                 trace_position=None, online=None, compact_verifier=False):
+         self.source, self.config, self.vocabulary = source, config, vocabulary
+         self.devices, self.checkpoint = tuple(devices), str(Path(checkpoint).resolve())
+         self.orthrus_head = orthrus_head
+         self.defer_draft = defer_draft
+         self.cluster = cluster
+         self.online = online
++        self.compact_verifier = compact_verifier
+         self._draft_metadata = None
+         self.draft = None
+         self.ledger = self.native = self.decode = self.host = self.hbm = None
+@@ -79,7 +80,8 @@ class NativeSession:
+         except PackageNotFoundError:
+             packages["pypto"] = getattr(importlib.import_module("pypto"), "__version__", "source")
+         manifest = dict(kernel=source.audit(), integration=integration_identity(), checkpoint=self.identity,
+-            orthrus_head=orthrus_head, deferred_draft=defer_draft, config=asdict(config), ranks=ranks,
++            orthrus_head=orthrus_head, deferred_draft=defer_draft, compact_verifier=compact_verifier,
++            config=asdict(config), ranks=ranks,
+             cache_resident_bytes_per_rank=cache_plan.resident_bytes_per_rank,
+             versions=packages,
+             environment={name: os.environ.get(name) for name in (
+@@ -217,6 +219,11 @@ class NativeSession:
+         prepare_seconds = time.perf_counter() - begin
+         before = self.native.weights.counters() if self.native is not None else None
+         progress = lambda event: logger.info("A3 native %s %s", phase, event)
++        online = self.online if self.online is not None and self.online.bound else None
++        feedback_owners = {
++            (handle.dp, handle.slot, handle.generation): handle
++            for handle in handles if online.feedback_pending(handle.request_id)
++        } if online is not None and phase in ("verify", "decode") else {}
+         if self.native is None:
+             if phase != "prefill":
+                 raise ValueError("The first resident dispatch must be Prefill")
+@@ -272,8 +279,16 @@ class NativeSession:
+             result = self.native.propose_candidates(chunk, self.draft,
+                 output=self.directory / f"draft-{self.calls}", progress=progress)
+         elif phase == "verify":
++            greedy_shard = None
++            if self.compact_verifier and self.cluster is not None:
++                teacher_dps = {owner[0] for owner in feedback_owners}
++
++                def greedy_shard(rank, logits, active):
++                    if rank // self.config.tp not in teacher_dps:
++                        return self.draft.greedy_shard(rank, logits, active)
++
+             result = self.native.verify_candidates(chunk, output=self.directory / f"verify-{self.calls}",
+-                                                   progress=progress)
++                                                   progress=progress, greedy_shard=greedy_shard)
+         elif phase == "accept":
+             result = self.native.commit_candidates(chunk, output=self.directory / f"accept-{self.calls}",
+                                                    progress=progress)
+@@ -287,11 +302,6 @@ class NativeSession:
+         ordered, output = (), None
+         if phase != "accept":
+             rows, prepared_update = {}, None
+-            online = self.online if self.online is not None and self.online.bound else None
+-            feedback_owners = {
+-                (handle.dp, handle.slot, handle.generation): handle
+-                for handle in handles if online.feedback_pending(handle.request_id)
+-            } if online is not None and phase in ("verify", "decode") else {}
+             for engine in input_contract["DP_engines"]:
+                 dp, end = engine["dp_rank"], 0
+                 if dp * self.config.tp not in self.local_ranks:
+@@ -306,8 +316,11 @@ class NativeSession:
+                 for request in engine["requests"]:
+                     start, end = end, end + len(request["token_ids"])
+                     owner = (dp, request["request_slot"], request["generation"])
+-                    if phase == "draft" and compact is not None:
+-                        row = compact[start:end - 1]
++                    if compact is not None:
++                        if owner in (requests if phase == "draft" else feedback_owners):
++                            raise RuntimeError("Native vocabulary packets omitted required distillation logits")
++                        # Draft rows predict the next position; verification also checks the last row.
++                        row = compact[start:end - 1 if phase == "draft" else end]
+                     elif phase == "draft":
+                         # Source logits at rows 0..30 predict destination tokens 1..31.
+                         student = logits[start:end - 1]

@@ -1714,12 +1714,25 @@ class DSV41ResidentPrimitives:
         # the mathematical norm by the number of DP replicas.
         first_dp = min(self.ranks) // 4
         group = tuple(range(first_dp * 4, first_dp * 4 + 4))
+        replicated = self._replicated_tp_parameters()
+        selected = {
+            name: group[:1] if name.split(".attn.", 1)[1] in replicated else group
+            for name in values
+        }
+
+        def rank_statistics(index):
+            rank = self.ranks[index]
+            return {
+                name: self._tensor_statistics(rank, gradient.values[rank], name)
+                for name, gradient in values.items() if rank in selected[name]
+            }
+
+        statistics = self._map_online_ranks(rank_statistics)
         squared, finite = 0., True
-        for full_name, gradient in values.items():
-            short = full_name.split(".attn.", 1)[1]
-            selected = group[:1] if short in self._replicated_tp_parameters() else group
-            for rank in selected:
-                part, good = self._tensor_statistics(rank, gradient.values[rank], full_name)
+        # Preserve the parameter-major accumulation order used for clipping.
+        for name, ranks in selected.items():
+            for rank in ranks:
+                part, good = statistics[self._local(rank)][name]
                 squared += part
                 finite = finite and good
         norm = math.sqrt(squared)
@@ -1734,22 +1747,22 @@ class DSV41ResidentPrimitives:
 
         shape = tuple(value.shape)
         stats, count = make_stats(shape)
-        sums = self._workspace(rank, (count, 8), torch.float32)
-        flags = self._workspace(rank, (count, 8), torch.float32)
+        # Both kernels overwrite every row of their output.
+        sums = self._workspace(rank, (count, 8), torch.float32, fill=None)
+        flags = self._workspace(rank, (count, 8), torch.float32, fill=None)
         self._execute(
             ("gradient-stats", shape), rank, lambda: make_stats(shape)[0],
             value=value, sums=sums, flags=flags,
         )
-        level = 0
         while count > 1:
             reduce, next_count = make_reduce(count)
-            next_sums = self._workspace(rank, (next_count, 8), torch.float32)
-            next_flags = self._workspace(rank, (next_count, 8), torch.float32)
+            next_sums = self._workspace(rank, (next_count, 8), torch.float32, fill=None)
+            next_flags = self._workspace(rank, (next_count, 8), torch.float32, fill=None)
             self._execute(
                 ("gradient-reduce", count), rank, lambda count=count: make_reduce(count)[0],
                 sums=sums, flags=flags, out_sums=next_sums, out_flags=next_flags,
             )
-            sums, flags, count, level = next_sums, next_flags, next_count, level + 1
+            sums, flags, count = next_sums, next_flags, next_count
         local = self._local(rank)
         host_sums = self.resident.read_output(sums, local)
         host_flags = self.resident.read_output(flags, local)

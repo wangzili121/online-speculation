@@ -45,7 +45,7 @@ for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.p
     lib-pypto72-compat.patch lib-cluster-retry.patch lib-cluster-prefill-trace.patch \
     lib-deterministic-reduction.patch lib-cluster-online.patch lib-workspace-write-only.patch \
     lib-orthrus-output.patch lib-orthrus-controls.patch lib-orthrus-network-hotpath.patch \
-    lib-orthrus-verify-rows.patch lib-orthrus-verify-parallel.patch; do
+    lib-orthrus-verify-rows.patch lib-orthrus-verify-parallel.patch lib-orthrus-verify-output.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -63,6 +63,8 @@ git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-metadata.pa
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-metadata.patch"
 git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-output.patch"
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-output.patch"
+git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-verify-output.patch"
+git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-verify-output.patch"
 python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolve(cluster=True)'
 
 if [[ "${1:-}" == --prepare-only ]]; then
@@ -177,9 +179,18 @@ class FeedbackProbe:
         assert update == "prepared"
 
 logits = torch.tensor([[0., 2., 0.], [0., 0., 3.], [1., 0., 0.], [0., 4., 0.]])
-session.native.verify_candidates = lambda *args, **kwargs: dict(
-    completed_layers=list(range(40)), timings={}, logits=[{"fresh": logits}] * 4,
-)
+def verify_probe(chunk, *, greedy_shard, **kwargs):
+    if greedy_shard is None:
+        return dict(completed_layers=list(range(40)), timings={}, logits=[{"fresh": logits}] * 8)
+    assert greedy_shard(0, logits, 2) is None
+    assert greedy_shard(3, logits, 2) is None
+    reduced = greedy_shard(4, logits, 4)
+    return dict(completed_layers=list(range(40)), timings={},
+                logits=[{"fresh": logits}] * 4 + [{}] * 4, greedy_tokens={1: reduced})
+
+session.native.verify_candidates = verify_probe
+session.compact_verifier = False
+session.draft = SimpleNamespace(greedy_shard=lambda rank, value, active: value[:active].argmax(-1))
 session.cluster.link.exchange = lambda tag, value: [] if tag == "greedy-output/verify" else unexpected_exchange(tag)
 session.online = FeedbackProbe()
 session.config = SimpleNamespace(tp=4)
@@ -191,6 +202,11 @@ inputs = {"DP_engines": [{"active": 4, "dp_rank": 0, "requests": [
     dict(request_slot=1, generation=1, token_ids=[0, 2]),
 ]}]}
 assert [row.tolist() for row in session._execute("verify", inputs, (), handles)] == [[1, 2], [0, 1]]
+session.compact_verifier = True
+session.local_ranks = tuple(range(8))
+handles += (Handle(request_id="greedy-1", dp=1), Handle(request_id="greedy-2", dp=1, slot=1))
+inputs["DP_engines"].append({"active": 4, "dp_rank": 1, "requests": inputs["DP_engines"][0]["requests"]})
+assert [row.tolist() for row in session._execute("verify", inputs, (), handles)] == [[1, 2], [0, 1]] * 2
 
 # Compact serialized evidence must not remove static data from the native call.
 utility = source.module("utils")
@@ -253,10 +269,14 @@ def reduce_rank(rank, values, active):
     best, ids = values[:active].max(dim=-1)
     return torch.stack((best, ids, torch.ones_like(best)), dim=-1).float()
 
-capture = SimpleNamespace(capture=(None, {(1, 0, 1): "captured"}),
-                          attention=SimpleNamespace(greedy_shard=reduce_rank))
+def reduce_non_teacher_rank(rank, values, active):
+    if rank // 2 != 1:
+        return reduce_rank(rank, values, active)
+
 reads.clear()
-outputs, greedy = network._read_speculative_vocab(shards, records, "fresh", executor, 2, capture)
+outputs, greedy = network._read_speculative_vocab(
+    shards, records, "fresh", executor, 2, reduce_non_teacher_rank,
+)
 assert reads == [(0, 96), (1, 96)] and set(outputs) == {2, 3}
 assert torch.equal(greedy[2], torch.cat((shards[4]["fresh"], shards[5]["fresh"]), dim=-1).argmax(-1))
 

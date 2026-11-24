@@ -247,6 +247,27 @@ def test_exact_k32_span_is_mandatory():
         DSV41ResidentPrimitives._span({"token_begin": 12, "token_end": 43})
 
 
+def test_gradient_norm_counts_one_dp_and_only_one_copy_of_tp_replicas(monkeypatch):
+    draft = ExecutingDraft(last_n=2, ranks=range(8, 16))
+    learner = DSV41ResidentPrimitives(draft=draft, native=native(), cluster=None, config=config(2))
+    records = []
+
+    def tensor_statistics(rank, value, name):
+        records.append((rank, name))
+        return rank + 1, value is not None
+
+    monkeypatch.setattr(learner, "_tensor_statistics", tensor_statistics)
+    names = learner.plan.trainable_names()
+    values = {name: _RankGradient(int(name.split(".")[1]), dict.fromkeys(range(8, 16), True)) for name in names}
+    norm, clip = learner.gradient_norm_and_clip(values, 1.)
+    assert norm.value == (2 * (4 * 9 + 4 * (9 + 10 + 11 + 12))) ** .5
+    assert clip.value == 1. / (norm.value + 1e-6)
+    assert len(records) == 40 and {rank for rank, _ in records} == {8, 9, 10, 11}
+    values["layers.39.attn.wo_b.weight"].values[11] = None
+    with pytest.raises(FloatingPointError, match="non-finite"):
+        learner.gradient_norm_and_clip(values, 1.)
+
+
 @pytest.mark.parametrize("failed_rank", [None, 5])
 def test_persistent_adam_and_resident_publication_use_device_descriptors(failed_rank):
     draft = ExecutingDraft()

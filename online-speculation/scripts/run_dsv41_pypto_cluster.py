@@ -432,6 +432,7 @@ def run(args):
                                 cache_plan, orthrus_head=str(args.head), cluster=cluster, prepared_cache=cache,
                                 defer_draft=True, trace_prefill=args.trace_prefill,
                                 trace_position=args.trace_position,
+                                compact_verifier=args.report_train_requests is not None,
                                 online=None if args.online_benchmark or args.report_train_requests else online)
         runner = A3Runner(source, config, cache_plan, session, checkpoint.text["vocab_size"], greedy_tokens=True)
         profile = OnlineUpdateProfile(args.output / "online-profile.jsonl") if args.online_profile else None

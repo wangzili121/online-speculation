@@ -1,0 +1,128 @@
+diff --git a/models/deepseek_v4_1_flash_a3/network.py b/models/deepseek_v4_1_flash_a3/network.py
+index ec6f96c..d6f3262 100644
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -764,16 +764,16 @@ def embed_network_input(input_contract, weights, executor, config, output):
+     return hidden, premix
+ 
+ 
+-def _read_speculative_vocab(logits_packets, records, case, executor, tp, draft=None):
++def _read_speculative_vocab(logits_packets, records, case, executor, tp, greedy_shard=None):
+     """Materialize one host-side result per logical TP group."""
+     shards, packets = {}, {}
+-    captured_dps = {owner[0] for owner in draft.capture[1]} if draft is not None and draft.capture else set()
+ 
+     def read_rank(rank):
+         active = len(records[rank]["positions"])
+         logits = logits_packets[rank][case]
+-        if draft is not None and active >= ORTHRUS_BLOCK and rank // tp not in captured_dps:
+-            packets[rank] = draft.attention.greedy_shard(rank, logits, active)
++        packet = greedy_shard(rank, logits, active) if greedy_shard is not None and active >= ORTHRUS_BLOCK else None
++        if packet is not None:
++            packets[rank] = packet
+         else:
+             shards[rank] = executor.resident.read_output(logits[:active], executor.rank_devices[rank]) if active else logits[:0]
+ 
+@@ -794,7 +794,7 @@ def _read_speculative_vocab(logits_packets, records, case, executor, tp, draft=N
+ 
+ 
+ def run_output_boundary(result, *, batch, topology, config, weights, executor, output,
+-                        trace_position=None, trace_record=None, orthrus_phase=None, draft=None):
++                        trace_position=None, trace_record=None, orthrus_phase=None, greedy_shard=None):
+     """Consume actual layer39 local delayed HC state and restore complete SP/TP vocabulary output."""
+     capacity, world, tp = executor.provider.capacity, topology["ep"], topology["tp"]
+     directory = Path(output)
+@@ -882,10 +882,11 @@ def run_output_boundary(result, *, batch, topology, config, weights, executor, o
+     if orthrus_phase is not None and executor.transport is not None and trace_record is None:
+         greedy_tokens = {}
+         for case, records in batch["cases"].items():
+-            logits_by_rank, greedy_tokens[case] = _read_speculative_vocab(logits_packets, records, case, executor, tp, draft)
++            logits_by_rank, greedy_tokens[case] = _read_speculative_vocab(logits_packets, records, case, executor, tp, greedy_shard)
+             for rank, logits in logits_by_rank.items():
+                 actual_logits[rank][case] = logits
+-                if orthrus_phase == "verify" and logits.shape[0] and rank % tp == 0:
++                # Diagnostic verification has no packet selector and retains full logits on disk.
++                if orthrus_phase == "verify" and greedy_shard is None and logits.shape[0] and rank % tp == 0:
+                     path = directory / f"rank-{rank}-{case}-network-logits.pt"
+                     torch.save(dict(logits=logits, active=logits.shape[0], positions=records[rank]["positions"],
+                                     DP_rank=rank // tp), path)
+@@ -1218,8 +1219,8 @@ class GenerationSession:
+             return None
+         return self._draft_replays.pop(owner)
+ 
+-    def verify_candidates(self, chunk, *, output, progress=None):
+-        """Evaluate packed causal K32 candidates and restore authoritative state before returning logits."""
++    def verify_candidates(self, chunk, *, output, progress=None, greedy_shard=None):
++        """Evaluate causal candidates and restore authoritative state before returning decisions or logits."""
+         if self.closed or self.failed or self.provider.max_requests_per_partition is None:
+             raise RuntimeError("Verification needs a live serving generation session")
+         actual = chunk["inputs"]["input_contract"]
+@@ -1255,7 +1256,9 @@ class GenerationSession:
+                         restore.callback(history.copy_, history.clone())
+                 with self.runtime.preserve_rank_cache_ranges(ranges_by_rank):
+                     snapshot_seconds = perf_counter() - snapshot_started
+-                    result = self._advance(chunk, output=output, progress=progress, phase="verify")
++                    result = self._advance(
++                        chunk, output=output, progress=progress, phase="verify", greedy_shard=greedy_shard,
++                    )
+                     restore_started = perf_counter()
+             result["timings"].update(
+                 verify_snapshot_seconds=snapshot_seconds,
+@@ -1281,7 +1284,7 @@ class GenerationSession:
+         self._verified_requests = None
+         return self._advance(chunk, output=output, progress=progress, phase="accept")
+ 
+-    def _advance(self, chunk, *, output, progress, phase, draft=None):
++    def _advance(self, chunk, *, output, progress, phase, draft=None, greedy_shard=None):
+         if self.closed or self.failed:
+             raise RuntimeError("A closed or failed generation session cannot advance")
+         following, contract = chunk["inputs"], chunk["contract"]
+@@ -1350,7 +1353,8 @@ class GenerationSession:
+             result = run_network_chunk(following, contract=contract, output=output, provider=self.provider,
+                 weights=self.weights, memory=self.memory, ownership=self.ownership, assigned=self.assigned,
+                 engram_contracts=self.engram_contracts, program=self.program, epoch=epoch, progress=progress,
+-                resident=self.runtime, phase=phase, draft=draft, transport=self.transport)
++                resident=self.runtime, phase=phase, draft=draft, transport=self.transport,
++                greedy_shard=greedy_shard)
+             self.weights.assert_static_unchanged()
+             if cache_uploads != self.runtime.stats["cache_h2d_bytes"]:
+                 raise RuntimeError("A token step uploaded persistent cache bytes")
+@@ -1486,6 +1490,7 @@ def run_network_chunk(
+     phase="prefill",
+     draft=None,
+     transport=None,
++    greedy_shard=None,
+ ):
+     """Execute embedding, the complete backbone and the final head with persistent owners."""
+     begin = perf_counter()
+@@ -1815,6 +1820,13 @@ def run_network_chunk(
+         else:
+             if progress is not None:
+                 progress(dict(stage="executing_output_head", epoch=epoch))
++            if draft is not None:
++                captured_dps = {owner[0] for owner in draft.capture[1]} if draft.capture else set()
++
++                def greedy_shard(rank, logits, active):
++                    if rank // topology["tp"] not in captured_dps:
++                        return draft.attention.greedy_shard(rank, logits, active)
++
+             output_result = run_output_boundary(
+                 result,
+                 batch=provider.batch_for_layer(39),
+@@ -1825,7 +1837,7 @@ def run_network_chunk(
+                 output=output / "actual-layer39-output",
+                 trace_position=trace_position,
+                 trace_record=record_trace if trace_position is not None else None,
+-                orthrus_phase=phase if phase in ("draft", "verify") else None, draft=draft,
++                orthrus_phase=phase if phase in ("draft", "verify") else None, greedy_shard=greedy_shard,
+             )
+             rows = output_result["logits"]
+             if output_result.get("vocabulary_layout") in ("host_shards", "device_greedy"):
+@@ -1889,6 +1901,7 @@ def run_network_chunk(
+             ),
+         )
+         return dict(runtime, logits=output_result["logits"], compilation=program.summary(),
++                    vocabulary_layout=output_result.get("vocabulary_layout"),
+                     greedy_tokens=output_result.get("greedy_tokens", {}).get("fresh", {}),
+                     prefill_activation_trace=str(output / "prefill-activations.json") if trace_prefill else None,
+                     timings=dict(layers=layer_timings, chunk_seconds=chunk_seconds,

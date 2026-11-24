@@ -504,6 +504,7 @@ def test_gsm8k_revision_comparison_recovers_old_phase_receipts_and_requires_matc
             dict(phase="draft", owners=[dict(request_id="orthrus-request-initial-0")],
                  runtime={"output_d2h_bytes": 20 - index}, timings={"chunk_seconds": 1.0 - 0.5 * index}),
             dict(phase="verify", owners=[dict(request_id="orthrus-request-initial-0")],
+                 vocabulary_layout="device_greedy" if index else None,
                  timings={"chunk_seconds": .4, "verify_snapshot_seconds": .2, "verify_restore_seconds": .1}),
             dict(phase="accept", owners=[dict(request_id="orthrus-request-initial-0")],
                  commit_tokens_per_dp=[4, 1, 0, 0]),
@@ -519,6 +520,7 @@ def test_gsm8k_revision_comparison_recovers_old_phase_receipts_and_requires_matc
     assert [p["draft"]["native_seconds"] for p in phases] == [1.0, 0.5]
     assert phases[1]["verify"]["verify_snapshot_seconds"] == .2
     assert phases[1]["verify"]["verify_restore_seconds"] == .1
+    assert phases[1]["verify"]["device_greedy_calls"] == 1
     assert phases[1]["accept"]["max_commit_tokens_per_dp"] == 17
     assert phases[1]["accept"]["accept_calls_fitting_capacity16"] == 1
     candidate = dirs[1] / "gsm8k-online-online.json"
