@@ -49,3 +49,43 @@ index 4fbb498..7fef66e 100644
          extra = () if draft is None else draft.finish_layer(layer)
          executor.retain_boundaries(result["hidden"], result["pre_mix"], extra)
          completed_layers.append(layer)
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_resident.py b/models/deepseek_v4_1_flash_a3/prefill_resident.py
+--- a/models/deepseek_v4_1_flash_a3/prefill_resident.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_resident.py
+@@ -312,5 +312,6 @@ class ResidentNetworkRuntime:
+         self.dynamic = {}
+         self.values = {}
++        self.replay_values = set()
+         self.free_values = {}
+         self.free_workspaces = {}
+         self._stats_lock = Lock()
+@@ -469,5 +470,6 @@ class ResidentNetworkRuntime:
+             self.readonly_aliases.clear()
+             self.parameter_abis.clear()
+             self.values.clear()
++            self.replay_values.clear()
+             self.free_values.clear()
+             self.free_workspaces.clear()
+@@ -1007,9 +1009,20 @@ class ResidentNetworkRuntime:
++    def retain_replay_values(self, values):
++        """Hold activation roots through verifier and delayed teacher rounds."""
++        keys = {(rank, value.untyped_storage()._cdata) for rank, value in values}
++        self.replay_values.update(keys.intersection(self.values))
++
++    def release_replay_values(self):
++        """Retire the completed replay without touching current forward scratch."""
++        if not self._closed:
++            self._retire_values(self.replay_values.intersection(self.values))
++        self.replay_values.clear()
++
+     def release_values(self, keep=()):
+         """Recycle completed layer scratch while retaining live layer-boundary aliases."""
+         if self._closed:
+             raise RuntimeError("Resident runtime is closed")
+         retained = {(rank, value.untyped_storage()._cdata) for rank, value in keep}
+-        self._retire_values(set(self.values) - retained)
+-
++        self._retire_values(set(self.values) - retained - self.replay_values)
++
+     def release_tensors(self, values):
+         """Recycle completed communication roots after all rank consumers finish."""

@@ -33,7 +33,7 @@ def test_router_logits_vjp_scatter_matches_selected_score_autograd():
     logits = torch.randn(4, 384, requires_grad=True)
     route_ids = torch.stack([torch.randperm(384)[:6] for _ in range(4)]).int()
     upstream = torch.randn(4, 6)
-    scores = logits.sigmoid().gather(1, route_ids.long())
+    scores = torch.nn.functional.softplus(logits).sqrt().gather(1, route_ids.long())
     weights = 2.5 * scores / scores.sum(-1, keepdim=True)
     expected, = torch.autograd.grad(weights, logits, upstream)
     actual = router_logits_vjp(logits.detach(), route_ids, upstream, scale=2.5)
@@ -85,7 +85,7 @@ def test_complete_frozen_moe_input_vjp_matches_fixed_route_autograd():
     shared_down = torch.randn(intermediate, hidden)
     route_ids = torch.stack([torch.randperm(experts)[:topk] for _ in range(rows)]).int()
     logits = value @ router
-    scores = logits.sigmoid().gather(1, route_ids.long())
+    scores = torch.nn.functional.softplus(logits).sqrt().gather(1, route_ids.long())
     weights = 2.5 * scores / scores.sum(-1, keepdim=True)
     routed = torch.stack([
         torch.stack([

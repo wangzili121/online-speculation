@@ -57,7 +57,11 @@ class DSV41OnlineBootstrap:
             # A single-node run stages and flips its local bank at a verifier
             # boundary.  The dual-node path below additionally cross-checks
             # every rank and digest before activation.
-            def publish(owner, version):
+            local_head_version = 0
+
+            def publish(owner, _update_number):
+                nonlocal local_head_version
+                version = local_head_version + 1
                 draft.stage_online(owner, version)
                 try:
                     draft.activate_online(version)
@@ -65,6 +69,7 @@ class DSV41OnlineBootstrap:
                 except BaseException:
                     draft.rollback_online(version)
                     raise
+                local_head_version = version
         else:
             publish = draft.online_publisher(cluster.link.exchange)
         controller = DSV41OnlineController(learner, self.config, publisher=publish)

@@ -306,9 +306,14 @@ class DSV41OnlineController:
         }
         if synchronization is not None:
             options["synchronization"] = synchronization
-        loss, norm, learner_version = self.learner.update_rows(
-            prepared.replay, prepared.teacher, **options,
-        )
+        try:
+            loss, norm, learner_version = self.learner.update_rows(
+                prepared.replay, prepared.teacher, **options,
+            )
+        finally:
+            release = getattr(prepared.replay, "release", None)
+            if release is not None:
+                release()
         update_seconds = perf_counter() - started
         publication_seconds = 0.0
         published = self.config.should_publish(update_number)

@@ -19,7 +19,7 @@ from .pypto_dsv41_indexer import INDEX_DIM, INDEX_HEADS, index_controls, make_in
 from .pypto_dsv41_sparse import TILE, TOPK, make_joined_attention, make_sparse_attention
 from .pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW, make_swa_attention, swa_spans
 from .dsv41_publication import AtomicHeadPublisher, PublicationReceipt
-from .dsv41_serving_online import DSV41CapturedLayer, DSV41ServingReplay
+from .dsv41_serving_online import DSV41CapturedLayer, DSV41SequenceSpan, DSV41ServingReplay
 from .dsv41_suffix import DSV41SuffixPlan
 
 
@@ -367,15 +367,13 @@ class DraftRound:
             for value in controls.values()
         ]
         if self.capture is not None and layer in self.capture[0].layers:
-            seen = set()
-            for value in (*self.captured_attention.values(), *self.captured_tail.values()):
-                for tensor in self._tensors(value):
-                    rank = value.get("rank")
-                    key = rank, tensor.untyped_storage()._cdata
-                    if key not in seen:
-                        seen.add(key)
-                        if rank is not None:
-                            keep.append((self.attention.rank_ids[rank], tensor))
+            self.attention.resident.retain_replay_values(
+                (self.attention.rank_ids[rank], tensor)
+                for captured in (self.captured_attention, self.captured_tail)
+                for (rank, physical_layer, _), value in captured.items()
+                if physical_layer == layer
+                for tensor in self._tensors(value)
+            )
         return keep
 
     @staticmethod
@@ -402,7 +400,23 @@ class DraftRound:
                 for item in record["request_token_map"]:
                     owner = self.owners[rank // self.attention.topology["tp"], item["request_slot"]]
                     if owner in requests:
-                        self.captured_tail[rank, layer, owner] = dict(state, rank=rank, case=case)
+                        captured = dict(state, rank=rank, case=case)
+                        self._snapshot_boundaries(rank, captured)
+                        self.captured_tail[rank, layer, owner] = captured
+
+    def _snapshot_boundaries(self, rank, state):
+        # The forward alternates two boundary buffers across layers. A lease
+        # alone protects their allocation, not the values in those buffers.
+        resident = self.attention.resident
+        local = self.attention.rank_ids[rank]
+        copies = {}
+        for name in ("readonly_hidden", "hidden", "incoming", "output_hidden", "ffn_pre"):
+            value = state[name]
+            if id(value) not in copies:
+                snapshot = resident.workspace(value.shape, value.dtype, local)
+                resident.copy_tensor(snapshot, value, local)
+                copies[id(value)] = snapshot
+            state[name] = copies[id(value)]
 
     def replays(self):
         """Return backend-owned last-N state after all selected layers completed."""
@@ -438,7 +452,10 @@ class DraftRound:
                         )
                         if end - begin != BLOCK:
                             raise RuntimeError("online suffix replay requires one complete K32 row span")
-                        span = {"token_begin": begin, "token_end": end}
+                        span = {
+                            "token_begin": begin, "token_end": end,
+                            "sp_span": DSV41SequenceSpan.from_record(record, begin, end),
+                        }
                     attention[rank] = dict(
                         a,
                         readonly_hidden=state["readonly_hidden"],
@@ -481,8 +498,11 @@ class DraftRound:
             }
             if set(boundary) != expected_ranks:
                 raise RuntimeError("captured suffix boundary does not cover the owner's TP ranks")
+            if any(set(layer.attention) != expected_ranks for layer in layers):
+                raise RuntimeError("captured suffix layers do not cover the owner's TP ranks")
             replays[owner] = DSV41ServingReplay(
                 request_id, prefix, owner, plan, boundary, tuple(layers),
+                release=self.attention.resident.release_replay_values,
             )
         return replays
 
@@ -576,11 +596,25 @@ class DraftRound:
         attention.execute(("output", compressed), rank,
                           lambda: make_output_program(attention.native, config, head_major_input=not compressed), values)
         if self.capture is not None and layer in self.capture[0].layers and owner in self.capture[1]:
+            from .pypto_dsv41_attention_vjp import C1AAttentionVJPGeometry, make_joined_history
+
+            if not compressed or role["ratio"] != 1:
+                raise ValueError("online draft replay requires C1A history")
+            # Accepted tokens may overwrite these cache pages while delayed
+            # teacher rows accumulate. Snapshot the exact selected K/V now.
+            geometry = C1AAttentionVJPGeometry()
+            joined_history = workspace((BLOCK * geometry.padded_columns, HEAD_DIM))
+            attention.execute("online-joined-history", rank,
+                              lambda: make_joined_history(geometry),
+                              dict(swa_pages=swa_pages, spans=swa_args["spans"],
+                                   compressed_pages=long["handle"], selected_rows=selected["physical_rows"],
+                                   selected_lengths=selected["lengths"], temporary=values["temporary"],
+                                   zeros=swa_zeros, joined=joined_history))
             self.captured_attention[rank, layer, owner] = {
                 "rank": rank, "record": record, "hidden": hidden, "incoming": None,
                 "pre": None, "post": None, "comb": None, "collapsed": hidden,
                 "cos": cos, "sin": sin, "history": history,
-                "selection": selected if compressed else None,
+                "selection": selected, "joined_history": joined_history,
                 "qkv": values, "contribution": contribution, "lse": final_lse,
             }
 

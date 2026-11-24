@@ -64,6 +64,7 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
+import torch
 
 import blockspec.pypto_dsv41_runtime as draft_runtime
 from pypto_serving_a3.session import NativeSession
@@ -126,12 +127,26 @@ finally:
     draft_runtime.ResidentDraftAttention = original
 assert session.draft is marker and binding.bound
 
+runtime_type = source.module("prefill_resident").ResidentNetworkRuntime
+runtime = runtime_type.__new__(runtime_type)
+replay_root, scratch = torch.zeros(1), torch.zeros(1)
+key = lambda value: (0, value.untyped_storage()._cdata)
+runtime.values = {key(value): value for value in (replay_root, scratch)}
+runtime._retire_values = lambda keys: [runtime.values.pop(item) for item in keys]
+runtime.replay_values = set()
+runtime._closed = False
+runtime.retain_replay_values([(0, replay_root)])
+runtime.release_values()
+assert tuple(runtime.values) == (key(replay_root),)
+runtime.release_replay_values()
+assert not runtime.values and not runtime.replay_values
+
 print(json.dumps(dict(
     passed=True,
     stage="offline-overlay",
     tree=os.environ["ORTHRUS_CLUSTER_LIB_TREE"],
     lifecycle={"target_unbound": True, "draft_bind": True, "unbound_cleanup": True,
-               "closed_cleanup": True},
+               "closed_cleanup": True, "replay_survives_scratch_recycle": True},
 )))
 PY
 fi

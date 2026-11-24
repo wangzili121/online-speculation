@@ -49,7 +49,7 @@ def main():
         make_clipped_swiglu_vjp,
         make_dequantize_blocked_weight,
         make_moe_combine_vjp,
-        make_normalized_route_vjp, make_router_logits_vjp,
+        make_normalized_route_vjp, make_router_input_vjp, make_router_logits_vjp,
     )
 
     torch.set_num_threads(4)
@@ -164,6 +164,10 @@ def main():
             empty((4, 6), torch.float32), empty((4, 384), torch.float32), 2.5,
             config=config,
         ),
+        "router_input_vjp": make_router_input_vjp(4, 128).compile(
+            empty((4, 384), torch.float32), empty((4, 6), torch.int32),
+            empty((384, 128), torch.float32), empty((4, 128)), config=config,
+        ),
         "w8a8_vjp_weight": make_dequantize_blocked_weight(256, 128).compile(
             empty((256 * 2, 64), torch.int8), empty((128,), torch.float32),
             empty((256, 128)), config=config,
@@ -269,6 +273,10 @@ def main():
             empty((32, 6), torch.float32), empty((32, 384), torch.float32), 2.5,
             config=config,
         )
+        programs["router_input_vjp_k32x5120"] = make_router_input_vjp(32, 5120).compile(
+            empty((32, 384), torch.float32), empty((32, 6), torch.int32),
+            empty((384, 5120), torch.float32), empty((32, 5120)), config=config,
+        )
         programs["moe_down_vjp_weight_2304x5120"] = make_dequantize_blocked_weight(
             2304, 5120,
         ).compile(
@@ -288,10 +296,13 @@ def main():
         # The frozen LM head is not updated, but its transpose is required to
         # propagate dLogits into the final trainable draft layer. Compile the
         # real V4.1 shape so a small fixture cannot hide an ABI/tile failure.
-        programs["lm_head_input_grad_129280x5120"] = make_linear(
-            (32, vocabulary), (5120, vocabulary), reduction_limit=64,
+        local_vocabulary = vocabulary // 4
+        if vocabulary % 256:
+            parser.error("full-shape TP4 validation requires a 256-aligned vocabulary")
+        programs["lm_head_input_grad_tp4"] = make_linear(
+            (32, local_vocabulary), (5120, local_vocabulary), reduction_limit=64,
         ).compile(
-            empty((32, vocabulary)), empty((5120, vocabulary)), empty((32, 5120)), config=config,
+            empty((32, local_vocabulary)), empty((5120, local_vocabulary)), empty((32, 5120)), config=config,
         )
         full_shape_linears = {
             # name: (upstream columns, input columns). Each pair compiles the
@@ -323,7 +334,6 @@ def main():
             "moe_down_input_grad_5120x2304": (5120, 2304),
             "moe_gate_input_grad_2304x5120": (2304, 5120),
             "moe_up_input_grad_2304x5120": (2304, 5120),
-            "router_input_grad_384x5120": (384, 5120),
         }
         for name, (outputs, inputs) in frozen_tail_linears.items():
             programs[name] = make_linear(
@@ -684,13 +694,14 @@ def main():
         )
         router_logits = torch.randn(4, 384, dtype=torch.float32)
         route_ids = torch.stack([torch.randperm(384)[:6] for _ in range(4)]).int()
-        sigmoid_scores = router_logits.sigmoid().gather(1, route_ids.long())
-        sigmoid_probability = sigmoid_scores / sigmoid_scores.sum(-1, keepdim=True)
-        expected_sigmoid_score_grad = 2.5 / sigmoid_scores.sum(-1, keepdim=True) * (
+        selected_logits = router_logits.gather(1, route_ids.long())
+        scores = torch.nn.functional.softplus(selected_logits).sqrt()
+        probability = scores / scores.sum(-1, keepdim=True)
+        expected_score_grad = 2.5 / scores.sum(-1, keepdim=True) * (
             expected_weight_grad
-            - (expected_weight_grad * sigmoid_probability).sum(-1, keepdim=True)
+            - (expected_weight_grad * probability).sum(-1, keepdim=True)
         )
-        expected_selected_logit_grad = expected_sigmoid_score_grad * sigmoid_scores * (1. - sigmoid_scores)
+        expected_selected_logit_grad = expected_score_grad * selected_logits.sigmoid() / (2. * scores)
         router_grad_handle = allocate(torch.full((4, 384), float("nan")))
         worker.run(
             programs["router_logits_vjp"], allocate(router_logits), allocate(route_ids),
@@ -701,8 +712,19 @@ def main():
             1, route_ids.long(), expected_selected_logit_grad,
         )
         torch.testing.assert_close(actual_router_grad, expected_router_grad, atol=.01, rtol=.002)
+        gate = torch.randn(384, 128)
+        router_input = allocate(torch.empty(4, 128, dtype=torch.bfloat16))
+        worker.run(
+            programs["router_input_vjp"], router_grad_handle, allocate(route_ids),
+            allocate(gate), router_input, config=config,
+        )
+        torch.testing.assert_close(
+            read(router_input, torch.empty(4, 128, dtype=torch.bfloat16)),
+            (actual_router_grad @ gate).bfloat16(), atol=.01, rtol=.0079,
+        )
         report["cases"].append({"operator": "fixed_route_moe_vjp", "shape": [4, 6, 128]})
         report["cases"].append({"operator": "router_logits_vjp", "shape": [4, 384]})
+        report["cases"].append({"operator": "router_input_vjp", "shape": [4, 128]})
 
         logical_weight = torch.randint(-127, 128, (256, 128), dtype=torch.int8)
         packed_weight = logical_weight.reshape(256, 2, 64).permute(1, 0, 2).contiguous().view(512, 64)

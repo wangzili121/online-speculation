@@ -139,6 +139,15 @@ class AcceptanceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "without applying an update"):
             audit(empty, empty, publish_every=1, require_update=True)
 
+    def test_online_capture_requires_a_draft_with_published_weights(self):
+        audit = runpy.run_path(str(COMMAND))["audit_session"]
+        directory = self.root / "orthrus-native"
+        with self.assertRaisesRegex(ValueError, "No draft round used the updated head"):
+            audit(directory, speculative=True, require_updated_draft=True)
+        self.round[1]["draft_head_version"] = 1
+        self.write_dispatches("orthrus", self.round)
+        audit(directory, speculative=True, require_updated_draft=True)
+
     def test_timing_summary_separates_first_call_and_incomplete_receipt(self):
         session = self.root / "native" / "session-1"
         session.mkdir(parents=True)

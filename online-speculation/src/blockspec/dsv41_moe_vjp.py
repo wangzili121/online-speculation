@@ -47,11 +47,11 @@ def normalized_route_vjp(scores, weight_gradient, *, scale=1.0):
 
 
 def router_logits_vjp(logits, route_ids, weight_gradient, *, scale=1.0):
-    """Differentiate sigmoid routing and scatter fixed-TopK logit gradients.
+    """Differentiate the native sqrt-softplus fixed-TopK router.
 
     Top-K membership is held fixed, exactly as it was in the serving forward.
     Unselected logits therefore receive zero gradient.  Selected scores are
-    ``sigmoid(logit)`` and their normalized weights are
+    ``sqrt(softplus(logit))`` and their normalized weights are
     ``scale * score / selected_scores.sum()``.
     """
     if (
@@ -64,9 +64,10 @@ def router_logits_vjp(logits, route_ids, weight_gradient, *, scale=1.0):
         raise ValueError("fixed-route scores, IDs and gradients are incompatible")
     if any(torch.unique(row).numel() != row.numel() for row in route_ids):
         raise ValueError("Top-K expert IDs must be unique within each token")
-    scores = logits.float().sigmoid().gather(1, route_ids.long())
+    selected_logits = logits.float().gather(1, route_ids.long())
+    scores = torch.nn.functional.softplus(selected_logits).sqrt()
     selected = normalized_route_vjp(scores, weight_gradient, scale=scale)
-    selected = selected * scores * (1. - scores)
+    selected = selected * selected_logits.sigmoid() / (2. * scores.clamp_min(1e-20))
     return torch.zeros(
         logits.shape, dtype=selected.dtype, device=selected.device,
     ).scatter(1, route_ids.long(), selected)
@@ -144,7 +145,7 @@ def frozen_moe_input_vjp(
     """Reference input VJP for the complete fixed-route frozen MoE.
 
     This is the executable golden for the production EP16 sequence: routed
-    experts, shared expert and sigmoid router-weight path all contribute to
+    experts, shared expert and the fixed-route weight path all contribute to
     ``d(value)`` while every target-model weight remains frozen.
     """
     if (
@@ -157,7 +158,7 @@ def frozen_moe_input_vjp(
     ):
         raise ValueError("invalid fixed-route frozen MoE tensors")
     logits = value.float() @ router_weight.float()
-    scores = logits.sigmoid().gather(1, route_ids.long())
+    scores = torch.nn.functional.softplus(logits).sqrt().gather(1, route_ids.long())
     weights = route_scale * scores / scores.sum(-1, keepdim=True)
     routed_outputs, routed_input_gradients = [], []
     for token, ids in enumerate(route_ids.tolist()):

@@ -21,6 +21,7 @@ import math
 import torch
 
 from .dsv41_device_update import SuffixGradient
+from .dsv41_serving_online import DSV41SequenceSpan
 from .dsv41_suffix import DSV41SuffixPlan
 
 
@@ -353,7 +354,7 @@ class DSV41ResidentPrimitives:
         result[:valid].copy_(value)
         return result
 
-    def _pinned(self, rank, name):
+    def _pinned(self, rank, name, shape=None):
         """Resolve one immutable target operand by its native pin name."""
         local = self._local(rank)
         rows = [owner for (device, _), owner in self.resident.pinned.items()
@@ -361,7 +362,23 @@ class DSV41ResidentPrimitives:
         if len(rows) != 1:
             raise RuntimeError(f"expected one resident {name!r} on rank {rank}, found {len(rows)}")
         source = rows[0]["source"]
+        if shape is not None:
+            source = source.view(shape)
         return self.resident.handle(source, local, readonly=True)
+
+    def _draft_operand(self, rank, layer, name, shape):
+        bank = self.draft.online_bank
+        source = bank.host[bank.active_slot, rank, layer, name].view(shape)
+        return self.resident.handle(source, self._local(rank), readonly=True)
+
+    def _expert_partition(self, rank, value, partition):
+        count = value.shape[0] // 4
+        local = self._local(rank)
+        shape = (count, *value.shape[1:])
+        offset = partition * math.prod(shape) * value.dtype.itemsize
+        view = self.resident.workers[local].view_tensor(value, shape, byte_offset=offset)
+        self.resident.alias_leases[id(view)] = view
+        return view
 
     @staticmethod
     def _span(row):
@@ -369,6 +386,44 @@ class DSV41ResidentPrimitives:
         if type(begin) is not int or type(end) is not int or end - begin != ROWS:
             raise ValueError("terminal VJP requires the exact captured K32 token span")
         return begin, end
+
+    @classmethod
+    def _local_span(cls, row):
+        if "sp_span" in row:
+            return row["sp_span"]
+        # Standalone VJP callers can supply a complete, unsharded K32 slab.
+        begin, _ = cls._span(row)
+        return DSV41SequenceSpan(begin, 0, ROWS)
+
+    def _copy_rows(self, rank, output, value, *, destination=0):
+        if value.shape[0]:
+            self.resident.copy_tensor(
+                output[destination:destination + value.shape[0]], value, self._local(rank),
+            )
+
+    def _padded_rows(self, rank, value, start, count, copies=1):
+        matrix = value.view(-1, value.shape[-1]) if torch.is_tensor(value) else value
+        rows = matrix[start * copies:(start + count) * copies]
+        if count == ROWS:
+            return rows
+        padded = self._workspace(rank, (ROWS * copies, matrix.shape[-1]), value.dtype)
+        self._copy_rows(rank, padded, rows)
+        return padded
+
+    def _local_rows(self, rank, row, value, copies=1):
+        span = self._local_span(row)
+        return self._padded_rows(rank, value, span.local_start, span.rows, copies)
+
+    def _compact_columns(self, rank, value, start, width):
+        """Materialize a contiguous device matrix from a strided column view."""
+        if start == 0 and width == value.shape[1]:
+            return value
+        output = self._workspace(rank, (value.shape[0], width), value.dtype)
+        for index in range(value.shape[0]):
+            self.resident.copy_tensor(
+                output[index], value[index, start:start + width], self._local(rank),
+            )
+        return output
 
     def loss_vjp(self, logits, teacher, valid, kind):
         if kind not in ("tv", "forward_kl") or not 1 <= valid < ROWS:
@@ -472,13 +527,13 @@ class DSV41ResidentPrimitives:
         from .pypto_dsv41_tail_vjp import make_hc_collapse_forward, make_hc_collapse_vjp
 
         hidden_gradients, premix_gradients, normalized_gradients = {}, {}, {}
-        terminal_states = {}
+        terminal_states, collapsed_packets = {}, {}
         local_vocabulary = vocabulary // 4
         for rank in ranks:
             row = rows[rank]
-            begin, end = self._span(row)
-            streams = row["hidden"][begin * HC_COPIES:end * HC_COPIES]
-            premix = row["pre_mix"][begin:end]
+            span = self._local_span(row)
+            streams = self._local_rows(rank, row, row["hidden"], HC_COPIES)
+            premix = self._local_rows(rank, row, row["pre_mix"])
             if streams.shape != (ROWS * HC_COPIES, HIDDEN) or premix.shape != (ROWS, HC_COPIES):
                 raise ValueError("captured final mHC state has the wrong K32 geometry")
 
@@ -488,7 +543,17 @@ class DSV41ResidentPrimitives:
                 lambda: make_hc_collapse_forward(ROWS, HIDDEN),
                 streams=streams, premix=premix, collapsed=collapsed,
             )
-            norm = self._pinned(rank, "norm.weight").view(1, HIDDEN)
+            packet = self._workspace(rank, (ROWS, HIDDEN))
+            self._copy_rows(rank, packet, collapsed[:span.rows], destination=span.block_start)
+            collapsed_packets[rank] = packet
+            terminal_states[rank] = streams, premix
+
+        # The forward concatenates local SP collapses before applying the
+        # final norm and each vocabulary shard. The request rows are disjoint.
+        collapsed_rows = self._tp_all_reduce(collapsed_packets, stage="lm-head-sp-collapse")
+        for rank in ranks:
+            collapsed = collapsed_rows[rank]
+            norm = self._pinned(rank, "norm.weight", (1, HIDDEN))
             normalized = self._workspace(rank, (ROWS, HIDDEN))
             inverse = self._workspace(rank, (ROWS, 8), torch.float32)
             self._execute(
@@ -496,13 +561,13 @@ class DSV41ResidentPrimitives:
                 lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20),
                 x=collapsed, gamma=norm, y=normalized, inv=inverse,
             )
-            terminal_states[rank] = streams, premix, collapsed, norm, inverse
+            terminal_states[rank] += (collapsed, norm, inverse)
 
             dlogits, losses = self._loss_on_rank(rank, gradient.loss)
             if gradient.loss.value is None:
                 gradient.loss.value = _ResidentScalar(losses, rank)
             lane = rank % 4
-            dlocal = dlogits[:, lane * local_vocabulary:(lane + 1) * local_vocabulary]
+            dlocal = self._compact_columns(rank, dlogits, lane * local_vocabulary, local_vocabulary)
             head = self.native.weights.head_for_rank(rank)
             if head.shape != (HIDDEN, local_vocabulary):
                 raise ValueError("native TP vocabulary head changed shape")
@@ -535,11 +600,13 @@ class DSV41ResidentPrimitives:
             self._execute(
                 ("final-collapse-vjp",), rank,
                 lambda: make_hc_collapse_vjp(ROWS, HIDDEN),
-                streams=streams, premix=premix, output_gradient=dcollapsed,
+                streams=streams, premix=premix,
+                output_gradient=self._padded_rows(rank, dcollapsed,
+                    self._local_span(rows[rank]).block_start, self._local_span(rows[rank]).rows),
                 stream_gradient=dstreams, premix_gradient=dpremix,
             )
             hidden_gradients[rank] = dstreams
-            premix_gradients[rank] = dpremix[:, :HC_COPIES]
+            premix_gradients[rank] = self._compact_columns(rank, dpremix, 0, HC_COPIES)
         return SuffixGradient(hidden_gradients, premix_gradients)
 
     @staticmethod
@@ -597,9 +664,8 @@ class DSV41ResidentPrimitives:
                 active = 0
             else:
                 captured, envelope = source
-                begin, end = self._span(captured)
-                normalized = captured["normed"][begin:end]
-                route_ids = captured["route_ids"][begin:end]
+                normalized = self._local_rows(rank, captured, captured["normed"])
+                route_ids = self._local_rows(rank, captured, captured["route_ids"])
                 expert_gradient = envelope.expert
                 if (
                     normalized.shape != (ROWS, HIDDEN)
@@ -610,7 +676,7 @@ class DSV41ResidentPrimitives:
                     or expert_gradient.dtype != torch.bfloat16
                 ):
                     raise ValueError("captured EP dispatch boundary changed its K32 ABI")
-                active = ROWS
+                active = self._local_span(captured).rows
 
             sent_metadata = self._workspace(
                 rank, (PACKET_ROWS, PACKET_FIELDS), torch.int64,
@@ -710,7 +776,7 @@ class DSV41ResidentPrimitives:
                 returned_dx=returned[positions[rank]]["frozen-tail"]["dx"],
                 sent_metadata=metadata, sent_counts=counts,
                 route_dx=route_dx, token_dx=token_dx,
-                active=ROWS, source_rank=rank,
+                active=self._local_span(sources[rank][0]).rows, source_rank=rank,
             )
             result[rank] = token_dx
         return result
@@ -781,7 +847,6 @@ class DSV41ResidentPrimitives:
         del state
         if layer not in self.plan.layers or rank not in self.ranks:
             raise ValueError("frozen-tail replay is outside the selected resident suffix")
-        begin, end = self._span(captured)
         if not isinstance(output_gradient, SuffixGradient):
             raise TypeError("frozen tail requires a suffix gradient")
         hidden_gradient, pre_gradient = output_gradient.hidden, output_gradient.pre_mix
@@ -790,14 +855,14 @@ class DSV41ResidentPrimitives:
         if pre_gradient.shape != (ROWS, HC_COPIES):
             raise ValueError("FFN pre-mix gradient changed the exact four-column ABI")
 
-        changed = captured["changed"][begin * HC_COPIES:end * HC_COPIES]
-        post = captured["post"][begin:end]
-        combination = captured["comb"][begin * HC_COPIES:end * HC_COPIES]
-        combined = captured["combined"][begin:end]
-        experts = captured["expert_outputs"][begin * 6:end * 6]
-        route_weights = captured["route_weights"][begin:end]
-        route_ids = captured["route_ids"][begin:end]
-        router_logits = captured["router_logits"][begin:end]
+        changed = self._local_rows(rank, captured, captured["changed"], HC_COPIES)
+        post = self._local_rows(rank, captured, captured["post"])
+        combination = self._local_rows(rank, captured, captured["comb"], HC_COPIES)
+        combined = self._local_rows(rank, captured, captured["combined"])
+        experts = self._local_rows(rank, captured, captured["expert_outputs"], 6)
+        route_weights = self._local_rows(rank, captured, captured["route_weights"])
+        route_ids = self._local_rows(rank, captured, captured["route_ids"])
+        router_logits = self._local_rows(rank, captured, captured["router_logits"])
         expected = {
             "changed": (changed, (ROWS * HC_COPIES, HIDDEN), torch.bfloat16),
             "post": (post, (ROWS, HC_COPIES), torch.float32),
@@ -850,12 +915,12 @@ class DSV41ResidentPrimitives:
             lambda: make_router_logits_vjp(ROWS, 384),
             router_logits=router_logits, route_ids=route_ids,
             weight_gradient=weight_gradient, router_gradient=router_gradient,
-            route_scale=2.5,
+            route_scale=self.draft.config["routed_scaling_factor"],
         )
         return _FrozenMoEEnvelope(
             shared_gradient, expert_gradient, router_gradient,
-            residual_gradient, post_gradient[:, :HC_COPIES],
-            combination_gradient[:, :HC_COPIES], pre_gradient,
+            residual_gradient, self._compact_columns(rank, post_gradient, 0, HC_COPIES),
+            self._compact_columns(rank, combination_gradient, 0, HC_COPIES), pre_gradient,
         )
 
     def _reverse_frozen_tail_finish(
@@ -864,11 +929,10 @@ class DSV41ResidentPrimitives:
         """Finish one rank after EP16 returns the six routed-expert dX rows."""
         if not isinstance(envelope, _FrozenMoEEnvelope):
             raise TypeError("frozen MoE finish requires its resident envelope")
-        begin, end = self._span(captured)
-        normed = captured["normed"][begin:end]
-        collapsed = captured["collapsed"][begin:end]
-        changed = captured["changed"][begin * HC_COPIES:end * HC_COPIES]
-        incoming = captured["pre"][begin:end]
+        normed = self._local_rows(rank, captured, captured["normed"])
+        collapsed = self._local_rows(rank, captured, captured["collapsed"])
+        changed = self._local_rows(rank, captured, captured["changed"], HC_COPIES)
+        incoming = self._local_rows(rank, captured, captured["pre"])
         if (
             normed.shape != (ROWS, HIDDEN) or normed.dtype != torch.bfloat16
             or collapsed.shape != (ROWS, HIDDEN) or collapsed.dtype != torch.bfloat16
@@ -878,38 +942,57 @@ class DSV41ResidentPrimitives:
         ):
             raise ValueError("captured FFN reverse boundary changed its K32 ABI")
 
-        from .pypto_dsv41_moe_vjp import make_frozen_w8a8_expert_input_vjp
-        from .pypto_dsv41_online_programs import make_element, make_linear, make_rms
+        from .pypto_dsv41_moe_vjp import make_frozen_w8a8_expert_input_vjp, make_router_input_vjp
+        from .pypto_dsv41_online_programs import make_element, make_rms
         from .pypto_dsv41_tail_vjp import (
             make_hc_pre_data_vjp,
             make_hc_pre_gate_vjp,
             make_hc_pre_projection_forward,
         )
 
-        # Frozen shared expert.  It uses the same W8A8 boundary as each
-        # routed expert, but receives the unweighted MoE output gradient.
+        # Native SP owns complete token rows. All four padded intermediate
+        # partitions of the shared expert are packed onto every rank.
         shared_weights = self.native.weights.for_layer(layer)["expert"](rank, None)
+        intermediate = shared_weights[1].shape[0] // (4 * 2)
+        shared_parts = []
+        for partition in range(4):
+            gate, scale, down = (self._expert_partition(rank, operand, partition)
+                                 for operand in shared_weights[:3])
+            gradient = self._workspace(rank, (ROWS, HIDDEN))
+            self._execute(
+                ("shared-expert-input-vjp", layer, intermediate), rank,
+                lambda: make_frozen_w8a8_expert_input_vjp(ROWS, HIDDEN, intermediate),
+                value=normed, output_gradient=envelope.shared,
+                gate_up_packed=gate, gate_up_scale=scale,
+                down_packed=down, down_scale=shared_weights[3],
+                input_gradient=gradient,
+            )
+            shared_parts.append(gradient)
+
+        pairs = [self._workspace(rank, (ROWS, HIDDEN)) for _ in range(2)]
+        for index, value in enumerate(pairs):
+            self._execute(
+                ("shared-input-add", layer), rank,
+                lambda: make_element((ROWS, HIDDEN), "add"),
+                a=shared_parts[2 * index], b=shared_parts[2 * index + 1], output=value,
+            )
         shared_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
         self._execute(
-            ("shared-expert-input-vjp", layer), rank,
-            lambda: make_frozen_w8a8_expert_input_vjp(ROWS, HIDDEN, 2304),
-            value=normed, output_gradient=envelope.shared,
-            gate_up_packed=shared_weights[0], gate_up_scale=shared_weights[1],
-            down_packed=shared_weights[2], down_scale=shared_weights[3],
-            input_gradient=shared_input_gradient,
+            ("shared-input-add", layer), rank,
+            lambda: make_element((ROWS, HIDDEN), "add"),
+            a=pairs[0], b=pairs[1], output=shared_input_gradient,
         )
 
         # Fixed Top-K router membership is not differentiated.  The selected
-        # sigmoid-score VJP already lives in ``envelope.router``; only the
+        # score VJP already lives in ``envelope.router``; only the
         # frozen full-precision gate projection remains here.
         gate = self._pinned(rank, f"layers.{layer}.ffn.gate.weight")
         router_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
         self._execute(
             ("router-input-vjp", layer), rank,
-            lambda: make_linear(
-                (ROWS, 384), (384, HIDDEN), transpose_b=False,
-            ),
-            a=envelope.router, b=gate, output=router_input_gradient,
+            lambda: make_router_input_vjp(ROWS, HIDDEN),
+            gradient=envelope.router, gate=gate, output=router_input_gradient,
+            ids=self._local_rows(rank, captured, captured["route_ids"]),
         )
         moe_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
         partial = self._workspace(rank, (ROWS, HIDDEN))
@@ -925,7 +1008,7 @@ class DSV41ResidentPrimitives:
         )
 
         # Reverse the frozen FFN RMSNorm with the model's actual 1e-20 eps.
-        norm = self._pinned(rank, f"layers.{layer}.ffn_norm.weight").view(1, HIDDEN)
+        norm = self._pinned(rank, f"layers.{layer}.ffn_norm.weight", (1, HIDDEN))
         replay_normed = self._workspace(rank, (ROWS, HIDDEN))
         inverse = self._workspace(rank, (ROWS, 8), torch.float32)
         self._execute(
@@ -977,7 +1060,7 @@ class DSV41ResidentPrimitives:
             residual_gradient=hidden_gradient,
             incoming_gradient=incoming_gradient,
         )
-        return SuffixGradient(hidden_gradient, incoming_gradient[:, :HC_COPIES])
+        return SuffixGradient(hidden_gradient, self._compact_columns(rank, incoming_gradient, 0, HC_COPIES))
 
     @staticmethod
     def _attention_record(captured):
@@ -994,14 +1077,13 @@ class DSV41ResidentPrimitives:
         """Reverse the frozen mHC-post shell around the draft contribution."""
         from .pypto_dsv41_tail_vjp import make_hc_post_data_vjp, make_hc_post_gate_vjp
 
-        begin, end = self._span(captured)
         if not isinstance(output_gradient, SuffixGradient):
             raise TypeError("draft Attention reverse requires a suffix gradient")
         hidden_gradient, pre_gradient = output_gradient.hidden, output_gradient.pre_mix
-        scattered = captured["attention_scattered"][begin:end]
-        residual = captured["hidden"][begin * HC_COPIES:end * HC_COPIES]
-        post = captured["post"][begin:end]
-        combination = captured["comb"][begin * HC_COPIES:end * HC_COPIES]
+        scattered = self._local_rows(rank, captured, captured["attention_scattered"])
+        residual = self._local_rows(rank, captured, captured["hidden"], HC_COPIES)
+        post = self._local_rows(rank, captured, captured["post"])
+        combination = self._local_rows(rank, captured, captured["comb"], HC_COPIES)
         if (
             hidden_gradient.shape != (ROWS * HC_COPIES, HIDDEN)
             or pre_gradient.shape != (ROWS, HC_COPIES)
@@ -1034,8 +1116,8 @@ class DSV41ResidentPrimitives:
         return {
             "value": value_gradient,
             "residual": residual_gradient,
-            "post": post_gradient[:, :HC_COPIES],
-            "combination": combination_gradient[:, :HC_COPIES],
+            "post": self._compact_columns(rank, post_gradient, 0, HC_COPIES),
+            "combination": self._compact_columns(rank, combination_gradient, 0, HC_COPIES),
             "pre": pre_gradient,
         }
 
@@ -1106,7 +1188,7 @@ class DSV41ResidentPrimitives:
             lambda: make_linear(
                 (ROWS, 1024), (1024, 4096), transpose_b=False, batches=2,
             ),
-            a=grouped_gradient, b=operands["wo_a"].view(2 * 1024, 4096),
+            a=grouped_gradient, b=self._draft_operand(rank, layer, "wo_a", (2 * 1024, 4096)),
             output=dunrotated_grouped,
         )
         dunrotated = self._workspace(rank, (ROWS, 8192))
@@ -1124,29 +1206,11 @@ class DSV41ResidentPrimitives:
         )
 
         # Exact selected-history probability replay and temporary-block VJP.
-        swa, = history["planes"]["swa"]
-        long, = history["planes"]["long"]
         anchor = history["committed_tokens"]
-        spans = torch.tensor(
-            swa_spans(
-                swa["pages"], anchor, swa["shape"][0],
-                stride_rows=swa["stride_rows"], offset_rows=swa["offset_rows"],
-            ),
-            dtype=torch.int32,
-        )
         history_bias = torch.full((1, 128), -torch.inf, dtype=torch.float32)
         history_bias[:, :min(anchor, 128)] = 0
         factories = c1a_vjp_factories(geometry)
-        joined = self._workspace(rank, (ROWS * geometry.padded_columns, 512))
-        self._execute(
-            ("attn-c1a-joined-history", layer), rank, factories["joined_history"],
-            swa_pages=swa["handle"], spans=spans,
-            compressed_pages=long["handle"],
-            selected_rows=selection["physical_rows"],
-            selected_lengths=selection["lengths"],
-            temporary=qkv["temporary"], zeros=self.draft.constants[rank]["swa_zero"],
-            joined=joined,
-        )
+        joined = captured["joined_history"]
         query = qkv["query"].view(geometry.rows, 512)
         probability = self._workspace(
             rank, (geometry.rows, geometry.padded_columns), torch.float32,
@@ -1257,7 +1321,7 @@ class DSV41ResidentPrimitives:
         )
         q_inverse = self._workspace(rank, (ROWS, 8), torch.float32)
         q_replay = self._workspace(rank, (ROWS, 1280))
-        q_gamma = operands["q_norm"].view(1, 1280)
+        q_gamma = self._draft_operand(rank, layer, "q_norm", (1, 1280))
         self._execute(
             ("attn-q-norm-replay", layer), rank,
             lambda: make_rms(ROWS, 1280, epsilon=1e-20),
@@ -1293,7 +1357,7 @@ class DSV41ResidentPrimitives:
 
         kv_inverse = self._workspace(rank, (ROWS, 8), torch.float32)
         kv_replay = self._workspace(rank, (ROWS, 512))
-        kv_gamma = operands["kv_norm"].view(1, 512)
+        kv_gamma = self._draft_operand(rank, layer, "kv_norm", (1, 512))
         self._execute(
             ("attn-kv-norm-replay", layer), rank,
             lambda: make_rms(ROWS, 512, epsilon=1e-20),
@@ -1356,11 +1420,10 @@ class DSV41ResidentPrimitives:
             make_hc_pre_projection_forward,
         )
 
-        begin, end = self._span(captured)
-        collapsed = captured["collapsed"][begin:end]
-        residual = captured["hidden"][begin * HC_COPIES:end * HC_COPIES]
-        incoming = captured["incoming"][begin:end]
-        norm = self._pinned(rank, f"layers.{layer}.attn_norm.weight").view(1, HIDDEN)
+        collapsed = self._local_rows(rank, captured, captured["collapsed"])
+        residual = self._local_rows(rank, captured, captured["hidden"], HC_COPIES)
+        incoming = self._local_rows(rank, captured, captured["incoming"])
+        norm = self._pinned(rank, f"layers.{layer}.attn_norm", (1, HIDDEN))
         replay = self._workspace(rank, (ROWS, HIDDEN))
         inverse = self._workspace(rank, (ROWS, 8), torch.float32)
         self._execute(
@@ -1376,9 +1439,9 @@ class DSV41ResidentPrimitives:
             dy=normalized_gradient, dx=collapsed_gradient,
         )
 
-        function = self._pinned(rank, f"layers.{layer}.hc_attn_fn")
-        scale = self._pinned(rank, f"layers.{layer}.hc_attn_scale")
-        base = self._pinned(rank, f"layers.{layer}.hc_attn_base")
+        function = self._pinned(rank, f"layers.{layer}.hc_function")
+        scale = self._pinned(rank, f"layers.{layer}.hc_scale")
+        base = self._pinned(rank, f"layers.{layer}.hc_base")
         projection = self._workspace(rank, (ROWS, 32), torch.float32)
         hc_inverse = self._workspace(rank, (ROWS, 16), torch.float32)
         self._execute(
@@ -1408,7 +1471,7 @@ class DSV41ResidentPrimitives:
             residual_gradient=hidden_gradient,
             incoming_gradient=incoming_gradient,
         )
-        return SuffixGradient(hidden_gradient, incoming_gradient[:, :HC_COPIES])
+        return SuffixGradient(hidden_gradient, self._compact_columns(rank, incoming_gradient, 0, HC_COPIES))
 
     def reverse_draft_attention_owner_batch(
         self, *, layer, ranks, captured, output_gradients,
@@ -1440,17 +1503,14 @@ class DSV41ResidentPrimitives:
         for rank in ranks:
             row = captured[rank]
             begin, end = self._span(row)
+            span = self._local_span(row)
             capacity = row["attention_scattered"].shape[0]
             physical, total = self._attention_record(row)
             if not 0 <= begin < end <= capacity or not 0 < physical <= capacity:
                 raise ValueError("captured Attention span is outside the SP slab")
             slab = self._workspace(rank, (capacity, HIDDEN), fill=0)
-            self._execute(
-                ("attn-output-gradient-scatter", layer), rank,
-                lambda: make_element((ROWS, HIDDEN), "copy"),
-                a=shells[rank]["value"], b=shells[rank]["value"],
-                output=slab[begin:end],
-            )
+            self._copy_rows(rank, slab, shells[rank]["value"][:span.rows],
+                            destination=span.local_start)
             scattered[rank] = slab
             geometry[rank] = begin, end, capacity, physical, total
         gathered = self._tp_collective(
@@ -1520,7 +1580,8 @@ class DSV41ResidentPrimitives:
                 value=reduced[rank], output=narrowed,
             )
             incoming = self._reverse_attention_pre(
-                layer, rank, captured[rank], shells[rank], narrowed[begin:end],
+                layer, rank, captured[rank], shells[rank],
+                self._local_rows(rank, captured[rank], narrowed),
             )
             result[rank] = incoming, local[rank][1]
         return result

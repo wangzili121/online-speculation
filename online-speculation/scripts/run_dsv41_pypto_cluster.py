@@ -238,6 +238,9 @@ def run(args):
     if any(len(prompt) + args.tokens + 31 > args.context for prompt in prompts):
         raise ValueError("Context must cover the prompt, requested output and the full K32 draft block")
     assignments = [index % config.topology["dp"] for index in range(len(prompts))]
+    if args.orthrus_only and args.require_online_update:
+        # The short capture gate exercises feedback ownership on both hosts.
+        assignments = [(0, 2, 1, 3)[index % 4] for index in range(len(prompts))]
     _, head, head_files = read_draft_artifact(args.model, args.head)
     head_identity = fingerprint([args.head / "manifest.json", find_weight_index(args.head)]
                                 + [args.head / file for file in sorted(set(head_files.values()))])
@@ -322,7 +325,8 @@ def run(args):
             runner.close()
         for mode in modes:
             _, phases, restored = audit_session(native_dir, speculative=mode == "orthrus", node_local=True,
-                                                request_prefix=f"{mode}-request-")
+                                                request_prefix=f"{mode}-request-",
+                                                require_updated_draft=mode == "orthrus" and args.require_online_update)
             audits[mode] = dict(phases=phases, verifier_restored_bytes=restored)
         tokens = (request_parity(results["target"], results["orthrus"])
                   if "target" in results else 0)

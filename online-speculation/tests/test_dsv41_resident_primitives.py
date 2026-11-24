@@ -4,9 +4,11 @@ import pytest
 import torch
 
 from blockspec.dsv41_device_update import SuffixGradient
+from blockspec.dsv41_serving_online import DSV41SequenceSpan
 from blockspec.pypto_dsv41_resident_primitives import (
     DSV41ResidentPrimitives,
     ProductionFactoryIncomplete,
+    _DeferredLogitsGradient,
     _HostScalar,
     _RankGradient,
     _FrozenMoEEnvelope,
@@ -124,6 +126,7 @@ class TailDraft(Draft):
     def __init__(self):
         super().__init__(ranks=range(4))
         self.resident = FakeResident(4)
+        self.config = {"routed_scaling_factor": 1.5}
         self.events = []
 
     def execute(self, key, rank, factory, inputs):
@@ -163,13 +166,14 @@ class TailDraft(Draft):
         elif operation == "router-logits-vjp":
             logits = inputs["router_logits"].float()
             ids = inputs["route_ids"].long()
-            scores = logits.sigmoid().gather(1, ids)
+            logits = logits.gather(1, ids)
+            scores = torch.nn.functional.softplus(logits).sqrt()
             upstream = inputs["weight_gradient"][:, :6]
             total = scores.sum(1, keepdim=True)
             selected = inputs["route_scale"] / total * (
                 upstream - (upstream * scores).sum(1, keepdim=True) / total
             )
-            selected = selected * scores * (1 - scores)
+            selected = selected * logits.sigmoid() / (2 * scores)
             inputs["router_gradient"].zero_().scatter_(1, ids, selected)
         else:
             raise AssertionError(f"unexpected fake tail execution {key}")
@@ -369,7 +373,8 @@ class AttentionBatchHarness(DSV41ResidentPrimitives):
     def __init__(self):
         self.ranks = (0, 1, 2, 3)
         self.events = []
-        self.draft = SimpleNamespace(native=lambda _name: SimpleNamespace())
+        self.draft = SimpleNamespace(native=lambda _name: SimpleNamespace(), rank_ids={rank: rank for rank in self.ranks})
+        self.resident = FakeResident(4)
 
     @staticmethod
     def _workspace(_rank, shape, dtype=torch.bfloat16, *, fill=None):
@@ -381,10 +386,16 @@ class AttentionBatchHarness(DSV41ResidentPrimitives):
         if "scatter" in key[0]:
             inputs["output"].copy_(inputs["a"])
         elif key[0] == "attn-output-gradient-unpack":
-            inputs["output"].copy_(inputs["packet"][:len(inputs["output"])])
+            capacity = len(inputs["output"])
+            for row in range(inputs["active"]):
+                lane, local = divmod(row, inputs["physical"])
+                inputs["output"][row].copy_(inputs["packet"][lane * capacity + local])
         elif key[0] == "attn-input-gradient-pack":
             inputs["packed"].zero_()
-            inputs["packed"][:len(inputs["value"])].copy_(inputs["value"])
+            capacity = len(inputs["value"])
+            for row in range(inputs["active"]):
+                lane, local = divmod(row, inputs["physical"])
+                inputs["packed"][lane * capacity + local].copy_(inputs["value"][row])
         elif key[0] == "attn-input-gradient-widen":
             inputs["output"].copy_(inputs["value"].float())
         elif key[0] == "attn-input-gradient-narrow":
@@ -417,6 +428,8 @@ class AttentionBatchHarness(DSV41ResidentPrimitives):
 
     def _reverse_c1a_rank(self, layer, rank, captured, contribution_gradient):
         del layer, captured
+        expected = torch.arange(1, 5).repeat_interleave(8)
+        torch.testing.assert_close(contribution_gradient[:, 0].float(), expected.float())
         self.events.append(("c1a", rank, tuple(contribution_gradient.shape)))
         names = self._execution_names()
         return torch.full((32, 5120), rank + 1, dtype=torch.bfloat16), {
@@ -425,6 +438,8 @@ class AttentionBatchHarness(DSV41ResidentPrimitives):
 
     def _reverse_attention_pre(self, layer, rank, captured, shell, normalized_gradient):
         del layer, captured, shell
+        assert normalized_gradient[:8].eq(10).all()
+        assert not normalized_gradient[8:].any()
         self.events.append(("pre", rank, tuple(normalized_gradient.shape)))
         return SuffixGradient(
             torch.full((128, 5120), rank + 1, dtype=torch.bfloat16),
@@ -437,7 +452,8 @@ def test_c1a_owner_batch_reverses_both_tp_collectives_once():
     captures = {
         rank: {
             "token_begin": 0, "token_end": 32,
-            "record": {"SP_physical_rows": 32, "positions": list(range(32))},
+            "sp_span": DSV41SequenceSpan(0, rank * 8, 8),
+            "record": {"SP_physical_rows": 8, "positions": list(range(32))},
             "attention_scattered": torch.zeros(32, 5120, dtype=torch.bfloat16),
         }
         for rank in value.ranks
@@ -460,6 +476,77 @@ def test_c1a_owner_batch_reverses_both_tp_collectives_once():
         ("c1a", rank) for rank in value.ranks
     ]
     assert all(set(result[rank][1]) == set(value._execution_names()) for rank in value.ranks)
+
+
+class TerminalHarness(AttentionBatchHarness):
+    def __init__(self):
+        super().__init__()
+        self.native = SimpleNamespace(
+            weights=SimpleNamespace(head_for_rank=lambda rank: torch.full(
+                (5120, 64), rank + 1, dtype=torch.bfloat16,
+            )),
+        )
+
+    @staticmethod
+    def _pinned(rank, name, shape):
+        assert name == "norm.weight"
+        return torch.ones(shape, dtype=torch.bfloat16)
+
+    def _loss_on_rank(self, rank, token):
+        return token.student, torch.zeros(32, 8)
+
+    def _tp_collective(self, values, collective, *, stage):
+        assert collective == "all_reduce"
+        reduced = sum(values.values())
+        if stage == "lm-head-sp-collapse":
+            expected = torch.arange(1, 5).repeat_interleave(8).float()
+            torch.testing.assert_close(reduced[:, 0].float(), expected)
+        return {rank: reduced for rank in values}
+
+    def _execute(self, key, rank, factory, **inputs):
+        assert all(value.is_contiguous() for value in inputs.values() if torch.is_tensor(value))
+        op = key[0]
+        if op == "final-collapse-forward":
+            values = inputs["streams"].view(32, 4, 5120).float()
+            inputs["collapsed"].copy_((values * inputs["premix"].unsqueeze(-1)).sum(1))
+        elif op == "final-rms-forward":
+            inputs["y"].copy_(inputs["x"])
+        elif op == "lm-head-input-vjp":
+            inputs["output"].copy_(inputs["a"].float() @ inputs["b"].float().T)
+        elif op == "final-rms-input-vjp":
+            # Identity VJP lets this test isolate the row layout.
+            inputs["dx"].copy_(inputs["dy"])
+        elif op == "final-collapse-vjp":
+            inputs["stream_gradient"].copy_(
+                (inputs["output_gradient"][:, None] * inputs["premix"][:, :, None]).view(128, 5120),
+            )
+            inputs["premix_gradient"][:, :4].copy_(inputs["output_gradient"][:, :4])
+        else:
+            raise AssertionError(key)
+
+
+def test_lm_head_vjp_routes_all_vocab_shards_back_to_the_owning_sp_rows():
+    terminal = TerminalHarness()
+    rows = {}
+    for rank in terminal.ranks:
+        hidden = torch.zeros(32, 4, 5120, dtype=torch.bfloat16)
+        hidden[:8, 0] = rank + 1
+        premix = torch.zeros(32, 4)
+        premix[:8, 0] = 1.
+        rows[rank] = {
+            "hidden": hidden, "pre_mix": premix,
+            "sp_span": DSV41SequenceSpan(0, rank * 8, 8),
+        }
+    logits = torch.zeros(32, 256, dtype=torch.bfloat16)
+    for lane in terminal.ranks:
+        logits[lane * 8:(lane + 1) * 8, lane * 64] = 1.
+    gradient = _DeferredLogitsGradient(SimpleNamespace(student=logits, value=None))
+    result = terminal.lm_head_vjp(gradient, rows)
+    for rank in terminal.ranks:
+        assert result.pre_mix[rank].is_contiguous()
+        assert result.pre_mix[rank][:8].eq(rank + 1).all()
+        assert not result.pre_mix[rank][8:].any()
+        assert result.hidden[rank].view(32, 4, 5120)[:8, 0].eq(rank + 1).all()
 
 
 class SymbolicTensor:

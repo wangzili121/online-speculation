@@ -75,3 +75,20 @@ def test_atomic_publisher_rolls_back_after_local_activation_if_peer_activation_f
         publisher(object(), 1)
     assert events == [("activate", 1), ("rollback", 1)]
     assert publisher.current_version == 0
+
+
+def test_agreement_on_a_different_activated_digest_does_not_commit():
+    events = []
+    publisher = AtomicHeadPublisher(
+        exchange=lambda tag, payload: receipt(
+            payload["phase"], payload["version"], range(8, 16), payload["digest"],
+        ).payload(),
+        stage=lambda learner, version: receipt("prepared", version, range(8)),
+        activate=lambda version: receipt("activated", version, range(8), "b" * 64),
+        rollback=lambda version: events.append(("rollback", version)),
+        commit=lambda version: events.append(("commit", version)),
+    )
+    with pytest.raises(ValueError, match="does not match the staged head"):
+        publisher(object(), 4)
+    assert events == [("rollback", 1)]
+    assert publisher.current_version == 0

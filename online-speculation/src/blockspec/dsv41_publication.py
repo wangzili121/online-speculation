@@ -95,13 +95,12 @@ class AtomicHeadPublisher:
                 activated, peer, current_version=self.current_version,
                 expected_ranks=self.expected_ranks, phase="activated",
             )
+            if activated.digest != digest:
+                raise ValueError("activated head does not match the staged head")
             if self.commit is not None:
                 self.commit(version)
         except BaseException:
             self.rollback(version)
             raise
-        if prepared.digest != digest or activated.digest != digest:
-            self.rollback(version)
-            raise ValueError("activated head does not match the staged head")
         self.current_version = version
         return version

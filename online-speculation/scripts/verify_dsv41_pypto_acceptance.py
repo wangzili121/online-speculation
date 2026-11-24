@@ -67,7 +67,8 @@ def audit_online_update(local, peer, *, publish_every, require_update):
         raise ValueError("Online draft publication did not follow the configured cadence")
 
 
-def audit_session(directory, *, speculative, node_local=False, request_prefix=None):
+def audit_session(directory, *, speculative, node_local=False, request_prefix=None,
+                  require_updated_draft=False):
     receipts = list(directory.rglob("serving-dispatches.jsonl"))
     if len(receipts) != 1:
         raise ValueError(f"Expected exactly one native session receipt in {directory}, found {len(receipts)}")
@@ -85,6 +86,7 @@ def audit_session(directory, *, speculative, node_local=False, request_prefix=No
     sequence = ("draft", "verify", "accept")
     owners, epoch, position = None, None, 0
     backup = restored = 0
+    updated_draft = False
     with receipts[0].open() as records:
         for line in records:
             row = json.loads(line)
@@ -112,6 +114,7 @@ def audit_session(directory, *, speculative, node_local=False, request_prefix=No
                 raise ValueError(f"Missing or duplicated {phase} owners")
             if phase == "draft":
                 owners, epoch = group, row["native_epoch"]
+                updated_draft |= (row.get("draft_head_version") or 0) > 0
             elif group != owners or row["native_epoch"] != epoch + int(phase == "accept"):
                 raise ValueError(f"{phase} changed request ownership or advanced the wrong epoch")
             if phase == "verify":
@@ -132,6 +135,8 @@ def audit_session(directory, *, speculative, node_local=False, request_prefix=No
         raise ValueError("Baseline did not execute a target decode step")
     if node_local and not phases["release"]:
         raise ValueError(f"Missing request release in {session}")
+    if require_updated_draft and not updated_draft:
+        raise ValueError("No draft round used the updated head")
     return manifest["checkpoint"], dict(phases), restored
 
 

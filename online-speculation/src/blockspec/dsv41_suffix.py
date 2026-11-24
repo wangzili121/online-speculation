@@ -68,6 +68,8 @@ class DSV41SuffixReplay:
     boundary: object
     layers: tuple[object, ...]
     student_logits: object | None = None
+    owner: tuple[int, int, int] | None = None
+    release: Callable[[], None] | None = None
 
     def __post_init__(self):
         if self.boundary is None:

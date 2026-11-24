@@ -9,6 +9,24 @@ from .dsv41_suffix import DSV41SuffixPlan, DSV41SuffixReplay
 
 
 @dataclass(frozen=True)
+class DSV41SequenceSpan:
+    """Intersection of a global K32 request and a rank's physical SP rows."""
+
+    local_start: int
+    block_start: int
+    rows: int
+
+    @classmethod
+    def from_record(cls, record, begin, end):
+        rank_start = record["cp_token_range"][0]
+        rank_end = rank_start + record["SP_valid_rows"]
+        start, stop = max(begin, rank_start), min(end, rank_end)
+        if start >= stop:
+            return cls(0, 0, 0)
+        return cls(start - rank_start, start - begin, stop - start)
+
+
+@dataclass(frozen=True)
 class DSV41CapturedLayer:
     """Device replay state retained for one selected layer and one K32 block.
 
@@ -55,6 +73,7 @@ class DSV41ServingReplay:
     boundary: object
     layers: tuple[DSV41CapturedLayer, ...]
     student_logits: object | None = None
+    release: object | None = None
 
     def __post_init__(self):
         if not self.request_id or not self.prefix or len(self.owner) != 3:
@@ -63,15 +82,14 @@ class DSV41ServingReplay:
             raise ValueError("serving replay does not cover the selected suffix")
 
     def suffix(self):
-        return DSV41SuffixReplay(
-            self.plan, self.boundary, self.layers, self.student_logits,
-        )
+        return DSV41SuffixReplay(self.plan, self.boundary, self.layers,
+                                 self.student_logits, owner=self.owner, release=self.release)
 
     def with_student_logits(self, value):
         """Attach the draft distribution emitted by this exact captured pass."""
         return DSV41ServingReplay(
             self.request_id, self.prefix, self.owner, self.plan,
-            self.boundary, self.layers, value,
+            self.boundary, self.layers, value, self.release,
         )
 
 
@@ -131,6 +149,8 @@ class DSV41ServingOnline:
         )
         if captured:
             self.pending[replay.request_id] = replay
+        elif replay.release is not None:
+            replay.release()
         return captured
 
     def verified(
@@ -197,8 +217,10 @@ class DSV41ServingOnline:
         return record
 
     def finish(self, request_id, *, defer=False):
-        self.pending.pop(request_id, None)
+        replay = self.pending.pop(request_id, None)
         prepared = self.controller.finish_request(request_id)
+        if prepared is None and replay is not None and replay.release is not None:
+            replay.release()
         if prepared is None or defer:
             return prepared
         return self.controller.apply(prepared)

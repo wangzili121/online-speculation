@@ -209,7 +209,16 @@ def make_router_logits_vjp(rows=32, experts=384, topk=6, *, inline=False):
             # coherent on A2/A3 when concurrent token blocks share cache lines.
             dense = pl.tile.full([1, experts], dtype=pl.FP32, value=0.)
             logits = pl.load(router_logits, [token, 0], [1, experts])
-            scores = pl.recip(pl.add(pl.exp(pl.neg(logits)), 1.))
+            tail = pl.exp(pl.neg(pl.abs(logits)))
+            negative_exp = pl.exp(pl.minimum(logits, 0.0))
+            negative_mask = pl.minimum(pl.maximum(pl.sub(pl.neg(logits), 10.0), 0.0), 1.0)
+            softplus = pl.maximum(
+                pl.add(pl.maximum(logits, 0.0), pl.log(pl.add(tail, 1.0))),
+                pl.mul(negative_exp, negative_mask),
+            )
+            scores = pl.sqrt(softplus)
+            sigmoid = pl.div(negative_exp, pl.add(tail, 1.0))
+            slopes = pl.div(sigmoid, pl.mul(pl.maximum(scores, 1e-20), 2.0))
             total = pl.cast(0., pl.FP32)
             weighted = pl.cast(0., pl.FP32)
             for slot in pl.range(topk):
@@ -223,7 +232,8 @@ def make_router_logits_vjp(rows=32, experts=384, topk=6, *, inline=False):
                 score_gradient = route_scale / total * (
                     pl.read(weight_gradient, [token, slot]) - weighted / total
                 )
-                value = score_gradient * score * (1. - score)
+                slope = pl.tile.read(slopes, [0, expert])
+                value = score_gradient * slope
                 pl.tile.write(dense, [0, expert], value)
             pl.store(dense, [token, 0], router_gradient)
         return router_gradient
@@ -242,6 +252,36 @@ def make_router_logits_vjp(rows=32, experts=384, topk=6, *, inline=False):
         )
 
     return router_logits_vjp if inline else entry
+
+
+def make_router_input_vjp(rows, hidden, topk=6):
+    """Transpose the FP32 gate projection using the fixed selected experts."""
+    import pypto.language as pl
+
+    tile = 128
+    if hidden % tile:
+        raise ValueError("Router input width must align to 128 columns")
+
+    @pl.jit
+    def project(gradient: pl.Tensor, ids: pl.Tensor, gate: pl.Tensor,
+                output: pl.Out[pl.Tensor]):
+        with pl.spmd(rows, name_hint="orthrus_dsv41_router_input_backward"):
+            token = pl.tile.get_block_idx()
+            for col in pl.range(0, hidden, tile):
+                accumulated = pl.tile.full([1, tile], dtype=pl.FP32, value=0.0)
+                for slot in pl.range(topk):
+                    expert = pl.cast(pl.read(ids, [token, slot]), pl.INDEX)
+                    value = pl.load(gate, [expert, col], [1, tile])
+                    accumulated = pl.add(accumulated, pl.mul(value, pl.read(gradient, [token, expert])))
+                pl.store(pl.cast(accumulated, pl.BF16, mode="rint"), [token, col], output)
+        return output
+
+    @pl.jit.host
+    def entry(gradient: pl.Tensor, ids: pl.Tensor, gate: pl.Tensor,
+              output: pl.Out[pl.Tensor]):
+        project(gradient, ids, gate, output, device=0)
+
+    return entry
 
 
 def make_clipped_swiglu_vjp(rows=32, intermediate=2304, limit=10.0, *, inline=False):

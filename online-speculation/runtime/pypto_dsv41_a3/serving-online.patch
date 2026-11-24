@@ -132,7 +132,17 @@ index 794ef00..b6d1f69 100644
          if self.cluster is not None:
              encoded = [[list(key), value.tolist()] for key, value in rows.items()]
              peer = self.cluster.link.exchange(f"greedy-output/{phase}", encoded)
-@@ -283,2 +360,6 @@ class NativeSession:
+@@ -277,7 +354,14 @@ class NativeSession:
+             timings=result["timings"], native_epoch=self.native.epoch, TP_logits_equal=True,
+             prefill_topk=prefill_topk, prefill_activation_trace=result.get("prefill_activation_trace"),
+-            greedy_rows=[value.tolist() for value in ordered] if self.cluster is not None else None))
++            greedy_rows=[value.tolist() for value in ordered] if self.cluster is not None else None,
++            draft_head_version=(self.draft.online_bank.active_version
++                                if phase == "draft" and self.online is not None and self.online.bound
++                                else None)))
+         return output
+-
++
      def clear_request(self, handle):
 +        if not self.closed and self.online is not None and self.online.bound:
 +            prepared = self.online.finish(handle.request_id, defer=self.cluster is not None)
