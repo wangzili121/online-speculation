@@ -13,7 +13,7 @@ def compile_resident_update_extras(compile_program, empty, config):
     from blockspec.pypto_dsv41_ep_vjp import EXPERT_CAPACITY
     from blockspec.pypto_dsv41_moe_vjp import make_frozen_w8a8_expert_input_vjp
     from blockspec.pypto_dsv41_online_programs import make_adam, make_adam_publish, make_rms
-    from blockspec.pypto_dsv41_optimizer_programs import make_publish, make_reduce, make_stats
+    from blockspec.pypto_dsv41_optimizer_programs import make_gradient_statistics, make_publish, make_reduce, make_stats
     from blockspec.pypto_dsv41_tail_vjp import make_hc_pre_data_vjp, make_hc_pre_projection_forward
 
     rows, hidden = 32, 5120
@@ -71,6 +71,9 @@ def compile_resident_update_extras(compile_program, empty, config):
                 reduce, sums, flags, out_sums, out_flags, config=config,
             )
             sums, flags, count = out_sums, out_flags, next_count
+        programs[f"gradient_statistics_fused_{shape}"] = compile_program(
+            make_gradient_statistics(shape), master, fp32((1, 8)), fp32((1, 8)), config=config,
+        )
         programs[f"adam_{shape}"] = compile_program(
             make_adam(shape), *(master,) * 7, 1e-5, .1, .001, 1., config=config,
         )

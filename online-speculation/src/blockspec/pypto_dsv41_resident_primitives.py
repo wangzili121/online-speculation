@@ -1736,26 +1736,15 @@ class DSV41ResidentPrimitives:
         return _HostScalar(norm), _HostScalar(clip)
 
     def _tensor_statistics(self, rank, value, name):
-        from .pypto_dsv41_optimizer_programs import make_reduce, make_stats
+        from .pypto_dsv41_optimizer_programs import make_gradient_statistics
 
         shape = tuple(value.shape)
-        stats, count = make_stats(shape)
-        # Both kernels overwrite every row of their output.
-        sums = self._workspace(rank, (count, 8), torch.float32, fill=None)
-        flags = self._workspace(rank, (count, 8), torch.float32, fill=None)
+        sums = self._workspace(rank, (1, 8), torch.float32, fill=None)
+        flags = self._workspace(rank, (1, 8), torch.float32, fill=None)
         self._execute(
-            ("gradient-stats", shape), rank, lambda: make_stats(shape)[0],
+            ("gradient-stats", shape), rank, lambda: make_gradient_statistics(shape),
             value=value, sums=sums, flags=flags,
         )
-        while count > 1:
-            reduce, next_count = make_reduce(count)
-            next_sums = self._workspace(rank, (next_count, 8), torch.float32, fill=None)
-            next_flags = self._workspace(rank, (next_count, 8), torch.float32, fill=None)
-            self._execute(
-                ("gradient-reduce", count), rank, lambda count=count: make_reduce(count)[0],
-                sums=sums, flags=flags, out_sums=next_sums, out_flags=next_flags,
-            )
-            sums, flags, count = next_sums, next_flags, next_count
         local = self._local(rank)
         host_sums = self.resident.read_output(sums, local)
         host_flags = self.resident.read_output(flags, local)

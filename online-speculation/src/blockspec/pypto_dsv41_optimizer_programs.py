@@ -74,6 +74,42 @@ def make_reduce(rows, *, inline=False):
     return (reduce if inline else with_resident_entry(entry, reduce)), R
 
 
+def make_gradient_statistics(shape):
+    """Compute squared-norm rows and finite flags for a resident weight gradient."""
+    import pypto.language as pl
+
+    statistics, count = make_stats(shape, inline=True)
+    if count == 1:
+        return make_stats(shape)[0]
+    blocks = count // 64
+    if count % 64 or not 0 < blocks <= 64:
+        raise ValueError("gradient statistics requires up to 64 aligned reduction blocks")
+    final_reduce, _ = make_reduce(blocks, inline=True)
+
+    @pl.jit
+    def fused(value: pl.Tensor, sums: pl.Out[pl.Tensor], flags: pl.Out[pl.Tensor]):
+        first_sums = pl.create_tensor([count, 8], dtype=pl.FP32)
+        first_flags = pl.create_tensor([count, 8], dtype=pl.FP32)
+        first_sums, first_flags = statistics(value, first_sums, first_flags)
+        partial_sums = pl.create_tensor([blocks, 8], dtype=pl.FP32)
+        partial_flags = pl.create_tensor([blocks, 8], dtype=pl.FP32)
+        with pl.spmd(blocks, name_hint="orthrus_gradient_reduce_aligned"):
+            row = pl.tile.get_block_idx()
+            partial_sums[row:row + 1, 0:8] = pl.col_sum(
+                pl.slice(first_sums, [64, 8], [row * 64, 0]),
+            )
+            finite = pl.transpose(pl.slice(first_flags, [64, 8], [row * 64, 0]), 0, 1)
+            partial_flags[row:row + 1, 0:8] = pl.reshape(pl.row_min(finite), [1, 8])
+        sums, flags = final_reduce(partial_sums, partial_flags, sums, flags)
+        return sums, flags
+
+    @pl.jit.host
+    def entry(value: pl.Tensor, sums: pl.Out[pl.Tensor], flags: pl.Out[pl.Tensor]):
+        fused(value, sums, flags, device=0)
+
+    return with_resident_entry(entry, fused)
+
+
 def make_publish(shape, *, gamma=False, inline=False):
     from math import prod
     import pypto.language as pl
