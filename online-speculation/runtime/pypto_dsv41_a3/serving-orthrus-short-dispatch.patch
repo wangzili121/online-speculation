@@ -1,0 +1,76 @@
+--- a/models/deepseek_v41_a3/session.py
++++ b/models/deepseek_v41_a3/session.py
+@@ -47,7 +47,8 @@
+
+     def __init__(self, source, checkpoint, devices, directory, config, vocabulary, cache_plan, *,
+                  orthrus_head=None, cluster=None, prepared_cache=None, defer_draft=False, trace_prefill=False,
+-                 trace_position=None, online=None, compact_verifier=False):
++                 trace_position=None, online=None, compact_verifier=False,
++                 short_speculative_dispatch=False):
+         self.source, self.config, self.vocabulary = source, config, vocabulary
+         self.devices, self.checkpoint = tuple(devices), str(Path(checkpoint).resolve())
+         self.orthrus_head = orthrus_head
+@@ -55,6 +56,7 @@
+         self.cluster = cluster
+         self.online = online
+         self.compact_verifier = compact_verifier
++        self.short_speculative_dispatch = short_speculative_dispatch
+         self._draft_metadata = None
+         self.draft = None
+         self.ledger = self.native = self.decode = self.host = self.hbm = None
+@@ -89,6 +91,7 @@
+             packages["pypto"] = getattr(importlib.import_module("pypto"), "__version__", "source")
+         manifest = dict(kernel=source.audit(), integration=integration_identity(), checkpoint=self.identity,
+             orthrus_head=orthrus_head, deferred_draft=defer_draft, compact_verifier=compact_verifier,
++            short_speculative_dispatch=short_speculative_dispatch,
+             config=asdict(config), ranks=ranks,
+             cache_resident_bytes_per_rank=cache_plan.resident_bytes_per_rank,
+             versions=packages,
+@@ -130,12 +133,12 @@
+             stream.write(json.dumps(receipt) + "\n")
+
+     def _prepare(self, input_contract, rank_payloads, phase):
+-        wide = phase in ("draft", "verify", "accept")
+-        directory = self.directory / (f"controls-{phase}-{self.calls}" if wide else f"controls-{self.calls}")
++        speculative = phase in ("draft", "verify", "accept")
++        directory = self.directory / (f"controls-{phase}-{self.calls}" if speculative else f"controls-{self.calls}")
+         directory.mkdir()
+         actual = dict(input_contract, checkpoint=self.checkpoint, checkpoint_sha256=self.identity,
+                       epoch=self.calls, predecessor_input_sha256=self.predecessor)
+-        if wide:
++        if speculative:
+             actual["phase"] = phase
+         input_path = directory / "input-contract.json"
+         utility = self.source.module("utils")
+@@ -148,7 +151,7 @@
+         previous = self._draft_metadata
+         if phase == "verify" and previous is not None and previous[0] is rank_payloads:
+             sources = previous[1]
+-        elif wide:
++        elif speculative:
+             # The native call retains the complete in-memory contract. Write a
+             # single replayable bundle so shared TP controls serialize once.
+             path = directory / "rank-metadata.pt"
+@@ -168,7 +171,10 @@
+         cache = dict(self.cache, cache_ABI=payloads, cache_ABI_sources=[dict(rank=row["rank"],
+             payload_sha256=row["sha256"], report_sha256=row["sha256"]) for row in sources])
+         contract = dict(self.native_config, input_contract_path=str(input_path), input_contract_sha256=identity)
+-        if wide:
++        if speculative and (
++            phase == "draft" or not self.short_speculative_dispatch
++            or any(engine["active"] > contract["capacity"] for engine in actual["DP_engines"])
++        ):
+             contract["capacity"] = ORTHRUS_DISPATCH_CAPACITY
+         inputs = dict(input_contract=actual, prepare_input_stage=True)
+         inputs["engram_lookup"] = self.host.lookup(inputs, cache=cache, config=contract)
+@@ -437,6 +443,10 @@
+             greedy_rows=[value.tolist() for value in ordered] if self.cluster is not None else None,
+             output_head_skipped=phase == "accept",
+             vocabulary_layout=result.get("vocabulary_layout"), prepare_seconds=prepare_seconds,
++            execution_capacity=chunk["contract"]["capacity"],
++            verifier_tokens_per_dp=(
++                [engine["active"] for engine in input_contract["DP_engines"]] if phase == "verify" else None
++            ),
+             teacher_logit_rows=selected_rows if phase == "verify" else None,
+             student_logit_rows=selected_rows if phase == "draft" else None,
+             commit_tokens_per_dp=(

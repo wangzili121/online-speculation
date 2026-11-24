@@ -125,6 +125,10 @@ def _collect_phases(path, offset, previous, totals, draft_versions):
             stage["serving_seconds"] += receipt.get("seconds", 0.0)
             timings = receipt.get("timings", {})
             stage["native_seconds"] += timings.get("chunk_seconds", 0.0)
+            capacity = receipt.get("execution_capacity")
+            if capacity is not None:
+                stage[f"capacity{capacity}_calls"] += 1
+                stage[f"capacity{capacity}_native_seconds"] += timings.get("chunk_seconds", 0.0)
             commit_tokens = receipt.get("commit_tokens_per_dp")
             if commit_tokens:
                 largest = max(commit_tokens)

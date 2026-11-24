@@ -1,0 +1,111 @@
+{
+  "host": "111",
+  "hardware": "Ascend 910B3",
+  "cache_physical_device": 6,
+  "reduce_physical_devices": [
+    6,
+    7
+  ],
+  "cache": {
+    "passed": true,
+    "phase": "native-cache-publish-attend-and-restore",
+    "tile_rows": [
+      16,
+      128
+    ],
+    "tp": 4,
+    "rank_local_heads": 16,
+    "head_dim": 512,
+    "cases": [
+      {
+        "active_rows": 1,
+        "exact_attention": true,
+        "exact_cache_write_and_restore": true,
+        "restored_bytes": 1024,
+        "iterations": 20,
+        "wide_ms": 2.061457955278456,
+        "narrow_ms": 2.0621928852051497
+      },
+      {
+        "active_rows": 2,
+        "exact_attention": true,
+        "exact_cache_write_and_restore": true,
+        "restored_bytes": 2048,
+        "iterations": 20,
+        "wide_ms": 2.1801480324938893,
+        "narrow_ms": 2.17600807081908
+      },
+      {
+        "active_rows": 8,
+        "exact_attention": true,
+        "exact_cache_write_and_restore": true,
+        "restored_bytes": 8192,
+        "iterations": 20,
+        "wide_ms": 2.274428028613329,
+        "narrow_ms": 2.2686630254611373
+      },
+      {
+        "active_rows": 16,
+        "exact_attention": true,
+        "exact_cache_write_and_restore": true,
+        "restored_bytes": 16384,
+        "iterations": 20,
+        "wide_ms": 2.3563079303130507,
+        "narrow_ms": 2.350567956455052
+      }
+    ]
+  },
+  "tp_reduce": {
+    "passed": true,
+    "phase": "native-tp-pack-widen-reduce-scatter-narrow",
+    "capacity_rows": [
+      16,
+      128
+    ],
+    "physical_devices": 2,
+    "tp": 2,
+    "hidden": 5120,
+    "cases": [
+      {
+        "active_rows": 1,
+        "iterations": 20,
+        "exact": true,
+        "wide_ms": 9.511276963166893,
+        "narrow_ms": 8.245311095379293,
+        "wide_send_bytes_per_rank": 5242880,
+        "narrow_send_bytes_per_rank": 655360
+      },
+      {
+        "active_rows": 8,
+        "iterations": 20,
+        "exact": true,
+        "wide_ms": 9.353437810204923,
+        "narrow_ms": 7.742805406451225,
+        "wide_send_bytes_per_rank": 5242880,
+        "narrow_send_bytes_per_rank": 655360
+      },
+      {
+        "active_rows": 16,
+        "iterations": 20,
+        "exact": true,
+        "wide_ms": 9.057997027412057,
+        "narrow_ms": 7.56692502181977,
+        "wide_send_bytes_per_rank": 5242880,
+        "narrow_send_bytes_per_rank": 655360
+      }
+    ]
+  },
+  "native_model_compile": {
+    "passed": true,
+    "compile_only": true,
+    "callable_images": false,
+    "programs": [
+      {
+        "capacity": 16,
+        "tokens": 8,
+        "stages": 45,
+        "compiled_entries": 64
+      }
+    ]
+  }
+}

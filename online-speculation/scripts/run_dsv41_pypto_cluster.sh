@@ -46,7 +46,8 @@ for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.p
     lib-deterministic-reduction.patch lib-cluster-online.patch lib-workspace-write-only.patch \
     lib-orthrus-output.patch lib-orthrus-controls.patch lib-orthrus-network-hotpath.patch \
     lib-orthrus-verify-rows.patch lib-orthrus-verify-parallel.patch lib-orthrus-verify-output.patch \
-    lib-orthrus-teacher-rows.patch lib-orthrus-student-rows.patch; do
+    lib-orthrus-teacher-rows.patch lib-orthrus-student-rows.patch \
+    lib-orthrus-short-dispatch.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -70,6 +71,8 @@ git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-teacher-row
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-teacher-rows.patch"
 git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-student-rows.patch"
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-student-rows.patch"
+git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-short-dispatch.patch"
+git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-short-dispatch.patch"
 python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolve(cluster=True)'
 
 if [[ "${1:-}" == --prepare-only ]]; then
@@ -161,7 +164,7 @@ def unexpected_exchange(*args):
 session.native = CommitProbe()
 session.cluster = SimpleNamespace(link=SimpleNamespace(exchange=unexpected_exchange))
 session.calls = 0
-session._prepare = lambda *args: {"contract": {"input_contract_sha256": "accept-probe"}}
+session._prepare = lambda *args: {"contract": {"input_contract_sha256": "accept-probe", "capacity": 128}}
 receipts = []
 session._record = receipts.append
 assert session._execute("accept", {"DP_engines": [{"active": 1, "dp_rank": 0}]}, (), (Handle(),)) is None
@@ -239,6 +242,7 @@ with TemporaryDirectory() as directory:
     session.cache = {"cache_ABI": [{"hash_constants": {"token_map": torch.arange(256)}}] * 2}
     session.host = SimpleNamespace(lookup=lambda *args, **options: {})
     session._draft_metadata = None
+    session.short_speculative_dispatch = False
     payload = {"layout": {"views": {}}, "metadata": {"swa": 7}}
     payloads = (payload,) * 2
     draft_prepared = NativeSession._prepare(session, {"DP_engines": []}, payloads, "draft")
@@ -250,6 +254,26 @@ with TemporaryDirectory() as directory:
     assert prepared["metadata_sources"][1]["path"] == evidence["path"]
     assert torch.load(evidence["path"], weights_only=True) == ({"metadata": {"swa": 7}},) * 2
     assert set(prepared["cache"]["cache_ABI"][0]) == {"layout", "metadata", "hash_constants"}
+
+    check_capacity = source.module("network").GenerationSession._check_speculative_dispatch_capacity
+    for phase, actual_rows, short, expected in (
+        ("accept", (1, 0), False, 128), ("accept", (1, 0), True, 16),
+        ("verify", (16, 0), True, 16), ("verify", (8, 17), True, 128),
+        ("accept", (1, 32), True, 128), ("draft", (32, 0), True, 128),
+    ):
+        session.calls += 1
+        session.short_speculative_dispatch = short
+        contract = {"DP_engines": [dict(active=count) for count in actual_rows]}
+        chunk = NativeSession._prepare(session, contract, payloads, phase)
+        assert chunk["contract"]["capacity"] == expected
+        check_capacity(chunk)
+    try:
+        chunk = dict(chunk, contract=dict(chunk["contract"], capacity=16))
+        check_capacity(chunk)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Native short dispatch accepted an overflowing DP")
 
 # TP groups are host-local and token rows preserve shard and request order.
 network = source.module("network")
@@ -464,6 +488,7 @@ print(json.dumps(dict(
     draft_student_rows_only_for_owner=True,
     host_vocabulary_shard_order=True, compact_greedy_with_full_feedback=True,
     verify_copy_coalescing=True, verify_swa_written_rows=True, parallel_verifier_rollback=True,
+    short_speculative_capacity_selection=True,
 )))
 PY
 fi

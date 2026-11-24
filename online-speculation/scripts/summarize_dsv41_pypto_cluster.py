@@ -532,6 +532,10 @@ def _gsm8k_serving_phases(directory):
                 phase[name] += row[name]
         timings = row.get("timings", {})
         phase["native_seconds"] += timings.get("chunk_seconds", 0.0)
+        capacity = row.get("execution_capacity")
+        if capacity is not None:
+            phase[f"capacity{capacity}_calls"] += 1
+            phase[f"capacity{capacity}_native_seconds"] += timings.get("chunk_seconds", 0.0)
         commit_tokens = row.get("commit_tokens_per_dp")
         if commit_tokens:
             largest = max(commit_tokens)

@@ -1,0 +1,37 @@
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -1250,9 +1250,7 @@
+         if self.closed or self.failed or self.provider.max_requests_per_partition is None:
+             raise RuntimeError("Verification needs a live serving generation session")
+         actual = chunk["inputs"]["input_contract"]
+-        contract = chunk["contract"]
+-        if contract["capacity"] != ORTHRUS_VERIFY_CAPACITY:
+-            raise ValueError("Verification needs the wide native program")
++        self._check_speculative_dispatch_capacity(chunk)
+         requests = self._candidate_requests(chunk)
+         if not requests or any(not 1 < len(tokens) <= ORTHRUS_BLOCK for tokens in requests.values()):
+             raise ValueError("Verification requires the pending anchor plus 1..31 candidates")
+@@ -1300,11 +1298,21 @@
+             self.epoch, self.contract, self.engram_contracts, self.program, capacity = previous
+             self.provider.set_execution_capacity(capacity)
+
++    @staticmethod
++    def _check_speculative_dispatch_capacity(chunk):
++        capacity = chunk["contract"]["capacity"]
++        engines = chunk["inputs"]["input_contract"]["DP_engines"]
++        if capacity not in (SERVING_DISPATCH_CAPACITY, ORTHRUS_VERIFY_CAPACITY) or any(
++            engine["active"] > capacity for engine in engines
++        ):
++            raise ValueError("Speculative target dispatch exceeds its native execution capacity")
++
+     def commit_candidates(self, chunk, *, output, progress=None):
+-        """Commit the anchor and accepted prefixes through the wide target forward."""
++        """Commit the anchor and accepted prefixes through the target forward."""
++        self._check_speculative_dispatch_capacity(chunk)
+         requests = self._candidate_requests(chunk)
+         verified = self._verified_requests
+-        if (chunk["contract"]["capacity"] != ORTHRUS_VERIFY_CAPACITY or verified is None
++        if (verified is None
+                 or requests.keys() != verified.keys()
+                 or any(not tokens or tokens != verified[key][:len(tokens)] for key, tokens in requests.items())):
+             raise ValueError("Commit must contain a prefix for every verified request generation")

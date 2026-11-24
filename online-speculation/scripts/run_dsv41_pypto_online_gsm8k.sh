@@ -52,6 +52,11 @@ export ORTHRUS_WORKLOAD="$workload"
 export CLUSTER_KEY_FILE="${CLUSTER_KEY_FILE:-/root/.orthrus-cluster.key}"
 export NPU_DEVICES="${NPU_DEVICES:-0,1,2,3,4,5,6,7}"
 
+dispatch_options=()
+if [[ "${DSV41_SHORT_SPECULATIVE_DISPATCH:-0}" == 1 ]]; then
+  dispatch_options+=(--short-speculative-dispatch)
+fi
+
 if [[ "$mode" == capture || "$mode" == profile ]]; then
   # Each host has a different set of historical result directories.  Reusing
   # the locally newest head can therefore make the cluster identities differ.
@@ -89,7 +94,7 @@ if [[ "$mode" == report ]]; then
     --report-train-requests "$train_requests" --report-batch-size "$batch_size" \
     --online-study /workspace/online-speculation/configs/dsv41/gsm8k-online.json \
     --online-primitives blockspec.pypto_dsv41_resident_primitives:create_primitives \
-    --online-overrides "$online_overrides"
+    --online-overrides "$online_overrides" "${dispatch_options[@]}"
   exit $?
 fi
 
@@ -97,4 +102,4 @@ exec bash "$root/scripts/dsv41_pypto_env.sh" cluster-accept "$node" \
   --max-requests "$requests" --tokens "$tokens" --no-trace-prefill \
   --online-study /workspace/online-speculation/configs/dsv41/gsm8k-online.json \
   --online-primitives blockspec.pypto_dsv41_resident_primitives:create_primitives \
-  --online-overrides "$online_overrides" "${short_gate[@]}"
+  --online-overrides "$online_overrides" "${short_gate[@]}" "${dispatch_options[@]}"

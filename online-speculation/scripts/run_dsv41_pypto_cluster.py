@@ -402,6 +402,7 @@ def run(args):
                        prompts=prompts, workload_ids=identities, partitions=assignments,
                        tokens=args.tokens, context=args.context,
                        trace_prefill=args.trace_prefill, trace_position=args.trace_position,
+                       short_speculative_dispatch=args.short_speculative_dispatch,
                        orthrus_only=args.orthrus_only, require_online_update=args.require_online_update,
                        online_profile=args.online_profile,
                        online_benchmark=args.online_benchmark,
@@ -433,6 +434,7 @@ def run(args):
                                 defer_draft=True, trace_prefill=args.trace_prefill,
                                 trace_position=args.trace_position,
                                 compact_verifier=args.report_train_requests is not None,
+                                short_speculative_dispatch=args.short_speculative_dispatch,
                                 online=None if args.online_benchmark or args.report_train_requests else online)
         runner = A3Runner(source, config, cache_plan, session, checkpoint.text["vocab_size"], greedy_tokens=True)
         profile = OnlineUpdateProfile(args.output / "online-profile.jsonl") if args.online_profile else None
@@ -630,6 +632,8 @@ def main():
                         help="Record hashes of actual prefill layer outputs for first-divergence diagnosis")
     parser.add_argument("--trace-position", type=int,
                         help="Record one absolute token position (zero-based) in Decode and K32 Verify")
+    parser.add_argument("--short-speculative-dispatch", action="store_true",
+                        help="Use the 16-row native program for verify/accept waves that fit on every DP")
     parser.add_argument("--online-study", type=Path,
                         help="Versioned GSM8K online policy; enables resident last-N updates")
     parser.add_argument("--online-primitives", metavar="MODULE:CALLABLE",
