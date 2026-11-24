@@ -145,6 +145,30 @@ def make_qkv_program(native_module, config, *, tp=4, block_size=BLOCK):
     return native_module("prefill_layer").compose_l2("orthrus_qkv", definitions, steps, block_size)
 
 
+def make_draft_attention_reduce_pack(capacity, hidden, tp):
+    """Pack BF16 draft contributions into FP32 collective buffers."""
+    import pypto.language as pl
+
+    @pl.jit
+    def pack(
+        value: pl.Tensor[[capacity, hidden], pl.BF16],
+        packed: pl.Out[pl.Tensor[[tp * capacity, hidden], pl.FP32]],
+        physical: pl.Scalar[pl.INT32],
+        active: pl.Scalar[pl.INT32],
+    ):
+        for row in pl.spmd(tp * capacity, name_hint="orthrus_attn_forward_reduce_pack"):
+            peer, local = row // capacity, row % capacity
+            source = peer * physical + local
+            if local < physical and source < active:
+                picked = pl.slice(value, [1, hidden], [source, 0])
+                packed[row:row + 1, :] = pl.cast(picked, pl.FP32)
+            else:
+                packed[row:row + 1, :] = pl.full([1, hidden], dtype=pl.FP32, value=0.)
+        return packed
+
+    return pack
+
+
 def make_output_program(native_module, config, *, tp=4, head_major_input=False, block_size=BLOCK):
     """Apply inverse RoPE and grouped Wo, yielding the local TP contribution."""
     import pypto.language as pl

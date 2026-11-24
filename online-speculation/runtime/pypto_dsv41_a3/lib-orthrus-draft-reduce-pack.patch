@@ -1,0 +1,51 @@
+--- a/models/deepseek_v4_1_flash_a3/prefill_layer.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+@@ -495,13 +495,16 @@
+         def project_rank(rank):
+             state, tp_rank = states[rank][case], rank % tp
+             total, physical = state["total"], state["physical"]
++            if draft is not None:
++                packed = (
++                    draft.pack_fp32(rank, state["draft_contribution"], physical, total)
++                    if total else zeros(rank, tp * capacity, 5120, dtype=torch.float32)
++                )
++                state["reduction_wide"] = packed
++                reduction[rank][case] = packed
++                return
+             if not total:
+                 reduction[rank][case] = zeros(rank, tp * capacity, 5120)
+-                return
+-            if draft is not None:
+-                packed = zeros(rank, tp * capacity, 5120)
+-                draft.pack(rank, state["draft_contribution"], packed, physical, total)
+-                reduction[rank][case] = packed
+                 return
+             heads, woa, wob = (
+                 zeros(rank, capacity, head_width),
+@@ -533,15 +536,17 @@
+             state.update(attention_heads=heads, wo_a=woa, wo_b=wob, reduction_packet=packed)
+             reduction[rank][case] = packed
+         map_ranks(project_rank)
+-    widened = [{} for _ in range(world)]
+-    for case in batch["cases"]:
+-        def widen_rank(rank):
+-            output = zeros(rank, tp * capacity, 5120, dtype=torch.float32)
+-            execute("reduce_widen", rank, case, [reduction[rank][case], output],
+-                    {"output": output}, "output_projection")
+-            widened[rank][case] = output
+-            states[rank][case]["reduction_wide"] = output
+-        map_ranks(widen_rank)
++    widened = reduction
++    if draft is None:
++        widened = [{} for _ in range(world)]
++        for case in batch["cases"]:
++            def widen_rank(rank):
++                output = zeros(rank, tp * capacity, 5120, dtype=torch.float32)
++                execute("reduce_widen", rank, case, [reduction[rank][case], output],
++                        {"output": output}, "output_projection")
++                widened[rank][case] = output
++                states[rank][case]["reduction_wide"] = output
++            map_ranks(widen_rank)
+     reduced = exchange("attention-output-reduce-fp32", widened, "reduce_scatter", "tp")
+     scattered = [{} for _ in range(world)]
+     def select_rank_output(rank):

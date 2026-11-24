@@ -1,0 +1,127 @@
+{
+  "passed": true,
+  "phase": "orthrus-draft-fp32-pack-with-tp-reduce-scatter",
+  "capacity_rows": [
+    128
+  ],
+  "physical_devices": 4,
+  "tp": 4,
+  "hidden": 5120,
+  "cases": [
+    {
+      "active_rows": 32,
+      "iterations": 20,
+      "exact": true,
+      "before_ms": 12.931462610140443,
+      "after_ms": 7.891894085332751,
+      "saved_bf16_staging_bytes_per_rank": 5242880
+    },
+    {
+      "active_rows": 64,
+      "iterations": 20,
+      "exact": true,
+      "before_ms": 12.743682018481195,
+      "after_ms": 7.739122956991196,
+      "saved_bf16_staging_bytes_per_rank": 5242880
+    },
+    {
+      "active_rows": 96,
+      "iterations": 20,
+      "exact": true,
+      "before_ms": 12.448261375539005,
+      "after_ms": 7.410192512907088,
+      "saved_bf16_staging_bytes_per_rank": 5242880
+    },
+    {
+      "active_rows": 128,
+      "iterations": 20,
+      "exact": true,
+      "before_ms": 12.343346141278744,
+      "after_ms": 7.307822350412607,
+      "saved_bf16_staging_bytes_per_rank": 5242880
+    }
+  ],
+  "server": "111",
+  "hardware": "Ascend 910B3",
+  "device_ids": [
+    0,
+    1,
+    6,
+    7
+  ],
+  "baseline": "aa8ad4e",
+  "production_draft_fixture": {
+    "physical_devices": 1,
+    "global_ranks": [
+      0
+    ],
+    "tp4_lanes": [
+      0
+    ],
+    "full_tp4": false,
+    "anchors": [
+      257,
+      129
+    ],
+    "layers": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39
+    ],
+    "roles": {
+      "full": 4,
+      "reindex": 4,
+      "reuse": 30,
+      "swa": 2
+    },
+    "block": 32,
+    "cache_unchanged": true,
+    "weights_reuploaded": false,
+    "dispatches": 258,
+    "weight_bytes": [
+      3169753600
+    ],
+    "collective_max_abs_error": 0.0,
+    "transport_calls": 0,
+    "pack_byte_exact": true,
+    "pack_checked_layer": 39,
+    "checkpoint_class": "W8A8"
+  }
+}

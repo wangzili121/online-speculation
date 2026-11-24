@@ -10,6 +10,7 @@ from time import monotonic_ns, perf_counter
 import torch
 
 from .pypto_dsv41_draft import (
+    make_draft_attention_reduce_pack,
     make_output_program,
     make_qkv_program,
     prepare_draft_operands,
@@ -619,6 +620,20 @@ class DraftRound:
         program = lambda: self.attention.native("input_pack").make_sp_reduce_pack(capacity, hidden, tp)
         self.attention.execute(("reduce_pack", capacity), rank, program,
                                dict(value=contribution, packed=packed, physical=physical, active=total))
+
+    def pack_fp32(self, rank, contribution, physical, total):
+        capacity, hidden = contribution.shape
+        tp = self.attention.topology["tp"]
+        local = self.attention.rank_ids[rank]
+        packed = self.attention.resident.workspace(
+            (tp * capacity, hidden), torch.float32, local, fill=None,
+        )
+        self.attention.execute(
+            ("draft_fp32_reduce_pack", capacity), rank,
+            lambda: make_draft_attention_reduce_pack(capacity, hidden, tp),
+            dict(value=contribution, packed=packed, physical=physical, active=total),
+        )
+        return packed
 
     def project_block(self, rank, layer, owner, hidden, cos, sin, contribution, *, record):
         attention = self.attention

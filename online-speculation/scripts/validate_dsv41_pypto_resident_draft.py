@@ -125,6 +125,9 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
                 packed_output = runtime.read_output(packed, local).view(4, capacity, width)
                 assert torch.equal(packed_output[:, :physical].reshape(active, width), output[:active])
                 assert not packed_output[:, physical:].any()
+                if layer == 39:
+                    widened = draft.pack_fp32(rank, contribution, physical=physical, total=active)
+                    assert torch.equal(runtime.read_output(widened, local), packed_output.flatten(0, 1).float())
                 return [contribution, packed], packed_output.flatten(0, 1)
             return [contribution], output
 

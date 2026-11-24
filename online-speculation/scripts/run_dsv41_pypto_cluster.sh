@@ -47,7 +47,7 @@ for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.p
     lib-orthrus-output.patch lib-orthrus-controls.patch lib-orthrus-network-hotpath.patch \
     lib-orthrus-verify-rows.patch lib-orthrus-verify-parallel.patch lib-orthrus-verify-output.patch \
     lib-orthrus-teacher-rows.patch lib-orthrus-student-rows.patch \
-    lib-orthrus-short-dispatch.patch; do
+    lib-orthrus-short-dispatch.patch lib-orthrus-draft-reduce-pack.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -277,6 +277,7 @@ with TemporaryDirectory() as directory:
 
 # TP groups are host-local and token rows preserve shard and request order.
 network = source.module("network")
+assert "draft.pack_fp32(" in getsource(source.module("prefill_layer").run_prefill_layer_inmemory)
 shards = [{}, {}, {"fresh": torch.arange(12).reshape(4, 3)},
           {"fresh": torch.arange(12, 24).reshape(4, 3)},
           {"fresh": torch.zeros(4, 3)}, {"fresh": torch.zeros(4, 3)}]
