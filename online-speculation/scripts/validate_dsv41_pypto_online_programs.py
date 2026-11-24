@@ -51,6 +51,12 @@ def compile_resident_update_extras(compile_program, empty, config):
                 make_rms(rows, width, mode=mode, epsilon=1e-20, gamma_bf16=True),
                 *inputs, config=config,
             )
+    for width in (512, 1280):
+        x, gamma = empty((rows, width)), empty((1, width))
+        programs[f"rms_trainable_{width}"] = compile_program(
+            make_rms(rows, width, mode="trainable", epsilon=1e-20, gamma_bf16=True),
+            x, gamma, x, x, fp32((1, width)), config=config,
+        )
     for shape in ((16,), (8192, 1280)):
         master = fp32(shape)
         stats, count = make_stats(shape)

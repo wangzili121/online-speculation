@@ -522,7 +522,7 @@ def make_rms(
     import math
     if (
         dimension % 64 or rows < 16 or rows % 16
-        or mode not in {"forward", "input", "frozen_input", "weight"}
+        or mode not in {"forward", "input", "frozen_input", "weight", "trainable"}
         or not isinstance(epsilon, (int, float))
         or not math.isfinite(epsilon) or epsilon <= 0
     ):
@@ -565,26 +565,35 @@ def make_rms(
             dx[row:row + 1, 0:D] = pl.cast(pl.reshape(grad, [1, D]), pl.BF16, mode="rint")
         return dx
 
+    @pl.jit.inline
+    def recomputed_input_row(x: pl.Tensor, gamma: pl.Tensor, dy: pl.Tensor, row: pl.Scalar[pl.INT32]):
+        z = pl.reshape(pl.cast(pl.slice(x, [1, D], [row, 0]), pl.FP32), [8, D // 8])
+        ones = pl.full([8, 8], dtype=pl.FP32, value=1.)
+        partial = pl.row_sum(pl.mul(z, z))
+        squared = pl.row_sum(pl.transpose(pl.row_expand_mul(ones, partial), 0, 1))
+        inverse = pl.reshape(
+            pl.rsqrt(pl.add(pl.mul(squared, INV_D), epsilon), high_precision=True), [1, 8],
+        )
+        r = pl.read(inverse, [0, 0])
+        g = pl.reshape(load_gamma(gamma, 0), [8, D // 8])
+        delta = pl.mul(pl.reshape(pl.cast(pl.slice(dy, [1, D], [row, 0]), pl.FP32), [8, D // 8]), g)
+        partial = pl.row_sum(pl.mul(z, delta))
+        dot = pl.row_sum(pl.transpose(pl.row_expand_mul(ones, partial), 0, 1))
+        correction = pl.mul(dot, r * r * r * INV_D)
+        grad = pl.sub(pl.mul(delta, r), pl.row_expand_mul(z, correction))
+        return pl.cast(pl.reshape(grad, [1, D]), pl.BF16, mode="rint"), inverse
+
     @kernel
     def frozen_input_grad(x: pl.Tensor, gamma: pl.Tensor, dy: pl.Tensor, dx: pl.Out[pl.Tensor]):
         with pl.spmd(rows, name_hint="orthrus_frozen_rms_input_vjp"):
             row = pl.tile.get_block_idx()
-            z = pl.reshape(pl.cast(pl.slice(x, [1, D], [row, 0]), pl.FP32), [8, D // 8])
-            ones = pl.full([8, 8], dtype=pl.FP32, value=1.)
-            partial = pl.row_sum(pl.mul(z, z))
-            squared = pl.row_sum(pl.transpose(pl.row_expand_mul(ones, partial), 0, 1))
-            inverse = pl.rsqrt(pl.add(pl.mul(squared, INV_D), epsilon), high_precision=True)
-            r = pl.read(pl.reshape(inverse, [1, 8]), [0, 0])
-            g = pl.reshape(load_gamma(gamma, 0), [8, D // 8])
-            delta = pl.mul(pl.reshape(pl.cast(pl.slice(dy, [1, D], [row, 0]), pl.FP32), [8, D // 8]), g)
-            partial = pl.row_sum(pl.mul(z, delta))
-            dot = pl.row_sum(pl.transpose(pl.row_expand_mul(ones, partial), 0, 1))
-            correction = pl.mul(dot, r * r * r * INV_D)
-            grad = pl.sub(pl.mul(delta, r), pl.row_expand_mul(z, correction))
-            dx[row:row + 1, 0:D] = pl.cast(pl.reshape(grad, [1, D]), pl.BF16, mode="rint")
+            grad, _ = recomputed_input_row(x, gamma, dy, row)
+            dx[row:row + 1, 0:D] = grad
         return dx
 
-    @kernel
+    weight_kernel = pl.jit.inline if mode == "trainable" else kernel
+
+    @weight_kernel
     def weight_grad(x: pl.Tensor, inv: pl.Tensor, dy: pl.Tensor, dg: pl.InOut[pl.Tensor]):
         with pl.spmd(D // 64, name_hint="orthrus_rms_weight_backward"):
             col = pl.tile.get_block_idx() * 64
@@ -602,6 +611,20 @@ def make_rms(
             dg[0:1, col:col + 64] = result
         return dg
 
+    @kernel
+    def trainable_grad(
+        x: pl.Tensor, gamma: pl.Tensor, dy: pl.Tensor,
+        dx: pl.Out[pl.Tensor], dg: pl.Out[pl.Tensor],
+    ):
+        inv = pl.create_tensor([rows, 8], dtype=pl.FP32)
+        with pl.spmd(rows, name_hint="orthrus_rms_input_vjp_with_inverse"):
+            row = pl.tile.get_block_idx()
+            grad, inverse = recomputed_input_row(x, gamma, dy, row)
+            dx[row:row + 1, 0:D] = grad
+            inv[row:row + 1, 0:8] = inverse
+        dg = weight_grad(x, inv, dy, dg)
+        return dx, dg
+
     if mode == "forward":
         @pl.jit.host
         def entry(x: pl.Tensor, gamma: pl.Tensor, y: pl.Out[pl.Tensor], inv: pl.Out[pl.Tensor]):
@@ -614,13 +637,18 @@ def make_rms(
         @pl.jit.host
         def entry(x: pl.Tensor, gamma: pl.Tensor, dy: pl.Tensor, dx: pl.Out[pl.Tensor]):
             frozen_input_grad(x, gamma, dy, dx, device=0)
+    elif mode == "trainable":
+        @pl.jit.host
+        def entry(x: pl.Tensor, gamma: pl.Tensor, dy: pl.Tensor,
+                  dx: pl.Out[pl.Tensor], dg: pl.Out[pl.Tensor]):
+            trainable_grad(x, gamma, dy, dx, dg, device=0)
     else:
         @pl.jit.host
         def entry(x: pl.Tensor, inv: pl.Tensor, dy: pl.Tensor, dg: pl.Out[pl.Tensor]):
             weight_grad(x, inv, dy, dg, device=0)
     chip = {
         "forward": forward, "input": input_grad,
-        "frozen_input": frozen_input_grad, "weight": weight_grad,
+        "frozen_input": frozen_input_grad, "weight": weight_grad, "trainable": trainable_grad,
     }[mode]
     return chip if inline else with_resident_entry(entry, chip)
 

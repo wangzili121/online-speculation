@@ -1,0 +1,59 @@
+{
+  "passed": true,
+  "baseline": "ada6e9d",
+  "phase": "trainable Q/KV RMSNorm VJP",
+  "device": "910B3",
+  "physical_devices": [
+    4
+  ],
+  "block": 32,
+  "iterations": 15,
+  "launch_count": {
+    "before": 3,
+    "after": 1
+  },
+  "case_inputs": "Random activations and gradients with zero and near-zero input rows",
+  "frozen_input_regression": {
+    "width": 5120,
+    "gamma_dtype": "torch.float32",
+    "byte_exact": true
+  },
+  "cases": [
+    {
+      "width": 512,
+      "gamma_dtype": "float32",
+      "byte_exact": true,
+      "wall_ms": {
+        "before": 2.552271937020123,
+        "after": 0.9699640795588493
+      }
+    },
+    {
+      "width": 512,
+      "gamma_dtype": "bfloat16",
+      "byte_exact": true,
+      "wall_ms": {
+        "before": 2.575351973064244,
+        "after": 0.9635150199756026
+      }
+    },
+    {
+      "width": 1280,
+      "gamma_dtype": "float32",
+      "byte_exact": true,
+      "wall_ms": {
+        "before": 2.6539519894868135,
+        "after": 0.9886950720101595
+      }
+    },
+    {
+      "width": 1280,
+      "gamma_dtype": "bfloat16",
+      "byte_exact": true,
+      "wall_ms": {
+        "before": 2.457910915836692,
+        "after": 0.9377149399369955
+      }
+    }
+  ]
+}

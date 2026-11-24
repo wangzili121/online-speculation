@@ -1,9 +1,10 @@
-"""Compare serial and parallel C1A reverse using real DSV4.1 draft operands."""
+"""Compare C1A backward implementations using real DSV4.1 draft operands."""
 
 import argparse
 import json
 import sys
 from pathlib import Path
+import runpy
 from statistics import median
 from time import perf_counter
 
@@ -20,6 +21,8 @@ def main():
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--head", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--baseline-file", type=Path, action="append", default=[],
+                        help="Previous resident-primitives source to compare under the same TP4 scheduler")
     args = parser.parse_args()
     torch.set_num_threads(4)
     torch.manual_seed(23)
@@ -51,13 +54,38 @@ def main():
         upstream = {rank: (torch.randn(32, width) * 0.1).bfloat16() for rank in ranks}
         for rank, value in upstream.items():
             runtime.pin(value, (rank,), readonly=True, name=f"test/upstream/{rank}")
-        engine = DSV41ResidentPrimitives.__new__(DSV41ResidentPrimitives)
-        engine.resident, engine.draft, engine.ranks = runtime, draft, ranks
+        def make_reverse(cls):
+            engine = cls.__new__(cls)
+            engine.resident, engine.draft, engine.ranks = runtime, draft, ranks
 
-        def reverse(rank):
-            return engine._reverse_c1a_rank(
-                layer, rank, snapshots[rank], upstream[rank],
-            )
+            def reverse(rank):
+                return engine._reverse_c1a_rank(layer, rank, snapshots[rank], upstream[rank])
+
+            return engine, reverse
+
+        engine, reverse = make_reverse(DSV41ResidentPrimitives)
+
+        def parallel():
+            return engine._map_owner_ranks(ranks, reverse)
+
+        if not args.baseline_file:
+            def serial():
+                return {rank: reverse(rank) for rank in ranks}
+
+            variants = {"serial": serial, "parallel": parallel}
+        else:
+            def load_variant(path):
+                module = runpy.run_path(str(path), run_name="blockspec.c1a_vjp_baseline")
+                implementation, reverse_rank = make_reverse(module["DSV41ResidentPrimitives"])
+
+                def run():
+                    return implementation._map_owner_ranks(ranks, reverse_rank)
+
+                return run
+
+            variants = {f"baseline_{index + 1}": load_variant(path)
+                        for index, path in enumerate(args.baseline_file)}
+            variants["candidate"] = parallel
 
         def read(outputs):
             copies = {}
@@ -69,37 +97,37 @@ def main():
 
         # Compile and warm every rank before measuring. Keep compilation out
         # of both arms, but include rank scheduling and kernel runtime.
-        def serial():
-            return {rank: reverse(rank) for rank in ranks}
+        def check(function):
+            result = read(function())
+            runtime.release_values()
+            return result
 
-        def parallel():
-            return engine._map_owner_ranks(ranks, reverse)
-
-        baseline = read(serial())
-        runtime.release_values()
-        candidate = read(parallel())
-        runtime.release_values()
-        nonzero = {}
-        for rank in ranks:
-            assert len(baseline[rank]) == 9
-            nonzero[rank] = []
-            for name, before in baseline[rank].items():
-                assert torch.isfinite(before).all(), (rank, name)
-                assert torch.equal(before, candidate[rank][name]), (rank, name)
-                if torch.count_nonzero(before):
-                    nonzero[rank].append(name)
-            assert len(nonzero[rank]) == 9, (rank, nonzero[rank])
-        samples = {"serial": [], "parallel": []}
+        comparisons = iter(variants.values())
+        baseline = check(next(comparisons))
+        for rank, tensors in baseline.items():
+            assert len(tensors) == 9
+            for name, value in tensors.items():
+                assert value.isfinite().all() and value.count_nonzero(), (rank, name)
+        for function in comparisons:
+            candidate = check(function)
+            for rank, tensors in baseline.items():
+                for name, value in tensors.items():
+                    assert torch.equal(value, candidate[rank][name]), (rank, name)
+        samples = {name: [] for name in variants}
+        fills = {name: [] for name in variants}
         for _ in range(8):
-            for name, function in (("serial", serial), ("parallel", parallel)):
+            for name, function in variants.items():
+                prior = runtime.stats["workspace_fill_bytes"]
                 start = perf_counter()
                 function()
                 samples[name].append((perf_counter() - start) * 1e3)
+                fills[name].append(runtime.stats["workspace_fill_bytes"] - prior)
                 runtime.release_values()
         print(json.dumps({
             "passed": True, "ranks": ranks, "layer": layer, "index_source": source,
             "anchor": anchor, "block": 32, "tensors_per_rank": 9, "byte_exact": True,
             "repeat_count": 8, "wall_ms": {name: median(rows) for name, rows in samples.items()},
+            "workspace_fill_bytes": {name: median(rows) for name, rows in fills.items()},
         }), flush=True)
         runtime.release_replay_values()
 

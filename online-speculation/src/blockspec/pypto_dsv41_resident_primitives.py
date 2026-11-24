@@ -1406,25 +1406,16 @@ class DSV41ResidentPrimitives:
             ),
             a=qkv["latent"], b=query_projection_gradient, output=dwq_b,
         )
-        q_inverse = self._workspace(rank, (ROWS, 8), torch.float32)
-        q_replay = self._workspace(rank, (ROWS, 1280))
         q_gamma = self._draft_operand(rank, layer, "q_norm", (1, 1280))
+        dqa = self._workspace(rank, (ROWS, 1280), fill=None)
+        dq_norm = self._workspace(rank, (1, 1280), torch.float32, fill=None)
         self._execute(
-            ("attn-q-norm-replay", layer), rank,
-            lambda: make_rms(ROWS, 1280, epsilon=1e-20, gamma_bf16=q_gamma.dtype == torch.bfloat16),
-            x=qkv["qa"], gamma=q_gamma, y=q_replay, inv=q_inverse,
-        )
-        dqa = self._workspace(rank, (ROWS, 1280))
-        dq_norm = self._workspace(rank, (1, 1280), torch.float32)
-        self._execute(
-            ("attn-q-norm-input-vjp", layer), rank,
-            lambda: make_rms(ROWS, 1280, mode="input", epsilon=1e-20, gamma_bf16=q_gamma.dtype == torch.bfloat16),
-            x=qkv["qa"], gamma=q_gamma, inv=q_inverse, dy=dlatent, dx=dqa,
-        )
-        self._execute(
-            ("attn-q-norm-weight-vjp", layer), rank,
-            lambda: make_rms(ROWS, 1280, mode="weight", epsilon=1e-20),
-            x=qkv["qa"], inv=q_inverse, dy=dlatent, dg=dq_norm,
+            ("attn-q-norm-vjp", layer), rank,
+            lambda: make_rms(
+                ROWS, 1280, mode="trainable", epsilon=1e-20,
+                gamma_bf16=q_gamma.dtype == torch.bfloat16,
+            ),
+            x=qkv["qa"], gamma=q_gamma, dy=dlatent, dx=dqa, dg=dq_norm,
         )
         dwq_a = self._workspace(rank, operands["wq_a"].shape, torch.float32)
         query_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
@@ -1442,27 +1433,16 @@ class DSV41ResidentPrimitives:
             a=dqa, b=operands["wq_a"], output=query_input_gradient,
         )
 
-        kv_inverse = self._workspace(rank, (ROWS, 8), torch.float32)
-        kv_replay = self._workspace(rank, (ROWS, 512))
         kv_gamma = self._draft_operand(rank, layer, "kv_norm", (1, 512))
+        dkv = self._workspace(rank, (ROWS, 512), fill=None)
+        dkv_norm = self._workspace(rank, (1, 512), torch.float32, fill=None)
         self._execute(
-            ("attn-kv-norm-replay", layer), rank,
-            lambda: make_rms(ROWS, 512, epsilon=1e-20, gamma_bf16=kv_gamma.dtype == torch.bfloat16),
-            x=qkv["kv"], gamma=kv_gamma, y=kv_replay, inv=kv_inverse,
-        )
-        dkv = self._workspace(rank, (ROWS, 512))
-        dkv_norm = self._workspace(rank, (1, 512), torch.float32)
-        self._execute(
-            ("attn-kv-norm-input-vjp", layer), rank,
-            lambda: make_rms(ROWS, 512, mode="input", epsilon=1e-20, gamma_bf16=kv_gamma.dtype == torch.bfloat16),
-            x=qkv["kv"], gamma=kv_gamma, inv=kv_inverse,
-            dy=temporary_norm_gradient, dx=dkv,
-        )
-        self._execute(
-            ("attn-kv-norm-weight-vjp", layer), rank,
-            lambda: make_rms(ROWS, 512, mode="weight", epsilon=1e-20),
-            x=qkv["kv"], inv=kv_inverse, dy=temporary_norm_gradient,
-            dg=dkv_norm,
+            ("attn-kv-norm-vjp", layer), rank,
+            lambda: make_rms(
+                ROWS, 512, mode="trainable", epsilon=1e-20,
+                gamma_bf16=kv_gamma.dtype == torch.bfloat16,
+            ),
+            x=qkv["kv"], gamma=kv_gamma, dy=temporary_norm_gradient, dx=dkv, dg=dkv_norm,
         )
         dwkv = self._workspace(rank, operands["wkv"].shape, torch.float32)
         kv_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
