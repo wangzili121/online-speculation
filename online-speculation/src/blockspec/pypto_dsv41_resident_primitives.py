@@ -493,21 +493,25 @@ class DSV41ResidentPrimitives:
         local_ranks = tuple(transport.plan.local_ranks)
         if not set(ranks) <= set(local_ranks):
             raise ValueError("a TP group may not cross hosts")
-        prepared = {}
-        for rank in ranks:
+        def prepare(rank):
             local = self._local(rank)
             channel = channels[local]
-            output = self._workspace(rank, output_shape, dtype)
+            output = self._workspace(rank, output_shape, dtype, fill=None)
             source = self.resident.tensor(values[rank], local)
             destination = self.resident.tensor(output, local)
             channel._validate_device_transfer(source, destination, collective)
-            prepared[rank] = output, (source, destination, f"online/{stage}/rank{rank}")
-        def transfer(local):
-            rank = local_ranks[local]
-            if rank in prepared:
-                channels[local].exchange_device_batch([prepared[rank][1]], collective)
-        self.resident.map_ranks(transfer)
-        return {rank: prepared[rank][0] for rank in ranks}
+            return output, (source, destination, f"online/{stage}/rank{rank}")
+
+        prepared = {rank: prepare(rank) for rank in ranks}
+
+        def transfer(rank):
+            local = self._local(rank)
+            output, packet = prepared[rank]
+            channels[local].exchange_device_batch([packet], collective)
+            self.resident.mark_workspace_written(output, local)
+            return output
+
+        return self._map_owner_ranks(ranks, transfer)
 
     def _tp_all_reduce(self, values, *, stage):
         return self._tp_collective(values, "all_reduce", stage=stage)
@@ -1683,7 +1687,7 @@ class DSV41ResidentPrimitives:
         else:
             output, _ = transport.exchange(
                 f"online-dp-step-{self._last_step + 1}", packets,
-                "all_reduce", "dp",
+                "all_reduce", "dp", write_only_receive=True,
             )
         result = {}
         for full_name in values:

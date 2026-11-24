@@ -1,0 +1,122 @@
+{
+  "passed": true,
+  "baseline": "541d287",
+  "phase": "online DSV4.1 collective write-only receive",
+  "device": "910B3",
+  "physical_devices": [
+    4,
+    5,
+    6,
+    7
+  ],
+  "repeat_count": 12,
+  "cases": [
+    {
+      "stage": "attn-output-vjp",
+      "collective": "all_gather",
+      "dtype": "bfloat16",
+      "shape": [
+        32,
+        5120
+      ],
+      "wall_ms": {
+        "before": 3.0235194717533886,
+        "after": 2.3660510196350515
+      },
+      "byte_exact": true,
+      "workspace_fill_bytes": {
+        "before": 5242880,
+        "after": 0
+      }
+    },
+    {
+      "stage": "attn-input-vjp",
+      "collective": "reduce_scatter",
+      "dtype": "float32",
+      "shape": [
+        128,
+        5120
+      ],
+      "wall_ms": {
+        "before": 3.712672973051667,
+        "after": 2.748508471995592
+      },
+      "byte_exact": true,
+      "workspace_fill_bytes": {
+        "before": 2621440,
+        "after": 0
+      }
+    },
+    {
+      "stage": "q-norm-vjp",
+      "collective": "all_reduce",
+      "dtype": "float32",
+      "shape": [
+        1280
+      ],
+      "wall_ms": {
+        "before": 3.512791998218745,
+        "after": 3.0449494952335954
+      },
+      "byte_exact": true,
+      "workspace_fill_bytes": {
+        "before": 20480,
+        "after": 0
+      }
+    },
+    {
+      "stage": "wkv-vjp",
+      "collective": "all_reduce",
+      "dtype": "float32",
+      "shape": [
+        5120,
+        512
+      ],
+      "wall_ms": {
+        "before": 6.2706550233997405,
+        "after": 3.5020659561268985
+      },
+      "byte_exact": true,
+      "workspace_fill_bytes": {
+        "before": 41943040,
+        "after": 0
+      }
+    },
+    {
+      "stage": "wq-a-vjp",
+      "collective": "all_reduce",
+      "dtype": "float32",
+      "shape": [
+        5120,
+        1280
+      ],
+      "wall_ms": {
+        "before": 9.715720952954143,
+        "after": 3.9501689607277513
+      },
+      "byte_exact": true,
+      "workspace_fill_bytes": {
+        "before": 104857600,
+        "after": 0
+      }
+    },
+    {
+      "stage": "local-dp-receive",
+      "collective": "all_reduce",
+      "dtype": "float32",
+      "shape": [
+        5120,
+        1280
+      ],
+      "wall_ms": {
+        "before": 7.493150536902249,
+        "after": 5.323115503415465
+      },
+      "byte_exact": true,
+      "workspace_fill_bytes": {
+        "before": 104857600,
+        "after": 0
+      }
+    }
+  ]
+}
