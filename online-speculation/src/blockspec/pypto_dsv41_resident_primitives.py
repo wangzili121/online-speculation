@@ -1550,7 +1550,9 @@ class DSV41ResidentPrimitives:
         self, *, layer, ranks, captured, output_gradients,
     ):
         """Reverse one complete node-local TP4 C1A draft-Attention batch."""
-        from .pypto_dsv41_online_programs import make_element
+        from .pypto_dsv41_attention_vjp import (
+            make_attention_input_gradient_pack, make_attention_output_gradient_unpack,
+        )
 
         ranks = tuple(ranks)
         if (
@@ -1579,29 +1581,26 @@ class DSV41ResidentPrimitives:
             span = self._local_span(row)
             capacity = row["attention_scattered"].shape[0]
             physical, total = self._attention_record(row)
-            if not 0 <= begin < end <= capacity or not 0 < physical <= capacity:
+            if not 0 <= begin < end <= total <= min(capacity, 4 * physical) or not 0 < physical <= ROWS:
                 raise ValueError("captured Attention span is outside the SP slab")
-            slab = self._workspace(rank, (capacity, HIDDEN), fill=0)
+            slab = self._workspace(rank, (ROWS, HIDDEN), fill=0)
             self._copy_rows(rank, slab, shells[rank]["value"][:span.rows],
                             destination=span.local_start)
             scattered[rank] = slab
-            geometry[rank] = begin, end, capacity, physical, total
+            geometry[rank] = begin, physical, total
         gathered = self._tp_collective(
             scattered, "all_gather", stage=f"layer{layer}-attn-output-vjp",
         )
         contribution_gradients = {}
         for rank in ranks:
-            begin, end, capacity, physical, total = geometry[rank]
-            full = self._workspace(rank, (capacity, HIDDEN), fill=0)
+            begin, physical, _ = geometry[rank]
+            output = self._workspace(rank, (ROWS, HIDDEN), fill=None)
             self._execute(
-                ("attn-output-gradient-unpack", layer, capacity), rank,
-                lambda capacity=capacity: self.draft.native("input_pack").make_sp_gather_unpack(
-                    capacity, HIDDEN, 4,
-                ),
-                packet=gathered[rank], output=full,
-                physical=physical, active=total,
+                ("attn-output-gradient-unpack",), rank,
+                lambda: make_attention_output_gradient_unpack(ROWS, HIDDEN, 4),
+                packet=gathered[rank], output=output, begin=begin, physical=physical,
             )
-            contribution_gradients[rank] = full[begin:end]
+            contribution_gradients[rank] = output
 
         local = {
             rank: self._reverse_c1a_rank(
@@ -1611,31 +1610,16 @@ class DSV41ResidentPrimitives:
         }
 
         # Reverse the native normalized-input all-gather: pack each rank's
-        # full-token gradient, reduce in FP32 and narrow once to BF16.
+        # request gradient directly into the rank-local SP rows. The native
+        # wide buffer has at most 32 live rows per TP rank.
         widened = {}
         for rank in ranks:
-            begin, end, capacity, physical, total = geometry[rank]
-            full = self._workspace(rank, (capacity, HIDDEN), fill=0)
+            begin, physical, total = geometry[rank]
+            wide = self._workspace(rank, (4 * ROWS, HIDDEN), torch.float32, fill=None)
             self._execute(
-                ("attn-input-gradient-scatter", layer), rank,
-                lambda: make_element((ROWS, HIDDEN), "copy"),
-                a=local[rank][0], b=local[rank][0], output=full[begin:end],
-            )
-            packed = self._workspace(rank, (4 * capacity, HIDDEN))
-            self._execute(
-                ("attn-input-gradient-pack", layer, capacity), rank,
-                lambda capacity=capacity: self.draft.native("input_pack").make_sp_reduce_pack(
-                    capacity, HIDDEN, 4,
-                ),
-                value=full, packed=packed, physical=physical, active=total,
-            )
-            wide = self._workspace(rank, (4 * capacity, HIDDEN), torch.float32)
-            self._execute(
-                ("attn-input-gradient-widen", layer, capacity), rank,
-                lambda capacity=capacity: self.draft.native("input_pack").make_sp_reduce_widen(
-                    4 * capacity, HIDDEN,
-                ),
-                value=packed, output=wide,
+                ("attn-input-gradient-pack",), rank,
+                lambda: make_attention_input_gradient_pack(ROWS, HIDDEN, 4),
+                gradient=local[rank][0], packed=wide, begin=begin, physical=physical, active=total,
             )
             widened[rank] = wide
         reduced = self._tp_collective(
@@ -1643,13 +1627,10 @@ class DSV41ResidentPrimitives:
         )
         result = {}
         for rank in ranks:
-            begin, end, capacity, _physical, _total = geometry[rank]
-            narrowed = self._workspace(rank, (capacity, HIDDEN))
+            narrowed = self._workspace(rank, (ROWS, HIDDEN), fill=None)
             self._execute(
-                ("attn-input-gradient-narrow", layer, capacity), rank,
-                lambda capacity=capacity: self.draft.native("input_pack").make_sp_reduce_narrow(
-                    capacity, HIDDEN,
-                ),
+                ("attn-input-gradient-narrow",), rank,
+                lambda: self.draft.native("input_pack").make_sp_reduce_narrow(ROWS, HIDDEN),
                 value=reduced[rank], output=narrowed,
             )
             incoming = self._reverse_attention_pre(

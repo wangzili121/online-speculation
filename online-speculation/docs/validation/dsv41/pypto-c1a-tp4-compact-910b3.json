@@ -1,0 +1,99 @@
+{
+  "passed": true,
+  "tp": 4,
+  "capacity": 128,
+  "request_rows": 32,
+  "hidden": 5120,
+  "scope": "resident TP4 replay communication and layout kernels",
+  "cases": [
+    {
+      "active_rows": 32,
+      "request_first_row": 0,
+      "exact": true,
+      "iterations": 12,
+      "median_ms": {
+        "baseline": 41.19149595499039,
+        "compact": 18.114065984264016
+      },
+      "send_bytes_per_rank": {
+        "baseline": {
+          "all_gather": 1310720,
+          "reduce_scatter": 10485760
+        },
+        "compact": {
+          "all_gather": 327680,
+          "reduce_scatter": 2621440
+        }
+      }
+    },
+    {
+      "active_rows": 64,
+      "request_first_row": 32,
+      "exact": true,
+      "iterations": 12,
+      "median_ms": {
+        "baseline": 41.37375159189105,
+        "compact": 17.692370456643403
+      },
+      "send_bytes_per_rank": {
+        "baseline": {
+          "all_gather": 1310720,
+          "reduce_scatter": 10485760
+        },
+        "compact": {
+          "all_gather": 327680,
+          "reduce_scatter": 2621440
+        }
+      }
+    },
+    {
+      "active_rows": 96,
+      "request_first_row": 32,
+      "exact": true,
+      "iterations": 12,
+      "median_ms": {
+        "baseline": 41.35256144218147,
+        "compact": 17.565104993991554
+      },
+      "send_bytes_per_rank": {
+        "baseline": {
+          "all_gather": 1310720,
+          "reduce_scatter": 10485760
+        },
+        "compact": {
+          "all_gather": 327680,
+          "reduce_scatter": 2621440
+        }
+      }
+    },
+    {
+      "active_rows": 128,
+      "request_first_row": 96,
+      "exact": true,
+      "iterations": 12,
+      "median_ms": {
+        "baseline": 40.443285019136965,
+        "compact": 16.521438490599394
+      },
+      "send_bytes_per_rank": {
+        "baseline": {
+          "all_gather": 1310720,
+          "reduce_scatter": 10485760
+        },
+        "compact": {
+          "all_gather": 327680,
+          "reduce_scatter": 2621440
+        }
+      }
+    }
+  ],
+  "server": "111",
+  "hardware": "910B3",
+  "physical_devices": [
+    4,
+    5,
+    6,
+    7
+  ],
+  "baseline": "29e57a5"
+}

@@ -431,21 +431,17 @@ class AttentionBatchHarness(DSV41ResidentPrimitives):
     def _execute(self, key, rank, factory, **inputs):
         del factory
         self.events.append((key[0], rank))
-        if "scatter" in key[0]:
-            inputs["output"].copy_(inputs["a"])
-        elif key[0] == "attn-output-gradient-unpack":
+        if key[0] == "attn-output-gradient-unpack":
             capacity = len(inputs["output"])
-            for row in range(inputs["active"]):
-                lane, local = divmod(row, inputs["physical"])
+            for row in range(capacity):
+                lane, local = divmod(inputs["begin"] + row, inputs["physical"])
                 inputs["output"][row].copy_(inputs["packet"][lane * capacity + local])
         elif key[0] == "attn-input-gradient-pack":
             inputs["packed"].zero_()
-            capacity = len(inputs["value"])
-            for row in range(inputs["active"]):
+            capacity = len(inputs["gradient"])
+            for index, row in enumerate(range(inputs["begin"], min(inputs["active"], inputs["begin"] + capacity))):
                 lane, local = divmod(row, inputs["physical"])
-                inputs["packed"][lane * capacity + local].copy_(inputs["value"][row])
-        elif key[0] == "attn-input-gradient-widen":
-            inputs["output"].copy_(inputs["value"].float())
+                inputs["packed"][lane * capacity + local].copy_(inputs["gradient"][index])
         elif key[0] == "attn-input-gradient-narrow":
             inputs["output"].copy_(inputs["value"].bfloat16())
         else:
@@ -475,8 +471,9 @@ class AttentionBatchHarness(DSV41ResidentPrimitives):
         raise AssertionError(collective)
 
     def _reverse_c1a_rank(self, layer, rank, captured, contribution_gradient):
-        del layer, captured
-        expected = torch.arange(1, 5).repeat_interleave(8)
+        del layer
+        physical = captured["record"]["SP_physical_rows"]
+        expected = torch.arange(captured["token_begin"], captured["token_end"]) // physical + 1
         torch.testing.assert_close(contribution_gradient[:, 0].float(), expected.float())
         self.events.append(("c1a", rank, tuple(contribution_gradient.shape)))
         names = self._execution_names()
@@ -485,9 +482,10 @@ class AttentionBatchHarness(DSV41ResidentPrimitives):
         }
 
     def _reverse_attention_pre(self, layer, rank, captured, shell, normalized_gradient):
-        del layer, captured, shell
-        assert normalized_gradient[:8].eq(10).all()
-        assert not normalized_gradient[8:].any()
+        del layer, shell
+        rows = captured["sp_span"].rows
+        assert normalized_gradient[:rows].eq(10).all()
+        assert not normalized_gradient[rows:].any()
         self.events.append(("pre", rank, tuple(normalized_gradient.shape)))
         return SuffixGradient(
             torch.full((128, 5120), rank + 1, dtype=torch.bfloat16),
@@ -495,14 +493,19 @@ class AttentionBatchHarness(DSV41ResidentPrimitives):
         )
 
 
-def test_c1a_owner_batch_reverses_both_tp_collectives_once():
+@pytest.mark.parametrize("begin,active", [(0, 32), (32, 64), (32, 96), (96, 128)])
+def test_c1a_owner_batch_reverses_both_tp_collectives_once(begin, active):
     value = AttentionBatchHarness()
+    physical = active // 4
     captures = {
         rank: {
-            "token_begin": 0, "token_end": 32,
-            "sp_span": DSV41SequenceSpan(0, rank * 8, 8),
-            "record": {"SP_physical_rows": 8, "positions": list(range(32))},
-            "attention_scattered": torch.zeros(32, 5120, dtype=torch.bfloat16),
+            "token_begin": begin, "token_end": begin + 32,
+            "sp_span": DSV41SequenceSpan.from_record(
+                {"cp_token_range": (rank * physical, (rank + 1) * physical), "SP_valid_rows": physical},
+                begin, begin + 32,
+            ),
+            "record": {"SP_physical_rows": physical, "positions": list(range(active))},
+            "attention_scattered": torch.zeros(128, 5120, dtype=torch.bfloat16),
         }
         for rank in value.ranks
     }

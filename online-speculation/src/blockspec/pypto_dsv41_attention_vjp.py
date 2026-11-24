@@ -16,6 +16,51 @@ from dataclasses import dataclass
 from .pypto_dsv41_resident_abi import with_resident_entry
 
 
+def make_attention_output_gradient_unpack(rows, hidden, tp):
+    """Extract one K32 request from gathered rank-local SP gradients."""
+    import pypto.language as pl
+
+    @pl.jit
+    def unpack(
+        packet: pl.Tensor[[tp * rows, hidden], pl.BF16],
+        output: pl.Out[pl.Tensor[[rows, hidden], pl.BF16]],
+        begin: pl.Scalar[pl.INT32],
+        physical: pl.Scalar[pl.INT32],
+    ):
+        for row in pl.spmd(rows, name_hint="orthrus_attn_output_gradient_unpack"):
+            token = begin + row
+            source = (token // physical) * rows + token % physical
+            output[row:row + 1, :] = pl.slice(packet, [1, hidden], [source, 0])
+        return output
+
+    return unpack
+
+
+def make_attention_input_gradient_pack(rows, hidden, tp):
+    """Pack one K32 replay's BF16 input gradient into compact FP32 TP buckets."""
+    import pypto.language as pl
+
+    @pl.jit
+    def pack(
+        gradient: pl.Tensor[[rows, hidden], pl.BF16],
+        packed: pl.Out[pl.Tensor[[tp * rows, hidden], pl.FP32]],
+        begin: pl.Scalar[pl.INT32],
+        physical: pl.Scalar[pl.INT32],
+        active: pl.Scalar[pl.INT32],
+    ):
+        for row in pl.spmd(tp * rows, name_hint="orthrus_attn_input_gradient_pack"):
+            peer, local = row // rows, row % rows
+            source = peer * physical + local
+            if local < physical and source >= begin and source < begin + rows and source < active:
+                value = pl.slice(gradient, [1, hidden], [source - begin, 0])
+                packed[row:row + 1, :] = pl.cast(value, pl.FP32)
+            else:
+                packed[row:row + 1, :] = pl.full([1, hidden], dtype=pl.FP32, value=0.)
+        return packed
+
+    return pack
+
+
 @dataclass(frozen=True)
 class C1AAttentionVJPGeometry:
     block: int = 32
