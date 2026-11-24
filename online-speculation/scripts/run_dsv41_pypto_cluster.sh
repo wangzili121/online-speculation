@@ -44,7 +44,8 @@ fi
 for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.patch \
     lib-pypto72-compat.patch lib-cluster-retry.patch lib-cluster-prefill-trace.patch \
     lib-deterministic-reduction.patch lib-cluster-online.patch lib-workspace-write-only.patch \
-    lib-orthrus-output.patch lib-orthrus-controls.patch lib-orthrus-network-hotpath.patch; do
+    lib-orthrus-output.patch lib-orthrus-controls.patch lib-orthrus-network-hotpath.patch \
+    lib-orthrus-verify-rows.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -292,6 +293,27 @@ assert copies == [3, 4, 3, 4]
 assert cache[1:4].tolist() == [1, 2, 3] and cache[10:14].tolist() == [10, 11, 12, 13]
 assert int(cache[16]) == 90
 
+# A verifier crossing two nonconsecutive pages only backs up written SWA rows.
+# Compression and token history remain protected across all their live pages.
+provider_type = source.module("state").NetworkCacheProvider
+swa, compressed = "model.layers.1.self_attn.swa_cache", "model.layers.2.self_attn.long_kv_cache"
+views = {
+    swa: dict(storage_key="swa", dtype="torch.bfloat16", shape=[8, 128, 1, 512],
+              stride=[65600, 512, 512, 1], storage_offset_bytes=128),
+    compressed: dict(storage_key="long", dtype="torch.bfloat16", shape=[8, 128, 1, 512],
+                     stride=[65536, 512, 512, 1], storage_offset_bytes=0),
+}
+layout = dict(views=views, raw={key: {"storage_offset_bytes": 0} for key in ("swa", "long")})
+provider = SimpleNamespace(local_ranks=(0,), layouts={0: {"fresh": layout}})
+metadata = {"groups": [dict(
+    names=[swa, compressed], live_block_ids=[2, 5, 7],
+    block_table=torch.tensor([[2, 7, 5]]), slot_mapping=torch.tensor([[7, 127], [5, 0], [5, 1]]),
+)]}
+ranges, history = provider_type.verification_ranges(provider, 0, metadata)
+assert ranges["swa"] == [(5 * 131200 + 128, 2048), (7 * 131200 + 128 + 127 * 1024, 1024)]
+assert ranges["long"] == [(page * 131072, 131072) for page in (2, 5, 7)]
+assert history == (2, 5, 7)
+
 runtime = runtime_type.__new__(runtime_type)
 replay_root, scratch = torch.zeros(1), torch.zeros(1)
 key = lambda value: (0, value.untyped_storage()._cdata)
@@ -312,7 +334,8 @@ print(json.dumps(dict(
     lifecycle={"target_unbound": True, "draft_bind": True, "unbound_cleanup": True,
                "closed_cleanup": True, "replay_survives_scratch_recycle": True},
     accept_without_logits=True, verifier_feedback_only_for_owner=True, compact_speculative_metadata=True,
-    host_vocabulary_shard_order=True, compact_greedy_with_full_feedback=True, verify_copy_coalescing=True,
+    host_vocabulary_shard_order=True, compact_greedy_with_full_feedback=True,
+    verify_copy_coalescing=True, verify_swa_written_rows=True,
 )))
 PY
 fi

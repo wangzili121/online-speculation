@@ -1,0 +1,61 @@
+--- a/models/deepseek_v4_1_flash_a3/state.py
++++ b/models/deepseek_v4_1_flash_a3/state.py
+@@ -691,15 +691,15 @@
+         return deepcopy(owned["groups"]), len(self._sequence_tokens.get(key, []))
+ 
+     def verification_ranges(self, rank, metadata):
+-        """Translate admitted physical pages into target arena and Engram extents."""
++        """Snapshot the SWA rows the verifier writes and the other mutable pages."""
+         _require(rank in self.local_ranks, "Verifier cache ranges require a local cache owner")
+         layout = self.layouts[rank]["fresh"]
+         intervals, history = {}, set()
+         for group in metadata["groups"]:
+             pages = set(group["live_block_ids"])
+             table = {page for row in group["block_table"].tolist() for page in row if page >= 0}
+-            slots = {page for page, _ in group["slot_mapping"].tolist() if page >= 0}
+-            if table != pages or not slots <= pages:
++            slots = [(page, row) for page, row in group["slot_mapping"].tolist() if page >= 0]
++            if table != pages or any(page not in pages for page, _ in slots):
+                 raise ValueError("Verifier cache ranges must cover all request page mappings")
+             if "model.layers.1.self_attn.swa_cache" in group["names"]:
+                 history.update(pages)
+@@ -707,10 +707,35 @@
+                 for plane in _descriptor_planes(layout["views"][name]):
+                     if any(type(page) is not int or not 0 < page < plane["shape"][0] for page in pages):
+                         raise ValueError("Verification cache page lies outside its owning arena")
+-                    page_bytes = plane["stride"][0] * DTYPE_BYTES[plane["dtype"]]
+-                    intervals.setdefault(plane["storage_key"], set()).update(
+-                        (page * page_bytes, page_bytes) for page in pages)
+-        return intervals, tuple(sorted(history))
++                    storage = plane["storage_key"]
++                    element_bytes = DTYPE_BYTES[plane["dtype"]]
++                    page_bytes = plane["stride"][0] * element_bytes
++                    dest = intervals.setdefault(storage, set())
++                    if name.endswith(".swa_cache"):
++                        # SWA publication writes only the BF16 row at each slot,
++                        # even when its view is embedded in a larger raw page.
++                        origin = plane["storage_offset_bytes"] - layout["raw"][storage]["storage_offset_bytes"]
++                        row_bytes = plane["shape"][-1] * element_bytes
++                        stride = plane["stride"][1] * element_bytes
++                        if any(not 0 <= row < plane["shape"][1] for _, row in slots):
++                            raise ValueError("Verification SWA slot lies outside its page")
++                        dest.update((page * page_bytes + origin + row * stride, row_bytes) for page, row in slots)
++                    else:
++                        dest.update((page * page_bytes, page_bytes) for page in pages)
++
++        # Shared raw arenas can contain both a row snapshot and a whole page
++        # snapshot. Copy their union once without losing either view's bytes.
++        merged = {}
++        for storage, extents in intervals.items():
++            runs = []
++            for offset, count in sorted(extents):
++                if runs and offset <= runs[-1][0] + runs[-1][1]:
++                    begin, length = runs[-1]
++                    runs[-1] = begin, max(length, offset + count - begin)
++                else:
++                    runs.append((offset, count))
++            merged[storage] = runs
++        return merged, tuple(sorted(history))
+ 
+     @contextmanager
+     def provisional_dispatch(self):
