@@ -21,7 +21,7 @@ import math
 import torch
 
 from .dsv41_device_update import SuffixGradient
-from .dsv41_online_profile import active_profile, profiled_stage, timed_stage
+from .dsv41_online_profile import active_profile, profile_online, profiled_stage, timed_stage
 from .dsv41_serving_online import DSV41SequenceSpan
 from .dsv41_suffix import DSV41SuffixPlan
 from .pypto_dsv41_resident_abi import with_resident_entry
@@ -660,7 +660,7 @@ class DSV41ResidentPrimitives:
         return output
 
     @profiled_stage("ep_pack")
-    def _ep_dispatch_packets(self, layer, sources):
+    def _ep_dispatch_packets(self, sources):
         """Create the same fixed dispatch ABI on owner and participant nodes."""
         from .pypto_dsv41_ep_vjp import (
             EXPERTS, MAP_PAD, PACKET_FIELDS, PACKET_ROWS, ROUTES,
@@ -708,7 +708,7 @@ class DSV41ResidentPrimitives:
             sent_dy = self._workspace(rank, (PACKET_ROWS, HIDDEN))
             sent_counts = self._workspace(rank, (EXPERTS // 24, MAP_PAD), torch.int32)
             self._execute(
-                ("ep-vjp-dispatch-pack", layer), rank,
+                ("ep-vjp-dispatch-pack",), rank,
                 make_ep_vjp_dispatch_pack,
                 normalized_x=normalized, route_output_gradient=expert_gradient,
                 route_ids=route_ids, sent_metadata=sent_metadata,
@@ -734,8 +734,11 @@ class DSV41ResidentPrimitives:
         from .pypto_dsv41_moe_vjp import make_frozen_w8a8_expert_input_vjp
 
         layer_weights = self.native.weights.for_layer(layer)["expert"]
-        packets = []
-        for index, rank in enumerate(self.ranks):
+        profile = active_profile()
+        measured = profile is not None and profile.current is not None
+
+        def run_rank(index):
+            rank = self.ranks[index]
             packet = received[index]["frozen-tail"]
             expert_x = self._workspace(rank, (SLAB_ROWS, HIDDEN))
             expert_dy = self._workspace(rank, (SLAB_ROWS, HIDDEN))
@@ -743,7 +746,7 @@ class DSV41ResidentPrimitives:
             packet_map = self._workspace(rank, (PACKET_ROWS, MAP_PAD), torch.int32)
             received_total = self._workspace(rank, (MAP_PAD,), torch.int32)
             self._execute(
-                ("ep-vjp-dispatch-unpack", layer), rank,
+                ("ep-vjp-dispatch-unpack",), rank,
                 make_ep_vjp_dispatch_unpack,
                 packet_metadata=packet["metadata"], packet_x=packet["x"],
                 packet_dy=packet["dy"], packet_counts=packet["counts"],
@@ -755,15 +758,15 @@ class DSV41ResidentPrimitives:
             expert_dx = self._workspace(rank, (SLAB_ROWS, HIDDEN))
             with timed_stage("expert_route_control_d2h"):
                 counts = self.resident.read_control(expert_counts, self._local(rank)).tolist()
-            profile = active_profile()
-            if profile is not None and profile.current is not None:
-                experts = profile.current["counts"]
-                experts["expert_rows_received"] += sum(counts)
-                experts["active_routed_expert_calls"] += sum(count > 0 for count in counts)
-                experts["expert_padded_rows"] += sum(
-                    16 if count <= 16 else EXPERT_CAPACITY for count in counts if count
-                )
-                experts[f"expert_rows_rank_{rank}"] += sum(counts)
+            if measured:
+                with profile.lock:
+                    experts = profile.current["counts"]
+                    experts["expert_rows_received"] += sum(counts)
+                    experts["active_routed_expert_calls"] += sum(count > 0 for count in counts)
+                    experts["expert_padded_rows"] += sum(
+                        16 if count <= 16 else EXPERT_CAPACITY for count in counts if count
+                    )
+                    experts[f"expert_rows_rank_{rank}"] += sum(counts)
             for local_expert, count in enumerate(counts):
                 if count == 0:
                     continue
@@ -775,7 +778,7 @@ class DSV41ResidentPrimitives:
                 if not isinstance(weights, (tuple, list)) or len(weights) != 4:
                     raise RuntimeError("resident routed expert changed its W8A8 weight ABI")
                 self._execute(
-                    ("routed-expert-input-vjp", layer, rows), rank,
+                    ("routed-expert-input-vjp", rows), rank,
                     lambda rows=rows: make_frozen_w8a8_expert_input_vjp(
                         rows, HIDDEN, 2304,
                     ),
@@ -788,16 +791,32 @@ class DSV41ResidentPrimitives:
 
             sent_dx = self._workspace(rank, (PACKET_ROWS, HIDDEN))
             self._execute(
-                ("ep-vjp-return-pack", layer), rank,
+                ("ep-vjp-return-pack",), rank,
                 make_ep_vjp_return_pack,
                 expert_dx=expert_dx, packet_counts=packet["counts"],
                 packet_map=packet_map, sent_dx=sent_dx,
             )
-            packets.append({"frozen-tail": {"dx": sent_dx}})
-        return packets
+            return {"frozen-tail": {"dx": sent_dx}}
+
+        if not measured:
+            return self.resident.map_ranks(run_rank)
+
+        def profile_rank(index):
+            with profile_online(profile):
+                return run_rank(index)
+
+        before = self.resident.stats.get("program_evictions", 0)
+        profile.parallel_ranks = True
+        try:
+            return self.resident.map_ranks(profile_rank)
+        finally:
+            profile.parallel_ranks = False
+            profile.current["counts"]["device_callable_evictions"] += (
+                self.resident.stats.get("program_evictions", 0) - before
+            )
 
     @profiled_stage("ep_restore_routes")
-    def _ep_routed_input_gradients(self, layer, returned, originals, sources):
+    def _ep_routed_input_gradients(self, returned, originals, sources):
         """Restore route order only for the TP ranks that originated K32 rows."""
         from .pypto_dsv41_ep_vjp import PACKET_ROWS, ROUTES, make_ep_vjp_source_restore
 
@@ -810,7 +829,7 @@ class DSV41ResidentPrimitives:
             route_dx = self._workspace(rank, (ROUTES, HIDDEN))
             token_dx = self._workspace(rank, (ROWS, HIDDEN))
             self._execute(
-                ("ep-vjp-source-restore", layer), rank,
+                ("ep-vjp-source-restore",), rank,
                 make_ep_vjp_source_restore,
                 returned_dx=returned[positions[rank]]["frozen-tail"]["dx"],
                 sent_metadata=metadata, sent_counts=counts,
@@ -848,13 +867,11 @@ class DSV41ResidentPrimitives:
             for rank in ranks
         }
         sources = {rank: (captured[rank], envelopes[rank]) for rank in ranks}
-        packets, originals = self._ep_dispatch_packets(layer, sources)
+        packets, originals = self._ep_dispatch_packets(sources)
         received = self._ep_exchange(dispatch_stage, packets)
         return_packets = self._ep_owner_expert_packets(layer, received)
         returned = self._ep_exchange(return_stage, return_packets)
-        routed = self._ep_routed_input_gradients(
-            layer, returned, originals, sources,
-        )
+        routed = self._ep_routed_input_gradients(returned, originals, sources)
         return {
             rank: self._reverse_frozen_tail_finish(
                 layer=layer, rank=rank, captured=captured[rank],
@@ -869,7 +886,7 @@ class DSV41ResidentPrimitives:
             layer, synchronization, "dispatch",
         )
         return_stage = self._reverse_sync_stage(layer, synchronization, "return")
-        packets, _ = self._ep_dispatch_packets(layer, {})
+        packets, _ = self._ep_dispatch_packets({})
         received = self._ep_exchange(dispatch_stage, packets)
         return_packets = self._ep_owner_expert_packets(layer, received)
         self._ep_exchange(return_stage, return_packets)
@@ -1001,7 +1018,7 @@ class DSV41ResidentPrimitives:
                                  for operand in shared_weights[:3])
             gradient = self._workspace(rank, (ROWS, HIDDEN))
             self._execute(
-                ("shared-expert-input-vjp", layer, intermediate), rank,
+                ("shared-expert-input-vjp", intermediate), rank,
                 lambda: make_frozen_w8a8_expert_input_vjp(ROWS, HIDDEN, intermediate),
                 value=normed, output_gradient=envelope.shared,
                 gate_up_packed=gate, gate_up_scale=scale,

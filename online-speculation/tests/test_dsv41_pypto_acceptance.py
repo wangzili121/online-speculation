@@ -136,17 +136,19 @@ def test_online_kernel_report_correlates_host_and_device_spans(tmp_path):
     receipt = dict(phase="verify", owners=[request], seconds=0.31, timings={"chunk_seconds": 0.21})
     (session / "serving-dispatches.jsonl").write_text(json.dumps(receipt) + "\n")
     calls = [
-        dict(start_ns=100, end_ns=200, update=2, operator="attention", rank=8, first=True, counters={}),
-        dict(start_ns=210, end_ns=315, update=2, operator="attention", rank=9, first=False, counters={}),
+        dict(start_ns=100, end_ns=200, update=2, operator="attention", rank=8, device=0, tid=11,
+             first=True, counters={}),
+        dict(start_ns=103, end_ns=315, update=2, operator="attention", rank=9, device=1, tid=12,
+             first=False, counters={}),
     ]
     (acceptance / "online-profile-dispatches.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in calls)
     )
     (tmp_path / "cluster-accept.log").write_text(
         "[mono_ns=107] Callable image: device=0 upload_bytes=1024 children=3\n"
-        "[STRACE] pid=1 tid=1 inv=6 hid=aa name=chip.run.runner_run.device_wall ts=0 dur=16 clk=dev\n"
-        "[STRACE] pid=1 tid=1 inv=6 hid=aa name=chip.run ts=110 dur=40\n"
-        "[STRACE] pid=1 tid=1 inv=7 hid=bb name=chip.run ts=230 dur=40\n"
+        "[STRACE] pid=1 tid=11 inv=6 hid=aa name=chip.run.runner_run.device_wall ts=0 dur=16 clk=dev dev_id=0\n"
+        "[STRACE] pid=1 tid=11 inv=6 hid=aa name=chip.run ts=110 dur=40\n"
+        "[STRACE] pid=1 tid=12 inv=7 hid=bb name=chip.run ts=120 dur=48\n"
     )
     target = acceptance / "online-profile-kernels.json"
     result = subprocess.run([sys.executable, str(SUMMARY), str(acceptance), "--online-kernels",
@@ -156,6 +158,7 @@ def test_online_kernel_report_correlates_host_and_device_spans(tmp_path):
     first, second = report["operators"]
     assert (first["device_ns"], first["host_run_ns"], first["callable_upload_bytes"]) == (16, 40, 1024)
     assert second["calls_with_device_span"] == 0 and "device_ns" not in second
+    assert second["host_run_ns"] == 48
     assert report["serving_phases"]["update"]["verify"]["wall_seconds"] == 0.31
     assert compact["calls"] == 2 and compact["calls_with_device_span"] == 1
 

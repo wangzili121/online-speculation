@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from functools import wraps
 import json
 from statistics import median
+from threading import Lock
 from time import perf_counter
 
 
@@ -35,7 +36,9 @@ def timed_stage(name):
     try:
         yield
     finally:
-        profile.current["stage_seconds"][name] += perf_counter() - started
+        elapsed = perf_counter() - started
+        with profile.lock:
+            profile.current["stage_seconds"][name] += elapsed
 
 
 def profiled_stage(name):
@@ -56,6 +59,8 @@ class OnlineUpdateProfile:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.dispatch_path = path.with_name("online-profile-dispatches.jsonl")
         self.dispatches = []
+        self.lock = Lock()
+        self.parallel_ranks = False
         self.current = None
         self.request_id = None
         self.capture = False

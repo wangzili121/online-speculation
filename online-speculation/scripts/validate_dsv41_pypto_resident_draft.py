@@ -5,6 +5,8 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from statistics import median
+from time import perf_counter
 
 import torch
 
@@ -157,7 +159,7 @@ def main():
     with native("prefill_resident").ResidentNetworkRuntime(devices, topology) as runtime:
         attention = ResidentDraftAttention(
             args.model, args.head, runtime, dict(ep=16 if args.rank_offset else args.cards, tp=4),
-            args.output / "kernels", local_ranks=ranks,
+            args.output / "kernels", local_ranks=ranks, joined_attention=not args.compare_joined_attention,
         )
         anchors = (257, 129)[:args.requests]
         primary = prepare_round(runtime, attention, ranks, anchors, 1)
@@ -177,6 +179,17 @@ def main():
             joined_dispatches = dict(baseline=baseline_dispatches,
                                      joined=runtime.stats["dispatches"] - start_dispatches,
                                      output_byte_exact=True)
+            samples = {False: [], True: []}
+            for _ in range(3):
+                for joined in samples:
+                    attention.joined_attention = joined
+                    started = perf_counter()
+                    _, _, sample = run_round(runtime, attention, args, ranks, anchors, 1, primary)
+                    samples[joined].append((perf_counter() - started) * 1000)
+                    if sample != fingerprint:
+                        raise ValueError("A repeated draft round changed output bytes")
+            joined_dispatches.update(steady_repeats=3, baseline_wall_ms=median(samples[False]),
+                                     joined_wall_ms=median(samples[True]))
         replay_passed = None
         if args.replay:
             other_anchors = (255, 127)[:args.requests]

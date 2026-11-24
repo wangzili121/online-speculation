@@ -108,7 +108,7 @@ def check_c1a_resident_dispatch(empty):
         wo_a=empty((2, 1024, 4096)), wo_b=empty((2048, 5120)),
     )
     draft = ResidentDraftAttention.__new__(ResidentDraftAttention)
-    draft.rank_ids, draft.heads, draft.joined_attention = {0: 0}, 16, False
+    draft.rank_ids, draft.heads, draft.joined_attention = {0: 0}, 16, True
     draft.resident, draft.native = ShapeOnlyResident(), native
     draft.config = dict(
         num_hidden_layers=40, hidden_size=5120, q_lora_rank=1280, num_attention_heads=64,

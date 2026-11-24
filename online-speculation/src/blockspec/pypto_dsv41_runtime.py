@@ -4,7 +4,7 @@ import importlib
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
+from threading import Lock, get_native_id
 from time import monotonic_ns, perf_counter
 
 import torch
@@ -176,7 +176,7 @@ class ResidentDraftAttention:
     """Own static diffusion operands and share the native rank workers."""
 
     def __init__(self, model, head, resident, topology, output, *, native_module=native, local_ranks=None,
-                 joined_attention=False):
+                 joined_attention=True):
         if topology["tp"] != 4:
             raise ValueError("DSV4.1 draft attention requires the verified TP4 shard geometry")
         ranks = tuple(range(topology["ep"]) if local_ranks is None else local_ranks)
@@ -260,32 +260,37 @@ class ResidentDraftAttention:
                 if timing is not None:
                     timing["compiled"].append({"operator": key, "seconds": perf_counter() - started})
         compiled, abi = self.programs[key]
-        first = timing is not None and not profile.dispatch_seen(rank, key)
         local_rank = self.rank_ids[rank]
         arguments = [inputs[name] for name in compiled.param_names]
         if timing is None:
             self.resident.execute(compiled, local_rank, arguments, abi)
             return
 
-        stats = self.resident.stats
-        tracked_counters = ("program_evictions", "h2d_bytes", "d2h_bytes", "d2d_bytes")
-        before = {name: stats.get(name, 0) for name in tracked_counters}
+        with profile.lock:
+            first = not profile.dispatch_seen(rank, key)
+        transfers = self.resident.transfer_stats[local_rank]
+        before = {name: transfers.get(name, 0) for name in ("h2d_bytes", "d2h_bytes", "d2d_bytes")}
+        evictions = self.resident.stats.get("program_evictions", 0)
         started = monotonic_ns()
         try:
             self.resident.execute(compiled, local_rank, arguments, abi)
         finally:
             ended = monotonic_ns()
-            changes = {name: stats.get(name, 0) - before[name] for name in tracked_counters}
+            changes = {name: transfers.get(name, 0) - previous for name, previous in before.items()}
             operator = key[1] if isinstance(key, tuple) and key[0] == "online" else str(key)
             elapsed = (ended - started) / 1e9
-            timing["kernel_dispatch_seconds"][operator] += elapsed
-            timing["counts"]["device_callable_evictions"] += changes["program_evictions"]
-            profile.dispatches.append(dict(
-                update=timing["update"], operator=operator, program=key, rank=rank,
-                start_ns=started, end_ns=ended, first=first, counters=changes,
-            ))
-            if first:
-                timing["first_dispatch"].append({"operator": key, "rank": rank, "seconds": elapsed})
+            with profile.lock:
+                timing["kernel_dispatch_seconds"][operator] += elapsed
+                if not profile.parallel_ranks:
+                    changes["program_evictions"] = self.resident.stats.get("program_evictions", 0) - evictions
+                    timing["counts"]["device_callable_evictions"] += changes["program_evictions"]
+                profile.dispatches.append(dict(
+                    update=timing["update"], operator=operator, program=key, rank=rank,
+                    device=self.resident.devices[local_rank], tid=get_native_id(),
+                    start_ns=started, end_ns=ended, first=first, counters=changes,
+                ))
+                if first:
+                    timing["first_dispatch"].append({"operator": key, "rank": rank, "seconds": elapsed})
 
     def arm_online_capture(self, requests, plan):
         """Capture exactly the next draft round for the selected request owners."""

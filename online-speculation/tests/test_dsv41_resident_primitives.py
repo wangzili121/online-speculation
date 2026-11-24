@@ -589,7 +589,10 @@ class SymbolicEPPrimitives(DSV41ResidentPrimitives):
 
     def __init__(self, ranks):
         draft = Draft(ranks=ranks)
-        draft.resident = SimpleNamespace(read_control=self._expert_counts, copy_tensor=self._copy_tensor)
+        draft.resident = SimpleNamespace(
+            read_control=self._expert_counts, copy_tensor=self._copy_tensor,
+            map_ranks=lambda function: [function(index) for index in range(len(ranks))],
+        )
         self.transport = SymbolicTransport()
         self.weights = SymbolicExpertWeights()
         super().__init__(
@@ -718,7 +721,7 @@ def test_ep16_dispatch_rejects_overlapping_replay_spans():
     value = SymbolicEPPrimitives(range(8))
     captures = {rank: (symbolic_capture(0), None) for rank in range(4)}
     with pytest.raises(ValueError, match="disjoint owner spans"):
-        value._ep_dispatch_packets(39, captures)
+        value._ep_dispatch_packets(captures)
 
 
 def test_ep16_reverse_rejects_a_stale_or_partial_contract():

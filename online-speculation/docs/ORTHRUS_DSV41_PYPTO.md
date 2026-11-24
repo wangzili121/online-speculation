@@ -62,7 +62,7 @@ PyPTO 程序接收 RoPE 后的 32 行 query、128 行分页滑窗的只读视图
 
 910B3、25.5.1 驱动和 CANN 9.0.0 上复现了旧版融合 SWA 的间歇性输出错误。跨页时 SWA 输出已出现偏差，LSE 仍通过参考对照。单独拆开 PV 矩阵乘仍能复现。服务现在将 QK、softmax 和 PV 分成三个设备任务，用设备缓冲区交接中间结果。8 头原始布局和 16 头 token-major 布局各通过六组分页和压缩历史用例，每组重复 30 次，逐轮对照 FP32 参考。容器内的复验命令见[环境说明](ORTHRUS_DSV41_PYPTO_ENVIRONMENT.md)。
 
-TP4 的 K32 压缩历史路径可将 SWA 与压缩 Attention 放进同一个 PyPTO 调用，设备侧仍保留分阶段执行。单张 910B3 使用同一常驻 worker，5 组分页用例每组交替计时 50 次，单层调用中位数从 1.97–2.14 ms 降至 1.24–1.30 ms，输出和 LSE 逐字节相同。用真实模型尺寸的合成 head 完成单 rank 的 40 层双请求对照，调度次数从 333 降到 257，输出、缓存和交替请求重放均逐字节一致。整模默认使用分开调用，独立复验入口为 `validate_dsv41_pypto_resident_draft.py --compare-joined-attention`。 [实测记录](validation/dsv41/pypto-joined-attention-910b3.json)
+TP4 的 K32 压缩历史路径默认将 SWA 与压缩 Attention 放进同一个 PyPTO 调用，设备侧分阶段执行。单张 910B3 使用同一常驻 worker，5 组分页用例每组交替计时 50 次，单层调用中位数从 1.97–2.14 ms 降至 1.24–1.30 ms，输出和 LSE 逐字节相同。用真实 W8A8 权重初始化 draft head 后，单 rank 的 40 层双请求复验将调用从 333 次降到 257 次。三组交替计时的中位数从 956 ms 降到 853 ms，含测试脚本的结果读回和对照。输出、缓存和交替请求重放逐字节一致。复验入口为 `validate_dsv41_pypto_resident_draft.py --compare-joined-attention --replay`。 [单层对照记录](validation/dsv41/pypto-joined-attention-910b3.json)
 
 ```bash
 PYTHONPATH=src python3 scripts/validate_dsv41_pypto_swa.py \

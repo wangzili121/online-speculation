@@ -34,13 +34,26 @@ def online_kernels(directory):
     dispatch_path = directory / "online-profile-dispatches.jsonl"
     with dispatch_path.open() as stream:
         calls = sorted((json.loads(line) for line in stream), key=lambda row: row["start_ns"])
-    starts = [row["start_ns"] for row in calls]
+    timelines = defaultdict(lambda: ([], []))
+    for index, row in enumerate(calls):
+        keys = [(field, row[field]) for field in ("device", "tid") if field in row]
+        for key in keys or [None]:
+            starts, indices = timelines[key]
+            starts.append(row["start_ns"])
+            indices.append(index)
     traces = [Counter() for _ in calls]
     pending = {}
 
-    def containing(timestamp, duration=0):
-        index = bisect_right(starts, timestamp) - 1
-        return index if index >= 0 and timestamp + duration <= calls[index]["end_ns"] else None
+    def containing(timestamp, duration=0, *, device=None, tid=None):
+        keys = [("device", device)] if device is not None else []
+        if tid is not None:
+            keys.append(("tid", tid))
+        for key in (*keys, None):
+            starts, indices = timelines.get(key, ([], []))
+            position = bisect_right(starts, timestamp) - 1
+            if position >= 0 and timestamp + duration <= calls[indices[position]]["end_ns"]:
+                return indices[position]
+        return None
 
     with (directory.parent / "cluster-accept.log").open() as stream:
         for line in stream:
@@ -52,11 +65,12 @@ def online_kernels(directory):
                     continue
                 identity = tuple(span.get(key) for key in ("pid", "tid", "inv", "hid"))
                 if name == "chip.run.runner_run.device_wall":
-                    pending[identity] = int(span["dur"])
+                    pending[identity] = (int(span["dur"]), int(span["dev_id"]) if "dev_id" in span else None)
                 else:
                     host_ns = int(span["dur"])
-                    device_ns = pending.pop(identity, None)
-                    index = containing(int(span["ts"]), host_ns)
+                    device_ns, device = pending.pop(identity, (None, None))
+                    tid = int(span["tid"]) if "tid" in span else None
+                    index = containing(int(span["ts"]), host_ns, device=device, tid=tid)
                     if index is not None:
                         traces[index]["host_run_ns"] += host_ns
                         traces[index]["host_runs"] += 1
@@ -65,7 +79,8 @@ def online_kernels(directory):
                             traces[index]["device_runs"] += 1
             elif "Callable image: device=" in line and "[mono_ns=" in line:
                 timestamp = int(line.split("[mono_ns=", 1)[1].split("]", 1)[0])
-                index = containing(timestamp)
+                device = int(line.split("Callable image: device=", 1)[1].split()[0])
+                index = containing(timestamp, device=device)
                 if index is not None:
                     upload = line.split("upload_bytes=", 1)[1].split()[0]
                     traces[index]["callable_upload_bytes"] += int(upload)
