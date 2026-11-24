@@ -452,6 +452,15 @@ class DraftRound:
             )
         return keep
 
+    def captures_rank(self, layer, rank, record):
+        """Whether this layer must keep routed expert outputs for online replay."""
+        if self.capture is None or layer not in self.capture[0].layers:
+            return False
+        requests = self.capture[1]
+        dp = rank // self.attention.topology["tp"]
+        return any(self.owners[dp, item["request_slot"]] in requests
+                   for item in record["request_token_map"])
+
     @staticmethod
     def _tensors(value):
         if torch.is_tensor(value):

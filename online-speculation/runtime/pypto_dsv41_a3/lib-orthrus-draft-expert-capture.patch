@@ -1,0 +1,18 @@
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_layer.py b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+index a563c71..44dde74 100644
+--- a/models/deepseek_v4_1_flash_a3/prefill_layer.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+@@ -598,5 +598,5 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+                          shared=zeros(rank, capacity, 5120), output_hidden=output,
+                          combined=zeros(rank, capacity, 5120))
+-            if draft is not None:
++            if draft is not None and draft.captures_rank(layer_id, rank, state["original"]):
+                 # Exact fixed-route backward needs every selected expert's
+                 # unweighted output to differentiate the normalized route
+@@ -714,5 +714,5 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+                              work["expert_outputs"], physical]
+                 execute("combine", rank, case, arguments, {"expert_outputs": work["expert_outputs"]}, "combine")
+-                if draft is not None:
++                if "expert_outputs" in state:
+                     rows = physical * 6
+                     copy_runtime_tensor(

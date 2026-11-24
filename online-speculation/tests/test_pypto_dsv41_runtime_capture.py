@@ -106,6 +106,11 @@ def test_real_capture_preserves_the_exact_k32_token_span():
         }], "cp_token_range": (16, 32, 16, 64), "SP_valid_rows": 16},
     }
     # The native draft branch leaves full_norm out of the FFN state dictionary.
+    assert not round_.captures_rank(38, 1, state["original"])
+    assert round_.captures_rank(39, 1, state["original"])
+    assert not round_.captures_rank(39, 1, {"request_token_map": []})
+    round_.owners[0, 7] = (0, 7, 2)
+    assert not round_.captures_rank(39, 1, {"request_token_map": [{"request_slot": 7}]})
     round_.observe_layer(39, {"states": [{}, {"fresh": state}]})
     round_.finish_layer(39)
     hidden.zero_()
