@@ -54,7 +54,7 @@ def check_rank_reduction(runtime, values, outputs, method, layer):
     received, receipts = runtime.exchange(f"draft/layer{layer}", packets, method, "tp")
     fp32 = torch.stack(outputs).float()
     reference, magnitude = fp32.sum(0), fp32.abs().sum(0)
-    eps = torch.finfo(torch.bfloat16).eps
+    eps = torch.finfo(values[0].dtype).eps
     largest = 0.0
     for rank, packet in enumerate(received):
         actual = runtime.read_output(packet["draft"]["contribution"], rank).float()
@@ -118,16 +118,22 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
                     owner = rank // attention.topology["tp"], slot, generation
                     rows = draft.selection[rank, owner, role["index_source"]][1]
                     assert (runtime.read_control(rows["lengths"], local) == min(TOPK, anchor // role["ratio"])).all()
-            if args.cards == 4 or (args.cards == 1 and layer == 39):
+            if args.cards == 4:
+                physical = active // 4
+                widened = draft.pack_fp32(rank, contribution, physical=physical, total=active)
+                packet = runtime.read_output(widened, local).view(4, capacity, width)
+                assert torch.equal(packet[:, :physical].reshape(active, width), output[:active].float())
+                assert not packet[:, physical:].any()
+                return [contribution, widened], packet.flatten(0, 1)
+            if args.cards == 1 and layer == 39:
                 physical = active // 4
                 packed = runtime.workspace((4 * capacity, width), hidden.dtype, local)
                 draft.pack(rank, contribution, packed, physical=physical, total=active)
                 packed_output = runtime.read_output(packed, local).view(4, capacity, width)
                 assert torch.equal(packed_output[:, :physical].reshape(active, width), output[:active])
                 assert not packed_output[:, physical:].any()
-                if layer == 39:
-                    widened = draft.pack_fp32(rank, contribution, physical=physical, total=active)
-                    assert torch.equal(runtime.read_output(widened, local), packed_output.flatten(0, 1).float())
+                widened = draft.pack_fp32(rank, contribution, physical=physical, total=active)
+                assert torch.equal(runtime.read_output(widened, local), packed_output.flatten(0, 1).float())
                 return [contribution, packed], packed_output.flatten(0, 1)
             return [contribution], output
 
@@ -271,6 +277,7 @@ def main():
                       roles={role: roles.count(role) for role in sorted(set(roles))},
                       block=args.block_size, cache_unchanged=True, weights_reuploaded=False,
                       dispatches=runtime.stats["dispatches"], weight_bytes=draft_bytes,
+                      collective_dtype="float32" if args.cards == 4 else "bfloat16" if args.cards > 1 else None,
                       collective_max_abs_error=collective_error, transport_calls=runtime.stats["transport_calls"])
         if replay_passed:
             result.update(rounds=3, replay_byte_exact=True, interleaved_anchors=list(other_anchors))
