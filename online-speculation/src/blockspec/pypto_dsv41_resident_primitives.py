@@ -1613,12 +1613,13 @@ class DSV41ResidentPrimitives:
             )
             contribution_gradients[rank] = output
 
-        local = {
-            rank: self._reverse_c1a_rank(
+        # Each lane owns a different weight shard, even if its SP slab is empty.
+        local = self._map_owner_ranks(
+            ranks,
+            lambda rank: self._reverse_c1a_rank(
                 layer, rank, captured[rank], contribution_gradients[rank],
-            )
-            for rank in ranks
-        }
+            ),
+        )
 
         # Reverse the native normalized-input all-gather: pack each rank's
         # request gradient directly into the rank-local SP rows. The native
