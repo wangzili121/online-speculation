@@ -632,7 +632,7 @@ def main():
                         help="Record hashes of actual prefill layer outputs for first-divergence diagnosis")
     parser.add_argument("--trace-position", type=int,
                         help="Record one absolute token position (zero-based) in Decode and K32 Verify")
-    parser.add_argument("--short-speculative-dispatch", action="store_true",
+    parser.add_argument("--short-speculative-dispatch", action=argparse.BooleanOptionalAction, default=False,
                         help="Use the 16-row native program for verify/accept waves that fit on every DP")
     parser.add_argument("--online-study", type=Path,
                         help="Versioned GSM8K online policy; enables resident last-N updates")
