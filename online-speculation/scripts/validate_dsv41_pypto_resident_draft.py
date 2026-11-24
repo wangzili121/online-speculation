@@ -70,15 +70,16 @@ def check_rank_reduction(runtime, values, outputs, method, layer):
 
 def prepare_round(runtime, attention, ranks, anchors, generation):
     capacity = 128
-    prefix = BLOCK if len(anchors) < capacity // BLOCK else 0
+    block_size = attention.block_size
+    prefix = block_size if len(anchors) < capacity // block_size else 0
     table, pinned, items = {}, [], []
     positions = torch.zeros(capacity)
     for slot, anchor in enumerate(anchors):
         history, caches = histories(runtime, attention, anchor, ranks, slot, generation)
         table.update(history)
         pinned.extend(caches)
-        begin, end = prefix + slot * BLOCK, prefix + (slot + 1) * BLOCK
-        positions[begin:end] = torch.arange(anchor, anchor + BLOCK)
+        begin, end = prefix + slot * block_size, prefix + (slot + 1) * block_size
+        positions[begin:end] = torch.arange(anchor, anchor + block_size)
         items.append(dict(request_slot=slot, token_begin=begin, token_end=end, initial_context_length=anchor))
     active = items[-1]["token_end"]
     record = dict(request_token_map=items)
@@ -90,6 +91,7 @@ def prepare_round(runtime, attention, ranks, anchors, generation):
 
 
 def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
+    block_size = attention.block_size
     table, pinned, active, record, width, hidden, cos, sin = prepared
     capacity = hidden.shape[0]
     draft = attention.start_round(table)
@@ -107,7 +109,7 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
             contribution = runtime.workspace(hidden.shape, hidden.dtype, local)
             draft.project_layer(rank, layer, record, hidden, cos, sin, contribution)
             output = runtime.read_output(contribution, local)
-            for block in output[prefix:active].split(BLOCK):
+            for block in output[prefix:active].split(block_size):
                 assert torch.isfinite(block).all() and block.abs().max() > 0, f"Invalid layer {layer}, rank {rank} output"
             assert not output[:prefix].any() and not output[active:].any()
             if role["index_source"] is not None and layer in (2, 3, 20, 21, 24, 25):
@@ -147,6 +149,7 @@ def main():
     for name in ("lib", "model", "head", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--cards", type=int, choices=(1, 2, 3, 4), default=1)
+    parser.add_argument("--block-size", type=int, choices=(8, 16, BLOCK), default=BLOCK)
     parser.add_argument("--requests", type=int, choices=(1, 2), default=1)
     parser.add_argument("--anchors", type=int, nargs="+", help="One to four context lengths in the same DP partition")
     parser.add_argument("--rank-offset", type=int, choices=(0, 4, 8, 12), default=0,
@@ -170,7 +173,7 @@ def main():
     with native("prefill_resident").ResidentNetworkRuntime(devices, topology) as runtime:
         attention = ResidentDraftAttention(
             args.model, args.head, runtime, dict(ep=16 if args.rank_offset else args.cards, tp=4),
-            args.output / "kernels", local_ranks=ranks, joined_attention=not args.compare_joined_attention,
+            args.output / "kernels", local_ranks=ranks, joined_attention=not args.compare_joined_attention, block_size=args.block_size,
         )
         anchors = tuple(args.anchors) if args.anchors is not None else (257, 129)[:args.requests]
         primary = prepare_round(runtime, attention, ranks, anchors, 1)
@@ -240,7 +243,7 @@ def main():
         result = dict(physical_devices=args.cards, global_ranks=ranks, tp4_lanes=devices, full_tp4=args.cards == 4,
                       anchors=list(anchors), layers=list(range(40)),
                       roles={role: roles.count(role) for role in sorted(set(roles))},
-                      block=BLOCK, cache_unchanged=True, weights_reuploaded=False,
+                      block=args.block_size, cache_unchanged=True, weights_reuploaded=False,
                       dispatches=runtime.stats["dispatches"], weight_bytes=draft_bytes,
                       collective_max_abs_error=collective_error, transport_calls=runtime.stats["transport_calls"])
         if replay_passed:

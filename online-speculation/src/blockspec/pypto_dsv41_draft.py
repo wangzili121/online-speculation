@@ -107,7 +107,7 @@ def prepare_output(weights, config, *, tp_rank, tp=4):
                 wo_b=wo_b[:, low * o_rank:high * o_rank].T.contiguous())
 
 
-def make_qkv_program(native_module, config, *, tp=4):
+def make_qkv_program(native_module, config, *, tp=4, block_size=BLOCK):
     """Compose the native BF16 matmul, weighted RMSNorm and adjacent RoPE leaves.
 
     Cosine and sine are supplied by the model's layer-specific RoPE path. Q
@@ -125,13 +125,13 @@ def make_qkv_program(native_module, config, *, tp=4):
     norm = native_module("rmsnorm").make_blocked_rmsnorm
     rope = native_module("rope").make_adjacent_rope
     definitions = dict(
-        qa=projection(hidden, latent, capacity=BLOCK),
-        qnorm=pl.jit(norm(BLOCK, latent, eps)._func),
-        qb=projection(latent, heads * dim, capacity=BLOCK),
-        qrope=pl.jit(rope(BLOCK, heads, dim, rope_width)._func),
-        kv=projection(hidden, dim, capacity=BLOCK),
-        kvnorm=pl.jit(norm(BLOCK, dim, eps)._func),
-        kvrope=pl.jit(rope(BLOCK, 1, dim, rope_width)._func),
+        qa=projection(hidden, latent, capacity=block_size),
+        qnorm=pl.jit(norm(block_size, latent, eps)._func),
+        qb=projection(latent, heads * dim, capacity=block_size),
+        qrope=pl.jit(rope(block_size, heads, dim, rope_width)._func),
+        kv=projection(hidden, dim, capacity=block_size),
+        kvnorm=pl.jit(norm(block_size, dim, eps)._func),
+        kvrope=pl.jit(rope(block_size, 1, dim, rope_width)._func),
     )
     steps = (
         ("qa", ("hidden", "wq_a", "qa", "active")),
@@ -142,10 +142,10 @@ def make_qkv_program(native_module, config, *, tp=4):
         ("kvnorm", ("kv", "kv_norm", "normalized_kv", "active")),
         ("kvrope", ("normalized_kv", "cos", "sin", "temporary", "active")),
     )
-    return native_module("prefill_layer").compose_l2("orthrus_qkv", definitions, steps, BLOCK)
+    return native_module("prefill_layer").compose_l2("orthrus_qkv", definitions, steps, block_size)
 
 
-def make_output_program(native_module, config, *, tp=4, head_major_input=False):
+def make_output_program(native_module, config, *, tp=4, head_major_input=False, block_size=BLOCK):
     """Apply inverse RoPE and grouped Wo, yielding the local TP contribution."""
     import pypto.language as pl
 
@@ -153,14 +153,14 @@ def make_output_program(native_module, config, *, tp=4, head_major_input=False):
     width, local_out = heads * dim, config["o_groups"] // tp * config["o_lora_rank"]
     rope_width = config["qk_rope_head_dim"]
     projection = native_module("qkv_proj_rope")
-    head_stride, token_stride = (BLOCK, 1) if head_major_input else (1, heads)
+    head_stride, token_stride = (block_size, 1) if head_major_input else (1, heads)
 
     @pl.jit
     def narrow(
-        attention: pl.Tensor[[BLOCK * heads, dim], pl.FP32],
-        context: pl.Out[pl.Tensor[[BLOCK, width], pl.BF16]],
+        attention: pl.Tensor[[block_size * heads, dim], pl.FP32],
+        context: pl.Out[pl.Tensor[[block_size, width], pl.BF16]],
     ):
-        for task in pl.spmd(BLOCK * heads, name_hint="orthrus_output_layout"):
+        for task in pl.spmd(block_size * heads, name_hint="orthrus_output_layout"):
             token, head = task // heads, task % heads
             row = head * head_stride + token * token_stride
             value = pl.slice(attention, [1, dim], [row, 0])
@@ -171,7 +171,7 @@ def make_output_program(native_module, config, *, tp=4, head_major_input=False):
         narrow=narrow,
         inverse=pl.jit(projection.make_rope(heads, inverse=True, head_dim=dim, rope_dim=rope_width)._func),
         grouped=pl.jit(projection.make_prefill_grouped_output(tp)._func),
-        down=projection.make_bf16_projection_staged(local_out, config["hidden_size"], capacity=BLOCK),
+        down=projection.make_bf16_projection_staged(local_out, config["hidden_size"], capacity=block_size),
     )
     steps = (
         ("narrow", ("attention", "context")),
@@ -179,4 +179,4 @@ def make_output_program(native_module, config, *, tp=4, head_major_input=False):
         ("grouped", ("unrotated", "wo_a", "grouped", "active")),
         ("down", ("grouped", "wo_b", "contribution", "active")),
     )
-    return native_module("prefill_layer").compose_l2("orthrus_output", definitions, steps, BLOCK)
+    return native_module("prefill_layer").compose_l2("orthrus_output", definitions, steps, block_size)

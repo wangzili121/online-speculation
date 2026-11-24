@@ -15,7 +15,8 @@ def compressed_physical_rows(selected, page_table, *, anchor, ratio, physical_pa
     if (ratio not in (1, 2) or anchor < 0 or physical_pages < 1
             or not 0 <= offset_rows <= stride_rows - WINDOW // ratio):
         raise ValueError("invalid compressed history geometry")
-    if selected.shape != (BLOCK, TOPK) or selected.dtype not in (torch.int32, torch.int64):
+    if (selected.ndim != 2 or selected.shape[0] not in (8, 16, BLOCK)
+            or selected.shape[1] != TOPK or selected.dtype not in (torch.int32, torch.int64)):
         raise ValueError("require one padded Top-K row per draft position")
     if page_table.ndim != 1 or page_table.dtype not in (torch.int32, torch.int64):
         raise ValueError("require an integer logical-to-physical page table")
@@ -38,7 +39,7 @@ def compressed_physical_rows(selected, page_table, *, anchor, ratio, physical_pa
     return rows, lengths
 
 
-def make_sparse_attention(*, head_major_swa=False):
+def make_sparse_attention(*, head_major_swa=False, block_size=BLOCK):
     import pypto.language as pl
 
     @pl.jit
@@ -47,28 +48,28 @@ def make_sparse_attention(*, head_major_swa=False):
         bias: pl.Tensor, zeros: pl.Tensor, local_output: pl.Tensor, local_lse: pl.Tensor,
         output: pl.Out[pl.Tensor], lse: pl.Out[pl.Tensor],
     ):
-        segment_output = pl.create_tensor([BLOCK * PARTS * HEAD_TILE, HEAD_DIM], dtype=pl.FP32)
-        segment_lse = pl.create_tensor([BLOCK * PARTS * HEAD_TILE, 1], dtype=pl.FP32)
+        segment_output = pl.create_tensor([block_size * PARTS * HEAD_TILE, HEAD_DIM], dtype=pl.FP32)
+        segment_lse = pl.create_tensor([block_size * PARTS * HEAD_TILE, 1], dtype=pl.FP32)
         if head_major_swa:
             # SWA emits one block per head. Merge consumes all heads of one token.
-            local_values = pl.create_tensor([BLOCK * HEAD_TILE, HEAD_DIM], dtype=pl.FP32)
-            lse_rows = pl.create_tensor([BLOCK, HEAD_TILE], dtype=pl.FP32)
-            with pl.spmd(BLOCK, name_hint="orthrus_v41_swa_layout"):
+            local_values = pl.create_tensor([block_size * HEAD_TILE, HEAD_DIM], dtype=pl.FP32)
+            lse_rows = pl.create_tensor([block_size, HEAD_TILE], dtype=pl.FP32)
+            with pl.spmd(block_size, name_hint="orthrus_v41_swa_layout"):
                 token = pl.tile.get_block_idx()
                 lse_row = pl.tile.full([1, HEAD_TILE], pl.FP32, value=0.0)
                 for head in pl.range(HEAD_TILE):
-                    source = head * BLOCK + token
+                    source = head * block_size + token
                     dest = token * HEAD_TILE + head
                     local_values[dest:dest + 1, :] = local_output[source:source + 1, :]
                     pl.tile.write(lse_row, [0, head], pl.read(local_lse, [source, 0]))
                 pl.store(lse_row, [token, 0], lse_rows)
-            local_logsumexp = pl.reshape(lse_rows, [BLOCK * HEAD_TILE, 1])
+            local_logsumexp = pl.reshape(lse_rows, [block_size * HEAD_TILE, 1])
         else:
             local_values = local_output
             local_logsumexp = local_lse
 
         # Each query has its own Top-K. Heads within that query reuse the same KV tile.
-        with pl.spmd(BLOCK * PARTS, name_hint="orthrus_v41_compressed"):
+        with pl.spmd(block_size * PARTS, name_hint="orthrus_v41_compressed"):
             task = pl.tile.get_block_idx()
             token, offset = task // PARTS, task % PARTS * TILE
             count = pl.cast(pl.read(lengths, [token]), pl.INDEX)
@@ -92,7 +93,7 @@ def make_sparse_attention(*, head_major_swa=False):
                 segment_output[dst:dst + HEAD_TILE, 0:HEAD_DIM] = pl.matmul_acc(value, low, kv)
                 segment_lse[dst:dst + HEAD_TILE, 0:1] = pl.add(ref, pl.log(denom))
 
-        with pl.spmd(BLOCK, name_hint="orthrus_v41_compressed_merge"):
+        with pl.spmd(block_size, name_hint="orthrus_v41_compressed_merge"):
             token = pl.tile.get_block_idx()
             start = token * HEAD_TILE
             count = pl.cast(pl.read(lengths, [token]), pl.INDEX)
@@ -119,10 +120,10 @@ def make_sparse_attention(*, head_major_swa=False):
     return attend
 
 
-def make_sparse_program(*, head_major_swa=False):
+def make_sparse_program(*, head_major_swa=False, block_size=BLOCK):
     import pypto.language as pl
 
-    attend = make_sparse_attention(head_major_swa=head_major_swa)
+    attend = make_sparse_attention(head_major_swa=head_major_swa, block_size=block_size)
 
     @pl.jit.host
     def entry(
@@ -135,12 +136,12 @@ def make_sparse_program(*, head_major_swa=False):
     return entry
 
 
-def make_joined_attention():
+def make_joined_attention(*, block_size=BLOCK):
     """Dispatch staged SWA and compressed Attention together for the TP4 layout."""
     import pypto.language as pl
 
-    swa = pl.jit.inline(make_swa_attention(HEAD_TILE, token_major_query=True)._func)
-    sparse = pl.jit.inline(make_sparse_attention(head_major_swa=True)._func)
+    swa = pl.jit.inline(make_swa_attention(HEAD_TILE, token_major_query=True, block_size=block_size)._func)
+    sparse = pl.jit.inline(make_sparse_attention(head_major_swa=True, block_size=block_size)._func)
 
     @pl.jit
     def attend(
@@ -149,8 +150,8 @@ def make_joined_attention():
         query_flat: pl.Tensor, pages: pl.Tensor, rows: pl.Tensor, lengths: pl.Tensor,
         bias: pl.Tensor, zeros: pl.Tensor, output: pl.Out[pl.Tensor], lse: pl.Out[pl.Tensor],
     ):
-        local = pl.create_tensor([BLOCK * HEAD_TILE, HEAD_DIM], dtype=pl.FP32)
-        local_lse = pl.create_tensor([BLOCK * HEAD_TILE, 1], dtype=pl.FP32)
+        local = pl.create_tensor([block_size * HEAD_TILE, HEAD_DIM], dtype=pl.FP32)
+        local_lse = pl.create_tensor([block_size * HEAD_TILE, 1], dtype=pl.FP32)
         local, local_lse = swa(query, swa_pages, spans, temporary, history_bias, sink, swa_zeros,
                                local, local_lse)
         output, lse = sparse(query_flat, pages, rows, lengths, bias, zeros, local, local_lse, output, lse)

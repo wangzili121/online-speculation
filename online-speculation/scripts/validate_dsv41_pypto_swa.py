@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare PyPTO V4.1 K32 SWA and compressed history with the Torch FP32 reference."""
+"""Compare PyPTO V4.1 SWA and compressed history with the Torch FP32 reference."""
 
 import argparse
 import json
@@ -15,10 +15,10 @@ from blockspec.pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW, make_swa_program,
 from blockspec.vllm_ascend.dsv41_attention import PagedRows, draft_attention
 
 
-def fixture(anchor, heads, seed):
+def fixture(anchor, heads, seed, *, block_size=BLOCK):
     generator = torch.Generator().manual_seed(seed)
-    query = torch.randn((1, BLOCK, heads, HEAD_DIM), generator=generator).bfloat16()
-    temporary = torch.randn((1, BLOCK, HEAD_DIM), generator=generator).bfloat16()
+    query = torch.randn((1, block_size, heads, HEAD_DIM), generator=generator).bfloat16()
+    temporary = torch.randn((1, block_size, HEAD_DIM), generator=generator).bfloat16()
     sink = torch.linspace(-8, 8, heads)
     pages = torch.full((5, WINDOW, HEAD_DIM), float("nan"), dtype=torch.bfloat16)
     # Use nonconsecutive physical page IDs, and poison every row outside the window.
@@ -31,20 +31,21 @@ def fixture(anchor, heads, seed):
     history_bias = torch.full((1, WINDOW), -torch.inf)
     history_bias[:, :min(anchor, WINDOW)] = 0
     expected = draft_attention(query, temporary, PagedRows(pages, table), torch.tensor([anchor]), sink, window=WINDOW)
-    packed_q = query.permute(0, 2, 1, 3).reshape(heads * BLOCK, HEAD_DIM).contiguous()
+    packed_q = query.permute(0, 2, 1, 3).reshape(heads * block_size, HEAD_DIM).contiguous()
+    temporary_operand = F.pad(temporary[0], (0, 0, 0, max(16 - block_size, 0)), value=1.)
     tensors = [
-        packed_q, pages.flatten(0, 1), spans, temporary[0], history_bias, sink,
+        packed_q, pages.flatten(0, 1), spans, temporary_operand, history_bias, sink,
         torch.zeros((WINDOW, HEAD_DIM), dtype=torch.bfloat16),
-        torch.empty((heads * BLOCK, HEAD_DIM), dtype=torch.float32),
-        torch.empty((heads * BLOCK, 1), dtype=torch.float32),
+        torch.empty((heads * block_size, HEAD_DIM), dtype=torch.float32),
+        torch.empty((heads * block_size, 1), dtype=torch.float32),
     ]
-    expected = tuple(x.transpose(1, 2).reshape(heads * BLOCK, -1) for x in expected)
+    expected = tuple(x.transpose(1, 2).reshape(heads * block_size, -1) for x in expected)
     return tensors, expected
 
 
-def compressed_fixture(anchor, ratio, seed, local):
+def compressed_fixture(anchor, ratio, seed, local, *, block_size=BLOCK):
     heads = local[5].numel()
-    query = local[0].reshape(heads, BLOCK, HEAD_DIM).transpose(0, 1).unsqueeze(0)
+    query = local[0].reshape(heads, block_size, HEAD_DIM).transpose(0, 1).unsqueeze(0)
     swa = PagedRows(local[1].unflatten(0, (-1, WINDOW)), swa_table(anchor))
     count = anchor // ratio
     generator = torch.Generator().manual_seed(seed + 120)
@@ -56,9 +57,9 @@ def compressed_fixture(anchor, ratio, seed, local):
     logical = torch.arange(count)
     physical = table[logical // page_rows] * pool_stride + logical % page_rows
     pool.flatten(0, 1)[physical.long()] = torch.randn((count, HEAD_DIM), generator=generator).bfloat16()
-    lengths = torch.tensor((0, 1, 31, 127, 128, 129, 333, TOPK) * 4, dtype=torch.int32).clamp_max(count)
-    bias = torch.full((BLOCK, TOPK), -torch.inf)
-    selected = torch.full((1, BLOCK, TOPK), -1, dtype=torch.long)
+    lengths = torch.tensor((0, 1, 31, 127, 128, 129, 333, TOPK) * (block_size // 8), dtype=torch.int32).clamp_max(count)
+    bias = torch.full((block_size, TOPK), -torch.inf)
+    selected = torch.full((1, block_size, TOPK), -1, dtype=torch.long)
     for token, take in enumerate(lengths.tolist()):
         rows = torch.randperm(count, generator=generator)[:take].sort().values
         selected[0, token, :take] = rows
@@ -67,15 +68,15 @@ def compressed_fixture(anchor, ratio, seed, local):
         selected[0], table, anchor=anchor, ratio=ratio, physical_pages=pool.shape[0], stride_rows=pool_stride,
     )
     gold = draft_attention(
-        query, local[3][None], swa, torch.tensor([anchor]), local[5], window=WINDOW,
+        query, local[3][:block_size][None], swa, torch.tensor([anchor]), local[5], window=WINDOW,
         global_kv=PagedRows(pages, table[None]), global_indices=selected,
     )
     tensors = [
         F.pad(query[0], (0, 0, 0, HEAD_TILE - heads)).reshape(-1, HEAD_DIM).contiguous(),
         pool.flatten(0, 1), physical_rows, lengths, bias,
         torch.zeros((TILE, HEAD_DIM), dtype=torch.bfloat16),
-        torch.empty((BLOCK * HEAD_TILE, HEAD_DIM)), torch.empty((BLOCK * HEAD_TILE, 1)),
-        torch.empty((BLOCK * HEAD_TILE, HEAD_DIM)), torch.empty((BLOCK * HEAD_TILE, 1)),
+        torch.empty((block_size * HEAD_TILE, HEAD_DIM)), torch.empty((block_size * HEAD_TILE, 1)),
+        torch.empty((block_size * HEAD_TILE, HEAD_DIM)), torch.empty((block_size * HEAD_TILE, 1)),
     ]
     return tensors, tuple(tensor[0] for tensor in gold)
 
@@ -101,6 +102,7 @@ def download(worker, resident, handles):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=int, default=0)
+    parser.add_argument("--block-size", type=int, choices=(8, 16, BLOCK), default=BLOCK)
     parser.add_argument("--heads", type=int, choices=(8, 16, 64), default=8)
     parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--check-every-run", action="store_true", help="Check each timed run for intermittent errors")
@@ -115,6 +117,7 @@ def main():
                         help="Chain SWA and compressed Attention through their production device layout")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    block_size = args.block_size
     if args.iterations < 1 or args.device < 0 or args.output.exists():
         parser.error("need positive iterations, a nonnegative device and a new output path")
     if args.compressed and args.heads > HEAD_TILE:
@@ -140,16 +143,16 @@ def main():
         "platform": config.platform, "torch": torch.__version__, "pypto": pypto_version,
         "swa": "fused" if args.fused_swa else "staged",
         "query_layout": "token_major" if args.serving_layout else "head_major",
-        "shape": {"block": BLOCK, "window": WINDOW, "heads": args.heads, "dim": HEAD_DIM},
+        "shape": {"block": block_size, "window": WINDOW, "heads": args.heads, "dim": HEAD_DIM},
         "output_tolerance": {"atol": 1e-5, "rtol": 1.3e-6},
         "lse_tolerance": {"atol": 2e-5, "rtol": 2e-6},
         "cases": [],
     }
     worker, handles, swa_handles = None, [], []
-    local_tensors, _ = fixture(0, args.heads, 173)
+    local_tensors, _ = fixture(0, args.heads, 173, block_size=block_size)
 
     def serving_query(tensor):
-        return tensor.reshape(args.heads, BLOCK, HEAD_DIM).transpose(0, 1).reshape(BLOCK, -1).contiguous()
+        return tensor.reshape(args.heads, block_size, HEAD_DIM).transpose(0, 1).reshape(block_size, -1).contiguous()
 
     def refresh_swa(tensors):
         worker.run(swa_program, *swa_handles, config=config)
@@ -157,7 +160,7 @@ def main():
             return
         download(worker, swa_resident[-2:], swa_handles[-2:])
         for host, segment in zip(tensors[-4:-2], swa_resident[-2:], strict=True):
-            active = segment.reshape(args.heads, BLOCK, -1).transpose(0, 1)
+            active = segment.reshape(args.heads, block_size, -1).transpose(0, 1)
             host.copy_(F.pad(active, (0, 0, 0, HEAD_TILE - args.heads)).reshape_as(host))
 
     swa_resident = [tensor.share_memory_() for tensor in local_tensors]
@@ -165,7 +168,7 @@ def main():
         swa_resident[0] = serving_query(local_tensors[0]).share_memory_()
     if args.compressed:
         cases = ((0, 1), (31, 2), (129, 1), (257, 2), (1025, 1), (1025, 2))
-        program_entry = make_sparse_program(head_major_swa=args.resident_chain)
+        program_entry = make_sparse_program(head_major_swa=args.resident_chain, block_size=block_size)
         report["shape"]["topk"] = TOPK
         report["swa_input"] = ("resident_head_major_alias" if args.resident_chain
                                else "pypto_swa_output_with_host_layout_conversion")
@@ -175,12 +178,12 @@ def main():
         parser.error("requested anchor is not in the selected fixture set")
     try:
         swa_program = make_swa_program(
-            args.heads, token_major_query=args.serving_layout, fused=args.fused_swa
+            args.heads, token_major_query=args.serving_layout, fused=args.fused_swa, block_size=block_size
         ).compile(*swa_resident, config=config)
         programs = [swa_program]
         program, resident = swa_program, swa_resident
         if args.compressed:
-            sample, _ = compressed_fixture(*cases[0], 173, local_tensors)
+            sample, _ = compressed_fixture(*cases[0], 173, local_tensors, block_size=block_size)
             resident = [tensor.share_memory_() for tensor in sample]
             program = program_entry.compile(*resident, config=config)
             programs.append(program)
@@ -202,12 +205,12 @@ def main():
         for index, (anchor, ratio) in enumerate(cases):
             if args.anchor is not None and anchor != args.anchor:
                 continue
-            local, swa_expected = fixture(anchor, args.heads, 173 + index)
+            local, swa_expected = fixture(anchor, args.heads, 173 + index, block_size=block_size)
             expected = swa_expected
             swa_errors = {}
             tensors = local
             if args.compressed:
-                tensors, expected = compressed_fixture(anchor, ratio, 173 + index, local)
+                tensors, expected = compressed_fixture(anchor, ratio, 173 + index, local, block_size=block_size)
             if args.serving_layout:
                 local[0] = serving_query(local[0])
             if args.compressed:
@@ -217,8 +220,8 @@ def main():
             worker.run(program, *bindings, config=config)
             output, lse = resident[-2:]
             if args.compressed:
-                output = output.unflatten(0, (BLOCK, HEAD_TILE))[:, :args.heads]
-                lse = lse.unflatten(0, (BLOCK, HEAD_TILE))[:, :args.heads]
+                output = output.unflatten(0, (block_size, HEAD_TILE))[:, :args.heads]
+                lse = lse.unflatten(0, (block_size, HEAD_TILE))[:, :args.heads]
             elapsed, swa_elapsed = [], []
             for _ in range(args.iterations):
                 if args.compressed and (args.check_every_run or args.resident_chain):
@@ -279,7 +282,7 @@ def main():
             except AssertionError:
                 bad_rows = ~torch.isclose(output, expected[0], **report["output_tolerance"]).all(dim=-1)
                 if not args.compressed:
-                    bad_rows = bad_rows.reshape(args.heads, BLOCK).transpose(0, 1)
+                    bad_rows = bad_rows.reshape(args.heads, block_size).transpose(0, 1)
                 case["output_failed_token_heads"] = bad_rows.nonzero().tolist()
                 if args.compressed:
                     case["selected_rows_by_failed_token"] = {

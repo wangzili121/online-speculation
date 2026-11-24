@@ -58,20 +58,20 @@ def compile_geometry(source, output, capacity, tokens, *, materialize):
             print(json.dumps(dict(stage="materialize_callable", capacity=capacity,
                                   entry=index, entries=len(compiled))), flush=True)
             executable.chip_callable
-    return dict(capacity=capacity, stages=len(program.stages), compiled_entries=len(compiled))
+    return dict(capacity=capacity, tokens=tokens, stages=len(program.stages), compiled_entries=len(compiled))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--shape", choices=("base", "wide", "both"), default="both")
+    parser.add_argument("--shape", choices=("base", "wide", "both", "short"), default="both")
     parser.add_argument("--pto-only", action="store_true", help="Stop before building callable images")
     args = parser.parse_args()
     source = KernelSource.resolve(cluster=True)
     torch.set_num_threads(2)
     args.output.mkdir(parents=True, exist_ok=False)
-    shapes = {"base": (16, 16), "wide": (128, 32)}
-    names = shapes if args.shape == "both" else [args.shape]
+    shapes = {"base": (16, 16), "wide": (128, 32), "short": (16, 8)}
+    names = ("base", "wide") if args.shape == "both" else (args.shape,)
     programs = [compile_geometry(source, args.output / name, *shapes[name], materialize=not args.pto_only)
                 for name in names]
     print(json.dumps(dict(passed=True, compile_only=True, callable_images=not args.pto_only,

@@ -107,6 +107,12 @@ PYTHONPATH=src python3 scripts/validate_dsv41_pypto_qkv.py \
 
 CPU 测试覆盖完整 K32、部分接受、零接受、跨 128 行分页以及多个 DP 的请求顺序。单张 910B3 验证了设备范围快照在正常返回和异常退出时均可逐字节恢复。公司内网 8+8 卡进一步完成了真实 W8A8 整模 K32 验证、接受前缀提交和 `100663296` 字节缓存恢复。 [双机整模记录](validation/dsv41/pypto-cluster-company-ep16-acceptance.json)
 
+### 短块验证
+
+Draft 测试入口支持 `--block-size 8|16|32`。K8 的投影和 Attention 查询使用 8 个位置，临时 KV 用 16 行存储以满足 Cube 对齐，softmax 屏蔽后 8 列。Indexer 沿用 16 行规格，只检索 8 个有效查询。在单张 910B3 上，K8 的六组 SWA 和压缩 Attention 用例通过 FP32 参考对照，并使用非零填充验证了屏蔽逻辑。同一张卡、同一初始化 head 分片和两个请求（历史长度 31、2049）下，40 层 draft 验证脚本的单轮中位数为 K8 763 ms、K16 693 ms、K32 725 ms，含结果读回与检查。三种块宽的缓存和交替请求重放均逐字节一致。
+
+K8 也在两张 910B3 上验证了两个 TP4 分片，三轮共执行 120 次归约，缓存和交替请求重放逐字节一致。`compile_dsv41_pypto_cluster.py --shape short --pto-only` 验证了基模 8 个有效位置、16 行容量的 64 个编译入口。双机 Serving 和在线更新目前使用 K32。短块的整模验证和吞吐需要在接通短块调度后测量。
+
 ## Serving 入口与实机验收
 
 原生 resident session 中，draft 复用基模的 Embedding、CPU Engram 查表、mHC、MoE 和 LM Head。每层的 Attention 由 diffusion 参数计算，Wo-B 使用 TP4 分片，输出贡献经原生 TP 归约后再进入共享 MoE。临时块和 Top-K 保存在设备上，全部 head 参数只在初始化时上传。请求接近上下文上限或需要额外采样约束时，runner 走普通 Decode。

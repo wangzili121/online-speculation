@@ -1,4 +1,4 @@
-"""K32 Orthrus attention over read-only V4.1 SWA pages and the draft block."""
+"""Orthrus attention over read-only V4.1 SWA pages and the draft block."""
 
 BLOCK = 32
 WINDOW = 128
@@ -22,18 +22,28 @@ def swa_spans(page_table, anchor: int, physical_pages: int, *, stride_rows=WINDO
     return tuple(spans + [(0, 0, 0)] * (2 - len(spans)))
 
 
-def make_swa_attention(heads: int, *, token_major_query: bool = False, fused: bool = False):
+def make_swa_attention(heads: int, *, token_major_query: bool = False, fused: bool = False, block_size: int = BLOCK):
     import pypto.language as pl
 
+    if block_size not in (8, 16, BLOCK):
+        raise ValueError("Orthrus Attention block width must be 8, 16 or 32")
     if fused:
+        if block_size != BLOCK:
+            raise ValueError("The legacy fused SWA accepts K32")
         return _make_fused_swa_attention(heads, token_major_query=token_major_query)
+
+    # Cube needs complete 16-column fractals. K8 keeps eight live rows and
+    # masks the unused temporary columns before normalization.
+    block_columns = max(16, block_size)
+
+    masked_logit = -1e30
 
     @pl.jit
     def attention(
         query: pl.Tensor,
         pages: pl.Tensor,
         spans: pl.Tensor,
-        temporary: pl.Tensor,
+        temporary: pl.Tensor[[block_columns, HEAD_DIM], pl.BF16],
         history_bias: pl.Tensor,
         sink: pl.Tensor,
         zeros: pl.Tensor,
@@ -42,12 +52,12 @@ def make_swa_attention(heads: int, *, token_major_query: bool = False, fused: bo
     ):
         # Run Cube and Vector tasks with explicit device-memory dependencies.
         # The former mixed-core SWA produced intermittent output errors.
-        local_scores = pl.create_tensor([heads * BLOCK, WINDOW], dtype=pl.FP32)
-        block_scores = pl.create_tensor([heads * BLOCK, BLOCK], dtype=pl.FP32)
-        local_high = pl.create_tensor([heads * BLOCK, WINDOW], dtype=pl.BF16)
-        local_low = pl.create_tensor([heads * BLOCK, WINDOW], dtype=pl.BF16)
-        block_high = pl.create_tensor([heads * BLOCK, BLOCK], dtype=pl.BF16)
-        block_low = pl.create_tensor([heads * BLOCK, BLOCK], dtype=pl.BF16)
+        local_scores = pl.create_tensor([heads * block_size, WINDOW], dtype=pl.FP32)
+        block_scores = pl.create_tensor([heads * block_size, block_columns], dtype=pl.FP32)
+        local_high = pl.create_tensor([heads * block_size, WINDOW], dtype=pl.BF16)
+        local_low = pl.create_tensor([heads * block_size, WINDOW], dtype=pl.BF16)
+        block_high = pl.create_tensor([heads * block_size, block_columns], dtype=pl.BF16)
+        block_low = pl.create_tensor([heads * block_size, block_columns], dtype=pl.BF16)
         with pl.spmd(heads, name_hint="orthrus_v41_swa_qk"):
             head = pl.tile.get_block_idx()
             history = pl.create_l1([WINDOW, HEAD_DIM], pl.BF16)
@@ -64,19 +74,23 @@ def make_swa_attention(heads: int, *, token_major_query: bool = False, fused: bo
                         valid_shape=[length, HEAD_DIM],
                     )
 
-            row = head * BLOCK
+            row = head * block_size
             if token_major_query:
-                q = pl.slice(query, [BLOCK, HEAD_DIM], [0, head * HEAD_DIM])
+                q = pl.slice(query, [block_size, HEAD_DIM], [0, head * HEAD_DIM])
             else:
-                q = pl.slice(query, [BLOCK, HEAD_DIM], [row, 0])
-            local_scores[row:row + BLOCK, :] = pl.matmul(q, history, b_trans=True, out_dtype=pl.FP32)
-            block_scores[row:row + BLOCK, :] = pl.matmul(q, temporary, b_trans=True, out_dtype=pl.FP32)
+                q = pl.slice(query, [block_size, HEAD_DIM], [row, 0])
+            local_scores[row:row + block_size, :] = pl.matmul(q, history, b_trans=True, out_dtype=pl.FP32)
+            block_scores[row:row + block_size, :] = pl.matmul(q, temporary, b_trans=True, out_dtype=pl.FP32)
         with pl.spmd(heads, name_hint="orthrus_v41_swa_softmax"):
             head = pl.tile.get_block_idx()
-            row = head * BLOCK
-            local = pl.mul(pl.slice(local_scores, [BLOCK, WINDOW], [row, 0]), HEAD_DIM ** -0.5)
+            row = head * block_size
+            local = pl.mul(pl.slice(local_scores, [block_size, WINDOW], [row, 0]), HEAD_DIM ** -0.5)
             local = pl.col_expand_add(local, history_bias)
-            block = pl.mul(pl.slice(block_scores, [BLOCK, BLOCK], [row, 0]), HEAD_DIM ** -0.5)
+            block = pl.mul(pl.slice(block_scores, [block_size, block_columns], [row, 0]), HEAD_DIM ** -0.5)
+            if block_size < block_columns:
+                mask = pl.full([1, block_columns], dtype=pl.FP32, value=0.0)
+                mask[0:1, 8:16] = pl.full([1, 8], dtype=pl.FP32, value=masked_logit)
+                block = pl.col_expand_add(block, mask)
             sink_value = pl.read(sink, [head])
             # Normalize all visible rows together. The sink has zero value.
             ref = pl.maximum(pl.maximum(pl.row_max(local), pl.row_max(block)), sink_value)
@@ -92,11 +106,11 @@ def make_swa_attention(heads: int, *, token_major_query: bool = False, fused: bo
             # Accumulate its residual with a second BF16 Cube multiplication.
             local_lo = pl.cast(pl.sub(p_local, pl.cast(local_hi, pl.FP32)), pl.BF16, mode="rint")
             block_lo = pl.cast(pl.sub(p_block, pl.cast(block_hi, pl.FP32)), pl.BF16, mode="rint")
-            local_high[row:row + BLOCK, :] = local_hi
-            local_low[row:row + BLOCK, :] = local_lo
-            block_high[row:row + BLOCK, :] = block_hi
-            block_low[row:row + BLOCK, :] = block_lo
-            lse[row:row + BLOCK, 0:1] = pl.add(ref, pl.log(total))
+            local_high[row:row + block_size, :] = local_hi
+            local_low[row:row + block_size, :] = local_lo
+            block_high[row:row + block_size, :] = block_hi
+            block_low[row:row + block_size, :] = block_lo
+            lse[row:row + block_size, 0:1] = pl.add(ref, pl.log(total))
         with pl.spmd(heads, name_hint="orthrus_v41_swa_pv"):
             head = pl.tile.get_block_idx()
             history = pl.create_l1([WINDOW, HEAD_DIM], pl.BF16)
@@ -113,15 +127,15 @@ def make_swa_attention(heads: int, *, token_major_query: bool = False, fused: bo
                         valid_shape=[length, HEAD_DIM],
                     )
 
-            row = head * BLOCK
-            local_hi = pl.slice(local_high, [BLOCK, WINDOW], [row, 0])
-            local_lo = pl.slice(local_low, [BLOCK, WINDOW], [row, 0])
-            block_hi = pl.slice(block_high, [BLOCK, BLOCK], [row, 0])
-            block_lo = pl.slice(block_low, [BLOCK, BLOCK], [row, 0])
+            row = head * block_size
+            local_hi = pl.slice(local_high, [block_size, WINDOW], [row, 0])
+            local_lo = pl.slice(local_low, [block_size, WINDOW], [row, 0])
+            block_hi = pl.slice(block_high, [block_size, block_columns], [row, 0])
+            block_lo = pl.slice(block_low, [block_size, block_columns], [row, 0])
             value = pl.matmul(local_hi, history, out_dtype=pl.FP32)
             value = pl.matmul_acc(value, block_hi, temporary)
             value = pl.matmul_acc(value, local_lo, history)
-            output[row:row + BLOCK, :] = pl.matmul_acc(value, block_lo, temporary)
+            output[row:row + block_size, :] = pl.matmul_acc(value, block_lo, temporary)
         return output, lse
 
     return attention
@@ -193,10 +207,12 @@ def _make_fused_swa_attention(heads: int, *, token_major_query: bool = False):
     return attention
 
 
-def make_swa_program(heads: int, *, token_major_query: bool = False, fused: bool = False):
+def make_swa_program(heads: int, *, token_major_query: bool = False, fused: bool = False, block_size: int = BLOCK):
     import pypto.language as pl
 
-    attention = make_swa_attention(heads, token_major_query=token_major_query, fused=fused)
+    attention = make_swa_attention(
+        heads, token_major_query=token_major_query, fused=fused, block_size=block_size,
+    )
 
     @pl.jit.host
     def entry(

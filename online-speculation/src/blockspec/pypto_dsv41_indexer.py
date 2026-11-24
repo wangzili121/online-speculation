@@ -24,7 +24,7 @@ class IndexGeometry:
     kv_offset: int
 
 
-def index_controls(history, *, candidate_blocks, candidate_block_size, max_context):
+def index_controls(history, *, candidate_blocks, candidate_block_size, max_context, block_size=BLOCK):
     """Bind the three planes returned by GenerationSession.draft_history."""
     import torch
 
@@ -61,11 +61,11 @@ def index_controls(history, *, candidate_blocks, candidate_block_size, max_conte
                              code_offset, scale_offset, kv_offset)
     page_table = torch.zeros(bucket // pages_per_index, dtype=torch.int32)
     page_table[:page_count] = torch.tensor(pages[:page_count], dtype=torch.int32)
-    positions = torch.full((BLOCK,), anchor - 1, dtype=torch.int32)
+    positions = torch.full((block_size,), anchor - 1, dtype=torch.int32)
     return geometry, dict(page_table=page_table, positions=positions, visible=visible)
 
 
-def make_indexer_program(native_module, config, geometry):
+def make_indexer_program(native_module, config, geometry, *, block_size=BLOCK):
     """Project the draft index queries, reuse A3 QLI and emit physical attention rows."""
     import pypto.language as pl
 
@@ -80,27 +80,27 @@ def make_indexer_program(native_module, config, geometry):
     index_width = INDEX_HEADS * INDEX_DIM
     scale_factor = index_width ** -0.5
     projection = native_module("qkv_proj_rope").make_bf16_projection_staged
-    rope = native_module("rope").make_adjacent_rope(BLOCK, INDEX_HEADS, INDEX_DIM, rope_dim)
+    rope = native_module("rope").make_adjacent_rope(block_size, INDEX_HEADS, INDEX_DIM, rope_dim)
     indexer = native_module("indexer")
 
     @pl.jit
     def rotate(
-        projected: pl.Tensor[[BLOCK, index_width], pl.BF16],
-        cos: pl.Tensor[[BLOCK, rope_dim // 2], pl.FP32],
-        sin: pl.Tensor[[BLOCK, rope_dim // 2], pl.FP32],
-        query: pl.InOut[pl.Tensor[[BLOCK, INDEX_HEADS, INDEX_DIM], pl.BF16]],
+        projected: pl.Tensor[[block_size, index_width], pl.BF16],
+        cos: pl.Tensor[[block_size, rope_dim // 2], pl.FP32],
+        sin: pl.Tensor[[block_size, rope_dim // 2], pl.FP32],
+        query: pl.InOut[pl.Tensor[[block_size, INDEX_HEADS, INDEX_DIM], pl.BF16]],
         active: pl.Scalar[pl.INT32],
     ):
-        rotated = pl.reshape(query, [BLOCK, index_width])
+        rotated = pl.reshape(query, [block_size, index_width])
         rope(projected, cos, sin, rotated, active)
         return query
 
     @pl.jit
     def scale_weights(
-        weights: pl.Tensor[[BLOCK, INDEX_HEADS], pl.BF16],
-        scaled: pl.Out[pl.Tensor[[BLOCK, INDEX_HEADS], pl.FP16]],
+        weights: pl.Tensor[[block_size, INDEX_HEADS], pl.BF16],
+        scaled: pl.Out[pl.Tensor[[block_size, INDEX_HEADS], pl.FP16]],
     ):
-        for token in pl.spmd(BLOCK, name_hint="orth_index_weight_scale"):
+        for token in pl.spmd(block_size, name_hint="orth_index_weight_scale"):
             value = pl.cast(weights[token:token + 1, :], pl.FP32)
             scaled[token:token + 1, :] = pl.cast(pl.mul(value, scale_factor), pl.FP16, mode="rint")
         return scaled
@@ -135,37 +135,39 @@ def make_indexer_program(native_module, config, geometry):
 
     @pl.jit
     def map_rows(
-        indices: pl.Tensor[[BLOCK, TOPK], pl.INT32],
+        indices: pl.Tensor[[block_size, TOPK], pl.INT32],
         table: pl.Tensor[[bucket // page_rows], pl.INT32],
-        physical_rows: pl.Out[pl.Tensor[[BLOCK, TOPK], pl.INT32]],
-        lengths: pl.Out[pl.Tensor[[BLOCK], pl.INT32]],
-        bias: pl.Out[pl.Tensor[[BLOCK, TOPK], pl.FP32]],
+        physical_rows: pl.Out[pl.Tensor[[block_size, TOPK], pl.INT32]],
+        lengths: pl.Out[pl.Tensor[[block_size], pl.INT32]],
+        bias: pl.Out[pl.Tensor[[block_size, TOPK], pl.FP32]],
         visible: pl.Scalar[pl.INT32],
+        active: pl.Scalar[pl.INT32],
     ):
         count = pl.min(TOPK, visible)
         # Separate writers by a full 32-byte row before publishing packed lengths.
-        counts = pl.create_tensor([BLOCK, 8], dtype=pl.INT32)
-        with pl.spmd(BLOCK, name_hint="orth_qli_physical_rows") as mapping:
+        counts = pl.create_tensor([block_size, 8], dtype=pl.INT32)
+        with pl.spmd(block_size, name_hint="orth_qli_physical_rows") as mapping:
             token = pl.tile.get_block_idx()
             rows = pl.tile.full([1, TOPK], pl.INT32, value=-1)
             mask = pl.tile.full([1, TOPK], pl.FP32, value=-1e30)
             used = 0
-            for lane in pl.range(count):
-                index = pl.read(indices, [token, lane])
-                if index >= 0:
-                    if index < visible:
-                        page = pl.read(table, [index // page_rows])
-                        offset = index % page_rows
-                        pl.tile.write(rows, [0, used], pl.cast(page * kv_stride + kv_offset + offset, pl.INT32))
-                        pl.tile.write(mask, [0, used], 0.0)
-                        used = used + 1
+            if token < active:
+                for lane in pl.range(count):
+                    index = pl.read(indices, [token, lane])
+                    if index >= 0:
+                        if index < visible:
+                            page = pl.read(table, [index // page_rows])
+                            offset = index % page_rows
+                            pl.tile.write(rows, [0, used], pl.cast(page * kv_stride + kv_offset + offset, pl.INT32))
+                            pl.tile.write(mask, [0, used], 0.0)
+                            used = used + 1
             pl.store(rows, [token, 0], physical_rows)
             pl.store(mask, [token, 0], bias)
             padded = pl.tile.full([1, 8], pl.INT32, value=0)
             pl.tile.write(padded, [0, 0], pl.cast(used, pl.INT32))
             pl.store(padded, [token, 0], counts)
-        packed = pl.reshape(lengths, [1, BLOCK])
-        with pl.spmd(BLOCK // 8, name_hint="orth_qli_lengths", deps=[mapping]):
+        packed = pl.reshape(lengths, [1, block_size])
+        with pl.spmd(block_size // 8, name_hint="orth_qli_lengths", deps=[mapping]):
             start = pl.tile.get_block_idx() * 8
             values = pl.tile.full([1, 8], pl.INT32, value=0)
             for lane in pl.range(8):
@@ -174,13 +176,13 @@ def make_indexer_program(native_module, config, geometry):
         return physical_rows, lengths, bias
 
     leaves = dict(
-        project=projection(latent, index_width, capacity=BLOCK),
-        weight=projection(hidden, INDEX_HEADS, capacity=BLOCK),
+        project=projection(latent, index_width, capacity=block_size),
+        weight=projection(hidden, INDEX_HEADS, capacity=block_size),
         rotate=rotate,
         scale=scale_weights,
         gather=gather_pages,
-        quantize=indexer.make_indexer_query_quantize_fp16_scale(BLOCK),
-        select=indexer.make_prefill_indexer_select(BLOCK, bucket, compress_ratio=geometry.ratio),
+        quantize=indexer.make_indexer_query_quantize_fp16_scale(block_size),
+        select=indexer.make_prefill_indexer_select(block_size, bucket, compress_ratio=geometry.ratio),
         lower=map_rows,
     )
     steps = (
@@ -192,6 +194,6 @@ def make_indexer_program(native_module, config, geometry):
         ("quantize", ("idx_query", "query_codes", "query_scales", "active")),
         ("select", ("query_codes", "query_scales", "index_keys", "key_scales", "idx_scaled_weights",
                     "positions", "index_scores", "logical_rows", "active")),
-        ("lower", ("logical_rows", "page_table", "physical_rows", "lengths", "bias", "visible")),
+        ("lower", ("logical_rows", "page_table", "physical_rows", "lengths", "bias", "visible", "active")),
     )
-    return native_module("prefill_layer").compose_l2("orthrus_indexer", leaves, steps, BLOCK)
+    return native_module("prefill_layer").compose_l2("orthrus_indexer", leaves, steps, block_size)

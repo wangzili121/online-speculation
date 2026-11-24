@@ -176,7 +176,7 @@ class ResidentDraftAttention:
     """Own static diffusion operands and share the native rank workers."""
 
     def __init__(self, model, head, resident, topology, output, *, native_module=native, local_ranks=None,
-                 joined_attention=True):
+                 joined_attention=True, block_size=BLOCK):
         if topology["tp"] != 4:
             raise ValueError("DSV4.1 draft attention requires the verified TP4 shard geometry")
         ranks = tuple(range(topology["ep"]) if local_ranks is None else local_ranks)
@@ -188,7 +188,9 @@ class ResidentDraftAttention:
         self.config, self.manifest, files = read_draft_artifact(self.model_path, self.head_path)
         self.files = files
         self.resident, self.topology = resident, topology
-        self.joined_attention = joined_attention
+        if block_size not in (8, 16, BLOCK):
+            raise ValueError("Native draft requires block width 8, 16 or 32")
+        self.joined_attention, self.block_size = joined_attention, block_size
         self.native = native_module
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
@@ -294,6 +296,8 @@ class ResidentDraftAttention:
 
     def arm_online_capture(self, requests, plan):
         """Capture exactly the next draft round for the selected request owners."""
+        if self.block_size != BLOCK:
+            raise ValueError("Online replay currently requires block width 32")
         if self._capture_request is not None:
             raise RuntimeError("a draft replay capture is already armed")
         plan = plan if isinstance(plan, DSV41SuffixPlan) else DSV41SuffixPlan(plan)
@@ -547,12 +551,13 @@ class DraftRound:
         return replays
 
     def project_layer(self, rank, layer, record, hidden, cos, sin, contribution):
+        block_size = self.attention.block_size
         dp = rank // self.attention.topology["tp"]
         for item in record["request_token_map"]:
             begin, end = item["token_begin"], item["token_end"]
             owner = self.owners[dp, item["request_slot"]]
-            if end - begin != BLOCK:
-                raise ValueError("Orthrus expects a complete K32 block for each scheduler request")
+            if end - begin != block_size:
+                raise ValueError("Orthrus expects a complete draft block for each scheduler request")
             if self.histories[rank, layer, owner]["committed_tokens"] != item["initial_context_length"]:
                 raise ValueError("Draft block and committed history identify different anchors")
             self.project_block(rank, layer, owner, hidden[begin:end], cos[begin:end], sin[begin:end],
@@ -567,24 +572,31 @@ class DraftRound:
 
     def project_block(self, rank, layer, owner, hidden, cos, sin, contribution, *, record):
         attention = self.attention
+        block_size = attention.block_size
         runtime = attention.resident
         history = self.histories[rank, layer, owner]
         anchor, role, planes = history["committed_tokens"], history["role"], history["planes"]
         heads, config = attention.heads, attention.config
         width, latent = heads * HEAD_DIM, config["q_lora_rank"]
 
-        def workspace(shape, dtype=torch.bfloat16):
-            # The K32 programs write every element of these output buffers.
-            return runtime.workspace(shape, dtype, attention.rank_ids[rank], fill=None)
+        local_rank = attention.rank_ids[rank]
+
+        def workspace(shape, dtype=torch.bfloat16, *, fill=None):
+            # The draft programs write every element of these output buffers.
+            return runtime.workspace(shape, dtype, local_rank, fill=fill)
 
         operands = attention.operands[rank, layer]
-        values = dict(operands, hidden=hidden, cos=cos, sin=sin, active=BLOCK)
+        values = dict(operands, hidden=hidden, cos=cos, sin=sin, active=block_size)
         for name, columns in (
             ("qa", latent), ("latent", latent), ("qb", width), ("query", width),
-            ("kv", HEAD_DIM), ("normalized_kv", HEAD_DIM), ("temporary", HEAD_DIM),
+            ("kv", HEAD_DIM), ("normalized_kv", HEAD_DIM),
         ):
-            values[name] = workspace((BLOCK, columns))
-        attention.execute("qkv", rank, lambda: make_qkv_program(attention.native, config), values)
+            values[name] = workspace((block_size, columns))
+        # SWA masks padded KV rows in the 16-column Cube tile at K8.
+        temporary = workspace((max(16, block_size), HEAD_DIM), fill=0 if block_size < 16 else None)
+        values["temporary"] = temporary[:block_size] if block_size < 16 else temporary
+        attention.execute("qkv", rank,
+                          lambda: make_qkv_program(attention.native, config, block_size=block_size), values)
 
         swa, = planes["swa"]
         if (swa["shape"][1:] != (WINDOW, 1, HEAD_DIM)
@@ -595,11 +607,12 @@ class DraftRound:
         bias[:, :min(anchor, WINDOW)] = 0
         spans = swa_spans(swa["pages"], anchor, swa["shape"][0], stride_rows=swa["stride_rows"],
                           offset_rows=swa["offset_rows"])
-        output_shape = (BLOCK * heads, HEAD_DIM)
+        output_shape = (block_size * heads, HEAD_DIM)
         compressed = role["index_source"] is not None
-        lse_shape = (BLOCK * heads, 1)
-        swa_args = dict(query=values["query"], spans=torch.tensor(spans, dtype=torch.int32),
-                        temporary=values["temporary"], history_bias=bias, sink=operands["sink"])
+        lse_shape = (block_size * heads, 1)
+        query = values["query"]
+        swa_args = dict(query=query, spans=torch.tensor(spans, dtype=torch.int32),
+                        temporary=temporary, history_bias=bias, sink=operands["sink"])
         swa_pages = swa["handle"]
         swa_zeros = attention.constants[rank]["swa_zero"]
         joined = compressed and attention.joined_attention
@@ -607,7 +620,7 @@ class DraftRound:
             local = workspace(output_shape, torch.float32)
             local_lse = workspace(lse_shape, torch.float32)
             attention.execute(("swa", swa_pages.shape[0]), rank,
-                              lambda: make_swa_attention(heads, token_major_query=True),
+                              lambda: make_swa_attention(heads, token_major_query=True, block_size=block_size),
                               dict(swa_args, pages=swa_pages, zeros=swa_zeros, output=local, lse=local_lse))
             context = local
             final_lse = local_lse
@@ -621,21 +634,24 @@ class DraftRound:
                                lengths=selected["lengths"], bias=selected["bias"],
                                zeros=attention.constants[rank]["sparse_zero"], output=context,
                                lse=final_lse)
-            flat_query = values["query"].view(-1, HEAD_DIM)
+            flat_query = query.view(-1, HEAD_DIM)
             if joined:
                 attention.execute(("joined_attention", swa_pages.shape[0], long["handle"].shape[0]), rank,
-                                  make_joined_attention,
+                                  lambda: make_joined_attention(block_size=block_size),
                                   dict(swa_args, **sparse_args, swa_pages=swa_pages, swa_zeros=swa_zeros,
                                        query_flat=flat_query))
             else:
                 attention.execute(("sparse", long["handle"].shape[0]), rank,
-                                  lambda: make_sparse_attention(head_major_swa=True),
+                                  lambda: make_sparse_attention(head_major_swa=True, block_size=block_size),
                                   dict(sparse_args, query=flat_query, local_output=local, local_lse=local_lse))
 
-        values.update(attention=context, context=workspace((BLOCK, width)), unrotated=workspace((BLOCK, width)),
-                      grouped=workspace((BLOCK, operands["wo_b"].shape[0])), contribution=contribution)
+        values.update(attention=context, context=workspace((block_size, width)),
+                      unrotated=workspace((block_size, width)),
+                      grouped=workspace((block_size, operands["wo_b"].shape[0])),
+                      contribution=contribution)
         attention.execute(("output", compressed), rank,
-                          lambda: make_output_program(attention.native, config, head_major_input=not compressed), values)
+                          lambda: make_output_program(attention.native, config, head_major_input=not compressed,
+                                                      block_size=block_size), values)
         if self.capture is not None and layer in self.capture[0].layers and owner in self.capture[1]:
             from .pypto_dsv41_attention_vjp import C1AAttentionVJPGeometry, make_joined_history
 
@@ -644,7 +660,7 @@ class DraftRound:
             # Accepted tokens may overwrite these cache pages while delayed
             # teacher rows accumulate. Snapshot the exact selected K/V now.
             geometry = C1AAttentionVJPGeometry()
-            joined_history = workspace((BLOCK * geometry.padded_columns, HEAD_DIM))
+            joined_history = workspace((block_size * geometry.padded_columns, HEAD_DIM))
             attention.execute("online-joined-history", rank,
                               lambda: make_joined_history(geometry),
                               dict(swa_pages=swa_pages, spans=swa_args["spans"],
@@ -661,6 +677,8 @@ class DraftRound:
 
     def index_rows(self, rank, layer, owner, history, values, workspace):
         attention = self.attention
+        block_size = attention.block_size
+        projection_rows = max(16, block_size)
         config, role = attention.config, history["role"]
         kv, = history["planes"]["long"]
         source = role["index_source"]
@@ -675,30 +693,41 @@ class DraftRound:
         geometry, controls = index_controls(
             history, candidate_blocks=config["candidate_topk_blocks"],
             candidate_block_size=config["candidate_block_size"], max_context=attention.max_context,
+            block_size=projection_rows,
         )
         codes, scales = history["planes"]["index"]
-        outputs = dict(physical_rows=workspace((BLOCK, TOPK), torch.int32),
-                       lengths=workspace((BLOCK,), torch.int32),
-                       bias=workspace((BLOCK, TOPK), torch.float32))
+        outputs = dict(physical_rows=workspace((projection_rows, TOPK), torch.int32),
+                       lengths=workspace((projection_rows,), torch.int32),
+                       bias=workspace((projection_rows, TOPK), torch.float32))
         shapes = {
-            "idx_projected": ((BLOCK, INDEX_HEADS * INDEX_DIM), torch.bfloat16),
-            "idx_raw_weights": ((BLOCK, INDEX_HEADS), torch.bfloat16),
-            "idx_query": ((BLOCK, INDEX_HEADS, INDEX_DIM), torch.bfloat16),
-            "idx_scaled_weights": ((BLOCK, INDEX_HEADS), torch.float16),
+            "idx_projected": ((projection_rows, INDEX_HEADS * INDEX_DIM), torch.bfloat16),
+            "idx_raw_weights": ((projection_rows, INDEX_HEADS), torch.bfloat16),
+            "idx_query": ((projection_rows, INDEX_HEADS, INDEX_DIM), torch.bfloat16),
+            "idx_scaled_weights": ((projection_rows, INDEX_HEADS), torch.float16),
             "index_keys": ((geometry.bucket, INDEX_DIM), torch.int8),
             "key_scales": ((geometry.bucket,), torch.float16),
-            "query_codes": ((BLOCK, INDEX_HEADS, INDEX_DIM), torch.int8),
-            "query_scales": ((BLOCK, INDEX_HEADS), torch.float16),
-            "index_scores": ((BLOCK, geometry.bucket), torch.float32),
-            "logical_rows": ((BLOCK, TOPK), torch.int32),
+            "query_codes": ((projection_rows, INDEX_HEADS, INDEX_DIM), torch.int8),
+            "query_scales": ((projection_rows, INDEX_HEADS), torch.float16),
+            "index_scores": ((projection_rows, geometry.bucket), torch.float32),
+            "logical_rows": ((projection_rows, TOPK), torch.int32),
         }
         bindings = dict(values, **controls, **outputs, index_codes=codes["handle"], index_scales=scales["handle"],
                         zero_codes=attention.constants[rank][f"index_zero_{geometry.ratio}"])
         # Preserve the native QLI intermediates' initialization contract.
         local = attention.rank_ids[rank]
+        if projection_rows != block_size:
+            for name in ("latent", "hidden", "cos", "sin"):
+                value = values[name]
+                padded = attention.resident.workspace((projection_rows, *value.shape[1:]), value.dtype, local)
+                attention.resident.copy_tensor(padded[:block_size], value, local)
+                bindings[name] = padded
         bindings.update({name: attention.resident.workspace(shape, dtype, local)
                          for name, (shape, dtype) in shapes.items()})
-        attention.execute(("indexer", geometry), rank, lambda: make_indexer_program(attention.native, config, geometry), bindings)
+        attention.execute(("indexer", geometry), rank,
+                          lambda: make_indexer_program(attention.native, config, geometry,
+                                                       block_size=projection_rows), bindings)
+        if projection_rows != block_size:
+            outputs = {name: value[:block_size] for name, value in outputs.items()}
         if self.last_use[layer] > layer:
             self.selection[key] = identity, outputs
         return outputs
