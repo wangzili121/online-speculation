@@ -85,7 +85,7 @@ def check_c1a_resident_dispatch(empty):
     from blockspec.pypto_dsv41_runtime import DraftRound, ResidentDraftAttention, native
 
     class ShapeOnlyResident:
-        def workspace(self, shape, dtype, rank):
+        def workspace(self, shape, dtype, rank, *, fill=0):
             return empty(shape, dtype)
 
         def execute(self, compiled, rank, arguments, abi):

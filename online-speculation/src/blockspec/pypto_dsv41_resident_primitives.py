@@ -333,11 +333,8 @@ class DSV41ResidentPrimitives:
         except KeyError as error:
             raise ValueError(f"rank {rank} belongs to the peer host") from error
 
-    def _workspace(self, rank, shape, dtype=torch.bfloat16, *, fill=None):
-        options = {} if fill is None else {"fill": fill}
-        return self.resident.workspace(
-            tuple(shape), dtype, self._local(rank), **options,
-        )
+    def _workspace(self, rank, shape, dtype=torch.bfloat16, *, fill=0):
+        return self.resident.workspace(tuple(shape), dtype, self._local(rank), fill=fill)
 
     def _execute(self, key, rank, factory, **inputs):
         self.draft.execute(("online", *key), rank, factory, inputs)
@@ -702,11 +699,11 @@ class DSV41ResidentPrimitives:
                 active = self._local_span(captured).rows
 
             sent_metadata = self._workspace(
-                rank, (PACKET_ROWS, PACKET_FIELDS), torch.int64,
+                rank, (PACKET_ROWS, PACKET_FIELDS), torch.int64, fill=None,
             )
-            sent_x = self._workspace(rank, (PACKET_ROWS, HIDDEN))
-            sent_dy = self._workspace(rank, (PACKET_ROWS, HIDDEN))
-            sent_counts = self._workspace(rank, (EXPERTS // 24, MAP_PAD), torch.int32)
+            sent_x = self._workspace(rank, (PACKET_ROWS, HIDDEN), fill=None)
+            sent_dy = self._workspace(rank, (PACKET_ROWS, HIDDEN), fill=None)
+            sent_counts = self._workspace(rank, (EXPERTS // 24, MAP_PAD), torch.int32, fill=None)
             self._execute(
                 ("ep-vjp-dispatch-pack",), rank,
                 make_ep_vjp_dispatch_pack,
@@ -740,11 +737,11 @@ class DSV41ResidentPrimitives:
         def run_rank(index):
             rank = self.ranks[index]
             packet = received[index]["frozen-tail"]
-            expert_x = self._workspace(rank, (SLAB_ROWS, HIDDEN))
-            expert_dy = self._workspace(rank, (SLAB_ROWS, HIDDEN))
-            expert_counts = self._workspace(rank, (LOCAL_EXPERTS,), torch.int32)
-            packet_map = self._workspace(rank, (PACKET_ROWS, MAP_PAD), torch.int32)
-            received_total = self._workspace(rank, (MAP_PAD,), torch.int32)
+            expert_x = self._workspace(rank, (SLAB_ROWS, HIDDEN), fill=None)
+            expert_dy = self._workspace(rank, (SLAB_ROWS, HIDDEN), fill=None)
+            expert_counts = self._workspace(rank, (LOCAL_EXPERTS,), torch.int32, fill=None)
+            packet_map = self._workspace(rank, (PACKET_ROWS, MAP_PAD), torch.int32, fill=None)
+            received_total = self._workspace(rank, (MAP_PAD,), torch.int32, fill=None)
             self._execute(
                 ("ep-vjp-dispatch-unpack",), rank,
                 make_ep_vjp_dispatch_unpack,
@@ -755,7 +752,8 @@ class DSV41ResidentPrimitives:
                 received_total=received_total, owner_rank=rank,
             )
 
-            expert_dx = self._workspace(rank, (SLAB_ROWS, HIDDEN))
+            # Return packing reads only routed rows written by the active experts.
+            expert_dx = self._workspace(rank, (SLAB_ROWS, HIDDEN), fill=None)
             with timed_stage("expert_route_control_d2h"):
                 counts = self.resident.read_control(expert_counts, self._local(rank)).tolist()
             if measured:
@@ -789,7 +787,7 @@ class DSV41ResidentPrimitives:
                     input_gradient=expert_dx[begin:end],
                 )
 
-            sent_dx = self._workspace(rank, (PACKET_ROWS, HIDDEN))
+            sent_dx = self._workspace(rank, (PACKET_ROWS, HIDDEN), fill=None)
             self._execute(
                 ("ep-vjp-return-pack",), rank,
                 make_ep_vjp_return_pack,

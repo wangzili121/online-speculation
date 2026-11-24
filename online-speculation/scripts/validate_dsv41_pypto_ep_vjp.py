@@ -143,13 +143,16 @@ def main():
             worker.copy_from(value.data_ptr(), handle.data_ptr, value.nbytes)
             return value
 
+        def dirty(shape, dtype):
+            return allocate(shape, dtype, torch.full(shape, 7, dtype=dtype))
+
         normalized_h = allocate(normalized_x.shape, normalized_x.dtype, normalized_x)
         route_dy_h = allocate(route_dy.shape, route_dy.dtype, route_dy)
         route_ids_h = allocate(route_ids.shape, route_ids.dtype, route_ids)
-        sent_meta_h = allocate((PACKET_ROWS, PACKET_FIELDS), torch.int64)
-        sent_x_h = allocate((PACKET_ROWS, HIDDEN), torch.bfloat16)
-        sent_dy_h = allocate((PACKET_ROWS, HIDDEN), torch.bfloat16)
-        sent_counts_h = allocate((EP_WORLD, MAP_PAD), torch.int32)
+        sent_meta_h = dirty((PACKET_ROWS, PACKET_FIELDS), torch.int64)
+        sent_x_h = dirty((PACKET_ROWS, HIDDEN), torch.bfloat16)
+        sent_dy_h = dirty((PACKET_ROWS, HIDDEN), torch.bfloat16)
+        sent_counts_h = dirty((EP_WORLD, MAP_PAD), torch.int32)
         worker.run(
             programs["dispatch_pack"], normalized_h, route_dy_h, route_ids_h,
             sent_meta_h, sent_x_h, sent_dy_h, sent_counts_h, active,
@@ -175,26 +178,25 @@ def main():
                     actual_dy, route_dy[token * TOPK + slot], atol=0, rtol=0,
                 )
                 packet_rows[packet] = (actual_x, actual_dy)
-        # Each owner bucket has inactive capacity; sample one row to ensure the
-        # production packet explicitly zeroes it rather than relying on alloc.
-        for owner in set(owners):
+        for owner in range(EP_WORLD):
             invalid = owner * ROUTES + int(sent_counts[owner, 0])
-            if torch.count_nonzero(sent_x[invalid]):
+            end = (owner + 1) * ROUTES
+            if torch.count_nonzero(sent_x[invalid:end]):
                 raise AssertionError("inactive dispatch x row was not zero")
-            if torch.count_nonzero(sent_dy[invalid]):
+            if torch.count_nonzero(sent_dy[invalid:end]):
                 raise AssertionError("inactive dispatch dY row was not zero")
 
         recv_meta_h = allocate((PACKET_ROWS, PACKET_FIELDS), torch.int64)
         recv_x_h = allocate((PACKET_ROWS, HIDDEN), torch.bfloat16)
         recv_dy_h = allocate((PACKET_ROWS, HIDDEN), torch.bfloat16)
         recv_counts_h = allocate((EP_WORLD, MAP_PAD), torch.int32)
-        expert_x_h = allocate((SLAB_ROWS, HIDDEN), torch.bfloat16)
-        expert_dy_h = allocate((SLAB_ROWS, HIDDEN), torch.bfloat16)
-        expert_counts_h = allocate((LOCAL_EXPERTS,), torch.int32)
-        packet_map_h = allocate((PACKET_ROWS, MAP_PAD), torch.int32)
-        received_total_h = allocate((MAP_PAD,), torch.int32)
+        expert_x_h = dirty((SLAB_ROWS, HIDDEN), torch.bfloat16)
+        expert_dy_h = dirty((SLAB_ROWS, HIDDEN), torch.bfloat16)
+        expert_counts_h = dirty((LOCAL_EXPERTS,), torch.int32)
+        packet_map_h = dirty((PACKET_ROWS, MAP_PAD), torch.int32)
+        received_total_h = dirty((MAP_PAD,), torch.int32)
         expert_dx_h = allocate((SLAB_ROWS, HIDDEN), torch.bfloat16)
-        returned_owner_h = allocate((PACKET_ROWS, HIDDEN), torch.bfloat16)
+        returned_owner_h = dirty((PACKET_ROWS, HIDDEN), torch.bfloat16)
         assembled_return = torch.zeros(PACKET_ROWS, HIDDEN, dtype=torch.bfloat16)
         owner_reports = []
 
@@ -232,10 +234,12 @@ def main():
             expert_dy = download(expert_dy_h, (SLAB_ROWS, HIDDEN), torch.bfloat16)
             if total != count or int(expert_counts.sum()) != count:
                 raise AssertionError("unpack lost an owner route")
+            unused = torch.ones(SLAB_ROWS, dtype=torch.bool)
             for row in range(count):
                 source_packet = source_begin + row
                 receive_packet = receive_begin + row
                 slab = int(packet_map[receive_packet, 0])
+                unused[slab] = False
                 if int(packet_map[receive_packet, 1]) != 1:
                     raise AssertionError("valid packet has no slab map")
                 if not torch.equal(
@@ -248,6 +252,8 @@ def main():
                 torch.testing.assert_close(slab_dy, packet_rows[source_packet][1], atol=0, rtol=0)
                 token, slot = sent_meta[source_packet, 1:3].tolist()
                 route = token * TOPK + slot
+            if expert_x[unused].any() or expert_dy[unused].any():
+                raise AssertionError("unpopulated expert slab rows were not zero")
             expert_dx = torch.zeros_like(expert_x)
             for row in range(count):
                 source_packet = source_begin + row
@@ -263,6 +269,8 @@ def main():
             returned_owner = download(
                 returned_owner_h, (PACKET_ROWS, HIDDEN), torch.bfloat16,
             )
+            if returned_owner[:receive_begin].any() or returned_owner[receive_begin + count:].any():
+                raise AssertionError("inactive return packet rows were not zero")
             for row in range(count):
                 source_packet = source_begin + row
                 receive_packet = receive_begin + row

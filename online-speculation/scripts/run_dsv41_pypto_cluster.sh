@@ -43,7 +43,7 @@ fi
 
 for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.patch \
     lib-pypto72-compat.patch lib-cluster-retry.patch lib-cluster-prefill-trace.patch \
-    lib-deterministic-reduction.patch lib-cluster-online.patch; do
+    lib-deterministic-reduction.patch lib-cluster-online.patch lib-workspace-write-only.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done

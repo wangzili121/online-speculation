@@ -618,7 +618,7 @@ class SymbolicEPPrimitives(DSV41ResidentPrimitives):
     def _copy_tensor(destination, source, rank):
         assert destination.shape == source.shape and destination.dtype == source.dtype
 
-    def _workspace(self, rank, shape, dtype=torch.bfloat16):
+    def _workspace(self, rank, shape, dtype=torch.bfloat16, *, fill=0):
         self.workspace_number += 1
         return SymbolicTensor(shape, dtype, f"workspace-{rank}-{self.workspace_number}")
 

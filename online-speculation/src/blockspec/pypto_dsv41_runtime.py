@@ -453,7 +453,7 @@ class DraftRound:
         for name in ("readonly_hidden", "hidden", "incoming", "output_hidden", "ffn_pre"):
             value = state[name]
             if id(value) not in copies:
-                snapshot = resident.workspace(value.shape, value.dtype, local)
+                snapshot = resident.workspace(value.shape, value.dtype, local, fill=None)
                 resident.copy_tensor(snapshot, value, local)
                 copies[id(value)] = snapshot
             state[name] = copies[id(value)]
@@ -574,7 +574,8 @@ class DraftRound:
         width, latent = heads * HEAD_DIM, config["q_lora_rank"]
 
         def workspace(shape, dtype=torch.bfloat16):
-            return runtime.workspace(shape, dtype, attention.rank_ids[rank])
+            # The K32 programs write every element of these output buffers.
+            return runtime.workspace(shape, dtype, attention.rank_ids[rank], fill=None)
 
         operands = attention.operands[rank, layer]
         values = dict(operands, hidden=hidden, cos=cos, sin=sin, active=BLOCK)
@@ -693,7 +694,10 @@ class DraftRound:
         }
         bindings = dict(values, **controls, **outputs, index_codes=codes["handle"], index_scales=scales["handle"],
                         zero_codes=attention.constants[rank][f"index_zero_{geometry.ratio}"])
-        bindings.update({name: workspace(shape, dtype) for name, (shape, dtype) in shapes.items()})
+        # Preserve the native QLI intermediates' initialization contract.
+        local = attention.rank_ids[rank]
+        bindings.update({name: attention.resident.workspace(shape, dtype, local)
+                         for name, (shape, dtype) in shapes.items()})
         attention.execute(("indexer", geometry), rank, lambda: make_indexer_program(attention.native, config, geometry), bindings)
         if self.last_use[layer] > layer:
             self.selection[key] = identity, outputs

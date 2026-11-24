@@ -64,6 +64,8 @@ PyPTO 程序接收 RoPE 后的 32 行 query、128 行分页滑窗的只读视图
 
 TP4 的 K32 压缩历史路径默认将 SWA 与压缩 Attention 放进同一个 PyPTO 调用，设备侧分阶段执行。单张 910B3 使用同一常驻 worker，5 组分页用例每组交替计时 50 次，单层调用中位数从 1.97–2.14 ms 降至 1.24–1.30 ms，输出和 LSE 逐字节相同。用真实 W8A8 权重初始化 draft head 后，单 rank 的 40 层双请求复验将调用从 333 次降到 257 次。三组交替计时的中位数从 956 ms 降到 853 ms，含测试脚本的结果读回和对照。输出、缓存和交替请求重放逐字节一致。复验入口为 `validate_dsv41_pypto_resident_draft.py --compare-joined-attention --replay`。 [单层对照记录](validation/dsv41/pypto-joined-attention-910b3.json)
 
+Draft 投影和 Attention 复用会被完整覆写的输出缓冲区，EP 反向的打包和解包由算子初始化无效行。使用配套 Serving 补丁的 `workspace(fill=None)` 路径，单张 910B3 上 2049-token 历史、同一 DP 的 1、2、4 个 K32 请求，40 层检查用时分别从 501、910、1610 ms 降到 422、703、1248 ms。输出、缓存和交替重放逐字节一致。可用 `validate_dsv41_pypto_resident_draft.py --compare-scratch-fill --anchors 2049 2049 --replay` 比较缓冲区清零开销。
+
 ```bash
 PYTHONPATH=src python3 scripts/validate_dsv41_pypto_swa.py \
   --device 0 --output /tmp/dsv41-swa-a2.json

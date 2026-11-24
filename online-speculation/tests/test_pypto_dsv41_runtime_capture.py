@@ -14,7 +14,7 @@ class ReplayPool:
         self.retained = set()
 
     @staticmethod
-    def workspace(shape, dtype, rank):
+    def workspace(shape, dtype, rank, *, fill=0):
         return torch.empty(shape, dtype=dtype)
 
     @staticmethod
