@@ -98,7 +98,8 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
     roles = []
     collective_error = 0.0
     prefix = record["request_token_map"][0]["token_begin"]
-    comparison = args.compare_joined_attention or args.compare_scratch_fill
+    comparison = (args.compare_joined_attention or args.compare_scratch_fill
+                  or args.compare_swa_controls or args.compare_index_scratch)
     fingerprint = hashlib.sha256() if args.replay or comparison else None
     for layer in range(40):
         role = native("cache").resolve_layer_role(layer)
@@ -160,6 +161,10 @@ def main():
                             help="Compare the 40-layer draft with grouped SWA/compressed dispatch")
     comparison.add_argument("--compare-scratch-fill", action="store_true",
                             help="Compare reused output buffers against zero-filled buffers")
+    comparison.add_argument("--compare-swa-controls", action="store_true",
+                            help="Compare fresh vs resident SWA controls across all draft layers")
+    comparison.add_argument("--compare-index-scratch", action="store_true",
+                            help="Compare zero-filled vs overwritten full-block indexer scratch")
     args = parser.parse_args()
     if args.anchors is not None and (len(args.anchors) > 4 or min(args.anchors) < 0):
         parser.error("--anchors requires one to four nonnegative context lengths")
@@ -205,6 +210,24 @@ def main():
             joined_dispatches.update(steady_repeats=3, baseline_wall_ms=median(samples[False]),
                                      joined_wall_ms=median(samples[True]))
         scratch_comparison = None
+        control_comparison = None
+        if args.compare_swa_controls or args.compare_index_scratch:
+            samples = {"previous": [], "optimized": []}
+            traffic = {}
+            counter = "h2d_bytes" if args.compare_swa_controls else "workspace_fill_bytes"
+            for _ in range(5):
+                for mode in samples:
+                    attention.reuse_swa_controls = not args.compare_swa_controls or mode == "optimized"
+                    attention.clear_index_scratch = args.compare_index_scratch and mode == "previous"
+                    before_bytes = runtime.stats[counter]
+                    started = perf_counter()
+                    _, _, sample = run_round(runtime, attention, args, ranks, anchors, 1, primary)
+                    samples[mode].append((perf_counter() - started) * 1000)
+                    traffic[mode] = runtime.stats[counter] - before_bytes
+                    if sample != fingerprint:
+                        raise ValueError("Reusing draft buffers changed output bytes")
+            control_comparison = {"wall_ms": {mode: median(times) for mode, times in samples.items()},
+                                  counter: traffic, "output_byte_exact": True}
         if args.compare_scratch_fill:
             raw_workspace = runtime.workspace
 
@@ -252,6 +275,8 @@ def main():
             result["joined_attention"] = joined_dispatches
         if scratch_comparison is not None:
             result["scratch_fill"] = scratch_comparison
+        if control_comparison is not None:
+            result["swa_controls" if args.compare_swa_controls else "index_scratch"] = control_comparison
         (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         print(result, flush=True)
 

@@ -1,0 +1,97 @@
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -760,7 +760,7 @@
+ 
+ 
+ def run_output_boundary(result, *, batch, topology, config, weights, executor, output,
+-                        trace_position=None, trace_record=None):
++                        trace_position=None, trace_record=None, orthrus_phase=None):
+     """Consume actual layer39 local delayed HC state and restore complete SP/TP vocabulary output."""
+     capacity, world, tp = executor.provider.capacity, topology["ep"], topology["tp"]
+     directory = Path(output)
+@@ -858,19 +858,22 @@
+             positions = record["positions"].tolist()
+             if trace_record is not None and trace_position in positions:
+                 trace_record("output-head/logits", rank, case, logits, positions.index(trace_position))
+-            logits = executor.resident.read_output(logits, executor.rank_devices[rank])
+-            path = directory / f"rank-{rank}-{case}-network-logits.pt"
+-            torch.save(
+-                dict(
+-                    logits=logits,
+-                    active=len(record["positions"]),
+-                    positions=record["positions"],
+-                    DP_rank=rank // tp,
+-                ),
+-                path,
+-            )
+-            files[str(path)] = file_sha(path)
+-            actual_logits[rank][case] = logits[: len(record["positions"])].clone()
++            active = len(positions)
++            if orthrus_phase is not None:
++                # Only the live rows feed greedy decisions or learner replay.
++                logits = logits[:active]
++            if logits.numel():
++                logits = executor.resident.read_output(logits, executor.rank_devices[rank])
++            # Keep verifier evidence for the canonical TP rank so divergence
++            # diagnostics can recover a teacher row without saving TP duplicates.
++            if orthrus_phase is None or (orthrus_phase == "verify" and active and rank % tp == 0):
++                path = directory / f"rank-{rank}-{case}-network-logits.pt"
++                torch.save(
++                    dict(logits=logits, active=active, positions=record["positions"], DP_rank=rank // tp),
++                    path,
++                )
++                files[str(path)] = file_sha(path)
++            actual_logits[rank][case] = logits if orthrus_phase is not None else logits[:active].clone()
+         executor.map_ranks(run_output_boundary_rank_2)
+     write_json(
+         directory / "execution.json",
+@@ -1704,21 +1707,26 @@
+             runtime_for_layer=runtime_for_layer,
+             observe_layer=observe_layer,
+         )
+-        if progress is not None:
+-            progress(dict(stage="executing_output_head", epoch=epoch))
+-        output_result = run_output_boundary(
+-            result,
+-            batch=provider.batch_for_layer(39),
+-            topology=topology,
+-            config=text,
+-            weights=weights,
+-            executor=executor,
+-            output=output / "actual-layer39-output",
+-            trace_position=trace_position,
+-            trace_record=record_trace if trace_position is not None else None,
+-        )
+-        if any(not torch.isfinite(value).all() for row in output_result["logits"] for value in row.values()):
+-            raise RuntimeError(f"Non-finite {phase} vocabulary logits")
++        if phase == "accept":
++            # The verifier already produced the emitted tokens. Commit only writes state.
++            output_result = dict(files={}, logits=[])
++        else:
++            if progress is not None:
++                progress(dict(stage="executing_output_head", epoch=epoch))
++            output_result = run_output_boundary(
++                result,
++                batch=provider.batch_for_layer(39),
++                topology=topology,
++                config=text,
++                weights=weights,
++                executor=executor,
++                output=output / "actual-layer39-output",
++                trace_position=trace_position,
++                trace_record=record_trace if trace_position is not None else None,
++                orthrus_phase=phase if phase in ("draft", "verify") else None,
++            )
++            if any(not torch.isfinite(value).all() for row in output_result["logits"] for value in row.values()):
++                raise RuntimeError(f"Non-finite {phase} vocabulary logits")
+         if trace_prefill:
+             torch.save(trace_tensors, output / "prefill-tensors.pt")
+             write_json(output / "prefill-activations.json", dict(
+@@ -1739,6 +1747,7 @@
+             completed_layers=list(range(40)),
+             actual_Layer39_boundary=True,
+             final_output_files=output_result["files"],
++            output_head_skipped=phase == "accept",
+             formal_accuracy="not_run",
+         )
+         resident.release_values()

@@ -107,7 +107,8 @@ def audit_session(directory, *, speculative, node_local=False, request_prefix=No
                 continue
             if not speculative or sequence[position] != phase:
                 raise ValueError(f"Unexpected {phase} dispatch in {session}")
-            if row["completed_layers"] != list(range(40)) or not row["TP_logits_equal"]:
+            checks_logits = phase != "accept" or not row.get("output_head_skipped", False)
+            if row["completed_layers"] != list(range(40)) or (checks_logits and not row["TP_logits_equal"]):
                 raise ValueError(f"Incomplete layers or inconsistent TP logits in {phase}")
             group = sorted((item["dp"], item["slot"], item["generation"]) for item in row["owners"])
             if not group or len(group) != len(set(group)):

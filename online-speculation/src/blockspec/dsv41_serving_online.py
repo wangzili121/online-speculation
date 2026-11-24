@@ -156,6 +156,10 @@ class DSV41ServingOnline:
             replay.release()
         return captured
 
+    def feedback_pending(self, request_id):
+        """Whether this host owns a replay awaiting authoritative rows."""
+        return request_id in self.pending
+
     def verified(
         self, request_id, prefix, candidate_inputs, delivered, logits, *,
         finished=False, defer=False,

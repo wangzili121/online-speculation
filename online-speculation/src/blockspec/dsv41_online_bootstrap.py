@@ -91,6 +91,9 @@ class DSV41OnlineBootstrap:
     def register_replay(self, *args, **kwargs):
         return self._call("register_replay", *args, **kwargs)
 
+    def feedback_pending(self, request_id):
+        return self._call("feedback_pending", request_id)
+
     def verified(self, *args, **kwargs):
         return self._call("verified", *args, **kwargs)
 

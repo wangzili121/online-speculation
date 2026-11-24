@@ -43,7 +43,8 @@ fi
 
 for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.patch \
     lib-pypto72-compat.patch lib-cluster-retry.patch lib-cluster-prefill-trace.patch \
-    lib-deterministic-reduction.patch lib-cluster-online.patch lib-workspace-write-only.patch; do
+    lib-deterministic-reduction.patch lib-cluster-online.patch lib-workspace-write-only.patch \
+    lib-orthrus-output.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -55,6 +56,8 @@ git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-cluster.patch"
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-cluster.patch"
 git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-online.patch"
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-online.patch"
+git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-fast.patch"
+git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-fast.patch"
 python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolve(cluster=True)'
 
 if [[ "${1:-}" == --prepare-only ]]; then
@@ -79,7 +82,8 @@ assert "cluster" in signature(NativeSession).parameters
 # Target-only runs precede deferred draft loading. They must neither call nor
 # clean up an online learner before the first draft has bound resident state.
 execute_source = getsource(NativeSession._execute)
-assert "self.online is not None and self.online.bound and phase" in execute_source
+assert "self.online is not None and self.online.bound" in execute_source
+assert 'if phase != "accept":' in execute_source
 
 @dataclass
 class Handle:
@@ -127,6 +131,60 @@ finally:
     draft_runtime.ResidentDraftAttention = original
 assert session.draft is marker and binding.bound
 
+# The accept path commits target state but returns no logits and sends no
+# greedy-output message. Exercise the patched Serving function itself.
+class CommitProbe:
+    def __init__(self):
+        self.weights = SimpleNamespace(counters=lambda: {})
+        self.epoch = 0
+
+    def commit_candidates(self, chunk, **kwargs):
+        self.epoch += 1
+        return dict(completed_layers=list(range(40)), logits=[], timings={})
+
+def unexpected_exchange(*args):
+    raise AssertionError("accept communicated vocabulary output")
+
+session.native = CommitProbe()
+session.cluster = SimpleNamespace(link=SimpleNamespace(exchange=unexpected_exchange))
+session.calls = 0
+session._prepare = lambda *args: {"contract": {"input_contract_sha256": "accept-probe"}}
+receipts = []
+session._record = receipts.append
+assert session._execute("accept", {"DP_engines": [{"active": 1, "dp_rank": 0}]}, (), (Handle(),)) is None
+assert session.native.epoch == session.calls == 1 and session.predecessor == "accept-probe"
+assert receipts[-1]["output_head_skipped"] and receipts[-1]["greedy_rows"] == []
+
+class FeedbackProbe:
+    bound = True
+
+    def feedback_pending(self, request_id):
+        return request_id == "feedback"
+
+    def verified(self, request_id, prefix, candidates, delivered, logits, *, defer):
+        assert (request_id, prefix, candidates, delivered, defer) == ("feedback", (6, 0), (1,), (1, 2), True)
+        assert logits.shape == (2, 3)
+        return "prepared"
+
+    def synchronize(self, update, exchange):
+        assert update == "prepared"
+
+logits = torch.tensor([[0., 2., 0.], [0., 0., 3.], [1., 0., 0.], [0., 4., 0.]])
+session.native.verify_candidates = lambda *args, **kwargs: dict(
+    completed_layers=list(range(40)), timings={}, logits=[{"fresh": logits}] * 4,
+)
+session.cluster.link.exchange = lambda tag, value: [] if tag == "greedy-output/verify" else unexpected_exchange(tag)
+session.online = FeedbackProbe()
+session.config = SimpleNamespace(tp=4)
+session.ledger = SimpleNamespace(get=lambda handle: SimpleNamespace(history=[6]))
+session.local_ranks = (0, 1, 2, 3)
+handles = (Handle(request_id="feedback"), Handle(request_id="ordinary", slot=1))
+inputs = {"DP_engines": [{"active": 4, "dp_rank": 0, "requests": [
+    dict(request_slot=0, generation=1, token_ids=[0, 1]),
+    dict(request_slot=1, generation=1, token_ids=[0, 2]),
+]}]}
+assert [row.tolist() for row in session._execute("verify", inputs, (), handles)] == [[1, 2], [0, 1]]
+
 runtime_type = source.module("prefill_resident").ResidentNetworkRuntime
 runtime = runtime_type.__new__(runtime_type)
 replay_root, scratch = torch.zeros(1), torch.zeros(1)
@@ -147,6 +205,7 @@ print(json.dumps(dict(
     tree=os.environ["ORTHRUS_CLUSTER_LIB_TREE"],
     lifecycle={"target_unbound": True, "draft_bind": True, "unbound_cleanup": True,
                "closed_cleanup": True, "replay_survives_scratch_recycle": True},
+    accept_without_logits=True, verifier_feedback_only_for_owner=True,
 )))
 PY
 fi

@@ -101,6 +101,8 @@ python3 online-speculation/scripts/summarize_dsv41_pypto_cluster.py /workspace/o
 
 对已完成生成的在线 profile 加 `--online-profile` 可直接读取保留的各阶段结果和更新日志，查看贪心输出对照、draft 版本、接受数及本机冷启动和稳定更新耗时。
 
+Draft 和 Verify 只回读实际参与本轮的词表行。Draft 结果直接交给候选解码；Verify 每个活跃 DP 只保存一个规范 TP rank 的有效 logits，供分叉诊断和复验。Accept 继续执行已接受前缀的状态提交，省去最终 LM Head 和贪心输出交换，回执用 `output_head_skipped` 记录。采用 128 行容量、32 行有效输入和 129280 词表的单卡小测，单 rank 词表回传从 33.1 MB 降到 8.27 MB，回读输出逐字节一致。双机整模收益用 `draft`、`verify`、`accept` 的阶段计时分别衡量。
+
 ### GSM8K 在线更新报告
 
 在两台公司节点使用同一份 checkout，分别执行 `run_dsv41_pypto_company_online.sh node7 report 1` 和 `run_dsv41_pypto_company_online.sh node8 report 1`。脚本使用现有 GSM8K 目录，从 `tuning.jsonl` 取 8 题在线更新，从 `quality_test.jsonl` 取 4 道留出题。默认每个 DP 分区放 1 个请求，最多 4 个并发，每题最多生成 32 个 token。两端可用相同的 `DSV41_REPORT_TRAIN`、`DSV41_REPORT_EVAL`、`DSV41_REPORT_TOKENS` 调整规模。

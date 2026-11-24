@@ -229,6 +229,14 @@ class ResidentDraftAttention:
             rank: {name: load_weight(value, local) for name, value in constants.items()}
             for rank, local in self.rank_ids.items()
         }
+        positions = torch.arange(WINDOW)
+        visible = torch.arange(WINDOW + 1)
+        mask = torch.zeros((WINDOW + 1, WINDOW), dtype=torch.float32)
+        mask.masked_fill_(positions[None, :] >= visible[:, None], -torch.inf)
+        resident.pin(mask, self.rank_ids.values(), readonly=True, name="orthrus/swa-history-bias")
+        self.swa_history_bias = tuple(mask[i:i + 1] for i in range(WINDOW + 1))
+        self.reuse_swa_controls = True
+        self.clear_index_scratch = False
 
     @property
     def mask_token_id(self):
@@ -393,6 +401,7 @@ class DraftRound:
         self.histories = histories
         self.owners = {(owner[0], owner[1]): owner for _, _, owner in histories}
         self.selection = {}
+        self.swa_spans = {}
         self.capture = capture
         self.captured_attention = {}
         self.captured_tail = {}
@@ -410,6 +419,7 @@ class DraftRound:
             for key, (_, controls) in self.selection.items()
             for value in controls.values()
         ]
+        keep.extend((self.attention.rank_ids[rank], tensor) for (rank, _), tensor in self.swa_spans.items())
         if self.capture is not None and layer in self.capture[0].layers:
             self.attention.resident.retain_replay_values(
                 (self.attention.rank_ids[rank], tensor)
@@ -603,15 +613,23 @@ class DraftRound:
                 or swa["handle"].shape != (swa["shape"][0] * swa["stride_rows"], HEAD_DIM)
                 or swa["handle"].dtype != torch.bfloat16):
             raise ValueError("Invalid resident SWA page plane")
-        bias = torch.full((1, WINDOW), -torch.inf, dtype=torch.float32)
-        bias[:, :min(anchor, WINDOW)] = 0
         spans = swa_spans(swa["pages"], anchor, swa["shape"][0], stride_rows=swa["stride_rows"],
                           offset_rows=swa["offset_rows"])
+        if attention.reuse_swa_controls:
+            bias = attention.swa_history_bias[min(anchor, WINDOW)]
+            key = rank, spans
+            spans_tensor = self.swa_spans.get(key)
+            if spans_tensor is None:
+                spans_tensor = self.swa_spans[key] = torch.tensor(spans, dtype=torch.int32)
+        else:
+            bias = torch.full((1, WINDOW), -torch.inf, dtype=torch.float32)
+            bias[:, :min(anchor, WINDOW)] = 0
+            spans_tensor = torch.tensor(spans, dtype=torch.int32)
         output_shape = (block_size * heads, HEAD_DIM)
         compressed = role["index_source"] is not None
         lse_shape = (block_size * heads, 1)
         query = values["query"]
-        swa_args = dict(query=query, spans=torch.tensor(spans, dtype=torch.int32),
+        swa_args = dict(query=query, spans=spans_tensor,
                         temporary=temporary, history_bias=bias, sink=operands["sink"])
         swa_pages = swa["handle"]
         swa_zeros = attention.constants[rank]["swa_zero"]
@@ -713,7 +731,8 @@ class DraftRound:
         }
         bindings = dict(values, **controls, **outputs, index_codes=codes["handle"], index_scales=scales["handle"],
                         zero_codes=attention.constants[rank][f"index_zero_{geometry.ratio}"])
-        # Preserve the native QLI intermediates' initialization contract.
+        # A full block overwrites every intermediate. Keep padding initialized
+        # when the indexer has fewer live rows than its aligned extent.
         local = attention.rank_ids[rank]
         if projection_rows != block_size:
             for name in ("latent", "hidden", "cos", "sin"):
@@ -721,7 +740,8 @@ class DraftRound:
                 padded = attention.resident.workspace((projection_rows, *value.shape[1:]), value.dtype, local)
                 attention.resident.copy_tensor(padded[:block_size], value, local)
                 bindings[name] = padded
-        bindings.update({name: attention.resident.workspace(shape, dtype, local)
+        index_fill = 0 if projection_rows != block_size or attention.clear_index_scratch else None
+        bindings.update({name: attention.resident.workspace(shape, dtype, local, fill=index_fill)
                          for name, (shape, dtype) in shapes.items()})
         attention.execute(("indexer", geometry), rank,
                           lambda: make_indexer_program(attention.native, config, geometry,

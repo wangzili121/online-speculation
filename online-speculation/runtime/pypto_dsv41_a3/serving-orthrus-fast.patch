@@ -1,0 +1,190 @@
+--- a/models/deepseek_v41_a3/session.py
++++ b/models/deepseek_v41_a3/session.py
+@@ -252,23 +252,6 @@
+                     self.draft.arm_online_capture(requests, self.online.plan)
+             result = self.native.propose_candidates(chunk, self.draft,
+                 output=self.directory / f"draft-{self.calls}", progress=progress)
+-            if self.online is not None and self.online.bound:
+-                draft_logits = {}
+-                for engine in input_contract["DP_engines"]:
+-                    dp, end = engine["dp_rank"], 0
+-                    if dp not in local_dp:
+-                        continue
+-                    logits = result["logits"][dp * self.config.tp]["fresh"]
+-                    for request in engine["requests"]:
+-                        start, end = end, end + len(request["token_ids"])
+-                        draft_logits[(dp, request["request_slot"], request["generation"])] = (
+-                            logits[start:end - 1].detach().cpu().contiguous()
+-                        )
+-                for handle in handles:
+-                    replay = self.native.take_draft_replay(handle.dp, handle.slot, handle.generation)
+-                    if replay is not None:
+-                        owner = handle.dp, handle.slot, handle.generation
+-                        self.online.register_replay(replay.with_student_logits(draft_logits[owner]))
+         elif phase == "verify":
+             result = self.native.verify_candidates(chunk, output=self.directory / f"verify-{self.calls}",
+                                                    progress=progress)
+@@ -281,82 +264,96 @@
+             raise RuntimeError("Native dispatch did not execute all 40 layers")
+         if before is not None and before != self.native.weights.counters():
+             raise RuntimeError("Serving dispatch changed the resident static weight bank")
+-        rows, prefill_topk, prepared_update = {}, [], None
+-        for engine in input_contract["DP_engines"]:
+-            dp, end = engine["dp_rank"], 0
+-            if dp * self.config.tp not in self.local_ranks:
+-                continue
+-            logits = result["logits"][dp * self.config.tp]["fresh"]
+-            for lane in range(1, self.config.tp):
+-                if not torch.equal(logits, result["logits"][dp * self.config.tp + lane]["fresh"]):
+-                    raise ValueError("Native TP vocabulary rows disagree")
+-            for request in engine["requests"]:
+-                start, end = end, end + len(request["token_ids"])
+-                if phase == "draft":
+-                    # Source logits at rows 0..30 predict destination tokens 1..31.
+-                    row = logits[start:end - 1].argmax(dim=-1)
+-                else:
+-                    row = logits[start:end] if phase == "verify" else logits[end - 1]
+-                    if self.online is not None and self.online.bound and phase in ("verify", "decode"):
+-                        handle = next(handle for handle in handles
+-                                      if (handle.dp, handle.slot, handle.generation)
+-                                      == (dp, request["request_slot"], request["generation"]))
+-                        state = self.ledger.get(handle)
+-                        prefix = (*state.history, request["token_ids"][0])
+-                        if phase == "verify":
+-                            target = row.argmax(dim=-1).tolist()
+-                            candidates = tuple(request["token_ids"][1:])
+-                            match = next((i for i, token in enumerate(candidates)
+-                                          if token != target[i]), len(candidates))
+-                            delivered = (*candidates[:match], target[match])
+-                            ready = self.online.verified(
+-                                handle.request_id, prefix, candidates, delivered, row,
+-                                defer=self.cluster is not None,
+-                            )
+-                        else:
+-                            delivered = (int(row.argmax()),)
+-                            ready = self.online.continued(
+-                                handle.request_id, prefix, delivered, row.unsqueeze(0),
+-                                defer=self.cluster is not None,
+-                            )
+-                        if self.cluster is not None and ready is not None:
+-                            if prepared_update is not None:
+-                                raise RuntimeError("one dispatch produced multiple online updates")
+-                            prepared_update = ready
+-                    if self.cluster is not None:
+-                        if phase == "prefill":
+-                            values, ids = row.float().topk(min(5, row.numel()))
+-                            prefill_topk.append(dict(dp=dp, slot=request["request_slot"],
+-                                generation=request["generation"], positions=request["position_ids"],
+-                                ids=ids.tolist(), logits=values.tolist()))
+-                        row = row.argmax(dim=-1)
+-                rows[(dp, request["request_slot"], request["generation"])] = row
+-        if (self.online is not None and self.online.bound and self.cluster is not None
+-                and phase in ("verify", "decode")):
+-            self.online.synchronize(prepared_update, self.cluster.link.exchange)
+-        if self.cluster is not None:
+-            encoded = [[list(key), value.tolist()] for key, value in rows.items()]
+-            peer = self.cluster.link.exchange(f"greedy-output/{phase}", encoded)
+-            for owner, value in peer:
+-                key = tuple(owner)
+-                if key in rows or key[0] * self.config.tp in self.local_ranks:
+-                    raise ValueError("Peer sent tokens for a locally owned request")
+-                rows[key] = torch.tensor(value, dtype=torch.long)
+-            if set(rows) != {(h.dp, h.slot, h.generation) for h in handles}:
+-                raise ValueError("Cluster greedy output does not cover the dispatch owners")
+-        ordered = tuple(rows[(h.dp, h.slot, h.generation)] for h in handles)
+-        output = ordered if phase == "verify" else torch.stack(ordered)
++        prefill_topk = []
++        ordered, output = (), None
++        if phase != "accept":
++            rows, prepared_update = {}, None
++            online = self.online if self.online is not None and self.online.bound else None
++            feedback_owners = {
++                (handle.dp, handle.slot, handle.generation): handle
++                for handle in handles if online.feedback_pending(handle.request_id)
++            } if online is not None and phase in ("verify", "decode") else {}
++            for engine in input_contract["DP_engines"]:
++                dp, end = engine["dp_rank"], 0
++                if dp * self.config.tp not in self.local_ranks:
++                    continue
++                logits = result["logits"][dp * self.config.tp]["fresh"]
++                for lane in range(1, self.config.tp):
++                    if not torch.equal(logits, result["logits"][dp * self.config.tp + lane]["fresh"]):
++                        raise ValueError("Native TP vocabulary rows disagree")
++                for request in engine["requests"]:
++                    start, end = end, end + len(request["token_ids"])
++                    owner = (dp, request["request_slot"], request["generation"])
++                    if phase == "draft":
++                        # Source logits at rows 0..30 predict destination tokens 1..31.
++                        student = logits[start:end - 1]
++                        if owner in requests:
++                            replay = self.native.take_draft_replay(*owner)
++                            if replay is not None:
++                                online.register_replay(replay.with_student_logits(student.detach().cpu().contiguous()))
++                        row = student.argmax(dim=-1)
++                    else:
++                        row = logits[start:end] if phase == "verify" else logits[end - 1]
++                        handle = feedback_owners.get(owner)
++                        greedy = row.argmax(dim=-1) if self.cluster is not None or handle is not None else None
++                        if handle is not None:
++                            state = self.ledger.get(handle)
++                            prefix = (*state.history, request["token_ids"][0])
++                            if phase == "verify":
++                                target = greedy.tolist()
++                                candidates = tuple(request["token_ids"][1:])
++                                match = next((i for i, token in enumerate(candidates)
++                                              if token != target[i]), len(candidates))
++                                delivered = (*candidates[:match], target[match])
++                                ready = self.online.verified(
++                                    handle.request_id, prefix, candidates, delivered, row,
++                                    defer=self.cluster is not None,
++                                )
++                            else:
++                                delivered = (int(greedy),)
++                                ready = self.online.continued(
++                                    handle.request_id, prefix, delivered, row.unsqueeze(0),
++                                    defer=self.cluster is not None,
++                                )
++                            if self.cluster is not None and ready is not None:
++                                if prepared_update is not None:
++                                    raise RuntimeError("one dispatch produced multiple online updates")
++                                prepared_update = ready
++                        if self.cluster is not None:
++                            if phase == "prefill":
++                                values, ids = row.float().topk(min(5, row.numel()))
++                                prefill_topk.append(dict(dp=dp, slot=request["request_slot"],
++                                    generation=request["generation"], positions=request["position_ids"],
++                                    ids=ids.tolist(), logits=values.tolist()))
++                            row = greedy
++                    rows[owner] = row
++            if (self.online is not None and self.online.bound and self.cluster is not None
++                    and phase in ("verify", "decode")):
++                self.online.synchronize(prepared_update, self.cluster.link.exchange)
++            if self.cluster is not None:
++                encoded = [[list(key), value.tolist()] for key, value in rows.items()]
++                peer = self.cluster.link.exchange(f"greedy-output/{phase}", encoded)
++                for owner, value in peer:
++                    key = tuple(owner)
++                    if key in rows or key[0] * self.config.tp in self.local_ranks:
++                        raise ValueError("Peer sent tokens for a locally owned request")
++                    rows[key] = torch.tensor(value, dtype=torch.long)
++                if set(rows) != {(h.dp, h.slot, h.generation) for h in handles}:
++                    raise ValueError("Cluster greedy output does not cover the dispatch owners")
++            ordered = tuple(rows[(h.dp, h.slot, h.generation)] for h in handles)
++            output = ordered if phase == "verify" else torch.stack(ordered)
+         if phase not in ("draft", "verify"):
+             self.predecessor = chunk["contract"]["input_contract_sha256"]
+             self.calls += 1
+         self._record(dict(phase=phase, seconds=time.perf_counter() - begin, owners=[asdict(h) for h in handles],
+             actual_rows=len(handles), completed_layers=result["completed_layers"],
+             padding_dp=[e["dp_rank"] for e in input_contract["DP_engines"] if not e["active"]],
+-            timings=result["timings"], native_epoch=self.native.epoch, TP_logits_equal=True,
++            timings=result["timings"], native_epoch=self.native.epoch, TP_logits_equal=True if phase != "accept" else None,
+             prefill_topk=prefill_topk, prefill_activation_trace=result.get("prefill_activation_trace"),
+             greedy_rows=[value.tolist() for value in ordered] if self.cluster is not None else None,
++            output_head_skipped=phase == "accept",
+             draft_head_version=(self.draft.online_bank.active_version
+-                                if phase == "draft" and self.online is not None and self.online.bound
++                                if phase == "draft" and self.draft.online_bank is not None
+                                 else None)))
+         return output
+ 

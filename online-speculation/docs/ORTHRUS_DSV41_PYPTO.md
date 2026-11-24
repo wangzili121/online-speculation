@@ -66,6 +66,8 @@ TP4 的 K32 压缩历史路径默认将 SWA 与压缩 Attention 放进同一个 
 
 Draft 投影和 Attention 复用会被完整覆写的输出缓冲区，EP 反向的打包和解包由算子初始化无效行。使用配套 Serving 补丁的 `workspace(fill=None)` 路径，单张 910B3 上 2049-token 历史、同一 DP 的 1、2、4 个 K32 请求，40 层检查用时分别从 501、910、1610 ms 降到 422、703、1248 ms。输出、缓存和交替重放逐字节一致。可用 `validate_dsv41_pypto_resident_draft.py --compare-scratch-fill --anchors 2049 2049 --replay` 比较缓冲区清零开销。
 
+SWA 历史 mask 在加载 head 时一次性驻留，页段坐标在同一轮各层间复用。完整块的 indexer 直接覆写中间缓冲区，K8 对齐产生的无效行继续初始化。单张 910B3 上分别做同输入五轮交替对照。SWA 控制复用在两个请求（31、2049 行历史）下把 40 层检查中位数从 822 ms 降到 788 ms；indexer 在四个请求（31、2049、8193、16351 行历史）下从 1353 ms 降到 1298 ms，每轮少清零约 82 MB。两项检查的输出、历史缓存和交替重放均逐字节一致。对应开关为 `--compare-swa-controls` 和 `--compare-index-scratch`。
+
 ```bash
 PYTHONPATH=src python3 scripts/validate_dsv41_pypto_swa.py \
   --device 0 --output /tmp/dsv41-swa-a2.json
