@@ -232,6 +232,40 @@ def profile_head_versions(receipt_path, requests):
     return {phase: sorted(values) for phase, values in versions.items()}
 
 
+def benchmark_workload(runner, session, online, prompts, entries, steps, decoder, devices, output):
+    """Run AR, frozen draft, then updating draft against the same greedy references."""
+    results, warmup_seconds = {}, {}
+    for mode in ("target", "fixed", "orthrus"):
+        speculative = mode != "target"
+        print(json.dumps(dict(stage="gsm8k_benchmark_phase", phase=mode)), flush=True)
+        if mode != "orthrus":
+            started = time.perf_counter()
+            generate(runner, prompts[:1], min(steps, 8), [0], speculative=speculative, request_start=-1)
+            warmup_seconds[mode] = time.perf_counter() - started
+        else:
+            started = time.perf_counter()
+            online.bind(session.draft, session.native, session.cluster)
+            session.online = online
+            warmup_seconds["learner_bind"] = time.perf_counter() - started
+        assignments = [index % session.config.topology["dp"] for index in range(len(prompts) - 1)]
+        reference = results.get("target", {}).get("requests")
+        started = time.perf_counter()
+        rows, stats = generate(
+            runner, prompts[1:], steps, assignments,
+            identities=[row["id"] for row in entries[1:]], metadata=entries[1:], decoder=decoder,
+            reference=reference, speculative=speculative, request_start=len(prompts) if mode == "fixed" else 0,
+        )
+        seconds = time.perf_counter() - started
+        tokens = sum(len(row["token_ids"]) for row in rows)
+        results[mode] = dict(
+            status="executed", devices=devices, sampling=SAMPLING, requests=rows, speculation=stats,
+            elapsed_seconds=seconds, output_tokens=tokens, output_tokens_per_second=tokens / seconds,
+            online=online.summary() if mode == "orthrus" else None,
+        )
+        write_report(output / mode / "result.json", results[mode])
+    return results, warmup_seconds
+
+
 def request_receipts(receipt_path, mode, index, phase):
     request_id = f"{mode}-request-{index}"
     with receipt_path.open() as stream:
@@ -340,6 +374,8 @@ def run(args):
         raise ValueError("Context must cover the prompt, requested output and the full K32 draft block")
     if args.online_profile and (len(prompts) != 5 or len(set(map(tuple, prompts))) != 5):
         raise ValueError("Online profiling needs five distinct GSM8K prompts")
+    if args.online_benchmark and len(prompts) < 2:
+        raise ValueError("The benchmark needs one warmup prompt and at least one measured prompt")
     assignments = [index % config.topology["dp"] for index in range(len(prompts))]
     if args.orthrus_only and args.require_online_update and not args.online_profile:
         # The short capture gate exercises feedback ownership on both hosts.
@@ -374,6 +410,7 @@ def run(args):
                        trace_prefill=args.trace_prefill, trace_position=args.trace_position,
                        orthrus_only=args.orthrus_only, require_online_update=args.require_online_update,
                        online_profile=args.online_profile,
+                       online_benchmark=args.online_benchmark,
                        online=None if online is None else online.config.contract())
         peer_request = link.exchange("acceptance/configuration", request)
         if peer_request != request:
@@ -399,7 +436,7 @@ def run(args):
         session = NativeSession(source, args.model, devices, native_dir, config, checkpoint.text["vocab_size"],
                                 cache_plan, orthrus_head=str(args.head), cluster=cluster, prepared_cache=cache,
                                 defer_draft=True, trace_prefill=args.trace_prefill,
-                                trace_position=args.trace_position, online=online)
+                                trace_position=args.trace_position, online=None if args.online_benchmark else online)
         runner = A3Runner(source, config, cache_plan, session, checkpoint.text["vocab_size"], greedy_tokens=True)
         profile = OnlineUpdateProfile(args.output / "online-profile.jsonl") if args.online_profile else None
         try:
@@ -408,6 +445,10 @@ def run(args):
                     runner, link, profile, prompts, entries, args.tokens, decoder, args.output,
                 )
                 versions = profile_head_versions(session.receipt_path, profile.requests)
+            elif args.online_benchmark:
+                results, warmup_seconds = benchmark_workload(
+                    runner, session, online, prompts, entries, args.tokens, decoder, devices, args.output,
+                )
             else:
                 for mode in modes:
                     print(f"Node {args.node} running {mode} on global ranks {list(plan.local_ranks)}", flush=True)
@@ -470,6 +511,36 @@ def run(args):
             audit_online_update(online_summary, peer["online"],
                                 publish_every=online.config.publish_every,
                                 require_update=args.require_online_update)
+        if args.online_benchmark:
+            fixed_tokens = request_parity(results["target"], results["fixed"])
+            elapsed = {name: result["elapsed_seconds"] for name, result in results.items()}
+            peer_elapsed = link.exchange("acceptance/gsm8k-benchmark-seconds", elapsed)
+            report = {
+                "requests_per_arm": len(prompts) - 1, "compared_tokens": {
+                    "fixed": fixed_tokens, "online": tokens,
+                },
+                "startup_seconds": {"engram": engram_seconds, **warmup_seconds},
+                "online_update_seconds": max(online_summary["update_seconds"], peer["online"]["update_seconds"]),
+                "online_publication_seconds": max(
+                    online_summary["publication_seconds"], peer["online"]["publication_seconds"],
+                ),
+                "updates": online_summary["updates"], "publications": online_summary["publications"],
+                "arms": {},
+            }
+            for name, result in results.items():
+                stats = result["speculation"]
+                wall = max(elapsed[name], peer_elapsed[name])
+                rounds = stats.get("draft_rounds", 0)
+                report["arms"][name] = dict(
+                    output_tokens=result["output_tokens"], elapsed_seconds=wall,
+                    tokens_per_second=result["output_tokens"] / wall,
+                    mean_accepted_candidates=stats.get("accepted_candidates", 0) / rounds if rounds else None,
+                )
+            report["online_speedup_vs_fixed"] = report["arms"]["fixed"]["elapsed_seconds"] / report["arms"]["orthrus"]["elapsed_seconds"]
+            report["online_speedup_vs_ar"] = report["arms"]["target"]["elapsed_seconds"] / report["arms"]["orthrus"]["elapsed_seconds"]
+            write_report(args.output / "gsm8k-benchmark-summary.json", report)
+            summary["gsm8k_benchmark"] = report
+            print(json.dumps(dict(stage="gsm8k_benchmark_summary", **report)), flush=True)
         if profile is not None:
             peer_records = link.exchange("acceptance/online-profile", profile.records)
             node0, node1 = (profile.records, peer_records) if plan.node == 0 else (peer_records, profile.records)
@@ -558,6 +629,8 @@ def main():
                         help="Fail unless the workload captures and applies an online update")
     parser.add_argument("--online-profile", action="store_true",
                         help="Run matched greedy probes and profile four to six updates in one session")
+    parser.add_argument("--online-benchmark", action="store_true",
+                        help="Benchmark AR, fixed draft, and online draft within one resident session")
     parser.add_argument("--connect-timeout", type=int, default=900)
     parser.add_argument("--timeout", type=int, default=3600, help="Maximum seconds of peer inactivity")
     args = parser.parse_args()
@@ -567,7 +640,8 @@ def main():
             or args.workload is None and args.prompt is not None and len(args.prompt) != 2
             or args.online_study is not None and args.online_primitives is None
             or args.require_online_update and args.online_study is None
-            or args.online_profile and not (args.orthrus_only and args.require_online_update)):
+            or args.online_profile and not (args.orthrus_only and args.require_online_update)
+            or args.online_benchmark and (args.orthrus_only or not args.require_online_update or args.workload is None)):
         parser.error("Require valid dimensions and exactly one prompt source")
     if args.trace_position is not None and not 0 <= args.trace_position < args.context:
         parser.error("--trace-position must be in the reserved context")

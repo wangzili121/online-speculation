@@ -2,7 +2,7 @@
 # Launch the paired DSV4.1 resident online-update study with one stable command.
 set -euo pipefail
 
-[[ $# -ge 1 ]] || { echo "usage: $0 <node7|node8> <capture|profile|smoke|tuning|eval> [last-N]" >&2; exit 2; }
+[[ $# -ge 1 ]] || { echo "usage: $0 <node7|node8> <capture|profile|smoke|tuning|benchmark|eval> [last-N]" >&2; exit 2; }
 node="$1"
 mode="${2:-smoke}"
 last_layers="${3:-1}"
@@ -17,8 +17,9 @@ case "$mode" in
   profile) split=tuning; requests=5; tokens=8 ;;
   smoke) split=tuning; requests=4; tokens=32 ;;
   tuning) split=tuning; requests=32; tokens=192 ;;
+  benchmark) split=online_eval; requests=33; tokens=96 ;;
   eval) split=online_eval; requests=384; tokens=192 ;;
-  *) echo "mode must be capture, profile, smoke, tuning or eval" >&2; exit 2 ;;
+  *) echo "mode must be capture, profile, smoke, tuning, benchmark or eval" >&2; exit 2 ;;
 esac
 
 workload="$data_root/$split.jsonl"
@@ -53,6 +54,10 @@ if [[ "$mode" == capture || "$mode" == profile ]]; then
 else
   online_overrides="{\"last_layers\":$last_layers}"
   short_gate=()
+  if [[ "$mode" == benchmark ]]; then
+    export PYPTO_REUSE_PREVIOUS_HEAD=0
+    short_gate=(--online-benchmark --require-online-update)
+  fi
 fi
 
 exec bash "$root/scripts/dsv41_pypto_env.sh" cluster-accept "$node" \

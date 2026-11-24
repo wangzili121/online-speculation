@@ -17,6 +17,45 @@ COMMAND = Path(__file__).resolve().parents[1] / "scripts/verify_dsv41_pypto_acce
 SUMMARY = COMMAND.with_name("summarize_dsv41_pypto_cluster.py")
 
 
+def test_gsm8k_benchmark_binds_learner_only_after_matched_fixed_arm(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(COMMAND.parent))
+    module = runpy.run_path(str(COMMAND.with_name("run_dsv41_pypto_cluster.py")))
+    benchmark = module["benchmark_workload"]
+    calls = []
+    session = SimpleNamespace(config=SimpleNamespace(topology={"dp": 4}), draft=object(),
+                              native=object(), cluster=object(), online=None)
+
+    def bind(draft, native, cluster):
+        assert len(calls) == 4 and session.online is None
+        assert (draft, native, cluster) == (session.draft, session.native, session.cluster)
+
+    online = SimpleNamespace(bind=bind, summary=lambda: {"updates": 3})
+
+    def generate(runner, prompts, tokens, assignments, *, speculative, request_start,
+                 identities=None, metadata=None, decoder=None, reference=None):
+        calls.append((speculative, request_start, session.online is not None, tokens, assignments))
+        rows = [dict(index=i, prompt_ids=prompt, token_ids=[i] * tokens,
+                     finish_reason="length", usage={"completion_tokens": tokens})
+                for i, prompt in enumerate(prompts)]
+        if reference is not None:
+            assert rows == reference
+        return rows, {}
+
+    monkeypatch.setitem(benchmark.__globals__, "generate", generate)
+    results, warmup = benchmark(
+        object(), session, online, [[3], [4], [5]], [{"id": str(i)} for i in range(3)], 96,
+        None, [0, 1], tmp_path,
+    )
+    assert calls == [
+        (False, -1, False, 8, [0]), (False, 0, False, 96, [0, 1]),
+        (True, -1, False, 8, [0]), (True, 3, False, 96, [0, 1]),
+        (True, 0, True, 96, [0, 1]),
+    ]
+    assert set(warmup) == {"target", "fixed", "learner_bind"}
+    assert module["request_parity"](results["fixed"], results["orthrus"]) == 192
+    assert all((tmp_path / arm / "result.json").exists() for arm in ("target", "fixed", "orthrus"))
+
+
 @pytest.mark.parametrize(("peer_affordable", "expected_updates"), [(True, 6), (False, 4)])
 def test_profile_runs_matched_probes_around_bounded_updates(tmp_path, monkeypatch, peer_affordable, expected_updates):
     from blockspec.dsv41_online_profile import OnlineUpdateProfile, active_profile

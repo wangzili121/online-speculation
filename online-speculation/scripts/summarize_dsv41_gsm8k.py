@@ -29,6 +29,7 @@ def load_run(path):
     speculation = result.get("speculation", {})
     proposed = speculation.get("proposed_candidates", 0)
     accepted = speculation.get("accepted_candidates", 0)
+    online = result.get("online") or {}
     return {
         "path": str(path),
         "requests": len(requests),
@@ -44,10 +45,10 @@ def load_run(path):
         "mean_accepted_per_round": (
             accepted / speculation["draft_rounds"] if speculation.get("draft_rounds") else None
         ),
-        "updates": result.get("online", {}).get("updates"),
-        "publications": result.get("online", {}).get("publications"),
-        "update_seconds": result.get("online", {}).get("update_seconds"),
-        "publication_seconds": result.get("online", {}).get("publication_seconds"),
+        "updates": online.get("updates"),
+        "publications": online.get("publications"),
+        "update_seconds": online.get("update_seconds"),
+        "publication_seconds": online.get("publication_seconds"),
     }
 
 
