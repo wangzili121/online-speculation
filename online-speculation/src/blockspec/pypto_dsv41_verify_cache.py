@@ -1,4 +1,34 @@
-"""Physical writes made by the DSV4.1 provisional target verifier."""
+"""Physical cache writes and read reuse in the provisional DSV4.1 verifier."""
+
+
+class VerifyIndexKeys:
+    """Keep gathered QLI keys until the last reindex layer in this dispatch."""
+
+    def __init__(self, roles):
+        self.last_use = {role["kv_source"]: role["physical_layer"]
+                         for role in roles if role["mode"] == "reindex"}
+        self.packed = {}
+
+    def get(self, role, rank, case, request, length, table, gather):
+        source = role["kv_source"]
+        if source not in self.last_use:
+            return gather()
+        rows_per_page = 128 // role["ratio"]
+        page_count = (length + rows_per_page - 1) // rows_per_page
+        key = rank, case, source, request
+        signature = length, tuple(table[:page_count].tolist())
+        saved = self.packed.get(key)
+        if saved is not None and saved[0] == signature:
+            return saved[1]
+        values = gather()
+        self.packed[key] = signature, values
+        return values
+
+    def finish_layer(self, layer, rank_devices):
+        self.packed = {key: value for key, value in self.packed.items()
+                       if layer < self.last_use[key[2]]}
+        return tuple((rank_devices[key[0]], tensor) for key, (_, values) in self.packed.items()
+                     for tensor in values)
 
 
 def index_written_pages(slots):

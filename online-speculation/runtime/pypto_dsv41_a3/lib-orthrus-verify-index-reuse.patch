@@ -1,0 +1,128 @@
+diff --git a/models/deepseek_v4_1_flash_a3/network.py b/models/deepseek_v4_1_flash_a3/network.py
+index cb6f5d1..ebf7fab 100644
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -1799,4 +1799,9 @@ def run_network_chunk(
+         prepared_engram.attach(layer, provider.state_handles_for_layer(layer))
+     layer_started, layer_timings = {}, []
++    index_keys = None
++    if phase == "verify":
++        from blockspec.pypto_dsv41_verify_cache import VerifyIndexKeys
++
++        index_keys = VerifyIndexKeys(resolve_layer_role(layer) for layer in range(40))
+
+     def runtime_for_layer(layer):
+@@ -1807,4 +1812,6 @@ def run_network_chunk(
+         actual["required_modes"] = contract["required_modes"]
+         actual["verify_index_cache"] = phase == "verify"
++        if index_keys is not None:
++            actual["verify_index_keys"] = index_keys
+         actual["engram"] = prepared_engram.apply
+         if draft is not None:
+@@ -1849,4 +1856,6 @@ def run_network_chunk(
+             draft.observe_layer(layer, result)
+         extra = () if draft is None else draft.finish_layer(layer)
++        if index_keys is not None:
++            extra += index_keys.finish_layer(layer, executor.rank_devices)
+         executor.retain_boundaries(result["hidden"], result["pre_mix"], extra)
+         completed_layers.append(layer)
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_consumer_runtime.py b/models/deepseek_v4_1_flash_a3/prefill_consumer_runtime.py
+index 9be28c6..7806906 100644
+--- a/models/deepseek_v4_1_flash_a3/prefill_consumer_runtime.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_consumer_runtime.py
+@@ -95,10 +95,16 @@ def run_consumer_attention(state, query, operands, execute, rank, case,
+         from .prefill_indexer import run_index_query_selection
+
++        codes = scales = load_index = None
+         if network is not None:
+             index_pages = owned_cache_pages(original, source_prefix + "indexer.k_cache", network["codes"])
+             if index_pages != source_pages:
+                 raise ValueError("Refresh source index and long cache owner pages differ")
+-            dense_index = load_network_index(raw, network, index_pages, execute, rank, case)
+-            codes, scales = dense_index["codes"], dense_index["scales"]
++
++            def load_index():
++                dense = load_network_index(raw, network, index_pages, execute, rank, case)
++                return dense["codes"], dense["scales"]
++
++            if state.get("runtime", {}).get("verify_index_keys") is None:
++                codes, scales = load_index()
+         else:
+             geometry = physical_index_geometry(live["layout"], source_prefix, cache_blocks)
+@@ -113,5 +119,6 @@ def run_consumer_attention(state, query, operands, execute, rank, case,
+             scales = dense_index["scales"].reshape(cache_blocks, 128, 1, 1)
+         selection = run_index_query_selection(state, q_input, latent, cosine, sine, operands,
+-            execute, rank, case, capacity, requests, table_pages, source_prefix, own_prefix, codes, scales)
++            execute, rank, case, capacity, requests, table_pages, source_prefix, own_prefix,
++            codes, scales, load_index=load_index)
+         selected, lengths = selection["selected"], selection["lengths"]
+         compressed, window = selection["compressed"], selection["window"]
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_indexer.py b/models/deepseek_v4_1_flash_a3/prefill_indexer.py
+index 6184f8b..a4b6650 100644
+--- a/models/deepseek_v4_1_flash_a3/prefill_indexer.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_indexer.py
+@@ -547,5 +547,5 @@ def validate_key_gather(*, device=0, sim=False, compile_only=False, cpu_only=Fal
+ def run_index_query_selection(state, q_input, latent, cosine, sine, operands,
+                               execute, rank, case, capacity, requests, table_pages,
+-                              source_prefix, own_prefix, codes, scales):
++                              source_prefix, own_prefix, codes=None, scales=None, *, load_index=None):
+     """Compute quantized index queries, paged-key scores and sparse controls with PyPTO."""
+     original, total = state["original"], state["total"]
+@@ -588,5 +588,9 @@ def run_index_query_selection(state, q_input, latent, cosine, sine, operands,
+             dict(codes=query_codes, scales=query_scales), "index_quant")
+     execute("index_weights_scale", rank, case, [weights_proj, weights, query_rows], dict(weights=weights), "index_key")
+-    candidate_scores = zeros(capacity, KEY_CAPACITY, dtype=torch.float32)
++    runtime = state.get("runtime", {})
++    role = state["role"]
++    retain_scores = not runtime.get("verify_index_cache") or role["candidate_write"]
++    candidate_scores = zeros(capacity, KEY_CAPACITY, dtype=torch.float32) if retain_scores else None
++    index_keys = runtime.get("verify_index_keys")
+     raw_selected = torch.full((capacity, 512), -1, dtype=torch.int32)
+     q_positions, q_requests = pad(positions[start:start + query_rows]), pad(request_ids[start:start + query_rows], fill=-1)
+@@ -600,9 +604,19 @@ def run_index_query_selection(state, q_input, latent, cosine, sine, operands,
+             continue
+         offset, count = left - start, right - left
+-        packed_key = zeros(KEY_CAPACITY, 128, dtype=torch.int8)
+-        packed_scale = zeros(KEY_CAPACITY, dtype=torch.float16)
+-        execute("index_key_gather", rank, case + f"-request-{request}",
+-                [codes, scales, long_table, packed_key, packed_scale, request, cache_lengths[request]],
+-                dict(key=packed_key, scales=packed_scale), "index_select")
++        def gather_key():
++            nonlocal codes, scales
++            if codes is None:
++                codes, scales = load_index()
++            key = zeros(KEY_CAPACITY, 128, dtype=torch.int8)
++            scale = zeros(KEY_CAPACITY, dtype=torch.float16)
++            execute("index_key_gather", rank, case + f"-request-{request}",
++                    [codes, scales, long_table, key, scale, request, cache_lengths[request]],
++                    dict(key=key, scales=scale), "index_select")
++            return key, scale
++
++        packed_key, packed_scale = (
++            gather_key() if index_keys is None else
++            index_keys.get(role, rank, case, request, cache_lengths[request], long_table[request], gather_key)
++        )
+         scores = zeros(capacity, KEY_CAPACITY, dtype=torch.float32)
+         picked = torch.full((capacity, 512), -1, dtype=torch.int32)
+@@ -613,5 +627,6 @@ def run_index_query_selection(state, q_input, latent, cosine, sine, operands,
+                 dict(scores=scores, selected=picked), "index_select")
+         copy_runtime_tensor(state.get("runtime", {}), raw_selected[offset:offset + count], picked[:count], rank)
+-        copy_runtime_tensor(state.get("runtime", {}), candidate_scores[offset:offset + count], scores[:count], rank)
++        if retain_scores:
++            copy_runtime_tensor(runtime, candidate_scores[offset:offset + count], scores[:count], rank)
+     if not query_rows:
+         # Empty CP ranks retain a recorded index-selection boundary.
+@@ -625,8 +640,9 @@ def run_index_query_selection(state, q_input, latent, cosine, sine, operands,
+     execute("sparse_controls", rank, case, controls_args,
+             dict(selected=selected, lengths=lengths, compressed=compressed_indices, window=window_indices), "index_select")
+-    visible_lengths = zeros(capacity, dtype=torch.int32)
+-    ratio = state["role"]["ratio"]
+-    visible = [(position + 1) // ratio for position in q_positions[:query_rows].tolist()]
+-    visible_lengths[:query_rows].copy_(torch.tensor(visible, dtype=torch.int32))
++    visible_lengths = None
++    if retain_scores:
++        visible_lengths = zeros(capacity, dtype=torch.int32)
++        visible = [(position + 1) // role["ratio"] for position in q_positions[:query_rows].tolist()]
++        visible_lengths[:query_rows].copy_(torch.tensor(visible, dtype=torch.int32))
+     return dict(selected=selected, lengths=lengths, compressed=compressed_indices,
+                 window=window_indices, scores=candidate_scores, visible_lengths=visible_lengths)

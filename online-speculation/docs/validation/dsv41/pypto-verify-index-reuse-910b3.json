@@ -1,0 +1,79 @@
+{
+  "passed": true,
+  "cases": [
+    {
+      "history": 31,
+      "requests": 2,
+      "readers": 4,
+      "byte_exact": true,
+      "calls_before": {
+        "network_load_codes": 5,
+        "network_load_scales": 5,
+        "index_key_gather": 10,
+        "index_select": 10,
+        "sparse_controls": 5
+      },
+      "calls_after": {
+        "network_load_codes": 1,
+        "network_load_scales": 1,
+        "index_key_gather": 2,
+        "index_select": 10,
+        "sparse_controls": 5
+      },
+      "before_ms": 78.1021062284708,
+      "after_ms": 51.08429887332022
+    },
+    {
+      "history": 1025,
+      "requests": 2,
+      "readers": 4,
+      "byte_exact": true,
+      "calls_before": {
+        "network_load_codes": 5,
+        "network_load_scales": 5,
+        "index_key_gather": 10,
+        "index_select": 10,
+        "sparse_controls": 5
+      },
+      "calls_after": {
+        "network_load_codes": 1,
+        "network_load_scales": 1,
+        "index_key_gather": 2,
+        "index_select": 10,
+        "sparse_controls": 5
+      },
+      "before_ms": 86.19495807215571,
+      "after_ms": 55.36756617948413
+    },
+    {
+      "history": 8193,
+      "requests": 2,
+      "readers": 4,
+      "byte_exact": true,
+      "calls_before": {
+        "network_load_codes": 5,
+        "network_load_scales": 5,
+        "index_key_gather": 10,
+        "index_select": 10,
+        "sparse_controls": 5
+      },
+      "calls_after": {
+        "network_load_codes": 1,
+        "network_load_scales": 1,
+        "index_key_gather": 2,
+        "index_select": 10,
+        "sparse_controls": 5
+      },
+      "before_ms": 91.12879820168018,
+      "after_ms": 55.64748612232506
+    }
+  ],
+  "device": "Ascend 910B3",
+  "host_label": "111",
+  "physical_card": 2,
+  "phase": "provisional verifier",
+  "baseline": "b94ce01",
+  "capacity": 128,
+  "active_rows": 32,
+  "timing": "Median of five hot resident executions. The sum covers one source layer and four reindex consumers. Native index cache load, key gather, score/Top-K and sparse controls run on NPU. Inputs for index scoring are deterministic synthetic post-projection queries. Readback, compilation and layer scratch cleanup are outside the measured windows."
+}
