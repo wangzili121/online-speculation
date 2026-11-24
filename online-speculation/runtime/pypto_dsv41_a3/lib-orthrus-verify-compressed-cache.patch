@@ -1,0 +1,145 @@
+--- a/models/deepseek_v4_1_flash_a3/cache.py
++++ b/models/deepseek_v4_1_flash_a3/cache.py
+@@ -511,58 +511,56 @@
+         entries["network_compressed_publish"] = make_network_cache_publish(capacity, geometry["long"])
+     if role["mode"] == "reuse":
+         return entries
++    from blockspec.pypto_dsv41_verify_cache import make_index_page_copy
++
+     for name in ("codes", "scales"):
+         plane = geometry[name]
+         payload, stride, offset = plane["payload"], plane["stride"], plane["offset"]
+-        tile = min(128, payload)
+         dtype = PTO_DTYPES[plane["dtype"]]
+-        entries["network_load_" + name] = make_paged_cache_copy(
+-            1, payload, stride, payload, source_offset=offset, dtype=dtype, copy_tile=tile
++        entries["network_load_" + name] = make_index_page_copy(
++            blocks=plane["blocks"], payload=payload, source_stride=stride,
++            destination_stride=payload, dtype=dtype, source_offset=offset,
+         )
+         if role["mode"] == "full":
+-            entries["network_store_" + name] = make_paged_cache_copy(
+-                1, payload, payload, stride, destination_offset=offset, dtype=dtype, copy_tile=tile
++            entries["network_store_" + name] = make_index_page_copy(
++                blocks=plane["blocks"], payload=payload, source_stride=payload,
++                destination_stride=stride, dtype=dtype, destination_offset=offset,
+             )
+     return entries
+
+
+ def load_network_index(raw, geometry, pages, execute, rank, case):
+-    """Stage actual index-owner pages in their native64/128-row typed shapes."""
++    """Batch selected index pages into the dense native indexer views."""
++    page_ids = _network_page_ids(geometry, pages) if pages else None
+     result = {}
+     for name in ("codes", "scales"):
+         plane = geometry[name]
+         dense = torch.empty((plane["blocks"], plane["payload"]), dtype=DTYPES[plane["dtype"]])
+-        physical = raw_cache_matrix(raw, plane)
+-        for page in pages:
+-            value = dense[page : page + 1]
+-            execute(
+-                "network_load_" + name,
+-                rank,
+-                case + f"-page-{page}",
+-                [physical[page : page + 1], value],
+-                {"payload": value},
+-                "physical_cache_load",
+-            )
++        if page_ids is not None:
++            physical = raw_cache_matrix(raw, plane)
++            execute("network_load_" + name, rank, case,
++                    [physical, dense, page_ids, len(pages)], {"payload": dense}, "physical_cache_load")
+         result[name] = dense.reshape(plane["blocks"], plane["rows"], 1, plane["width"])
+     return result
+
+
++def _network_page_ids(geometry, pages):
++    ids = torch.zeros(geometry["codes"]["blocks"], dtype=torch.int32)
++    ids[:len(pages)] = torch.tensor(pages, dtype=torch.int32)
++    return ids
++
++
+ def store_network_index(raw, geometry, pages, dense, execute, rank, case):
+-    """Store only real index-owner pages and preserve aliased ring/SWA pages."""
++    """Store selected index payloads and preserve the unrelated cache planes."""
++    if not pages:
++        return
++    page_ids = _network_page_ids(geometry, pages)
+     for name in ("codes", "scales"):
+         plane = geometry[name]
+         physical = raw_cache_matrix(raw, plane)
+         source = dense[name].reshape(plane["blocks"], plane["payload"])
+-        for page in pages:
+-            value = physical[page : page + 1]
+-            execute(
+-                "network_store_" + name,
+-                rank,
+-                case + f"-page-{page}",
+-                [source[page : page + 1], value],
+-                {"raw": value},
+-                "physical_cache_store",
+-            )
++        execute("network_store_" + name, rank, case,
++                [source, physical, page_ids, len(pages)], {"raw": physical}, "physical_cache_store")
+
+
+ def validate_network_sparse_indices(indices, original, geometry, active):
+--- a/models/deepseek_v4_1_flash_a3/prefill_compressed_runtime.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_compressed_runtime.py
+@@ -129,6 +129,7 @@
+     if network is not None:
+         cache = raw_cache_matrix(raw, network["long"])
+         own_cache = raw_cache_matrix(raw, network["own"])
++        verify = state.get("runtime", {}).get("verify_index_cache", False)
+         dense = load_network_index(raw, network, index_pages, execute, rank, case)
+         codes, scales = dense["codes"], dense["scales"]
+         if ratio == 2:
+@@ -265,6 +266,10 @@
+         ("index_quant", "cache_publish"),
+     )
+     if network is not None:
++        if verify:
++            from blockspec.pypto_dsv41_verify_cache import index_written_pages
++
++            index_pages = index_written_pages(global_meta[prefix + "indexer.k_cache"]["slot_mapping"])
+         store_network_index(raw, network, index_pages, dense, execute, rank, case)
+     elif ratio == 2:
+         cache_codes.copy_(codes)
+--- a/models/deepseek_v4_1_flash_a3/state.py
++++ b/models/deepseek_v4_1_flash_a3/state.py
+@@ -691,7 +691,9 @@
+         return deepcopy(owned["groups"]), len(self._sequence_tokens.get(key, []))
+
+     def verification_ranges(self, rank, metadata):
+-        """Snapshot the SWA rows the verifier writes and the other mutable pages."""
++        """Snapshot the cache planes that the provisional verifier can overwrite."""
++        from blockspec.pypto_dsv41_verify_cache import plane_write_extents
++
+         _require(rank in self.local_ranks, "Verifier cache ranges require a local cache owner")
+         layout = self.layouts[rank]["fresh"]
+         intervals, history = {}, set()
+@@ -720,6 +722,13 @@
+                         if any(not 0 <= row < plane["shape"][1] for _, row in slots):
+                             raise ValueError("Verification SWA slot lies outside its page")
+                         dest.update((page * page_bytes + origin + row * stride, row_bytes) for page, row in slots)
++                    elif name.endswith((".long_kv_cache", ".indexer.k_cache", ".compressor.state_cache")):
++                        native = metadata["metadata"][name]["global_metadata"]
++                        origin = plane["storage_offset_bytes"] - layout["raw"][storage]["storage_offset_bytes"]
++                        dest.update(plane_write_extents(
++                            name, plane, native=native, pages=pages,
++                            element_bytes=element_bytes, origin=origin,
++                        ))
+                     else:
+                         dest.update((page * page_bytes, page_bytes) for page in pages)
+
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -1805,6 +1805,7 @@
+             progress(dict(stage="executing_layer", epoch=epoch, layer=layer))
+         actual = executor.for_layer(layer)
+         actual["required_modes"] = contract["required_modes"]
++        actual["verify_index_cache"] = phase == "verify"
+         actual["engram"] = prepared_engram.apply
+         if draft is not None:
+             actual["draft_attention"] = draft

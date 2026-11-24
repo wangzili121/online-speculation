@@ -1,0 +1,101 @@
+{
+  "passed": true,
+  "cases": [
+    {
+      "ratio": 1,
+      "active": 8,
+      "pages_per_group": 2,
+      "index_copy_ms": {
+        "before": 7.428313139826059,
+        "after": 4.348566988483071
+      },
+      "backup_bytes": {
+        "before": 532480,
+        "after": 49664
+      },
+      "byte_exact": true
+    },
+    {
+      "ratio": 1,
+      "active": 32,
+      "pages_per_group": 32,
+      "index_copy_ms": {
+        "before": 153.89727684669197,
+        "after": 4.381046863272786
+      },
+      "backup_bytes": {
+        "before": 8421376,
+        "after": 98816
+      },
+      "byte_exact": true
+    },
+    {
+      "ratio": 1,
+      "active": 32,
+      "pages_per_group": 128,
+      "index_copy_ms": {
+        "before": 926.9444840028882,
+        "after": 4.844308132305741
+      },
+      "backup_bytes": {
+        "before": 33587200,
+        "after": 98816
+      },
+      "byte_exact": true
+    },
+    {
+      "ratio": 2,
+      "active": 8,
+      "pages_per_group": 2,
+      "index_copy_ms": {
+        "before": 7.628613151609898,
+        "after": 4.588588140904903
+      },
+      "backup_bytes": {
+        "before": 532480,
+        "after": 61696
+      },
+      "byte_exact": true
+    },
+    {
+      "ratio": 2,
+      "active": 32,
+      "pages_per_group": 32,
+      "index_copy_ms": {
+        "before": 155.16049903817475,
+        "after": 4.633318167179823
+      },
+      "backup_bytes": {
+        "before": 8421376,
+        "after": 196864
+      },
+      "byte_exact": true
+    },
+    {
+      "ratio": 2,
+      "active": 32,
+      "pages_per_group": 128,
+      "index_copy_ms": {
+        "before": 916.9705060776323,
+        "after": 4.898699000477791
+      },
+      "backup_bytes": {
+        "before": 33587200,
+        "after": 196864
+      },
+      "byte_exact": true
+    }
+  ],
+  "iterations": 5,
+  "baseline": "1bd2597",
+  "hardware": "Ascend 910B3",
+  "physical_device": 2,
+  "phase": "native verifier compressed-index copy and raw-cache rollback",
+  "image": "orthrus-dsv41-pypto:72a62d1-offline",
+  "scope": "1 layer and 1 rank per case, actual native publishers with seeded tensors",
+  "full_page_store_exact": true,
+  "compiled_entries_by_capacity": {
+    "16": 64,
+    "128": 64
+  }
+}

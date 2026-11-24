@@ -48,7 +48,8 @@ for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.p
     lib-orthrus-verify-rows.patch lib-orthrus-verify-parallel.patch lib-orthrus-verify-output.patch \
     lib-orthrus-teacher-rows.patch lib-orthrus-student-rows.patch \
     lib-orthrus-short-dispatch.patch lib-orthrus-draft-reduce-pack.patch lib-orthrus-engram-prefix.patch lib-orthrus-short-greedy.patch \
-    lib-orthrus-auxiliary-pin.patch lib-orthrus-engram-verify-readonly.patch; do
+    lib-orthrus-auxiliary-pin.patch lib-orthrus-engram-verify-readonly.patch \
+    lib-orthrus-verify-compressed-cache.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -501,14 +502,14 @@ except RuntimeError as error:
     assert str(error) == "verify dispatch failed"
 assert events == [("save", 0), ("save", 2), ("restore", 2), ("restore", 0)]
 
-# A verifier crossing two nonconsecutive pages only backs up written SWA rows.
-# Compression and token history remain protected across all their live pages.
+# A verifier crossing nonconsecutive pages only snapshots its published rows.
+# Ratio-2 compressed slots skip the token that does not complete a pair.
 provider_type = source.module("state").NetworkCacheProvider
 swa, compressed = "model.layers.1.self_attn.swa_cache", "model.layers.2.self_attn.long_kv_cache"
 views = {
     swa: dict(storage_key="swa", dtype="torch.bfloat16", shape=[8, 128, 1, 512],
               stride=[65600, 512, 512, 1], storage_offset_bytes=128),
-    compressed: dict(storage_key="long", dtype="torch.bfloat16", shape=[8, 128, 1, 512],
+    compressed: dict(storage_key="long", dtype="torch.bfloat16", shape=[8, 64, 1, 512],
                      stride=[65536, 512, 512, 1], storage_offset_bytes=0),
 }
 layout = dict(views=views, raw={key: {"storage_offset_bytes": 0} for key in ("swa", "long")})
@@ -517,10 +518,25 @@ metadata = {"groups": [dict(
     names=[swa, compressed], live_block_ids=[2, 5, 7],
     block_table=torch.tensor([[2, 7, 5]]), slot_mapping=torch.tensor([[7, 127], [5, 0], [5, 1]]),
 )]}
+metadata["metadata"] = {compressed: {"global_metadata": {
+    "slot_mapping": torch.tensor([[7, 63], [-1, -1], [5, 0]]),
+}}}
 ranges, history = provider_type.verification_ranges(provider, 0, metadata)
 assert ranges["swa"] == [(5 * 131200 + 128, 2048), (7 * 131200 + 128 + 127 * 1024, 1024)]
-assert ranges["long"] == [(page * 131072, 131072) for page in (2, 5, 7)]
+assert ranges["long"] == [(5 * 131072, 1024), (7 * 131072 + 63 * 1024, 1024)]
 assert history == (2, 5, 7)
+
+from blockspec.pypto_dsv41_verify_cache import plane_write_extents
+ring = dict(shape=[8, 32, 1, 1024], stride=[32768, 1024, 1024, 1])
+ring_meta = dict(
+    query_start_loc=torch.tensor([0, 3, 5]),
+    positions=torch.tensor([31, 32, 33, 66, 67]),
+    block_table=torch.tensor([[7], [5]], dtype=torch.int32),
+)
+assert plane_write_extents("layer.compressor.state_cache", ring, native=ring_meta, pages={5, 7},
+                           element_bytes=4, origin=0) == [
+    (7 * 131072 + row * 4096, 4096) for row in (31, 0, 1)
+] + [(5 * 131072 + row * 4096, 4096) for row in (2, 3)]
 
 runtime = runtime_type.__new__(runtime_type)
 replay_root, scratch = torch.zeros(1), torch.zeros(1)
@@ -547,6 +563,7 @@ print(json.dumps(dict(
     verify_copy_coalescing=True, verify_swa_written_rows=True, parallel_verifier_rollback=True,
     short_speculative_capacity_selection=True,
     verify_candidate_limit_preserves_k32_draft=True, verify_engram_reused_only_for_accept=True, short_verifier_teacher_rows_exact=True,
+    verify_compressed_written_rows=True,
 )))
 PY
 fi
