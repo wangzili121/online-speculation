@@ -1,6 +1,7 @@
 """Compare C1A backward implementations using real DSV4.1 draft operands."""
 
 import argparse
+from hashlib import sha256
 import json
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from time import perf_counter
 
 import torch
 
+from blockspec.dsv41_online_profile import OnlineUpdateProfile, profile_online
 from blockspec.pypto_dsv41_resident_primitives import DSV41ResidentPrimitives
 from blockspec.pypto_dsv41_runtime import ResidentDraftAttention, native
 from validate_dsv41_pypto_resident_draft import prepare_round
@@ -24,6 +26,8 @@ def main():
     parser.add_argument("--last-layers", type=int, choices=(1, 2, 4), default=1)
     parser.add_argument("--baseline-file", type=Path, action="append", default=[],
                         help="Previous resident-primitives source to compare under the same TP4 scheduler")
+    parser.add_argument("--startup-only", action="store_true",
+                        help="Profile one fresh C1A backward and fingerprint every output")
     args = parser.parse_args()
     torch.set_num_threads(4)
     torch.manual_seed(23)
@@ -111,6 +115,33 @@ def main():
             result = read(outputs)
             runtime.release_values()
             return result
+
+        if args.startup_only:
+            profile = OnlineUpdateProfile(args.output / "startup-online.jsonl")
+            contract = dict(update_number=1, request_id="c1a-startup", owner=(0, 0, 1), teacher_rows=7)
+            with profile_online(profile), profile.update(contract, owner_is_local=True) as record:
+                tensors = check("startup", parallel)
+            checksums = {}
+            for (layer, rank), values in sorted(tensors.items()):
+                for name, value in sorted(values.items()):
+                    assert value.isfinite().all() and value.count_nonzero(), (layer, rank, name)
+                    checksums[f"{layer}/{rank}/{name}"] = sha256(
+                        value.contiguous().view(torch.uint8).numpy(),
+                    ).hexdigest()
+            programs = record["compiled"]
+            launches = record["first_dispatch"]
+            print(json.dumps(dict(
+                passed=True, ranks=ranks, layers=plan.layers, startup=first_dispatch["startup"],
+                frontend_seconds=sum(row["seconds"] for row in programs),
+                assemble_seconds=sum(row["assemble_seconds"] for row in programs),
+                rank_first_dispatch_seconds=sum(row["seconds"] for row in launches),
+                rank_first_dispatches=len(launches), ready_cache_hits=sum(row["ready_cache_hits"] for row in programs),
+                generation_builds=sum(row["generation_builds"] for row in programs),
+                binary_builds=sum(row["binary_builds"] for row in programs),
+                cache_bypasses=sum(row["cache_bypasses"] for row in programs), checksums=checksums,
+            )), flush=True)
+            runtime.release_replay_values()
+            return
 
         comparisons = iter(variants.items())
         baseline = check(*next(comparisons))

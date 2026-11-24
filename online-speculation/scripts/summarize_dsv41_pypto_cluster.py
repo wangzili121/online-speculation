@@ -103,6 +103,11 @@ def recover_online_profile(directory):
             update=row["update"], dp=row["owner_dp"], teacher_rows=row["teacher_rows"],
             seconds=round(row["update_seconds"], 3), publication=round(row["publication_seconds"], 3),
             compile_seconds=round(sum(item["seconds"] for item in row["compiled"]), 3),
+            assemble_seconds=(
+                round(sum(item["assemble_seconds"] for item in row["compiled"]), 3)
+                if all("assemble_seconds" in item for item in row["compiled"]) else None
+            ),
+            ready_cache_hits=sum(item.get("ready_cache_hits", 0) for item in row["compiled"]),
             first_dispatches=len(row["first_dispatch"]),
         ) for row in records if not row.get("error")],
         hot_update_median_seconds=round(median(row["update_seconds"] for row in hot), 3) if hot else None,

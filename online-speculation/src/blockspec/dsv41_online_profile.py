@@ -17,6 +17,13 @@ def active_profile():
     return _PROFILE.get()
 
 
+def program_assembly_seconds(programs):
+    """Old reports counted lazy binary assembly in the first dispatch."""
+    if all("assemble_seconds" in entry for entry in programs):
+        return sum(entry["assemble_seconds"] for entry in programs)
+    return None
+
+
 @contextmanager
 def profile_online(profile):
     token = _PROFILE.set(profile)
@@ -152,6 +159,10 @@ class OnlineUpdateProfile:
                 "new_rank_dispatches": sum(len(row["first_dispatch"]) for row in (a, b)),
                 "jit_seconds_by_host": [sum(entry["seconds"] for entry in row["compiled"])
                                         for row in (a, b)],
+                "assemble_seconds_by_host": [program_assembly_seconds(row["compiled"]) for row in (a, b)],
+                "ready_cache_hits_by_host": [
+                    sum(entry.get("ready_cache_hits", 0) for entry in row["compiled"]) for row in (a, b)
+                ],
                 "first_dispatch_seconds_by_host": [
                     sum(entry["seconds"] for entry in row["first_dispatch"]) for row in (a, b)
                 ],

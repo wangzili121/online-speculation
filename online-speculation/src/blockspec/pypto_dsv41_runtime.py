@@ -2,6 +2,7 @@
 
 import importlib
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock, get_native_id
@@ -251,33 +252,55 @@ class ResidentDraftAttention:
     def mask_token_id(self):
         return self.manifest["mask_token_id"]
 
-    def execute(self, key, rank, factory, inputs):
+    def _compile_program(self, key, factory, inputs, timing):
+        from pypto import CacheConfig, cache_stats
         from pypto.backend import BackendType
         from pypto.runtime import ExecutionMode, RunConfig
 
+        online = isinstance(key, tuple) and key[0] == "online"
+        cache_dir = os.environ.get("PYPTO_DSV41_ONLINE_CACHE_DIR") if online else None
+        if cache_dir:
+            cache_options = dict(cache_config=CacheConfig(
+                enabled=True, root=Path(cache_dir), extra_fingerprint=os.environ.get("ORTHRUS_CLUSTER_LIB_TREE"),
+            ))
+        else:
+            cache_options = dict(save_kernels_dir=str(self.output / f"entry-{len(self.programs):03d}"))
+        options = RunConfig(arch=BackendType.Ascend910, execution_mode=ExecutionMode.ONBOARD,
+                            save_kernels=True, **cache_options)
+        started = perf_counter()
+        prior_cache = cache_stats() if timing is not None else None
+        kernel = resident_entry(factory())
+        # Compilation consumes tensor metadata. Real resident aliases are
+        # bound only at dispatch and never enter the cached artifact.
+        arguments = [
+            value if isinstance(value, torch.Tensor) or not hasattr(value, "shape")
+            else torch.empty(value.shape, dtype=value.dtype, device="meta")
+            for value in (inputs[name] for name in kernel.param_names)
+        ]
+        compiled, abi = compile_resident_entry(
+            kernel, arguments, options, abi=self.native("network").network_parameter_abi, name=key,
+        )
+        generated = perf_counter()
+        if online:
+            compiled.load()
+        if timing is not None:
+            cache = cache_stats()
+            timing["compiled"].append({
+                "operator": key, "seconds": generated - started,
+                "assemble_seconds": perf_counter() - generated if online else 0.0,
+                "ready_cache_hits": cache.ready_hits - prior_cache.ready_hits,
+                "generation_builds": cache.generation_builds - prior_cache.generation_builds,
+                "binary_builds": cache.binary_builds - prior_cache.binary_builds,
+                "cache_bypasses": cache.bypasses - prior_cache.bypasses,
+            })
+        return compiled, abi
+
+    def execute(self, key, rank, factory, inputs):
         profile = active_profile()
         timing = None if profile is None else profile.current
         with self.compile_lock:
             if key not in self.programs:
-                started = perf_counter() if timing is not None else None
-                kernel = resident_entry(factory())
-                options = RunConfig(
-                    arch=BackendType.Ascend910, execution_mode=ExecutionMode.ONBOARD, save_kernels=True,
-                    save_kernels_dir=str(self.output / f"entry-{len(self.programs):03d}"),
-                )
-                # The compiler consumes static shape/dtype metadata here. Physical
-                # target aliases are bound only at execution.
-                arguments = [
-                    value if isinstance(value, torch.Tensor) or not hasattr(value, "shape")
-                    else torch.empty(value.shape, dtype=value.dtype, device="meta")
-                    for value in (inputs[name] for name in kernel.param_names)
-                ]
-                self.programs[key] = compile_resident_entry(
-                    kernel, arguments, options,
-                    abi=self.native("network").network_parameter_abi, name=key,
-                )
-                if timing is not None:
-                    timing["compiled"].append({"operator": key, "seconds": perf_counter() - started})
+                self.programs[key] = self._compile_program(key, factory, inputs, timing)
         compiled, abi = self.programs[key]
         local_rank = self.rank_ids[rank]
         arguments = [inputs[name] for name in compiled.param_names]

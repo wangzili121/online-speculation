@@ -99,6 +99,8 @@ def test_profile_runs_matched_probes_around_bounded_updates(tmp_path, monkeypatc
                 contract = dict(update_number=self.version, request_id=name, owner=[self.partition, 0, 1], teacher_rows=7)
                 with profile.update(contract, owner_is_local=self.partition == 0) as row:
                     row.update(update_seconds=2.0, publication_seconds=0.1)
+                    if self.version == 1:
+                        row["compiled"].append(dict(seconds=0.031, assemble_seconds=0.008, ready_cache_hits=1))
             return SimpleNamespace(accepted_token_ids=[[tokens[0] + i for i in range(1, 2 + accepted)]],
                                    num_draft_tokens=[31])
 
@@ -142,6 +144,9 @@ def test_profile_runs_matched_probes_around_bounded_updates(tmp_path, monkeypatc
     assert recovered["greedy_comparison"] == comparisons
     assert recovered["probe_head_versions"] == {"fixed_before": [0], "fixed_after": [expected_updates]}
     assert len(recovered["updates"]) == expected_updates
+    assert recovered["updates"][0]["assemble_seconds"] == 0.008
+    assert recovered["updates"][0]["ready_cache_hits"] == 1
+    assert recovered["updates"][1]["assemble_seconds"] == 0.0
     assert recovered["hot_update_median_seconds"] == 2.0
     assert recovered["probes"]["fixed_after"]["accepted"] > recovered["probes"]["fixed_before"]["accepted"]
     assert not json.loads(failure.read_text())["passed"]

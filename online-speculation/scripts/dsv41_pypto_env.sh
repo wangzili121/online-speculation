@@ -442,6 +442,9 @@ case "$action" in
         mkdir -p "$state_dir"
         state_dir="$(cd "$state_dir" && pwd -P)"
         options+=(-v "$log_dir:/results" -v "$state_dir:/cluster-state" -e PYPTO_A3_STATE_DIR=/cluster-state)
+        if [[ "${PYPTO_DSV41_ONLINE_CACHE:-1}" == 1 ]]; then
+          options+=(-e PYPTO_DSV41_ONLINE_CACHE_DIR=/cluster-state/online-jit)
+        fi
         if [[ -n "${ORTHRUS_WORKLOAD:-}" ]]; then
           workload="$(cd "$(dirname "$ORTHRUS_WORKLOAD")" && pwd -P)/$(basename "$ORTHRUS_WORKLOAD")"
           [[ -f "$workload" && -r "$workload" ]] || {
