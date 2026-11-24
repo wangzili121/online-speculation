@@ -1,0 +1,48 @@
+{
+  "passed": true,
+  "phase": "C1A rank-local VJP",
+  "device": "910B3",
+  "physical_devices": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "tp": 4,
+  "layer": 39,
+  "index_source": 36,
+  "anchor": 257,
+  "block": 32,
+  "repeat_count": 8,
+  "input": "W8A8 checkpoint-initialized draft head, real captured C1A states, seeded gradients and history",
+  "tensors_per_rank": 9,
+  "byte_exact": true,
+  "variants": {
+    "parallel": {
+      "revision": "ada6e9d",
+      "wall_ms": 111.88940657302737,
+      "workspace_fill_bytes": 648126720
+    },
+    "parallel_and_norm": {
+      "revision": "a4ae3c9",
+      "wall_ms": 97.81430242583156,
+      "workspace_fill_bytes": 647172352
+    },
+    "parallel_norm_write_only": {
+      "wall_ms": 90.86550096981227,
+      "workspace_fill_bytes": 30609664
+    }
+  },
+  "output_poison_test": {
+    "device": "910B3",
+    "physical_device": 4,
+    "byte_exact": true,
+    "overwritten_bytes": {
+      "wo_b": 41943040,
+      "wo_a": 33554432,
+      "wq_b": 41943040,
+      "wq_a": 26214400,
+      "wkv": 10485760
+    }
+  }
+}

@@ -1223,7 +1223,6 @@ class DSV41ResidentPrimitives:
             C1AAttentionVJPGeometry, c1a_vjp_factories,
         )
         from .pypto_dsv41_online_programs import make_element, make_linear, make_rms
-        from .pypto_dsv41_swa import swa_spans
 
         geometry = C1AAttentionVJPGeometry()
         qkv = captured["qkv"]
@@ -1242,7 +1241,8 @@ class DSV41ResidentPrimitives:
         # batched GEMM preserve the native two-group ownership exactly.
         grouped = qkv["grouped"]
         unrotated = qkv["unrotated"]
-        dwo_b = self._workspace(rank, operands["wo_b"].shape, torch.float32)
+        # These dW programs overwrite every tile and never accumulate into scratch.
+        dwo_b = self._workspace(rank, operands["wo_b"].shape, torch.float32, fill=None)
         self._execute(
             ("attn-wo-b-weight-vjp", layer), rank,
             lambda: make_linear(
@@ -1269,7 +1269,7 @@ class DSV41ResidentPrimitives:
             lambda: _make_group_layout(ROWS, 2, 4096, split=True),
             source=unrotated, output=grouped_input,
         )
-        dwo_a_flat = self._workspace(rank, (2 * 1024, 4096), torch.float32)
+        dwo_a_flat = self._workspace(rank, (2 * 1024, 4096), torch.float32, fill=None)
         self._execute(
             ("attn-wo-a-weight-vjp", layer), rank,
             lambda: make_linear(
@@ -1302,9 +1302,7 @@ class DSV41ResidentPrimitives:
         )
 
         # Exact selected-history probability replay and temporary-block VJP.
-        anchor = history["committed_tokens"]
-        history_bias = torch.full((1, 128), -torch.inf, dtype=torch.float32)
-        history_bias[:, :min(anchor, 128)] = 0
+        history_bias = self.draft.swa_history_bias[min(history["committed_tokens"], geometry.swa)]
         factories = c1a_vjp_factories(geometry)
         joined = captured["joined_history"]
         query = qkv["query"].view(geometry.rows, 512)
@@ -1392,7 +1390,7 @@ class DSV41ResidentPrimitives:
         )
 
         dlatent = self._workspace(rank, (ROWS, 1280))
-        dwq_b = self._workspace(rank, operands["wq_b"].shape, torch.float32)
+        dwq_b = self._workspace(rank, operands["wq_b"].shape, torch.float32, fill=None)
         self._execute(
             ("attn-wq-b-input-vjp", layer), rank,
             lambda: make_linear((ROWS, 8192), (1280, 8192)),
@@ -1417,7 +1415,7 @@ class DSV41ResidentPrimitives:
             ),
             x=qkv["qa"], gamma=q_gamma, dy=dlatent, dx=dqa, dg=dq_norm,
         )
-        dwq_a = self._workspace(rank, operands["wq_a"].shape, torch.float32)
+        dwq_a = self._workspace(rank, operands["wq_a"].shape, torch.float32, fill=None)
         query_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
         self._execute(
             ("attn-wq-a-weight-vjp", layer), rank,
@@ -1444,7 +1442,7 @@ class DSV41ResidentPrimitives:
             ),
             x=qkv["kv"], gamma=kv_gamma, dy=temporary_norm_gradient, dx=dkv, dg=dkv_norm,
         )
-        dwkv = self._workspace(rank, operands["wkv"].shape, torch.float32)
+        dwkv = self._workspace(rank, operands["wkv"].shape, torch.float32, fill=None)
         kv_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
         self._execute(
             ("attn-wkv-weight-vjp", layer), rank,
