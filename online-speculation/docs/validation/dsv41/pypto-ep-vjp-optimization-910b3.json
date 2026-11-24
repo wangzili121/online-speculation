@@ -1,0 +1,223 @@
+{
+  "format": "orthrus-dsv41-ep-local-optimization-v1",
+  "board": "Ascend 910B3",
+  "host": "167",
+  "baseline": "c2be3c5",
+  "scope": "native EP16 kernel shapes on one card and local HCCL all-to-all on four cards",
+  "matched_k32": {
+    "baseline": {
+      "format": "orthrus-dsv41-pypto-ep-vjp-v1",
+      "passed": true,
+      "compiled": [
+        "dispatch_pack",
+        "dispatch_unpack",
+        "return_pack",
+        "source_restore"
+      ],
+      "executed": true,
+      "simulator_execution": false,
+      "shape": {
+        "rows": 32,
+        "topk": 6,
+        "hidden": 5120,
+        "experts": 384,
+        "world": 16,
+        "packet_rows": 3072,
+        "expert_capacity": 32
+      },
+      "active": 32,
+      "source_rank": 9,
+      "owners": [
+        {
+          "owner": 1,
+          "routes": 64
+        },
+        {
+          "owner": 7,
+          "routes": 32
+        },
+        {
+          "owner": 8,
+          "routes": 64
+        },
+        {
+          "owner": 15,
+          "routes": 32
+        }
+      ],
+      "routes": 192,
+      "route_max_abs": 0.0,
+      "token_max_abs": 0.0,
+      "inactive_route_nonzero": 0,
+      "inactive_token_nonzero": 0,
+      "steady_kernel_ms": {
+        "dispatch_pack": {
+          "median": 1.9276844686828554,
+          "calls": 16
+        },
+        "dispatch_unpack": {
+          "median": 1.7712184926494956,
+          "calls": 64
+        },
+        "return_pack": {
+          "median": 1.4080969849601388,
+          "calls": 64
+        },
+        "source_restore": {
+          "median": 9.15601901942864,
+          "calls": 16
+        }
+      }
+    },
+    "candidate": {
+      "format": "orthrus-dsv41-pypto-ep-vjp-v1",
+      "passed": true,
+      "compiled": [
+        "dispatch_pack",
+        "dispatch_unpack",
+        "return_pack",
+        "source_restore"
+      ],
+      "executed": true,
+      "simulator_execution": false,
+      "shape": {
+        "rows": 32,
+        "topk": 6,
+        "hidden": 5120,
+        "experts": 384,
+        "world": 16,
+        "packet_rows": 3072,
+        "expert_capacity": 32
+      },
+      "active": 32,
+      "source_rank": 9,
+      "owners": [
+        {
+          "owner": 1,
+          "routes": 64
+        },
+        {
+          "owner": 7,
+          "routes": 32
+        },
+        {
+          "owner": 8,
+          "routes": 64
+        },
+        {
+          "owner": 15,
+          "routes": 32
+        }
+      ],
+      "routes": 192,
+      "route_max_abs": 0.0,
+      "token_max_abs": 0.0,
+      "inactive_route_nonzero": 0,
+      "inactive_token_nonzero": 0,
+      "steady_kernel_ms": {
+        "dispatch_pack": {
+          "median": 1.7089230241253972,
+          "calls": 16
+        },
+        "dispatch_unpack": {
+          "median": 1.1190504301339388,
+          "calls": 64
+        },
+        "return_pack": {
+          "median": 1.3229764881543815,
+          "calls": 64
+        },
+        "source_restore": {
+          "median": 0.8287439704872668,
+          "calls": 16
+        }
+      }
+    }
+  },
+  "additional_cases": {
+    "ep-unpack": {
+      "passed": true,
+      "component": "ep-unpack",
+      "byte_exact": true,
+      "cases": {
+        "empty": {
+          "routes": 0,
+          "baseline_ms": 1.9582395325414836,
+          "fused_ms": 1.347790937870741
+        },
+        "sparse_remote": {
+          "routes": 6,
+          "baseline_ms": 1.9537339685484767,
+          "fused_ms": 1.3411365216597915
+        },
+        "single_expert_full": {
+          "routes": 32,
+          "baseline_ms": 1.9509894773364067,
+          "fused_ms": 1.3233015197329223
+        },
+        "same_owner_full": {
+          "routes": 192,
+          "baseline_ms": 1.9759739516302943,
+          "fused_ms": 1.3618210214190185
+        }
+      }
+    },
+    "ep-source-restore": {
+      "passed": true,
+      "component": "ep-source-restore",
+      "byte_exact": true,
+      "cases": {
+        "empty": {
+          "active": 0,
+          "baseline_ms": 9.373624518048018,
+          "fused_ms": 1.244981016498059
+        },
+        "partial": {
+          "active": 3,
+          "baseline_ms": 9.353359520900995,
+          "fused_ms": 1.182835956569761
+        },
+        "striped": {
+          "active": 32,
+          "baseline_ms": 9.373030043207109,
+          "fused_ms": 1.1270205141045153
+        },
+        "all_one_owner": {
+          "active": 32,
+          "baseline_ms": 9.357274509966373,
+          "fused_ms": 1.1492650373838842
+        }
+      }
+    },
+    "ep-hccl-receive": {
+      "passed": true,
+      "component": "ep-hccl-receive",
+      "physical_cards": 4,
+      "baseline_ms": 17.13425654452294,
+      "write_only_ms": 15.608693996910006,
+      "baseline_fill_bytes": 252053504,
+      "write_only_fill_bytes": 0,
+      "exact_all_to_all_and_following_d2d": true
+    },
+    "ep-pack": {
+      "passed": true,
+      "component": "ep-pack",
+      "physical_cards": 4,
+      "byte_exact": true,
+      "cases": {
+        "peer_only": {
+          "serial_ms": 10.50925999879837,
+          "parallel_ms": 6.363624997902662
+        },
+        "single_owner_lane": {
+          "serial_ms": 10.206438542809337,
+          "parallel_ms": 5.967523553408682
+        },
+        "striped_owner": {
+          "serial_ms": 12.303588504437357,
+          "parallel_ms": 9.031337453052402
+        }
+      }
+    }
+  }
+}

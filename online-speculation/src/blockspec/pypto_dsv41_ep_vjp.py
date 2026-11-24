@@ -126,22 +126,18 @@ def make_ep_vjp_dispatch_pack():
             peer = packet // ROUTES
             bucket_row = packet % ROUTES
             peer_count = pl.read(sent_counts, [peer, 0])
-            for part in pl.range(HIDDEN // HIDDEN_TILE):
-                column = part * HIDDEN_TILE
-                if bucket_row < peer_count:
-                    token = pl.cast(pl.read(sent_metadata, [packet, 1]), pl.INDEX)
-                    slot = pl.cast(pl.read(sent_metadata, [packet, 2]), pl.INDEX)
-                    route = token * TOPK + slot
-                    sent_x[packet:packet + 1, column:column + HIDDEN_TILE] = normalized_x[
-                        token:token + 1, column:column + HIDDEN_TILE
-                    ]
-                    sent_dy[packet:packet + 1, column:column + HIDDEN_TILE] = route_output_gradient[
-                        route:route + 1, column:column + HIDDEN_TILE
-                    ]
-                else:
-                    zero = pl.tile.full([1, HIDDEN_TILE], dtype=pl.BF16, value=0.)
-                    pl.store(zero, [packet, column], sent_x)
-                    pl.store(zero, [packet, column], sent_dy)
+            if bucket_row < peer_count:
+                token = pl.cast(pl.read(sent_metadata, [packet, 1]), pl.INDEX)
+                slot = pl.cast(pl.read(sent_metadata, [packet, 2]), pl.INDEX)
+                route = token * TOPK + slot
+                x = pl.load(normalized_x, [token, 0], [1, HIDDEN])
+                dy = pl.load(route_output_gradient, [route, 0], [1, HIDDEN])
+                pl.store(x, [packet, 0], sent_x)
+                pl.store(dy, [packet, 0], sent_dy)
+            else:
+                zero = pl.tile.full([1, HIDDEN], dtype=pl.BF16, value=0.)
+                pl.store(zero, [packet, 0], sent_x)
+                pl.store(zero, [packet, 0], sent_dy)
         return sent_metadata, sent_x, sent_dy, sent_counts
 
     return ep_vjp_dispatch_pack
@@ -166,6 +162,7 @@ def make_ep_vjp_dispatch_unpack():
     ):
         # packet_map is indexed by the received packet.  Field 0 is its slab
         # row; field 1 is validity; fields 2..5 preserve source/token/slot/id.
+        slab_packet = pl.create_tensor([LOCAL_EXPERTS, EXPERT_CAPACITY], dtype=pl.INT32)
         with pl.spmd(1, name_hint="orthrus_ep_vjp_unpack_metadata") as metadata_ready:
             _block = pl.tile.get_block_idx()
             for packet in pl.range(PACKET_ROWS):
@@ -181,6 +178,7 @@ def make_ep_vjp_dispatch_unpack():
                         packet = source * ROUTES + row
                         if pl.read(packet_metadata, [packet, 3]) == expert:
                             slab = local * EXPERT_CAPACITY + count
+                            pl.write(slab_packet, [local, count], pl.cast(packet, pl.INT32))
                             pl.write(packet_map, [packet, 0], pl.cast(slab, pl.INT32))
                             pl.write(packet_map, [packet, 1], pl.cast(1, pl.INT32))
                             for field in pl.range(PACKET_FIELDS):
@@ -197,24 +195,14 @@ def make_ep_vjp_dispatch_unpack():
 
         with pl.spmd(
             SLAB_ROWS,
-            name_hint="orthrus_ep_vjp_zero_slabs",
+            name_hint="orthrus_ep_vjp_unpack_slabs",
             deps=[metadata_ready],
-        ) as slabs_zeroed:
-            slab = pl.tile.get_block_idx()
-            zero = pl.tile.full([1, HIDDEN_TILE], dtype=pl.BF16, value=0.)
-            for part in pl.range(HIDDEN // HIDDEN_TILE):
-                column = part * HIDDEN_TILE
-                pl.store(zero, [slab, column], expert_x)
-                pl.store(zero, [slab, column], expert_dy)
-
-        with pl.spmd(
-            PACKET_ROWS,
-            name_hint="orthrus_ep_vjp_unpack_payload",
-            deps=[slabs_zeroed],
         ):
-            packet = pl.tile.get_block_idx()
-            if pl.read(packet_map, [packet, 1]) != 0:
-                slab = pl.cast(pl.read(packet_map, [packet, 0]), pl.INDEX)
+            slab = pl.tile.get_block_idx()
+            local, row = slab // EXPERT_CAPACITY, slab % EXPERT_CAPACITY
+            # Only populated inverse-map entries were written by the metadata task.
+            if row < pl.read(expert_counts, [local]):
+                packet = pl.cast(pl.read(slab_packet, [local, row]), pl.INDEX)
                 for part in pl.range(HIDDEN // HIDDEN_TILE):
                     column = part * HIDDEN_TILE
                     expert_x[slab:slab + 1, column:column + HIDDEN_TILE] = packet_x[
@@ -223,6 +211,12 @@ def make_ep_vjp_dispatch_unpack():
                     expert_dy[slab:slab + 1, column:column + HIDDEN_TILE] = packet_dy[
                         packet:packet + 1, column:column + HIDDEN_TILE
                     ]
+            else:
+                zero = pl.tile.full([1, HIDDEN_TILE], dtype=pl.BF16, value=0.)
+                for part in pl.range(HIDDEN // HIDDEN_TILE):
+                    column = part * HIDDEN_TILE
+                    pl.store(zero, [slab, column], expert_x)
+                    pl.store(zero, [slab, column], expert_dy)
         return expert_x, expert_dy, expert_counts, packet_map, received_total
 
     return ep_vjp_dispatch_unpack
@@ -246,19 +240,16 @@ def make_ep_vjp_return_pack():
             packet = pl.tile.get_block_idx()
             source = packet // ROUTES
             bucket_row = packet % ROUTES
-            for part in pl.range(HIDDEN // HIDDEN_TILE):
-                column = part * HIDDEN_TILE
-                if (
-                    bucket_row < pl.read(packet_counts, [source, 0])
-                    and pl.read(packet_map, [packet, 1]) != 0
-                ):
-                    slab = pl.cast(pl.read(packet_map, [packet, 0]), pl.INDEX)
-                    sent_dx[packet:packet + 1, column:column + HIDDEN_TILE] = expert_dx[
-                        slab:slab + 1, column:column + HIDDEN_TILE
-                    ]
-                else:
-                    zero = pl.tile.full([1, HIDDEN_TILE], dtype=pl.BF16, value=0.)
-                    pl.store(zero, [packet, column], sent_dx)
+            if (
+                bucket_row < pl.read(packet_counts, [source, 0])
+                and pl.read(packet_map, [packet, 1]) != 0
+            ):
+                slab = pl.cast(pl.read(packet_map, [packet, 0]), pl.INDEX)
+                dx = pl.load(expert_dx, [slab, 0], [1, HIDDEN])
+                pl.store(dx, [packet, 0], sent_dx)
+            else:
+                zero = pl.tile.full([1, HIDDEN], dtype=pl.BF16, value=0.)
+                pl.store(zero, [packet, 0], sent_dx)
         return sent_dx
 
     return ep_vjp_return_pack
@@ -278,41 +269,25 @@ def make_ep_vjp_source_restore():
         active: pl.Scalar[pl.INT32],
         source_rank: pl.Scalar[pl.INT32],
     ):
-        with pl.spmd(
-            ROUTES * (HIDDEN // HIDDEN_TILE),
-            name_hint="orthrus_ep_vjp_zero_routes",
-        ) as routes_zeroed:
-            task = pl.tile.get_block_idx()
-            zero = pl.tile.full([1, HIDDEN_TILE], dtype=pl.BF16, value=0.)
-            route = task // (HIDDEN // HIDDEN_TILE)
-            column = task % (HIDDEN // HIDDEN_TILE) * HIDDEN_TILE
-            pl.store(zero, [route, column], route_dx)
-
-        with pl.spmd(
-            PACKET_ROWS * (HIDDEN // HIDDEN_TILE),
-            name_hint="orthrus_ep_vjp_restore_routes",
-            deps=[routes_zeroed],
-        ) as routes_restored:
-            task = pl.tile.get_block_idx()
-            packet = task // (HIDDEN // HIDDEN_TILE)
-            column = task % (HIDDEN // HIDDEN_TILE) * HIDDEN_TILE
-            owner = packet // ROUTES
-            bucket_row = packet % ROUTES
-            if (
-                bucket_row < pl.read(sent_counts, [owner, 0])
-                and pl.read(sent_metadata, [packet, 0]) == source_rank
-            ):
-                token = pl.cast(pl.read(sent_metadata, [packet, 1]), pl.INDEX)
-                slot = pl.cast(pl.read(sent_metadata, [packet, 2]), pl.INDEX)
-                route = token * TOPK + slot
-                route_dx[route:route + 1, column:column + HIDDEN_TILE] = returned_dx[
-                    packet:packet + 1, column:column + HIDDEN_TILE
-                ]
+        route_packet = pl.create_tensor([K32_ROWS, MAP_PAD], dtype=pl.INT32)
+        with pl.spmd(1, name_hint="orthrus_ep_vjp_index_routes") as indexed:
+            _block = pl.tile.get_block_idx()
+            for token in pl.range(K32_ROWS):
+                for slot in pl.range(TOPK):
+                    pl.write(route_packet, [token, slot], pl.cast(-1, pl.INT32))
+            for owner in pl.range(EP_WORLD):
+                count = pl.cast(pl.read(sent_counts, [owner, 0]), pl.INDEX)
+                for row in pl.range(count):
+                    packet = owner * ROUTES + row
+                    if pl.read(sent_metadata, [packet, 0]) == source_rank:
+                        token = pl.cast(pl.read(sent_metadata, [packet, 1]), pl.INDEX)
+                        slot = pl.cast(pl.read(sent_metadata, [packet, 2]), pl.INDEX)
+                        pl.write(route_packet, [token, slot], pl.cast(packet, pl.INT32))
 
         with pl.spmd(
             K32_ROWS * (HIDDEN // HIDDEN_TILE),
             name_hint="orthrus_ep_vjp_sum_routes",
-            deps=[routes_restored],
+            deps=[indexed],
         ):
             task = pl.tile.get_block_idx()
             zero = pl.tile.full([1, HIDDEN_TILE], dtype=pl.BF16, value=0.)
@@ -321,16 +296,21 @@ def make_ep_vjp_source_restore():
             if token < active:
                 total = pl.tile.full([1, HIDDEN_TILE], dtype=pl.FP32, value=0.)
                 for slot in pl.range(TOPK):
-                    value = pl.cast(
-                        pl.load(route_dx, [token * TOPK + slot, column], [1, HIDDEN_TILE]),
-                        pl.FP32,
-                    )
-                    total = pl.add(total, value)
+                    route = token * TOPK + slot
+                    entry = pl.read(route_packet, [token, slot])
+                    value = zero
+                    if entry >= 0:
+                        packet = pl.cast(entry, pl.INDEX)
+                        value = pl.load(returned_dx, [packet, column], [1, HIDDEN_TILE])
+                    pl.store(value, [route, column], route_dx)
+                    total = pl.add(total, pl.cast(value, pl.FP32))
                 pl.store(
                     pl.cast(total, pl.BF16, mode="rint"),
                     [token, column], token_dx,
                 )
             else:
+                for slot in pl.range(TOPK):
+                    pl.store(zero, [token * TOPK + slot, column], route_dx)
                 pl.store(zero, [token, column], token_dx)
         return route_dx, token_dx
 

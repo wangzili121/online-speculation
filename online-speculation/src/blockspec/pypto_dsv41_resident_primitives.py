@@ -642,7 +642,6 @@ class DSV41ResidentPrimitives:
     def _ep_exchange(self, stage, packets):
         """Run one fixed-packet EP16 all-to-all on every node-local rank."""
         transport = getattr(self.native, "transport", None)
-        exchange = self.resident.exchange if transport is None else transport.exchange
         phase = stage.rsplit("-", 2)[-2]
         profile = active_profile()
         if profile is not None and profile.current is not None:
@@ -651,7 +650,13 @@ class DSV41ResidentPrimitives:
                 for packet in packets for fields in packet.values() for value in fields.values()
             )
         with timed_stage(f"ep_{phase}_exchange"):
-            output, _ = exchange(stage, packets, "all_to_all", "ep")
+            if transport is None:
+                output, _ = self.resident.exchange(stage, packets, "all_to_all", "ep")
+            else:
+                # All-to-all writes every byte of each fixed-width bucket.
+                output, _ = transport.exchange(
+                    stage, packets, "all_to_all", "ep", write_only_receive=True,
+                )
         if len(output) != len(self.ranks):
             raise RuntimeError("EP16 exchange did not return every node-local rank")
         return output
@@ -674,8 +679,8 @@ class DSV41ResidentPrimitives:
         if sources and rows != list(range(ROWS)):
             raise ValueError("EP reverse requires disjoint owner spans covering one K32 block")
 
-        packets, originals = [], {}
-        for rank in self.ranks:
+        def pack_rank(index):
+            rank = self.ranks[index]
             source = sources.get(rank)
             if source is None:
                 normalized = self._workspace(rank, (ROWS, HIDDEN))
@@ -712,13 +717,18 @@ class DSV41ResidentPrimitives:
                 sent_x=sent_x, sent_dy=sent_dy, sent_counts=sent_counts,
                 active=active, source_rank=rank,
             )
-            originals[rank] = sent_metadata, sent_counts
-            packets.append({
+            return {
                 "frozen-tail": {
                     "metadata": sent_metadata, "x": sent_x,
                     "dy": sent_dy, "counts": sent_counts,
                 },
-            })
+            }
+
+        packets = self._map_online_ranks(pack_rank)
+        originals = {
+            rank: (packet["frozen-tail"]["metadata"], packet["frozen-tail"]["counts"])
+            for rank, packet in zip(self.ranks, packets, strict=True)
+        }
         return packets, originals
 
     @profiled_stage("ep_expert_owner")
@@ -759,12 +769,16 @@ class DSV41ResidentPrimitives:
             if measured:
                 with profile.lock:
                     experts = profile.current["counts"]
-                    experts["expert_rows_received"] += sum(counts)
+                    received_rows = sum(counts)
+                    experts["expert_rows_received"] += received_rows
+                    experts["peak_routed_rows_per_ep_rank"] = max(
+                        experts["peak_routed_rows_per_ep_rank"], received_rows,
+                    )
                     experts["active_routed_expert_calls"] += sum(count > 0 for count in counts)
                     experts["expert_padded_rows"] += sum(
                         16 if count <= 16 else EXPERT_CAPACITY for count in counts if count
                     )
-                    experts[f"expert_rows_rank_{rank}"] += sum(counts)
+                    experts[f"expert_rows_rank_{rank}"] += received_rows
             for local_expert, count in enumerate(counts):
                 if count == 0:
                     continue

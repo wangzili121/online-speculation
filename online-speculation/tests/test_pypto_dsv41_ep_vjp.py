@@ -218,7 +218,7 @@ def test_pypto_source_defines_four_fixed_shape_packet_kernels():
     }
     for name in (
         "orthrus_ep_vjp_pack_payload",
-        "orthrus_ep_vjp_unpack_payload",
+        "orthrus_ep_vjp_unpack_slabs",
         "orthrus_ep_vjp_return_pack",
         "orthrus_ep_vjp_sum_routes",
     ):
@@ -226,5 +226,5 @@ def test_pypto_source_defines_four_fixed_shape_packet_kernels():
     assert "pl.Tensor[[K32_ROWS, HIDDEN], pl.BF16]" in source
     assert "pl.Tensor[[PACKET_ROWS, PACKET_FIELDS], pl.INT64]" in source
     assert "pl.Tensor[[SLAB_ROWS, HIDDEN], pl.BF16]" in source
-    assert "deps=[slabs_zeroed]" in source
-    assert "deps=[routes_restored]" in source
+    assert "deps=[metadata_ready]" in inspect.getsource(ep.make_ep_vjp_dispatch_unpack)
+    assert "deps=[indexed]" in inspect.getsource(ep.make_ep_vjp_source_restore)

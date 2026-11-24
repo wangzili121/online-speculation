@@ -4,6 +4,8 @@
 import argparse
 import json
 from pathlib import Path
+from statistics import median
+from time import perf_counter
 
 
 def main():
@@ -12,9 +14,13 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--simulate", action="store_true")
+    parser.add_argument("--iterations", type=int, default=0, help="Timed repeats after each correctness launch")
+    parser.add_argument("--active", type=int, default=3, help="Number of active source rows in the K32 block")
     args = parser.parse_args()
     if args.output.exists():
         parser.error("output must not already exist")
+    if args.iterations < 0:
+        parser.error("iterations must be nonnegative")
 
     import torch
     from pypto.backend import BackendType
@@ -37,6 +43,8 @@ def main():
         make_ep_vjp_return_pack,
         make_ep_vjp_source_restore,
     )
+    if not 0 <= args.active <= K32_ROWS:
+        parser.error(f"active must be in [0, {K32_ROWS}]")
 
     config = RunConfig(
         backend_type=BackendType.Ascend910B,
@@ -100,7 +108,7 @@ def main():
 
     torch.manual_seed(4117)
     torch.set_num_threads(4)
-    active, source_rank = 3, 9
+    active, source_rank = args.active, 9
     owners = (1, 7, 8, 15, 1, 8)
     route_ids = torch.zeros(K32_ROWS, TOPK, dtype=torch.int32)
     for token in range(active):
@@ -126,6 +134,14 @@ def main():
     worker, handles = None, []
     try:
         worker = ChipWorker(config=config)
+        timings = {name: [] for name in programs}
+
+        def run(name, *operands):
+            worker.run(programs[name], *operands, config=config)
+            for _ in range(args.iterations):
+                started = perf_counter()
+                worker.run(programs[name], *operands, config=config)
+                timings[name].append((perf_counter() - started) * 1e3)
 
         def allocate(shape, dtype, value=None):
             keywords = {}
@@ -153,10 +169,10 @@ def main():
         sent_x_h = dirty((PACKET_ROWS, HIDDEN), torch.bfloat16)
         sent_dy_h = dirty((PACKET_ROWS, HIDDEN), torch.bfloat16)
         sent_counts_h = dirty((EP_WORLD, MAP_PAD), torch.int32)
-        worker.run(
-            programs["dispatch_pack"], normalized_h, route_dy_h, route_ids_h,
+        run(
+            "dispatch_pack", normalized_h, route_dy_h, route_ids_h,
             sent_meta_h, sent_x_h, sent_dy_h, sent_counts_h, active,
-            source_rank, config=config,
+            source_rank,
         )
         sent_meta = download(
             sent_meta_h, (PACKET_ROWS, PACKET_FIELDS), torch.int64,
@@ -222,10 +238,10 @@ def main():
             upload(recv_counts_h, received_counts)
             upload(recv_x_h, received_x)
             upload(recv_dy_h, received_dy)
-            worker.run(
-                programs["dispatch_unpack"], recv_meta_h, recv_x_h, recv_dy_h,
+            run(
+                "dispatch_unpack", recv_meta_h, recv_x_h, recv_dy_h,
                 recv_counts_h, expert_x_h, expert_dy_h, expert_counts_h,
-                packet_map_h, received_total_h, owner, config=config,
+                packet_map_h, received_total_h, owner,
             )
             packet_map = download(packet_map_h, (PACKET_ROWS, MAP_PAD), torch.int32)
             expert_counts = download(expert_counts_h, (LOCAL_EXPERTS,), torch.int32)
@@ -262,9 +278,9 @@ def main():
                 token, slot = sent_meta[source_packet, 1:3].tolist()
                 expert_dx[slab] = expected_route_dx[token * TOPK + slot]
             upload(expert_dx_h, expert_dx)
-            worker.run(
-                programs["return_pack"], expert_dx_h, recv_counts_h,
-                packet_map_h, returned_owner_h, config=config,
+            run(
+                "return_pack", expert_dx_h, recv_counts_h,
+                packet_map_h, returned_owner_h,
             )
             returned_owner = download(
                 returned_owner_h, (PACKET_ROWS, HIDDEN), torch.bfloat16,
@@ -286,9 +302,9 @@ def main():
         upload(returned_h, assembled_return)
         route_dx_h = allocate((ROUTES, HIDDEN), torch.bfloat16)
         token_dx_h = allocate((K32_ROWS, HIDDEN), torch.bfloat16)
-        worker.run(
-            programs["source_restore"], returned_h, sent_meta_h, sent_counts_h,
-            route_dx_h, token_dx_h, active, source_rank, config=config,
+        run(
+            "source_restore", returned_h, sent_meta_h, sent_counts_h,
+            route_dx_h, token_dx_h, active, source_rank,
         )
         route_dx = download(route_dx_h, (ROUTES, HIDDEN), torch.bfloat16)
         token_dx = download(token_dx_h, (K32_ROWS, HIDDEN), torch.bfloat16)
@@ -303,6 +319,11 @@ def main():
             inactive_route_nonzero=int(torch.count_nonzero(route_dx[active * TOPK:])),
             inactive_token_nonzero=int(torch.count_nonzero(token_dx[active:])),
         )
+        if args.iterations:
+            report["steady_kernel_ms"] = {
+                name: {"median": median(samples), "calls": len(samples)}
+                for name, samples in timings.items()
+            }
     except BaseException as error:
         report["error"] = repr(error)
         raise

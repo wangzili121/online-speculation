@@ -613,7 +613,8 @@ class SymbolicTransport:
     def __init__(self):
         self.events = []
 
-    def exchange(self, stage, packets, collective, group):
+    def exchange(self, stage, packets, collective, group, *, write_only_receive=False):
+        assert write_only_receive
         self.events.append((stage, collective, group, len(packets)))
         return packets, []
 

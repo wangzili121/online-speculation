@@ -97,7 +97,7 @@ class ClusterCollectives:
             self.channels[axis] = channels
         return self.channels[axis]
 
-    def exchange(self, stage, packets, collective, group):
+    def exchange(self, stage, packets, collective, group, *, write_only_receive=False):
         """Exchange node-local tensor packets in global rank order."""
         import torch
 
@@ -149,7 +149,9 @@ class ClusterCollectives:
                         shape[0] *= channel.world
                     elif collective == "reduce_scatter":
                         shape[0] //= channel.world
-                    received = self.runtime.workspace(shape, value.dtype, rank)
+                    received = self.runtime.workspace(
+                        shape, value.dtype, rank, fill=None if write_only_receive else 0,
+                    )
                     source, destination = self.runtime.tensor(value, rank), self.runtime.tensor(received, rank)
                     channel._validate_device_transfer(source, destination, collective)
                     transfers.append((source, destination, f"{stage}/{case}/{field}"))
@@ -164,6 +166,10 @@ class ClusterCollectives:
         def transfer(rank):
             outputs, transfers = prepared[rank]
             channels[rank].exchange_device_batch(transfers, collective)
+            if write_only_receive:
+                for fields in outputs.values():
+                    for value in fields.values():
+                        self.runtime.mark_workspace_written(value, rank)
             return outputs
 
         with timed_stage(f"{group}_{collective}_device"):

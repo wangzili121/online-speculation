@@ -10,7 +10,7 @@
 +        if fill is not None and fill != 0 and not (fill == -1 and integral):
 +            raise ValueError("Device workspaces support no fill, zero or integer -1 initialization")
          shape = tuple(shape)
-@@ -911,6 +911,7 @@
+@@ -911,9 +911,15 @@
              allocation = owner["allocation"]
 -            self._device_fill(allocation.data_ptr, allocation.nbytes, 0 if fill == 0 else 255, rank)
 -            owner["device_written"] = True
@@ -21,3 +21,11 @@
              self._record_transfer(rank, "workspace_requests", 1)
 -            self._record_transfer(rank, "workspace_fill_bytes", allocation.nbytes)
              return value
+ 
++    def mark_workspace_written(self, value, rank):
++        """Record device authority after a successful external write to scratch."""
++        key = rank, value.untyped_storage()._cdata
++        self.values[key]["device_written"] = True
++
+     def tensor(self, value, rank):
+         """Return a typed device alias without copying an authoritative payload."""
