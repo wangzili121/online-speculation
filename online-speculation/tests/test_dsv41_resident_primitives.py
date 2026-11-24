@@ -544,6 +544,7 @@ def test_c1a_owner_batch_reverses_both_tp_collectives_once(begin, active):
 class TerminalHarness(AttentionBatchHarness):
     def __init__(self):
         super().__init__()
+        self.config = SimpleNamespace(teacher_rows=31)
         self.native = SimpleNamespace(
             weights=SimpleNamespace(head_for_rank=lambda rank: torch.full(
                 (5120, 64), rank + 1, dtype=torch.bfloat16,
@@ -556,8 +557,9 @@ class TerminalHarness(AttentionBatchHarness):
         return torch.ones(shape, dtype=torch.bfloat16)
 
     def _loss_on_rank(self, rank, token, student, teacher):
-        assert student.shape == teacher.shape == (32, 256)
-        return student, torch.zeros(32, 8)
+        assert student.shape == teacher.shape == (self.config.teacher_rows, 256)
+        assert not student[token.valid:].any() and not teacher[token.valid:].any()
+        return student, torch.zeros(self.config.teacher_rows, 8)
 
     def _tp_collective(self, values, collective, *, stage):
         assert collective == "all_reduce"
@@ -575,7 +577,10 @@ class TerminalHarness(AttentionBatchHarness):
             inputs["collapsed"].copy_((values * inputs["premix"].unsqueeze(-1)).sum(1))
         elif op == "vocab-gradient-shard":
             start = inputs["offset"]
-            inputs["output"].copy_(inputs["gradient"][:, start:start + inputs["output"].shape[1]])
+            width = inputs["output"].shape[1]
+            rows = inputs["gradient"].shape[0]
+            inputs["output"].zero_()
+            inputs["output"][:rows].copy_(inputs["gradient"][:, start:start + width])
         elif op == "lm-head-input-vjp":
             inputs["output"].copy_(inputs["a"].float() @ inputs["b"].float().T)
         elif op == "final-rms-frozen-input-vjp":

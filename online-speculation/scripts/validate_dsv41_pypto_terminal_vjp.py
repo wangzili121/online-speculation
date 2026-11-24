@@ -62,13 +62,19 @@ def main():
             instance = cls.__new__(cls)
             instance.resident, instance.draft, instance.native = runtime, draft, native
             instance.ranks, instance._scalar_reads = ranks, 0
+            instance.config = SimpleNamespace(teacher_rows=7)
             return instance
 
         arms = {"before": primitive(old.DSV41ResidentPrimitives),
                 "after": primitive(DSV41ResidentPrimitives)}
-        for kind, valid, counts in (("tv", 7, (8, 8, 8, 8)),
-                                     ("forward_kl", 7, (8, 8, 8, 8)),
-                                     ("tv", 1, (32, 0, 0, 0))):
+        for kind, valid, feedback_capacity, counts in (
+            ("tv", 7, 7, (8, 8, 8, 8)),
+            ("forward_kl", 7, 7, (8, 8, 8, 8)),
+            ("tv", 1, 7, (32, 0, 0, 0)),
+            ("tv", 1, 1, (32, 0, 0, 0)),
+            ("forward_kl", 31, 31, (8, 8, 8, 8)),
+        ):
+            arms["after"].config.teacher_rows = feedback_capacity
             data = {}
             start = 0
             for rank, count in enumerate(counts):
@@ -86,8 +92,9 @@ def main():
 
             def run(arm, check=False):
                 prim = arms[arm]
-                collectives = {}
+                collectives, loss_upload = {}, {}
                 original = prim._tp_all_reduce
+                original_loss = prim._loss_on_rank
                 if check:
                     def record(values, *, stage):
                         inputs = [runtime.read_output(values[rank], rank).clone() for rank in ranks]
@@ -96,6 +103,13 @@ def main():
                                                       for rank in ranks])
                         return reduced
                     prim._tp_all_reduce = record
+                    def record_loss(rank, *args):
+                        transfers = runtime.transfer_stats[rank]
+                        before = transfers.get("h2d_bytes", 0)
+                        outputs = original_loss(rank, *args)
+                        loss_upload[rank] = transfers.get("h2d_bytes", 0) - before
+                        return outputs
+                    prim._loss_on_rank = record_loss
                 start = perf_counter()
                 try:
                     loss, gradient = prim.loss_vjp(student, teacher, valid, kind)
@@ -103,6 +117,7 @@ def main():
                 finally:
                     if check:
                         del prim._tp_all_reduce
+                        del prim._loss_on_rank
                 elapsed = (perf_counter() - start) * 1000
                 values = []
                 if check:
@@ -111,12 +126,12 @@ def main():
                             values.append(runtime.read_output(tensor, rank).clone())
                     values.append(torch.tensor(prim.read_scalar(loss)))
                 runtime.release_values()
-                return elapsed, values, collectives
+                return elapsed, values, collectives, sum(loss_upload.values())
 
-            print(json.dumps(dict(stage="warm", kind=kind, rows=valid)), flush=True)
-            _, before, before_collectives = run("before", check=True)
-            _, after, after_collectives = run("after", check=True)
-            _, repeated, repeated_collectives = run("before", check=True)
+            print(json.dumps(dict(stage="warm", kind=kind, rows=valid, feedback_capacity=feedback_capacity)), flush=True)
+            _, before, before_collectives, before_upload = run("before", check=True)
+            _, after, after_collectives, after_upload = run("after", check=True)
+            _, repeated, repeated_collectives, _ = run("before", check=True)
             errors = [float((a.float() - b.float()).abs().max()) for a, b in zip(before, after)]
             assert all(torch.isfinite(t).all() for t in before + after)
             assert torch.equal(before[-1], after[-1]) and after[-1] > 0
@@ -144,16 +159,18 @@ def main():
             samples = {arm: [] for arm in arms}
             for _ in range(12):
                 for arm in arms:
-                    elapsed, _, _ = run(arm)
+                    elapsed, _, _, _ = run(arm)
                     samples[arm].append(elapsed)
             result = dict(loss=after[-1].item(), exact_collective_inputs=True, collective_outputs=updates,
                           gradient_max_abs=max(errors[:-1]), baseline_repeat_max_abs=max(
                               (a.float() - b.float()).abs().max().item() for a, b in zip(before, repeated)),
                           baseline_median_ms=median(samples["before"]),
                           optimized_median_ms=median(samples["after"]), repetitions=len(samples["before"]),
-                          sequence_rows=counts,
+                          sequence_rows=counts, feedback_capacity=feedback_capacity,
+                          loss_h2d_bytes={"before": before_upload, "after": after_upload},
                           timings={arm: median(values) for arm, values in samples.items()})
-            results[f"{kind}/{valid}"] = result
+            key = f"{kind}/{valid}/capacity{feedback_capacity}"
+            results[key] = result
             print(json.dumps(result), flush=True)
 
     report = dict(

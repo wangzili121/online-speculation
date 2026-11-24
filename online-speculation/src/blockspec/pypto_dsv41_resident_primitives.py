@@ -344,7 +344,7 @@ class DSV41ResidentPrimitives:
         self.draft.execute(("online", *key), rank, factory, inputs)
 
     @staticmethod
-    def _padded_logits(value, valid, vocabulary):
+    def _padded_logits(value, valid, vocabulary, capacity):
         if (
             not torch.is_tensor(value) or value.device.type != "cpu"
             or value.ndim != 2 or value.shape != (valid, vocabulary)
@@ -353,7 +353,9 @@ class DSV41ResidentPrimitives:
             value = value.detach().to(device="cpu", dtype=torch.bfloat16).contiguous()
             if value.shape != (valid, vocabulary):
                 raise ValueError("full-vocabulary logits changed shape")
-        result = torch.zeros((ROWS, vocabulary), dtype=torch.bfloat16)
+        if valid == capacity:
+            return value
+        result = torch.zeros((capacity, vocabulary), dtype=torch.bfloat16)
         result[:valid].copy_(value)
         return result
 
@@ -444,13 +446,13 @@ class DSV41ResidentPrimitives:
     def _loss_on_rank(self, rank, token, student, teacher):
         from .pypto_dsv41_online_programs import make_kl, make_tv
 
-        vocabulary = token.student.shape[1]
-        gradient = self._workspace(rank, (ROWS, vocabulary), fill=None)
-        losses = self._workspace(rank, (ROWS, 8), torch.float32, fill=None)
+        capacity, vocabulary = student.shape
+        gradient = self._workspace(rank, (capacity, vocabulary), fill=None)
+        losses = self._workspace(rank, (capacity, 8), torch.float32, fill=None)
         factory = make_tv if token.kind == "tv" else make_kl
         self._execute(
-            ("loss", token.kind, vocabulary), rank,
-            lambda: factory(ROWS, vocabulary),
+            ("loss", token.kind, vocabulary, capacity), rank,
+            lambda: factory(capacity, vocabulary),
             student=student, teacher=teacher, position_weights=student,
             gradient=gradient, losses=losses,
             valid=token.valid, normalizer=token.valid,
@@ -564,15 +566,18 @@ class DSV41ResidentPrimitives:
         # Rank threads share read-only host inputs. Padding them per rank
         # duplicates the full vocabulary allocation and contends for CPU workers.
         loss = gradient.loss
-        student = self._padded_logits(loss.student, loss.valid, vocabulary)
-        teacher = self._padded_logits(loss.teacher, loss.valid, vocabulary)
+        feedback_capacity = self.config.teacher_rows
+        if loss.valid > feedback_capacity:
+            raise ValueError("terminal loss received more rows than the configured teacher window")
+        student = self._padded_logits(loss.student, loss.valid, vocabulary, feedback_capacity)
+        teacher = self._padded_logits(loss.teacher, loss.valid, vocabulary, feedback_capacity)
 
         def reverse_head(rank):
             dlogits, losses = self._loss_on_rank(rank, loss, student, teacher)
             dlocal = self._workspace(rank, (ROWS, local_vocabulary), fill=None)
             self._execute(
-                ("vocab-gradient-shard", vocabulary), rank,
-                lambda: make_vocab_gradient_shard(ROWS, vocabulary),
+                ("vocab-gradient-shard", vocabulary, feedback_capacity), rank,
+                lambda: make_vocab_gradient_shard(ROWS, vocabulary, source_rows=feedback_capacity),
                 gradient=dlogits, output=dlocal, offset=rank % 4 * local_vocabulary,
             )
             head = self.native.weights.head_for_rank(rank)
@@ -1860,6 +1865,11 @@ class DSV41ResidentPrimitives:
             raise TypeError("only resident scalar summaries may cross the host boundary")
         host = self.resident.read_output(value.value, self._local(value.rank))
         self._scalar_reads += 1
+        if host.shape[0] != ROWS:
+            # Preserve the original host reduction layout for loss reporting.
+            padded = torch.zeros((ROWS, host.shape[1]), dtype=host.dtype)
+            padded[:host.shape[0]].copy_(host)
+            host = padded
         return float(host[:, 0].sum())
 
     @property
