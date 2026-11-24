@@ -796,7 +796,12 @@ class DSV41ResidentPrimitives:
             )
             return {"frozen-tail": {"dx": sent_dx}}
 
-        if not measured:
+        return self._map_online_ranks(run_rank)
+
+    def _map_online_ranks(self, run_rank):
+        """Dispatch independent per-card work while retaining one update profile."""
+        profile = active_profile()
+        if profile is None or profile.current is None:
             return self.resident.map_ranks(run_rank)
 
         def profile_rank(index):
@@ -1753,41 +1758,45 @@ class DSV41ResidentPrimitives:
     @profiled_stage("adamw")
     def adamw(self, values, **options):
         self._require_optimizer_state()
-        from .pypto_dsv41_online_programs import make_adam
-        from .pypto_dsv41_optimizer_programs import make_publish
+        from .pypto_dsv41_online_programs import make_adam, make_adam_publish
 
         rate, step, clip = options["rate"], options["step"], options["clip"]
         clip = clip.value if isinstance(clip, _HostScalar) else float(clip)
         if step != self._last_step + 1 or not math.isfinite(rate) or rate <= 0:
             raise ValueError("Adam step/rate is out of order or invalid")
-        for full_name, gradient in values.items():
-            layer = int(full_name.split(".")[1])
-            short = full_name.split(".attn.", 1)[1]
-            for rank in self.ranks:
+        parameters = [
+            (int(name.split(".")[1]), name.split(".attn.", 1)[1], gradient)
+            for name, gradient in values.items()
+        ]
+        correction1, correction2 = 1. - .9 ** step, 1. - .999 ** step
+
+        def update_rank(index):
+            rank = self.ranks[index]
+            for layer, short, gradient in parameters:
                 state = self._adam[rank, layer, short]
-                grad = gradient.values[rank]
-                self._execute(
-                    ("adam", tuple(state.master.shape)), rank,
-                    lambda shape=tuple(state.master.shape): make_adam(shape),
-                    master=state.master, gradient=grad, first=state.first, second=state.second,
-                    next_master=state.candidate_master,
-                    next_first=state.candidate_first,
-                    next_second=state.candidate_second,
-                    rate=rate, correction1=1. - .9 ** step,
-                    correction2=1. - .999 ** step, clip=clip,
+                shape = tuple(state.master.shape)
+                operands = dict(
+                    master=state.master, gradient=gradient.values[rank],
+                    first=state.first, second=state.second, next_master=state.candidate_master,
+                    next_first=state.candidate_first, next_second=state.candidate_second,
+                    rate=rate, correction1=correction1, correction2=correction2, clip=clip,
                 )
                 if state.execution_dtype == torch.bfloat16:
                     self._execute(
-                        ("publish", tuple(state.master.shape)), rank,
-                        lambda shape=tuple(state.master.shape): make_publish(shape),
-                        master=state.candidate_master, execution=state.execution,
+                        ("adam-publish", shape), rank, lambda: make_adam_publish(shape),
+                        **operands, execution=state.execution,
                     )
                 elif state.execution_dtype == torch.float32:
-                    self.resident.copy_tensor(
-                        state.execution, state.candidate_master, self._local(rank),
-                    )
+                    self._execute(("adam", shape), rank, lambda: make_adam(shape), **operands)
+                    self.resident.copy_tensor(state.execution, state.candidate_master, self._local(rank))
                 else:
                     raise TypeError("unsupported draft execution dtype")
+
+        self._map_online_ranks(update_rank)
+        # No rank advances its optimizer state before all candidate writes finish.
+        for rank in self.ranks:
+            for layer, short, _ in parameters:
+                state = self._adam[rank, layer, short]
                 state.master, state.candidate_master = state.candidate_master, state.master
                 state.first, state.candidate_first = state.candidate_first, state.first
                 state.second, state.candidate_second = state.candidate_second, state.second

@@ -12,7 +12,7 @@ def compile_resident_update_extras(compile_program, empty, config):
     import torch
     from blockspec.pypto_dsv41_ep_vjp import EXPERT_CAPACITY
     from blockspec.pypto_dsv41_moe_vjp import make_frozen_w8a8_expert_input_vjp
-    from blockspec.pypto_dsv41_online_programs import make_adam, make_rms
+    from blockspec.pypto_dsv41_online_programs import make_adam, make_adam_publish, make_rms
     from blockspec.pypto_dsv41_optimizer_programs import make_publish, make_reduce, make_stats
     from blockspec.pypto_dsv41_tail_vjp import make_hc_pre_data_vjp, make_hc_pre_projection_forward
 
@@ -68,8 +68,13 @@ def compile_resident_update_extras(compile_program, empty, config):
         programs[f"adam_{shape}"] = compile_program(
             make_adam(shape), *(master,) * 7, 1e-5, .1, .001, 1., config=config,
         )
+    projection = (8192, 1280)
     programs["publish_projection"] = compile_program(
-        make_publish((8192, 1280)), fp32((8192, 1280)), empty((8192, 1280)), config=config,
+        make_publish(projection), fp32(projection), empty(projection), config=config,
+    )
+    programs["adam_publish_projection"] = compile_program(
+        make_adam_publish(projection), *[fp32(projection) for _ in range(7)],
+        1e-5, .1, .001, 1., empty(projection), config=config,
     )
     return programs
 
@@ -176,6 +181,7 @@ def main():
     from pypto.runtime import DistributedWorker, ExecutionMode, RunConfig
     from blockspec.pypto_dsv41_online_programs import (
         make_adam,
+        make_adam_publish,
         make_element,
         make_kl,
         make_linear,
@@ -251,6 +257,10 @@ def main():
         "adam": compile_program(make_adam((64, 128)),
             *[empty((64, 128), torch.float32) for _ in range(7)],
             1e-4, .1, .001, 1., config=config,
+        ),
+        "adam_publish": compile_program(make_adam_publish((64, 128)),
+            *[empty((64, 128), torch.float32) for _ in range(7)],
+            1e-4, .1, .001, 1., empty((64, 128)), config=config,
         ),
         "linear": compile_program(make_linear((32, 128), (64, 128)),
             empty((32, 128)), empty((64, 128)), empty((32, 64)), config=config,
@@ -988,6 +998,23 @@ def main():
             1e-4, .1, .001, 1., config=config,
         )
         worker.run(programs["publish"], linked_next[0], linked_execution, config=config)
+        fused_next = [allocate(torch.empty_like(linked_master)) for _ in range(3)]
+        fused_execution = allocate(torch.empty_like(published))
+        worker.run(
+            programs["adam_publish"], linked_state[0], linked_parameter_gradient,
+            linked_state[1], linked_state[2], *fused_next,
+            1e-4, .1, .001, 1., fused_execution, config=config,
+        )
+        for plain, fused in zip(linked_next, fused_next, strict=True):
+            torch.testing.assert_close(
+                read(plain, torch.empty_like(linked_master)), read(fused, torch.empty_like(linked_master)),
+                atol=0, rtol=0,
+            )
+        torch.testing.assert_close(
+            read(linked_execution, torch.empty_like(published)), read(fused_execution, torch.empty_like(published)),
+            atol=0, rtol=0,
+        )
+        report["cases"].append({"operator": "adam_publish", "byte_exact": True})
 
         linked_student_reference = linked_student.float().requires_grad_()
         linked_teacher_log = linked_teacher.float().log_softmax(-1)

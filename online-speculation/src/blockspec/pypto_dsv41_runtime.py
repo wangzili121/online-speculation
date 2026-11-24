@@ -138,6 +138,7 @@ class MutableDraftHeadBank:
         if set(state.operands) != expected_rows:
             raise ValueError("resident publication does not cover every local rank and layer")
         slot = 1 - self.active_slot
+        copies = {local: [] for local in self.rank_ids.values()}
         for (rank, layer), operands in state.operands.items():
             expected = {key[3] for key in self.handles if key[:3] == (slot, rank, layer)}
             if set(operands) != expected:
@@ -147,7 +148,13 @@ class MutableDraftHeadBank:
                 destination = self.host[slot, rank, layer, name]
                 if source.shape != destination.shape or source.dtype != destination.dtype:
                     raise ValueError(f"resident operand changed shape or dtype: layer {layer} {name}")
+                copies[local].append((destination, source))
+
+        def copy_rank(local):
+            for destination, source in copies.get(local, ()):
                 self.resident.copy_tensor(destination, source, local)
+
+        self.resident.map_ranks(copy_rank)
         self.staged = version, slot, state.digest
         return PublicationReceipt("prepared", version, state.digest, tuple(sorted(self.rank_ids)))
 

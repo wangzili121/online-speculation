@@ -42,7 +42,7 @@ NPU_DEVICE=0 PYPTO_VISIBLE_DEVICE=0 PYPTO_RUNTIME_DEVICE=0 \
   bash online-speculation/scripts/dsv41_pypto_env.sh online-ready
 ```
 
-当前验收基线为：158 项 DSV4.1 测试、4 项跳过和 5 组子测试通过，22 个设备数值用例通过，61 个生产形状程序完成编译；其中包含 TP4/K32 的逐 query C1A 历史重放、sink、临时块 K/V 梯度，K32×5120 的 mHC 反向，以及固定 Top-6 路由、冻结 W8A8 专家输入 VJP、EP16 编排、AdamW 和发布。inactive head bank 的设备到设备发布也已实卡通过，完整 head 不经 CPU 往返。`readiness.json` 汇总测试、serving 补丁和实卡 kernel 证据，并保留为宿主用户可读；它不替代双机 serving 中的一次完整在线更新。
+首轮单机验收记录包括 158 项 DSV4.1 测试、4 项跳过和 5 组子测试通过，22 个设备数值用例通过，61 个生产形状程序完成编译；其中包含 TP4/K32 的逐 query C1A 历史重放、sink、临时块 K/V 梯度，K32×5120 的 mHC 反向，以及固定 Top-6 路由、冻结 W8A8 专家输入 VJP、EP16 编排、AdamW 和发布。inactive head bank 的设备到设备发布也已实卡通过，完整 head 不经 CPU 往返。`readiness.json` 汇总测试、serving 补丁和实卡 kernel 证据，并保留为宿主用户可读；它不替代双机 serving 中的一次完整在线更新。
 
 先在两台机器放置相同的 `tuning.jsonl`。固定 head 推理链路已经通过双机验收；在线更新应直接使用统一入口同时启动 4 题、每题 32 token 的 smoke。它会加载在线策略，执行真实反馈收集、last-N 反向、同步更新与安全发布：
 
@@ -69,10 +69,13 @@ bash online-speculation/scripts/dsv41_pypto_env.sh gsm8k-summary \
 
 ## 性能记录
 
+两组预热使用相同输入，并对比生成的 token。每个评测臂记录 Serving 实际执行过的 `draft_head_versions`，冻结评测只有实际使用最终发布版本才通过。
+
 报告的 `serving_phases_by_host` 按主机分别记录 prefill、decode、draft、verify、accept 和 release 的调用数、执行时间和搬运量。预热计入单独的启动时间。在线实验同时保留计入全部更新的吞吐与扣除更新的估算值，冻结后的 head 在同一批未参与更新的题上与 AR、初始 head 对照。
 
 - 起草每个 DP 分区的一组 K32 词表行在 NPU 上选 token。111 单卡对照中，每个 TP 分片的回读与选 token 从 3.62 ms 降到 1.07 ms，回读量从 2,068,480 字节降到 1,024 字节。并列按最小 token ID 处理。需要训练的分区保留完整学生 logits，验证器的完整教师 logits 由本机 TP 分片按原词表顺序拼接。
 - C1A 反向把 softmax VJP 和两份块内矩阵的提取合到一次调用，单卡从 3.51 ms 降到 1.27 ms。完整 score 梯度、sink 梯度和两份块输出与原实现逐元素一致。
+- 在线更新将 Adam 的候选参数写回与 BF16 转换合在一次调用中。111 上 8192×1280 投影从 2.14 ms 降到 1.33 ms，三个 FP32 状态及 BF16 执行权重逐元素一致。本机各 rank 并发执行，所有候选写完后才切换优化器状态。发布时各 rank 并行复制到各自的备用权重槽。双机确认后，按既有步频切换版本。
 - Serving 在每轮起草中按请求解析一次历史页表。K32 的层间有限值检查在各 rank 并行执行。单卡 32 行检查从 2.23 ms 降到 0.94 ms，有限值与 NaN/Inf 判定相同。验证回滚合并相邻区间。SWA 仅备份候选会写入的行，压缩缓存与 Engram 保留原来的页级备份。111 跨两个非连续物理页的 32 行对照中，一份 SWA 缓存从备份 918,400 字节降到 32,768 字节，备份和恢复从 0.85 ms 降到 0.46 ms。实际写入后回滚，缓存逐字节一致。
 
 单卡数字为各阶段的稳态微基准。双机报告用同一组输入核对 greedy 输出、权重发布版本、接受长度和整体吞吐。

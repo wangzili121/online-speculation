@@ -110,15 +110,18 @@ def _write(path, data):
     temporary.replace(path)
 
 
-def _collect_phases(path, offset, previous, totals):
+def _collect_phases(path, offset, previous, totals, draft_versions):
     """Read each completed Serving receipt once and attribute runtime byte deltas."""
     counters = ("output_d2h_bytes", "verify_backup_d2d_bytes", "verify_restore_d2d_bytes")
     with path.open() as stream:
         stream.seek(offset)
         for line in iter(stream.readline, ""):
             receipt = json.loads(line)
-            stage = totals[receipt["phase"]]
+            phase = receipt["phase"]
+            stage = totals[phase]
             stage["calls"] += 1
+            if phase == "draft":
+                draft_versions.add(receipt["draft_head_version"] or 0)
             stage["serving_seconds"] += receipt.get("seconds", 0.0)
             stage["native_seconds"] += receipt.get("timings", {}).get("chunk_seconds", 0.0)
             stage["prepare_seconds"] += receipt.get("prepare_seconds", 0.0)
@@ -151,22 +154,30 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
     run_results = {}
     receipt_offset, runtime_counters = 0, Counter()
 
-    def warmup(name, *, speculative):
+    def warmup(name, *, speculative, expected=None):
         nonlocal receipt_offset
         print(json.dumps(dict(stage="gsm8k_online_startup", phase=name)), flush=True)
         started = perf_counter()
-        generate_wave(runner, prompts[:batch_size], entries[:batch_size], 2,
-                      start_index=0, phase=name, eos_ids=eos_ids, decoder=decoder, speculative=speculative)
+        warmup_rows, _, _ = generate_wave(
+            runner, prompts[:batch_size], entries[:batch_size], 2, start_index=0, phase=name,
+            eos_ids=eos_ids, decoder=decoder, speculative=speculative,
+            expected=None if expected is None else expected["requests"],
+        )
         elapsed = perf_counter() - started
-        receipt_offset = _collect_phases(session.receipt_path, receipt_offset, runtime_counters, defaultdict(Counter))
+        receipt_offset = _collect_phases(
+            session.receipt_path, receipt_offset, runtime_counters, defaultdict(Counter), set(),
+        )
         startup[name] = max(elapsed, link.exchange(f"report/seconds/{name}", elapsed))
+        result = dict(status="executed", devices=list(session.devices), sampling=sampling, requests=warmup_rows)
+        if expected is not None:
+            report["startup_compared_tokens"] = request_parity(expected, result)
         _write(summary_path, report)
+        return result
 
+    warmup_target = warmup("ar_warmup", speculative=False)
     for name, subset in (("ar", heldout), ("initial", heldout), ("online", train), ("frozen", heldout)):
-        if name == "ar":
-            warmup("ar_warmup", speculative=False)
         if name == "initial":
-            warmup("draft_warmup", speculative=True)
+            warmup("draft_warmup", speculative=True, expected=warmup_target)
         print(json.dumps(dict(stage="gsm8k_online_phase", phase=name)), flush=True)
         if name == "online":
             started = perf_counter()
@@ -178,6 +189,7 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
             session.online = None  # The last published operands remain active in ResidentDraftAttention.
         rows, speculation, timing = [], Counter(), Counter()
         phase_totals = defaultdict(Counter)
+        draft_versions = set()
         started = perf_counter()
         for first in range(subset.start, subset.stop, batch_size):
             last = min(first + batch_size, subset.stop)
@@ -193,20 +205,25 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
             speculation.update(counts)
             timing.update(spans)
             measured_seconds = perf_counter() - started
-            receipt_offset = _collect_phases(session.receipt_path, receipt_offset, runtime_counters, phase_totals)
+            receipt_offset = _collect_phases(
+                session.receipt_path, receipt_offset, runtime_counters, phase_totals, draft_versions,
+            )
             n_tokens = sum(len(row["token_ids"]) for row in rows)
             version = session.draft.online_bank.active_version if name in ("online", "frozen") else 0
             local = dict(
                 wall_seconds=measured_seconds, **timing, output_tokens=n_tokens,
                 requests=len(rows), learner=online.summary() if name == "online" else None,
                 first_update=None, head_version=version, phase_totals=phase_totals,
+                draft_head_versions=sorted(draft_versions),
             )
             if name == "online" and online.bridge.controller.records:
                 record = online.bridge.controller.records[0]
                 local["first_update"] = record["update_seconds"] + record["publication_seconds"]
             peer = link.exchange(f"report/progress/{name}/{first}", local)
-            if any(local[key] != peer[key] for key in ("requests", "output_tokens", "head_version")):
-                raise ValueError(f"Hosts disagree on {name} workload progress")
+            if any(local[key] != peer[key] for key in ("requests", "output_tokens", "head_version", "draft_head_versions")):
+                raise ValueError(f"Hosts disagree on {name} workload progress or executed draft versions")
+            if name in ("initial", "frozen") and draft_versions - {version}:
+                raise ValueError(f"{name} executed draft versions {sorted(draft_versions)}, expected {version}")
             result = dict(status="executed", devices=list(session.devices), sampling=sampling,
                           requests=rows, speculation=dict(speculation))
             run_results[name] = result
@@ -229,6 +246,7 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
                 gsm8k_answered=sum(actual is not None for actual, _ in answers),
                 stopped=sum(row["finish_reason"] == "stop" for row in rows),
                 length_limited=sum(row["finish_reason"] == "length" for row in rows), head_version=version,
+                draft_head_versions=local["draft_head_versions"],
                 serving_phases_by_host={
                     str(node): record["phase_totals"]
                     for node, record in ((session.cluster.plan.node, local), (1 - session.cluster.plan.node, peer))
@@ -255,7 +273,9 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
             comparisons[name] = request_parity(run_results["ar"], run_results[name])
         _write(summary_path, report)
     trained = arms["online"]
-    report["passed"] = bool(trained["publications"] and arms["frozen"]["head_version"] == trained["head_version"])
+    report["passed"] = bool(
+        trained["publications"] and arms["frozen"]["draft_head_versions"] == [trained["head_version"]]
+    )
     report["frozen_speedup_vs_initial"] = arms["frozen"]["wall_tok_s"] / arms["initial"]["wall_tok_s"]
     report["frozen_speedup_vs_ar"] = arms["frozen"]["wall_tok_s"] / arms["ar"]["wall_tok_s"]
     return report

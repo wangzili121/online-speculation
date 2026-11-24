@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -104,7 +105,7 @@ class ExecutingDraft(Draft):
 
     def execute(self, key, rank, factory, inputs):
         operation = key[1]
-        if operation == "adam":
+        if operation in ("adam", "adam-publish"):
             gradient = inputs["gradient"].float() * float(inputs["clip"])
             mean = .9 * inputs["first"] + .1 * gradient
             variance = .999 * inputs["second"] + .001 * gradient.square()
@@ -114,8 +115,8 @@ class ExecutingDraft(Draft):
                 (variance / inputs["correction2"]).sqrt() + 1e-8
             )
             inputs["next_master"].copy_(inputs["master"] - update)
-        elif operation == "publish":
-            inputs["execution"].copy_(inputs["master"].to(inputs["execution"].dtype))
+            if operation == "adam-publish":
+                inputs["execution"].copy_(inputs["next_master"].to(inputs["execution"].dtype))
         else:
             raise AssertionError(f"unexpected fake execution {key}")
 
@@ -246,8 +247,15 @@ def test_exact_k32_span_is_mandatory():
         DSV41ResidentPrimitives._span({"token_begin": 12, "token_end": 43})
 
 
-def test_persistent_adam_and_resident_publication_use_device_descriptors():
+@pytest.mark.parametrize("failed_rank", [None, 5])
+def test_persistent_adam_and_resident_publication_use_device_descriptors(failed_rank):
     draft = ExecutingDraft()
+
+    def run_with_workers(function):
+        with ThreadPoolExecutor(max_workers=len(draft.rank_ids)) as pool:
+            return list(pool.map(function, draft.rank_ids.values()))
+
+    draft.resident.map_ranks = run_with_workers
     value = DSV41ResidentPrimitives(
         draft=draft, native=native(), cluster=None, config=config(),
     )
@@ -260,7 +268,23 @@ def test_persistent_adam_and_resident_publication_use_device_descriptors():
             for rank in value.ranks
         })
     value._last_norm = 1.
-    value.adamw(gradients, rate=1e-5, step=1, clip=_HostScalar(1.))
+    step = dict(rate=1e-5, step=1, clip=_HostScalar(1.))
+    if failed_rank is not None:
+        masters = {key: state.master for key, state in value._adam.items()}
+        execute = draft.execute
+
+        def fail_one_rank(key, rank, factory, inputs):
+            if rank == failed_rank:
+                raise RuntimeError("failed candidate write")
+            execute(key, rank, factory, inputs)
+
+        draft.execute = fail_one_rank
+        with pytest.raises(RuntimeError, match="failed candidate write"):
+            value.adamw(gradients, **step)
+        assert value._last_step == 0
+        assert all(value._adam[key].master is master for key, master in masters.items())
+        return
+    value.adamw(gradients, **step)
     state = value.publication_state(value.plan.layers)
     assert set(state.public_names) == set(value.plan.trainable_names())
     assert set(state.operands) == {(rank, 39) for rank in range(8)}

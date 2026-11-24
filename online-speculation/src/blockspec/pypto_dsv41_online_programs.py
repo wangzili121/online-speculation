@@ -262,6 +262,65 @@ def make_adam(shape, *, beta1=.9, beta2=.999, epsilon=1e-8, inline=False):
     return adam if inline else with_resident_entry(entry, adam)
 
 
+def make_adam_publish(shape):
+    """Produce Adam candidates and BF16 execution weights from the same FP32 tile."""
+    from math import prod
+    import pypto.language as pl
+
+    size = prod(shape)
+    tile = min(2048, size)
+    if size % tile:
+        raise ValueError("complete Adam parameter tiles required")
+    rows = size // tile
+
+    @pl.jit
+    def adam_publish(
+        master: pl.Tensor, gradient: pl.Tensor, first: pl.Tensor, second: pl.Tensor,
+        next_master: pl.Out[pl.Tensor], next_first: pl.Out[pl.Tensor], next_second: pl.Out[pl.Tensor],
+        rate: pl.Scalar[pl.FP32], correction1: pl.Scalar[pl.FP32], correction2: pl.Scalar[pl.FP32],
+        clip: pl.Scalar[pl.FP32], execution: pl.Out[pl.Tensor],
+    ):
+        p = pl.reshape(master, [rows, tile])
+        g = pl.reshape(gradient, [rows, tile])
+        m = pl.reshape(first, [rows, tile])
+        v = pl.reshape(second, [rows, tile])
+        op = pl.reshape(next_master, [rows, tile])
+        om = pl.reshape(next_first, [rows, tile])
+        ov = pl.reshape(next_second, [rows, tile])
+        parameter = pl.reshape(execution, [rows, tile])
+        with pl.spmd((rows + 15) // 16, name_hint="orthrus_adam_bf16_candidate"):
+            base = pl.tile.get_block_idx() * 16
+            for part in pl.range(16):
+                row = base + part
+                if row < rows:
+                    grad = pl.mul(pl.slice(g, [1, tile], [row, 0]), clip)
+                    mean = pl.add(pl.mul(pl.slice(m, [1, tile], [row, 0]), .9), pl.mul(grad, 1. - .9))
+                    variance = pl.add(
+                        pl.mul(pl.slice(v, [1, tile], [row, 0]), .999),
+                        pl.mul(pl.mul(grad, grad), 1. - .999),
+                    )
+                    denominator = pl.add(pl.sqrt(pl.div(variance, correction2)), 1e-8)
+                    update = pl.div(pl.mul(mean, rate), pl.mul(denominator, correction1))
+                    candidate = pl.sub(pl.slice(p, [1, tile], [row, 0]), update)
+                    op[row:row + 1, 0:tile] = candidate
+                    om[row:row + 1, 0:tile] = mean
+                    ov[row:row + 1, 0:tile] = variance
+                    parameter[row:row + 1, 0:tile] = pl.cast(candidate, pl.BF16, mode="rint")
+        return next_master, next_first, next_second, execution
+
+    @pl.jit.host
+    def entry(
+        master: pl.Tensor, gradient: pl.Tensor, first: pl.Tensor, second: pl.Tensor,
+        next_master: pl.Out[pl.Tensor], next_first: pl.Out[pl.Tensor], next_second: pl.Out[pl.Tensor],
+        rate: pl.Scalar[pl.FP32], correction1: pl.Scalar[pl.FP32], correction2: pl.Scalar[pl.FP32],
+        clip: pl.Scalar[pl.FP32], execution: pl.Out[pl.Tensor],
+    ):
+        adam_publish(master, gradient, first, second, next_master, next_first, next_second,
+                     rate, correction1, correction2, clip, execution, device=0)
+
+    return with_resident_entry(entry, adam_publish)
+
+
 def reduction_tile(k, limit):
     """归约 tile 必须整除 K；形状不齐整时退到较小的硬件对齐 tile。"""
     if type(limit) is not int or limit not in (32, 64, 128, 256, 512):

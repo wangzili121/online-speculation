@@ -468,7 +468,8 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkeypatch):
+@pytest.mark.parametrize("stale_frozen_draft", [False, True])
+def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkeypatch, stale_frozen_draft):
     monkeypatch.syspath_prepend(str(COMMAND.parent))
     monkeypatch.setitem(sys.modules, "pypto_serving.config.types", SimpleNamespace(
         DecodeBatch=SimpleNamespace, PrefillBatch=SimpleNamespace, SamplingParams=SimpleNamespace,
@@ -528,6 +529,9 @@ def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkey
 
         def run_orthrus(self, batch):
             phase = batch.request_ids[0].split("-")[2]
+            with receipts.open("a") as stream:
+                version = 0 if stale_frozen_draft and phase == "frozen" else bank.active_version
+                stream.write(json.dumps(dict(phase="draft", draft_head_version=version)) + "\n")
             seen.append((phase, batch.cache_partitions))
             if phase in ("draft_warmup", "initial"):
                 assert session.online is None and bank.active_version == 0
@@ -548,9 +552,19 @@ def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkey
     runner = Runner()
     prompts = [[100 + i] * (i % 4 + 1) for i in range(12)]
     entries = [dict(id=f"gsm8k-{i}", reference_answer="#### 2") for i in range(len(prompts))]
-    report = study(runner, session, online, prompts, entries, train_count=8, steps=4, batch_size=4,
-                   eos_ids={3}, decoder=lambda tokens: "#### 2", output=tmp_path, engram_seconds=5.0)
+    options = dict(train_count=8, steps=4, batch_size=4, eos_ids={3},
+                   decoder=lambda tokens: "#### 2", output=tmp_path, engram_seconds=5.0)
+    if stale_frozen_draft:
+        with pytest.raises(ValueError, match="frozen executed draft versions"):
+            study(runner, session, online, prompts, entries, **options)
+        assert not json.loads((tmp_path / "gsm8k-online-report.json").read_text())["complete"]
+        return
+    report = study(runner, session, online, prompts, entries, **options)
     assert report["passed"] and report["compared_tokens"] == {"initial": 12, "frozen": 12}
+    assert report["startup_compared_tokens"] == 8
+    assert report["arms"]["ar"]["draft_head_versions"] == []
+    assert report["arms"]["initial"]["draft_head_versions"] == [0]
+    assert report["arms"]["frozen"]["draft_head_versions"] == [report["arms"]["online"]["publications"]]
     assert report["arms"]["online"]["requests"] == 8
     assert report["arms"]["frozen"]["requests"] == 4
     assert report["arms"]["frozen"]["stopped"] == 4

@@ -1,3 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 import torch
 
 from blockspec.pypto_dsv41_runtime import MutableDraftHeadBank, ResidentHeadState
@@ -18,6 +21,11 @@ class Resident:
     def tensor(self, value, rank):
         self.syncs.append((rank, value.detach().clone()))
         return value
+
+    def map_ranks(self, function):
+        ranks = sorted({rank for _, pin_ranks, _ in self.pins for rank in pin_ranks})
+        with ThreadPoolExecutor(max_workers=len(ranks)) as pool:
+            return list(pool.map(function, ranks))
 
     def copy_tensor(self, destination, source, rank):
         destination.copy_(source)
@@ -67,7 +75,8 @@ def test_mutable_bank_can_reverse_an_activation_before_cluster_commit():
     assert bank.operands(0, 39)["weight"] is old
 
 
-def test_mutable_bank_publishes_resident_shards_without_host_staging():
+@pytest.mark.parametrize("bad_shape", [False, True])
+def test_mutable_bank_publishes_resident_shards_without_host_staging(bad_shape):
     resident = Resident()
     ranks, layers = {0: 0, 1: 1}, (39,)
     initial = {
@@ -77,13 +86,20 @@ def test_mutable_bank_publishes_resident_shards_without_host_staging():
     bank = MutableDraftHeadBank(resident, ranks, initial, layers)
     state = ResidentHeadState(
         operands={
-            (rank, 39): {"weight": torch.full((2, 2), rank + 3, dtype=torch.bfloat16)}
+            (rank, 39): {"weight": torch.full(
+                (1, 2) if rank == 1 and bad_shape else (2, 2), rank + 3, dtype=torch.bfloat16,
+            )}
             for rank in ranks
         },
         public_names=("layers.39.attn.weight",),
         digest="a" * 64,
     )
 
+    if bad_shape:
+        with pytest.raises(ValueError, match="changed shape or dtype"):
+            bank.stage_resident(state, 1)
+        assert not resident.syncs and bank.staged is None and bank.active_version == 0
+        return
     receipt = bank.stage_resident(state, 1)
     assert receipt.digest == "a" * 64 and bank.active_version == 0
     bank.activate(1)
