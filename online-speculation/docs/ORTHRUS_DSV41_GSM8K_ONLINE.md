@@ -73,9 +73,10 @@ bash online-speculation/scripts/dsv41_pypto_env.sh gsm8k-summary \
 
 报告的 `serving_phases_by_host` 按主机分别记录 prefill、decode、draft、verify、accept 和 release 的调用数、执行时间和搬运量。预热计入单独的启动时间。在线实验同时保留计入全部更新的吞吐与扣除更新的估算值，冻结后的 head 在同一批未参与更新的题上与 AR、初始 head 对照。
 
-在线算子默认复用本机 `PYPTO_CLUSTER_STATE_DIR` 下的 `online-jit` 中的 PyPTO 编译产物。首次运行构建缓存，随后相同源码、运行环境和算子形状可直接加载。双机冷启动对照可在两端同时设置 `PYPTO_DSV41_ONLINE_CACHE=0`。Profile 分别记录主机编译或缓存查找、二进制构建或加载、首个 rank 调用和命中数。首次 rank 调用时间按各 rank 累加，更新总耗时以两端的实际 wall time 为准。
+Orthrus 专用前向与在线反向算子默认复用本机 `PYPTO_CLUSTER_STATE_DIR` 下的 `orthrus-jit` 中的 PyPTO 编译产物。首次运行构建缓存，随后相同源码、运行环境和算子形状可直接加载。双机冷启动对照可在两端同时设置 `PYPTO_DSV41_JIT_CACHE=0`。在线 Profile 分别记录主机编译或缓存查找、二进制构建或加载、首个 rank 调用和命中数。首次 rank 调用时间按各 rank 累加，更新总耗时以两端的实际 wall time 为准。
 
 - 111 四卡用 W8A8 基模初始化的 head 生成 capture。last-2 C1A 反向在空缓存中首次执行耗时 105.84 秒，重启进程后耗时 1.73 秒。主机二进制构建或加载从 92.78 秒降到 0.039 秒，28 个入口全部命中，72 个边界和梯度张量逐字节一致。该计时从反向开始，整模权重加载和跨机通信分别计时。实机记录见 [冷启动对照](validation/dsv41/pypto-online-jit-restart-910b3.json)。
+- 同样的缓存覆盖起草前向。111 四卡、两个 K32 请求执行全部 40 层 draft Attention，关闭缓存、填充空缓存、重启命中三个进程的首轮耗时分别为 56.13、55.74 和 11.63 秒。重启后八个入口全部命中，三组输出逐字节相同，并核对历史 KV 原样保留。各进程的热态约 8 秒量级。测试包含本机 TP 归约与校验，权重加载在计时窗口之前。实机记录见 [起草首轮对照](validation/dsv41/pypto-draft-jit-restart-910b3.json)。
 
 - 词表归约支持同一 DP 分区一次处理 1～4 组 K32。默认 GSM8K 调度仍按每分区一个请求运行。111 单卡对照中，每个 TP 分片的回读与选 token 从 3.62 ms 降到 1.07 ms，回读量从 2,068,480 字节降到 1,024 字节。167 已实卡对照 64、96 和 128 行，128 行的每分片阶段从 21.43 ms 降到 1.73 ms。所有用例的 token ID 一致，并列按最小 ID 处理。
 - GSM8K 报告路径在设备端得到完整 K31 候选，只回读可能用于蒸馏的学生行，每行保留完整词表。111 四卡实测，K32 采集 7 行时，回读和选 token 从 17.90 ms 降到 7.00 ms，回读从 8,273,920 降到 1,814,016 字节。同一分区打包两个请求且采集第二个时，回读和选 token 从 35.26 ms 降到 7.36 ms。候选和学生值逐元素一致，1 行和 31 行的监督预算也通过。报告记录 `student_logit_rows` 和实际回读字节。

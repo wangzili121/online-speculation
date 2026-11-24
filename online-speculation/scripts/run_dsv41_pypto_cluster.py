@@ -393,7 +393,7 @@ def run(args):
         torch=torch.__version__,
     )
     identity = hashlib.sha256(json.dumps(build, sort_keys=True).encode()).hexdigest()
-    online_jit_cache = online is not None and bool(os.environ.get("PYPTO_DSV41_ONLINE_CACHE_DIR"))
+    orthrus_jit_cache = bool(os.environ.get("PYPTO_DSV41_JIT_CACHE_DIR"))
     key = args.key_file.read_bytes().strip()
     address = args.master_address, args.port
     print(f"Node {args.node} waiting for peer at {address[0]}:{address[1]}", flush=True)
@@ -409,7 +409,7 @@ def run(args):
                        online_profile=args.online_profile,
                        online_benchmark=args.online_benchmark,
                        report_train_requests=args.report_train_requests, report_batch_size=args.report_batch_size,
-                       online_jit_cache=online_jit_cache,
+                       orthrus_jit_cache=orthrus_jit_cache,
                        online=None if online is None else online.config.contract())
         peer_request = link.exchange("acceptance/configuration", request)
         if peer_request != request:
@@ -516,7 +516,7 @@ def run(args):
                        checkpoint=checkpoint_identity, head_sha256=head_identity, head_role=head["artifact_role"],
                        verify_candidate_limit=args.verify_candidate_limit,
                        short_speculative_dispatch=args.short_speculative_dispatch,
-                       online_jit_cache=online_jit_cache,
+                       orthrus_jit_cache=orthrus_jit_cache,
                        target=audits.get("target"), orthrus=audits["orthrus"],
                        speculation=speculation,
                        online=online_summary)

@@ -258,7 +258,7 @@ class ResidentDraftAttention:
         from pypto.runtime import ExecutionMode, RunConfig
 
         online = isinstance(key, tuple) and key[0] == "online"
-        cache_dir = os.environ.get("PYPTO_DSV41_ONLINE_CACHE_DIR") if online else None
+        cache_dir = os.environ.get("PYPTO_DSV41_JIT_CACHE_DIR")
         if cache_dir:
             cache_options = dict(cache_config=CacheConfig(
                 enabled=True, root=Path(cache_dir), extra_fingerprint=os.environ.get("ORTHRUS_CLUSTER_LIB_TREE"),
@@ -281,13 +281,13 @@ class ResidentDraftAttention:
             kernel, arguments, options, abi=self.native("network").network_parameter_abi, name=key,
         )
         generated = perf_counter()
-        if online:
+        if online or cache_dir:
             compiled.load()
         if timing is not None:
             cache = cache_stats()
             timing["compiled"].append({
                 "operator": key, "seconds": generated - started,
-                "assemble_seconds": perf_counter() - generated if online else 0.0,
+                "assemble_seconds": perf_counter() - generated if online or cache_dir else 0.0,
                 "ready_cache_hits": cache.ready_hits - prior_cache.ready_hits,
                 "generation_builds": cache.generation_builds - prior_cache.generation_builds,
                 "binary_builds": cache.binary_builds - prior_cache.binary_builds,

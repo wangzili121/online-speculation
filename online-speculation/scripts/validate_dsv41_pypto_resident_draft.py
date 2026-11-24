@@ -100,7 +100,7 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
     prefix = record["request_token_map"][0]["token_begin"]
     comparison = (args.compare_joined_attention or args.compare_scratch_fill
                   or args.compare_swa_controls or args.compare_index_scratch)
-    fingerprint = hashlib.sha256() if args.replay or comparison else None
+    fingerprint = hashlib.sha256() if args.replay or args.startup_only or comparison else None
     for layer in range(40):
         role = native("cache").resolve_layer_role(layer)
         roles.append(role["mode"])
@@ -165,6 +165,8 @@ def main():
     parser.add_argument("--rank-offset", type=int, choices=(0, 4, 8, 12), default=0,
                         help="Global rank at the start of the local TP4 partition")
     parser.add_argument("--replay", action="store_true", help="Interleave a second generation and replay the first")
+    parser.add_argument("--startup-only", action="store_true",
+                        help="Report cold artifact preparation and compare three subsequent draft rounds")
     comparison = parser.add_mutually_exclusive_group()
     comparison.add_argument("--compare-joined-attention", action="store_true",
                             help="Compare the 40-layer draft with grouped SWA/compressed dispatch")
@@ -194,7 +196,29 @@ def main():
         upload_counts = ("device_weight_upload_calls", "device_draft_weight_upload_calls")
         before = [runtime.stats.get(name, 0) for name in upload_counts]
         start_dispatches = runtime.stats["dispatches"]
+        from pypto import cache_stats
+        clock = perf_counter()
+        counters = cache_stats()
         roles, collective_error, fingerprint = run_round(runtime, attention, args, ranks, anchors, 1, primary)
+        startup = perf_counter() - clock
+        if args.startup_only:
+            after = cache_stats()
+            warm = []
+            for _ in range(3):
+                began = perf_counter()
+                _, _, repeated = run_round(runtime, attention, args, ranks, anchors, 1, primary)
+                warm.append(perf_counter() - began)
+                assert repeated == fingerprint
+            assert before == [runtime.stats.get(name, 0) for name in upload_counts]
+            print(json.dumps(dict(
+                passed=True, layers=len(roles), ranks=ranks, anchors=anchors, block=args.block_size,
+                first_round_seconds=startup, hot_round_seconds=median(warm), output_sha256=fingerprint,
+                ready_cache_hits=after.ready_hits - counters.ready_hits,
+                generation_builds=after.generation_builds - counters.generation_builds,
+                binary_builds=after.binary_builds - counters.binary_builds,
+                cache_bypasses=after.bypasses - counters.bypasses,
+            )), flush=True)
+            return
         joined_dispatches = None
         if args.compare_joined_attention:
             baseline_dispatches = runtime.stats["dispatches"] - start_dispatches

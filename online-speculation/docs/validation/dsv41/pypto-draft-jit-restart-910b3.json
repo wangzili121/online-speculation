@@ -1,0 +1,87 @@
+{
+  "passed": true,
+  "host": "111",
+  "device": "Ascend 910B3",
+  "physical_cards": [
+    2,
+    3,
+    6,
+    7
+  ],
+  "scope": "All 40 Orthrus draft Attention layers using W8A8 checkpoint-initialized head, two synthetic histories in one TP4 DP partition, including FP32 TP reduce_scatter and equality checks. Three independent processes. Head upload and replay setup are outside timers.",
+  "reference_checkout": "7c9730e",
+  "native_overlay_tree": "5ed1c797aae4096b52c081195fc734b136cbf84c",
+  "byte_exact": true,
+  "cache_unchanged": true,
+  "arms": [
+    {
+      "run": "disabled",
+      "passed": true,
+      "layers": 40,
+      "ranks": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "anchors": [
+        257,
+        129
+      ],
+      "block": 32,
+      "first_round_seconds": 56.12715334701352,
+      "hot_round_seconds": 8.901484311092645,
+      "output_sha256": "c11e5d44ad49f2156bd3eb564fa674b7b6ea362f1184b70e12ee7aa1daad107c",
+      "ready_cache_hits": 0,
+      "generation_builds": 8,
+      "binary_builds": 8,
+      "cache_bypasses": 0
+    },
+    {
+      "run": "empty_store",
+      "passed": true,
+      "layers": 40,
+      "ranks": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "anchors": [
+        257,
+        129
+      ],
+      "block": 32,
+      "first_round_seconds": 55.74202894605696,
+      "hot_round_seconds": 7.9112356710247695,
+      "output_sha256": "c11e5d44ad49f2156bd3eb564fa674b7b6ea362f1184b70e12ee7aa1daad107c",
+      "ready_cache_hits": 0,
+      "generation_builds": 8,
+      "binary_builds": 8,
+      "cache_bypasses": 0
+    },
+    {
+      "run": "reopened_store",
+      "passed": true,
+      "layers": 40,
+      "ranks": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "anchors": [
+        257,
+        129
+      ],
+      "block": 32,
+      "first_round_seconds": 11.629963462008163,
+      "hot_round_seconds": 8.717137954896316,
+      "output_sha256": "c11e5d44ad49f2156bd3eb564fa674b7b6ea362f1184b70e12ee7aa1daad107c",
+      "ready_cache_hits": 8,
+      "generation_builds": 0,
+      "binary_builds": 0,
+      "cache_bypasses": 0
+    }
+  ]
+}
