@@ -2,8 +2,10 @@
 
 from .pypto_dsv41_resident_abi import with_resident_entry
 
+EXPERT_DEQUANT_TILE = 128
 
-def make_dequantize_blocked_weight(input_width, output_width, *, inline=False):
+
+def make_dequantize_blocked_weight(input_width, output_width, *, inline=False, row_tile=16):
     """Restore the BF16 weight used by a frozen W8A8 input VJP.
 
     Native DSV4.1 stores an INT8 ``[K, N]`` matrix as
@@ -17,13 +19,12 @@ def make_dequantize_blocked_weight(input_width, output_width, *, inline=False):
     if (
         type(input_width) is not int or type(output_width) is not int
         or input_width <= 0 or output_width <= 0
-        or input_width % 256 or output_width % 64
+        or input_width % 256 or output_width % 64 or row_tile not in (16, 32, 64, 128)
     ):
         raise ValueError("blocked W8A8 weight requires K/256 and N/64 alignment")
     import pypto.language as pl
 
     blocks = output_width // 64
-    row_tile = 16
     row_tiles = input_width // row_tile
     tiles = row_tiles * blocks
     workers = min(tiles, 256)
@@ -373,7 +374,7 @@ def make_clipped_swiglu_vjp(rows=32, intermediate=2304, limit=10.0, *, inline=Fa
 
 
 def make_frozen_w8a8_expert_input_vjp(
-    rows=64, hidden=5120, intermediate=2304, limit=10.0,
+    rows=64, hidden=5120, intermediate=2304, limit=10.0, *, dequant_tile=EXPERT_DEQUANT_TILE,
 ):
     """Recompute one frozen expert and return only its input gradient.
 
@@ -402,8 +403,8 @@ def make_frozen_w8a8_expert_input_vjp(
     from .pypto_dsv41_online_programs import make_linear
 
     gate_width = 2 * intermediate
-    dequant_gate = make_dequantize_blocked_weight(hidden, gate_width, inline=True)
-    dequant_down = make_dequantize_blocked_weight(intermediate, hidden, inline=True)
+    dequant_gate = make_dequantize_blocked_weight(hidden, gate_width, inline=True, row_tile=dequant_tile)
+    dequant_down = make_dequantize_blocked_weight(intermediate, hidden, inline=True, row_tile=dequant_tile)
     gate_forward = make_linear(
         (rows, hidden), (hidden, gate_width), transpose_b=False, inline=True,
     )

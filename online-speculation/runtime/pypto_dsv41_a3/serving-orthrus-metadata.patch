@@ -1,0 +1,139 @@
+--- a/models/deepseek_v41_a3/metadata.py
++++ b/models/deepseek_v41_a3/metadata.py
+@@ -25,8 +25,25 @@
+     chunks = tuple(chunks)
+     ledger.input_contract(chunks)  # Reject an over-capacity collective.
+     payloads = []
++    share_dp_metadata = bool(chunks and chunks[0].phase in ("draft", "verify", "accept"))
+     for rank in range(config.ep):
+-        local = [chunk for chunk in chunks if chunk.handle.dp == rank // config.tp]
++        dp, lane = divmod(rank, config.tp)
++        if share_dp_metadata and lane:
++            # Only the sequence-parallel slice is rank-local. The provider
++            # copies these read-only DP controls before adopting the payload.
++            shared = payloads[dp * config.tp]
++            total = shared["positions"].numel()
++            per_rank = (total + config.tp - 1) // config.tp
++            begin, end = lane * per_rank, (lane + 1) * per_rank
++            span = (begin, end, per_rank, per_rank * config.tp)
++            valid = max(0, min(end, total) - min(begin, total))
++            metadata = {
++                name: dict(record, cp_token_range=span, num_actual_tokens=valid)
++                for name, record in shared["metadata"].items()
++            }
++            payloads.append(dict(shared, layout=cache_plan.layouts[rank], metadata=metadata))
++            continue
++        local = [chunk for chunk in chunks if chunk.handle.dp == dp]
+         positions = [position for chunk in local for position in range(chunk.start, chunk.start + len(chunk.tokens))]
+         lengths = torch.tensor([chunk.start + len(chunk.tokens) for chunk in local], dtype=torch.int32)
+         starts = torch.tensor([0] + [sum(len(chunk.tokens) for chunk in local[:i + 1])
+@@ -53,11 +70,16 @@
+                                slot_mapping=torch.tensor(raw_slots, dtype=torch.int64).reshape(total, 2),
+                                live_block_ids=sorted({page for pages in tables for page in pages}),
+                                reserved_untouched_block_id=cache_plan.reserved_page))
++            controls_by_plane = {}
+             for name in names:
+                 layer = roles[int(name.split(".")[2])]
+                 compressed = name.endswith(("long_kv_cache", "indexer.k_cache"))
+                 ring = name.endswith("compressor.state_cache")
+                 ratio = layer["ratio"] if compressed else 1
++                plane = ratio, ring
++                if share_dp_metadata and plane in controls_by_plane:
++                    metadata[name] = controls_by_plane[plane]
++                    continue
+                 typed_slots = []
+                 for chunk, pages in zip(local, tables, strict=True):
+                     for position in range(chunk.start, chunk.start + len(chunk.tokens)):
+@@ -74,6 +96,8 @@
+                 if ring:
+                     full["c2_source_positions"] = torch.where(pos % 2 == 1, pos - 1, 0)
+                 metadata[name] = dict(cp_token_range=span, num_actual_tokens=valid, global_metadata=full)
++                if share_dp_metadata:
++                    controls_by_plane[plane] = metadata[name]
+         payloads.append(dict(layout=cache_plan.layouts[rank], metadata=metadata, groups=groups,
+                              positions=pos, lengths=lengths, query_start_loc=starts))
+     return tuple(payloads)
+--- a/models/deepseek_v41_a3/session.py
++++ b/models/deepseek_v41_a3/session.py
+@@ -46,6 +46,7 @@
+         self.defer_draft = defer_draft
+         self.cluster = cluster
+         self.online = online
++        self._draft_metadata = None
+         self.draft = None
+         self.ledger = self.native = self.decode = self.host = self.hbm = None
+         self.closed, self.calls, self.predecessor = False, 0, None
+@@ -130,13 +131,30 @@
+         utility = self.source.module("utils")
+         utility.write_json(input_path, actual)
+         identity = utility.file_sha(input_path)
+-        payloads, sources = [], []
+-        for rank, payload in enumerate(rank_payloads):
+-            payload = dict(payload, hash_constants=self.cache["cache_ABI"][rank]["hash_constants"])
+-            path = directory / f"rank-{rank}-metadata.pt"
+-            torch.save(payload, path)
+-            sources.append(dict(rank=rank, path=str(path), sha256=utility.file_sha(path)))
+-            payloads.append(payload)
++        payloads = [
++            dict(payload, hash_constants=self.cache["cache_ABI"][rank]["hash_constants"])
++            for rank, payload in enumerate(rank_payloads)
++        ]
++        previous = self._draft_metadata
++        if phase == "verify" and previous is not None and previous[0] is rank_payloads:
++            sources = previous[1]
++        elif wide:
++            # The native call retains the complete in-memory contract. Write a
++            # single replayable bundle so shared TP controls serialize once.
++            path = directory / "rank-metadata.pt"
++            controls = tuple({key: value for key, value in payload.items()
++                              if key not in ("layout", "hash_constants")} for payload in payloads)
++            torch.save(controls, path)
++            digest = utility.file_sha(path)
++            sources = [dict(rank=rank, path=str(path), sha256=digest, bundled=True)
++                       for rank in range(len(payloads))]
++        else:
++            sources = []
++            for rank, payload in enumerate(payloads):
++                path = directory / f"rank-{rank}-metadata.pt"
++                torch.save(payload, path)
++                sources.append(dict(rank=rank, path=str(path), sha256=utility.file_sha(path)))
++        self._draft_metadata = (rank_payloads, sources) if phase == "draft" else None
+         cache = dict(self.cache, cache_ABI=payloads, cache_ABI_sources=[dict(rank=row["rank"],
+             payload_sha256=row["sha256"], report_sha256=row["sha256"]) for row in sources])
+         contract = dict(self.native_config, input_contract_path=str(input_path), input_contract_sha256=identity)
+--- a/models/deepseek_v41_a3/runner.py
++++ b/models/deepseek_v41_a3/runner.py
+@@ -176,12 +176,14 @@
+         outputs = [None] * len(chunks)
+         try:
+             for wave in self.ledger.dispatches(chunks):
+-                tokens_by_handle = self._draft_wave(wave)
++                tokens_by_handle, payloads = self._draft_wave(wave)
+                 checked = tuple(self.ledger.prepare_chunk(
+                     chunk.handle, (*chunk.tokens[:1], *tokens_by_handle[chunk.handle]),
+                     chunk.start, chunk.output_row, "verify",
+                 ) for chunk in wave)
+-                self._verify_wave(checked, outputs)
++                # Candidate IDs change, but the anchor, span and page table are
++                # the same 32 positions per request.
++                self._verify_wave(checked, outputs, payloads=payloads)
+         except Exception:
+             self._abort_speculation(batch.request_ids)
+             raise
+@@ -198,11 +200,12 @@
+                 or proposals.dtype != torch.long or proposals.shape != expected):
+             raise ValueError("A3 diffusion head must return 31 candidate IDs per request")
+         self.dispatch_count += 1
+-        return dict(zip(handles, proposals.tolist(), strict=True))
+-
+-    def _verify_wave(self, wave, outputs):
++        return dict(zip(handles, proposals.tolist(), strict=True)), payloads
++
++    def _verify_wave(self, wave, outputs, *, payloads=None):
+         contract, order = self.ledger.input_contract(wave)
+-        payloads = rank_metadata(self.source, self.cache_plan, self.ledger, wave)
++        if payloads is None:
++            payloads = rank_metadata(self.source, self.cache_plan, self.ledger, wave)
+         handles = tuple(handle for handle, _ in order)
+         verifier_rows = self.session.execute("verify", contract, payloads, handles)
+         by_handle = {chunk.handle: chunk for chunk in wave}

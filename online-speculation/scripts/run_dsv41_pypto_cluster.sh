@@ -44,7 +44,7 @@ fi
 for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.patch \
     lib-pypto72-compat.patch lib-cluster-retry.patch lib-cluster-prefill-trace.patch \
     lib-deterministic-reduction.patch lib-cluster-online.patch lib-workspace-write-only.patch \
-    lib-orthrus-output.patch; do
+    lib-orthrus-output.patch lib-orthrus-controls.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -58,6 +58,8 @@ git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-online.patch"
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-online.patch"
 git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-fast.patch"
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-fast.patch"
+git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-metadata.patch"
+git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-metadata.patch"
 python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolve(cluster=True)'
 
 if [[ "${1:-}" == --prepare-only ]]; then
@@ -66,6 +68,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import torch
 
@@ -185,6 +188,28 @@ inputs = {"DP_engines": [{"active": 4, "dp_rank": 0, "requests": [
 ]}]}
 assert [row.tolist() for row in session._execute("verify", inputs, (), handles)] == [[1, 2], [0, 1]]
 
+# Compact serialized evidence must not remove static data from the native call.
+utility = source.module("utils")
+with TemporaryDirectory() as directory:
+    session.directory = Path(directory)
+    session.source = source
+    session.checkpoint, session.identity = "checkpoint", "identity"
+    session.native_config = {"capacity": 16}
+    session.cache = {"cache_ABI": [{"hash_constants": {"token_map": torch.arange(256)}}] * 2}
+    session.host = SimpleNamespace(lookup=lambda *args, **options: {})
+    session._draft_metadata = None
+    payload = {"layout": {"views": {}}, "metadata": {"swa": 7}}
+    payloads = (payload,) * 2
+    draft_prepared = NativeSession._prepare(session, {"DP_engines": []}, payloads, "draft")
+    prepared = NativeSession._prepare(session, {"DP_engines": []}, payloads, "verify")
+    assert prepared["metadata_sources"] is draft_prepared["metadata_sources"]
+    assert session._draft_metadata is None
+    evidence = prepared["metadata_sources"][0]
+    assert utility.file_sha(evidence["path"]) == evidence["sha256"]
+    assert prepared["metadata_sources"][1]["path"] == evidence["path"]
+    assert torch.load(evidence["path"], weights_only=True) == ({"metadata": {"swa": 7}},) * 2
+    assert set(prepared["cache"]["cache_ABI"][0]) == {"layout", "metadata", "hash_constants"}
+
 runtime_type = source.module("prefill_resident").ResidentNetworkRuntime
 runtime = runtime_type.__new__(runtime_type)
 replay_root, scratch = torch.zeros(1), torch.zeros(1)
@@ -205,7 +230,7 @@ print(json.dumps(dict(
     tree=os.environ["ORTHRUS_CLUSTER_LIB_TREE"],
     lifecycle={"target_unbound": True, "draft_bind": True, "unbound_cleanup": True,
                "closed_cleanup": True, "replay_survives_scratch_recycle": True},
-    accept_without_logits=True, verifier_feedback_only_for_owner=True,
+    accept_without_logits=True, verifier_feedback_only_for_owner=True, compact_speculative_metadata=True,
 )))
 PY
 fi

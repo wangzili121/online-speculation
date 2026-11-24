@@ -1,0 +1,28 @@
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -1227,11 +1227,22 @@
+         if len(sources) != self.weights.world:
+             raise ValueError("Continuation metadata must cover every active and empty rank")
+         metadata, receipts = [], []
++        source_digests, loaded_bundles = {}, {}
+         for rank, record in enumerate(sources):
+-            if record["rank"] != rank or file_sha(record["path"]) != record["sha256"]:
++            path = record["path"]
++            if path not in source_digests:
++                source_digests[path] = file_sha(path)
++            if record["rank"] != rank or source_digests[path] != record["sha256"]:
+                 raise ValueError("Continuation metadata source changed")
+-            metadata.append(chunk["cache"]["cache_ABI"][rank] if "cache" in chunk else
+-                            torch.load(record["path"], map_location="cpu", weights_only=True))
++            if "cache" in chunk:
++                payload = chunk["cache"]["cache_ABI"][rank]
++            elif record.get("bundled"):
++                if path not in loaded_bundles:
++                    loaded_bundles[path] = torch.load(path, map_location="cpu", weights_only=True)
++                payload = loaded_bundles[path][rank]
++            else:
++                payload = torch.load(path, map_location="cpu", weights_only=True)
++            metadata.append(payload)
+             receipts.append(dict(rank=rank, metadata_sha256=record["sha256"]))
+         if "engram_lookup" not in following:
+             raise ValueError("Each continuation requires fresh Engram lookup rows")

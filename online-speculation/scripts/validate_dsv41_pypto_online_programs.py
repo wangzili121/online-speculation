@@ -109,6 +109,8 @@ def check_c1a_resident_dispatch(empty):
     )
     draft = ResidentDraftAttention.__new__(ResidentDraftAttention)
     draft.rank_ids, draft.heads, draft.joined_attention, draft.block_size = {0: 0}, 16, True, 32
+    draft.reuse_swa_controls = True
+    draft.swa_history_bias = (empty((1, 128), torch.float32),) * 129
     draft.resident, draft.native = ShapeOnlyResident(), native
     draft.config = dict(
         num_hidden_layers=40, hidden_size=5120, q_lora_rank=1280, num_attention_heads=64,

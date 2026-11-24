@@ -5,6 +5,8 @@ import argparse
 import json
 from pathlib import Path
 
+from blockspec.pypto_dsv41_moe_vjp import EXPERT_DEQUANT_TILE
+
 
 def pack_kn(value):
     """Pack logical INT8 [K,N] into the native [N/64*K,64] layout."""
@@ -14,7 +16,7 @@ def pack_kn(value):
     return value.reshape(k, n // 64, 64).permute(1, 0, 2).reshape(-1, 64).contiguous()
 
 
-def validate(rows, hidden, intermediate, active, config):
+def validate(rows, hidden, intermediate, active, config, *, dequant_tile=EXPERT_DEQUANT_TILE):
     import torch
     from blockspec.pypto_dsv41_moe_vjp import make_frozen_w8a8_expert_input_vjp
     from blockspec.pypto_dsv41_resident_abi import resident_entry
@@ -47,7 +49,7 @@ def validate(rows, hidden, intermediate, active, config):
     expected = (gate_gradient.float() @ gate_weight.float().T).bfloat16()
 
     result = torch.empty_like(value)
-    chip = resident_entry(make_frozen_w8a8_expert_input_vjp(rows, hidden, intermediate))
+    chip = resident_entry(make_frozen_w8a8_expert_input_vjp(rows, hidden, intermediate, dequant_tile=dequant_tile))
     chip(
         value, output_gradient, pack_kn(gate_codes), gate_scale, pack_kn(down_codes), down_scale,
         result, config=config,
@@ -67,6 +69,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--production", action="store_true")
+    parser.add_argument("--dequant-tile", type=int, choices=(16, 32, 64, 128), default=EXPERT_DEQUANT_TILE)
     args = parser.parse_args()
     if args.output.exists():
         parser.error("output must not already exist")
@@ -89,7 +92,7 @@ def main():
     }
     try:
         for rows, hidden, intermediate, active in shapes:
-            report["cases"].append(validate(rows, hidden, intermediate, active, config))
+            report["cases"].append(validate(rows, hidden, intermediate, active, config, dequant_tile=args.dequant_tile))
         report.update(
             passed=True, compiled=True, executed=True,
             npu_execution=not args.simulate, simulator_execution=args.simulate,
