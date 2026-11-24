@@ -40,7 +40,7 @@ class FakeResident:
 
     @staticmethod
     def workspace(shape, dtype, rank, *, fill=0):
-        return torch.full(shape, fill, dtype=dtype)
+        return torch.empty(shape, dtype=dtype) if fill is None else torch.full(shape, fill, dtype=dtype)
 
     @staticmethod
     def handle(value, rank, *, readonly=False):
@@ -164,6 +164,8 @@ class TailDraft(Draft):
             inputs["weight_gradient"][:, :6].copy_(
                 torch.einsum("td,trd->tr", dy, experts)
             )
+        elif operation == "mhc-gradient-pack":
+            inputs["output"].view(-1, 4).copy_(inputs["source"][:, :4])
         elif operation == "router-logits-vjp":
             logits = inputs["router_logits"].float()
             ids = inputs["route_ids"].long()
@@ -385,6 +387,7 @@ def test_frozen_tail_envelope_uses_captured_routes_and_exact_k32_state():
     assert draft.events == [
         ("ffn-hc-post-data-vjp", 0), ("ffn-hc-post-gate-vjp", 0),
         ("moe-combine-vjp", 0), ("router-logits-vjp", 0),
+        ("mhc-gradient-pack", 0), ("mhc-gradient-pack", 0),
     ]
 
 
@@ -555,14 +558,12 @@ class TerminalHarness(AttentionBatchHarness):
         if op == "final-collapse-forward":
             values = inputs["streams"].view(32, 4, 5120).float()
             inputs["collapsed"].copy_((values * inputs["premix"].unsqueeze(-1)).sum(1))
-        elif op == "final-rms-forward":
-            inputs["y"].copy_(inputs["x"])
         elif op == "vocab-gradient-shard":
             start = inputs["offset"]
             inputs["output"].copy_(inputs["gradient"][:, start:start + inputs["output"].shape[1]])
         elif op == "lm-head-input-vjp":
             inputs["output"].copy_(inputs["a"].float() @ inputs["b"].float().T)
-        elif op == "final-rms-input-vjp":
+        elif op == "final-rms-frozen-input-vjp":
             # Identity VJP lets this test isolate the row layout.
             inputs["dx"].copy_(inputs["dy"])
         elif op == "final-collapse-vjp":
@@ -570,6 +571,8 @@ class TerminalHarness(AttentionBatchHarness):
                 (inputs["output_gradient"][:, None] * inputs["premix"][:, :, None]).view(128, 5120),
             )
             inputs["premix_gradient"][:, :4].copy_(inputs["output_gradient"][:, :4])
+        elif op == "mhc-gradient-pack":
+            inputs["output"].view(-1, 4).copy_(inputs["source"][:, :4])
         else:
             raise AssertionError(key)
 

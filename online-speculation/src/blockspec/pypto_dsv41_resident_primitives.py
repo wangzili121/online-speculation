@@ -414,16 +414,17 @@ class DSV41ResidentPrimitives:
         span = self._local_span(row)
         return self._padded_rows(rank, value, span.local_start, span.rows, copies)
 
-    def _compact_columns(self, rank, value, start, width):
-        """Materialize a contiguous device matrix from a strided column view."""
-        if start == 0 and width == value.shape[1]:
-            return value
-        output = self._workspace(rank, (value.shape[0], width), value.dtype)
-        for index in range(value.shape[0]):
-            self.resident.copy_tensor(
-                output[index], value[index, start:start + width], self._local(rank),
-            )
-        return output
+    def _compact_mhc_columns(self, rank, value):
+        """Materialize the four logical coefficients of each padded mHC row."""
+        from .pypto_dsv41_tail_vjp import make_mhc_gradient_pack
+
+        rows = value.shape[0]
+        output = self._workspace(rank, (rows // 4, 16), torch.float32, fill=None)
+        self._execute(
+            ("mhc-gradient-pack", rows), rank,
+            lambda: make_mhc_gradient_pack(rows), source=value, output=output,
+        )
+        return output.view(rows, HC_COPIES)
 
     def loss_vjp(self, logits, teacher, valid, kind):
         if kind not in ("tv", "forward_kl") or not 1 <= valid < ROWS:
@@ -569,15 +570,6 @@ class DSV41ResidentPrimitives:
         teacher = self._padded_logits(loss.teacher, loss.valid, vocabulary)
 
         def reverse_head(rank):
-            collapsed = collapsed_rows[rank]
-            norm = norms[rank]
-            normalized = self._workspace(rank, (ROWS, HIDDEN))
-            inverse = self._workspace(rank, (ROWS, 8), torch.float32)
-            self._execute(
-                ("final-rms-forward",), rank,
-                lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
-                x=collapsed, gamma=norm, y=normalized, inv=inverse,
-            )
             dlogits, losses = self._loss_on_rank(rank, loss, student, teacher)
             dlocal = self._workspace(rank, (ROWS, local_vocabulary), fill=None)
             self._execute(
@@ -598,24 +590,26 @@ class DSV41ResidentPrimitives:
                 a=dlocal, b=self.resident.handle(head, self._local(rank), readonly=True),
                 output=dnormalized,
             )
-            return inverse, losses, dnormalized
+            return losses, dnormalized
 
         terminal_reverse = map_owner(reverse_head)
         if loss.value is None:
-            loss.value = _ResidentScalar(terminal_reverse[ranks[0]][1], ranks[0])
+            loss.value = _ResidentScalar(terminal_reverse[ranks[0]][0], ranks[0])
         normalized_gradients = self._tp_all_reduce(
-            {rank: state[2] for rank, state in terminal_reverse.items()}, stage="lm-head-input-vjp",
+            {rank: state[1] for rank, state in terminal_reverse.items()}, stage="lm-head-input-vjp",
         )
 
         def reverse_collapse(rank):
             streams, premix, _ = terminal_states[rank]
-            inverse, _, _ = terminal_reverse[rank]
             norm = norms[rank]
             dcollapsed = self._workspace(rank, (ROWS, HIDDEN))
             self._execute(
-                ("final-rms-input-vjp",), rank,
-                lambda: make_rms(ROWS, HIDDEN, mode="input", epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
-                x=collapsed_rows[rank], gamma=norm, inv=inverse,
+                ("final-rms-frozen-input-vjp",), rank,
+                lambda: make_rms(
+                    ROWS, HIDDEN, mode="frozen_input", epsilon=1e-20,
+                    gamma_bf16=norm.dtype == torch.bfloat16,
+                ),
+                x=collapsed_rows[rank], gamma=norm,
                 dy=normalized_gradients[rank], dx=dcollapsed,
             )
             dstreams = self._workspace(rank, (ROWS * HC_COPIES, HIDDEN))
@@ -628,7 +622,7 @@ class DSV41ResidentPrimitives:
                     self._local_span(rows[rank]).block_start, self._local_span(rows[rank]).rows),
                 stream_gradient=dstreams, premix_gradient=dpremix,
             )
-            return dstreams, self._compact_columns(rank, dpremix, 0, HC_COPIES)
+            return dstreams, self._compact_mhc_columns(rank, dpremix)
 
         output = map_owner(reverse_collapse)
         hidden_gradients = {rank: value[0] for rank, value in output.items()}
@@ -1032,8 +1026,8 @@ class DSV41ResidentPrimitives:
         )
         return _FrozenMoEEnvelope(
             shared_gradient, expert_gradient, router_gradient,
-            residual_gradient, self._compact_columns(rank, post_gradient, 0, HC_COPIES),
-            self._compact_columns(rank, combination_gradient, 0, HC_COPIES), pre_gradient,
+            residual_gradient, self._compact_mhc_columns(rank, post_gradient),
+            self._compact_mhc_columns(rank, combination_gradient), pre_gradient,
         )
 
     @profiled_stage("moe_shared_and_mhc_vjp")
@@ -1123,18 +1117,14 @@ class DSV41ResidentPrimitives:
 
         # Reverse the frozen FFN RMSNorm with the model's actual 1e-20 eps.
         norm = self._pinned(rank, f"layers.{layer}.ffn_norm.weight", (1, HIDDEN))
-        replay_normed = self._workspace(rank, (ROWS, HIDDEN))
-        inverse = self._workspace(rank, (ROWS, 8), torch.float32)
-        self._execute(
-            ("ffn-rms-forward", layer), rank,
-            lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
-            x=collapsed, gamma=norm, y=replay_normed, inv=inverse,
-        )
         collapsed_gradient = self._workspace(rank, (ROWS, HIDDEN))
         self._execute(
-            ("ffn-rms-input-vjp", layer), rank,
-            lambda: make_rms(ROWS, HIDDEN, mode="input", epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
-            x=collapsed, gamma=norm, inv=inverse,
+            ("ffn-rms-frozen-input-vjp", layer), rank,
+            lambda: make_rms(
+                ROWS, HIDDEN, mode="frozen_input", epsilon=1e-20,
+                gamma_bf16=norm.dtype == torch.bfloat16,
+            ),
+            x=collapsed, gamma=norm,
             dy=moe_input_gradient, dx=collapsed_gradient,
         )
 
@@ -1172,7 +1162,7 @@ class DSV41ResidentPrimitives:
             residual_gradient=hidden_gradient,
             incoming_gradient=incoming_gradient,
         )
-        return SuffixGradient(hidden_gradient, self._compact_columns(rank, incoming_gradient, 0, HC_COPIES))
+        return SuffixGradient(hidden_gradient, self._compact_mhc_columns(rank, incoming_gradient))
 
     @staticmethod
     def _attention_record(captured):
@@ -1228,8 +1218,8 @@ class DSV41ResidentPrimitives:
         return {
             "value": value_gradient,
             "residual": residual_gradient,
-            "post": self._compact_columns(rank, post_gradient, 0, HC_COPIES),
-            "combination": self._compact_columns(rank, combination_gradient, 0, HC_COPIES),
+            "post": self._compact_mhc_columns(rank, post_gradient),
+            "combination": self._compact_mhc_columns(rank, combination_gradient),
             "pre": pre_gradient,
         }
 
@@ -1527,18 +1517,14 @@ class DSV41ResidentPrimitives:
         residual = self._local_rows(rank, captured, captured["hidden"], HC_COPIES)
         incoming = self._local_rows(rank, captured, captured["incoming"])
         norm = self._pinned(rank, f"layers.{layer}.attn_norm", (1, HIDDEN))
-        replay = self._workspace(rank, (ROWS, HIDDEN))
-        inverse = self._workspace(rank, (ROWS, 8), torch.float32)
-        self._execute(
-            ("attn-rms-replay", layer), rank,
-            lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
-            x=collapsed, gamma=norm, y=replay, inv=inverse,
-        )
         collapsed_gradient = self._workspace(rank, (ROWS, HIDDEN))
         self._execute(
-            ("attn-rms-input-vjp", layer), rank,
-            lambda: make_rms(ROWS, HIDDEN, mode="input", epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
-            x=collapsed, gamma=norm, inv=inverse,
+            ("attn-rms-frozen-input-vjp", layer), rank,
+            lambda: make_rms(
+                ROWS, HIDDEN, mode="frozen_input", epsilon=1e-20,
+                gamma_bf16=norm.dtype == torch.bfloat16,
+            ),
+            x=collapsed, gamma=norm,
             dy=normalized_gradient, dx=collapsed_gradient,
         )
 
@@ -1574,7 +1560,7 @@ class DSV41ResidentPrimitives:
             residual_gradient=hidden_gradient,
             incoming_gradient=incoming_gradient,
         )
-        return SuffixGradient(hidden_gradient, self._compact_columns(rank, incoming_gradient, 0, HC_COPIES))
+        return SuffixGradient(hidden_gradient, self._compact_mhc_columns(rank, incoming_gradient))
 
     @profiled_stage("attention_vjp")
     def reverse_draft_attention_owner_batch(

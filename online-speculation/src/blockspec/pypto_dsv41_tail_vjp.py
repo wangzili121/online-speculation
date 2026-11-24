@@ -3,6 +3,26 @@
 from .pypto_dsv41_resident_abi import with_resident_entry
 
 
+def make_mhc_gradient_pack(rows):
+    """Pack the four real FP32 coefficients out of each padded mHC row."""
+    import pypto.language as pl
+
+    @pl.jit
+    def pack(source: pl.Tensor[[rows, 16], pl.FP32],
+             output: pl.Out[pl.Tensor[[rows // 4, 16], pl.FP32]]):
+        # Each block builds and writes one full cache line, even though
+        # a logical row is only four coefficients wide.
+        for group in pl.spmd(rows // 4, name_hint="orthrus_pack_mhc_rows"):
+            tile = pl.create_tile([1, 16], dtype=pl.FP32)
+            for item in pl.range(16):
+                coefficient = pl.read(source, [group * 4 + item // 4, item % 4])
+                pl.tile.write(tile, [0, item], coefficient)
+            pl.store(tile, [group, 0], output)
+        return output
+
+    return pack
+
+
 def make_hc_collapse_forward(rows=32, hidden=5120, copies=4, *, inline=False):
     """Rebuild the final FP32-accumulated mHC collapse before RMSNorm."""
     if rows < 1 or hidden < 64 or hidden % 64 or copies != 4:

@@ -1,0 +1,150 @@
+{
+  "server_device": "Ascend 910B3",
+  "leaf_tests_111_card6": {
+    "mhc_pack": {
+      "passed": true,
+      "operator": "mhc-gradient-pack",
+      "source_stride": 16,
+      "cases": {
+        "32": {
+          "before_ms": 7.014052011072636,
+          "after_ms": 1.0118521749973297,
+          "repetitions": 25,
+          "exact": true
+        },
+        "128": {
+          "before_ms": 26.724234921857715,
+          "after_ms": 0.8588810451328754,
+          "repetitions": 25,
+          "exact": true
+        }
+      }
+    },
+    "rms_vjp": {
+      "passed": true,
+      "cases": {
+        "fp32": {
+          "before_ms": 2.154774032533169,
+          "after_ms": 0.8945818990468979,
+          "exact": true,
+          "repetitions": 23
+        },
+        "bf16": {
+          "before_ms": 2.233952982351184,
+          "after_ms": 0.9036010596901178,
+          "exact": true,
+          "repetitions": 23
+        }
+      },
+      "shape": [
+        32,
+        5120
+      ]
+    }
+  },
+  "terminal_tp4_167": {
+    "passed": true,
+    "device": "Ascend 910B3",
+    "physical_devices": [
+      4,
+      5,
+      6,
+      7
+    ],
+    "tp": 4,
+    "width": 5120,
+    "vocabulary": 129280,
+    "block": 32,
+    "baseline": "b1eea3a",
+    "evidence": "synthetic matched terminal VJP with local HCCL",
+    "cases": {
+      "tv/7": {
+        "loss": 0.14000628888607025,
+        "exact_collective_inputs": true,
+        "collective_outputs": {
+          "lm-head-sp-collapse": {
+            "before_after_max_abs": 0.0,
+            "before_repeat_max_abs": 0.0
+          },
+          "lm-head-input-vjp": {
+            "before_after_max_abs": 4.76837158203125e-07,
+            "before_repeat_max_abs": 4.76837158203125e-07
+          }
+        },
+        "gradient_max_abs": 6.39843347016722e-06,
+        "baseline_repeat_max_abs": 1.6827310901135206e-05,
+        "baseline_median_ms": 81.28081192262471,
+        "optimized_median_ms": 40.38393497467041,
+        "repetitions": 12,
+        "sequence_rows": [
+          8,
+          8,
+          8,
+          8
+        ],
+        "timings": {
+          "before": 81.28081192262471,
+          "after": 40.38393497467041
+        }
+      },
+      "forward_kl/7": {
+        "loss": 0.061243586242198944,
+        "exact_collective_inputs": true,
+        "collective_outputs": {
+          "lm-head-sp-collapse": {
+            "before_after_max_abs": 0.0,
+            "before_repeat_max_abs": 0.0
+          },
+          "lm-head-input-vjp": {
+            "before_after_max_abs": 4.76837158203125e-07,
+            "before_repeat_max_abs": 4.76837158203125e-07
+          }
+        },
+        "gradient_max_abs": 7.6527358032763e-06,
+        "baseline_repeat_max_abs": 1.1429190635681152e-05,
+        "baseline_median_ms": 85.26557649020106,
+        "optimized_median_ms": 44.06461748294532,
+        "repetitions": 12,
+        "sequence_rows": [
+          8,
+          8,
+          8,
+          8
+        ],
+        "timings": {
+          "before": 85.26557649020106,
+          "after": 44.06461748294532
+        }
+      },
+      "tv/1": {
+        "loss": 0.13642854988574982,
+        "exact_collective_inputs": true,
+        "collective_outputs": {
+          "lm-head-sp-collapse": {
+            "before_after_max_abs": 0.0,
+            "before_repeat_max_abs": 0.0
+          },
+          "lm-head-input-vjp": {
+            "before_after_max_abs": 3.814697265625e-06,
+            "before_repeat_max_abs": 1.9073486328125e-06
+          }
+        },
+        "gradient_max_abs": 4.64925542473793e-05,
+        "baseline_repeat_max_abs": 3.4813303500413895e-05,
+        "baseline_median_ms": 73.64433747716248,
+        "optimized_median_ms": 36.3667460042052,
+        "repetitions": 12,
+        "sequence_rows": [
+          32,
+          0,
+          0,
+          0
+        ],
+        "timings": {
+          "before": 73.64433747716248,
+          "after": 36.3667460042052
+        }
+      }
+    }
+  }
+}
