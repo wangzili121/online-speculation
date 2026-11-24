@@ -1289,28 +1289,19 @@ class DSV41ResidentPrimitives:
             rank, (geometry.rows, geometry.padded_columns),
         )
         sink_rows = self._workspace(rank, (geometry.rows, 16), torch.float32)
+        block_score = self._workspace(rank, (geometry.rows, ROWS))
+        block_probability = self._workspace(rank, (geometry.rows, ROWS))
         self._execute(
-            ("attn-c1a-softmax-vjp", layer), rank,
-            factories["probability_vjp"],
+            ("attn-c1a-softmax-block-vjp", layer), rank,
+            factories["softmax_block_vjp"],
             probability=probability, probability_gradient=probability_gradient,
             score_gradient=score_gradient, sink_rows=sink_rows,
+            block_score=block_score, block_probability=block_probability,
         )
         query_gradient = self._workspace(rank, (geometry.rows, 512))
         self._execute(
             ("attn-c1a-query-vjp", layer), rank, factories["d_query"],
             a=score_gradient, b=joined, output=query_gradient,
-        )
-        block_score = self._workspace(rank, (geometry.rows, ROWS))
-        block_probability = self._workspace(rank, (geometry.rows, ROWS))
-        self._execute(
-            ("attn-c1a-score-block", layer), rank,
-            factories["score_block_extract"],
-            joined=score_gradient, block_gradient=block_score,
-        )
-        self._execute(
-            ("attn-c1a-probability-block", layer), rank,
-            factories["probability_block_extract"],
-            probability=probability, block_probability=block_probability,
         )
         key_gradient = self._workspace(rank, (ROWS, 512), torch.float32)
         value_gradient = self._workspace(rank, (ROWS, 512), torch.float32)

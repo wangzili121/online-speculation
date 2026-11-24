@@ -1,0 +1,235 @@
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -326,7 +326,12 @@
+                     "embedding",
+                 ),
+             )
+-            self.bind("validation", {"finite": make_finite_check(geometry["capacity"])})
++            if geometry["capacity"] == ORTHRUS_VERIFY_CAPACITY:
++                from blockspec.pypto_dsv41_finite import make_speculative_finite_check
++                finite = make_speculative_finite_check(geometry["capacity"])
++            else:
++                finite = make_finite_check(geometry["capacity"])
++            self.bind("validation", {"finite": finite})
+             for layer in range(40):
+                 definitions, layer_geometry, expert_capacity = make_network_layer_entries(
+                     provider, text, topology, layer, self._layer_definitions
+@@ -759,8 +764,37 @@
+     return hidden, premix
+ 
+ 
++def _read_speculative_vocab(logits_packets, records, case, executor, tp, draft=None):
++    """Materialize one host-side result per logical TP group."""
++    shards, packets = {}, {}
++    captured_dps = {owner[0] for owner in draft.capture[1]} if draft is not None and draft.capture else set()
++
++    def read_rank(rank):
++        active = len(records[rank]["positions"])
++        logits = logits_packets[rank][case]
++        if draft is not None and active == ORTHRUS_BLOCK and rank // tp not in captured_dps:
++            packets[rank] = draft.attention.greedy_shard(rank, logits, active)
++        else:
++            shards[rank] = executor.resident.read_output(logits[:active], executor.rank_devices[rank]) if active else logits[:0]
++
++    executor.map_ranks(read_rank)
++    outputs, greedy = {}, {}
++    for leader in sorted(rank for rank in executor.rank_devices if rank % tp == 0):
++        ranks = range(leader, leader + tp)
++        if leader in packets:
++            from blockspec.pypto_dsv41_greedy import merge_greedy_shards
++            greedy[leader // tp] = merge_greedy_shards(
++                [packets[rank] for rank in ranks], logits_packets[leader][case].shape[1],
++            )
++        else:
++            merged = torch.cat([shards[rank] for rank in ranks], dim=-1)
++            for rank in ranks:
++                outputs[rank] = merged
++    return outputs, greedy
++
++
+ def run_output_boundary(result, *, batch, topology, config, weights, executor, output,
+-                        trace_position=None, trace_record=None, orthrus_phase=None):
++                        trace_position=None, trace_record=None, orthrus_phase=None, draft=None):
+     """Consume actual layer39 local delayed HC state and restore complete SP/TP vocabulary output."""
+     capacity, world, tp = executor.provider.capacity, topology["ep"], topology["tp"]
+     directory = Path(output)
+@@ -840,10 +874,31 @@
+                 trace_record("output-head/local-logits", rank, case, local_logits, row)
+             logits_packets[rank][case] = local_logits
+         executor.map_ranks(run_output_boundary_rank_1)
++    files, actual_logits = {}, [{} for _ in range(world)]
++    # In the two-node plan, each complete TP4 group lives on one host. Serving
++    # needs one logical vocabulary per DP request, including teacher rows.
++    # Keep the existing device gather for full activation traces and contracts
++    # outside the clustered speculative path.
++    if orthrus_phase is not None and executor.transport is not None and trace_record is None:
++        greedy_tokens = {}
++        for case, records in batch["cases"].items():
++            logits_by_rank, greedy_tokens[case] = _read_speculative_vocab(logits_packets, records, case, executor, tp, draft)
++            for rank, logits in logits_by_rank.items():
++                actual_logits[rank][case] = logits
++                if orthrus_phase == "verify" and logits.shape[0] and rank % tp == 0:
++                    path = directory / f"rank-{rank}-{case}-network-logits.pt"
++                    torch.save(dict(logits=logits, active=logits.shape[0], positions=records[rank]["positions"],
++                                    DP_rank=rank // tp), path)
++                    files[str(path)] = file_sha(path)
++        vocabulary_layout = "device_greedy" if any(greedy_tokens.values()) else "host_shards"
++        write_json(directory / "execution.json", dict(
++            outcome="executed_actual_layer39_output_boundary_not_compared", files=files,
++            native_reference="not_run", full40_accuracy="not_run", vocabulary_layout=vocabulary_layout,
++        ))
++        return dict(files=files, logits=actual_logits, vocabulary_layout=vocabulary_layout, greedy_tokens=greedy_tokens)
+     gathered_logits = executor.exchange(
+         executor.namespace + "-output-vocabulary-gather", logits_packets, "all_gather", "tp"
+     )
+-    files, actual_logits = {}, [{} for _ in range(world)]
+     for case, records in batch["cases"].items():
+         def run_output_boundary_rank_2(rank):
+             record = records[rank]
+@@ -1008,10 +1063,16 @@
+             raise ValueError("Draft rank must belong to the request's DP partition")
+         if rank not in self.provider.local_ranks:
+             raise ValueError("Draft history requires a local cache owner")
+-        groups, committed = self.provider.request_history(dp_rank, request_slot, generation)
+-        if anchor_position != committed:
++        pages, committed = self._draft_request_pages(dp_rank, request_slot, generation, anchor_position)
++        return self._bind_draft_history(rank, layer, pages, committed)
++
++    def _draft_request_pages(self, dp, slot, generation, anchor):
++        groups, committed = self.provider.request_history(dp, slot, generation)
++        if anchor != committed:
+             raise ValueError("Draft anchor must immediately follow the committed target history")
++        return {name: group["pages"] for group in groups.values() for name in group["names"]}, committed
+ 
++    def _bind_draft_history(self, rank, layer, request_pages, committed):
+         role = resolve_layer_role(layer)
+         layout = self.provider.layouts[rank]["fresh"]
+         names = {"swa": f"model.layers.{layer}.self_attn.swa_cache"}
+@@ -1020,7 +1081,7 @@
+             names.update(long=root + "long_kv_cache", index=root + "indexer.k_cache")
+         planes = {}
+         for kind, name in names.items():
+-            pages, = (group["pages"] for group in groups.values() if name in group["names"])
++            pages = request_pages[name]
+             descriptors = layout["views"][name]
+             descriptors = descriptors if isinstance(descriptors, list) else [descriptors]
+             bindings = []
+@@ -1118,14 +1179,20 @@
+                 token != attention.mask_token_id for token in tokens[1:]) for tokens in requests.values()):
+             raise ValueError("Draft blocks require the pending anchor plus 31 MASK tokens")
+         tp = self.contract["topology"]["tp"]
+-        histories = {
+-            (rank, layer, (dp, slot, generation)): self.draft_history(
+-                dp, slot, generation, rank=rank, layer=layer, anchor_position=anchor,
+-            )
+-            for dp, slot, generation, anchor in requests
+-            for rank in self.provider.local_ranks if rank // tp == dp
+-            for layer in range(40)
+-        }
++        local_rank_groups = {}
++        for rank in self.provider.local_ranks:
++            local_rank_groups.setdefault(rank // tp, []).append(rank)
++        histories = {}
++        for dp, slot, generation, anchor in requests:
++            ranks = local_rank_groups.get(dp)
++            if not ranks:
++                continue
++            pages, committed = self._draft_request_pages(dp, slot, generation, anchor)
++            for rank in ranks:
++                for layer in range(40):
++                    histories[rank, layer, (dp, slot, generation)] = self._bind_draft_history(
++                        rank, layer, pages, committed,
++                    )
+         self._verified_requests = None
+         previous = (self.epoch, self.contract, self.engram_contracts, self.program, self.provider.capacity)
+         try:
+@@ -1679,17 +1746,33 @@
+         return actual
+ 
+     completed_layers = []
++    wide_validation = provider.capacity == ORTHRUS_VERIFY_CAPACITY
++    if wide_validation:
++        from blockspec.pypto_dsv41_finite import STATUS_WORDS
++        status_shape = (provider.capacity, STATUS_WORDS)
++    else:
++        status_shape = (provider.capacity,)
+ 
+     def observe_layer(layer, result):
+         for case, records in provider.batch_for_layer(layer)["cases"].items():
+-            for rank in provider.local_ranks:
+-                record = records[rank]
+-                valid = record["SP_valid_rows"]
+-                status = torch.empty(provider.capacity, dtype=torch.int32)
++            def validate_rank(rank):
++                valid = records[rank]["SP_valid_rows"]
++                if wide_validation and not valid:
++                    return
++                status = torch.empty(status_shape, dtype=torch.int32)
+                 arguments = [result["hidden"][rank][case], result["pre_mix"][rank][case], status, valid]
+                 executor.execute_entry(program.entries_for_stage("validation")["finite"], rank, arguments)
+-                if not bool(executor.read_control(status, rank).all()):
++                flags = executor.read_control(status[:valid] if wide_validation else status, rank)
++                if wide_validation:
++                    flags = flags[:, 0]
++                if not bool(flags.all()):
+                     raise RuntimeError(f"Non-finite {phase} state after layer {layer} on rank {rank}")
++
++            if wide_validation:
++                executor.map_ranks(validate_rank)
++            else:
++                for rank in provider.local_ranks:
++                    validate_rank(rank)
+         if draft is None:
+             provider.observe_layer(layer, result)
+         if trace_prefill or trace_position is not None:
+@@ -1734,9 +1817,12 @@
+                 output=output / "actual-layer39-output",
+                 trace_position=trace_position,
+                 trace_record=record_trace if trace_position is not None else None,
+-                orthrus_phase=phase if phase in ("draft", "verify") else None,
++                orthrus_phase=phase if phase in ("draft", "verify") else None, draft=draft,
+             )
+-            if any(not torch.isfinite(value).all() for row in output_result["logits"] for value in row.values()):
++            rows = output_result["logits"]
++            if output_result.get("vocabulary_layout") in ("host_shards", "device_greedy"):
++                rows = rows[::topology["tp"]]
++            if any(not torch.isfinite(value).all() for row in rows for value in row.values()):
+                 raise RuntimeError(f"Non-finite {phase} vocabulary logits")
+         if trace_prefill:
+             torch.save(trace_tensors, output / "prefill-tensors.pt")
+@@ -1759,6 +1845,7 @@
+             actual_Layer39_boundary=True,
+             final_output_files=output_result["files"],
+             output_head_skipped=phase == "accept",
++            vocabulary_layout=output_result.get("vocabulary_layout"),
+             formal_accuracy="not_run",
+         )
+         resident.release_values()
+@@ -1794,6 +1881,7 @@
+             ),
+         )
+         return dict(runtime, logits=output_result["logits"], compilation=program.summary(),
++                    greedy_tokens=output_result.get("greedy_tokens", {}).get("fresh", {}),
+                     prefill_activation_trace=str(output / "prefill-activations.json") if trace_prefill else None,
+                     timings=dict(layers=layer_timings, chunk_seconds=chunk_seconds,
+                                  weight_load_seconds=weights.load_seconds - initial_load_seconds,
+--- a/models/deepseek_v4_1_flash_a3/prefill_resident.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_resident.py
+@@ -582,11 +582,15 @@
+             if owner["readonly"] or not owner["name"].startswith("raw/"):
+                 raise ValueError("Verification can preserve only mutable target cache arenas")
+             allocation = owner["allocation"]
+-            end = 0
++            end, first_span = 0, len(spans)
+             for offset, count in intervals:
+                 if not end <= offset < offset + count <= allocation.nbytes:
+                     raise ValueError("Verification ranges overlap or exceed the target arena")
+-                spans.append((allocation.data_ptr + offset, count))
++                if len(spans) > first_span and offset == end:
++                    start, previous_bytes = spans[-1]
++                    spans[-1] = start, previous_bytes + count
++                else:
++                    spans.append((allocation.data_ptr + offset, count))
+                 end = offset + count
+         if not spans:
+             yield

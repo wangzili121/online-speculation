@@ -44,7 +44,7 @@ fi
 for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.patch \
     lib-pypto72-compat.patch lib-cluster-retry.patch lib-cluster-prefill-trace.patch \
     lib-deterministic-reduction.patch lib-cluster-online.patch lib-workspace-write-only.patch \
-    lib-orthrus-output.patch lib-orthrus-controls.patch; do
+    lib-orthrus-output.patch lib-orthrus-controls.patch lib-orthrus-network-hotpath.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -60,6 +60,8 @@ git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-fast.patch"
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-fast.patch"
 git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-metadata.patch"
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-metadata.patch"
+git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-output.patch"
+git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-output.patch"
 python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolve(cluster=True)'
 
 if [[ "${1:-}" == --prepare-only ]]; then
@@ -210,7 +212,86 @@ with TemporaryDirectory() as directory:
     assert torch.load(evidence["path"], weights_only=True) == ({"metadata": {"swa": 7}},) * 2
     assert set(prepared["cache"]["cache_ABI"][0]) == {"layout", "metadata", "hash_constants"}
 
+# TP groups are host-local and token rows preserve shard and request order.
+network = source.module("network")
+shards = [{}, {}, {"fresh": torch.arange(12).reshape(4, 3)},
+          {"fresh": torch.arange(12, 24).reshape(4, 3)},
+          {"fresh": torch.zeros(4, 3)}, {"fresh": torch.zeros(4, 3)}]
+ranks = {2: 0, 3: 1, 4: 2, 5: 3}
+reads = []
+executor = SimpleNamespace(
+    rank_devices=ranks, map_ranks=lambda fn: [fn(rank) for rank in ranks],
+    resident=SimpleNamespace(read_output=lambda value, device: (reads.append((device, value.numel())), value)[1]),
+)
+records = [{"positions": positions} for positions in ((), (), (4, 5, 6), (4, 5, 6), (), ())]
+outputs, greedy = network._read_speculative_vocab(shards, records, "fresh", executor, 2)
+expected = torch.cat((shards[2]["fresh"][:3], shards[3]["fresh"][:3]), dim=-1)
+assert not greedy and reads == [(0, 9), (1, 9)] and torch.equal(outputs[2], expected)
+assert outputs[2] is outputs[3] and outputs[4].shape == outputs[5].shape == (0, 6)
+
+# One local DP group captures teacher feedback, while another only returns IDs.
+# They share the same projection path but may independently choose how to read it.
+session.online = None
+session.draft = SimpleNamespace(online_bank=None)
+session.native.propose_candidates = lambda *args, **kwargs: dict(
+    completed_layers=list(range(40)), timings={}, logits=[], greedy_tokens={0: torch.arange(32)},
+    vocabulary_layout="device_greedy",
+)
+session.cluster.link.exchange = lambda tag, value: [] if tag == "greedy-output/draft" else unexpected_exchange(tag)
+draft_input = {"DP_engines": [{"active": 32, "dp_rank": 0, "requests": [
+    dict(request_slot=0, generation=1, token_ids=[0] * 32),
+]}]}
+assert session._execute("draft", draft_input, (), (Handle(),)).tolist() == [list(range(31))]
+assert receipts[-1]["vocabulary_layout"] == "device_greedy"
+
+records = [{"positions": range(32)}] * 6
+shards = [{}, {}] + [{"fresh": torch.arange(32 * 3).reshape(32, 3) + 100 * rank}
+                    for rank in ranks]
+def reduce_rank(rank, values, active):
+    best, ids = values[:active].max(dim=-1)
+    return torch.stack((best, ids, torch.ones_like(best)), dim=-1).float()
+
+capture = SimpleNamespace(capture=(None, {(1, 0, 1): "captured"}),
+                          attention=SimpleNamespace(greedy_shard=reduce_rank))
+reads.clear()
+outputs, greedy = network._read_speculative_vocab(shards, records, "fresh", executor, 2, capture)
+assert reads == [(0, 96), (1, 96)] and set(outputs) == {2, 3}
+assert torch.equal(greedy[2], torch.cat((shards[4]["fresh"], shards[5]["fresh"]), dim=-1).argmax(-1))
+
 runtime_type = source.module("prefill_resident").ResidentNetworkRuntime
+# Only adjacent intervals may share a D2D copy. Restore on failure as well.
+from ctypes import memmove
+
+cache = torch.arange(20, dtype=torch.uint8)
+values = {cache.data_ptr(): cache}
+copies = []
+def alloc_tensor(shape, dtype):
+    tensor = torch.empty(shape, dtype=dtype)
+    values[tensor.data_ptr()] = tensor
+    return SimpleNamespace(data_ptr=tensor.data_ptr(), nbytes=tensor.nbytes)
+def device_copy(dst, src, count, rank):
+    copies.append(count)
+    memmove(dst, src, count)
+
+snapshot = SimpleNamespace(
+    _closed=False, _select=lambda rank: None, _device_copy=device_copy, _record_transfer=lambda *args: None,
+    pinned={(0, cache.untyped_storage()._cdata): {"readonly": False, "name": "raw/cache",
+                                                 "allocation": SimpleNamespace(data_ptr=cache.data_ptr(),
+                                                                               nbytes=cache.nbytes)}},
+    workers=[SimpleNamespace(alloc_tensor=alloc_tensor, free_tensor=lambda ptr: values.pop(ptr.data_ptr))],
+)
+try:
+    with runtime_type.preserve_cache_ranges(snapshot, 0, [(cache, [(1, 2), (3, 1), (10, 4)])]):
+        cache[1:4].fill_(1)
+        cache[10:14].fill_(1)
+        cache[16].fill_(90)
+        raise RuntimeError("synthetic verification failure")
+except RuntimeError as error:
+    assert str(error) == "synthetic verification failure"
+assert copies == [3, 4, 3, 4]
+assert cache[1:4].tolist() == [1, 2, 3] and cache[10:14].tolist() == [10, 11, 12, 13]
+assert int(cache[16]) == 90
+
 runtime = runtime_type.__new__(runtime_type)
 replay_root, scratch = torch.zeros(1), torch.zeros(1)
 key = lambda value: (0, value.untyped_storage()._cdata)
@@ -231,6 +312,7 @@ print(json.dumps(dict(
     lifecycle={"target_unbound": True, "draft_bind": True, "unbound_cleanup": True,
                "closed_cleanup": True, "replay_survives_scratch_recycle": True},
     accept_without_logits=True, verifier_feedback_only_for_owner=True, compact_speculative_metadata=True,
+    host_vocabulary_shard_order=True, compact_greedy_with_full_feedback=True, verify_copy_coalescing=True,
 )))
 PY
 fi

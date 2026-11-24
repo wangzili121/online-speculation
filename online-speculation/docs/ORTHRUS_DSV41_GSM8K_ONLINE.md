@@ -18,7 +18,7 @@ bash online-speculation/scripts/dsv41_pypto_env.sh gsm8k-prepare \
   /workspace/data/orthrus-dsv41-gsm8k /workspace/data/gsm8k-source
 ```
 
-四个实验臂使用相同题目顺序和 greedy 生成：target-only、固定初始化 head、初始化 head 直接在线更新、短预热 head 继续在线更新。每个在线实验重新初始化优化器，训练和权重发布时间计入总耗时。配置见 [`gsm8k-online.json`](../configs/dsv41/gsm8k-online.json)。
+评测按 AR、固定起始 head、在线更新、冻结更新后的 head 四阶段执行。AR 和两个固定 head 阶段使用同一批留出题、相同题序和 greedy 生成。在线阶段用独立题目，支持从模型复制初始化的 head 或已预热的 head 开始。训练和权重发布时间计入在线总耗时。配置见 [`gsm8k-online.json`](../configs/dsv41/gsm8k-online.json)。
 
 ## 在线监督
 
@@ -66,6 +66,16 @@ bash online-speculation/scripts/dsv41_pypto_env.sh gsm8k-summary \
 ```
 
 在线版本必须额外满足三件事才允许扩大样本：保存真实修正前缀上的完整教师 logits；从同一 anchor 重放最后一层并完成有效梯度更新；TP4/DP4 在 verifier 轮次边界原子切换同一 head 版本。缺少其中任何一项都只能称为 fixed-head 推理。
+
+## 性能记录
+
+报告的 `serving_phases_by_host` 按主机分别记录 prefill、decode、draft、verify、accept 和 release 的调用数、执行时间和搬运量。预热计入单独的启动时间。在线实验同时保留计入全部更新的吞吐与扣除更新的估算值，冻结后的 head 在同一批未参与更新的题上与 AR、初始 head 对照。
+
+- 起草每个 DP 分区的一组 K32 词表行在 NPU 上选 token。111 单卡对照中，每个 TP 分片的回读与选 token 从 3.62 ms 降到 1.07 ms，回读量从 2,068,480 字节降到 1,024 字节。并列按最小 token ID 处理。需要训练的分区保留完整学生 logits，验证器的完整教师 logits 由本机 TP 分片按原词表顺序拼接。
+- C1A 反向把 softmax VJP 和两份块内矩阵的提取合到一次调用，单卡从 3.51 ms 降到 1.27 ms。完整 score 梯度、sink 梯度和两份块输出与原实现逐元素一致。
+- Serving 在每轮起草中按请求解析一次历史页表。K32 的层间有限值检查在各 rank 并行执行。单卡 32 行检查从 2.23 ms 降到 0.94 ms，有限值与 NaN/Inf 判定相同。验证回滚合并同一缓存内相邻区间的复制，已测异常时仍恢复相同字节。
+
+单卡数字为各阶段的稳态微基准。双机报告用同一组输入核对 greedy 输出、权重发布版本、接受长度和整体吞吐。
 
 ## 验收顺序
 

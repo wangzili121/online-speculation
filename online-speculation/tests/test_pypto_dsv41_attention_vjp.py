@@ -21,7 +21,7 @@ def test_c1a_vjp_rejects_unaligned_or_short_softmax_capacity(columns):
 def test_c1a_vjp_includes_per_query_replay_and_shared_block_gradients():
     assert set(c1a_vjp_factories()) == {
         "joined_history", "probability_replay",
-        "probability_vjp", "sink_reduce", "score_block_extract",
+        "probability_vjp", "softmax_block_vjp", "sink_reduce", "score_block_extract",
         "probability_block_extract",
         "d_probability", "d_query", "d_key_block", "d_value_block",
     }

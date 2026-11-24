@@ -4,13 +4,49 @@
 import argparse
 import json
 from pathlib import Path
+from statistics import median
+from time import perf_counter
+
+
+def simulate_softmax_block(geometry, factories):
+    """Exercise the production chip entry with the simulator and the split reference."""
+    import torch
+    from pypto.backend import BackendType
+    from pypto.runtime import ExecutionMode, RunConfig
+
+    config = RunConfig(arch=BackendType.Ascend910, execution_mode=ExecutionMode.SIM)
+    probability = torch.rand(geometry.rows, geometry.padded_columns)
+    probability[probability < 0.6] = 0
+    probability /= probability.sum(dim=-1, keepdim=True)
+    upstream = torch.randn_like(probability).bfloat16()
+    block = torch.empty(geometry.rows, geometry.block, dtype=torch.bfloat16)
+    split = (torch.empty_like(upstream), torch.zeros(geometry.rows, 16), block, torch.empty_like(block))
+    fused = tuple(torch.zeros_like(value) for value in split)
+    entry = {name: factories[name]().resident_entry for name in (
+        "probability_vjp", "score_block_extract", "probability_block_extract", "softmax_block_vjp",
+    )}
+    entry["probability_vjp"](probability, upstream, *split[:2], config=config)
+    entry["score_block_extract"](split[0], split[2], config=config)
+    entry["probability_block_extract"](probability, split[3], config=config)
+    entry["softmax_block_vjp"](probability, upstream, *fused, config=config)
+    names = ("score_gradient", "sink_rows", "block_score", "block_probability")
+    differences = {}
+    for name, reference, actual in zip(names, split, fused, strict=True):
+        if name == "sink_rows":
+            reference, actual = reference[:, 0], actual[:, 0]
+        differences[name] = (reference.float() - actual.float()).abs().max().item()
+        torch.testing.assert_close(actual, reference, atol=0, rtol=0)
+    return dict(passed=True, simulator_execution=True, shape=list(probability.shape), max_abs=differences)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--compile-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--compile-only", action="store_true")
+    mode.add_argument("--softmax-sim", action="store_true")
+    parser.add_argument("--repeats", type=int, default=20)
     args = parser.parse_args()
     if args.output.exists():
         parser.error("output must not already exist")
@@ -27,13 +63,19 @@ def main():
     torch.manual_seed(4101)
     torch.set_num_threads(4)
     geometry = C1AAttentionVJPGeometry()
+    factories = c1a_vjp_factories(geometry)
+    if args.softmax_sim:
+        report = simulate_softmax_block(geometry, factories)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps(report))
+        return
     config = RunConfig(
         backend_type=BackendType.Ascend910B,
         execution_mode=ExecutionMode.ONBOARD,
         distributed_config=DistributedConfig(device_ids=[args.device], num_sub_workers=0),
     )
     empty = lambda shape, dtype=torch.bfloat16: torch.empty(shape, dtype=dtype, device="meta")
-    factories = c1a_vjp_factories(geometry)
     programs = {
         "joined_history": factories["joined_history"]().compile(
             empty((128, geometry.dimension)), empty((2, 3), torch.int32),
@@ -60,6 +102,14 @@ def main():
             empty((geometry.rows, geometry.padded_columns)),
             empty((geometry.rows, geometry.padded_columns)),
             empty((geometry.rows, 16), torch.float32), config=config,
+        ),
+        "softmax_block_vjp": factories["softmax_block_vjp"]().compile(
+            empty((geometry.rows, geometry.padded_columns), torch.float32),
+            empty((geometry.rows, geometry.padded_columns)),
+            empty((geometry.rows, geometry.padded_columns)),
+            empty((geometry.rows, 16), torch.float32),
+            empty((geometry.rows, geometry.block)),
+            empty((geometry.rows, geometry.block)), config=config,
         ),
         "sink_reduce": factories["sink_reduce"]().compile(
             empty((geometry.rows, 16), torch.float32),
@@ -277,6 +327,42 @@ def main():
             ].bfloat16(),
             atol=0, rtol=0,
         )
+
+        fused_outputs = tuple(allocate(torch.zeros_like(value)) for value in (
+            score_gradient, torch.empty(geometry.rows, 16, dtype=torch.float32),
+            block_score, block_probability,
+        ))
+
+        def separate():
+            worker.run(programs["probability_vjp"], probability_handle, d_probability_handle,
+                       score_gradient_handle, sink_rows_handle, config=config)
+            worker.run(programs["score_block_extract"], score_gradient_handle, block_score_handle,
+                       config=config)
+            worker.run(programs["probability_block_extract"], probability_handle,
+                       block_probability_handle, config=config)
+
+        def fused():
+            worker.run(programs["softmax_block_vjp"], probability_handle, d_probability_handle,
+                       *fused_outputs, config=config)
+
+        fused()
+        sink_reference = read(sink_rows_handle, torch.empty(
+            geometry.rows, 16, dtype=torch.float32,
+        ))[:, 0]
+        for i, expected in enumerate((score_gradient, sink_reference, block_score, block_probability)):
+            shape = (geometry.rows, 16) if i == 1 else expected.shape
+            actual = read(fused_outputs[i], torch.empty(shape, dtype=expected.dtype))
+            assert torch.equal(actual[:, 0] if i == 1 else actual, expected), i
+        latency = {separate: [], fused: []}
+        for _ in range(args.repeats):
+            for run, timings in latency.items():
+                start = perf_counter()
+                run()
+                timings.append(1000 * (perf_counter() - start))
+        report["cases"].append({
+            "operator": "softmax_block_vjp", "byte_exact": True,
+            "separate_ms": median(latency[separate]), "fused_ms": median(latency[fused]),
+        })
 
         d_query_handle = allocate(torch.zeros_like(upstream))
         worker.run(

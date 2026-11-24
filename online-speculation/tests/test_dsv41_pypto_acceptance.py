@@ -475,9 +475,12 @@ def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkey
     ))
     study = runpy.run_path(str(COMMAND.with_name("dsv41_gsm8k_report.py")))["study_workload"]
     bank = SimpleNamespace(active_version=0)
+    receipts = tmp_path / "serving-dispatches.jsonl"
+    receipts.touch()
     session = SimpleNamespace(
         online=None, draft=SimpleNamespace(online_bank=bank), native=object(), devices=list(range(8)),
-        cluster=SimpleNamespace(link=SimpleNamespace(exchange=lambda tag, payload: payload)),
+        receipt_path=receipts, cluster=SimpleNamespace(plan=SimpleNamespace(node=0),
+                                                      link=SimpleNamespace(exchange=lambda tag, payload: payload)),
     )
     seen = []
     records = []
@@ -502,7 +505,13 @@ def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkey
         config = SimpleNamespace(chunk_tokens=2)
         ledger = SimpleNamespace(requests={})
 
+        output_bytes = 0
+
         def run(self, batch, phase):
+            self.output_bytes += 32
+            with receipts.open("a") as stream:
+                stream.write(json.dumps(dict(phase=phase, seconds=1.0, timings={"chunk_seconds": 0.5},
+                                             runtime={"output_d2h_bytes": self.output_bytes})) + "\n")
             if phase == "prefill":
                 tokens = batch.token_ids.tolist()
                 assert sum(batch.chunk_lens) == len(tokens)
@@ -545,6 +554,10 @@ def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkey
     assert report["arms"]["online"]["requests"] == 8
     assert report["arms"]["frozen"]["requests"] == 4
     assert report["arms"]["frozen"]["stopped"] == 4
+    prefill = report["arms"]["ar"]["serving_phases_by_host"]["0"]["prefill"]
+    assert prefill["calls"] > 0
+    assert prefill["output_d2h_bytes"] == 32 * prefill["calls"]
+    assert prefill["native_seconds"] == .5 * prefill["calls"]
     assert report["arms"]["frozen"]["head_version"] == report["arms"]["online"]["publications"]
     assert report["arms"]["online"]["wall_tok_s_excluding_all_updates_estimate"] > 0
     assert all(partitions == [0, 1, 2, 3] for _, partitions in seen)

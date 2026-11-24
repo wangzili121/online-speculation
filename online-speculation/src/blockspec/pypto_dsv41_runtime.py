@@ -302,6 +302,19 @@ class ResidentDraftAttention:
                 if first:
                     timing["first_dispatch"].append({"operator": key, "rank": rank, "seconds": elapsed})
 
+    def greedy_shard(self, rank, logits, active):
+        """Return the finite-checked argmax of each live row on this TP rank."""
+        from .pypto_dsv41_greedy import PACKET_COLUMNS, make_local_greedy
+
+        capacity, vocabulary = logits.shape
+        device = self.rank_ids[rank]
+        packets = self.resident.workspace((capacity, PACKET_COLUMNS), torch.float32, device, fill=None)
+        self.execute(
+            ("draft-greedy", capacity, vocabulary), rank, lambda: make_local_greedy(capacity, vocabulary),
+            dict(logits=logits, packets=packets, active=active),
+        )
+        return self.resident.read_output(packets[:active], device)
+
     def arm_online_capture(self, requests, plan):
         """Capture exactly the next draft round for the selected request owners."""
         if self.block_size != BLOCK:

@@ -1,0 +1,47 @@
+--- a/models/deepseek_v41_a3/session.py
++++ b/models/deepseek_v41_a3/session.py
+@@ -212,9 +212,10 @@
+             raise
+ 
+     def _execute(self, phase, input_contract, rank_payloads, handles):
++        begin = time.perf_counter()
+         chunk = self._prepare(input_contract, rank_payloads, phase)
++        prepare_seconds = time.perf_counter() - begin
+         before = self.native.weights.counters() if self.native is not None else None
+-        begin = time.perf_counter()
+         progress = lambda event: logger.info("A3 native %s %s", phase, event)
+         if self.native is None:
+             if phase != "prefill":
+@@ -295,14 +296,19 @@
+                 dp, end = engine["dp_rank"], 0
+                 if dp * self.config.tp not in self.local_ranks:
+                     continue
+-                logits = result["logits"][dp * self.config.tp]["fresh"]
+-                for lane in range(1, self.config.tp):
+-                    if not torch.equal(logits, result["logits"][dp * self.config.tp + lane]["fresh"]):
+-                        raise ValueError("Native TP vocabulary rows disagree")
++                compact = result.get("greedy_tokens", {}).get(dp)
++                if compact is None:
++                    logits = result["logits"][dp * self.config.tp]["fresh"]
++                    for lane in range(1, self.config.tp):
++                        peer_logits = result["logits"][dp * self.config.tp + lane]["fresh"]
++                        if peer_logits is not logits and not torch.equal(logits, peer_logits):
++                            raise ValueError("Native TP vocabulary rows disagree")
+                 for request in engine["requests"]:
+                     start, end = end, end + len(request["token_ids"])
+                     owner = (dp, request["request_slot"], request["generation"])
+-                    if phase == "draft":
++                    if phase == "draft" and compact is not None:
++                        row = compact[start:end - 1]
++                    elif phase == "draft":
+                         # Source logits at rows 0..30 predict destination tokens 1..31.
+                         student = logits[start:end - 1]
+                         if owner in requests:
+@@ -370,6 +376,7 @@
+             prefill_topk=prefill_topk, prefill_activation_trace=result.get("prefill_activation_trace"),
+             greedy_rows=[value.tolist() for value in ordered] if self.cluster is not None else None,
+             output_head_skipped=phase == "accept",
++            vocabulary_layout=result.get("vocabulary_layout"), prepare_seconds=prepare_seconds,
+             draft_head_version=(self.draft.online_bank.active_version
+                                 if phase == "draft" and self.draft.online_bank is not None
+                                 else None)))

@@ -101,6 +101,61 @@ def make_softmax_vjp(geometry=C1AAttentionVJPGeometry(), *, inline=False):
     return softmax_vjp if inline else with_resident_entry(entry, softmax_vjp)
 
 
+def make_softmax_block_vjp(geometry=C1AAttentionVJPGeometry()):
+    """Write both K32 matrix operands while differentiating the same softmax row."""
+    import pypto.language as pl
+
+    rows, columns = geometry.rows, geometry.padded_columns
+    block, begin, sink_column = geometry.block, geometry.block_begin, geometry.sink_column
+    scale = geometry.dimension ** -0.5
+
+    @pl.jit
+    def softmax_block_vjp(
+        probability: pl.Tensor, probability_gradient: pl.Tensor,
+        score_gradient: pl.Out[pl.Tensor], sink_rows: pl.Out[pl.Tensor],
+        block_score: pl.Out[pl.Tensor], block_probability: pl.Out[pl.Tensor],
+    ):
+        with pl.spmd(rows, name_hint="orthrus_dsv41_c1a_softmax_block_backward"):
+            row = pl.tile.get_block_idx()
+            p_row = pl.slice(probability, [1, columns], [row, 0])
+            p = pl.reshape(p_row, [8, columns // 8])
+            dy = pl.reshape(
+                pl.cast(pl.slice(probability_gradient, [1, columns], [row, 0]), pl.FP32),
+                [8, columns // 8],
+            )
+            partial = pl.row_expand_mul(
+                pl.full([8, 8], dtype=pl.FP32, value=1.), pl.row_sum(pl.mul(p, dy)),
+            )
+            dot = pl.row_sum(pl.transpose(partial, 0, 1))
+            result = pl.mul(p, pl.row_expand_sub(dy, dot))
+            score_row = pl.cast(
+                pl.mul(pl.reshape(result, [1, columns]), scale), pl.BF16, mode="rint",
+            )
+            score_gradient[row:row + 1, 0:columns] = score_row
+            block_score[row:row + 1, 0:block] = pl.slice(score_row, [1, block], [0, begin])
+            block_probability[row:row + 1, 0:block] = pl.cast(
+                pl.slice(p_row, [1, block], [0, begin]), pl.BF16, mode="rint",
+            )
+            pl.write(
+                sink_rows, [row, 0],
+                pl.read(result, [sink_column // (columns // 8), sink_column % (columns // 8)]),
+            )
+        return score_gradient, sink_rows, block_score, block_probability
+
+    @pl.jit.host
+    def entry(
+        probability: pl.Tensor, probability_gradient: pl.Tensor,
+        score_gradient: pl.Out[pl.Tensor], sink_rows: pl.Out[pl.Tensor],
+        block_score: pl.Out[pl.Tensor], block_probability: pl.Out[pl.Tensor],
+    ):
+        softmax_block_vjp(
+            probability, probability_gradient, score_gradient, sink_rows,
+            block_score, block_probability, device=0,
+        )
+
+    return with_resident_entry(entry, softmax_block_vjp)
+
+
 def make_joined_history(geometry=C1AAttentionVJPGeometry(), *, inline=False):
     """Materialize each query's exact SWA + selected C1A + K32 key/value rows.
 
@@ -400,6 +455,7 @@ def c1a_vjp_factories(geometry=C1AAttentionVJPGeometry()):
         "joined_history": lambda: make_joined_history(geometry),
         "probability_replay": lambda: make_probability_replay(geometry),
         "probability_vjp": lambda: make_softmax_vjp(geometry),
+        "softmax_block_vjp": lambda: make_softmax_block_vjp(geometry),
         "sink_reduce": lambda: make_sink_reduce(geometry),
         "score_block_extract": lambda: make_block_extract(geometry),
         "probability_block_extract": lambda: make_probability_block_extract(geometry),

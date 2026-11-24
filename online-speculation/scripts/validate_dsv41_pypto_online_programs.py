@@ -88,6 +88,9 @@ def check_c1a_resident_dispatch(empty):
         def workspace(self, shape, dtype, rank, *, fill=0):
             return empty(shape, dtype)
 
+        def read_output(self, value, rank):
+            return value
+
         def execute(self, compiled, rank, arguments, abi):
             for argument, spec in zip(arguments, abi["params"], strict=True):
                 if not isinstance(argument, torch.Tensor):
@@ -147,7 +150,9 @@ def check_c1a_resident_dispatch(empty):
         reverse._reverse_c1a_rank(
             layer, 0, round_.captured_attention[0, layer, owner], contribution,
         )
-    return len(draft.programs)
+        c1a_programs = len(draft.programs)
+        assert tuple(draft.greedy_shard(0, empty((128, 32320)), 32).shape) == (32, 8)
+    return c1a_programs
 
 
 def main():
@@ -370,6 +375,11 @@ def main():
             empty((production_attention.rows, production_attention.block)), config=config,
         )
         factories = c1a_vjp_factories(production_attention)
+        rows, cols, block = production_attention.rows, production_attention.padded_columns, production_attention.block
+        programs["c1a_softmax_block_vjp_tp4_k32"] = compile_program(factories["softmax_block_vjp"](),
+            empty((rows, cols), torch.float32), empty((rows, cols)), empty((rows, cols)),
+            empty((rows, 16), torch.float32), empty((rows, block)), empty((rows, block)), config=config,
+        )
         programs["c1a_joined_history_tp4_k32"] = compile_program(factories["joined_history"](),
             empty((128, production_attention.dimension)), empty((2, 3), torch.int32),
             empty((512, production_attention.dimension)),

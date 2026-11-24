@@ -1,6 +1,6 @@
 """Batched online study with a shared base model and disjoint evaluation prompts."""
 
-from collections import Counter
+from collections import Counter, defaultdict
 from itertools import accumulate
 import json
 from time import perf_counter
@@ -110,6 +110,29 @@ def _write(path, data):
     temporary.replace(path)
 
 
+def _collect_phases(path, offset, previous, totals):
+    """Read each completed Serving receipt once and attribute runtime byte deltas."""
+    counters = ("output_d2h_bytes", "verify_backup_d2d_bytes", "verify_restore_d2d_bytes")
+    with path.open() as stream:
+        stream.seek(offset)
+        for line in iter(stream.readline, ""):
+            receipt = json.loads(line)
+            stage = totals[receipt["phase"]]
+            stage["calls"] += 1
+            stage["serving_seconds"] += receipt.get("seconds", 0.0)
+            stage["native_seconds"] += receipt.get("timings", {}).get("chunk_seconds", 0.0)
+            stage["prepare_seconds"] += receipt.get("prepare_seconds", 0.0)
+            vocabulary = receipt.get("vocabulary_layout")
+            if vocabulary is not None:
+                stage[f"{vocabulary}_calls"] += 1
+            runtime = receipt.get("runtime") or {}
+            for name in counters:
+                if name in runtime:
+                    stage[name] += runtime[name] - previous[name]
+                    previous[name] = runtime[name]
+        return stream.tell()
+
+
 def study_workload(runner, session, online, prompts, entries, *, train_count, steps,
                    batch_size, eos_ids, decoder, output, engram_seconds):
     """Persist each wave; compare fixed versions on the identical held-out requests."""
@@ -126,12 +149,16 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
     heldout = slice(train_count, len(entries))
     sampling = dict(temperature=0, ignore_eos=not bool(eos_ids))
     run_results = {}
+    receipt_offset, runtime_counters = 0, Counter()
+
     def warmup(name, *, speculative):
+        nonlocal receipt_offset
         print(json.dumps(dict(stage="gsm8k_online_startup", phase=name)), flush=True)
         started = perf_counter()
         generate_wave(runner, prompts[:batch_size], entries[:batch_size], 2,
                       start_index=0, phase=name, eos_ids=eos_ids, decoder=decoder, speculative=speculative)
         elapsed = perf_counter() - started
+        receipt_offset = _collect_phases(session.receipt_path, receipt_offset, runtime_counters, defaultdict(Counter))
         startup[name] = max(elapsed, link.exchange(f"report/seconds/{name}", elapsed))
         _write(summary_path, report)
 
@@ -150,6 +177,7 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
         if name == "frozen":
             session.online = None  # The last published operands remain active in ResidentDraftAttention.
         rows, speculation, timing = [], Counter(), Counter()
+        phase_totals = defaultdict(Counter)
         started = perf_counter()
         for first in range(subset.start, subset.stop, batch_size):
             last = min(first + batch_size, subset.stop)
@@ -164,12 +192,14 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
             rows.extend(emitted)
             speculation.update(counts)
             timing.update(spans)
+            measured_seconds = perf_counter() - started
+            receipt_offset = _collect_phases(session.receipt_path, receipt_offset, runtime_counters, phase_totals)
             n_tokens = sum(len(row["token_ids"]) for row in rows)
             version = session.draft.online_bank.active_version if name in ("online", "frozen") else 0
             local = dict(
-                wall_seconds=perf_counter() - started, **timing, output_tokens=n_tokens,
+                wall_seconds=measured_seconds, **timing, output_tokens=n_tokens,
                 requests=len(rows), learner=online.summary() if name == "online" else None,
-                first_update=None, head_version=version,
+                first_update=None, head_version=version, phase_totals=phase_totals,
             )
             if name == "online" and online.bridge.controller.records:
                 record = online.bridge.controller.records[0]
@@ -199,6 +229,10 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
                 gsm8k_answered=sum(actual is not None for actual, _ in answers),
                 stopped=sum(row["finish_reason"] == "stop" for row in rows),
                 length_limited=sum(row["finish_reason"] == "length" for row in rows), head_version=version,
+                serving_phases_by_host={
+                    str(node): record["phase_totals"]
+                    for node, record in ((session.cluster.plan.node, local), (1 - session.cluster.plan.node, peer))
+                },
             )
             if name == "online":
                 learners = local["learner"], peer["learner"]
