@@ -14,6 +14,7 @@ import time
 
 from blockspec.pypto_dsv41_cluster import ClusterDispatcher, ControlLink, RankPlan
 from blockspec.dsv41_online import read_workload
+from blockspec.dsv41_online_profile import OnlineUpdateProfile, active_profile, profile_online
 from validate_dsv41_pypto_cluster import check_visible_devices
 from verify_dsv41_pypto_acceptance import (
     TokenDivergence, audit_online_update, audit_session, check_generated_prefix, request_parity,
@@ -79,9 +80,13 @@ def generate(runner, prompts, steps, assignments, *, identities=None, metadata=N
     mode = "orthrus" if speculative else "target"
     identities = list(range(len(prompts))) if identities is None else identities
     metadata = [{} for _ in prompts] if metadata is None else metadata
+    profile = active_profile()
     for index, (prompt, partition, identity, attributes) in enumerate(
             zip(prompts, assignments, identities, metadata, strict=True)):
         request_id = f"{mode}-request-{index}"
+        if profile is not None:
+            profile.begin_request(request_id)
+            phase_started = time.perf_counter()
         expected = None if reference is None else reference[index]["token_ids"]
         # Exercise the native chunked-prefill path, including the left-over chunk.
         for start in range(0, len(prompt), runner.config.chunk_tokens):
@@ -91,6 +96,8 @@ def generate(runner, prompts, steps, assignments, *, identities=None, metadata=N
                 chunk_offsets=[0], chunk_starts=[start], prompt_lens=[len(prompt)],
                 block_ids_by_group=[pages], cache_partitions=[partition])
             prefill = runner.run(batch, "prefill")
+        if profile is not None:
+            profile.requests[-1]["prefill_seconds"] = time.perf_counter() - phase_started
         output = [int(prefill.sampled_token_ids[0])]
         if expected is not None:
             check_generated_prefix(index, expected, output, phase="prefill")
@@ -104,7 +111,11 @@ def generate(runner, prompts, steps, assignments, *, identities=None, metadata=N
                 hidden_states=None, seq_lens=torch.tensor([committed + 1]),
                 sampling_params=[SamplingParams(temperature=0, top_p=1)],
                 block_ids_by_group=[pages], cache_partitions=[partition])
+            if profile is not None:
+                decode_started = time.perf_counter()
             result = runner.run_orthrus(batch) if speculative else runner.run(batch, "decode")
+            if profile is not None:
+                profile.requests[-1]["decode_seconds"] += time.perf_counter() - decode_started
             if result.accepted_token_ids is None:
                 emitted = result.sampled_token_ids.tolist()
                 counts["plain_decode_steps"] += 1
@@ -120,7 +131,12 @@ def generate(runner, prompts, steps, assignments, *, identities=None, metadata=N
             output.extend(emitted[:steps - len(output)])
             if expected is not None:
                 check_generated_prefix(index, expected, output, phase=phase)
+        if profile is not None:
+            phase_started = time.perf_counter()
         runner.release_finished_requests([request_id])
+        if profile is not None:
+            profile.requests[-1].update(dp=partition, generated_tokens=len(output),
+                                        release_seconds=time.perf_counter() - phase_started)
         generated.append(dict(
             index=index, workload_id=identity, dp=partition,
             prompt_ids=prompt, token_ids=output,
@@ -230,6 +246,11 @@ def run(args):
     tokenize = source.module("prefill_prepare").tokenize_prompt
     entries = (read_workload(args.workload, args.max_requests) if args.workload is not None
                else [dict(id=f"prompt-{i}", prompt=text) for i, text in enumerate(args.prompt or PROMPTS)])
+    if args.online_profile:
+        # Both hosts warm their owner path. Reuse DP0 and the exact same prompt
+        # thereafter to keep router work and input/cache shapes comparable.
+        sample = entries[0]
+        entries = [dict(sample, id=f"{sample['id']}-profile-{index}") for index in range(4)]
     identities = [row["id"] for row in entries]
     raw_prompts = [row["prompt"] for row in entries]
     prompts = [tokenize(text, args.model, checkpoint.text["vocab_size"]) for text in raw_prompts]
@@ -238,7 +259,9 @@ def run(args):
     if any(len(prompt) + args.tokens + 31 > args.context for prompt in prompts):
         raise ValueError("Context must cover the prompt, requested output and the full K32 draft block")
     assignments = [index % config.topology["dp"] for index in range(len(prompts))]
-    if args.orthrus_only and args.require_online_update:
+    if args.online_profile:
+        assignments = [0, 2, 0, 0]
+    elif args.orthrus_only and args.require_online_update:
         # The short capture gate exercises feedback ownership on both hosts.
         assignments = [(0, 2, 1, 3)[index % 4] for index in range(len(prompts))]
     _, head, head_files = read_draft_artifact(args.model, args.head)
@@ -270,6 +293,7 @@ def run(args):
                        tokens=args.tokens, context=args.context,
                        trace_prefill=args.trace_prefill, trace_position=args.trace_position,
                        orthrus_only=args.orthrus_only, require_online_update=args.require_online_update,
+                       online_profile=args.online_profile,
                        online=None if online is None else online.config.contract())
         peer_request = link.exchange("acceptance/configuration", request)
         if peer_request != request:
@@ -295,16 +319,18 @@ def run(args):
                                 defer_draft=True, trace_prefill=args.trace_prefill,
                                 trace_position=args.trace_position, online=online)
         runner = A3Runner(source, config, cache_plan, session, checkpoint.text["vocab_size"], greedy_tokens=True)
+        profile = OnlineUpdateProfile(args.output / "online-profile.jsonl") if args.online_profile else None
         try:
             for mode in modes:
                 print(f"Node {args.node} running {mode} on global ranks {list(plan.local_ranks)}", flush=True)
                 expected = results.get("target", {}).get("requests") if mode == "orthrus" else None
                 started = time.perf_counter()
-                rows, stats = generate(
-                    runner, prompts, args.tokens, assignments,
-                    identities=identities, metadata=entries, decoder=decoder, reference=expected,
-                    speculative=mode == "orthrus",
-                )
+                with profile_online(profile):
+                    rows, stats = generate(
+                        runner, prompts, args.tokens, assignments,
+                        identities=identities, metadata=entries, decoder=decoder, reference=expected,
+                        speculative=mode == "orthrus",
+                    )
                 elapsed = time.perf_counter() - started
                 results[mode] = dict(status="executed", devices=devices, sampling=SAMPLING,
                                      requests=rows, speculation=stats, elapsed_seconds=elapsed,
@@ -345,6 +371,41 @@ def run(args):
             audit_online_update(online_summary, peer["online"],
                                 publish_every=online.config.publish_every,
                                 require_update=args.require_online_update)
+        if profile is not None:
+            peer_records = link.exchange("acceptance/online-profile", profile.records)
+            node0, node1 = (profile.records, peer_records) if plan.node == 0 else (peer_records, profile.records)
+            report = OnlineUpdateProfile.summary(node0, node1)
+            report["local_requests"] = profile.requests
+            rows = results["orthrus"]["requests"]
+            report["repeat_greedy_outputs_match"] = all(row["token_ids"] == rows[0]["token_ids"] for row in rows)
+            write_report(args.output / "online-profile-summary.json", report)
+            summary["online_profile"] = {
+                "updates_profiled": len(report["updates"]),
+                "hot_updates": report["hot_updates"],
+                "hot_update_median_seconds": report["hot_update_median_seconds"],
+            }
+            stages = report["hot_owner_stage_median_seconds"]
+            if not stages and report["updates"]:
+                stages = report["updates"][-1]["owner_stage_seconds"]
+            print(json.dumps({
+                "stage": "online_profile_summary", **summary["online_profile"],
+                "updates": [{
+                    "dp": row["owner_dp"], "teacher_rows": row["teacher_rows"],
+                    "seconds": round(row["update_seconds"], 3),
+                    "publication_seconds": round(row["publication_seconds"], 3),
+                    "jit_seconds": round(max(row["jit_seconds_by_host"]), 3),
+                    "new_rank_dispatches": row["new_rank_dispatches"],
+                } for row in report["updates"]],
+                "phase_sample": "hot_owner_median" if report["hot_updates"] else "last_update_owner",
+                "phase_seconds": {
+                    name: round(stages[name], 3) for name in (
+                        "lm_head_loss_and_vjp", "ep_dispatch_exchange", "ep_expert_owner",
+                        "ep_return_exchange", "moe_shared_and_mhc_vjp", "attention_vjp",
+                        "dp_gradient_reduce", "gradient_norm_clip", "adamw",
+                    ) if name in stages
+                },
+                "repeat_greedy_outputs_match": report["repeat_greedy_outputs_match"],
+            }), flush=True)
         summary["peer"] = peer
     return summary
 
@@ -379,6 +440,8 @@ def main():
                         help="Skip the target parity pass for a short integration gate")
     parser.add_argument("--require-online-update", action="store_true",
                         help="Fail unless the workload captures and applies an online update")
+    parser.add_argument("--online-profile", action="store_true",
+                        help="Profile four updates in one session, repeating the first workload prompt")
     parser.add_argument("--connect-timeout", type=int, default=900)
     parser.add_argument("--timeout", type=int, default=3600, help="Maximum seconds of peer inactivity")
     args = parser.parse_args()
@@ -387,7 +450,8 @@ def main():
             or args.workload is not None and args.prompt is not None
             or args.workload is None and args.prompt is not None and len(args.prompt) != 2
             or args.online_study is not None and args.online_primitives is None
-            or args.require_online_update and args.online_study is None):
+            or args.require_online_update and args.online_study is None
+            or args.online_profile and not (args.orthrus_only and args.require_online_update)):
         parser.error("Require valid dimensions and exactly one prompt source")
     if args.trace_position is not None and not 0 <= args.trace_position < args.context:
         parser.error("--trace-position must be in the reserved context")

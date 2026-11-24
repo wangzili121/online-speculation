@@ -2,7 +2,7 @@
 # Launch the paired DSV4.1 resident online-update study with one stable command.
 set -euo pipefail
 
-[[ $# -ge 1 ]] || { echo "usage: $0 <node7|node8> <capture|smoke|tuning|eval> [last-N]" >&2; exit 2; }
+[[ $# -ge 1 ]] || { echo "usage: $0 <node7|node8> <capture|profile|smoke|tuning|eval> [last-N]" >&2; exit 2; }
 node="$1"
 mode="${2:-smoke}"
 last_layers="${3:-1}"
@@ -14,10 +14,11 @@ case "$last_layers" in 1|2|4|8) ;; *) echo "last-N must be one of 1, 2, 4 or 8" 
 
 case "$mode" in
   capture) split=tuning; requests=2; tokens=2 ;;
+  profile) split=tuning; requests=1; tokens=8 ;;
   smoke) split=tuning; requests=4; tokens=32 ;;
   tuning) split=tuning; requests=32; tokens=192 ;;
   eval) split=online_eval; requests=384; tokens=192 ;;
-  *) echo "mode must be capture, smoke, tuning or eval" >&2; exit 2 ;;
+  *) echo "mode must be capture, profile, smoke, tuning or eval" >&2; exit 2 ;;
 esac
 
 workload="$data_root/$split.jsonl"
@@ -37,13 +38,18 @@ export ORTHRUS_WORKLOAD="$workload"
 export CLUSTER_KEY_FILE="${CLUSTER_KEY_FILE:-/root/.orthrus-cluster.key}"
 export NPU_DEVICES="${NPU_DEVICES:-0,1,2,3,4,5,6,7}"
 
-if [[ "$mode" == capture ]]; then
+if [[ "$mode" == capture || "$mode" == profile ]]; then
   # Each host has a different set of historical result directories.  Reusing
   # the locally newest head can therefore make the cluster identities differ.
   # A capture gate starts from the deterministic target initialization instead.
   export PYPTO_REUSE_PREVIOUS_HEAD=0
-  online_overrides="{\"last_layers\":$last_layers,\"teacher_rows\":1,\"warm_update_stride\":1,\"warm_update_steps\":1,\"steady_update_stride\":1,\"publish_every\":1}"
+  teacher_rows=1
   short_gate=(--orthrus-only --require-online-update)
+  if [[ "$mode" == profile ]]; then
+    teacher_rows=7
+    short_gate+=(--online-profile)
+  fi
+  online_overrides="{\"last_layers\":$last_layers,\"teacher_rows\":$teacher_rows,\"warm_update_stride\":1,\"warm_update_steps\":1,\"steady_update_stride\":1,\"publish_every\":1}"
 else
   online_overrides="{\"last_layers\":$last_layers}"
   short_gate=()

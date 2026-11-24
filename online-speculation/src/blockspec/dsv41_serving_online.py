@@ -5,6 +5,7 @@ from collections.abc import Mapping
 
 import torch
 
+from .dsv41_online_profile import active_profile
 from .dsv41_suffix import DSV41SuffixPlan, DSV41SuffixReplay
 
 
@@ -113,7 +114,9 @@ class DSV41ServingOnline:
 
     def capture_due(self):
         due = self.controller.begin_verifier_round()
-        return due and not self.pending and self.remote_pending is None
+        profile = active_profile()
+        return (due and not self.pending and self.remote_pending is None
+                and (profile is None or profile.can_capture()))
 
     @staticmethod
     def _capture_rows(requests):
@@ -209,10 +212,23 @@ class DSV41ServingOnline:
         contract = local if local is not None else peer
         if contract["update_number"] != update_number:
             raise ValueError("cluster online update versions disagree")
-        record = (
-            self.controller.apply(prepared, synchronization=contract)
-            if prepared is not None else self.controller.apply_remote(contract)
-        )
+        def apply_update():
+            if prepared is not None:
+                return self.controller.apply(prepared, synchronization=contract)
+            return self.controller.apply_remote(contract)
+
+        profile = active_profile()
+        if profile is None:
+            record = apply_update()
+        else:
+            with profile.update(contract, owner_is_local=prepared is not None) as measured:
+                record = apply_update()
+                measured.update(
+                    update_seconds=record["update_seconds"],
+                    publication_seconds=record["publication_seconds"],
+                    loss=record["loss"] if prepared is not None else None,
+                    gradient_norm=record["gradient_norm"],
+                )
         self.remote_pending = None
         return record
 

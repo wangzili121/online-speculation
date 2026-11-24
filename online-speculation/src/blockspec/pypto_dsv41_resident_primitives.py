@@ -21,6 +21,7 @@ import math
 import torch
 
 from .dsv41_device_update import SuffixGradient
+from .dsv41_online_profile import active_profile, profiled_stage, timed_stage
 from .dsv41_serving_online import DSV41SequenceSpan
 from .dsv41_suffix import DSV41SuffixPlan
 from .pypto_dsv41_resident_abi import with_resident_entry
@@ -514,6 +515,7 @@ class DSV41ResidentPrimitives:
     def _tp_all_reduce(self, values, *, stage):
         return self._tp_collective(values, "all_reduce", stage=stage)
 
+    @profiled_stage("lm_head_loss_and_vjp")
     def lm_head_vjp(self, gradient, rows):
         """Run the terminal reverse on every TP owner without host gradients."""
         if not isinstance(gradient, _DeferredLogitsGradient):
@@ -644,11 +646,20 @@ class DSV41ResidentPrimitives:
         """Run one fixed-packet EP16 all-to-all on every node-local rank."""
         transport = getattr(self.native, "transport", None)
         exchange = self.resident.exchange if transport is None else transport.exchange
-        output, _ = exchange(stage, packets, "all_to_all", "ep")
+        phase = stage.rsplit("-", 2)[-2]
+        profile = active_profile()
+        if profile is not None and profile.current is not None:
+            profile.current["counts"][f"ep_{phase}_logical_send_bytes"] += sum(
+                value.numel() * value.element_size()
+                for packet in packets for fields in packet.values() for value in fields.values()
+            )
+        with timed_stage(f"ep_{phase}_exchange"):
+            output, _ = exchange(stage, packets, "all_to_all", "ep")
         if len(output) != len(self.ranks):
             raise RuntimeError("EP16 exchange did not return every node-local rank")
         return output
 
+    @profiled_stage("ep_pack")
     def _ep_dispatch_packets(self, layer, sources):
         """Create the same fixed dispatch ABI on owner and participant nodes."""
         from .pypto_dsv41_ep_vjp import (
@@ -713,6 +724,7 @@ class DSV41ResidentPrimitives:
             })
         return packets, originals
 
+    @profiled_stage("ep_expert_owner")
     def _ep_owner_expert_packets(self, layer, received):
         """Run frozen expert input VJPs for the populated slabs on each local rank."""
         from .pypto_dsv41_ep_vjp import (
@@ -742,6 +754,10 @@ class DSV41ResidentPrimitives:
 
             expert_dx = self._workspace(rank, (SLAB_ROWS, HIDDEN))
             counts = self.resident.read_control(expert_counts, self._local(rank)).tolist()
+            profile = active_profile()
+            if profile is not None and profile.current is not None:
+                profile.current["counts"]["expert_rows_received"] += sum(counts)
+                profile.current["counts"]["active_routed_expert_calls"] += sum(count > 0 for count in counts)
             for local_expert, count in enumerate(counts):
                 if count == 0:
                     continue
@@ -774,6 +790,7 @@ class DSV41ResidentPrimitives:
             packets.append({"frozen-tail": {"dx": sent_dx}})
         return packets
 
+    @profiled_stage("ep_restore_routes")
     def _ep_routed_input_gradients(self, layer, returned, originals, sources):
         """Restore route order only for the TP ranks that originated K32 rows."""
         from .pypto_dsv41_ep_vjp import PACKET_ROWS, ROUTES, make_ep_vjp_source_restore
@@ -851,6 +868,7 @@ class DSV41ResidentPrimitives:
         return_packets = self._ep_owner_expert_packets(layer, received)
         self._ep_exchange(return_stage, return_packets)
 
+    @profiled_stage("moe_route_vjp")
     def _reverse_frozen_moe_envelope(
         self, *, layer, rank, captured, state, output_gradient,
     ):
@@ -939,6 +957,7 @@ class DSV41ResidentPrimitives:
             self._compact_columns(rank, combination_gradient, 0, HC_COPIES), pre_gradient,
         )
 
+    @profiled_stage("moe_shared_and_mhc_vjp")
     def _reverse_frozen_tail_finish(
         self, *, layer, rank, captured, envelope, routed_input_gradient,
     ):
@@ -1487,6 +1506,7 @@ class DSV41ResidentPrimitives:
         )
         return SuffixGradient(hidden_gradient, self._compact_columns(rank, incoming_gradient, 0, HC_COPIES))
 
+    @profiled_stage("attention_vjp")
     def reverse_draft_attention_owner_batch(
         self, *, layer, ranks, captured, output_gradients,
     ):
@@ -1600,6 +1620,7 @@ class DSV41ResidentPrimitives:
             result[rank] = incoming, local[rank][1]
         return result
 
+    @profiled_stage("tp_gradient_assembly")
     def tp_assemble_gradients(self, layer, values):
         self._require_optimizer_state()
         ranks = tuple(sorted(values))
@@ -1622,6 +1643,7 @@ class DSV41ResidentPrimitives:
             result[name] = _RankGradient(layer, shards)
         return result
 
+    @profiled_stage("dp_gradient_reduce")
     def dp_all_reduce(self, values):
         self._require_optimizer_state()
         if set(values) != set(self.plan.trainable_names()):
@@ -1663,6 +1685,7 @@ class DSV41ResidentPrimitives:
             )
         return result
 
+    @profiled_stage("gradient_norm_clip")
     def gradient_norm_and_clip(self, values, maximum):
         self._require_optimizer_state()
         if not math.isfinite(maximum) or maximum <= 0:
@@ -1715,6 +1738,7 @@ class DSV41ResidentPrimitives:
         host_flags = self.resident.read_output(flags, local)
         return float(host_sums.sum()), bool((host_flags == 1).all())
 
+    @profiled_stage("adamw")
     def adamw(self, values, **options):
         self._require_optimizer_state()
         from .pypto_dsv41_online_programs import make_adam

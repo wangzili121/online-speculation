@@ -1,8 +1,10 @@
+import json
 from types import SimpleNamespace
 
 import torch
 
 from blockspec.dsv41_online import DSV41OnlineConfig, DSV41OnlineController
+from blockspec.dsv41_online_profile import OnlineUpdateProfile, active_profile, profile_online, timed_stage
 from blockspec.dsv41_serving_online import (
     DSV41CapturedLayer,
     DSV41ServingOnline,
@@ -25,6 +27,63 @@ def layer_state(layer):
             "shared", "expert_outputs", "combined", "output_hidden", "output_pre_mix",
         )},
     )
+
+
+def test_online_profile_measures_four_updates_with_hot_owner_reuse(tmp_path):
+    def update(version, owner_dp):
+        profile = active_profile()
+        with timed_stage("attention_vjp"):
+            if not profile.dispatch_seen(owner_dp * 4, "attention"):
+                profile.current["first_dispatch"].append({"seconds": 0.5})
+        return .1, .2, version
+
+    config = DSV41OnlineConfig(
+        teacher_rows=7, warm_update_stride=1, warm_update_steps=1,
+        steady_update_stride=1, publish_every=1,
+    )
+    bridges, profiles = [], []
+    for dp in (0, 2):
+        learner = SimpleNamespace(
+            last_layers=1,
+            update_rows=lambda replay, teacher, **kw: update(kw["synchronization"]["update_number"], replay.owner[0]),
+            update_participant=lambda contract, **kw: (0., .2, contract["update_number"]),
+        )
+        bridges.append(DSV41ServingOnline(DSV41OnlineController(
+            learner, config, publisher=lambda *_: None,
+        )))
+        profiles.append(OnlineUpdateProfile(tmp_path / f"node-{dp}.jsonl"))
+    for index, dp in enumerate((0, 2, 0, 0)):
+        request = f"orthrus-request-{index}"
+        owner = dp // 2
+        for bridge, profile in zip(bridges, profiles, strict=True):
+            with profile_online(profile):
+                profile.begin_request(request)
+                assert bridge.capture_due()
+        bridge = bridges[owner]
+        replay = DSV41ServingReplay(
+            request, (4,), (dp, 0, 1), DSV41SuffixPlan(1), torch.zeros(32, 4), (layer_state(39),),
+        )
+        assert bridge.register_replay(replay)
+        assert bridge.verified(request, (4,), (5, 6), (5, 6, 7), torch.randn(3, 7), defer=True) is None
+        prepared = bridge.verified(
+            request, (4, 5, 6, 7), (8, 9, 10), (8, 9, 10, 11), torch.randn(4, 7), defer=True,
+        )
+        for node, (bridge, profile) in enumerate(zip(bridges, profiles, strict=True)):
+            with profile_online(profile):
+                if node == owner:
+                    bridge.synchronize(prepared, lambda *_: None)
+                else:
+                    bridge.synchronize(None, lambda *_: prepared.contract())
+                assert not bridge.capture_due()
+
+    for profile in profiles:
+        assert len(profile.path.read_text().splitlines()) == 4
+    report = OnlineUpdateProfile.summary(*(profile.records for profile in profiles))
+    assert [row["hot"] for row in report["updates"]] == [False, False, True, True]
+    assert report["hot_updates"] == 2
+    assert [row["teacher_rows"] for row in report["updates"]] == [7] * 4
+    assert all("attention_vjp" in row["owner_stage_seconds"] for row in report["updates"])
+    assert json.loads(profiles[0].path.read_text().splitlines()[1])["loss"] is None
 
 
 def test_serving_bridge_runs_last_n_update_from_corrected_verifier_rows():

@@ -5,6 +5,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
+from time import perf_counter
 
 import torch
 
@@ -20,6 +21,7 @@ from .pypto_dsv41_resident_abi import compile_resident_entry, resident_entry
 from .pypto_dsv41_sparse import TILE, TOPK, make_joined_attention, make_sparse_attention
 from .pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW, make_swa_attention, swa_spans
 from .dsv41_publication import AtomicHeadPublisher, PublicationReceipt
+from .dsv41_online_profile import active_profile
 from .dsv41_serving_online import DSV41CapturedLayer, DSV41SequenceSpan, DSV41ServingReplay
 from .dsv41_suffix import DSV41SuffixPlan
 
@@ -234,8 +236,11 @@ class ResidentDraftAttention:
         from pypto.backend import BackendType
         from pypto.runtime import ExecutionMode, RunConfig
 
+        profile = active_profile()
+        timing = None if profile is None else profile.current
         with self.compile_lock:
             if key not in self.programs:
+                started = perf_counter() if timing is not None else None
                 kernel = resident_entry(factory())
                 options = RunConfig(
                     arch=BackendType.Ascend910, execution_mode=ExecutionMode.ONBOARD, save_kernels=True,
@@ -252,8 +257,22 @@ class ResidentDraftAttention:
                     kernel, arguments, options,
                     abi=self.native("network").network_parameter_abi, name=key,
                 )
+                if timing is not None:
+                    timing["compiled"].append({"operator": key, "seconds": perf_counter() - started})
         compiled, abi = self.programs[key]
+        first = timing is not None and not profile.dispatch_seen(rank, key)
+        if timing is not None:
+            started = perf_counter()
+            stats = getattr(self.resident, "stats", {})
+            evictions_before = stats.get("program_evictions", 0)
         self.resident.execute(compiled, self.rank_ids[rank], [inputs[name] for name in compiled.param_names], abi)
+        if timing is not None:
+            elapsed = perf_counter() - started
+            operator = key[1] if isinstance(key, tuple) and key[0] == "online" else str(key)
+            timing["kernel_dispatch_seconds"][operator] += elapsed
+            timing["counts"]["device_callable_evictions"] += stats.get("program_evictions", 0) - evictions_before
+            if first:
+                timing["first_dispatch"].append({"operator": key, "rank": rank, "seconds": elapsed})
 
     def arm_online_capture(self, requests, plan):
         """Capture exactly the next draft round for the selected request owners."""

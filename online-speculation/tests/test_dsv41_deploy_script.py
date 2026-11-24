@@ -146,6 +146,31 @@ def test_capture_does_not_reuse_node_local_head_history():
     assert '"${PYPTO_REUSE_PREVIOUS_HEAD:-1}" == 1' in cluster
 
 
+def test_profile_launcher_uses_seven_teacher_rows_and_a_single_session(tmp_path):
+    root = tmp_path / "repo"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    study = root / "configs" / "dsv41" / "gsm8k-online.json"
+    factory = root / "src" / "blockspec" / "pypto_dsv41_resident_primitives.py"
+    for path in (study, factory):
+        path.parent.mkdir(parents=True)
+        path.touch()
+    (tmp_path / "tuning.jsonl").touch()
+    launcher = scripts / "run_dsv41_pypto_online_gsm8k.sh"
+    launcher.write_text((ROOT / "scripts" / launcher.name).read_text())
+    (scripts / "dsv41_pypto_env.sh").write_text("printf '%s\\n' \"$*\"\n")
+    result = subprocess.run(
+        ["bash", launcher, "node7", "profile", "1"], check=True,
+        capture_output=True, text=True,
+        env=os.environ | {"DSV41_GSM8K_ROOT": str(tmp_path)},
+    )
+    factory_call, cluster_call = result.stdout.splitlines()
+    assert factory_call == "online-factory-check"
+    assert cluster_call.startswith("cluster-accept node7 --max-requests 1 --tokens 8 ")
+    assert '"teacher_rows":7' in cluster_call
+    assert "--orthrus-only --require-online-update --online-profile" in cluster_call
+
+
 def test_cluster_source_pairing_tracks_the_fully_patched_kernel_tree():
     launcher = (ROOT / "scripts" / "run_dsv41_pypto_cluster.sh").read_text()
     patch = (ROOT / "runtime" / "pypto_dsv41_a3" / "serving-cluster.patch").read_text()

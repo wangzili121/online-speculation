@@ -2,6 +2,8 @@
 
 import ctypes as C
 
+from .dsv41_online_profile import timed_stage
+
 
 ROOT_INFO_BYTES = 4108
 
@@ -115,7 +117,8 @@ class ClusterCollectives:
             [case, field, list(value.shape), str(value.dtype)]
             for case, values in packet.items() for field, value in values.items()
         ]} for rank, packet in zip(ranks, packets, strict=True)]
-        peer = self.link.exchange(f"schedule/{stage}", dict(collective=collective, group=group, packets=signatures))
+        with timed_stage(f"{group}_schedule_control"):
+            peer = self.link.exchange(f"schedule/{stage}", dict(collective=collective, group=group, packets=signatures))
         if peer["collective"] != collective or peer["group"] != group:
             raise ValueError("Peers entered different HCCL collectives")
         records = signatures + peer["packets"]
@@ -145,14 +148,17 @@ class ClusterCollectives:
                     output[case][field] = received
             return output, transfers
 
-        prepared = self.runtime.map_ranks(prepare)
-        self.link.exchange(f"ready/{stage}", None)
+        with timed_stage(f"{group}_collective_buffer_prepare"):
+            prepared = self.runtime.map_ranks(prepare)
+        with timed_stage(f"{group}_ready_control"):
+            self.link.exchange(f"ready/{stage}", None)
 
         def transfer(rank):
             outputs, transfers = prepared[rank]
             channels[rank].exchange_device_batch(transfers, collective)
             return outputs
 
-        outputs = self.runtime.map_ranks(transfer)
+        with timed_stage(f"{group}_{collective}_device"):
+            outputs = self.runtime.map_ranks(transfer)
         return outputs, [dict(rank=ranks[rank], group_ranks=channel.group_ranks, activation_staging=False,
                               collective=collective) for rank, channel in sorted(channels.items())]

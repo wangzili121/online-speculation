@@ -7,7 +7,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 case "${1:-}" in
   node7) cluster_key=/root/.orthrus-cluster.key ;;
   node8) cluster_key=/home/wangzili/.orthrus-cluster.key ;;
-  *) echo "usage: $0 <node7|node8> <capture|smoke|tuning|eval> [last-N]" >&2; exit 2 ;;
+  *) echo "usage: $0 <node7|node8> <capture|profile|smoke|tuning|eval> [last-N]" >&2; exit 2 ;;
 esac
 
 export PYPTO_IMAGE="${PYPTO_IMAGE:-orthrus-dsv41-pypto:72a62d1-offline}"
