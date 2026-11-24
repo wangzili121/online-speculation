@@ -1,0 +1,32 @@
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -1266,18 +1266,14 @@
+             raise ValueError("Verification metadata must describe every resident rank")
+         snapshot_started = perf_counter()
+         try:
+-            with ExitStack() as restore:
+-                restore.enter_context(self.provider.provisional_dispatch())
++            with self.provider.provisional_dispatch():
+                 ranges_by_rank = {}
+                 for rank, device in self.weights.rank_devices.items():
+                     if not actual["DP_engines"][rank // world["tp"]]["requests"]:
+                         continue
+-                    intervals, history_pages = self.provider.verification_ranges(rank, metadata[rank])
++                    intervals, _ = self.provider.verification_ranges(rank, metadata[rank])
+                     raw = self.provider.arenas[rank]["fresh"]
+                     ranges_by_rank[device] = [(raw[key], extents) for key, extents in intervals.items()]
+-                    for page in history_pages:
+-                        history = self.provider.history.caches[rank]["fresh"][page * 128:(page + 1) * 128]
+-                        restore.callback(history.copy_, history.clone())
+                 with self.runtime.preserve_rank_cache_ranges(ranges_by_rank):
+                     snapshot_seconds = perf_counter() - snapshot_started
+                     result = self._advance(
+@@ -1777,7 +1773,7 @@
+         weights.raw_for_layer,
+         eng_runtime,
+         lookup=inputs["engram_lookup"],
+-        write_history=draft is None,
++        write_history=draft is None and phase != "verify",
+     )
+     for layer in (1, 14):
+         prepared_engram.attach(layer, provider.state_handles_for_layer(layer))

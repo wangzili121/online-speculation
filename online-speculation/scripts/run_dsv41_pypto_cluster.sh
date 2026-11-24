@@ -48,7 +48,7 @@ for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.p
     lib-orthrus-verify-rows.patch lib-orthrus-verify-parallel.patch lib-orthrus-verify-output.patch \
     lib-orthrus-teacher-rows.patch lib-orthrus-student-rows.patch \
     lib-orthrus-short-dispatch.patch lib-orthrus-draft-reduce-pack.patch lib-orthrus-engram-prefix.patch lib-orthrus-short-greedy.patch \
-    lib-orthrus-auxiliary-pin.patch; do
+    lib-orthrus-auxiliary-pin.patch lib-orthrus-engram-verify-readonly.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
