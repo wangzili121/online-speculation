@@ -16,6 +16,7 @@ from .pypto_dsv41_draft import (
     read_draft_artifact,
     read_draft_weights,
 )
+from .pypto_dsv41_ep_vjp import ROUTES, route_bucket_width
 from .pypto_dsv41_indexer import INDEX_DIM, INDEX_HEADS, index_controls, make_indexer_program
 from .pypto_dsv41_resident_abi import compile_resident_entry, resident_entry
 from .pypto_dsv41_sparse import TILE, TOPK, make_joined_attention, make_sparse_attention
@@ -577,8 +578,27 @@ class DraftRound:
             replays[owner] = DSV41ServingReplay(
                 request_id, prefix, owner, plan, boundary, tuple(layers),
                 release=self.attention.resident.release_replay_values,
+                ep_bucket_rows=tuple(self._ep_bucket_rows(layer.ffn) for layer in layers),
             )
         return replays
+
+    def _ep_bucket_rows(self, ffn):
+        """Size EP packets from the immutable route IDs captured for this request."""
+        if any("sp_span" not in row for row in ffn.values()):
+            return ROUTES
+        spans = [row["sp_span"] for row in ffn.values()]
+        if sum(span.rows for span in spans) != BLOCK:
+            return ROUTES
+        resident = self.attention.resident
+        local_ids = []
+        for rank, row in ffn.items():
+            span = row["sp_span"]
+            if span.rows:
+                ids = row["route_ids"][span.local_start:span.local_start + span.rows]
+                if ids.shape[0] != span.rows:
+                    raise ValueError("captured EP route IDs do not cover the source span")
+                local_ids.append(resident.read_control(ids, self.attention.rank_ids[rank]))
+        return route_bucket_width(local_ids)
 
     def project_layer(self, rank, layer, record, hidden, cos, sin, contribution):
         block_size = self.attention.block_size

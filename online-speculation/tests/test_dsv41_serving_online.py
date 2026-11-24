@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from blockspec.dsv41_online import DSV41OnlineConfig, DSV41OnlineController
@@ -184,6 +185,7 @@ def test_serving_bridge_synchronizes_owner_and_reverse_participant_peer():
             self.calls.append((
                 "owner", teacher.shape[0],
                 options["synchronization"]["reverse"]["protocol"],
+                tuple(options["synchronization"]["reverse"]["ep_bucket_rows"]),
             ))
             return .4, .6, 1
 
@@ -191,6 +193,7 @@ def test_serving_bridge_synchronizes_owner_and_reverse_participant_peer():
             self.calls.append((
                 "participant", options["update_number"],
                 tuple(contract["reverse"]["layers"]),
+                tuple(contract["reverse"]["ep_bucket_rows"]),
             ))
             return 0., .6, 1
 
@@ -203,7 +206,7 @@ def test_serving_bridge_synchronizes_owner_and_reverse_participant_peer():
     peer = DSV41ServingOnline(DSV41OnlineController(peer_learner, config))
     replay = DSV41ServingReplay(
         "r", (4,), (0, 0, 1), DSV41SuffixPlan(1), torch.zeros(32, 4),
-        (layer_state(39),),
+        (layer_state(39),), ep_bucket_rows=(32,),
     )
     assert owner.capture_due() and peer.capture_due()
     assert owner.register_replay(replay)
@@ -211,13 +214,16 @@ def test_serving_bridge_synchronizes_owner_and_reverse_participant_peer():
         "r", (4,), (), (5,), torch.randn(1, 7), defer=True,
     )
     contract = prepared.contract()
+    bad = dict(contract, reverse=dict(contract["reverse"], ep_bucket_rows=[48]))
+    with pytest.raises(ValueError, match="invalid EP bucket widths"):
+        peer.synchronize(None, lambda tag, payload: bad)
     owner_record = owner.synchronize(prepared, lambda tag, payload: None)
     peer_record = peer.synchronize(None, lambda tag, payload: contract)
     assert owner_record["update"] == peer_record["update"] == 1
     assert owner_learner.calls == [
-        ("owner", 1, "dsv41-synchronized-reverse-v1"),
+        ("owner", 1, "dsv41-synchronized-reverse-v1", (32,)),
     ]
-    assert peer_learner.calls == [("participant", 1, (39,))]
+    assert peer_learner.calls == [("participant", 1, (39,), (32,))]
 
 
 def test_serving_bridge_rejects_remote_zero_gradient_shortcut():

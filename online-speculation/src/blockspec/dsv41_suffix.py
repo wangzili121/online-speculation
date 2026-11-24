@@ -70,6 +70,7 @@ class DSV41SuffixReplay:
     student_logits: object | None = None
     owner: tuple[int, int, int] | None = None
     release: Callable[[], None] | None = None
+    ep_bucket_rows: tuple[int, ...] = ()
 
     def __post_init__(self):
         if self.boundary is None:

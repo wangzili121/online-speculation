@@ -130,3 +130,25 @@ def test_replay_uses_the_real_serving_ffn_state_names():
     for name in ("ffn_collapsed", "ffn_normed", "router_input", "router_logits", "output_hidden"):
         assert f"{name}=" in source
     assert 'state["padded_hidden"]' not in inspect.getsource(DraftRound.replays)
+
+
+def test_bucket_reads_only_the_retained_request_rows_on_each_rank():
+    round_ = DraftRound.__new__(DraftRound)
+    devices = []
+
+    def read_control(value, device):
+        devices.append(device)
+        assert value.shape == (16, 6)
+        return value.clone()
+
+    round_.attention = SimpleNamespace(
+        rank_ids={4: 0, 5: 1}, resident=SimpleNamespace(read_control=read_control),
+    )
+    route_ids = torch.full((32, 6), -1, dtype=torch.int32)
+    route_ids[8:24] = torch.tensor([0, 1, 48, 72, 96, 120], dtype=torch.int32)
+    ffn = {
+        4: {"sp_span": DSV41SequenceSpan(8, 0, 16), "route_ids": route_ids},
+        5: {"sp_span": DSV41SequenceSpan(8, 16, 16), "route_ids": route_ids},
+    }
+    assert round_._ep_bucket_rows(ffn) == 32
+    assert devices == [0, 1]

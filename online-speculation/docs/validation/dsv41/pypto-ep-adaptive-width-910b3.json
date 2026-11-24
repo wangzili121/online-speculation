@@ -1,0 +1,531 @@
+{
+  "format": "orthrus-dsv41-ep-adaptive-width-910b3-v1",
+  "baseline": "ed977ec, fixed bucket of 192 rows",
+  "host": "167",
+  "scope": "single-NPU full K32 EP16 packet chain, local 2-NPU communication and resident route control",
+  "matched": {
+    "balanced": {
+      "full": {
+        "format": "orthrus-dsv41-pypto-ep-vjp-v1",
+        "passed": true,
+        "compiled": [
+          "dispatch_pack",
+          "dispatch_unpack",
+          "return_pack",
+          "source_restore"
+        ],
+        "executed": true,
+        "simulator_execution": false,
+        "routing": "balanced",
+        "selected_bucket_rows": 32,
+        "shape": {
+          "rows": 32,
+          "topk": 6,
+          "hidden": 5120,
+          "experts": 384,
+          "world": 16,
+          "packet_rows": 3072,
+          "expert_capacity": 32,
+          "bucket_rows": 192
+        },
+        "active": 32,
+        "source_rank": 9,
+        "owners": [
+          {
+            "owner": 1,
+            "routes": 32
+          },
+          {
+            "owner": 3,
+            "routes": 32
+          },
+          {
+            "owner": 7,
+            "routes": 32
+          },
+          {
+            "owner": 8,
+            "routes": 32
+          },
+          {
+            "owner": 12,
+            "routes": 32
+          },
+          {
+            "owner": 15,
+            "routes": 32
+          }
+        ],
+        "routes": 192,
+        "route_max_abs": 0.0,
+        "token_max_abs": 0.0,
+        "inactive_route_nonzero": 0,
+        "inactive_token_nonzero": 0,
+        "steady_kernel_ms": {
+          "dispatch_pack": {
+            "median": 1.9129739957861602,
+            "calls": 12
+          },
+          "dispatch_unpack": {
+            "median": 1.1351155117154121,
+            "calls": 72
+          },
+          "return_pack": {
+            "median": 1.3596615171991289,
+            "calls": 72
+          },
+          "source_restore": {
+            "median": 0.8985644672065973,
+            "calls": 12
+          }
+        }
+      },
+      "selected": {
+        "format": "orthrus-dsv41-pypto-ep-vjp-v1",
+        "passed": true,
+        "compiled": [
+          "dispatch_pack",
+          "dispatch_unpack",
+          "return_pack",
+          "source_restore"
+        ],
+        "executed": true,
+        "simulator_execution": false,
+        "routing": "balanced",
+        "selected_bucket_rows": 32,
+        "shape": {
+          "rows": 32,
+          "topk": 6,
+          "hidden": 5120,
+          "experts": 384,
+          "world": 16,
+          "packet_rows": 512,
+          "expert_capacity": 32,
+          "bucket_rows": 32
+        },
+        "active": 32,
+        "source_rank": 9,
+        "owners": [
+          {
+            "owner": 1,
+            "routes": 32
+          },
+          {
+            "owner": 3,
+            "routes": 32
+          },
+          {
+            "owner": 7,
+            "routes": 32
+          },
+          {
+            "owner": 8,
+            "routes": 32
+          },
+          {
+            "owner": 12,
+            "routes": 32
+          },
+          {
+            "owner": 15,
+            "routes": 32
+          }
+        ],
+        "routes": 192,
+        "route_max_abs": 0.0,
+        "token_max_abs": 0.0,
+        "inactive_route_nonzero": 0,
+        "inactive_token_nonzero": 0,
+        "steady_kernel_ms": {
+          "dispatch_pack": {
+            "median": 0.9631995344534516,
+            "calls": 12
+          },
+          "dispatch_unpack": {
+            "median": 1.0449895053170621,
+            "calls": 72
+          },
+          "return_pack": {
+            "median": 0.8225039928220212,
+            "calls": 72
+          },
+          "source_restore": {
+            "median": 0.8509439649060369,
+            "calls": 12
+          }
+        }
+      }
+    },
+    "mixed": {
+      "full": {
+        "format": "orthrus-dsv41-pypto-ep-vjp-v1",
+        "passed": true,
+        "compiled": [
+          "dispatch_pack",
+          "dispatch_unpack",
+          "return_pack",
+          "source_restore"
+        ],
+        "executed": true,
+        "simulator_execution": false,
+        "routing": "mixed",
+        "selected_bucket_rows": 64,
+        "shape": {
+          "rows": 32,
+          "topk": 6,
+          "hidden": 5120,
+          "experts": 384,
+          "world": 16,
+          "packet_rows": 3072,
+          "expert_capacity": 32,
+          "bucket_rows": 192
+        },
+        "active": 32,
+        "source_rank": 9,
+        "owners": [
+          {
+            "owner": 1,
+            "routes": 64
+          },
+          {
+            "owner": 7,
+            "routes": 32
+          },
+          {
+            "owner": 8,
+            "routes": 64
+          },
+          {
+            "owner": 15,
+            "routes": 32
+          }
+        ],
+        "routes": 192,
+        "route_max_abs": 0.0,
+        "token_max_abs": 0.0,
+        "inactive_route_nonzero": 0,
+        "inactive_token_nonzero": 0,
+        "steady_kernel_ms": {
+          "dispatch_pack": {
+            "median": 1.753343502059579,
+            "calls": 12
+          },
+          "dispatch_unpack": {
+            "median": 1.1256905272603035,
+            "calls": 48
+          },
+          "return_pack": {
+            "median": 1.4327315147966146,
+            "calls": 48
+          },
+          "source_restore": {
+            "median": 0.8754889713600278,
+            "calls": 12
+          }
+        }
+      },
+      "selected": {
+        "format": "orthrus-dsv41-pypto-ep-vjp-v1",
+        "passed": true,
+        "compiled": [
+          "dispatch_pack",
+          "dispatch_unpack",
+          "return_pack",
+          "source_restore"
+        ],
+        "executed": true,
+        "simulator_execution": false,
+        "routing": "mixed",
+        "selected_bucket_rows": 64,
+        "shape": {
+          "rows": 32,
+          "topk": 6,
+          "hidden": 5120,
+          "experts": 384,
+          "world": 16,
+          "packet_rows": 1024,
+          "expert_capacity": 32,
+          "bucket_rows": 64
+        },
+        "active": 32,
+        "source_rank": 9,
+        "owners": [
+          {
+            "owner": 1,
+            "routes": 64
+          },
+          {
+            "owner": 7,
+            "routes": 32
+          },
+          {
+            "owner": 8,
+            "routes": 64
+          },
+          {
+            "owner": 15,
+            "routes": 32
+          }
+        ],
+        "routes": 192,
+        "route_max_abs": 0.0,
+        "token_max_abs": 0.0,
+        "inactive_route_nonzero": 0,
+        "inactive_token_nonzero": 0,
+        "steady_kernel_ms": {
+          "dispatch_pack": {
+            "median": 1.0769400396384299,
+            "calls": 12
+          },
+          "dispatch_unpack": {
+            "median": 0.9916250128298998,
+            "calls": 48
+          },
+          "return_pack": {
+            "median": 0.8814990287646651,
+            "calls": 48
+          },
+          "source_restore": {
+            "median": 0.8009235607460141,
+            "calls": 12
+          }
+        }
+      }
+    },
+    "skewed": {
+      "full": {
+        "format": "orthrus-dsv41-pypto-ep-vjp-v1",
+        "passed": true,
+        "compiled": [
+          "dispatch_pack",
+          "dispatch_unpack",
+          "return_pack",
+          "source_restore"
+        ],
+        "executed": true,
+        "simulator_execution": false,
+        "routing": "skewed",
+        "selected_bucket_rows": 128,
+        "shape": {
+          "rows": 32,
+          "topk": 6,
+          "hidden": 5120,
+          "experts": 384,
+          "world": 16,
+          "packet_rows": 3072,
+          "expert_capacity": 32,
+          "bucket_rows": 192
+        },
+        "active": 32,
+        "source_rank": 9,
+        "owners": [
+          {
+            "owner": 1,
+            "routes": 128
+          },
+          {
+            "owner": 7,
+            "routes": 32
+          },
+          {
+            "owner": 8,
+            "routes": 32
+          }
+        ],
+        "routes": 192,
+        "route_max_abs": 0.0,
+        "token_max_abs": 0.0,
+        "inactive_route_nonzero": 0,
+        "inactive_token_nonzero": 0,
+        "steady_kernel_ms": {
+          "dispatch_pack": {
+            "median": 1.734583463985473,
+            "calls": 12
+          },
+          "dispatch_unpack": {
+            "median": 1.1013299808837473,
+            "calls": 36
+          },
+          "return_pack": {
+            "median": 1.3804315240122378,
+            "calls": 36
+          },
+          "source_restore": {
+            "median": 0.8569490164518356,
+            "calls": 12
+          }
+        }
+      },
+      "selected": {
+        "format": "orthrus-dsv41-pypto-ep-vjp-v1",
+        "passed": true,
+        "compiled": [
+          "dispatch_pack",
+          "dispatch_unpack",
+          "return_pack",
+          "source_restore"
+        ],
+        "executed": true,
+        "simulator_execution": false,
+        "routing": "skewed",
+        "selected_bucket_rows": 128,
+        "shape": {
+          "rows": 32,
+          "topk": 6,
+          "hidden": 5120,
+          "experts": 384,
+          "world": 16,
+          "packet_rows": 2048,
+          "expert_capacity": 32,
+          "bucket_rows": 128
+        },
+        "active": 32,
+        "source_rank": 9,
+        "owners": [
+          {
+            "owner": 1,
+            "routes": 128
+          },
+          {
+            "owner": 7,
+            "routes": 32
+          },
+          {
+            "owner": 8,
+            "routes": 32
+          }
+        ],
+        "routes": 192,
+        "route_max_abs": 0.0,
+        "token_max_abs": 0.0,
+        "inactive_route_nonzero": 0,
+        "inactive_token_nonzero": 0,
+        "steady_kernel_ms": {
+          "dispatch_pack": {
+            "median": 1.3832420227117836,
+            "calls": 12
+          },
+          "dispatch_unpack": {
+            "median": 1.0318650165572762,
+            "calls": 36
+          },
+          "return_pack": {
+            "median": 1.0948700364679098,
+            "calls": 36
+          },
+          "source_restore": {
+            "median": 0.8189034997485578,
+            "calls": 12
+          }
+        }
+      }
+    }
+  },
+  "concentrated": {
+    "format": "orthrus-dsv41-pypto-ep-vjp-v1",
+    "passed": true,
+    "compiled": [
+      "dispatch_pack",
+      "dispatch_unpack",
+      "return_pack",
+      "source_restore"
+    ],
+    "executed": true,
+    "simulator_execution": false,
+    "routing": "concentrated",
+    "selected_bucket_rows": 192,
+    "shape": {
+      "rows": 32,
+      "topk": 6,
+      "hidden": 5120,
+      "experts": 384,
+      "world": 16,
+      "packet_rows": 3072,
+      "expert_capacity": 32,
+      "bucket_rows": 192
+    },
+    "active": 32,
+    "source_rank": 9,
+    "owners": [
+      {
+        "owner": 9,
+        "routes": 192
+      }
+    ],
+    "routes": 192,
+    "route_max_abs": 0.0,
+    "token_max_abs": 0.0,
+    "inactive_route_nonzero": 0,
+    "inactive_token_nonzero": 0,
+    "steady_kernel_ms": {
+      "dispatch_pack": {
+        "median": 1.6600030357949436,
+        "calls": 12
+      },
+      "dispatch_unpack": {
+        "median": 1.0914105223491788,
+        "calls": 12
+      },
+      "return_pack": {
+        "median": 1.3002160121686757,
+        "calls": 12
+      },
+      "source_restore": {
+        "median": 0.7800934836268425,
+        "calls": 12
+      }
+    }
+  },
+  "resident_route_width": {
+    "passed": true,
+    "component": "resident-captured-controls",
+    "bucket": 32,
+    "readback_bytes": 768
+  },
+  "local_hccl": [
+    {
+      "passed": true,
+      "component": "ep-hccl-receive",
+      "physical_cards": 2,
+      "bucket_rows": 32,
+      "baseline_ms": 7.623226032592356,
+      "write_only_ms": 6.415590993128717,
+      "baseline_fill_bytes": 21005312,
+      "write_only_fill_bytes": 0,
+      "exact_all_to_all_and_following_d2d": true
+    },
+    {
+      "passed": true,
+      "component": "ep-hccl-receive",
+      "physical_cards": 2,
+      "bucket_rows": 64,
+      "baseline_ms": 7.39942496875301,
+      "write_only_ms": 5.674761952832341,
+      "baseline_fill_bytes": 42009600,
+      "write_only_fill_bytes": 0,
+      "exact_all_to_all_and_following_d2d": true
+    },
+    {
+      "passed": true,
+      "component": "ep-hccl-receive",
+      "physical_cards": 2,
+      "bucket_rows": 128,
+      "baseline_ms": 9.035493014380336,
+      "write_only_ms": 6.393640534952283,
+      "baseline_fill_bytes": 84018176,
+      "write_only_fill_bytes": 0,
+      "exact_all_to_all_and_following_d2d": true
+    },
+    {
+      "passed": true,
+      "component": "ep-hccl-receive",
+      "physical_cards": 2,
+      "bucket_rows": 192,
+      "baseline_ms": 10.412504489067942,
+      "write_only_ms": 6.6844719694927335,
+      "baseline_fill_bytes": 126026752,
+      "write_only_fill_bytes": 0,
+      "exact_all_to_all_and_following_d2d": true
+    }
+  ]
+}

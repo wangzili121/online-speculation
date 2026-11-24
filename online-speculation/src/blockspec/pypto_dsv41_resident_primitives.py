@@ -24,6 +24,7 @@ from .dsv41_device_update import SuffixGradient
 from .dsv41_online_profile import active_profile, profile_online, profiled_stage, timed_stage
 from .dsv41_serving_online import DSV41SequenceSpan
 from .dsv41_suffix import DSV41SuffixPlan
+from .pypto_dsv41_ep_vjp import EPVJPGeometry, ROUTES
 from .pypto_dsv41_resident_abi import with_resident_entry
 
 
@@ -639,6 +640,10 @@ class DSV41ResidentPrimitives:
             raise ValueError("synchronized frozen-tail reverse has an invalid update number")
         return f"online-frozen-tail-step{step}-layer{layer}-{phase}-v1"
 
+    def _reverse_bucket_rows(self, layer, synchronization):
+        widths = synchronization["reverse"].get("ep_bucket_rows")
+        return widths[self.plan.layers.index(layer)] if widths else ROUTES
+
     def _ep_exchange(self, stage, packets):
         """Run one fixed-packet EP16 all-to-all on every node-local rank."""
         transport = getattr(self.native, "transport", None)
@@ -662,12 +667,13 @@ class DSV41ResidentPrimitives:
         return output
 
     @profiled_stage("ep_pack")
-    def _ep_dispatch_packets(self, sources):
+    def _ep_dispatch_packets(self, sources, bucket_rows=ROUTES):
         """Create the same fixed dispatch ABI on owner and participant nodes."""
         from .pypto_dsv41_ep_vjp import (
-            EXPERTS, MAP_PAD, PACKET_FIELDS, PACKET_ROWS, ROUTES,
+            EP_WORLD, MAP_PAD, PACKET_FIELDS,
             make_ep_vjp_dispatch_pack,
         )
+        packet_rows = EPVJPGeometry(bucket_rows=bucket_rows).packet_rows
 
         # The expert slab holds one K32 block, split across the owner ranks.
         spans = [self._local_span(captured) for captured, _ in sources.values()]
@@ -704,14 +710,14 @@ class DSV41ResidentPrimitives:
                 active = self._local_span(captured).rows
 
             sent_metadata = self._workspace(
-                rank, (PACKET_ROWS, PACKET_FIELDS), torch.int64, fill=None,
+                rank, (packet_rows, PACKET_FIELDS), torch.int64, fill=None,
             )
-            sent_x = self._workspace(rank, (PACKET_ROWS, HIDDEN), fill=None)
-            sent_dy = self._workspace(rank, (PACKET_ROWS, HIDDEN), fill=None)
-            sent_counts = self._workspace(rank, (EXPERTS // 24, MAP_PAD), torch.int32, fill=None)
+            sent_x = self._workspace(rank, (packet_rows, HIDDEN), fill=None)
+            sent_dy = self._workspace(rank, (packet_rows, HIDDEN), fill=None)
+            sent_counts = self._workspace(rank, (EP_WORLD, MAP_PAD), torch.int32, fill=None)
             self._execute(
-                ("ep-vjp-dispatch-pack",), rank,
-                make_ep_vjp_dispatch_pack,
+                ("ep-vjp-dispatch-pack", bucket_rows), rank,
+                lambda: make_ep_vjp_dispatch_pack(bucket_rows),
                 normalized_x=normalized, route_output_gradient=expert_gradient,
                 route_ids=route_ids, sent_metadata=sent_metadata,
                 sent_x=sent_x, sent_dy=sent_dy, sent_counts=sent_counts,
@@ -732,13 +738,14 @@ class DSV41ResidentPrimitives:
         return packets, originals
 
     @profiled_stage("ep_expert_owner")
-    def _ep_owner_expert_packets(self, layer, received):
+    def _ep_owner_expert_packets(self, layer, received, bucket_rows):
         """Run frozen expert input VJPs for the populated slabs on each local rank."""
         from .pypto_dsv41_ep_vjp import (
-            EXPERT_CAPACITY, LOCAL_EXPERTS, MAP_PAD, PACKET_ROWS,
+            EXPERT_CAPACITY, LOCAL_EXPERTS, MAP_PAD,
             SLAB_ROWS, make_ep_vjp_dispatch_unpack, make_ep_vjp_return_pack,
         )
         from .pypto_dsv41_moe_vjp import make_frozen_w8a8_expert_input_vjp
+        packet_rows = EPVJPGeometry(bucket_rows=bucket_rows).packet_rows
 
         layer_weights = self.native.weights.for_layer(layer)["expert"]
         profile = active_profile()
@@ -750,11 +757,11 @@ class DSV41ResidentPrimitives:
             expert_x = self._workspace(rank, (SLAB_ROWS, HIDDEN), fill=None)
             expert_dy = self._workspace(rank, (SLAB_ROWS, HIDDEN), fill=None)
             expert_counts = self._workspace(rank, (LOCAL_EXPERTS,), torch.int32, fill=None)
-            packet_map = self._workspace(rank, (PACKET_ROWS, MAP_PAD), torch.int32, fill=None)
+            packet_map = self._workspace(rank, (packet_rows, MAP_PAD), torch.int32, fill=None)
             received_total = self._workspace(rank, (MAP_PAD,), torch.int32, fill=None)
             self._execute(
-                ("ep-vjp-dispatch-unpack",), rank,
-                make_ep_vjp_dispatch_unpack,
+                ("ep-vjp-dispatch-unpack", bucket_rows), rank,
+                lambda: make_ep_vjp_dispatch_unpack(bucket_rows),
                 packet_metadata=packet["metadata"], packet_x=packet["x"],
                 packet_dy=packet["dy"], packet_counts=packet["counts"],
                 expert_x=expert_x, expert_dy=expert_dy,
@@ -801,10 +808,10 @@ class DSV41ResidentPrimitives:
                     input_gradient=expert_dx[begin:end],
                 )
 
-            sent_dx = self._workspace(rank, (PACKET_ROWS, HIDDEN), fill=None)
+            sent_dx = self._workspace(rank, (packet_rows, HIDDEN), fill=None)
             self._execute(
-                ("ep-vjp-return-pack",), rank,
-                make_ep_vjp_return_pack,
+                ("ep-vjp-return-pack", bucket_rows), rank,
+                lambda: make_ep_vjp_return_pack(bucket_rows),
                 expert_dx=expert_dx, packet_counts=packet["counts"],
                 packet_map=packet_map, sent_dx=sent_dx,
             )
@@ -833,9 +840,9 @@ class DSV41ResidentPrimitives:
             )
 
     @profiled_stage("ep_restore_routes")
-    def _ep_routed_input_gradients(self, returned, originals, sources):
+    def _ep_routed_input_gradients(self, returned, originals, sources, bucket_rows):
         """Restore route order only for the TP ranks that originated K32 rows."""
-        from .pypto_dsv41_ep_vjp import PACKET_ROWS, ROUTES, make_ep_vjp_source_restore
+        from .pypto_dsv41_ep_vjp import make_ep_vjp_source_restore
 
         result = {}
         positions = {rank: index for index, rank in enumerate(self.ranks)}
@@ -846,8 +853,8 @@ class DSV41ResidentPrimitives:
             route_dx = self._workspace(rank, (ROUTES, HIDDEN))
             token_dx = self._workspace(rank, (ROWS, HIDDEN))
             self._execute(
-                ("ep-vjp-source-restore",), rank,
-                make_ep_vjp_source_restore,
+                ("ep-vjp-source-restore", bucket_rows), rank,
+                lambda: make_ep_vjp_source_restore(bucket_rows),
                 returned_dx=returned[positions[rank]]["frozen-tail"]["dx"],
                 sent_metadata=metadata, sent_counts=counts,
                 route_dx=route_dx, token_dx=token_dx,
@@ -865,6 +872,7 @@ class DSV41ResidentPrimitives:
             layer, synchronization, "dispatch",
         )
         return_stage = self._reverse_sync_stage(layer, synchronization, "return")
+        bucket_rows = self._reverse_bucket_rows(layer, synchronization)
         ranks = tuple(ranks)
         if (
             len(ranks) != 4
@@ -884,11 +892,11 @@ class DSV41ResidentPrimitives:
             for rank in ranks
         }
         sources = {rank: (captured[rank], envelopes[rank]) for rank in ranks}
-        packets, originals = self._ep_dispatch_packets(sources)
+        packets, originals = self._ep_dispatch_packets(sources, bucket_rows)
         received = self._ep_exchange(dispatch_stage, packets)
-        return_packets = self._ep_owner_expert_packets(layer, received)
+        return_packets = self._ep_owner_expert_packets(layer, received, bucket_rows)
         returned = self._ep_exchange(return_stage, return_packets)
-        routed = self._ep_routed_input_gradients(returned, originals, sources)
+        routed = self._ep_routed_input_gradients(returned, originals, sources, bucket_rows)
         return {
             rank: self._reverse_frozen_tail_finish(
                 layer=layer, rank=rank, captured=captured[rank],
@@ -903,9 +911,10 @@ class DSV41ResidentPrimitives:
             layer, synchronization, "dispatch",
         )
         return_stage = self._reverse_sync_stage(layer, synchronization, "return")
-        packets, _ = self._ep_dispatch_packets({})
+        bucket_rows = self._reverse_bucket_rows(layer, synchronization)
+        packets, _ = self._ep_dispatch_packets({}, bucket_rows)
         received = self._ep_exchange(dispatch_stage, packets)
-        return_packets = self._ep_owner_expert_packets(layer, received)
+        return_packets = self._ep_owner_expert_packets(layer, received, bucket_rows)
         self._ep_exchange(return_stage, return_packets)
 
     @profiled_stage("moe_route_vjp")

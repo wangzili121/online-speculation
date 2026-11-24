@@ -83,6 +83,7 @@ class OnlineUpdateProfile:
             "update": contract["update_number"], "request_id": contract["request_id"],
             "owner_dp": contract["owner"][0], "owner_is_local": owner_is_local,
             "teacher_rows": contract["teacher_rows"],
+            "ep_bucket_rows": contract.get("reverse", {}).get("ep_bucket_rows"),
             "stage_seconds": Counter(), "kernel_dispatch_seconds": Counter(),
             "counts": Counter(), "compiled": [],
             "first_dispatch": [],
@@ -137,6 +138,7 @@ class OnlineUpdateProfile:
             rows.append({
                 "update": a["update"], "owner_dp": a["owner_dp"],
                 "teacher_rows": a["teacher_rows"],
+                "ep_bucket_rows": owner.get("ep_bucket_rows"),
                 "loss": owner["loss"],
                 "gradient_norm": owner["gradient_norm"],
                 "hot": not any(row["compiled"] or row["first_dispatch"] for row in (a, b)),

@@ -16,6 +16,8 @@ def main():
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--iterations", type=int, default=0, help="Timed repeats after each correctness launch")
     parser.add_argument("--active", type=int, default=3, help="Number of active source rows in the K32 block")
+    parser.add_argument("--bucket-rows", type=int, help="Override the selected EP wire width")
+    parser.add_argument("--routing", choices=("mixed", "balanced", "skewed", "concentrated"), default="mixed")
     args = parser.parse_args()
     if args.output.exists():
         parser.error("output must not already exist")
@@ -27,6 +29,8 @@ def main():
     from pypto.ir import DistributedConfig
     from pypto.runtime import ChipWorker, ExecutionMode, RunConfig
     from blockspec.pypto_dsv41_ep_vjp import (
+        EPVJPGeometry,
+        EP_BUCKET_WIDTHS,
         EP_WORLD,
         EXPERT_CAPACITY,
         HIDDEN,
@@ -34,7 +38,6 @@ def main():
         LOCAL_EXPERTS,
         MAP_PAD,
         PACKET_FIELDS,
-        PACKET_ROWS,
         ROUTES,
         SLAB_ROWS,
         TOPK,
@@ -42,9 +45,29 @@ def main():
         make_ep_vjp_dispatch_unpack,
         make_ep_vjp_return_pack,
         make_ep_vjp_source_restore,
+        route_bucket_width,
     )
     if not 0 <= args.active <= K32_ROWS:
         parser.error(f"active must be in [0, {K32_ROWS}]")
+
+    active, source_rank = args.active, 9
+    owners = {
+        "mixed": (1, 7, 8, 15, 1, 8),
+        "balanced": (1, 3, 7, 8, 12, 15),
+        "skewed": (1, 1, 1, 1, 7, 8),
+        "concentrated": (9,) * TOPK,
+    }[args.routing]
+    route_ids = torch.zeros(K32_ROWS, TOPK, dtype=torch.int32)
+    for token in range(active):
+        for slot in range(TOPK):
+            route = token * TOPK + slot
+            owner = owners[route % len(owners)]
+            route_ids[token, slot] = owner * LOCAL_EXPERTS + route % LOCAL_EXPERTS
+    selected = route_bucket_width([route_ids[:active]])
+    bucket_rows = args.bucket_rows if args.bucket_rows is not None else ROUTES
+    if bucket_rows not in EP_BUCKET_WIDTHS or bucket_rows < selected:
+        parser.error(f"{args.routing} requires a supported bucket width of at least {selected}")
+    PACKET_ROWS = EPVJPGeometry(bucket_rows=bucket_rows).packet_rows
 
     config = RunConfig(
         backend_type=BackendType.Ascend910B,
@@ -57,7 +80,7 @@ def main():
         shape, dtype=dtype, device="meta",
     )
     programs = {
-        "dispatch_pack": make_ep_vjp_dispatch_pack().compile(
+        "dispatch_pack": make_ep_vjp_dispatch_pack(bucket_rows).compile(
             meta((K32_ROWS, HIDDEN)), meta((ROUTES, HIDDEN)),
             meta((K32_ROWS, TOPK), torch.int32),
             meta((PACKET_ROWS, PACKET_FIELDS), torch.int64),
@@ -65,7 +88,7 @@ def main():
             meta((EP_WORLD, MAP_PAD), torch.int32), K32_ROWS, 9,
             config=config,
         ),
-        "dispatch_unpack": make_ep_vjp_dispatch_unpack().compile(
+        "dispatch_unpack": make_ep_vjp_dispatch_unpack(bucket_rows).compile(
             meta((PACKET_ROWS, PACKET_FIELDS), torch.int64),
             meta((PACKET_ROWS, HIDDEN)), meta((PACKET_ROWS, HIDDEN)),
             meta((EP_WORLD, MAP_PAD), torch.int32),
@@ -74,13 +97,13 @@ def main():
             meta((PACKET_ROWS, MAP_PAD), torch.int32),
             meta((MAP_PAD,), torch.int32), 9, config=config,
         ),
-        "return_pack": make_ep_vjp_return_pack().compile(
+        "return_pack": make_ep_vjp_return_pack(bucket_rows).compile(
             meta((SLAB_ROWS, HIDDEN)),
             meta((EP_WORLD, MAP_PAD), torch.int32),
             meta((PACKET_ROWS, MAP_PAD), torch.int32),
             meta((PACKET_ROWS, HIDDEN)), config=config,
         ),
-        "source_restore": make_ep_vjp_source_restore().compile(
+        "source_restore": make_ep_vjp_source_restore(bucket_rows).compile(
             meta((PACKET_ROWS, HIDDEN)),
             meta((PACKET_ROWS, PACKET_FIELDS), torch.int64),
             meta((EP_WORLD, MAP_PAD), torch.int32),
@@ -94,10 +117,13 @@ def main():
         "compiled": sorted(programs),
         "executed": False,
         "simulator_execution": False,
+        "routing": args.routing,
+        "selected_bucket_rows": selected,
         "shape": {
             "rows": K32_ROWS, "topk": TOPK, "hidden": HIDDEN,
             "experts": LOCAL_EXPERTS * EP_WORLD, "world": EP_WORLD,
             "packet_rows": PACKET_ROWS, "expert_capacity": EXPERT_CAPACITY,
+            "bucket_rows": bucket_rows,
         },
     }
     if args.compile_only:
@@ -108,14 +134,6 @@ def main():
 
     torch.manual_seed(4117)
     torch.set_num_threads(4)
-    active, source_rank = args.active, 9
-    owners = (1, 7, 8, 15, 1, 8)
-    route_ids = torch.zeros(K32_ROWS, TOPK, dtype=torch.int32)
-    for token in range(active):
-        for slot in range(TOPK):
-            route = token * TOPK + slot
-            owner = owners[route % len(owners)]
-            route_ids[token, slot] = owner * LOCAL_EXPERTS + route % LOCAL_EXPERTS
     normalized_x = (torch.randn(K32_ROWS, HIDDEN) * .05).bfloat16()
     route_dy = (torch.randn(ROUTES, HIDDEN) * .05).bfloat16()
     expected_route_dx = torch.zeros_like(route_dy)
@@ -185,7 +203,7 @@ def main():
         packet_rows = {}
         for owner in range(EP_WORLD):
             for row in range(int(sent_counts[owner, 0])):
-                packet = owner * ROUTES + row
+                packet = owner * bucket_rows + row
                 token, slot = sent_meta[packet, 1:3].tolist()
                 actual_x = sent_x[packet]
                 actual_dy = sent_dy[packet]
@@ -195,8 +213,8 @@ def main():
                 )
                 packet_rows[packet] = (actual_x, actual_dy)
         for owner in range(EP_WORLD):
-            invalid = owner * ROUTES + int(sent_counts[owner, 0])
-            end = (owner + 1) * ROUTES
+            invalid = owner * bucket_rows + int(sent_counts[owner, 0])
+            end = (owner + 1) * bucket_rows
             if torch.count_nonzero(sent_x[invalid:end]):
                 raise AssertionError("inactive dispatch x row was not zero")
             if torch.count_nonzero(sent_dy[invalid:end]):
@@ -223,8 +241,8 @@ def main():
             received_x = torch.zeros(PACKET_ROWS, HIDDEN, dtype=torch.bfloat16)
             received_dy = torch.zeros_like(received_x)
             received_counts[source_rank, 0] = count
-            source_begin = owner * ROUTES
-            receive_begin = source_rank * ROUTES
+            source_begin = owner * bucket_rows
+            receive_begin = source_rank * bucket_rows
             received_meta[receive_begin:receive_begin + count] = sent_meta[
                 source_begin:source_begin + count
             ]

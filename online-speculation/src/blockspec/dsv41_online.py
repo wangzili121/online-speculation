@@ -15,6 +15,7 @@ from time import perf_counter
 import torch
 
 from .dsv41_suffix import DSV41SuffixPlan
+from .pypto_dsv41_ep_vjp import EP_BUCKET_WIDTHS
 
 
 def read_workload(path, limit=None):
@@ -149,6 +150,10 @@ class DSV41PreparedUpdate:
         plan = getattr(self.replay, "plan", None)
         if plan is None:
             raise RuntimeError("prepared update has no synchronized suffix plan")
+        reverse = {"protocol": "dsv41-synchronized-reverse-v1", "layers": list(plan.layers)}
+        widths = getattr(self.replay, "ep_bucket_rows", ())
+        if widths:
+            reverse["ep_bucket_rows"] = list(widths)
         return {
             "request_id": self.request_id,
             "owner": None if replay_owner is None else list(replay_owner),
@@ -157,10 +162,7 @@ class DSV41PreparedUpdate:
             "update_number": self.update_number,
             "learning_rate": self.learning_rate,
             "objective": self.objective,
-            "reverse": {
-                "protocol": "dsv41-synchronized-reverse-v1",
-                "layers": list(plan.layers),
-            },
+            "reverse": reverse,
         }
 
 
@@ -361,11 +363,17 @@ class DSV41OnlineController:
             or contract["objective"] != self.config.objective
             or contract["learning_rate"] != self.config.learning_rate_for(update_number)
             or not isinstance(reverse, dict)
-            or set(reverse) != {"protocol", "layers"}
-            or reverse["protocol"] != "dsv41-synchronized-reverse-v1"
-            or reverse["layers"] != expected_layers
+            or set(reverse) - {"protocol", "layers", "ep_bucket_rows"}
+            or reverse.get("protocol") != "dsv41-synchronized-reverse-v1"
+            or reverse.get("layers") != expected_layers
         ):
             raise ValueError("remote DSV4.1 update contract is stale or inconsistent")
+        widths = reverse.get("ep_bucket_rows")
+        if "ep_bucket_rows" in reverse and (
+            not isinstance(widths, list) or len(widths) != len(expected_layers)
+            or any(type(width) is not int or width not in EP_BUCKET_WIDTHS for width in widths)
+        ):
+            raise ValueError("remote DSV4.1 update has invalid EP bucket widths")
         participate = getattr(self.learner, "update_participant", None)
         if not callable(participate):
             raise RuntimeError(

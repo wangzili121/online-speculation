@@ -611,11 +611,13 @@ class SymbolicTensor:
 
 class SymbolicTransport:
     def __init__(self):
-        self.events = []
+        self.events, self.packet_rows = [], []
 
     def exchange(self, stage, packets, collective, group, *, write_only_receive=False):
         assert write_only_receive
         self.events.append((stage, collective, group, len(packets)))
+        payload = "x" if "-dispatch-" in stage else "dx"
+        self.packet_rows.append({packet["frozen-tail"][payload].shape[0] for packet in packets})
         return packets, []
 
 
@@ -633,7 +635,7 @@ class SymbolicExpertWeights:
 class SymbolicEPPrimitives(DSV41ResidentPrimitives):
     """Exercise the real owner/peer scheduler without allocating packet slabs."""
 
-    def __init__(self, ranks):
+    def __init__(self, ranks, last_n=1):
         draft = Draft(ranks=ranks)
         draft.resident = SimpleNamespace(
             read_control=self._expert_counts, copy_tensor=self._copy_tensor,
@@ -647,7 +649,7 @@ class SymbolicEPPrimitives(DSV41ResidentPrimitives):
                 weights=self.weights, runtime=object(), transport=self.transport,
             ),
             cluster=None,
-            config=config(),
+            config=config(last_n),
         )
         self.events = []
         self.workspace_number = 0
@@ -703,14 +705,17 @@ def symbolic_capture(rank):
     }
 
 
-def reverse_contract():
-    return {
+def reverse_contract(bucket_rows=None):
+    result = {
         "update_number": 7,
         "reverse": {
             "protocol": "dsv41-synchronized-reverse-v1",
             "layers": [39],
         },
     }
+    if bucket_rows is not None:
+        result["reverse"]["ep_bucket_rows"] = [bucket_rows]
+    return result
 
 
 def test_owner_batch_runs_fixed_ep16_packets_and_only_populated_experts():
@@ -726,7 +731,7 @@ def test_owner_batch_runs_fixed_ep16_packets_and_only_populated_experts():
     result = value.reverse_frozen_tail_owner_batch(
         layer=39, ranks=ranks, captured=captured,
         states={rank: object() for rank in ranks},
-        output_gradients=gradients, synchronization=reverse_contract(),
+        output_gradients=gradients, synchronization=reverse_contract(32),
     )
 
     assert set(result) == set(ranks)
@@ -734,6 +739,7 @@ def test_owner_batch_runs_fixed_ep16_packets_and_only_populated_experts():
         ("online-frozen-tail-step7-layer39-dispatch-v1", "all_to_all", "ep", 8),
         ("online-frozen-tail-step7-layer39-return-v1", "all_to_all", "ep", 8),
     ]
+    assert value.transport.packet_rows == [{512}, {512}]
     packs = [event for event in value.events if event[0] == "ep-vjp-dispatch-pack"]
     assert [event[2]["active"] for event in packs] == [8] * 4 + [0] * 4
     assert len([event for event in value.events if event[0] == "ep-vjp-dispatch-unpack"]) == 8
@@ -749,13 +755,14 @@ def test_owner_batch_runs_fixed_ep16_packets_and_only_populated_experts():
 def test_peer_participates_in_both_collectives_and_reverses_received_routes():
     value = SymbolicEPPrimitives(range(8, 16))
     value.participate_frozen_tail_peer(
-        layer=39, synchronization=reverse_contract(),
+        layer=39, synchronization=reverse_contract(32),
     )
 
     assert value.transport.events == [
         ("online-frozen-tail-step7-layer39-dispatch-v1", "all_to_all", "ep", 8),
         ("online-frozen-tail-step7-layer39-return-v1", "all_to_all", "ep", 8),
     ]
+    assert value.transport.packet_rows == [{512}, {512}]
     packs = [event for event in value.events if event[0] == "ep-vjp-dispatch-pack"]
     assert [event[2]["active"] for event in packs] == [0] * 8
     assert len([event for event in value.events if event[0] == "routed-expert-input-vjp"]) == 2
@@ -768,6 +775,15 @@ def test_ep16_dispatch_rejects_overlapping_replay_spans():
     captures = {rank: (symbolic_capture(0), None) for rank in range(4)}
     with pytest.raises(ValueError, match="disjoint owner spans"):
         value._ep_dispatch_packets(captures)
+
+
+def test_ep16_peer_looks_up_each_wire_width_by_layer_in_reverse_order():
+    value = SymbolicEPPrimitives(range(8, 16), last_n=2)
+    contract = reverse_contract()
+    contract["reverse"].update(layers=[38, 39], ep_bucket_rows=[192, 32])
+    for layer in (39, 38):
+        value.participate_frozen_tail_peer(layer=layer, synchronization=contract)
+    assert value.transport.packet_rows == [{512}, {512}, {3072}, {3072}]
 
 
 def test_ep16_reverse_rejects_a_stale_or_partial_contract():

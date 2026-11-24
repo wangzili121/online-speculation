@@ -224,7 +224,20 @@ def test_pypto_source_defines_four_fixed_shape_packet_kernels():
     ):
         assert name in source
     assert "pl.Tensor[[K32_ROWS, HIDDEN], pl.BF16]" in source
-    assert "pl.Tensor[[PACKET_ROWS, PACKET_FIELDS], pl.INT64]" in source
+    assert "pl.Tensor[[P, PACKET_FIELDS], pl.INT64]" in source
     assert "pl.Tensor[[SLAB_ROWS, HIDDEN], pl.BF16]" in source
     assert "deps=[metadata_ready]" in inspect.getsource(ep.make_ep_vjp_dispatch_unpack)
     assert "deps=[indexed]" in inspect.getsource(ep.make_ep_vjp_source_restore)
+
+
+def test_route_bucket_uses_the_peak_from_one_source_to_one_owner():
+    def route_ids(rows, repeated_slots):
+        slots = [slot if slot < repeated_slots else slot * ep.LOCAL_EXPERTS for slot in range(ep.TOPK)]
+        return torch.tensor(slots, dtype=torch.int32).repeat(rows, 1)
+
+    # Two senders can each fill a bucket without increasing the wire stride.
+    assert ep.route_bucket_width([route_ids(16, 2), route_ids(16, 2)]) == 32
+    assert ep.route_bucket_width([route_ids(16, 3)]) == 64
+    assert ep.route_bucket_width([route_ids(32, 4)]) == 128
+    assert ep.route_bucket_width([route_ids(32, ep.TOPK)]) == 192
+    assert ep.route_bucket_width([]) == 32

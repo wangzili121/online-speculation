@@ -2,8 +2,8 @@
 
 The forward router is replayed, so backward dispatches the normalized expert
 input and one expert-output gradient for every recorded route.  HCCL remains
-outside these leaves: each packet tensor is laid out as sixteen fixed peer
-buckets and can be passed directly through the resident EP all-to-all.
+outside these leaves: each packet tensor is laid out as sixteen equal-width
+peer buckets sized from the captured route IDs for that layer.
 """
 
 from dataclasses import dataclass
@@ -17,6 +17,7 @@ HIDDEN = 5120
 LOCAL_EXPERTS = EXPERTS // EP_WORLD
 ROUTES = K32_ROWS * TOPK
 PACKET_ROWS = EP_WORLD * ROUTES
+EP_BUCKET_WIDTHS = (32, 64, 128, ROUTES)
 # One online update routes a single K32 replay, partitioned over the owner TP
 # group. Top-K selects each expert at most once per token.
 EXPERT_CAPACITY = K32_ROWS
@@ -35,12 +36,14 @@ class EPVJPGeometry:
     experts: int = EXPERTS
     world: int = EP_WORLD
     hidden: int = HIDDEN
+    bucket_rows: int = ROUTES
 
     def __post_init__(self):
         if (
             self.rows != K32_ROWS or self.topk != TOPK
             or self.experts != EXPERTS or self.world != EP_WORLD
             or self.hidden != HIDDEN
+            or type(self.bucket_rows) is not int or self.bucket_rows not in EP_BUCKET_WIDTHS
         ):
             raise ValueError("Orthrus DSV4.1 EP VJP uses the fixed K32/EP16 ABI")
 
@@ -50,7 +53,7 @@ class EPVJPGeometry:
 
     @property
     def packet_rows(self):
-        return self.world * self.routes
+        return self.world * self.bucket_rows
 
     @property
     def local_experts(self):
@@ -76,18 +79,35 @@ def global_ep_rank(node_rank, local_rank, *, ranks_per_node=8):
     return node_rank * ranks_per_node + local_rank
 
 
-def make_ep_vjp_dispatch_pack():
+def route_bucket_width(source_ids):
+    """Choose one wire width for the largest source-to-owner bucket."""
+    import torch
+
+    maximum = 0
+    for ids in source_ids:
+        if (ids.ndim != 2 or ids.shape[0] > K32_ROWS or ids.shape[1] != TOPK
+                or ids.dtype != torch.int32):
+            raise ValueError("EP route IDs must be [rows, top-k] INT32 controls")
+        if ((ids < 0) | (ids >= EXPERTS)).any():
+            raise ValueError("EP route ID has no expert owner")
+        owners = ids.flatten().to(torch.int64) // LOCAL_EXPERTS
+        maximum = max(maximum, int(torch.bincount(owners, minlength=EP_WORLD).max()))
+    return next(width for width in EP_BUCKET_WIDTHS if width >= maximum)
+
+
+def make_ep_vjp_dispatch_pack(bucket_rows=ROUTES):
     """Pack normalized x and route dY into global-owner EP16 buckets."""
     import pypto.language as pl
+    P = EPVJPGeometry(bucket_rows=bucket_rows).packet_rows
 
     @pl.jit
     def ep_vjp_dispatch_pack(
         normalized_x: pl.Tensor[[K32_ROWS, HIDDEN], pl.BF16],
         route_output_gradient: pl.Tensor[[ROUTES, HIDDEN], pl.BF16],
         route_ids: pl.Tensor[[K32_ROWS, TOPK], pl.INT32],
-        sent_metadata: pl.InOut[pl.Tensor[[PACKET_ROWS, PACKET_FIELDS], pl.INT64]],
-        sent_x: pl.InOut[pl.Tensor[[PACKET_ROWS, HIDDEN], pl.BF16]],
-        sent_dy: pl.InOut[pl.Tensor[[PACKET_ROWS, HIDDEN], pl.BF16]],
+        sent_metadata: pl.InOut[pl.Tensor[[P, PACKET_FIELDS], pl.INT64]],
+        sent_x: pl.InOut[pl.Tensor[[P, HIDDEN], pl.BF16]],
+        sent_dy: pl.InOut[pl.Tensor[[P, HIDDEN], pl.BF16]],
         sent_counts: pl.InOut[pl.Tensor[[EP_WORLD, MAP_PAD], pl.INT32]],
         active: pl.Scalar[pl.INT32],
         source_rank: pl.Scalar[pl.INT32],
@@ -100,8 +120,8 @@ def make_ep_vjp_dispatch_pack():
             for peer in pl.range(EP_WORLD):
                 for field in pl.range(MAP_PAD):
                     pl.write(sent_counts, [peer, field], pl.cast(0, pl.INT32))
-                for row in pl.range(ROUTES):
-                    packet = peer * ROUTES + row
+                for row in pl.range(bucket_rows):
+                    packet = peer * bucket_rows + row
                     for field in pl.range(PACKET_FIELDS):
                         pl.write(sent_metadata, [packet, field], pl.cast(0, pl.INT64))
                 count = pl.cast(0, pl.INDEX)
@@ -109,7 +129,7 @@ def make_ep_vjp_dispatch_pack():
                     for slot in pl.range(TOPK):
                         expert = pl.read(route_ids, [token, slot])
                         if expert // LOCAL_EXPERTS == peer:
-                            packet = peer * ROUTES + count
+                            packet = peer * bucket_rows + count
                             pl.write(sent_metadata, [packet, 0], pl.cast(source_rank, pl.INT64))
                             pl.write(sent_metadata, [packet, 1], pl.cast(token, pl.INT64))
                             pl.write(sent_metadata, [packet, 2], pl.cast(slot, pl.INT64))
@@ -118,13 +138,13 @@ def make_ep_vjp_dispatch_pack():
                 pl.write(sent_counts, [peer, 0], pl.cast(count, pl.INT32))
 
         with pl.spmd(
-            PACKET_ROWS,
+            P,
             name_hint="orthrus_ep_vjp_pack_payload",
             deps=[metadata_ready],
         ):
             packet = pl.tile.get_block_idx()
-            peer = packet // ROUTES
-            bucket_row = packet % ROUTES
+            peer = packet // bucket_rows
+            bucket_row = packet % bucket_rows
             peer_count = pl.read(sent_counts, [peer, 0])
             if bucket_row < peer_count:
                 token = pl.cast(pl.read(sent_metadata, [packet, 1]), pl.INDEX)
@@ -143,20 +163,21 @@ def make_ep_vjp_dispatch_pack():
     return ep_vjp_dispatch_pack
 
 
-def make_ep_vjp_dispatch_unpack():
+def make_ep_vjp_dispatch_unpack(bucket_rows=ROUTES):
     """Regroup received packets into fixed slabs for 24 owned experts."""
     import pypto.language as pl
+    P = EPVJPGeometry(bucket_rows=bucket_rows).packet_rows
 
     @pl.jit
     def ep_vjp_dispatch_unpack(
-        packet_metadata: pl.Tensor[[PACKET_ROWS, PACKET_FIELDS], pl.INT64],
-        packet_x: pl.Tensor[[PACKET_ROWS, HIDDEN], pl.BF16],
-        packet_dy: pl.Tensor[[PACKET_ROWS, HIDDEN], pl.BF16],
+        packet_metadata: pl.Tensor[[P, PACKET_FIELDS], pl.INT64],
+        packet_x: pl.Tensor[[P, HIDDEN], pl.BF16],
+        packet_dy: pl.Tensor[[P, HIDDEN], pl.BF16],
         packet_counts: pl.Tensor[[EP_WORLD, MAP_PAD], pl.INT32],
         expert_x: pl.InOut[pl.Tensor[[SLAB_ROWS, HIDDEN], pl.BF16]],
         expert_dy: pl.InOut[pl.Tensor[[SLAB_ROWS, HIDDEN], pl.BF16]],
         expert_counts: pl.InOut[pl.Tensor[[LOCAL_EXPERTS], pl.INT32]],
-        packet_map: pl.InOut[pl.Tensor[[PACKET_ROWS, MAP_PAD], pl.INT32]],
+        packet_map: pl.InOut[pl.Tensor[[P, MAP_PAD], pl.INT32]],
         received_total: pl.InOut[pl.Tensor[[MAP_PAD], pl.INT32]],
         owner_rank: pl.Scalar[pl.INT32],
     ):
@@ -165,7 +186,7 @@ def make_ep_vjp_dispatch_unpack():
         slab_packet = pl.create_tensor([LOCAL_EXPERTS, EXPERT_CAPACITY], dtype=pl.INT32)
         with pl.spmd(1, name_hint="orthrus_ep_vjp_unpack_metadata") as metadata_ready:
             _block = pl.tile.get_block_idx()
-            for packet in pl.range(PACKET_ROWS):
+            for packet in pl.range(P):
                 for field in pl.range(MAP_PAD):
                     pl.write(packet_map, [packet, field], pl.cast(0, pl.INT32))
             total = pl.cast(0, pl.INDEX)
@@ -175,7 +196,7 @@ def make_ep_vjp_dispatch_unpack():
                 for source in pl.range(EP_WORLD):
                     source_count = pl.cast(pl.read(packet_counts, [source, 0]), pl.INDEX)
                     for row in pl.range(source_count):
-                        packet = source * ROUTES + row
+                        packet = source * bucket_rows + row
                         if pl.read(packet_metadata, [packet, 3]) == expert:
                             slab = local * EXPERT_CAPACITY + count
                             pl.write(slab_packet, [local, count], pl.cast(packet, pl.INT32))
@@ -222,24 +243,25 @@ def make_ep_vjp_dispatch_unpack():
     return ep_vjp_dispatch_unpack
 
 
-def make_ep_vjp_return_pack():
+def make_ep_vjp_return_pack(bucket_rows=ROUTES):
     """Pack owner-computed expert dX into the original source buckets."""
     import pypto.language as pl
+    P = EPVJPGeometry(bucket_rows=bucket_rows).packet_rows
 
     @pl.jit
     def ep_vjp_return_pack(
         expert_dx: pl.Tensor[[SLAB_ROWS, HIDDEN], pl.BF16],
         packet_counts: pl.Tensor[[EP_WORLD, MAP_PAD], pl.INT32],
-        packet_map: pl.Tensor[[PACKET_ROWS, MAP_PAD], pl.INT32],
-        sent_dx: pl.InOut[pl.Tensor[[PACKET_ROWS, HIDDEN], pl.BF16]],
+        packet_map: pl.Tensor[[P, MAP_PAD], pl.INT32],
+        sent_dx: pl.InOut[pl.Tensor[[P, HIDDEN], pl.BF16]],
     ):
         with pl.spmd(
-            PACKET_ROWS,
+            P,
             name_hint="orthrus_ep_vjp_return_pack",
         ):
             packet = pl.tile.get_block_idx()
-            source = packet // ROUTES
-            bucket_row = packet % ROUTES
+            source = packet // bucket_rows
+            bucket_row = packet % bucket_rows
             if (
                 bucket_row < pl.read(packet_counts, [source, 0])
                 and pl.read(packet_map, [packet, 1]) != 0
@@ -255,14 +277,15 @@ def make_ep_vjp_return_pack():
     return ep_vjp_return_pack
 
 
-def make_ep_vjp_source_restore():
+def make_ep_vjp_source_restore(bucket_rows=ROUTES):
     """Restore route order and deterministically sum six dX rows per token."""
     import pypto.language as pl
+    P = EPVJPGeometry(bucket_rows=bucket_rows).packet_rows
 
     @pl.jit
     def ep_vjp_source_restore(
-        returned_dx: pl.Tensor[[PACKET_ROWS, HIDDEN], pl.BF16],
-        sent_metadata: pl.Tensor[[PACKET_ROWS, PACKET_FIELDS], pl.INT64],
+        returned_dx: pl.Tensor[[P, HIDDEN], pl.BF16],
+        sent_metadata: pl.Tensor[[P, PACKET_FIELDS], pl.INT64],
         sent_counts: pl.Tensor[[EP_WORLD, MAP_PAD], pl.INT32],
         route_dx: pl.InOut[pl.Tensor[[ROUTES, HIDDEN], pl.BF16]],
         token_dx: pl.InOut[pl.Tensor[[K32_ROWS, HIDDEN], pl.BF16]],
@@ -278,7 +301,7 @@ def make_ep_vjp_source_restore():
             for owner in pl.range(EP_WORLD):
                 count = pl.cast(pl.read(sent_counts, [owner, 0]), pl.INDEX)
                 for row in pl.range(count):
-                    packet = owner * ROUTES + row
+                    packet = owner * bucket_rows + row
                     if pl.read(sent_metadata, [packet, 0]) == source_rank:
                         token = pl.cast(pl.read(sent_metadata, [packet, 1]), pl.INDEX)
                         slot = pl.cast(pl.read(sent_metadata, [packet, 2]), pl.INDEX)

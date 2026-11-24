@@ -1,6 +1,6 @@
 """Serving bridge from native K32 verification to DSV4.1 online updates."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections.abc import Mapping
 
 import torch
@@ -75,6 +75,7 @@ class DSV41ServingReplay:
     layers: tuple[DSV41CapturedLayer, ...]
     student_logits: object | None = None
     release: object | None = None
+    ep_bucket_rows: tuple[int, ...] = ()
 
     def __post_init__(self):
         if not self.request_id or not self.prefix or len(self.owner) != 3:
@@ -84,14 +85,12 @@ class DSV41ServingReplay:
 
     def suffix(self):
         return DSV41SuffixReplay(self.plan, self.boundary, self.layers,
-                                 self.student_logits, owner=self.owner, release=self.release)
+                                 self.student_logits, owner=self.owner, release=self.release,
+                                 ep_bucket_rows=self.ep_bucket_rows)
 
     def with_student_logits(self, value):
         """Attach the draft distribution emitted by this exact captured pass."""
-        return DSV41ServingReplay(
-            self.request_id, self.prefix, self.owner, self.plan,
-            self.boundary, self.layers, value, self.release,
-        )
+        return replace(self, student_logits=value)
 
 
 class DSV41ServingOnline:
