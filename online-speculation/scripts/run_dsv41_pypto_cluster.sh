@@ -45,7 +45,7 @@ for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.p
     lib-pypto72-compat.patch lib-cluster-retry.patch lib-cluster-prefill-trace.patch \
     lib-deterministic-reduction.patch lib-cluster-online.patch lib-workspace-write-only.patch \
     lib-orthrus-output.patch lib-orthrus-controls.patch lib-orthrus-network-hotpath.patch \
-    lib-orthrus-verify-rows.patch; do
+    lib-orthrus-verify-rows.patch lib-orthrus-verify-parallel.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -160,6 +160,7 @@ session._record = receipts.append
 assert session._execute("accept", {"DP_engines": [{"active": 1, "dp_rank": 0}]}, (), (Handle(),)) is None
 assert session.native.epoch == session.calls == 1 and session.predecessor == "accept-probe"
 assert receipts[-1]["output_head_skipped"] and receipts[-1]["greedy_rows"] == []
+assert receipts[-1]["commit_tokens_per_dp"] == [1]
 
 class FeedbackProbe:
     bound = True
@@ -293,6 +294,37 @@ assert copies == [3, 4, 3, 4]
 assert cache[1:4].tolist() == [1, 2, 3] and cache[10:14].tolist() == [10, 11, 12, 13]
 assert int(cache[16]) == 90
 
+# Drain every live snapshot if model execution aborts and the rank queues
+# have already rejected future stages.
+from contextlib import contextmanager
+
+events = []
+@contextmanager
+def record_snapshot(rank, ranges):
+    events.append(("save", rank))
+    try:
+        yield
+    finally:
+        events.append(("restore", rank))
+
+def map_snapshot_ranks(function):
+    assert not disabled
+    return [function(rank) for rank in range(3)]
+
+disabled = False
+snapshots = SimpleNamespace(preserve_cache_ranges=record_snapshot, map_ranks=map_snapshot_ranks)
+with runtime_type.preserve_rank_cache_ranges(snapshots, {0: (), 2: ()}):
+    assert events == [("save", 0), ("save", 2)]
+assert events == [("save", 0), ("save", 2), ("restore", 0), ("restore", 2)]
+events.clear()
+try:
+    with runtime_type.preserve_rank_cache_ranges(snapshots, {0: (), 2: ()}):
+        disabled = True
+        raise RuntimeError("verify dispatch failed")
+except RuntimeError as error:
+    assert str(error) == "verify dispatch failed"
+assert events == [("save", 0), ("save", 2), ("restore", 2), ("restore", 0)]
+
 # A verifier crossing two nonconsecutive pages only backs up written SWA rows.
 # Compression and token history remain protected across all their live pages.
 provider_type = source.module("state").NetworkCacheProvider
@@ -335,7 +367,7 @@ print(json.dumps(dict(
                "closed_cleanup": True, "replay_survives_scratch_recycle": True},
     accept_without_logits=True, verifier_feedback_only_for_owner=True, compact_speculative_metadata=True,
     host_vocabulary_shard_order=True, compact_greedy_with_full_feedback=True,
-    verify_copy_coalescing=True, verify_swa_written_rows=True,
+    verify_copy_coalescing=True, verify_swa_written_rows=True, parallel_verifier_rollback=True,
 )))
 PY
 fi

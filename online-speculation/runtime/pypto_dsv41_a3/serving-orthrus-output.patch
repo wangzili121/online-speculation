@@ -37,11 +37,14 @@
                          # Source logits at rows 0..30 predict destination tokens 1..31.
                          student = logits[start:end - 1]
                          if owner in requests:
-@@ -370,6 +376,7 @@
+@@ -370,6 +376,10 @@
              prefill_topk=prefill_topk, prefill_activation_trace=result.get("prefill_activation_trace"),
              greedy_rows=[value.tolist() for value in ordered] if self.cluster is not None else None,
              output_head_skipped=phase == "accept",
 +            vocabulary_layout=result.get("vocabulary_layout"), prepare_seconds=prepare_seconds,
++            commit_tokens_per_dp=(
++                [engine["active"] for engine in input_contract["DP_engines"]] if phase == "accept" else None
++            ),
              draft_head_version=(self.draft.online_bank.active_version
                                  if phase == "draft" and self.draft.online_bank is not None
                                  else None)))

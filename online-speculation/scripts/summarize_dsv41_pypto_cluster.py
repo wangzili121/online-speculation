@@ -524,7 +524,16 @@ def _gsm8k_serving_phases(directory):
         phase = arms[name][row["phase"]]
         phase.update(deltas)
         phase["calls"] += 1
-        phase["native_seconds"] += row.get("timings", {}).get("chunk_seconds", 0.0)
+        timings = row.get("timings", {})
+        phase["native_seconds"] += timings.get("chunk_seconds", 0.0)
+        commit_tokens = row.get("commit_tokens_per_dp")
+        if commit_tokens:
+            largest = max(commit_tokens)
+            phase["max_commit_tokens_per_dp"] = max(phase["max_commit_tokens_per_dp"], largest)
+            phase["accept_calls_fitting_capacity16"] += int(largest <= 16)
+        for key in ("verify_snapshot_seconds", "verify_restore_seconds"):
+            if key in timings:
+                phase[key] += timings[key]
     return arms
 
 

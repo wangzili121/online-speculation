@@ -123,7 +123,16 @@ def _collect_phases(path, offset, previous, totals, draft_versions):
             if phase == "draft":
                 draft_versions.add(receipt["draft_head_version"] or 0)
             stage["serving_seconds"] += receipt.get("seconds", 0.0)
-            stage["native_seconds"] += receipt.get("timings", {}).get("chunk_seconds", 0.0)
+            timings = receipt.get("timings", {})
+            stage["native_seconds"] += timings.get("chunk_seconds", 0.0)
+            commit_tokens = receipt.get("commit_tokens_per_dp")
+            if commit_tokens:
+                largest = max(commit_tokens)
+                stage["max_commit_tokens_per_dp"] = max(stage["max_commit_tokens_per_dp"], largest)
+                stage["accept_calls_fitting_capacity16"] += int(largest <= 16)
+            for name in ("verify_snapshot_seconds", "verify_restore_seconds"):
+                if name in timings:
+                    stage[name] += timings[name]
             stage["prepare_seconds"] += receipt.get("prepare_seconds", 0.0)
             vocabulary = receipt.get("vocabulary_layout")
             if vocabulary is not None:
