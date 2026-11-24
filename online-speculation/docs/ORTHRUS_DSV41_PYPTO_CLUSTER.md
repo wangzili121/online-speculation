@@ -99,6 +99,8 @@ CLUSTER_KEY_FILE=/home/wangzili/.orthrus-cluster.key \
 python3 online-speculation/scripts/summarize_dsv41_pypto_cluster.py /workspace/orthrus-cluster-accept.RUN/acceptance
 ```
 
+对已完成生成的在线 profile 加 `--online-profile` 可直接读取保留的各阶段结果和更新日志，查看贪心输出对照、draft 版本、接受数及本机冷启动和稳定更新耗时。
+
 如遇到 `verify/accept` 分叉，在持有该请求的节点用离线镜像读已有 logits。脚本会先比对两个输入直到待预测位置的前缀，再输出同一位置的最大误差、平均误差和两边的 Top-5。
 
 ```bash

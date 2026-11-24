@@ -8,8 +8,11 @@ import json
 from pathlib import Path
 from statistics import median
 
+from verify_dsv41_pypto_acceptance import TokenDivergence, check_generated_prefix
+
 
 PHASES = ("prefill", "decode", "draft", "verify", "accept")
+PROFILE_ARMS = ("ar", "fixed_before", "update", "update_extra", "fixed_after")
 COUNTERS = (
     "verify_backup_d2d_bytes", "verify_restore_d2d_bytes",
     "device_draft_weight_upload_calls", "device_draft_weight_upload_seconds",
@@ -27,6 +30,84 @@ def read_receipts(directory):
                 break  # The Serving process may still be writing the final receipt.
             rows.append(json.loads(line))
     return receipt_paths[0].parent, rows
+
+
+def profile_comparisons(arms):
+    baseline = arms["ar"]["requests"]
+    comparisons = {}
+    for name in ("fixed_before", "fixed_after"):
+        matched = 0
+        divergence = None
+        for a, b in zip(baseline, arms[name]["requests"], strict=True):
+            if (a["prompt_ids"], a["workload_id"]) != (b["prompt_ids"], b["workload_id"]):
+                raise ValueError(f"{name} uses different probes from AR")
+            try:
+                check_generated_prefix(b["index"], a["token_ids"], b["token_ids"], phase=name)
+                if len(b["token_ids"]) < len(a["token_ids"]):
+                    offset = len(b["token_ids"])
+                    raise TokenDivergence(b["index"], offset, name, a["token_ids"][offset], None)
+            except TokenDivergence as error:
+                divergence = error.details
+                break
+            matched += len(a["token_ids"])
+        comparisons[name] = dict(matched_tokens=matched, divergence=divergence)
+    return comparisons
+
+
+def profile_head_versions(receipt_path, requests):
+    fixed = {
+        row["request_id"]: row["phase"] for row in requests
+        if row["phase"] in ("fixed_before", "fixed_after")
+    }
+    versions = {phase: set() for phase in fixed.values()}
+    with receipt_path.open() as stream:
+        for line in stream:
+            row = json.loads(line)
+            if row["phase"] != "draft":
+                continue
+            for owner in row["owners"]:
+                phase = fixed.get(owner["request_id"])
+                if phase is not None:
+                    versions[phase].add(row.get("draft_head_version") or 0)
+    return {phase: sorted(values) for phase, values in versions.items()}
+
+
+def recover_online_profile(directory):
+    """Summarize saved probes and local update costs even if final acceptance failed."""
+    arms = {}
+    for name in PROFILE_ARMS:
+        path = directory / f"online-profile-{name}.json"
+        if name != "update_extra" or path.exists():
+            arms[name] = json.loads(path.read_text())
+    with (directory / "online-profile.jsonl").open() as stream:
+        records = [json.loads(line) for line in stream]
+    hot = [row for row in records if not (row.get("error") or row["compiled"] or row["first_dispatch"])]
+    local_hot = [row for row in hot if row["owner_is_local"]]
+    requests = [row for arm in arms.values() for row in arm["timing"]]
+    session, = directory.glob("native/session-*/serving-dispatches.jsonl")
+    return dict(
+        greedy_comparison=profile_comparisons(arms),
+        probe_head_versions=profile_head_versions(session, requests),
+        probes={
+            name: dict(
+                draft_rounds=arms[name]["speculation"].get("draft_rounds", 0),
+                proposed=arms[name]["speculation"].get("proposed_candidates", 0),
+                accepted=arms[name]["speculation"].get("accepted_candidates", 0),
+                decode_tok_s=round(arms[name]["decode_tokens_per_second"], 3),
+            ) for name in ("ar", "fixed_before", "fixed_after")
+        },
+        updates=[dict(
+            update=row["update"], dp=row["owner_dp"], teacher_rows=row["teacher_rows"],
+            seconds=round(row["update_seconds"], 3), publication=round(row["publication_seconds"], 3),
+            compile_seconds=round(sum(item["seconds"] for item in row["compiled"]), 3),
+            first_dispatches=len(row["first_dispatch"]),
+        ) for row in records if not row.get("error")],
+        hot_update_median_seconds=round(median(row["update_seconds"] for row in hot), 3) if hot else None,
+        hot_local_owner_stage_seconds={
+            name: round(median(row["stage_seconds"].get(name, 0.0) for row in local_hot), 4)
+            for name in sorted({name for row in local_hot for name in row["stage_seconds"]})
+        },
+    )
 
 
 def online_kernels(directory):
@@ -98,11 +179,11 @@ def online_kernels(directory):
 
     phases = {}
     phase_by_request = {}
-    for path in directory.glob("online-profile-*.json"):
-        if path.name in ("online-profile-summary.json", "online-profile-kernels.json"):
-            continue
-        for row in json.loads(path.read_text())["timing"]:
-            phase_by_request[row["request_id"]] = row["phase"]
+    for name in PROFILE_ARMS:
+        path = directory / f"online-profile-{name}.json"
+        if path.is_file():
+            for row in json.loads(path.read_text())["timing"]:
+                phase_by_request[row["request_id"]] = row["phase"]
     _, receipts = read_receipts(directory)
     dispatches = defaultdict(list)
     native = defaultdict(list)
@@ -430,9 +511,12 @@ def main():
                         help="Reconstruct the first differing TP Attention reduction from saved tensors")
     parser.add_argument("--online-kernels", action="store_true",
                         help="Attribute online operator dispatches to the saved runtime trace")
+    parser.add_argument("--online-profile", action="store_true",
+                        help="Recover the saved greedy probes and update timings without running the model")
     parser.add_argument("--output", type=Path, help="Save the full online operator report and print a compact summary")
     args = parser.parse_args()
-    if sum((args.verifier_logits, args.failure_diagnosis, args.prefill_reduction, args.online_kernels)) > 1:
+    if sum((args.verifier_logits, args.failure_diagnosis, args.prefill_reduction,
+            args.online_kernels, args.online_profile)) > 1:
         parser.error("Choose only one diagnostic mode")
     if args.output is not None and not args.online_kernels:
         parser.error("--output requires --online-kernels")
@@ -443,6 +527,8 @@ def main():
             summary = failure_diagnosis(args.directory)
         elif args.verifier_logits:
             summary = verifier_logits(args.directory)
+        elif args.online_profile:
+            summary = recover_online_profile(args.directory)
         elif args.online_kernels:
             summary = online_kernels(args.directory)
             if args.output is not None:
@@ -453,7 +539,7 @@ def main():
             summary = summarize(args.directory)
     except (OSError, ImportError, IndexError, KeyError, ValueError) as error:
         parser.exit(1, f"{error}\n")
-    compact = args.verifier_logits or args.failure_diagnosis or args.prefill_reduction
+    compact = args.verifier_logits or args.failure_diagnosis or args.prefill_reduction or args.online_profile
     print(json.dumps(summary, indent=None if compact else 2))
 
 

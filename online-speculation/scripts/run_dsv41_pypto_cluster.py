@@ -15,6 +15,7 @@ import time
 from blockspec.pypto_dsv41_cluster import ClusterDispatcher, ControlLink, RankPlan
 from blockspec.dsv41_online import read_workload
 from blockspec.dsv41_online_profile import OnlineUpdateProfile, active_profile, profile_online
+from summarize_dsv41_pypto_cluster import profile_comparisons, profile_head_versions
 from validate_dsv41_pypto_cluster import check_visible_devices
 from verify_dsv41_pypto_acceptance import (
     TokenDivergence, audit_online_update, audit_session, check_generated_prefix, request_parity,
@@ -199,37 +200,7 @@ def profile_workload(runner, link, profile, prompts, entries, steps, decoder, ou
             phase("update_extra", (1, 2), (0, 0), capture=True)
         phase("fixed_after", probes, (0, 2), tokens=probe_tokens)
 
-    comparisons = {}
-    for name in ("fixed_before", "fixed_after"):
-        matched = 0
-        divergence = None
-        for baseline, trial in zip(results["ar"]["requests"], results[name]["requests"], strict=True):
-            try:
-                check_generated_prefix(trial["index"], baseline["token_ids"], trial["token_ids"], phase=name)
-            except TokenDivergence as error:
-                divergence = error.details
-                break
-            matched += len(baseline["token_ids"])
-        comparisons[name] = dict(matched_tokens=matched, divergence=divergence)
-    return results, comparisons
-
-
-def profile_head_versions(receipt_path, requests):
-    fixed = {
-        row["request_id"]: row["phase"] for row in requests
-        if row["phase"] in ("fixed_before", "fixed_after")
-    }
-    versions = {phase: set() for phase in fixed.values()}
-    with receipt_path.open() as stream:
-        for line in stream:
-            row = json.loads(line)
-            if row["phase"] != "draft":
-                continue
-            for owner in row["owners"]:
-                phase = fixed.get(owner["request_id"])
-                if phase is not None:
-                    versions[phase].add(row.get("draft_head_version") or 0)
-    return {phase: sorted(values) for phase, values in versions.items()}
+    return results, profile_comparisons(results)
 
 
 def benchmark_workload(runner, session, online, prompts, entries, steps, decoder, devices, output):
@@ -339,6 +310,20 @@ def verification_difference(receipt_path, request_index):
     return result
 
 
+def profile_acceptance(arms, comparisons, records, versions, *, teacher_rows, publications):
+    expected_updates = 6 if "update_extra" in arms else 4
+    passed = (all(row["divergence"] is None for row in comparisons.values())
+              and len(records) == expected_updates
+              and all(row["teacher_rows"] == teacher_rows for row in records)
+              and versions.get("fixed_before") == [0]
+              and versions.get("fixed_after") == [publications])
+    return dict(
+        passed=passed, expected_updates=expected_updates,
+        compared_tokens=sum(row["matched_tokens"] for row in comparisons.values()),
+        speculation=dict(sum((Counter(arm["speculation"]) for arm in arms.values()), Counter())),
+    )
+
+
 def run(args):
     import torch
     from pypto_serving_a3.cache import CachePlan
@@ -392,7 +377,8 @@ def run(args):
     blockspec = scripts.parent / "src/blockspec"
     build = dict(
         adapter=integration_identity()["adapter_files_sha256"],
-        orthrus=fingerprint([Path(__file__), scripts / "verify_dsv41_pypto_acceptance.py"]
+        orthrus=fingerprint([Path(__file__), scripts / "verify_dsv41_pypto_acceptance.py",
+                             scripts / "summarize_dsv41_pypto_cluster.py"]
                           + sorted(blockspec.glob("pypto_dsv41_*.py"))
                           + sorted(blockspec.glob("dsv41_*.py"))),
         native_tree=os.environ["ORTHRUS_CLUSTER_LIB_TREE"],
@@ -441,7 +427,7 @@ def run(args):
         profile = OnlineUpdateProfile(args.output / "online-profile.jsonl") if args.online_profile else None
         try:
             if profile is not None:
-                phases, comparisons = profile_workload(
+                profile_arms, comparisons = profile_workload(
                     runner, link, profile, prompts, entries, args.tokens, decoder, args.output,
                 )
                 versions = profile_head_versions(session.receipt_path, profile.requests)
@@ -478,25 +464,22 @@ def run(args):
         finally:
             runner.close()
         for mode in modes:
-            _, phases, restored = audit_session(native_dir, speculative=mode == "orthrus", node_local=True,
-                                                request_prefix=f"{mode}-request-",
-                                                require_updated_draft=mode == "orthrus" and args.require_online_update)
-            audits[mode] = dict(phases=phases, verifier_restored_bytes=restored)
+            _, dispatch_counts, restored = audit_session(
+                native_dir, speculative=mode == "orthrus", node_local=True, request_prefix=f"{mode}-request-",
+                require_updated_draft=mode == "orthrus" and args.require_online_update,
+            )
+            audits[mode] = dict(phases=dispatch_counts, verifier_restored_bytes=restored)
         tokens = (request_parity(results["target"], results["orthrus"])
                   if "target" in results else 0)
         online_summary = None if online is None else online.summary()
         passed = True
         if profile is not None:
-            tokens = sum(row["matched_tokens"] for row in comparisons.values())
-            expected_updates = 6 if "update_extra" in phases else 4
-            passed = (all(row["divergence"] is None for row in comparisons.values())
-                      and len(profile.records) == expected_updates
-                      and all(row["teacher_rows"] == online.config.teacher_rows for row in profile.records)
-                      and versions.get("fixed_before") == [0]
-                      and versions.get("fixed_after") == [online_summary["publications"]])
-        speculation = results["orthrus"]["speculation"] if profile is None else dict(
-            sum((Counter(arm["speculation"]) for arm in phases.values()), Counter())
-        )
+            gate = profile_acceptance(profile_arms, comparisons, profile.records, versions,
+                                      teacher_rows=online.config.teacher_rows, publications=online_summary["publications"])
+            passed, tokens = gate["passed"], gate["compared_tokens"]
+            expected_updates, speculation = gate["expected_updates"], gate["speculation"]
+        else:
+            speculation = results["orthrus"]["speculation"]
         summary = dict(passed=passed, node=plan.node, global_ranks=list(plan.local_ranks), build_id=identity,
                        topology=dict(dp=4, tp=4, ep=16), physical_to_runtime=mapping, compared_tokens=tokens,
                        checkpoint=checkpoint_identity, head_sha256=head_identity, head_role=head["artifact_role"],
@@ -552,12 +535,12 @@ def run(args):
             report["greedy_comparison"] = comparisons
             report["probe_head_versions"] = versions
             report["probe_metrics"] = {
-                name: {key: phases[name][key] for key in (
+                name: {key: profile_arms[name][key] for key in (
                     "decode_tokens_per_second", "mean_accepted_candidates", "candidate_acceptance_rate",
                 )}
                 for name in ("ar", "fixed_before", "fixed_after")
             }
-            rows = phases["update"]["requests"]
+            rows = profile_arms["update"]["requests"]
             report["repeat_greedy_outputs_match"] = all(row["token_ids"] == rows[0]["token_ids"] for row in rows)
             write_report(args.output / "online-profile-summary.json", report)
             summary["online_profile"] = {

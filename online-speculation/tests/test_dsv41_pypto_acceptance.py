@@ -66,7 +66,8 @@ def test_profile_runs_matched_probes_around_bounded_updates(tmp_path, monkeypatc
     ))
     entry = runpy.run_path(str(COMMAND.with_name("run_dsv41_pypto_cluster.py")))
     profile = OnlineUpdateProfile(tmp_path / "online-profile.jsonl")
-    receipts = tmp_path / "dispatches.jsonl"
+    receipts = tmp_path / "native/session-test/serving-dispatches.jsonl"
+    receipts.parent.mkdir(parents=True)
 
     class Runner:
         cache_plan = SimpleNamespace(groups=[])
@@ -97,7 +98,7 @@ def test_profile_runs_matched_probes_around_bounded_updates(tmp_path, monkeypatc
                 self.version += 1
                 contract = dict(update_number=self.version, request_id=name, owner=[self.partition, 0, 1], teacher_rows=7)
                 with profile.update(contract, owner_is_local=self.partition == 0) as row:
-                    row["update_seconds"] = 2.0
+                    row.update(update_seconds=2.0, publication_seconds=0.1)
             return SimpleNamespace(accepted_token_ids=[[tokens[0] + i for i in range(1, 2 + accepted)]],
                                    num_draft_tokens=[31])
 
@@ -121,10 +122,29 @@ def test_profile_runs_matched_probes_around_bounded_updates(tmp_path, monkeypatc
                            for phase in ("fixed_before", "fixed_after")}
     assert [row["owner_dp"] for row in profile.records] == ([0, 2, 0, 0, 0, 0] if peer_affordable else [0, 2, 0, 0])
     assert len({row["request_id"] for row in profile.requests}) == len(profile.requests)
-    assert entry["profile_head_versions"](receipts, profile.requests) == {
+    versions = entry["profile_head_versions"](receipts, profile.requests)
+    assert versions == {
         "fixed_before": [0], "fixed_after": [expected_updates],
     }
+    gate = entry["profile_acceptance"](phases, comparisons, profile.records, versions,
+                                      teacher_rows=7, publications=expected_updates)
+    assert gate["passed"] and gate["expected_updates"] == expected_updates
+    assert gate["compared_tokens"] == 64
+    assert gate["speculation"]["draft_rounds"] == sum(
+        arm["speculation"].get("draft_rounds", 0) for arm in phases.values()
+    )
     assert phases["fixed_after"]["mean_accepted_candidates"] > phases["fixed_before"]["mean_accepted_candidates"]
+    failure = tmp_path / "acceptance.json"
+    failure.write_text(json.dumps(dict(passed=False, error="TypeError in final aggregation")))
+    result = subprocess.run([sys.executable, str(SUMMARY), str(tmp_path), "--online-profile"],
+                            check=True, capture_output=True, text=True)
+    recovered = json.loads(result.stdout)
+    assert recovered["greedy_comparison"] == comparisons
+    assert recovered["probe_head_versions"] == {"fixed_before": [0], "fixed_after": [expected_updates]}
+    assert len(recovered["updates"]) == expected_updates
+    assert recovered["hot_update_median_seconds"] == 2.0
+    assert recovered["probes"]["fixed_after"]["accepted"] > recovered["probes"]["fixed_before"]["accepted"]
+    assert not json.loads(failure.read_text())["passed"]
 
 
 def test_online_kernel_report_correlates_host_and_device_spans(tmp_path):
