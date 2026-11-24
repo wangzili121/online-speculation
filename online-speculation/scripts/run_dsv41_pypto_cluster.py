@@ -15,7 +15,9 @@ import time
 from blockspec.pypto_dsv41_cluster import ClusterDispatcher, ControlLink, RankPlan
 from blockspec.dsv41_online import read_workload
 from validate_dsv41_pypto_cluster import check_visible_devices
-from verify_dsv41_pypto_acceptance import TokenDivergence, audit_session, check_generated_prefix, request_parity
+from verify_dsv41_pypto_acceptance import (
+    TokenDivergence, audit_online_update, audit_session, check_generated_prefix, request_parity,
+)
 
 
 PROMPTS = (
@@ -93,7 +95,7 @@ def generate(runner, prompts, steps, assignments, *, identities=None, metadata=N
         if expected is not None:
             check_generated_prefix(index, expected, output, phase="prefill")
         print(json.dumps(dict(stage="prefill_token", mode=mode, request=index, dp=partition,
-                              token=output[0], compared=speculative)), flush=True)
+                              token=output[0], compared=expected is not None)), flush=True)
         while len(output) < steps:
             committed = len(runner.ledger.requests[request_id].history)
             if committed != len(prompt) + len(output) - 1:
@@ -249,7 +251,8 @@ def run(args):
     build = dict(
         adapter=integration_identity()["adapter_files_sha256"],
         orthrus=fingerprint([Path(__file__), scripts / "verify_dsv41_pypto_acceptance.py"]
-                          + sorted(blockspec.glob("pypto_dsv41_*.py"))),
+                          + sorted(blockspec.glob("pypto_dsv41_*.py"))
+                          + sorted(blockspec.glob("dsv41_*.py"))),
         native_tree=os.environ["ORTHRUS_CLUSTER_LIB_TREE"],
         torch=torch.__version__,
     )
@@ -263,6 +266,7 @@ def run(args):
                        prompts=prompts, workload_ids=identities, partitions=assignments,
                        tokens=args.tokens, context=args.context,
                        trace_prefill=args.trace_prefill, trace_position=args.trace_position,
+                       orthrus_only=args.orthrus_only, require_online_update=args.require_online_update,
                        online=None if online is None else online.config.contract())
         peer_request = link.exchange("acceptance/configuration", request)
         if peer_request != request:
@@ -323,10 +327,6 @@ def run(args):
         tokens = (request_parity(results["target"], results["orthrus"])
                   if "target" in results else 0)
         online_summary = None if online is None else online.summary()
-        if args.require_online_update and (
-            online_summary is None or online_summary.get("updates", 0) < 1
-        ):
-            raise RuntimeError("online capture gate completed without applying an update")
         summary = dict(passed=True, node=plan.node, global_ranks=list(plan.local_ranks), build_id=identity,
                        topology=dict(dp=4, tp=4, ep=16), physical_to_runtime=mapping, compared_tokens=tokens,
                        checkpoint=checkpoint_identity, head_sha256=head_identity, head_role=head["artifact_role"],
@@ -337,6 +337,10 @@ def run(args):
         if (peer["node"] != 1 - plan.node or peer["global_ranks"] != list(RankPlan((8, 8), 4, 1 - plan.node).local_ranks)
                 or not peer["passed"] or peer["compared_tokens"] != tokens or peer["build_id"] != identity):
             raise ValueError("The peer did not complete the matching eight-rank acceptance")
+        if online is not None:
+            audit_online_update(online_summary, peer["online"],
+                                publish_every=online.config.publish_every,
+                                require_update=args.require_online_update)
         summary["peer"] = peer
     return summary
 

@@ -134,7 +134,7 @@ index 794ef00..b6d1f69 100644
              peer = self.cluster.link.exchange(f"greedy-output/{phase}", encoded)
 @@ -283,2 +360,6 @@ class NativeSession:
      def clear_request(self, handle):
-+        if self.online is not None and self.online.bound:
++        if not self.closed and self.online is not None and self.online.bound:
 +            prepared = self.online.finish(handle.request_id, defer=self.cluster is not None)
 +            if self.cluster is not None:
 +                self.online.synchronize(prepared, self.cluster.link.exchange)

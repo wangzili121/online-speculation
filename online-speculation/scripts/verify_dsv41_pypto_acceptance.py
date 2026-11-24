@@ -54,6 +54,19 @@ def request_parity(target, draft):
     return tokens
 
 
+def audit_online_update(local, peer, *, publish_every, require_update):
+    """Validate the completed optimizer and publication steps on both hosts."""
+    counters = ("updates", "publications")
+    if not local.get("bound") or not peer.get("bound"):
+        raise ValueError("Both hosts must bind the online learner")
+    if any(local[key] != peer[key] for key in counters):
+        raise ValueError("Hosts disagree on online update or publication counts")
+    if require_update and not local["updates"]:
+        raise ValueError("Online capture completed without applying an update")
+    if local["publications"] != local["updates"] // publish_every:
+        raise ValueError("Online draft publication did not follow the configured cadence")
+
+
 def audit_session(directory, *, speculative, node_local=False, request_prefix=None):
     receipts = list(directory.rglob("serving-dispatches.jsonl"))
     if len(receipts) != 1:
@@ -117,8 +130,8 @@ def audit_session(directory, *, speculative, node_local=False, request_prefix=No
         raise ValueError("No Orthrus round executed. Greedy parity alone cannot validate the speculative path.")
     if not speculative and not phases["decode"]:
         raise ValueError("Baseline did not execute a target decode step")
-    if node_local and (not phases["release"] or (speculative and not restored)):
-        raise ValueError(f"Missing local request release or verifier restoration in {session}")
+    if node_local and not phases["release"]:
+        raise ValueError(f"Missing request release in {session}")
     return manifest["checkpoint"], dict(phases), restored
 
 

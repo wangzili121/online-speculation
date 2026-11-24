@@ -99,6 +99,12 @@ session.native = SimpleNamespace(release_request=lambda *owner: released.append(
 session.clear_request(Handle())
 assert released == [(0, 0, 1)]
 
+session.online.bound = True
+session.closed = True
+session.clear_request(Handle())
+assert released == [(0, 0, 1)]
+session.closed = False
+
 class Binding:
     bound = False
     def bind(self, draft, native, cluster):
@@ -124,7 +130,8 @@ print(json.dumps(dict(
     passed=True,
     stage="offline-overlay",
     tree=os.environ["ORTHRUS_CLUSTER_LIB_TREE"],
-    lifecycle={"target_unbound": True, "draft_bind": True, "unbound_cleanup": True},
+    lifecycle={"target_unbound": True, "draft_bind": True, "unbound_cleanup": True,
+               "closed_cleanup": True},
 )))
 PY
 fi

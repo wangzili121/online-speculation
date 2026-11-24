@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -99,6 +100,44 @@ class AcceptanceTest(unittest.TestCase):
         code, report = self.run_acceptance()
         self.assertEqual(code, 1)
         self.assertIn("resident draft", report["error"])
+
+    def test_single_request_peer_does_not_need_to_restore_unowned_kv(self):
+        session = self.root / "native" / "session-1"
+        session.mkdir(parents=True)
+        (session / "run-manifest.json").write_text(json.dumps(dict(
+            orthrus_head="head", deferred_draft=True, checkpoint={"config": "same"},
+            ranks=[{"dp_rank": 2}],
+        )))
+        (session / "cleanup.json").write_text(json.dumps(dict(closed=True, runtime_closed=True, errors=[])))
+        target = dict(dp=0, slot=0, generation=1, request_id="target-request-0")
+        draft = dict(dp=0, slot=0, generation=2, request_id="orthrus-request-0")
+        self.round[2]["runtime"] = dict(verify_backup_d2d_bytes=0, verify_restore_d2d_bytes=0)
+        rows = [
+            dict(phase="prefill", owners=[target], draft_resident=False),
+            dict(phase="decode", owners=[target], draft_resident=False),
+            dict(phase="release", owner=target, draft_resident=False),
+            *(dict(row, owners=[draft], draft_resident=row["phase"] != "prefill") for row in self.round),
+            dict(phase="release", owner=draft, draft_resident=True),
+        ]
+        (session / "serving-dispatches.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows),
+        )
+        code, report = self.run_acceptance()
+        self.assertEqual(code, 0, report)
+        self.assertEqual(report["verifier_restored_bytes"], 0)
+
+    def test_online_capture_checks_both_hosts_and_requires_publication(self):
+        audit = runpy.run_path(str(COMMAND))["audit_online_update"]
+        completed = dict(bound=True, updates=1, publications=1)
+        audit(completed, completed, publish_every=1, require_update=True)
+        with self.assertRaisesRegex(ValueError, "disagree on online update or publication"):
+            audit(completed, completed | {"publications": 0}, publish_every=1, require_update=True)
+        unpublished = completed | {"publications": 0}
+        with self.assertRaisesRegex(ValueError, "configured cadence"):
+            audit(unpublished, unpublished, publish_every=1, require_update=True)
+        empty = unpublished | {"updates": 0}
+        with self.assertRaisesRegex(ValueError, "without applying an update"):
+            audit(empty, empty, publish_every=1, require_update=True)
 
     def test_timing_summary_separates_first_call_and_incomplete_receipt(self):
         session = self.root / "native" / "session-1"
