@@ -1,12 +1,14 @@
 """梯度有限性、全局裁剪与执行参数发布；状态候选确认后才切换版本。"""
 
+from .pypto_dsv41_resident_abi import with_resident_entry
+
 
 def make_stats(shape, *, input_bf16=False, inline=False):
     from math import prod
     import pypto.language as pl
     N = prod(shape)
     T = min(4096, N)
-    if N % T:
+    if N % T or T % 8:
         raise ValueError("aligned gradient tensor required")
     from .pypto_dsv41_online_programs import make_fp32_row
     load = make_fp32_row(T, input_fp32=not input_bf16)
@@ -21,15 +23,23 @@ def make_stats(shape, *, input_bf16=False, inline=False):
                 row = base + part
                 if row < N // T:
                     values = load(x, row)
-                    block = pl.reshape(values, [8, T // 8])
-                    sums[row:row + 1, 0:8] = pl.reshape(pl.row_sum(pl.mul(block, block)), [1, 8])
-                    flags[row:row + 1, 0:8] = pl.reshape(pl.row_min(pl.cmp(pl.abs(block), 3.4028234663852886e38, cmp_type=3)), [1, 8])
+                    if T < 64:
+                        # Keep a 32-byte row for short FP32 parameters such as the sink.
+                        short_block = pl.reshape(values, [T // 8, 8])
+                        sums[row:row + 1, 0:8] = pl.col_sum(pl.mul(short_block, short_block))
+                        short_finite = pl.cmp(pl.abs(short_block), 3.4028234663852886e38, cmp_type=3)
+                        flags[row:row + 1, 0:8] = pl.cmp(pl.col_sum(short_finite), T // 8, cmp_type=0)
+                    else:
+                        block = pl.reshape(values, [8, T // 8])
+                        sums[row:row + 1, 0:8] = pl.reshape(pl.row_sum(pl.mul(block, block)), [1, 8])
+                        finite = pl.cmp(pl.abs(block), 3.4028234663852886e38, cmp_type=3)
+                        flags[row:row + 1, 0:8] = pl.reshape(pl.row_min(finite), [1, 8])
         return sums, flags
 
     @pl.jit.host
     def entry(value: pl.Tensor, sums: pl.Out[pl.Tensor], flags: pl.Out[pl.Tensor]):
         stats(value, sums, flags, device=0)
-    return (stats if inline else entry), N // T
+    return (stats if inline else with_resident_entry(entry, stats)), N // T
 
 
 def make_reduce(rows, *, inline=False):
@@ -61,7 +71,7 @@ def make_reduce(rows, *, inline=False):
     @pl.jit.host
     def entry(sums: pl.Tensor, flags: pl.Tensor, out_sums: pl.Out[pl.Tensor], out_flags: pl.Out[pl.Tensor]):
         reduce(sums, flags, out_sums, out_flags, device=0)
-    return (reduce if inline else entry), R
+    return (reduce if inline else with_resident_entry(entry, reduce)), R
 
 
 def make_publish(shape, *, gamma=False, inline=False):
@@ -101,7 +111,7 @@ def make_publish(shape, *, gamma=False, inline=False):
     @pl.jit.host
     def entry(master: pl.Tensor, execution: pl.Out[pl.Tensor]):
         publish(master, execution, device=0)
-    return publish if inline else entry
+    return publish if inline else with_resident_entry(entry, publish)
 
 
 def make_global_stats(max_norm):
@@ -132,7 +142,7 @@ def make_global_stats(max_norm):
               va: pl.Tensor, vb: pl.Tensor, vc: pl.Tensor, vd: pl.Tensor, ve: pl.Tensor, vf: pl.Tensor,
               output: pl.Out[pl.Tensor]):
         calculate(a, b, c, d, e, f, va, vb, vc, vd, ve, vf, output, device=0)
-    return entry
+    return with_resident_entry(entry, calculate)
 
 
 def make_accumulate(shape):
@@ -157,7 +167,7 @@ def make_accumulate(shape):
     @pl.jit.host
     def entry(total: pl.Tensor, gradient: pl.Tensor, output: pl.Out[pl.Tensor]):
         add(total, gradient, output, device=0)
-    return entry
+    return with_resident_entry(entry, add)
 
 
 def make_norm_equal(dimension):
@@ -175,5 +185,5 @@ def make_norm_equal(dimension):
     @pl.jit.host
     def entry(a: pl.Tensor, b: pl.Tensor, flags: pl.Out[pl.Tensor]):
         compare(a, b, flags, device=0)
-    return entry
+    return with_resident_entry(entry, compare)
 

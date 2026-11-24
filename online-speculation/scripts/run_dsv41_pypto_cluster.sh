@@ -156,6 +156,24 @@ if [[ "${1:-}" == --compile-only ]]; then
   exec python "$root/scripts/compile_dsv41_pypto_cluster.py" "$@"
 fi
 
+check_online_abi() {
+  echo 'Checking resident online kernel signatures before loading model weights.'
+  bash "$patches/docker/cache-pto-isa.sh"
+  PYTHONPATH="$PYPTO_LIB_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+    python "$root/scripts/validate_dsv41_pypto_online_programs.py" \
+    --compile-only --resident-abi --output /results/resident-online-abi.json
+}
+if [[ "${1:-}" == --online-abi-only ]]; then
+  check_online_abi
+  exit
+fi
+for option in "$@"; do
+  if [[ "$option" == --online-study ]]; then
+    check_online_abi
+    break
+  fi
+done
+
 : "${TARGET_WEIGHTS:?Mount the paired W8A8 model}"
 if [[ "${PYPTO_REUSE_PREVIOUS_HEAD:-1}" == 1 && -z "${DRAFT_HEAD:-}" && -n "${PYPTO_PREVIOUS_HEAD:-}" ]]; then
   if python - "$TARGET_WEIGHTS" "$PYPTO_PREVIOUS_HEAD" <<'PY'

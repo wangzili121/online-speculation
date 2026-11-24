@@ -1,5 +1,7 @@
 """PyPTO leaves for the fixed-route DSV4.1 MoE reverse pass."""
 
+from .pypto_dsv41_resident_abi import with_resident_entry
+
 
 def make_dequantize_blocked_weight(input_width, output_width, *, inline=False):
     """Restore the BF16 weight used by a frozen W8A8 input VJP.
@@ -57,7 +59,7 @@ def make_dequantize_blocked_weight(input_width, output_width, *, inline=False):
     ):
         dequantize(packed, channel_scale, logical, device=0)
 
-    return dequantize if inline else entry
+    return dequantize if inline else with_resident_entry(entry, dequantize)
 
 
 def make_moe_combine_vjp(rows=32, hidden=5120, topk=6, *, inline=False):
@@ -128,7 +130,7 @@ def make_moe_combine_vjp(rows=32, hidden=5120, topk=6, *, inline=False):
             shared_gradient, expert_gradient, weight_gradient, device=0,
         )
 
-    return moe_combine_vjp if inline else entry
+    return moe_combine_vjp if inline else with_resident_entry(entry, moe_combine_vjp)
 
 
 def make_normalized_route_vjp(rows=32, topk=6, *, inline=False):
@@ -174,7 +176,7 @@ def make_normalized_route_vjp(rows=32, topk=6, *, inline=False):
             selected_scores, weight_gradient, score_gradient, route_scale, device=0,
         )
 
-    return normalized_route_vjp if inline else entry
+    return normalized_route_vjp if inline else with_resident_entry(entry, normalized_route_vjp)
 
 
 def make_router_logits_vjp(rows=32, experts=384, topk=6, *, inline=False):
@@ -251,7 +253,7 @@ def make_router_logits_vjp(rows=32, experts=384, topk=6, *, inline=False):
             router_gradient, route_scale, device=0,
         )
 
-    return router_logits_vjp if inline else entry
+    return router_logits_vjp if inline else with_resident_entry(entry, router_logits_vjp)
 
 
 def make_router_input_vjp(rows, hidden, topk=6):
@@ -281,7 +283,7 @@ def make_router_input_vjp(rows, hidden, topk=6):
               output: pl.Out[pl.Tensor]):
         project(gradient, ids, gate, output, device=0)
 
-    return entry
+    return with_resident_entry(entry, project)
 
 
 def make_clipped_swiglu_vjp(rows=32, intermediate=2304, limit=10.0, *, inline=False):
@@ -363,7 +365,7 @@ def make_clipped_swiglu_vjp(rows=32, intermediate=2304, limit=10.0, *, inline=Fa
     ):
         swiglu_vjp(gate_up, output_gradient, gate_up_gradient, device=0)
 
-    return swiglu_vjp if inline else entry
+    return swiglu_vjp if inline else with_resident_entry(entry, swiglu_vjp)
 
 
 def make_frozen_w8a8_expert_input_vjp(
@@ -450,4 +452,4 @@ def make_frozen_w8a8_expert_input_vjp(
             down_packed, down_scale, input_gradient, device=0,
         )
 
-    return entry
+    return with_resident_entry(entry, expert_input_vjp)

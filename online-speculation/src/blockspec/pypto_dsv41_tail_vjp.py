@@ -1,5 +1,7 @@
 """PyPTO leaves for the frozen DSV4.1 suffix reverse pass."""
 
+from .pypto_dsv41_resident_abi import with_resident_entry
+
 
 def make_hc_collapse_forward(rows=32, hidden=5120, copies=4, *, inline=False):
     """Rebuild the final FP32-accumulated mHC collapse before RMSNorm."""
@@ -46,7 +48,7 @@ def make_hc_collapse_forward(rows=32, hidden=5120, copies=4, *, inline=False):
     ):
         hc_collapse_forward(streams, premix, collapsed, device=0)
 
-    return hc_collapse_forward if inline else entry
+    return hc_collapse_forward if inline else with_resident_entry(entry, hc_collapse_forward)
 
 
 def make_hc_collapse_vjp(rows=32, hidden=5120, copies=4, *, inline=False):
@@ -125,7 +127,7 @@ def make_hc_collapse_vjp(rows=32, hidden=5120, copies=4, *, inline=False):
             stream_gradient, premix_gradient, device=0,
         )
 
-    return hc_collapse_vjp if inline else entry
+    return hc_collapse_vjp if inline else with_resident_entry(entry, hc_collapse_vjp)
 
 
 def make_hc_post_data_vjp(rows=32, hidden=5120, copies=4, *, inline=False):
@@ -194,7 +196,7 @@ def make_hc_post_data_vjp(rows=32, hidden=5120, copies=4, *, inline=False):
             output_gradient, post, combination, value_gradient, residual_gradient, device=0,
         )
 
-    return hc_post_data_vjp if inline else entry
+    return hc_post_data_vjp if inline else with_resident_entry(entry, hc_post_data_vjp)
 
 
 def make_hc_post_gate_vjp(rows=32, hidden=5120, copies=4, *, inline=False):
@@ -292,7 +294,7 @@ def make_hc_post_gate_vjp(rows=32, hidden=5120, copies=4, *, inline=False):
             value, residual, output_gradient, post_gradient, combination_gradient, device=0,
         )
 
-    return hc_post_gate_vjp if inline else entry
+    return hc_post_gate_vjp if inline else with_resident_entry(entry, hc_post_gate_vjp)
 
 
 def make_hc_pre_gate_vjp(rows=32, copies=4, iterations=20, eps=1e-6, *, inline=False):
@@ -481,7 +483,7 @@ def make_hc_pre_gate_vjp(rows=32, copies=4, iterations=20, eps=1e-6, *, inline=F
             combination_gradient, projection_gradient, device=0,
         )
 
-    return hc_pre_gate_vjp if inline else entry
+    return hc_pre_gate_vjp if inline else with_resident_entry(entry, hc_pre_gate_vjp)
 
 
 def make_hc_pre_projection_forward(
@@ -593,7 +595,7 @@ def make_hc_pre_projection_forward(
     ):
         projection_forward(residual, function, projection, inverse, device=0)
 
-    return projection_forward if inline else entry
+    return projection_forward if inline else with_resident_entry(entry, projection_forward)
 
 
 def make_hc_pre_data_vjp(
@@ -733,4 +735,4 @@ def make_hc_pre_data_vjp(
             incoming_gradient, device=0,
         )
 
-    return data_vjp if inline else entry
+    return data_vjp if inline else with_resident_entry(entry, data_vjp)

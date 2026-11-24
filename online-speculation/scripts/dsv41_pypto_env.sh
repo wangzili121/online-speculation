@@ -46,6 +46,16 @@ if [[ "$action" == cluster-check || "$action" == cluster-accept ||
 fi
 image="${PYPTO_IMAGE:-$default_image}"
 case "$action" in
+  online-abi-check)
+    image="${PYPTO_IMAGE:-$default_image-offline}"
+    report_dir="$(mktemp -d "$PWD/orthrus-online-abi.XXXXXX")"
+    echo "Report: $report_dir/resident-online-abi.json"
+    exec docker run --rm --network none \
+      -v "$root:/workspace/online-speculation:ro" -v "$report_dir:/results" \
+      -e PYTHONPATH=/workspace/online-speculation/src \
+      "$image" bash /workspace/online-speculation/scripts/run_dsv41_pypto_cluster.sh \
+      --online-abi-only
+    ;;
   gsm8k-prepare)
     destination="${1:-/workspace/data/orthrus-dsv41-gsm8k}"
     arguments=(--output "$destination")
@@ -495,5 +505,6 @@ case "$action" in
   *)
     echo "Usage: $0 {build|refresh-image|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|multicard-check|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
     echo "Company checks: $0 {fabric-check|cluster-check|cluster-accept} {node7|node8}"
+    echo "Offline online-update compilation check: $0 online-abi-check"
     ;;
 esac

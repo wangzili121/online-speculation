@@ -16,6 +16,7 @@ from .pypto_dsv41_draft import (
     read_draft_weights,
 )
 from .pypto_dsv41_indexer import INDEX_DIM, INDEX_HEADS, index_controls, make_indexer_program
+from .pypto_dsv41_resident_abi import compile_resident_entry, resident_entry
 from .pypto_dsv41_sparse import TILE, TOPK, make_joined_attention, make_sparse_attention
 from .pypto_dsv41_swa import BLOCK, HEAD_DIM, WINDOW, make_swa_attention, swa_spans
 from .dsv41_publication import AtomicHeadPublisher, PublicationReceipt
@@ -235,7 +236,7 @@ class ResidentDraftAttention:
 
         with self.compile_lock:
             if key not in self.programs:
-                kernel = factory()
+                kernel = resident_entry(factory())
                 options = RunConfig(
                     arch=BackendType.Ascend910, execution_mode=ExecutionMode.ONBOARD, save_kernels=True,
                     save_kernels_dir=str(self.output / f"entry-{len(self.programs):03d}"),
@@ -247,8 +248,10 @@ class ResidentDraftAttention:
                     else torch.empty(value.shape, dtype=value.dtype, device="meta")
                     for value in (inputs[name] for name in kernel.param_names)
                 ]
-                compiled = kernel.compile(*arguments, config=options)
-                self.programs[key] = compiled, self.native("network").network_parameter_abi(compiled)
+                self.programs[key] = compile_resident_entry(
+                    kernel, arguments, options,
+                    abi=self.native("network").network_parameter_abi, name=key,
+                )
         compiled, abi = self.programs[key]
         self.resident.execute(compiled, self.rank_ids[rank], [inputs[name] for name in compiled.param_names], abi)
 

@@ -23,6 +23,7 @@ import torch
 from .dsv41_device_update import SuffixGradient
 from .dsv41_serving_online import DSV41SequenceSpan
 from .dsv41_suffix import DSV41SuffixPlan
+from .pypto_dsv41_resident_abi import with_resident_entry
 
 
 ROWS = 32
@@ -77,7 +78,7 @@ def _make_group_layout(rows, groups, width, *, split):
     def entry(source: pl.Tensor, output: pl.Out[pl.Tensor]):
         layout(source, output, device=0)
 
-    return entry
+    return with_resident_entry(entry, layout)
 
 
 def _make_rope_vjp(native_module, heads, *, inverse):
@@ -100,7 +101,7 @@ def _make_rope_vjp(native_module, heads, *, inverse):
               output: pl.Out[pl.Tensor], active: pl.Scalar[pl.INT32]):
         kernel(x, cos, sin, output, active, device=0)
 
-    return entry
+    return with_resident_entry(entry, kernel)
 
 
 def _make_sink_compact(heads=16):
@@ -121,7 +122,7 @@ def _make_sink_compact(heads=16):
     def entry(source: pl.Tensor, output: pl.Out[pl.Tensor]):
         compact(source, output, device=0)
 
-    return entry
+    return with_resident_entry(entry, compact)
 
 
 class ProductionFactoryIncomplete(RuntimeError):
@@ -449,7 +450,8 @@ class DSV41ResidentPrimitives:
         self._execute(
             ("loss", token.kind, vocabulary), rank,
             lambda: factory(ROWS, vocabulary),
-            student=student, teacher=teacher, gradient=gradient, losses=losses,
+            student=student, teacher=teacher, position_weights=student,
+            gradient=gradient, losses=losses,
             valid=token.valid, normalizer=token.valid,
         )
         return gradient, losses
@@ -558,7 +560,7 @@ class DSV41ResidentPrimitives:
             inverse = self._workspace(rank, (ROWS, 8), torch.float32)
             self._execute(
                 ("final-rms-forward",), rank,
-                lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20),
+                lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
                 x=collapsed, gamma=norm, y=normalized, inv=inverse,
             )
             terminal_states[rank] += (collapsed, norm, inverse)
@@ -591,7 +593,7 @@ class DSV41ResidentPrimitives:
             dcollapsed = self._workspace(rank, (ROWS, HIDDEN))
             self._execute(
                 ("final-rms-input-vjp",), rank,
-                lambda: make_rms(ROWS, HIDDEN, mode="input", epsilon=1e-20),
+                lambda: make_rms(ROWS, HIDDEN, mode="input", epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
                 x=collapsed, gamma=norm, inv=inverse,
                 dy=normalized_gradients[rank], dx=dcollapsed,
             )
@@ -1013,15 +1015,13 @@ class DSV41ResidentPrimitives:
         inverse = self._workspace(rank, (ROWS, 8), torch.float32)
         self._execute(
             ("ffn-rms-forward", layer), rank,
-            lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20),
+            lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
             x=collapsed, gamma=norm, y=replay_normed, inv=inverse,
         )
         collapsed_gradient = self._workspace(rank, (ROWS, HIDDEN))
         self._execute(
             ("ffn-rms-input-vjp", layer), rank,
-            lambda: make_rms(
-                ROWS, HIDDEN, mode="input", epsilon=1e-20,
-            ),
+            lambda: make_rms(ROWS, HIDDEN, mode="input", epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
             x=collapsed, gamma=norm, inv=inverse,
             dy=moe_input_gradient, dx=collapsed_gradient,
         )
@@ -1234,7 +1234,7 @@ class DSV41ResidentPrimitives:
         score_gradient = self._workspace(
             rank, (geometry.rows, geometry.padded_columns),
         )
-        sink_rows = self._workspace(rank, (geometry.rows, 8), torch.float32)
+        sink_rows = self._workspace(rank, (geometry.rows, 16), torch.float32)
         self._execute(
             ("attn-c1a-softmax-vjp", layer), rank,
             factories["probability_vjp"],
@@ -1277,7 +1277,7 @@ class DSV41ResidentPrimitives:
             ),
             a=key_gradient, b=value_gradient, output=temporary_gradient,
         )
-        sink_padded = self._workspace(rank, (16, 8), torch.float32)
+        sink_padded = self._workspace(rank, (geometry.local_heads, 16), torch.float32)
         sink_gradient = self._workspace(rank, (1, 16), torch.float32)
         self._execute(
             ("attn-c1a-sink-reduce", layer), rank, factories["sink_reduce"],
@@ -1324,14 +1324,14 @@ class DSV41ResidentPrimitives:
         q_gamma = self._draft_operand(rank, layer, "q_norm", (1, 1280))
         self._execute(
             ("attn-q-norm-replay", layer), rank,
-            lambda: make_rms(ROWS, 1280, epsilon=1e-20),
+            lambda: make_rms(ROWS, 1280, epsilon=1e-20, gamma_bf16=q_gamma.dtype == torch.bfloat16),
             x=qkv["qa"], gamma=q_gamma, y=q_replay, inv=q_inverse,
         )
         dqa = self._workspace(rank, (ROWS, 1280))
         dq_norm = self._workspace(rank, (1, 1280), torch.float32)
         self._execute(
             ("attn-q-norm-input-vjp", layer), rank,
-            lambda: make_rms(ROWS, 1280, mode="input", epsilon=1e-20),
+            lambda: make_rms(ROWS, 1280, mode="input", epsilon=1e-20, gamma_bf16=q_gamma.dtype == torch.bfloat16),
             x=qkv["qa"], gamma=q_gamma, inv=q_inverse, dy=dlatent, dx=dqa,
         )
         self._execute(
@@ -1360,14 +1360,14 @@ class DSV41ResidentPrimitives:
         kv_gamma = self._draft_operand(rank, layer, "kv_norm", (1, 512))
         self._execute(
             ("attn-kv-norm-replay", layer), rank,
-            lambda: make_rms(ROWS, 512, epsilon=1e-20),
+            lambda: make_rms(ROWS, 512, epsilon=1e-20, gamma_bf16=kv_gamma.dtype == torch.bfloat16),
             x=qkv["kv"], gamma=kv_gamma, y=kv_replay, inv=kv_inverse,
         )
         dkv = self._workspace(rank, (ROWS, 512))
         dkv_norm = self._workspace(rank, (1, 512), torch.float32)
         self._execute(
             ("attn-kv-norm-input-vjp", layer), rank,
-            lambda: make_rms(ROWS, 512, mode="input", epsilon=1e-20),
+            lambda: make_rms(ROWS, 512, mode="input", epsilon=1e-20, gamma_bf16=kv_gamma.dtype == torch.bfloat16),
             x=qkv["kv"], gamma=kv_gamma, inv=kv_inverse,
             dy=temporary_norm_gradient, dx=dkv,
         )
@@ -1428,13 +1428,13 @@ class DSV41ResidentPrimitives:
         inverse = self._workspace(rank, (ROWS, 8), torch.float32)
         self._execute(
             ("attn-rms-replay", layer), rank,
-            lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20),
+            lambda: make_rms(ROWS, HIDDEN, epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
             x=collapsed, gamma=norm, y=replay, inv=inverse,
         )
         collapsed_gradient = self._workspace(rank, (ROWS, HIDDEN))
         self._execute(
             ("attn-rms-input-vjp", layer), rank,
-            lambda: make_rms(ROWS, HIDDEN, mode="input", epsilon=1e-20),
+            lambda: make_rms(ROWS, HIDDEN, mode="input", epsilon=1e-20, gamma_bf16=norm.dtype == torch.bfloat16),
             x=collapsed, gamma=norm, inv=inverse,
             dy=normalized_gradient, dx=collapsed_gradient,
         )

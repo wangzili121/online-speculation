@@ -1,5 +1,7 @@
 """在线训练的显式梯度 kernel；模型值和优化器状态均在设备计算。"""
 
+from .pypto_dsv41_resident_abi import with_resident_entry
+
 
 def tv_supervision_weight(valid, focus_weight):
     return valid + (focus_weight - 1) * max(0, min(valid, 4) - 2)
@@ -24,7 +26,7 @@ def _loss_entry(compute, *, inline, position_weighted):
                   gradient: pl.Out[pl.Tensor], losses: pl.Out[pl.Tensor],
                   valid: pl.Scalar[pl.INT32], normalizer: pl.Scalar[pl.INT32]):
             compute(student, teacher, weights, gradient, losses, valid, normalizer, device=0)
-        return entry
+        return with_resident_entry(entry, compute)
 
     @pl.jit.inline
     def ordinary(student: pl.Tensor, teacher: pl.Tensor, gradient: pl.Out[pl.Tensor],
@@ -36,7 +38,7 @@ def _loss_entry(compute, *, inline, position_weighted):
     def entry(student: pl.Tensor, teacher: pl.Tensor, gradient: pl.Out[pl.Tensor],
               losses: pl.Out[pl.Tensor], valid: pl.Scalar[pl.INT32], normalizer: pl.Scalar[pl.INT32]):
         compute(student, teacher, student, gradient, losses, valid, normalizer, device=0)
-    return entry
+    return with_resident_entry(entry, compute)
 
 
 def make_tv(rows, vocabulary, *, inline=False, focus_weight=1, position_weighted=False,
@@ -257,7 +259,7 @@ def make_adam(shape, *, beta1=.9, beta2=.999, epsilon=1e-8, inline=False):
         adam(master, gradient, first, second, next_master, next_first, next_second,
              rate, correction1, correction2, clip, device=0)
 
-    return adam if inline else entry
+    return adam if inline else with_resident_entry(entry, adam)
 
 
 def reduction_tile(k, limit):
@@ -355,7 +357,7 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
 
     if inline:
         return linear
-    return entry
+    return with_resident_entry(entry, linear)
 
 
 def make_fp32_row(tile, *, input_fp32):
@@ -428,14 +430,14 @@ def make_element(shape, kind, *, scale=1., inline=False, tile=128, task_group=1,
 
     if inline:
         return element
-    return entry
+    return with_resident_entry(entry, element)
 
 
 def make_rms(
     rows, dimension, *, mode="forward", inline=False, accumulate=False,
-    epsilon=1e-6,
+    epsilon=1e-6, gamma_bf16=False,
 ):
-    """RMSNorm 前向、输入梯度或共享 Q/K norm 参数梯度。gamma 已包含 1。"""
+    """RMSNorm 前向、输入梯度或共享 Q/K norm 参数梯度。"""
     import math
     if (
         dimension % 64 or rows < 16 or rows % 16
@@ -447,6 +449,7 @@ def make_rms(
     import pypto.language as pl
     kernel = pl.jit.inline if inline else pl.jit
     D = dimension
+    load_gamma = make_fp32_row(D, input_fp32=not gamma_bf16)
     INV_D = 1. / D
     ROW_TILE = 32 if rows % 32 == 0 else 16
 
@@ -459,7 +462,7 @@ def make_rms(
             repeated = pl.row_expand_mul(pl.full([8, 8], dtype=pl.FP32, value=1.), partial)
             total = pl.row_sum(pl.transpose(repeated, 0, 1))
             r = pl.rsqrt(pl.add(pl.mul(total, 1. / D), epsilon), high_precision=True)
-            g = pl.reshape(pl.slice(gamma, [1, D], [0, 0]), [8, D // 8])
+            g = pl.reshape(load_gamma(gamma, 0), [8, D // 8])
             normalized = pl.reshape(pl.mul(pl.row_expand_mul(z, r), g), [1, D])
             y[row:row + 1, 0:D] = pl.cast(normalized, pl.BF16, mode="rint")
             inv[row:row + 1, 0:8] = pl.reshape(r, [1, 8])
@@ -470,7 +473,7 @@ def make_rms(
         with pl.spmd(rows, name_hint="orthrus_rms_input_backward"):
             row = pl.tile.get_block_idx()
             z = pl.reshape(pl.cast(pl.slice(x, [1, D], [row, 0]), pl.FP32), [8, D // 8])
-            g = pl.reshape(pl.slice(gamma, [1, D], [0, 0]), [8, D // 8])
+            g = pl.reshape(load_gamma(gamma, 0), [8, D // 8])
             delta = pl.mul(pl.reshape(pl.cast(pl.slice(dy, [1, D], [row, 0]), pl.FP32), [8, D // 8]), g)
             r = pl.read(inv, [row, 0])
             partial = pl.row_sum(pl.mul(z, delta))
@@ -511,7 +514,6 @@ def make_rms(
         @pl.jit.host
         def entry(x: pl.Tensor, inv: pl.Tensor, dy: pl.Tensor, dg: pl.Out[pl.Tensor]):
             weight_grad(x, inv, dy, dg, device=0)
-    if inline:
-        return {"forward": forward, "input": input_grad, "weight": weight_grad}[mode]
-    return entry
+    chip = {"forward": forward, "input": input_grad, "weight": weight_grad}[mode]
+    return chip if inline else with_resident_entry(entry, chip)
 

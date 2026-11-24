@@ -13,6 +13,8 @@ express: masked softmax VJP, sink reduction, and extraction of K32 rows.
 
 from dataclasses import dataclass
 
+from .pypto_dsv41_resident_abi import with_resident_entry
+
 
 @dataclass(frozen=True)
 class C1AAttentionVJPGeometry:
@@ -96,7 +98,7 @@ def make_softmax_vjp(geometry=C1AAttentionVJPGeometry(), *, inline=False):
               score_gradient: pl.Out[pl.Tensor], sink_rows: pl.Out[pl.Tensor]):
         softmax_vjp(probability, probability_gradient, score_gradient, sink_rows, device=0)
 
-    return softmax_vjp if inline else entry
+    return softmax_vjp if inline else with_resident_entry(entry, softmax_vjp)
 
 
 def make_joined_history(geometry=C1AAttentionVJPGeometry(), *, inline=False):
@@ -199,7 +201,7 @@ def make_joined_history(geometry=C1AAttentionVJPGeometry(), *, inline=False):
             temporary, zeros, joined, device=0,
         )
 
-    return joined_history if inline else entry
+    return joined_history if inline else with_resident_entry(entry, joined_history)
 
 
 def make_probability_replay(geometry=C1AAttentionVJPGeometry(), *, inline=False):
@@ -304,7 +306,7 @@ def make_probability_replay(geometry=C1AAttentionVJPGeometry(), *, inline=False)
             final_lse, probability, device=0,
         )
 
-    return probability_replay if inline else entry
+    return probability_replay if inline else with_resident_entry(entry, probability_replay)
 
 
 def make_sink_reduce(geometry=C1AAttentionVJPGeometry(), *, inline=False):
@@ -331,7 +333,7 @@ def make_sink_reduce(geometry=C1AAttentionVJPGeometry(), *, inline=False):
     def entry(sink_rows: pl.Tensor, sink_gradient: pl.Out[pl.Tensor]):
         sink_reduce(sink_rows, sink_gradient, device=0)
 
-    return sink_reduce if inline else entry
+    return sink_reduce if inline else with_resident_entry(entry, sink_reduce)
 
 
 def make_block_extract(geometry=C1AAttentionVJPGeometry(), *, inline=False):
@@ -354,7 +356,7 @@ def make_block_extract(geometry=C1AAttentionVJPGeometry(), *, inline=False):
     def entry(joined: pl.Tensor, block_gradient: pl.Out[pl.Tensor]):
         block_extract(joined, block_gradient, device=0)
 
-    return block_extract if inline else entry
+    return block_extract if inline else with_resident_entry(entry, block_extract)
 
 
 def make_probability_block_extract(geometry=C1AAttentionVJPGeometry(), *, inline=False):
@@ -380,7 +382,7 @@ def make_probability_block_extract(geometry=C1AAttentionVJPGeometry(), *, inline
     def entry(probability: pl.Tensor, block_probability: pl.Out[pl.Tensor]):
         probability_block_extract(probability, block_probability, device=0)
 
-    return probability_block_extract if inline else entry
+    return probability_block_extract if inline else with_resident_entry(entry, probability_block_extract)
 
 
 def c1a_vjp_factories(geometry=C1AAttentionVJPGeometry()):
