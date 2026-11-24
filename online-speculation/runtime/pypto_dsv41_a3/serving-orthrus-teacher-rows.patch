@@ -1,0 +1,104 @@
+diff --git a/models/deepseek_v41_a3/session.py b/models/deepseek_v41_a3/session.py
+index a710044..685a2ca 100644
+--- a/models/deepseek_v41_a3/session.py
++++ b/models/deepseek_v41_a3/session.py
+@@ -279,16 +279,37 @@ class NativeSession:
+             result = self.native.propose_candidates(chunk, self.draft,
+                 output=self.directory / f"draft-{self.calls}", progress=progress)
+         elif phase == "verify":
+-            greedy_shard = None
++            if feedback_owners:
++                from blockspec.pypto_dsv41_greedy import verified_prefix
++
++            greedy_shard = logit_ranges = None
+             if self.compact_verifier and self.cluster is not None:
+-                teacher_dps = {owner[0] for owner in feedback_owners}
++                greedy_shard = self.draft.greedy_shard
++                if feedback_owners:
++                    feedback_by_dp = {}
++                    for engine in input_contract["DP_engines"]:
++                        dp, end = engine["dp_rank"], 0
++                        for request in engine["requests"]:
++                            start, end = end, end + len(request["token_ids"])
++                            owner = (dp, request["request_slot"], request["generation"])
++                            handle = feedback_owners.get(owner)
++                            if handle is not None:
++                                feedback_by_dp.setdefault(dp, []).append(
++                                    (start, end, tuple(request["token_ids"][1:]),
++                                     online.feedback_rows_needed(handle.request_id))
++                                )
+ 
+-                def greedy_shard(rank, logits, active):
+-                    if rank // self.config.tp not in teacher_dps:
+-                        return self.draft.greedy_shard(rank, logits, active)
++                    def logit_ranges(dp, greedy):
++                        spans = []
++                        for start, end, candidates, needed in feedback_by_dp.get(dp, ()):
++                            delivered = verified_prefix(candidates, greedy[start:end].tolist())
++                            spans.append((start, start + min(needed, len(delivered))))
++                        return spans
+ 
+-            result = self.native.verify_candidates(chunk, output=self.directory / f"verify-{self.calls}",
+-                                                   progress=progress, greedy_shard=greedy_shard)
++            result = self.native.verify_candidates(
++                chunk, output=self.directory / f"verify-{self.calls}", progress=progress,
++                greedy_shard=greedy_shard, logit_ranges=logit_ranges,
++            )
+         elif phase == "accept":
+             result = self.native.commit_candidates(chunk, output=self.directory / f"accept-{self.calls}",
+                                                    progress=progress)
+@@ -316,11 +337,11 @@ class NativeSession:
+                 for request in engine["requests"]:
+                     start, end = end, end + len(request["token_ids"])
+                     owner = (dp, request["request_slot"], request["generation"])
+-                    if compact is not None:
+-                        if owner in (requests if phase == "draft" else feedback_owners):
+-                            raise RuntimeError("Native vocabulary packets omitted required distillation logits")
+-                        # Draft rows predict the next position; verification also checks the last row.
+-                        row = compact[start:end - 1 if phase == "draft" else end]
++                    if phase == "draft" and compact is not None:
++                        if owner in requests:
++                            raise RuntimeError("Native vocabulary packets omitted required student logits")
++                        # Draft rows predict the next position.
++                        row = compact[start:end - 1]
+                     elif phase == "draft":
+                         # Source logits at rows 0..30 predict destination tokens 1..31.
+                         student = logits[start:end - 1]
+@@ -330,18 +351,20 @@ class NativeSession:
+                                 online.register_replay(replay.with_student_logits(student.detach().cpu().contiguous()))
+                         row = student.argmax(dim=-1)
+                     else:
+-                        row = logits[start:end] if phase == "verify" else logits[end - 1]
+                         handle = feedback_owners.get(owner)
+-                        greedy = row.argmax(dim=-1) if self.cluster is not None or handle is not None else None
++                        if compact is None:
++                            row = logits[start:end] if phase == "verify" else logits[end - 1]
++                            greedy = row.argmax(dim=-1) if self.cluster is not None or handle is not None else None
++                        else:
++                            # Verification checks the last row for a bonus token after full acceptance.
++                            greedy = compact[start:end]
++                            row = result.get("selected_logits", {}).get((dp, start))
+                         if handle is not None:
+                             state = self.ledger.get(handle)
+                             prefix = (*state.history, request["token_ids"][0])
+                             if phase == "verify":
+-                                target = greedy.tolist()
+                                 candidates = tuple(request["token_ids"][1:])
+-                                match = next((i for i, token in enumerate(candidates)
+-                                              if token != target[i]), len(candidates))
+-                                delivered = (*candidates[:match], target[match])
++                                delivered = verified_prefix(candidates, greedy.tolist())
+                                 ready = self.online.verified(
+                                     handle.request_id, prefix, candidates, delivered, row,
+                                     defer=self.cluster is not None,
+@@ -390,6 +413,10 @@ class NativeSession:
+             greedy_rows=[value.tolist() for value in ordered] if self.cluster is not None else None,
+             output_head_skipped=phase == "accept",
+             vocabulary_layout=result.get("vocabulary_layout"), prepare_seconds=prepare_seconds,
++            teacher_logit_rows=(
++                sum(rows.shape[0] for rows in result.get("selected_logits", {}).values())
++                if phase == "verify" and result.get("greedy_tokens") else None
++            ),
+             commit_tokens_per_dp=(
+                 [engine["active"] for engine in input_contract["DP_engines"]] if phase == "accept" else None
+             ),

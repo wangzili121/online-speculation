@@ -1,0 +1,43 @@
+{
+  "format": "orthrus-dsv41-verifier-teacher-readback-910b3-v1",
+  "host": "167",
+  "baseline": "bee9bad, dense verifier readback in teacher-owning DP partition",
+  "scope": "resident vocabulary output with four logical TP shards on two physical 910B3 cards",
+  "measurement": {
+    "passed": true,
+    "physical_cards": 2,
+    "logical_tp": 4,
+    "vocab": 129280,
+    "exact_token_and_teacher": true,
+    "short_fallback": true,
+    "cases": {
+      "early_rejection": {
+        "active_rows": 32,
+        "teacher_start": 0,
+        "teacher_rows": 1,
+        "full_ms": 28.89813599176705,
+        "selective_ms": 9.991926955990493,
+        "full_bytes": 8273920,
+        "selective_bytes": 262656
+      },
+      "packed_partial_acceptance": {
+        "active_rows": 64,
+        "teacher_start": 32,
+        "teacher_rows": 3,
+        "full_ms": 42.15546802151948,
+        "selective_ms": 9.467613999731839,
+        "full_bytes": 16547840,
+        "selective_bytes": 783872
+      },
+      "packed_full_acceptance_capped": {
+        "active_rows": 64,
+        "teacher_start": 32,
+        "teacher_rows": 7,
+        "full_ms": 45.8643960300833,
+        "selective_ms": 10.75802999548614,
+        "full_bytes": 16547840,
+        "selective_bytes": 1818112
+      }
+    }
+  }
+}

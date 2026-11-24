@@ -505,6 +505,7 @@ def test_gsm8k_revision_comparison_recovers_old_phase_receipts_and_requires_matc
                  runtime={"output_d2h_bytes": 20 - index}, timings={"chunk_seconds": 1.0 - 0.5 * index}),
             dict(phase="verify", owners=[dict(request_id="orthrus-request-initial-0")],
                  vocabulary_layout="device_greedy" if index else None,
+                 teacher_logit_rows=2 if index else None,
                  timings={"chunk_seconds": .4, "verify_snapshot_seconds": .2, "verify_restore_seconds": .1}),
             dict(phase="accept", owners=[dict(request_id="orthrus-request-initial-0")],
                  commit_tokens_per_dp=[4, 1, 0, 0]),
@@ -521,6 +522,7 @@ def test_gsm8k_revision_comparison_recovers_old_phase_receipts_and_requires_matc
     assert phases[1]["verify"]["verify_snapshot_seconds"] == .2
     assert phases[1]["verify"]["verify_restore_seconds"] == .1
     assert phases[1]["verify"]["device_greedy_calls"] == 1
+    assert phases[1]["verify"]["teacher_logit_rows"] == 2
     assert phases[1]["accept"]["max_commit_tokens_per_dp"] == 17
     assert phases[1]["accept"]["accept_calls_fitting_capacity16"] == 1
     candidate = dirs[1] / "gsm8k-online-online.json"
@@ -595,6 +597,8 @@ def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkey
             with receipts.open("a") as stream:
                 version = 0 if stale_frozen_draft and phase == "frozen" else bank.active_version
                 stream.write(json.dumps(dict(phase="draft", draft_head_version=version)) + "\n")
+                if phase == "online":
+                    stream.write(json.dumps(dict(phase="verify", teacher_logit_rows=2)) + "\n")
             seen.append((phase, batch.cache_partitions))
             if phase in ("draft_warmup", "initial"):
                 assert session.online is None and bank.active_version == 0
@@ -635,6 +639,8 @@ def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkey
     assert prefill["calls"] > 0
     assert prefill["output_d2h_bytes"] == 32 * prefill["calls"]
     assert prefill["native_seconds"] == .5 * prefill["calls"]
+    verify = report["arms"]["online"]["serving_phases_by_host"]["0"]["verify"]
+    assert verify["teacher_logit_rows"] == 2 * verify["calls"]
     assert report["arms"]["frozen"]["head_version"] == report["arms"]["online"]["publications"]
     assert report["arms"]["online"]["wall_tok_s_excluding_all_updates_estimate"] > 0
     assert all(partitions == [0, 1, 2, 3] for _, partitions in seen)

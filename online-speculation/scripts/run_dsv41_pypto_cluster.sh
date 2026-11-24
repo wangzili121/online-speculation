@@ -45,7 +45,8 @@ for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.p
     lib-pypto72-compat.patch lib-cluster-retry.patch lib-cluster-prefill-trace.patch \
     lib-deterministic-reduction.patch lib-cluster-online.patch lib-workspace-write-only.patch \
     lib-orthrus-output.patch lib-orthrus-controls.patch lib-orthrus-network-hotpath.patch \
-    lib-orthrus-verify-rows.patch lib-orthrus-verify-parallel.patch lib-orthrus-verify-output.patch; do
+    lib-orthrus-verify-rows.patch lib-orthrus-verify-parallel.patch lib-orthrus-verify-output.patch \
+    lib-orthrus-teacher-rows.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -65,6 +66,8 @@ git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-output.patc
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-output.patch"
 git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-verify-output.patch"
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-verify-output.patch"
+git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-teacher-rows.patch"
+git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-teacher-rows.patch"
 python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolve(cluster=True)'
 
 if [[ "${1:-}" == --prepare-only ]]; then
@@ -166,27 +169,36 @@ assert receipts[-1]["commit_tokens_per_dp"] == [1]
 
 class FeedbackProbe:
     bound = True
+    needed = 2
 
     def feedback_pending(self, request_id):
         return request_id == "feedback"
 
+    def feedback_rows_needed(self, request_id):
+        assert request_id == "feedback"
+        return self.needed
+
     def verified(self, request_id, prefix, candidates, delivered, logits, *, defer):
-        assert (request_id, prefix, candidates, delivered, defer) == ("feedback", (6, 0), (1,), (1, 2), True)
-        assert logits.shape == (2, 3)
+        assert (request_id, prefix, defer) == ("feedback", (6, 0), True)
+        assert delivered == self.delivered
+        assert torch.equal(logits, self.expected_logits)
         return "prepared"
 
     def synchronize(self, update, exchange):
         assert update == "prepared"
 
-logits = torch.tensor([[0., 2., 0.], [0., 0., 3.], [1., 0., 0.], [0., 4., 0.]])
-def verify_probe(chunk, *, greedy_shard, **kwargs):
+logits = torch.tensor([[0., 2., 0.], [0., 0., 3.], [1., 0., 0.], [0., 4., 0.], [0., 0., 5.]])
+def verify_probe(chunk, *, greedy_shard, logit_ranges, **kwargs):
     if greedy_shard is None:
+        assert logit_ranges is None
         return dict(completed_layers=list(range(40)), timings={}, logits=[{"fresh": logits}] * 8)
-    assert greedy_shard(0, logits, 2) is None
-    assert greedy_shard(3, logits, 2) is None
-    reduced = greedy_shard(4, logits, 4)
-    return dict(completed_layers=list(range(40)), timings={},
-                logits=[{"fresh": logits}] * 4 + [{}] * 4, greedy_tokens={1: reduced})
+    greedy = greedy_shard(0, logits, 5)
+    assert torch.equal(greedy_shard(4, logits, 5), greedy)
+    assert logit_ranges(0, greedy) == [(2, 2 + len(session.online.expected_logits))]
+    assert not logit_ranges(1, greedy)
+    return dict(completed_layers=list(range(40)), timings={}, logits=[{}] * 8,
+                greedy_tokens={0: greedy, 1: greedy},
+                selected_logits={(0, begin): logits[begin:end] for begin, end in logit_ranges(0, greedy)})
 
 session.native.verify_candidates = verify_probe
 session.compact_verifier = False
@@ -196,17 +208,24 @@ session.online = FeedbackProbe()
 session.config = SimpleNamespace(tp=4)
 session.ledger = SimpleNamespace(get=lambda handle: SimpleNamespace(history=[6]))
 session.local_ranks = (0, 1, 2, 3)
-handles = (Handle(request_id="feedback"), Handle(request_id="ordinary", slot=1))
-inputs = {"DP_engines": [{"active": 4, "dp_rank": 0, "requests": [
-    dict(request_slot=0, generation=1, token_ids=[0, 1]),
-    dict(request_slot=1, generation=1, token_ids=[0, 2]),
+handles = (Handle(request_id="ordinary"), Handle(request_id="feedback", slot=1))
+feedback_request = dict(request_slot=1, generation=1, token_ids=[0, 0, 1])
+inputs = {"DP_engines": [{"active": 5, "dp_rank": 0, "requests": [
+    dict(request_slot=0, generation=1, token_ids=[0, 1]), feedback_request,
 ]}]}
-assert [row.tolist() for row in session._execute("verify", inputs, (), handles)] == [[1, 2], [0, 1]]
+session.online.delivered = (0, 1, 2)
+session.online.expected_logits = logits[2:5]
+assert [row.tolist() for row in session._execute("verify", inputs, (), handles)] == [[1, 2], [0, 1, 2]]
 session.compact_verifier = True
 session.local_ranks = tuple(range(8))
 handles += (Handle(request_id="greedy-1", dp=1), Handle(request_id="greedy-2", dp=1, slot=1))
-inputs["DP_engines"].append({"active": 4, "dp_rank": 1, "requests": inputs["DP_engines"][0]["requests"]})
-assert [row.tolist() for row in session._execute("verify", inputs, (), handles)] == [[1, 2], [0, 1]] * 2
+inputs["DP_engines"].append({"active": 5, "dp_rank": 1, "requests": inputs["DP_engines"][0]["requests"]})
+for candidates, delivered in (((0, 1), (0, 1, 2)), ((0, 2), (0, 1)), ((2, 1), (0,))):
+    feedback_request["token_ids"] = [0, *candidates]
+    session.online.delivered = delivered
+    session.online.expected_logits = logits[2:2 + min(2, len(delivered))]
+    assert [row.tolist() for row in session._execute("verify", inputs, (), handles)] == [[1, 2], [0, 1, 2]] * 2
+    assert receipts[-1]["teacher_logit_rows"] == min(2, len(delivered))
 
 # Compact serialized evidence must not remove static data from the native call.
 utility = source.module("utils")
@@ -242,9 +261,9 @@ executor = SimpleNamespace(
     resident=SimpleNamespace(read_output=lambda value, device: (reads.append((device, value.numel())), value)[1]),
 )
 records = [{"positions": positions} for positions in ((), (), (4, 5, 6), (4, 5, 6), (), ())]
-outputs, greedy = network._read_speculative_vocab(shards, records, "fresh", executor, 2)
+outputs, greedy, selected = network._read_speculative_vocab(shards, records, "fresh", executor, 2)
 expected = torch.cat((shards[2]["fresh"][:3], shards[3]["fresh"][:3]), dim=-1)
-assert not greedy and reads == [(0, 9), (1, 9)] and torch.equal(outputs[2], expected)
+assert not greedy and not selected and reads == [(0, 9), (1, 9)] and torch.equal(outputs[2], expected)
 assert outputs[2] is outputs[3] and outputs[4].shape == outputs[5].shape == (0, 6)
 
 # One local DP group captures teacher feedback, while another only returns IDs.
@@ -274,11 +293,23 @@ def reduce_non_teacher_rank(rank, values, active):
         return reduce_rank(rank, values, active)
 
 reads.clear()
-outputs, greedy = network._read_speculative_vocab(
+outputs, greedy, selected = network._read_speculative_vocab(
     shards, records, "fresh", executor, 2, reduce_non_teacher_rank,
 )
-assert reads == [(0, 96), (1, 96)] and set(outputs) == {2, 3}
+assert reads == [(0, 96), (1, 96)] and set(outputs) == {2, 3} and not selected
 assert torch.equal(greedy[2], torch.cat((shards[4]["fresh"], shards[5]["fresh"]), dim=-1).argmax(-1))
+
+reads.clear()
+outputs, greedy, selected = network._read_speculative_vocab(
+    shards, records, "fresh", executor, 2, reduce_rank,
+    lambda dp, tokens: [(5, 6), (32, 35)] if dp == 2 else [],
+)
+assert not outputs and set(greedy) == {1, 2}
+assert set(selected) == {(2, 5), (2, 32)}
+assert reads == [(2, 3), (2, 9), (3, 3), (3, 9)]
+full = torch.cat((shards[4]["fresh"], shards[5]["fresh"]), dim=-1)
+assert torch.equal(selected[2, 5], full[5:6])
+assert torch.equal(selected[2, 32], full[32:35])
 
 runtime_type = source.module("prefill_resident").ResidentNetworkRuntime
 # Only adjacent intervals may share a D2D copy. Restore on failure as well.

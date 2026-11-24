@@ -143,6 +143,26 @@ def test_serving_bridge_rejects_teacher_rows_from_rejected_candidate_branch():
         raise AssertionError("wrong-branch feedback was accepted")
 
 
+def test_serving_bridge_uses_only_remaining_rows_of_the_delivered_prefix():
+    config = DSV41OnlineConfig(
+        teacher_rows=3, warm_update_stride=1, warm_update_steps=1, steady_update_stride=1,
+    )
+    learner = SimpleNamespace(last_layers=1, update_rows=lambda *args, **kwargs: None)
+    bridge = DSV41ServingOnline(DSV41OnlineController(learner, config))
+    plan = DSV41SuffixPlan(1)
+    assert bridge.capture_due() and bridge.register_replay(DSV41ServingReplay(
+        "r", (4,), (0, 0, 1), plan, torch.zeros(32, 4), (layer_state(39),),
+    ))
+    first = torch.arange(7, dtype=torch.float32).reshape(1, 7)
+    tail = torch.arange(14, 28, dtype=torch.float32).reshape(2, 7)
+    assert bridge.verified("r", (4,), (99,), (5,), first, defer=True) is None
+    assert bridge.feedback_rows_needed("r") == 2
+    with pytest.raises(ValueError, match="verifier-logit rows"):
+        bridge.verified("r", (4, 5), (6, 7, 8), (6, 7, 8, 9), tail[:1], defer=True)
+    prepared = bridge.verified("r", (4, 5), (6, 7, 8), (6, 7, 8, 9), tail, defer=True)
+    assert torch.equal(prepared.teacher, torch.cat((first, tail)))
+
+
 def test_serving_bridge_can_defer_update_until_cluster_rendezvous():
     class Learner:
         last_layers = 1

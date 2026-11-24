@@ -137,6 +137,8 @@ def _collect_phases(path, offset, previous, totals, draft_versions):
             vocabulary = receipt.get("vocabulary_layout")
             if vocabulary is not None:
                 stage[f"{vocabulary}_calls"] += 1
+            if receipt.get("teacher_logit_rows") is not None:
+                stage["teacher_logit_rows"] += receipt["teacher_logit_rows"]
             runtime = receipt.get("runtime") or {}
             for name in counters:
                 if name in runtime:

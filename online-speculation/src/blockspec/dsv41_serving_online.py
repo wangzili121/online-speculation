@@ -159,6 +159,9 @@ class DSV41ServingOnline:
         """Whether this host owns a replay awaiting authoritative rows."""
         return request_id in self.pending
 
+    def feedback_rows_needed(self, request_id):
+        return self.controller.blocks[request_id].remaining
+
     def verified(
         self, request_id, prefix, candidate_inputs, delivered, logits, *,
         finished=False, defer=False,
@@ -171,9 +174,10 @@ class DSV41ServingOnline:
         candidate_inputs = None if candidate_inputs is None else tuple(int(token) for token in candidate_inputs)
         if not delivered:
             raise ValueError("verification must deliver a correction, bonus or accepted token")
+        count = min(len(delivered), self.feedback_rows_needed(request_id))
         if (
             not torch.is_tensor(logits) or logits.ndim != 2
-            or logits.shape[0] < len(delivered) or not logits.is_floating_point()
+            or logits.shape[0] < count or not logits.is_floating_point()
         ):
             raise ValueError("full finite verifier-logit rows are required for online feedback")
         teacher = logits[:len(delivered)].detach().cpu()
@@ -181,12 +185,13 @@ class DSV41ServingOnline:
             raise ValueError("non-finite verifier rows cannot train the draft")
         # Inputs are always rebuilt from the corrected branch.  Candidate IDs
         # are checked only for the rows that were genuinely accepted.
-        inputs = (prefix[-1], *delivered[:-1])
         accepted = max(0, len(delivered) - 1)
         if candidate_inputs is not None and candidate_inputs[:accepted] != delivered[:accepted]:
             raise ValueError("delivered prefix is not the accepted candidate prefix")
+        delivered = delivered[:count]
+        inputs = (prefix[-1], *delivered[:-1])
         method = self.controller.prepare if defer else self.controller.observe
-        record = method(request_id, prefix, inputs, delivered, teacher, finished=finished)
+        record = method(request_id, prefix, inputs, delivered, teacher[:count], finished=finished)
         if record is not None or finished:
             self.pending.pop(request_id, None)
         return record

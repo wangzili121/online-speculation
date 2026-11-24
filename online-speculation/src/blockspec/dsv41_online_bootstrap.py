@@ -94,6 +94,9 @@ class DSV41OnlineBootstrap:
     def feedback_pending(self, request_id):
         return self._call("feedback_pending", request_id)
 
+    def feedback_rows_needed(self, request_id):
+        return self._call("feedback_rows_needed", request_id)
+
     def verified(self, *args, **kwargs):
         return self._call("verified", *args, **kwargs)
 

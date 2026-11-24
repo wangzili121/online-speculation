@@ -182,8 +182,12 @@ class DSV41DelayedTeacherBlock:
         self.closed = False
 
     @property
+    def remaining(self):
+        return self.width - 1 - len(self.rows)
+
+    @property
     def full(self):
-        return len(self.rows) == self.width - 1
+        return self.remaining == 0
 
     @property
     def ready(self):
@@ -207,7 +211,7 @@ class DSV41DelayedTeacherBlock:
             or inputs != (prefix[-1], *delivered[:-1])
         ):
             raise ValueError("unverified or wrong-branch teacher rows cannot train the draft")
-        count = min(len(delivered), self.width - 1 - len(self.rows))
+        count = min(len(delivered), self.remaining)
         self.rows.extend(row.detach().cpu().clone() for row in teacher_rows[:count])
         self.prefix += delivered[:count]
         return count

@@ -3,6 +3,15 @@
 PACKET_COLUMNS = 8
 
 
+def verified_prefix(candidates, target):
+    """Return accepted candidates followed by the verifier correction or bonus."""
+    match = next(
+        (index for index, token in enumerate(candidates) if token != target[index]),
+        len(candidates),
+    )
+    return (*candidates[:match], target[match])
+
+
 def make_local_greedy(capacity, vocabulary, *, tile=6464):
     """Emit one (score, local token ID, all-finite) packet per live row."""
     import pypto.language as pl
