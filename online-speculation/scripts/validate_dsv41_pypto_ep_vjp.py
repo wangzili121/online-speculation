@@ -11,6 +11,7 @@ def main():
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compile-only", action="store_true")
+    parser.add_argument("--simulate", action="store_true")
     args = parser.parse_args()
     if args.output.exists():
         parser.error("output must not already exist")
@@ -39,7 +40,7 @@ def main():
 
     config = RunConfig(
         backend_type=BackendType.Ascend910B,
-        execution_mode=ExecutionMode.ONBOARD,
+        execution_mode=ExecutionMode.SIM if args.simulate else ExecutionMode.ONBOARD,
         distributed_config=DistributedConfig(
             device_ids=[args.device], num_sub_workers=0,
         ),
@@ -84,6 +85,7 @@ def main():
         "passed": False,
         "compiled": sorted(programs),
         "executed": False,
+        "simulator_execution": False,
         "shape": {
             "rows": K32_ROWS, "topk": TOPK, "hidden": HIDDEN,
             "experts": LOCAL_EXPERTS * EP_WORLD, "world": EP_WORLD,
@@ -286,6 +288,7 @@ def main():
         torch.testing.assert_close(token_dx, expected_token_dx, atol=0, rtol=0)
         report.update(
             passed=True, executed=True, active=active, source_rank=source_rank,
+            simulator_execution=args.simulate,
             owners=owner_reports, routes=int(sent_counts[:, 0].sum()),
             route_max_abs=float((route_dx.float() - expected_route_dx.float()).abs().max()),
             token_max_abs=float((token_dx.float() - expected_token_dx.float()).abs().max()),

@@ -162,6 +162,8 @@ check_online_abi() {
   PYTHONPATH="$PYPTO_LIB_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
     python "$root/scripts/validate_dsv41_pypto_online_programs.py" \
     --compile-only --resident-abi --output /results/resident-online-abi.json
+  python "$root/scripts/validate_dsv41_pypto_expert_input_vjp.py" \
+    --production --simulate --output /results/resident-expert-vjp.json
 }
 if [[ "${1:-}" == --online-abi-only ]]; then
   check_online_abi

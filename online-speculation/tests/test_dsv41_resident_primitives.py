@@ -589,7 +589,7 @@ class SymbolicEPPrimitives(DSV41ResidentPrimitives):
 
     def __init__(self, ranks):
         draft = Draft(ranks=ranks)
-        draft.resident = SimpleNamespace()
+        draft.resident = SimpleNamespace(read_control=self._expert_counts, copy_tensor=self._copy_tensor)
         self.transport = SymbolicTransport()
         self.weights = SymbolicExpertWeights()
         super().__init__(
@@ -602,6 +602,18 @@ class SymbolicEPPrimitives(DSV41ResidentPrimitives):
         )
         self.events = []
         self.workspace_number = 0
+
+    @staticmethod
+    def _expert_counts(tensor, local):
+        assert tensor.shape == (24,) and tensor.dtype == torch.int32
+        counts = torch.zeros(24, dtype=torch.int32)
+        if local == 0:
+            counts[[0, 23]] = torch.tensor([3, 19], dtype=torch.int32)
+        return counts
+
+    @staticmethod
+    def _copy_tensor(destination, source, rank):
+        assert destination.shape == source.shape and destination.dtype == source.dtype
 
     def _workspace(self, rank, shape, dtype=torch.bfloat16):
         self.workspace_number += 1
@@ -636,6 +648,7 @@ class SymbolicEPPrimitives(DSV41ResidentPrimitives):
 def symbolic_capture(rank):
     return {
         "token_begin": 0, "token_end": 32,
+        "sp_span": DSV41SequenceSpan(0, rank % 4 * 8, 8),
         "normed": SymbolicTensor((32, 5120), name=f"normed-{rank}"),
         "route_ids": SymbolicTensor((32, 6), torch.int32, f"routes-{rank}"),
     }
@@ -651,7 +664,7 @@ def reverse_contract():
     }
 
 
-def test_owner_batch_runs_fixed_ep16_packets_and_all_local_experts():
+def test_owner_batch_runs_fixed_ep16_packets_and_only_populated_experts():
     value = SymbolicEPPrimitives(range(8))
     ranks = tuple(range(4))
     captured = {rank: symbolic_capture(rank) for rank in ranks}
@@ -673,17 +686,18 @@ def test_owner_batch_runs_fixed_ep16_packets_and_all_local_experts():
         ("online-frozen-tail-step7-layer39-return-v1", "all_to_all", "ep", 8),
     ]
     packs = [event for event in value.events if event[0] == "ep-vjp-dispatch-pack"]
-    assert [event[2]["active"] for event in packs] == [32] * 4 + [0] * 4
+    assert [event[2]["active"] for event in packs] == [8] * 4 + [0] * 4
     assert len([event for event in value.events if event[0] == "ep-vjp-dispatch-unpack"]) == 8
-    assert len([event for event in value.events if event[0] == "routed-expert-input-vjp"]) == 8 * 24
+    calls = [event for event in value.events if event[0] == "routed-expert-input-vjp"]
+    assert [(rank, args["value"].shape) for _, rank, args in calls] == [
+        (0, (16, 5120)), (0, (32, 5120)),
+    ]
     assert len([event for event in value.events if event[0] == "ep-vjp-return-pack"]) == 8
     assert len([event for event in value.events if event[0] == "ep-vjp-source-restore"]) == 4
-    assert [(owner, expert) for _, owner, expert in value.weights.calls] == [
-        (owner, owner * 24 + local) for owner in range(8) for local in range(24)
-    ]
+    assert value.weights.calls == [(39, 0, 0), (39, 0, 23)]
 
 
-def test_peer_participates_in_both_collectives_and_all_owned_experts():
+def test_peer_participates_in_both_collectives_and_reverses_received_routes():
     value = SymbolicEPPrimitives(range(8, 16))
     value.participate_frozen_tail_peer(
         layer=39, synchronization=reverse_contract(),
@@ -695,11 +709,16 @@ def test_peer_participates_in_both_collectives_and_all_owned_experts():
     ]
     packs = [event for event in value.events if event[0] == "ep-vjp-dispatch-pack"]
     assert [event[2]["active"] for event in packs] == [0] * 8
-    assert len([event for event in value.events if event[0] == "routed-expert-input-vjp"]) == 8 * 24
+    assert len([event for event in value.events if event[0] == "routed-expert-input-vjp"]) == 2
     assert not [event for event in value.events if event[0] in {"ep-vjp-source-restore", "finish"}]
-    assert [(owner, expert) for _, owner, expert in value.weights.calls] == [
-        (owner, owner * 24 + local) for owner in range(8, 16) for local in range(24)
-    ]
+    assert value.weights.calls == [(39, 8, 192), (39, 8, 215)]
+
+
+def test_ep16_dispatch_rejects_overlapping_replay_spans():
+    value = SymbolicEPPrimitives(range(8))
+    captures = {rank: (symbolic_capture(0), None) for rank in range(4)}
+    with pytest.raises(ValueError, match="disjoint owner spans"):
+        value._ep_dispatch_packets(39, captures)
 
 
 def test_ep16_reverse_rejects_a_stale_or_partial_contract():

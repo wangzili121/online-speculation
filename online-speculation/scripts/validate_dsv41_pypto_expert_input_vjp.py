@@ -14,57 +14,25 @@ def pack_kn(value):
     return value.reshape(k, n // 64, 64).permute(1, 0, 2).reshape(-1, 64).contiguous()
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
-    if args.output.exists():
-        parser.error("output must not already exist")
-
+def validate(rows, hidden, intermediate, active, config):
     import torch
-    from pypto.backend import BackendType
-    from pypto.ir import DistributedConfig
-    from pypto.runtime import DistributedWorker, ExecutionMode, RunConfig
     from blockspec.pypto_dsv41_moe_vjp import make_frozen_w8a8_expert_input_vjp
-
-    config = RunConfig(
-        backend_type=BackendType.Ascend910B,
-        execution_mode=ExecutionMode.ONBOARD,
-        distributed_config=DistributedConfig(device_ids=[args.device], num_sub_workers=0),
-    )
-    empty = lambda shape, dtype=torch.bfloat16: torch.empty(shape, dtype=dtype, device="meta")
-
-    # Compile the production expert slab even though the numerical fixture is
-    # intentionally compact enough to return quickly on a shared development card.
-    make_frozen_w8a8_expert_input_vjp().compile(
-        empty((64, 5120)), empty((64, 5120)),
-        empty((5120 * (4608 // 64), 64), torch.int8), empty((4608,), torch.float32),
-        empty((2304 * (5120 // 64), 64), torch.int8), empty((5120,), torch.float32),
-        empty((64, 5120)), config=config,
-    )
-
-    rows, hidden, intermediate = 16, 256, 256
-    program = make_frozen_w8a8_expert_input_vjp(rows, hidden, intermediate).compile(
-        empty((rows, hidden)), empty((rows, hidden)),
-        empty((hidden * (2 * intermediate // 64), 64), torch.int8),
-        empty((2 * intermediate,), torch.float32),
-        empty((intermediate * (hidden // 64), 64), torch.int8),
-        empty((hidden,), torch.float32), empty((rows, hidden)), config=config,
-    )
+    from blockspec.pypto_dsv41_resident_abi import resident_entry
 
     torch.manual_seed(47)
-    value = (torch.randn(rows, hidden) * .1).bfloat16()
-    output_gradient = (torch.randn(rows, hidden) * .1).bfloat16()
+    value = torch.zeros((rows, hidden), dtype=torch.bfloat16)
+    output_gradient = torch.zeros_like(value)
+    value[:active] = torch.randn(active, hidden) * .1
+    output_gradient[:active] = torch.randn(active, hidden) * .1
     gate_codes = torch.randint(-8, 9, (hidden, 2 * intermediate), dtype=torch.int8)
     down_codes = torch.randint(-8, 9, (intermediate, hidden), dtype=torch.int8)
     gate_scale = torch.rand(2 * intermediate).mul_(.01).add_(.001)
     down_scale = torch.rand(hidden).mul_(.01).add_(.001)
     gate_weight = (gate_codes.float() * gate_scale).bfloat16()
     down_weight = (down_codes.float() * down_scale).bfloat16()
-    gate_up = (value.float() @ gate_weight.float()).bfloat16().float()
+    gate_up = (value[:active].float() @ gate_weight.float()).bfloat16().float()
     activation_gradient = (
-        output_gradient.float() @ down_weight.float().T
+        output_gradient[:active].float() @ down_weight.float().T
     ).bfloat16().float()
     gate, up = gate_up.chunk(2, dim=-1)
     gate_clamped, up_clamped = gate.clamp(max=10.), up.clamp(-10., 10.)
@@ -78,40 +46,61 @@ def main():
     gate_gradient = torch.cat((dgate, dup), -1).bfloat16()
     expected = (gate_gradient.float() @ gate_weight.float().T).bfloat16()
 
-    result = torch.zeros_like(expected)
-    worker, handles = None, []
-    report = {"passed": False, "compiled": True, "executed": False}
+    result = torch.empty_like(value)
+    chip = resident_entry(make_frozen_w8a8_expert_input_vjp(rows, hidden, intermediate))
+    chip(
+        value, output_gradient, pack_kn(gate_codes), gate_scale, pack_kn(down_codes), down_scale,
+        result, config=config,
+    )
+    torch.testing.assert_close(result[:active], expected, atol=.003, rtol=.03)
+    if torch.count_nonzero(result[active:]):
+        raise AssertionError("Inactive expert rows must return zero")
+    return {
+        "shape": [rows, hidden, intermediate], "active_rows": active,
+        "max_abs": float((result[:active].float() - expected.float()).abs().max()),
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--device", type=int, default=0)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--simulate", action="store_true")
+    parser.add_argument("--production", action="store_true")
+    args = parser.parse_args()
+    if args.output.exists():
+        parser.error("output must not already exist")
+
+    import torch
+    from pypto.backend import BackendType
+    from pypto.runtime import ExecutionMode, RunConfig
+
+    torch.set_num_threads(4)
+    config = RunConfig(
+        arch=BackendType.Ascend910, device_id=args.device,
+        execution_mode=ExecutionMode.SIM if args.simulate else ExecutionMode.ONBOARD,
+    )
+    shapes = ((16, 5120, 2304, 3), (32, 5120, 2304, 19), (32, 5120, 768, 31))
+    if not args.production:
+        shapes = ((16, 256, 256, 15),)
+    report = {
+        "passed": False, "compiled": False, "executed": False,
+        "npu_execution": False, "simulator_execution": False, "cases": [],
+    }
     try:
-        worker = DistributedWorker([program], config=config)
-
-        def allocate(tensor):
-            handle = worker.alloc_tensor(tuple(tensor.shape), tensor.dtype, init=tensor.contiguous())
-            handles.append(handle)
-            return handle
-
-        output = allocate(result)
-        worker.run(
-            program, allocate(value), allocate(output_gradient), allocate(pack_kn(gate_codes)),
-            allocate(gate_scale), allocate(pack_kn(down_codes)), allocate(down_scale), output,
-            config=config,
-        )
-        worker.copy_from(result.data_ptr(), output.data_ptr, result.nbytes)
-        torch.testing.assert_close(result, expected, atol=.03125, rtol=.03125)
+        for rows, hidden, intermediate, active in shapes:
+            report["cases"].append(validate(rows, hidden, intermediate, active, config))
         report.update(
-            passed=True, executed=True, fixture=[rows, hidden, intermediate],
-            production=[64, 5120, 2304],
-            max_abs=float((result.float() - expected.float()).abs().max()),
+            passed=True, compiled=True, executed=True,
+            npu_execution=not args.simulate, simulator_execution=args.simulate,
         )
     except BaseException as error:
         report["error"] = repr(error)
         raise
     finally:
-        if worker is not None:
-            while handles:
-                worker.free_tensor(handles.pop())
-            worker.close()
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps({"stage": "expert-input-vjp", **report}), flush=True)
 
 
 if __name__ == "__main__":

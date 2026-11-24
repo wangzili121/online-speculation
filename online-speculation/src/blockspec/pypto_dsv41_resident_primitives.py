@@ -656,6 +656,16 @@ class DSV41ResidentPrimitives:
             make_ep_vjp_dispatch_pack,
         )
 
+        # The expert slab holds one K32 block, split across the owner ranks.
+        spans = [self._local_span(captured) for captured, _ in sources.values()]
+        rows = sorted(
+            row
+            for span in spans
+            for row in range(span.block_start, span.block_start + span.rows)
+        )
+        if sources and rows != list(range(ROWS)):
+            raise ValueError("EP reverse requires disjoint owner spans covering one K32 block")
+
         packets, originals = [], {}
         for rank in self.ranks:
             source = sources.get(rank)
@@ -704,7 +714,7 @@ class DSV41ResidentPrimitives:
         return packets, originals
 
     def _ep_owner_expert_packets(self, layer, received):
-        """Run all 24 frozen W8A8 expert input VJPs owned by each local rank."""
+        """Run frozen expert input VJPs for the populated slabs on each local rank."""
         from .pypto_dsv41_ep_vjp import (
             EXPERT_CAPACITY, LOCAL_EXPERTS, MAP_PAD, PACKET_ROWS,
             SLAB_ROWS, make_ep_vjp_dispatch_unpack, make_ep_vjp_return_pack,
@@ -731,17 +741,21 @@ class DSV41ResidentPrimitives:
             )
 
             expert_dx = self._workspace(rank, (SLAB_ROWS, HIDDEN))
-            for local_expert in range(LOCAL_EXPERTS):
+            counts = self.resident.read_control(expert_counts, self._local(rank)).tolist()
+            for local_expert, count in enumerate(counts):
+                if count == 0:
+                    continue
                 begin = local_expert * EXPERT_CAPACITY
-                end = begin + EXPERT_CAPACITY
+                rows = 16 if count <= 16 else EXPERT_CAPACITY
+                end = begin + rows
                 global_expert = rank * LOCAL_EXPERTS + local_expert
                 weights = layer_weights(rank, global_expert)
                 if not isinstance(weights, (tuple, list)) or len(weights) != 4:
                     raise RuntimeError("resident routed expert changed its W8A8 weight ABI")
                 self._execute(
-                    ("routed-expert-input-vjp", layer), rank,
-                    lambda: make_frozen_w8a8_expert_input_vjp(
-                        EXPERT_CAPACITY, HIDDEN, 2304,
+                    ("routed-expert-input-vjp", layer, rows), rank,
+                    lambda rows=rows: make_frozen_w8a8_expert_input_vjp(
+                        rows, HIDDEN, 2304,
                     ),
                     value=expert_x[begin:end],
                     output_gradient=expert_dy[begin:end],

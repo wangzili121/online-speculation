@@ -17,9 +17,9 @@ HIDDEN = 5120
 LOCAL_EXPERTS = EXPERTS // EP_WORLD
 ROUTES = K32_ROWS * TOPK
 PACKET_ROWS = EP_WORLD * ROUTES
-# A token cannot select the same expert twice.  One expert can therefore
-# receive at most one row per source token: 32 rows * 16 EP ranks.
-EXPERT_CAPACITY = K32_ROWS * EP_WORLD
+# One online update routes a single K32 replay, partitioned over the owner TP
+# group. Top-K selects each expert at most once per token.
+EXPERT_CAPACITY = K32_ROWS
 SLAB_ROWS = LOCAL_EXPERTS * EXPERT_CAPACITY
 PACKET_FIELDS = 4
 MAP_PAD = 8
@@ -58,7 +58,7 @@ class EPVJPGeometry:
 
     @property
     def expert_capacity(self):
-        return self.rows * self.world
+        return self.rows
 
     @property
     def slab_rows(self):

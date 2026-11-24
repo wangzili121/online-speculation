@@ -30,10 +30,10 @@ def compile_resident_update_extras(compile_program, empty, config):
             fp32((rows, 16)), config=config,
         ),
     }
-    for expert_rows, intermediate in ((rows, 768), (EXPERT_CAPACITY, 2304)):
+    for expert_rows, intermediate in ((rows, 768), (16, 2304), (EXPERT_CAPACITY, 2304)):
         hidden_values = empty((expert_rows, hidden))
         gate_width = 2 * intermediate
-        programs[f"expert_input_vjp_{expert_rows}"] = compile_program(
+        programs[f"expert_input_vjp_{expert_rows}x{intermediate}"] = compile_program(
             make_frozen_w8a8_expert_input_vjp(expert_rows, hidden, intermediate),
             hidden_values, hidden_values,
             empty((hidden * gate_width // 64, 64), torch.int8), fp32((gate_width,)),

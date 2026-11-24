@@ -23,6 +23,10 @@ def make_dequantize_blocked_weight(input_width, output_width, *, inline=False):
     import pypto.language as pl
 
     blocks = output_width // 64
+    row_tile = 16
+    row_tiles = input_width // row_tile
+    tiles = row_tiles * blocks
+    workers = min(tiles, 256)
     kernel = pl.jit.inline if inline else pl.jit
 
     @kernel
@@ -31,24 +35,24 @@ def make_dequantize_blocked_weight(input_width, output_width, *, inline=False):
         channel_scale: pl.Tensor,
         logical: pl.Out[pl.Tensor],
     ):
-        with pl.spmd(input_width * blocks, name_hint="orthrus_dsv41_w8a8_vjp_weight"):
-            task = pl.tile.get_block_idx()
-            row = task // blocks
-            block = task % blocks
-            # A2/A3 has no direct INT8->FP32 vector conversion.
-            codes = pl.cast(
-                pl.cast(
-                    pl.slice(packed, [1, 64], [block * input_width + row, 0]),
-                    pl.FP16,
-                ),
-                pl.FP32,
-            )
-            scales = pl.reshape(
-                pl.slice(channel_scale, [64], [block * 64]), [1, 64],
-            )
-            logical[row:row + 1, block * 64:block * 64 + 64] = pl.cast(
-                pl.mul(codes, scales), pl.BF16, mode="rint",
-            )
+        # The pinned A2/A3 runtime stores the launch count as a signed int16.
+        # Walk tiles in bounded workers even for a full 5120 x 4608 matrix.
+        for worker in pl.spmd(workers, name_hint="orthrus_dsv41_w8a8_vjp_weight"):
+            for task in pl.range(worker, tiles, workers):
+                block = task // row_tiles
+                row = task % row_tiles * row_tile
+                # A2/A3 has no direct INT8->FP32 vector conversion.
+                codes = pl.cast(
+                    pl.cast(
+                        pl.slice(packed, [row_tile, 64], [block * input_width + row, 0]),
+                        pl.FP16,
+                    ),
+                    pl.FP32,
+                )
+                scales = pl.reshape(pl.slice(channel_scale, [64], [block * 64]), [1, 64])
+                logical[row:row + row_tile, block * 64:block * 64 + 64] = pl.cast(
+                    pl.col_expand_mul(codes, scales), pl.BF16, mode="rint",
+                )
         return logical
 
     @pl.jit.host
@@ -381,7 +385,7 @@ def make_frozen_w8a8_expert_input_vjp(
     the two logical BF16 matrices on device.  No weight gradient or host-side
     model math is formed.
 
-    ``rows`` is the fixed expert receive slab (normally 64).  Inactive rows
+    ``rows`` is the padded expert dispatch size. Inactive rows
     must be zero in both ``value`` and ``output_gradient``; linearity then
     keeps their returned input gradient exactly zero without host control.
     """

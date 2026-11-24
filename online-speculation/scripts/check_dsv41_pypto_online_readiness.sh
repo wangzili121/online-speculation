@@ -71,7 +71,7 @@ retry_gate expert-capture \
   --device "$device" --output "$output/expert-capture.json"
 retry_gate expert-input-vjp \
   "$python" "$root/scripts/validate_dsv41_pypto_expert_input_vjp.py" \
-  --device "$device" --output "$output/expert-input-vjp.json"
+  --device "$device" --production --output "$output/expert-input-vjp.json"
 retry_gate ep-vjp \
   "$python" "$root/scripts/validate_dsv41_pypto_ep_vjp.py" \
   --device "$device" --output "$output/ep-vjp.json"

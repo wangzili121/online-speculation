@@ -120,8 +120,8 @@ def test_production_geometry_is_fixed_k32_ep16():
     assert shape.routes == 192
     assert shape.packet_rows == 3072
     assert shape.local_experts == 24
-    assert shape.expert_capacity == 512
-    assert shape.slab_rows == 12288
+    assert shape.expert_capacity == 32
+    assert shape.slab_rows == 768
 
 
 def test_node_local_rank_maps_to_global_ep16_rank():
@@ -131,12 +131,13 @@ def test_node_local_rank_maps_to_global_ep16_rank():
 
 def test_cpu_ep16_round_trip_restores_and_sums_routes_with_inactive_zero():
     torch.manual_seed(7)
-    hidden, active = 7, 19
+    hidden = 7
+    active_by_rank = [8 if 8 <= rank < 12 else 0 for rank in range(ep.EP_WORLD)]
     ids = _route_ids()
     source_x = [torch.randn(ep.K32_ROWS, hidden, dtype=torch.bfloat16) for _ in range(ep.EP_WORLD)]
     source_dy = [torch.randn(ep.ROUTES, hidden, dtype=torch.bfloat16) for _ in range(ep.EP_WORLD)]
     packed = [
-        _cpu_pack(source_x[rank], source_dy[rank], ids, active, rank)
+        _cpu_pack(source_x[rank], source_dy[rank], ids, active_by_rank[rank], rank)
         for rank in range(ep.EP_WORLD)
     ]
 
@@ -152,6 +153,7 @@ def test_cpu_ep16_round_trip_restores_and_sums_routes_with_inactive_zero():
         owner_packets.append(_cpu_return(expert_dx, received[3], packet_map))
 
     for source in range(ep.EP_WORLD):
+        active = active_by_rank[source]
         returned = _all_to_all_return(owner_packets, packed, source)
         route_dx, token_dx = _cpu_restore(
             returned, packed[source][0], packed[source][3], active, source,
@@ -182,7 +184,7 @@ def test_packet_map_preserves_source_token_slot_and_global_expert():
     packed = [
         _cpu_pack(
             torch.full((ep.K32_ROWS, hidden), rank, dtype=torch.bfloat16),
-            torch.zeros(ep.ROUTES, hidden, dtype=torch.bfloat16), ids, 3, rank,
+            torch.zeros(ep.ROUTES, hidden, dtype=torch.bfloat16), ids, 3 if rank < 4 else 0, rank,
         )
         for rank in range(ep.EP_WORLD)
     ]
@@ -193,6 +195,20 @@ def test_packet_map_preserves_source_token_slot_and_global_expert():
     assert valid.any()
     assert torch.equal(packet_map[valid, 2:6].long(), received[0][valid].long())
     assert bool(((packet_map[valid, 5] // ep.LOCAL_EXPERTS) == owner).all())
+
+
+def test_one_expert_can_receive_every_token_in_the_k32_replay():
+    expert = 23
+    ids = (torch.arange(ep.TOPK, dtype=torch.int32) + expert).expand(ep.K32_ROWS, -1)
+    x = torch.arange(ep.K32_ROWS, dtype=torch.float32).reshape(-1, 1)
+    dy = torch.zeros(ep.ROUTES, 1)
+    packed = [_cpu_pack(x + rank * 8, dy, ids, 8 if rank < 4 else 0, rank)
+              for rank in range(ep.EP_WORLD)]
+    expert_x, _, counts, packet_map = _cpu_unpack(_all_to_all_dispatch(packed, 0), 0)
+    start = expert * ep.EXPERT_CAPACITY
+    assert counts[expert].item() == 32
+    assert packet_map[:, 0].max().item() == ep.SLAB_ROWS - 1
+    torch.testing.assert_close(expert_x[start:, 0], x[:, 0])
 
 
 def test_pypto_source_defines_four_fixed_shape_packet_kernels():
