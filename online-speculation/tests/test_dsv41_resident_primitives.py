@@ -352,6 +352,18 @@ def test_tp4_and_dp4_collectives_keep_replication_and_sharding_exact():
             expected = 10. if short in replicated else rank % 4 + 1.
             torch.testing.assert_close(gradient.values[rank], torch.full((64,), expected))
 
+    owners_before = set(value._dp_zero_ranks)
+    assert owners_before == set(range(4, 16))
+    zero_buffer = value._dp_zero_storage
+    no_contribution = value.zero_gradients(value.plan.layers, value.plan.trainable_names())
+    zero_reduced = value.dp_all_reduce(no_contribution)
+    assert all(torch.count_nonzero(row) == 0 for gradient in zero_reduced.values() for row in gradient.values.values())
+    assert value._dp_zero_storage is zero_buffer
+    assert value._dp_zero_ranks == set(range(16))
+    for rank in value.ranks:
+        descriptor = draft.resident.pinned[rank, zero_buffer.untyped_storage()._cdata]
+        assert descriptor["source"] is zero_buffer and descriptor["readonly"]
+
 
 def test_frozen_tail_envelope_uses_captured_routes_and_exact_k32_state():
     torch.manual_seed(7)

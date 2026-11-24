@@ -252,6 +252,9 @@ class DSV41ResidentPrimitives:
         self.resident = draft.resident
         self._scalar_reads = 0
         self._adam = {}
+        self._dp_zero_storage = None
+        self._dp_zero_ranks = set()
+        self._dp_zero_views = {}
         self._last_step = 0
         self._last_norm = None
         self._publication_digest = None
@@ -1659,6 +1662,21 @@ class DSV41ResidentPrimitives:
             result[name] = _RankGradient(layer, shards)
         return result
 
+    def _dp_zero(self, rank, shape):
+        """Give every missing DP gradient a read-only view of one zero buffer."""
+        if self._dp_zero_storage is None:
+            largest = max(state.master.numel() for state in self._adam.values())
+            self._dp_zero_storage = torch.zeros(largest, dtype=torch.float32)
+        if rank not in self._dp_zero_ranks:
+            self.resident.pin(
+                self._dp_zero_storage, (self._local(rank),), readonly=True,
+                name=f"online-dp/zero/rank{rank}",
+            )
+            self._dp_zero_ranks.add(rank)
+        if shape not in self._dp_zero_views:
+            self._dp_zero_views[shape] = self._dp_zero_storage[:math.prod(shape)].view(shape)
+        return self._dp_zero_views[shape]
+
     @profiled_stage("dp_gradient_reduce")
     def dp_all_reduce(self, values):
         self._require_optimizer_state()
@@ -1674,9 +1692,7 @@ class DSV41ResidentPrimitives:
                     raise TypeError("DP reduction received a foreign gradient descriptor")
                 value = gradient.values.get(rank)
                 if value is None:
-                    value = self._workspace(
-                        rank, self._adam[rank, layer, short].master.shape, torch.float32,
-                    )
+                    value = self._dp_zero(rank, self._adam[rank, layer, short].master.shape)
                 row[full_name] = {"value": value}
             packets.append(row)
 
@@ -1813,15 +1829,9 @@ class DSV41ResidentPrimitives:
         self._require_optimizer_state()
         if tuple(layers) != self.plan.layers or tuple(names) != self.plan.trainable_names():
             raise ValueError("zero-gradient participant changed the suffix ABI")
-        result = {}
-        for full_name in names:
-            layer = int(full_name.split(".")[1])
-            short = full_name.split(".attn.", 1)[1]
-            result[full_name] = _RankGradient(layer, {
-                rank: self._workspace(rank, self._adam[rank, layer, short].master.shape, torch.float32)
-                for rank in self.ranks
-            })
-        return result
+        # The reduction resolves absent contributions on each rank. A
+        # participant can join without allocating a tensor per parameter.
+        return {name: _RankGradient(int(name.split(".")[1]), {}) for name in names}
 
     def publication_state(self, layers):
         self._require_optimizer_state()
