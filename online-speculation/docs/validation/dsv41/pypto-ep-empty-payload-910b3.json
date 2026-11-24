@@ -1,0 +1,37 @@
+{
+  "passed": true,
+  "phase": "ep16-empty-packet",
+  "physical_cards": 2,
+  "exact_all_zero": true,
+  "iterations": 20,
+  "scope": "local pack and expert-side return without EP fabric",
+  "buckets": {
+    "32": {
+      "before": {
+        "dispatch_ms": 3.596247057430446,
+        "expert_side_ms": 4.798867448698729
+      },
+      "after": {
+        "dispatch_ms": 2.397141477558762,
+        "expert_side_ms": 5.127504002302885
+      }
+    },
+    "192": {
+      "before": {
+        "dispatch_ms": 4.934987984597683,
+        "expert_side_ms": 6.56029098900035
+      },
+      "after": {
+        "dispatch_ms": 3.100184432696551,
+        "expert_side_ms": 6.400045473128557
+      }
+    }
+  },
+  "baseline": "18568bd",
+  "hardware": "Ascend 910B3",
+  "server": "167",
+  "device_ids": [
+    4,
+    5
+  ]
+}

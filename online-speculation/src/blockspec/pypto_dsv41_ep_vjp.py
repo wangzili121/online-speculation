@@ -164,6 +164,28 @@ def make_ep_vjp_dispatch_pack(bucket_rows=ROUTES):
     return ep_vjp_dispatch_pack
 
 
+def make_ep_vjp_empty_payload(bucket_rows=ROUTES):
+    """Fill the two BF16 payloads for a source rank with no replay tokens."""
+    import pypto.language as pl
+
+    packet_rows = EPVJPGeometry(bucket_rows=bucket_rows).packet_rows
+    chunk = 4
+
+    @pl.jit
+    def empty_payload(
+        sent_x: pl.Out[pl.Tensor[[packet_rows, HIDDEN], pl.BF16]],
+        sent_dy: pl.Out[pl.Tensor[[packet_rows, HIDDEN], pl.BF16]],
+    ):
+        for task in pl.spmd(packet_rows // chunk, name_hint="orthrus_ep_vjp_empty_payload"):
+            offset = task * chunk
+            zero = pl.tile.full([chunk, HIDDEN], dtype=pl.BF16, value=0.)
+            pl.store(zero, [offset, 0], sent_x)
+            pl.store(zero, [offset, 0], sent_dy)
+        return sent_x, sent_dy
+
+    return empty_payload
+
+
 def make_ep_vjp_dispatch_unpack(bucket_rows=ROUTES):
     """Regroup received packets and initialize only rows read by the expert VJP."""
     import pypto.language as pl

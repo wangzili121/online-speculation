@@ -530,15 +530,6 @@ class DSV41ResidentPrimitives:
         local_vocabulary = vocabulary // 4
         norms = {rank: self._pinned(rank, "norm.weight", (1, HIDDEN)) for rank in ranks}
 
-        def map_owner(function):
-            def run_rank(index):
-                rank = self.ranks[index]
-                if rank in rows:
-                    return function(rank)
-
-            result = self._map_online_ranks(run_rank)
-            return {rank: value for rank, value in zip(self.ranks, result, strict=True) if rank in rows}
-
         def collapse(rank):
             row = rows[rank]
             span = self._local_span(row)
@@ -559,7 +550,7 @@ class DSV41ResidentPrimitives:
 
         # The forward concatenates local SP collapses before applying the
         # final norm and each vocabulary shard. The request rows are disjoint.
-        terminal_states = map_owner(collapse)
+        terminal_states = self._map_owner_ranks(ranks, collapse)
         collapsed_packets = {rank: state[2] for rank, state in terminal_states.items()}
         collapsed_rows = self._tp_all_reduce(collapsed_packets, stage="lm-head-sp-collapse")
 
@@ -592,7 +583,7 @@ class DSV41ResidentPrimitives:
             )
             return losses, dnormalized
 
-        terminal_reverse = map_owner(reverse_head)
+        terminal_reverse = self._map_owner_ranks(ranks, reverse_head)
         if loss.value is None:
             loss.value = _ResidentScalar(terminal_reverse[ranks[0]][0], ranks[0])
         normalized_gradients = self._tp_all_reduce(
@@ -624,7 +615,7 @@ class DSV41ResidentPrimitives:
             )
             return dstreams, self._compact_mhc_columns(rank, dpremix)
 
-        output = map_owner(reverse_collapse)
+        output = self._map_owner_ranks(ranks, reverse_collapse)
         hidden_gradients = {rank: value[0] for rank, value in output.items()}
         premix_gradients = {rank: value[1] for rank, value in output.items()}
         return SuffixGradient(hidden_gradients, premix_gradients)
@@ -689,7 +680,7 @@ class DSV41ResidentPrimitives:
         """Create the same fixed dispatch ABI on owner and participant nodes."""
         from .pypto_dsv41_ep_vjp import (
             EP_WORLD, MAP_PAD, PACKET_FIELDS,
-            make_ep_vjp_dispatch_pack,
+            make_ep_vjp_dispatch_pack, make_ep_vjp_empty_payload,
         )
         packet_rows = EPVJPGeometry(bucket_rows=bucket_rows).packet_rows
 
@@ -706,33 +697,33 @@ class DSV41ResidentPrimitives:
         def pack_rank(index):
             rank = self.ranks[index]
             source = sources.get(rank)
-            if source is None:
-                normalized = self._workspace(rank, (ROWS, HIDDEN))
-                expert_gradient = self._workspace(rank, (ROUTES, HIDDEN))
-                route_ids = self._workspace(rank, (ROWS, 6), torch.int32)
-                active = 0
-            else:
-                captured, envelope = source
-                normalized = self._local_rows(rank, captured, captured["normed"])
-                route_ids = self._local_rows(rank, captured, captured["route_ids"])
-                expert_gradient = envelope.expert
-                if (
-                    normalized.shape != (ROWS, HIDDEN)
-                    or normalized.dtype != torch.bfloat16
-                    or route_ids.shape != (ROWS, 6)
-                    or route_ids.dtype != torch.int32
-                    or expert_gradient.shape != (ROUTES, HIDDEN)
-                    or expert_gradient.dtype != torch.bfloat16
-                ):
-                    raise ValueError("captured EP dispatch boundary changed its K32 ABI")
-                active = self._local_span(captured).rows
-
-            sent_metadata = self._workspace(
-                rank, (packet_rows, PACKET_FIELDS), torch.int64, fill=None,
-            )
+            fill = 0 if source is None else None
+            sent_metadata = self._workspace(rank, (packet_rows, PACKET_FIELDS), torch.int64, fill=fill)
             sent_x = self._workspace(rank, (packet_rows, HIDDEN), fill=None)
             sent_dy = self._workspace(rank, (packet_rows, HIDDEN), fill=None)
-            sent_counts = self._workspace(rank, (EP_WORLD, MAP_PAD), torch.int32, fill=None)
+            sent_counts = self._workspace(rank, (EP_WORLD, MAP_PAD), torch.int32, fill=fill)
+            packet = {"frozen-tail": {"metadata": sent_metadata, "x": sent_x,
+                                      "dy": sent_dy, "counts": sent_counts}}
+            if source is None:
+                self._execute(
+                    ("ep-vjp-empty-payload", bucket_rows), rank,
+                    lambda: make_ep_vjp_empty_payload(bucket_rows), sent_x=sent_x, sent_dy=sent_dy,
+                )
+                return packet
+            captured, envelope = source
+            normalized = self._local_rows(rank, captured, captured["normed"])
+            route_ids = self._local_rows(rank, captured, captured["route_ids"])
+            expert_gradient = envelope.expert
+            if (
+                normalized.shape != (ROWS, HIDDEN)
+                or normalized.dtype != torch.bfloat16
+                or route_ids.shape != (ROWS, 6)
+                or route_ids.dtype != torch.int32
+                or expert_gradient.shape != (ROUTES, HIDDEN)
+                or expert_gradient.dtype != torch.bfloat16
+            ):
+                raise ValueError("captured EP dispatch boundary changed its K32 ABI")
+            active = self._local_span(captured).rows
             self._execute(
                 ("ep-vjp-dispatch-pack", bucket_rows), rank,
                 lambda: make_ep_vjp_dispatch_pack(bucket_rows),
@@ -741,12 +732,7 @@ class DSV41ResidentPrimitives:
                 sent_x=sent_x, sent_dy=sent_dy, sent_counts=sent_counts,
                 active=active, source_rank=rank,
             )
-            return {
-                "frozen-tail": {
-                    "metadata": sent_metadata, "x": sent_x,
-                    "dy": sent_dy, "counts": sent_counts,
-                },
-            }
+            return packet
 
         packets = self._map_online_ranks(pack_rank)
         originals = {
@@ -856,6 +842,19 @@ class DSV41ResidentPrimitives:
                 self.resident.stats.get("program_evictions", 0) - before
             )
 
+    def _map_owner_ranks(self, ranks, function):
+        if len(ranks) == 1:
+            return {ranks[0]: function(ranks[0])}
+        selected = set(ranks)
+
+        def run_rank(index):
+            rank = self.ranks[index]
+            if rank in selected:
+                return function(rank)
+
+        result = self._map_online_ranks(run_rank)
+        return {rank: value for rank, value in zip(self.ranks, result, strict=True) if rank in selected}
+
     @profiled_stage("ep_restore_routes")
     def _ep_routed_input_gradients(self, returned, originals, sources, bucket_rows):
         """Restore route order only for the TP ranks that originated K32 rows."""
@@ -908,26 +907,38 @@ class DSV41ResidentPrimitives:
         ):
             raise ValueError("owner frozen-tail reverse requires one complete local TP4 group")
 
-        envelopes = {
-            rank: self._reverse_frozen_moe_envelope(
+        live_ranks = tuple(rank for rank in ranks if self._local_span(captured[rank]).rows)
+        if not live_ranks:
+            raise ValueError("EP reverse requires disjoint owner spans covering one K32 block")
+        envelopes = self._map_owner_ranks(
+            live_ranks,
+            lambda rank: self._reverse_frozen_moe_envelope(
                 layer=layer, rank=rank, captured=captured[rank],
                 state=states[rank], output_gradient=output_gradients[rank],
-            )
-            for rank in ranks
-        }
-        sources = {rank: (captured[rank], envelopes[rank]) for rank in ranks}
+            ),
+        )
+        sources = {rank: (captured[rank], envelope) for rank, envelope in envelopes.items()}
         packets, originals = self._ep_dispatch_packets(sources, bucket_rows)
         received = self._ep_exchange(dispatch_stage, packets)
         return_packets = self._ep_owner_expert_packets(layer, received, bucket_rows)
         returned = self._ep_exchange(return_stage, return_packets)
         routed = self._ep_routed_input_gradients(returned, originals, sources, bucket_rows)
-        return {
-            rank: self._reverse_frozen_tail_finish(
+        result = self._map_owner_ranks(
+            live_ranks,
+            lambda rank: self._reverse_frozen_tail_finish(
                 layer=layer, rank=rank, captured=captured[rank],
                 envelope=envelopes[rank], routed_input_gradient=routed[rank],
-            )
-            for rank in ranks
-        }
+            ),
+        )
+        # The frozen FFN is token-local. Empty owners still participated as
+        # expert destinations above, and need an empty boundary for TP replay.
+        for rank in ranks:
+            if rank not in result:
+                result[rank] = SuffixGradient(
+                    self._workspace(rank, (ROWS * HC_COPIES, HIDDEN)),
+                    self._workspace(rank, (ROWS, HC_COPIES), torch.float32),
+                )
+        return {rank: result[rank] for rank in ranks}
 
     def participate_frozen_tail_peer(self, *, layer, synchronization):
         """Enter the same two EP16 collectives without inventing source rows."""

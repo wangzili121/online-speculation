@@ -734,10 +734,14 @@ def reverse_contract(bucket_rows=None):
     return result
 
 
-def test_owner_batch_runs_fixed_ep16_packets_and_only_populated_experts():
+@pytest.mark.parametrize("live_rows", [(8, 8, 8, 8), (0, 16, 16, 0), (0, 0, 0, 32)])
+def test_owner_batch_runs_fixed_ep16_packets_and_only_populated_experts(live_rows):
     value = SymbolicEPPrimitives(range(8))
     ranks = tuple(range(4))
     captured = {rank: symbolic_capture(rank) for rank in ranks}
+    for rank, count in enumerate(live_rows):
+        captured[rank]["sp_span"] = DSV41SequenceSpan(0, sum(live_rows[:rank]), count)
+    live_ranks = [rank for rank, rows in enumerate(live_rows) if rows]
     gradients = {
         rank: SuffixGradient(
             SymbolicTensor((128, 5120)), SymbolicTensor((32, 4), torch.float32),
@@ -757,14 +761,23 @@ def test_owner_batch_runs_fixed_ep16_packets_and_only_populated_experts():
     ]
     assert value.transport.packet_rows == [{512}, {512}]
     packs = [event for event in value.events if event[0] == "ep-vjp-dispatch-pack"]
-    assert [event[2]["active"] for event in packs] == [8] * 4 + [0] * 4
+    assert [(rank, args["active"]) for _, rank, args in packs] == [
+        (rank, live_rows[rank]) for rank in live_ranks
+    ]
+    assert [rank for name, rank, _ in value.events if name == "envelope"] == live_ranks
+    assert [rank for name, rank, _ in value.events if name == "finish"] == live_ranks
+    assert all(gradient.hidden.shape == (128, 5120) and gradient.pre_mix.shape == (32, 4)
+               for gradient in result.values())
     assert len([event for event in value.events if event[0] == "ep-vjp-dispatch-unpack"]) == 8
     calls = [event for event in value.events if event[0] == "routed-expert-input-vjp"]
     assert [(rank, args["value"].shape) for _, rank, args in calls] == [
         (0, (16, 5120)), (0, (32, 5120)),
     ]
+    assert [rank for name, rank, _ in value.events if name == "ep-vjp-empty-payload"] == [
+        rank for rank in value.ranks if rank not in live_ranks
+    ]
     assert len([event for event in value.events if event[0] == "ep-vjp-return-pack"]) == 8
-    assert len([event for event in value.events if event[0] == "ep-vjp-source-restore"]) == 4
+    assert [rank for name, rank, _ in value.events if name == "ep-vjp-source-restore"] == live_ranks
     assert value.weights.calls == [(39, 0, 0), (39, 0, 23)]
 
 
@@ -779,8 +792,8 @@ def test_peer_participates_in_both_collectives_and_reverses_received_routes():
         ("online-frozen-tail-step7-layer39-return-v1", "all_to_all", "ep", 8),
     ]
     assert value.transport.packet_rows == [{512}, {512}]
-    packs = [event for event in value.events if event[0] == "ep-vjp-dispatch-pack"]
-    assert [event[2]["active"] for event in packs] == [0] * 8
+    assert not [event for event in value.events if event[0] == "ep-vjp-dispatch-pack"]
+    assert [rank for name, rank, _ in value.events if name == "ep-vjp-empty-payload"] == list(value.ranks)
     assert len([event for event in value.events if event[0] == "routed-expert-input-vjp"]) == 2
     assert not [event for event in value.events if event[0] in {"ep-vjp-source-restore", "finish"}]
     assert value.weights.calls == [(39, 8, 192), (39, 8, 215)]

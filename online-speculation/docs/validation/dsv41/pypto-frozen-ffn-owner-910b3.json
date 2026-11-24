@@ -1,0 +1,67 @@
+{
+  "passed": true,
+  "phase": "resident-frozen-ffn-owner-backward",
+  "tp": 4,
+  "layer": 39,
+  "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+  "scope": "actual W8A8 layer, synthetic captures, fixed EP-return gradients",
+  "cases": [
+    {
+      "active_rows": 32,
+      "first_request_row": 0,
+      "local_rows": [
+        8,
+        8,
+        8,
+        8
+      ],
+      "exact": true,
+      "median_ms": {
+        "before": 168.42876165173948,
+        "after": 87.99371996428818
+      },
+      "iterations": 12
+    },
+    {
+      "active_rows": 96,
+      "first_request_row": 32,
+      "local_rows": [
+        0,
+        16,
+        16,
+        0
+      ],
+      "exact": true,
+      "median_ms": {
+        "before": 156.55394492205232,
+        "after": 56.36484804563224
+      },
+      "iterations": 12
+    },
+    {
+      "active_rows": 128,
+      "first_request_row": 96,
+      "local_rows": [
+        0,
+        0,
+        0,
+        32
+      ],
+      "exact": true,
+      "median_ms": {
+        "before": 148.13184435479343,
+        "after": 36.53907205443829
+      },
+      "iterations": 12
+    }
+  ],
+  "baseline": "18568bd",
+  "hardware": "Ascend 910B3",
+  "server": "111",
+  "device_ids": [
+    0,
+    1,
+    2,
+    3
+  ]
+}
