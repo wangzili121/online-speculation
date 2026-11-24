@@ -1,0 +1,92 @@
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -766,7 +766,9 @@
+
+ def _read_speculative_vocab(logits_packets, records, case, executor, tp, greedy_shard=None, logit_ranges=None):
+     """Materialize one host-side result per logical TP group."""
+-    shards, packets = {}, {}
++    from blockspec.pypto_dsv41_greedy import host_greedy_shard, merge_host_greedy_shards
++
++    shards, packets, local_greedy = {}, {}, {}
+
+     def read_rank(rank):
+         active = len(records[rank]["positions"])
+@@ -776,6 +778,8 @@
+             packets[rank] = packet
+         else:
+             shards[rank] = executor.resident.read_output(logits[:active], executor.rank_devices[rank]) if active else logits[:0]
++            if greedy_shard is not None and 0 < active < ORTHRUS_BLOCK:
++                local_greedy[rank] = host_greedy_shard(shards[rank])
+
+     executor.map_ranks(read_rank)
+     outputs, greedy = {}, {}
+@@ -785,6 +789,10 @@
+             from blockspec.pypto_dsv41_greedy import merge_greedy_shards
+             greedy[leader // tp] = merge_greedy_shards(
+                 [packets[rank] for rank in ranks], logits_packets[leader][case].shape[1],
++            )
++        elif leader in local_greedy:
++            greedy[leader // tp] = merge_host_greedy_shards(
++                [local_greedy[rank] for rank in ranks], logits_packets[leader][case].shape[1],
+             )
+         else:
+             merged = torch.cat([shards[rank] for rank in ranks], dim=-1)
+@@ -799,12 +807,17 @@
+             def read_selected(rank):
+                 spans = ranges.get(rank // tp, ())
+                 if spans:
+-                    logits = logits_packets[rank][case]
+-                    device = executor.rank_devices[rank]
+-                    partial[rank] = {
+-                        start: executor.resident.read_output(logits[start:end], device)
+-                        for start, end in spans
+-                    }
++                    if rank in local_greedy:
++                        # Short verification already copied these shards. Only
++                        # assemble the contiguous vocabulary for teacher rows.
++                        partial[rank] = {start: shards[rank][start:end] for start, end in spans}
++                    else:
++                        logits = logits_packets[rank][case]
++                        device = executor.rank_devices[rank]
++                        partial[rank] = {
++                            start: executor.resident.read_output(logits[start:end], device)
++                            for start, end in spans
++                        }
+
+             executor.map_ranks(read_selected)
+             for dp, spans in ranges.items():
+@@ -903,9 +916,13 @@
+     # outside the clustered speculative path.
+     if orthrus_phase is not None and executor.transport is not None and trace_record is None:
+         greedy_tokens, selected_logits = {}, {}
++        short_host_greedy = False
+         for case, records in batch["cases"].items():
+             logits_by_rank, greedy_tokens[case], selected_logits[case] = _read_speculative_vocab(
+                 logits_packets, records, case, executor, tp, greedy_shard, logit_ranges,
++            )
++            short_host_greedy |= any(
++                len(records[dp * tp]["positions"]) < ORTHRUS_BLOCK for dp in greedy_tokens[case]
+             )
+             for rank, logits in logits_by_rank.items():
+                 actual_logits[rank][case] = logits
+@@ -915,7 +932,10 @@
+                     torch.save(dict(logits=logits, active=logits.shape[0], positions=records[rank]["positions"],
+                                     DP_rank=rank // tp), path)
+                     files[str(path)] = file_sha(path)
+-        vocabulary_layout = "device_greedy" if any(greedy_tokens.values()) else "host_shards"
++        if short_host_greedy:
++            vocabulary_layout = "sharded_greedy"
++        else:
++            vocabulary_layout = "device_greedy" if any(greedy_tokens.values()) else "host_shards"
+         write_json(directory / "execution.json", dict(
+             outcome="executed_actual_layer39_output_boundary_not_compared", files=files,
+             native_reference="not_run", full40_accuracy="not_run", vocabulary_layout=vocabulary_layout,
+@@ -1880,7 +1900,7 @@
+                 greedy_shard=greedy_shard, logit_ranges=logit_ranges,
+             )
+             rows = output_result["logits"]
+-            if output_result.get("vocabulary_layout") in ("host_shards", "device_greedy"):
++            if output_result.get("vocabulary_layout") in ("host_shards", "device_greedy", "sharded_greedy"):
+                 rows = rows[::topology["tp"]]
+             if any(not torch.isfinite(value).all() for row in rows for value in row.values()):
+                 raise RuntimeError(f"Non-finite {phase} vocabulary logits")

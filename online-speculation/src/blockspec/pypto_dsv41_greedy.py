@@ -74,3 +74,22 @@ def merge_greedy_shards(packets, shard_size):
         raise ValueError("Orthrus vocabulary reduction returned an invalid shard index")
     owners = scores.argmax(dim=0, keepdim=True)
     return local_ids.gather(0, owners).squeeze(0) + owners.flatten() * shard_size
+
+
+def host_greedy_shard(logits):
+    """Choose each shard's lowest-ID maximum and reject nonfinite rows."""
+    import torch
+
+    scores, ids = logits.max(dim=-1)
+    if not torch.isfinite(logits.amin()) or not torch.isfinite(scores).all():
+        raise RuntimeError("Non-finite speculative vocabulary logits")
+    return scores, ids
+
+
+def merge_host_greedy_shards(shards, shard_size):
+    """Resolve the winning global ID without joining entire vocabulary rows."""
+    import torch
+
+    scores, ids = zip(*shards, strict=True)
+    owners = torch.stack(scores).argmax(dim=0)
+    return torch.stack(ids).gather(0, owners[None]).flatten() + owners * shard_size

@@ -1670,7 +1670,7 @@ class DSV41ResidentPrimitives:
         if rank not in self._dp_zero_ranks:
             self.resident.pin(
                 self._dp_zero_storage, (self._local(rank),), readonly=True,
-                name=f"online-dp/zero/rank{rank}",
+                name=f"online-dp/zero/rank{rank}", auxiliary=True,
             )
             self._dp_zero_ranks.add(rank)
         if shape not in self._dp_zero_views:

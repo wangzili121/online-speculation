@@ -32,7 +32,7 @@ class FakeResident:
         self.pinned = {}
         self.local_count = local_count
 
-    def pin(self, value, ranks, *, readonly, name):
+    def pin(self, value, ranks, *, readonly, name, auxiliary=False):
         for rank in ranks:
             self.pinned[rank, value.untyped_storage()._cdata] = {
                 "source": value, "name": name, "readonly": readonly,

@@ -87,6 +87,7 @@ def main():
             return elapsed, runtime.stats["workspace_fill_bytes"] - fill, runtime.stats["h2d_bytes"] - upload
 
         summaries = {}
+        sealed_weight_uploads = runtime.stats["device_weight_upload_calls"]
         for owner in (0, 3, None):
             for label in variants:
                 run(label, owner, verify=True)
@@ -98,13 +99,14 @@ def main():
                         "fill_bytes": rows[0][1], "h2d_bytes": rows[0][2]}
                 for label, rows in samples.items()
             }
+        assert runtime.stats["device_weight_upload_calls"] == sealed_weight_uploads
         engine, _ = variants["after"]
         expected_bytes = max(torch.Size(shape).numel() for shape in shapes) * 4
         for rank in ranks:
             assert torch.count_nonzero(runtime.read_output(engine._dp_zero(rank, shapes[0]), rank)) == 0
             record = runtime.pinned[rank, engine._dp_zero_storage.untyped_storage()._cdata]
             assert record["readonly"] and record["nbytes"] == expected_bytes
-    print(json.dumps(dict(passed=True, dp=4, local_fabric=True, byte_exact=True,
+    print(json.dumps(dict(passed=True, dp=4, local_fabric=True, byte_exact=True, static_weight_counter_unchanged=True,
                           repeats=10, zero_bytes_per_rank=expected_bytes, cases=summaries)), flush=True)
 
 

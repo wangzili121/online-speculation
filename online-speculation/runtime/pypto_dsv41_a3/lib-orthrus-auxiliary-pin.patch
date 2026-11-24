@@ -1,0 +1,25 @@
+--- a/models/deepseek_v4_1_flash_a3/prefill_resident.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_resident.py
+@@ -506,7 +506,7 @@
+             raise failure
+         return results
+
+-    def pin(self, value, ranks, *, readonly, name):
++    def pin(self, value, ranks, *, readonly, name, auxiliary=False):
+         """Upload one owning allocation per rank and retain all typed aliases."""
+         if self._closed:
+             raise RuntimeError("Resident runtime is closed")
+@@ -535,10 +535,11 @@
+             self.pinned[key] = dict(host=host, nbytes=extent, source=value, allocation=allocation, readonly=readonly,
+                                     base_offset=offset,
+                                     name=name, versions={id(value): (value, value._version)})
+-            kind = "weight_bytes" if readonly else "state_bytes"
++            checkpoint_weight = readonly and not auxiliary
++            kind = "weight_bytes" if checkpoint_weight else "state_bytes"
+             self.stats[kind][rank] += allocation.nbytes
+             self._record_transfer(rank, "h2d_bytes", allocation.nbytes)
+-            if readonly:
++            if checkpoint_weight:
+                 self.stats["device_weight_upload_calls"] += 1
+                 self.stats["device_weight_upload_seconds"] += perf_counter() - upload_begin
+             elif name.startswith("raw/"):

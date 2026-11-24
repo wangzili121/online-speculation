@@ -47,7 +47,8 @@ for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.p
     lib-orthrus-output.patch lib-orthrus-controls.patch lib-orthrus-network-hotpath.patch \
     lib-orthrus-verify-rows.patch lib-orthrus-verify-parallel.patch lib-orthrus-verify-output.patch \
     lib-orthrus-teacher-rows.patch lib-orthrus-student-rows.patch \
-    lib-orthrus-short-dispatch.patch lib-orthrus-draft-reduce-pack.patch lib-orthrus-engram-prefix.patch; do
+    lib-orthrus-short-dispatch.patch lib-orthrus-draft-reduce-pack.patch lib-orthrus-engram-prefix.patch lib-orthrus-short-greedy.patch \
+    lib-orthrus-auxiliary-pin.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -338,6 +339,16 @@ expected = torch.cat((shards[2]["fresh"][:3], shards[3]["fresh"][:3]), dim=-1)
 assert not greedy and not selected and reads == [(0, 9), (1, 9)] and torch.equal(outputs[2], expected)
 assert outputs[2] is outputs[3] and outputs[4].shape == outputs[5].shape == (0, 6)
 
+reads.clear()
+outputs, greedy, selected = network._read_speculative_vocab(
+    shards, records, "fresh", executor, 2,
+    greedy_shard=lambda *_: unexpected_exchange("device greedy for short verifier"),
+    logit_ranges=lambda dp, _: [(1, 3)] if dp == 1 else (),
+)
+assert 2 not in outputs and torch.equal(greedy[1], expected.argmax(-1))
+assert torch.equal(selected[1, 1], expected[1:3]) and reads == [(0, 9), (1, 9)]
+
+
 # One local DP group captures teacher feedback, while another only returns IDs.
 # They share the same projection path but may independently choose how to read it.
 session.online = None
@@ -535,7 +546,7 @@ print(json.dumps(dict(
     host_vocabulary_shard_order=True, compact_greedy_with_full_feedback=True,
     verify_copy_coalescing=True, verify_swa_written_rows=True, parallel_verifier_rollback=True,
     short_speculative_capacity_selection=True,
-    verify_candidate_limit_preserves_k32_draft=True, verify_engram_reused_only_for_accept=True,
+    verify_candidate_limit_preserves_k32_draft=True, verify_engram_reused_only_for_accept=True, short_verifier_teacher_rows_exact=True,
 )))
 PY
 fi
