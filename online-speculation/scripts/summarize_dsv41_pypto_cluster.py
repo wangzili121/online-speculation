@@ -503,6 +503,76 @@ def prefill_reduction(directory):
     return report
 
 
+def _gsm8k_serving_phases(directory):
+    """Recover phase deltas from the original receipts, including older runs."""
+    _, receipts = read_receipts(directory)
+    arms = {arm: defaultdict(Counter) for arm in ("ar", "initial", "online", "frozen")}
+    counter_names = ("output_d2h_bytes", "verify_backup_d2d_bytes", "verify_restore_d2d_bytes")
+    previous = Counter()
+    for row in receipts:
+        runtime = row.get("runtime") or {}
+        deltas = {name: runtime[name] - previous[name] for name in counter_names if name in runtime}
+        for name, delta in deltas.items():
+            previous[name] += delta
+        owners = [row["owner"]] if row["phase"] == "release" else row["owners"]
+        labels = {item["request_id"].split("-", 3)[2] for item in owners}
+        if len(labels) != 1:
+            continue
+        name, = labels
+        if name not in arms:
+            continue
+        phase = arms[name][row["phase"]]
+        phase.update(deltas)
+        phase["calls"] += 1
+        phase["native_seconds"] += row.get("timings", {}).get("chunk_seconds", 0.0)
+    return arms
+
+
+def compare_gsm8k_reports(baseline, candidate):
+    """Compare completed identical workloads and recover local timings on older builds."""
+    def load(path, filename):
+        return json.loads((path / filename).read_text())
+
+    before, after = (load(path, "acceptance.json") for path in (baseline, candidate))
+    fields = ("node", "topology", "physical_to_runtime", "checkpoint", "head_sha256")
+    if not before["passed"] or not after["passed"] or not all(before[key] == after[key] for key in fields):
+        raise ValueError("GSM8K comparison requires successful runs on the same host, cards, topology and weights")
+    if before["peer"]["physical_to_runtime"] != after["peer"]["physical_to_runtime"]:
+        raise ValueError("GSM8K comparison requires the same peer cards")
+    left, right = (load(path, "gsm8k-online-report.json") for path in (baseline, candidate))
+    fields = ("training_requests", "heldout_requests", "max_concurrent_requests", "max_new_tokens", "updates_policy")
+    if not left["complete"] or not right["complete"] or not all(left[key] == right[key] for key in fields):
+        raise ValueError("GSM8K comparison requires the same completed workload and update policy")
+
+    receipts = [_gsm8k_serving_phases(path) for path in (baseline, candidate)]
+    comparisons = {}
+    for name in ("ar", "initial", "online", "frozen"):
+        old, new = (load(path, f"gsm8k-online-{name}.json") for path in (baseline, candidate))
+        if len(old["requests"]) != len(new["requests"]):
+            raise ValueError(f"{name} has a different number of requests")
+        for a, b in zip(old["requests"], new["requests"]):
+            if (a["workload_id"], a["prompt_ids"], a["dp"]) != (b["workload_id"], b["prompt_ids"], b["dp"]):
+                raise ValueError(f"{name} used different prompts or DP assignments")
+            check_generated_prefix(b["index"], a["token_ids"], b["token_ids"], phase=name)
+            if len(a["token_ids"]) != len(b["token_ids"]):
+                raise ValueError(f"{name} did not finish with the same token counts")
+
+        a, b = left["arms"][name], right["arms"][name]
+        stats = {
+            key: [a[key], b[key]]
+            for key in ("wall_tok_s", "decode_tok_s", "accepted_per_round", "acceptance_rate")
+        }
+        if name == "online":
+            for key in ("updates", "publications", "update_seconds", "publication_seconds",
+                        "first_update_and_publish_seconds", "wall_tok_s_excluding_all_updates_estimate"):
+                stats[key] = [a[key], b[key]]
+        stats["wall_throughput_ratio"] = b["wall_tok_s"] / a["wall_tok_s"]
+        stats["local_serving"] = [rows[name] for rows in receipts]
+        comparisons[name] = stats
+    return dict(node=after["node"], build_ids=[before["build_id"], after["build_id"]],
+                compared_greedy=True, order=["baseline", "candidate"], arms=comparisons)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path, help="The acceptance directory printed by cluster-accept")
@@ -516,13 +586,15 @@ def main():
                         help="Attribute online operator dispatches to the saved runtime trace")
     parser.add_argument("--online-profile", action="store_true",
                         help="Recover the saved greedy probes and update timings without running the model")
-    parser.add_argument("--output", type=Path, help="Save the full online operator report and print a compact summary")
+    parser.add_argument("--compare-gsm8k", type=Path, metavar="BASELINE",
+                        help="Compare this completed GSM8K report with the baseline acceptance directory")
+    parser.add_argument("--output", type=Path, help="Save the full online-kernel or GSM8K comparison report")
     args = parser.parse_args()
     if sum((args.verifier_logits, args.failure_diagnosis, args.prefill_reduction,
-            args.online_kernels, args.online_profile)) > 1:
+            args.online_kernels, args.online_profile, args.compare_gsm8k is not None)) > 1:
         parser.error("Choose only one diagnostic mode")
-    if args.output is not None and not args.online_kernels:
-        parser.error("--output requires --online-kernels")
+    if args.output is not None and not (args.online_kernels or args.compare_gsm8k is not None):
+        parser.error("--output requires --online-kernels or --compare-gsm8k")
     try:
         if args.prefill_reduction:
             summary = prefill_reduction(args.directory)
@@ -532,6 +604,10 @@ def main():
             summary = verifier_logits(args.directory)
         elif args.online_profile:
             summary = recover_online_profile(args.directory)
+        elif args.compare_gsm8k is not None:
+            summary = compare_gsm8k_reports(args.compare_gsm8k, args.directory)
+            if args.output is not None:
+                args.output.write_text(json.dumps(summary, indent=2) + "\n")
         elif args.online_kernels:
             summary = online_kernels(args.directory)
             if args.output is not None:

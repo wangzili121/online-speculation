@@ -48,9 +48,10 @@ def main():
     if args.simulate:
         entry = make_local_greedy(capacity, shard, tile=args.tile)
         packets = [torch.empty((capacity, PACKET_COLUMNS), dtype=torch.float32) for _ in shards]
-        for source, packed in zip(shards, packets, strict=True):
-            entry(source, packed, 32, config=config)
-        assert torch.equal(merge_greedy_shards([packed[:32] for packed in packets], shard), expected[:32])
+        for count in (32, 64, 96, 128):
+            for source, packed in zip(shards, packets, strict=True):
+                entry(source, packed, count, config=config)
+            assert torch.equal(merge_greedy_shards([packed[:count] for packed in packets], shard), expected[:count])
         entry(invalid, packets[0], 3, config=config)
         assert packets[0][:3, 2].eq(0).all()
         report = dict(passed=True, simulator=True, tile=args.tile)
@@ -67,7 +68,7 @@ def main():
         attention.output = args.output.parent / f"{args.output.stem}-program"
         attention.output.mkdir(exist_ok=False)
         attention.native = lambda name: network
-        for count in (1, 7, 32):
+        for count in (1, 7, 32, 64, 96, 128):
             for source in shards:
                 attention.greedy_shard(0, source, count)
                 runtime.release_values()

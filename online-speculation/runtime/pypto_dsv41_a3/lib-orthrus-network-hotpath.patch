@@ -26,7 +26,7 @@
 +    def read_rank(rank):
 +        active = len(records[rank]["positions"])
 +        logits = logits_packets[rank][case]
-+        if draft is not None and active == ORTHRUS_BLOCK and rank // tp not in captured_dps:
++        if draft is not None and active >= ORTHRUS_BLOCK and rank // tp not in captured_dps:
 +            packets[rank] = draft.attention.greedy_shard(rank, logits, active)
 +        else:
 +            shards[rank] = executor.resident.read_output(logits[:active], executor.rank_devices[rank]) if active else logits[:0]

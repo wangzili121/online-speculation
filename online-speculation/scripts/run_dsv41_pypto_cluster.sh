@@ -245,8 +245,8 @@ draft_input = {"DP_engines": [{"active": 32, "dp_rank": 0, "requests": [
 assert session._execute("draft", draft_input, (), (Handle(),)).tolist() == [list(range(31))]
 assert receipts[-1]["vocabulary_layout"] == "device_greedy"
 
-records = [{"positions": range(32)}] * 6
-shards = [{}, {}] + [{"fresh": torch.arange(32 * 3).reshape(32, 3) + 100 * rank}
+records = [{"positions": range(32 if rank < 4 else 64)} for rank in range(6)]
+shards = [{}, {}] + [{"fresh": torch.arange(64 * 3).reshape(64, 3) + 200 * rank}
                     for rank in ranks]
 def reduce_rank(rank, values, active):
     best, ids = values[:active].max(dim=-1)

@@ -468,6 +468,57 @@ if __name__ == "__main__":
     unittest.main()
 
 
+def test_gsm8k_revision_comparison_recovers_old_phase_receipts_and_requires_matching_tokens(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(SUMMARY.parent))
+    compare = runpy.run_path(str(SUMMARY))["compare_gsm8k_reports"]
+    dirs = [tmp_path / name for name in ("baseline", "candidate")]
+    arm_names = ("ar", "initial", "online", "frozen")
+    for index, directory in enumerate(dirs):
+        path = directory / "native" / "session-test"
+        path.mkdir(parents=True)
+        writes = {
+            "acceptance.json": dict(
+                node=0, build_id=str(index), passed=True, topology={"dp": 4, "tp": 4, "ep": 16},
+                physical_to_runtime={"0": 0}, checkpoint={"config.json": "same"}, head_sha256="same",
+                peer={"physical_to_runtime": {"0": 0}},
+            ),
+            "gsm8k-online-report.json": dict(
+                complete=True, training_requests=1, heldout_requests=1,
+                max_concurrent_requests=1, max_new_tokens=2, updates_policy={"last_layers": 1},
+                arms={name: dict(
+                    wall_tok_s=1 + index, decode_tok_s=1 + index, accepted_per_round=None, acceptance_rate=None,
+                    updates=1, publications=1, update_seconds=0.5, publication_seconds=0.1,
+                    first_update_and_publish_seconds=0.6, wall_tok_s_excluding_all_updates_estimate=1.5,
+                ) for name in arm_names},
+            ),
+        }
+        for name in arm_names:
+            writes[f"gsm8k-online-{name}.json"] = {
+                "requests": [{"index": 0, "workload_id": "same", "dp": 0, "prompt_ids": [1], "token_ids": [2, 3]}]
+            }
+        for filename, data in writes.items():
+            (directory / filename).write_text(json.dumps(data))
+        receipts = [
+            dict(phase="prefill", owners=[dict(request_id="target-request-ar_warmup-0")],
+                 runtime={"output_d2h_bytes": 10}),
+            dict(phase="draft", owners=[dict(request_id="orthrus-request-initial-0")],
+                 runtime={"output_d2h_bytes": 20 - index}, timings={"chunk_seconds": 1.0 - 0.5 * index}),
+        ]
+        (path / "serving-dispatches.jsonl").write_text("".join(json.dumps(row) + "\n" for row in receipts))
+
+    report = compare(*dirs)
+    assert report["compared_greedy"] and report["arms"]["initial"]["wall_throughput_ratio"] == 2
+    phases = report["arms"]["initial"]["local_serving"]
+    assert [p["draft"]["output_d2h_bytes"] for p in phases] == [10, 9]
+    assert [p["draft"]["native_seconds"] for p in phases] == [1.0, 0.5]
+    candidate = dirs[1] / "gsm8k-online-online.json"
+    data = json.loads(candidate.read_text())
+    data["requests"][0]["token_ids"][-1] = 4
+    candidate.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="diverged at generated token index 1"):
+        compare(*dirs)
+
+
 @pytest.mark.parametrize("stale_frozen_draft", [False, True])
 def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkeypatch, stale_frozen_draft):
     monkeypatch.syspath_prepend(str(COMMAND.parent))
