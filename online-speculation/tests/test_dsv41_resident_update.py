@@ -130,12 +130,13 @@ def test_resident_backend_rejects_incomplete_owner_tp_capture():
         raise AssertionError("incomplete TP capture was accepted")
 
 
-def test_resident_backend_trains_only_available_corrected_prefix_rows():
+@pytest.mark.parametrize("student_rows", [7, 31])
+def test_resident_backend_trains_only_available_corrected_prefix_rows(student_rows):
     plan = DSV41SuffixPlan(1)
     primitives = Primitives(plan)
     backend = DSV41ResidentUpdateBackend(primitives, last_layers=1)
     loss, gradient = backend.loss_vjp(
-        torch.randn(31, 17), torch.randn(7, 17), 7, "tv",
+        torch.randn(student_rows, 17), torch.randn(7, 17), 7, "tv",
     )
     assert loss.item() == pytest.approx(.2)
     assert gradient.shape == (7, 17)

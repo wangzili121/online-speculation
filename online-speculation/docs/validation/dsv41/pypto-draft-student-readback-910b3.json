@@ -1,0 +1,51 @@
+{
+  "format": "orthrus-dsv41-draft-student-readback-910b3-v1",
+  "host": "111",
+  "baseline": "46505bc, dense student readback in the capture DP partition",
+  "scope": "resident draft vocabulary output of one TP4 group, on four physical 910B3 cards",
+  "measurement": {
+    "passed": true,
+    "physical_cards": 4,
+    "logical_tp": 4,
+    "vocab": 129280,
+    "exact_candidates_and_student": true,
+    "cases": {
+      "single_capture": {
+        "active_rows": 32,
+        "student_start": 0,
+        "student_rows": 7,
+        "full_ms": 17.90124597027898,
+        "selective_ms": 7.00338208116591,
+        "full_bytes": 8273920,
+        "selective_bytes": 1814016
+      },
+      "packed_second_capture": {
+        "active_rows": 64,
+        "student_start": 32,
+        "student_rows": 7,
+        "full_ms": 35.25978198740631,
+        "selective_ms": 7.359127514064312,
+        "full_bytes": 16547840,
+        "selective_bytes": 1818112
+      },
+      "packed_short_budget": {
+        "active_rows": 64,
+        "student_start": 32,
+        "student_rows": 1,
+        "full_ms": 36.055333097465336,
+        "selective_ms": 7.4309929041191936,
+        "full_bytes": 16547840,
+        "selective_bytes": 266752
+      },
+      "single_full_budget": {
+        "active_rows": 32,
+        "student_start": 0,
+        "student_rows": 31,
+        "full_ms": 17.48716994188726,
+        "selective_ms": 9.425971540622413,
+        "full_bytes": 8273920,
+        "selective_bytes": 8019456
+      }
+    }
+  }
+}

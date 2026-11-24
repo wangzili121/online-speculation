@@ -527,8 +527,9 @@ def _gsm8k_serving_phases(directory):
         vocabulary = row.get("vocabulary_layout")
         if vocabulary is not None:
             phase[f"{vocabulary}_calls"] += 1
-        if row.get("teacher_logit_rows") is not None:
-            phase["teacher_logit_rows"] += row["teacher_logit_rows"]
+        for name in ("teacher_logit_rows", "student_logit_rows"):
+            if row.get(name) is not None:
+                phase[name] += row[name]
         timings = row.get("timings", {})
         phase["native_seconds"] += timings.get("chunk_seconds", 0.0)
         commit_tokens = row.get("commit_tokens_per_dp")

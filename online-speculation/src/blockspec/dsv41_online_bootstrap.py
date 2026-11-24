@@ -34,6 +34,10 @@ class DSV41OnlineBootstrap:
     def bound(self):
         return self.bridge is not None
 
+    @property
+    def max_feedback_rows(self):
+        return self.config.teacher_rows
+
     def bind(self, draft, native, cluster=None):
         """Bind once after target weights, resident workers and draft exist."""
         if self.bound:

@@ -46,7 +46,7 @@ for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.p
     lib-deterministic-reduction.patch lib-cluster-online.patch lib-workspace-write-only.patch \
     lib-orthrus-output.patch lib-orthrus-controls.patch lib-orthrus-network-hotpath.patch \
     lib-orthrus-verify-rows.patch lib-orthrus-verify-parallel.patch lib-orthrus-verify-output.patch \
-    lib-orthrus-teacher-rows.patch; do
+    lib-orthrus-teacher-rows.patch lib-orthrus-student-rows.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -68,6 +68,8 @@ git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-verify-outp
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-verify-output.patch"
 git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-teacher-rows.patch"
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-teacher-rows.patch"
+git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-student-rows.patch"
+git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-student-rows.patch"
 python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolve(cluster=True)'
 
 if [[ "${1:-}" == --prepare-only ]]; then
@@ -281,6 +283,48 @@ draft_input = {"DP_engines": [{"active": 32, "dp_rank": 0, "requests": [
 assert session._execute("draft", draft_input, (), (Handle(),)).tolist() == [list(range(31))]
 assert receipts[-1]["vocabulary_layout"] == "device_greedy"
 
+student = torch.arange(64 * 17).reshape(64, 17).float()
+student[::2, 0] += 100
+proposals = student.argmax(dim=-1)
+captured = []
+capture_owner = (0, 1, 1)
+
+def select_capture(requests, _exchange):
+    assert requests[capture_owner] == ("student", (6, 0))
+    return {capture_owner: requests[capture_owner]}
+
+def take_capture(*owner):
+    assert owner == capture_owner
+    return SimpleNamespace(with_student_logits=lambda logits: logits)
+
+def draft_probe(_chunk, _draft, *, logit_ranges, **kwargs):
+    base = dict(completed_layers=list(range(40)), timings={})
+    if logit_ranges is None:
+        return dict(base, logits=[{"fresh": student}] * 4)
+    assert logit_ranges(0, proposals) == [(32, 39)]
+    assert not logit_ranges(1, proposals)
+    return dict(base, logits=[{}] * 4, greedy_tokens={0: proposals},
+                selected_logits={(0, 32): student[32:39]})
+
+session.native.propose_candidates = draft_probe
+session.native.take_draft_replay = take_capture
+session.online = SimpleNamespace(
+    bound=True, capture_due=lambda: True, select_capture=select_capture,
+    max_feedback_rows=7, plan="last-1", register_replay=captured.append,
+)
+session.draft = SimpleNamespace(online_bank=None, arm_online_capture=lambda *_: None)
+draft_input["DP_engines"][0]["requests"].append(
+    dict(request_slot=1, generation=1, token_ids=[0] * 32),
+)
+draft_input["DP_engines"][0]["active"] = 64
+draft_handles = (Handle(), Handle(request_id="student", slot=1))
+for compact in (False, True):
+    session.compact_verifier = compact
+    proposed = session._execute("draft", draft_input, (), draft_handles)
+    assert proposed.tolist() == [proposals[:31].tolist(), proposals[32:63].tolist()]
+    assert torch.equal(captured[-1], student[32:39 if compact else 63])
+    assert receipts[-1]["student_logit_rows"] == (7 if compact else None)
+
 records = [{"positions": range(32 if rank < 4 else 64)} for rank in range(6)]
 shards = [{}, {}] + [{"fresh": torch.arange(64 * 3).reshape(64, 3) + 200 * rank}
                     for rank in ranks]
@@ -417,6 +461,7 @@ print(json.dumps(dict(
     lifecycle={"target_unbound": True, "draft_bind": True, "unbound_cleanup": True,
                "closed_cleanup": True, "replay_survives_scratch_recycle": True},
     accept_without_logits=True, verifier_feedback_only_for_owner=True, compact_speculative_metadata=True,
+    draft_student_rows_only_for_owner=True,
     host_vocabulary_shard_order=True, compact_greedy_with_full_feedback=True,
     verify_copy_coalescing=True, verify_swa_written_rows=True, parallel_verifier_rollback=True,
 )))

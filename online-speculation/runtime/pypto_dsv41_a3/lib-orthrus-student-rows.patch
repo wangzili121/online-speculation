@@ -1,0 +1,33 @@
+diff --git a/models/deepseek_v4_1_flash_a3/network.py b/models/deepseek_v4_1_flash_a3/network.py
+index 478a045..347fd1e 100644
+--- a/models/deepseek_v4_1_flash_a3/network.py
++++ b/models/deepseek_v4_1_flash_a3/network.py
+@@ -1192,7 +1192,7 @@ class GenerationSession:
+                 result[(*owner, request["initial_context_length"])] = tuple(request["token_ids"])
+         return result
+ 
+-    def propose_candidates(self, chunk, attention, *, output, progress=None):
++    def propose_candidates(self, chunk, attention, *, output, progress=None, logit_ranges=None):
+         """Run the diffusion head over committed target history and temporary blocks."""
+         if self.closed or self.failed or self.provider.max_requests_per_partition is None:
+             raise RuntimeError("Draft attention needs a live serving generation session")
+@@ -1226,6 +1226,7 @@ class GenerationSession:
+                 draft_round = attention.start_round(histories)
+                 result = self._advance(
+                     chunk, output=output, progress=progress, phase="draft", draft=draft_round,
++                    logit_ranges=logit_ranges,
+                 )
+                 replays = draft_round.replays()
+                 overlap = set(self._draft_replays) & set(replays)
+@@ -1848,7 +1849,10 @@ def run_network_chunk(
+             if progress is not None:
+                 progress(dict(stage="executing_output_head", epoch=epoch))
+             if draft is not None:
+-                captured_dps = {owner[0] for owner in draft.capture[1]} if draft.capture else set()
++                captured_dps = (
++                    {owner[0] for owner in draft.capture[1]}
++                    if draft.capture and logit_ranges is None else set()
++                )
+ 
+                 def greedy_shard(rank, logits, active):
+                     if rank // topology["tp"] not in captured_dps:

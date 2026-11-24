@@ -1,0 +1,137 @@
+diff --git a/models/deepseek_v41_a3/session.py b/models/deepseek_v41_a3/session.py
+index 685a2ca..44332e2 100644
+--- a/models/deepseek_v41_a3/session.py
++++ b/models/deepseek_v41_a3/session.py
+@@ -34,6 +34,14 @@ from .weights import A3Checkpoint
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _request_spans(engine):
++    dp, end = engine["dp_rank"], 0
++    for request in engine["requests"]:
++        start, end = end, end + len(request["token_ids"])
++        owner = (dp, request["request_slot"], request["generation"])
++        yield start, end, owner, request
++
++
+ class NativeSession:
+     """Run both phases in the public serving worker over one native resource owner."""
+ 
+@@ -276,8 +284,25 @@ class NativeSession:
+                 )
+                 if requests:
+                     self.draft.arm_online_capture(requests, self.online.plan)
+-            result = self.native.propose_candidates(chunk, self.draft,
+-                output=self.directory / f"draft-{self.calls}", progress=progress)
++            logit_ranges = None
++            if requests and self.compact_verifier and self.cluster is not None:
++                rows = online.max_feedback_rows
++                student_by_dp = {}
++                for engine in input_contract["DP_engines"]:
++                    spans = [
++                        (start, min(start + rows, end - 1))
++                        for start, end, owner, _ in _request_spans(engine) if owner in requests
++                    ]
++                    if spans:
++                        student_by_dp[engine["dp_rank"]] = spans
++
++                def logit_ranges(dp, _greedy):
++                    return student_by_dp.get(dp, ())
++
++            result = self.native.propose_candidates(
++                chunk, self.draft, output=self.directory / f"draft-{self.calls}",
++                progress=progress, logit_ranges=logit_ranges,
++            )
+         elif phase == "verify":
+             if feedback_owners:
+                 from blockspec.pypto_dsv41_greedy import verified_prefix
+@@ -288,13 +313,10 @@ class NativeSession:
+                 if feedback_owners:
+                     feedback_by_dp = {}
+                     for engine in input_contract["DP_engines"]:
+-                        dp, end = engine["dp_rank"], 0
+-                        for request in engine["requests"]:
+-                            start, end = end, end + len(request["token_ids"])
+-                            owner = (dp, request["request_slot"], request["generation"])
++                        for start, end, owner, request in _request_spans(engine):
+                             handle = feedback_owners.get(owner)
+                             if handle is not None:
+-                                feedback_by_dp.setdefault(dp, []).append(
++                                feedback_by_dp.setdefault(owner[0], []).append(
+                                     (start, end, tuple(request["token_ids"][1:]),
+                                      online.feedback_rows_needed(handle.request_id))
+                                 )
+@@ -320,36 +342,38 @@ class NativeSession:
+         if before is not None and before != self.native.weights.counters():
+             raise RuntimeError("Serving dispatch changed the resident static weight bank")
+         prefill_topk = []
++        greedy_groups = result.get("greedy_tokens", {})
++        selected_logits = result.get("selected_logits", {})
++        selected_rows = sum(logits.shape[0] for logits in selected_logits.values()) if greedy_groups else None
+         ordered, output = (), None
+         if phase != "accept":
+             rows, prepared_update = {}, None
+             for engine in input_contract["DP_engines"]:
+-                dp, end = engine["dp_rank"], 0
++                dp = engine["dp_rank"]
+                 if dp * self.config.tp not in self.local_ranks:
+                     continue
+-                compact = result.get("greedy_tokens", {}).get(dp)
++                compact = greedy_groups.get(dp)
+                 if compact is None:
+                     logits = result["logits"][dp * self.config.tp]["fresh"]
+                     for lane in range(1, self.config.tp):
+                         peer_logits = result["logits"][dp * self.config.tp + lane]["fresh"]
+                         if peer_logits is not logits and not torch.equal(logits, peer_logits):
+                             raise ValueError("Native TP vocabulary rows disagree")
+-                for request in engine["requests"]:
+-                    start, end = end, end + len(request["token_ids"])
+-                    owner = (dp, request["request_slot"], request["generation"])
+-                    if phase == "draft" and compact is not None:
+-                        if owner in requests:
+-                            raise RuntimeError("Native vocabulary packets omitted required student logits")
+-                        # Draft rows predict the next position.
+-                        row = compact[start:end - 1]
+-                    elif phase == "draft":
++                for start, end, owner, request in _request_spans(engine):
++                    if phase == "draft":
+                         # Source logits at rows 0..30 predict destination tokens 1..31.
+-                        student = logits[start:end - 1]
++                        if compact is None:
++                            student = logits[start:end - 1]
++                            row = student.argmax(dim=-1)
++                        else:
++                            row = compact[start:end - 1]
++                            student = selected_logits.get((dp, start))
+                         if owner in requests:
++                            if student is None:
++                                raise RuntimeError("Native vocabulary packets omitted required student logits")
+                             replay = self.native.take_draft_replay(*owner)
+                             if replay is not None:
+                                 online.register_replay(replay.with_student_logits(student.detach().cpu().contiguous()))
+-                        row = student.argmax(dim=-1)
+                     else:
+                         handle = feedback_owners.get(owner)
+                         if compact is None:
+@@ -358,7 +382,7 @@ class NativeSession:
+                         else:
+                             # Verification checks the last row for a bonus token after full acceptance.
+                             greedy = compact[start:end]
+-                            row = result.get("selected_logits", {}).get((dp, start))
++                            row = selected_logits.get((dp, start))
+                         if handle is not None:
+                             state = self.ledger.get(handle)
+                             prefix = (*state.history, request["token_ids"][0])
+@@ -413,10 +437,8 @@ class NativeSession:
+             greedy_rows=[value.tolist() for value in ordered] if self.cluster is not None else None,
+             output_head_skipped=phase == "accept",
+             vocabulary_layout=result.get("vocabulary_layout"), prepare_seconds=prepare_seconds,
+-            teacher_logit_rows=(
+-                sum(rows.shape[0] for rows in result.get("selected_logits", {}).values())
+-                if phase == "verify" and result.get("greedy_tokens") else None
+-            ),
++            teacher_logit_rows=selected_rows if phase == "verify" else None,
++            student_logit_rows=selected_rows if phase == "draft" else None,
+             commit_tokens_per_dp=(
+                 [engine["active"] for engine in input_contract["DP_engines"]] if phase == "accept" else None
+             ),

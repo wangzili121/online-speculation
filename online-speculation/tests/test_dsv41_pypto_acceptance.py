@@ -502,6 +502,7 @@ def test_gsm8k_revision_comparison_recovers_old_phase_receipts_and_requires_matc
             dict(phase="prefill", owners=[dict(request_id="target-request-ar_warmup-0")],
                  runtime={"output_d2h_bytes": 10}),
             dict(phase="draft", owners=[dict(request_id="orthrus-request-initial-0")],
+                 student_logit_rows=7 if index else None,
                  runtime={"output_d2h_bytes": 20 - index}, timings={"chunk_seconds": 1.0 - 0.5 * index}),
             dict(phase="verify", owners=[dict(request_id="orthrus-request-initial-0")],
                  vocabulary_layout="device_greedy" if index else None,
@@ -519,6 +520,7 @@ def test_gsm8k_revision_comparison_recovers_old_phase_receipts_and_requires_matc
     phases = report["arms"]["initial"]["local_serving"]
     assert [p["draft"]["output_d2h_bytes"] for p in phases] == [10, 9]
     assert [p["draft"]["native_seconds"] for p in phases] == [1.0, 0.5]
+    assert phases[1]["draft"]["student_logit_rows"] == 7
     assert phases[1]["verify"]["verify_snapshot_seconds"] == .2
     assert phases[1]["verify"]["verify_restore_seconds"] == .1
     assert phases[1]["verify"]["device_greedy_calls"] == 1

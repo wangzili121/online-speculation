@@ -111,6 +111,10 @@ class DSV41ServingOnline:
     def plan(self):
         return DSV41SuffixPlan(self.controller.config.last_layers)
 
+    @property
+    def max_feedback_rows(self):
+        return self.controller.config.teacher_rows
+
     def capture_due(self):
         due = self.controller.begin_verifier_round()
         profile = active_profile()
