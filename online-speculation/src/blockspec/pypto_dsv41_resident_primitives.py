@@ -1050,8 +1050,10 @@ class DSV41ResidentPrimitives:
         ):
             raise ValueError("captured FFN reverse boundary changed its K32 ABI")
 
-        from .pypto_dsv41_moe_vjp import make_frozen_w8a8_expert_input_vjp, make_router_input_vjp
-        from .pypto_dsv41_online_programs import make_element, make_rms
+        from .pypto_dsv41_moe_vjp import (
+            make_frozen_w8a8_expert_input_vjp, make_moe_input_gradient_sum, make_router_input_vjp,
+        )
+        from .pypto_dsv41_online_programs import make_rms
         from .pypto_dsv41_tail_vjp import (
             make_hc_pre_data_vjp,
             make_hc_pre_gate_vjp,
@@ -1077,20 +1079,6 @@ class DSV41ResidentPrimitives:
             )
             shared_parts.append(gradient)
 
-        pairs = [self._workspace(rank, (ROWS, HIDDEN)) for _ in range(2)]
-        for index, value in enumerate(pairs):
-            self._execute(
-                ("shared-input-add", layer), rank,
-                lambda: make_element((ROWS, HIDDEN), "add"),
-                a=shared_parts[2 * index], b=shared_parts[2 * index + 1], output=value,
-            )
-        shared_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
-        self._execute(
-            ("shared-input-add", layer), rank,
-            lambda: make_element((ROWS, HIDDEN), "add"),
-            a=pairs[0], b=pairs[1], output=shared_input_gradient,
-        )
-
         # Fixed Top-K router membership is not differentiated.  The selected
         # score VJP already lives in ``envelope.router``; only the
         # frozen full-precision gate projection remains here.
@@ -1102,17 +1090,12 @@ class DSV41ResidentPrimitives:
             gradient=envelope.router, gate=gate, output=router_input_gradient,
             ids=self._local_rows(rank, captured, captured["route_ids"]),
         )
-        moe_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
-        partial = self._workspace(rank, (ROWS, HIDDEN))
+        moe_input_gradient = self._workspace(rank, (ROWS, HIDDEN), fill=None)
         self._execute(
-            ("moe-input-add-routed-shared", layer), rank,
-            lambda: make_element((ROWS, HIDDEN), "add"),
-            a=routed_input_gradient, b=shared_input_gradient, output=partial,
-        )
-        self._execute(
-            ("moe-input-add-router", layer), rank,
-            lambda: make_element((ROWS, HIDDEN), "add"),
-            a=partial, b=router_input_gradient, output=moe_input_gradient,
+            ("moe-input-gradient-sum",), rank, make_moe_input_gradient_sum,
+            shared_0=shared_parts[0], shared_1=shared_parts[1],
+            shared_2=shared_parts[2], shared_3=shared_parts[3],
+            routed=routed_input_gradient, router=router_input_gradient, output=moe_input_gradient,
         )
 
         # Reverse the frozen FFN RMSNorm with the model's actual 1e-20 eps.

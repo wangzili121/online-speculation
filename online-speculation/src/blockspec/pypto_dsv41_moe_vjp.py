@@ -5,6 +5,42 @@ from .pypto_dsv41_resident_abi import with_resident_entry
 EXPERT_DEQUANT_TILE = 128
 
 
+def make_moe_input_gradient_sum(rows=32, hidden=5120):
+    """Combine four shared partitions, routed experts and router input VJP."""
+    import pypto.language as pl
+
+    tile = 512
+    tiles = hidden // tile
+
+    @pl.jit
+    def sum_gradients(
+        shared_0: pl.Tensor[[rows, hidden], pl.BF16],
+        shared_1: pl.Tensor[[rows, hidden], pl.BF16],
+        shared_2: pl.Tensor[[rows, hidden], pl.BF16],
+        shared_3: pl.Tensor[[rows, hidden], pl.BF16],
+        routed: pl.Tensor[[rows, hidden], pl.BF16],
+        router: pl.Tensor[[rows, hidden], pl.BF16],
+        output: pl.Out[pl.Tensor[[rows, hidden], pl.BF16]],
+    ):
+        for task in pl.spmd(rows * tiles, name_hint="orthrus_moe_input_gradient_sum"):
+            row, col = task // tiles, task % tiles * tile
+            a = pl.cast(pl.slice(shared_0, [1, tile], [row, col]), pl.FP32)
+            b = pl.cast(pl.slice(shared_1, [1, tile], [row, col]), pl.FP32)
+            c = pl.cast(pl.slice(shared_2, [1, tile], [row, col]), pl.FP32)
+            d = pl.cast(pl.slice(shared_3, [1, tile], [row, col]), pl.FP32)
+            # Match the boundaries of the original pairwise BF16 adds.
+            left = pl.cast(pl.cast(pl.add(a, b), pl.BF16, mode="rint"), pl.FP32)
+            right = pl.cast(pl.cast(pl.add(c, d), pl.BF16, mode="rint"), pl.FP32)
+            shared = pl.cast(pl.cast(pl.add(left, right), pl.BF16, mode="rint"), pl.FP32)
+            experts = pl.cast(pl.slice(routed, [1, tile], [row, col]), pl.FP32)
+            partial = pl.cast(pl.cast(pl.add(experts, shared), pl.BF16, mode="rint"), pl.FP32)
+            gate = pl.cast(pl.slice(router, [1, tile], [row, col]), pl.FP32)
+            output[row:row + 1, col:col + tile] = pl.cast(pl.add(partial, gate), pl.BF16, mode="rint")
+        return output
+
+    return sum_gradients
+
+
 def make_dequantize_blocked_weight(input_width, output_width, *, inline=False, row_tile=16):
     """Restore the BF16 weight used by a frozen W8A8 input VJP.
 

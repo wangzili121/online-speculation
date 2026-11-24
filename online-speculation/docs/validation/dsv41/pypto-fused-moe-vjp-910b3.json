@@ -1,0 +1,39 @@
+{
+  "server": "111",
+  "device": "Ascend 910B3",
+  "kernel_card": 6,
+  "ffn_tail_card": 0,
+  "gradient_sum": {
+    "passed": true,
+    "shape": [
+      32,
+      5120
+    ],
+    "exact": true,
+    "cases": 25,
+    "repetitions": 24,
+    "before_ms": 6.474370951764286,
+    "after_ms": 1.1302570346742868
+  },
+  "ffn_tail": {
+    "passed": true,
+    "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+    "layer": 39,
+    "actual_weights": [
+      "W8A8 shared expert",
+      "router gate",
+      "FFN RMSNorm",
+      "FFN mHC"
+    ],
+    "input": "matched synthetic activations and fixed top6 routes",
+    "shape": [
+      32,
+      5120
+    ],
+    "exact": true,
+    "repetitions": 18,
+    "baseline": "dcfb59e",
+    "before_ms": 31.064320937730372,
+    "after_ms": 25.39945300668478
+  }
+}
