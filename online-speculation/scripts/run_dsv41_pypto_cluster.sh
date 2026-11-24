@@ -47,7 +47,7 @@ for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.p
     lib-orthrus-output.patch lib-orthrus-controls.patch lib-orthrus-network-hotpath.patch \
     lib-orthrus-verify-rows.patch lib-orthrus-verify-parallel.patch lib-orthrus-verify-output.patch \
     lib-orthrus-teacher-rows.patch lib-orthrus-student-rows.patch \
-    lib-orthrus-short-dispatch.patch lib-orthrus-draft-reduce-pack.patch; do
+    lib-orthrus-short-dispatch.patch lib-orthrus-draft-reduce-pack.patch lib-orthrus-engram-prefix.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
@@ -75,6 +75,8 @@ git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-short-dispa
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-short-dispatch.patch"
 git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-candidate-limit.patch"
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-candidate-limit.patch"
+git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-engram-prefix.patch"
+git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-engram-prefix.patch"
 python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolve(cluster=True)'
 
 if [[ "${1:-}" == --prepare-only ]]; then
@@ -271,8 +273,14 @@ with TemporaryDirectory() as directory:
     session.checkpoint, session.identity = "checkpoint", "identity"
     session.native_config = {"capacity": 16}
     session.cache = {"cache_ABI": [{"hash_constants": {"token_map": torch.arange(256)}}] * 2}
-    session.host = SimpleNamespace(lookup=lambda *args, **options: {})
+    lookups = []
+    def lookup(inputs, **options):
+        lookups.append(options.get("verified"))
+        records = [dict(full={}, hashes=None) for _ in inputs["input_contract"]["DP_engines"] for _ in range(4)]
+        return {"cases": {"fresh": records}}
+    session.host = SimpleNamespace(lookup=lookup)
     session._draft_metadata = None
+    session._verified_engram = None
     session.short_speculative_dispatch = False
     payload = {"layout": {"views": {}}, "metadata": {"swa": 7}}
     payloads = (payload,) * 2
@@ -294,8 +302,14 @@ with TemporaryDirectory() as directory:
     ):
         session.calls += 1
         session.short_speculative_dispatch = short
-        contract = {"DP_engines": [dict(active=count) for count in actual_rows]}
+        contract = {"DP_engines": [dict(active=count, requests=[]) for count in actual_rows]}
+        reference = session._verified_engram
         chunk = NativeSession._prepare(session, contract, payloads, phase)
+        assert lookups[-1] is (reference if phase == "accept" else None)
+        if phase == "verify":
+            assert len(session._verified_engram) == len(actual_rows)
+        else:
+            assert session._verified_engram is None
         assert chunk["contract"]["capacity"] == expected
         check_capacity(chunk)
     try:
@@ -521,7 +535,7 @@ print(json.dumps(dict(
     host_vocabulary_shard_order=True, compact_greedy_with_full_feedback=True,
     verify_copy_coalescing=True, verify_swa_written_rows=True, parallel_verifier_rollback=True,
     short_speculative_capacity_selection=True,
-    verify_candidate_limit_preserves_k32_draft=True,
+    verify_candidate_limit_preserves_k32_draft=True, verify_engram_reused_only_for_accept=True,
 )))
 PY
 fi

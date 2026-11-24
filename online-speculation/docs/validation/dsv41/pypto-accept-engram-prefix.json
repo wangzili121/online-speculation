@@ -1,0 +1,39 @@
+{
+  "passed": true,
+  "baseline": "9321714",
+  "model": "DeepSeek-V4.1-Flash",
+  "phase": "Orthrus HOST Engram accepted-prefix preparation",
+  "execution": "CPU",
+  "fixture": "Native HostEngram with constructed INT8/FP32 group32 tables",
+  "dp": 4,
+  "tp": 4,
+  "repeats": 12,
+  "byte_exact": true,
+  "mismatched_ancestry_falls_back": true,
+  "cases": [
+    {
+      "case": "single",
+      "capacity": 16,
+      "wall_ms": {
+        "before": 5.607436003629118,
+        "after": 2.759587485343218
+      }
+    },
+    {
+      "case": "4dp",
+      "capacity": 128,
+      "wall_ms": {
+        "before": 33.88038551202044,
+        "after": 7.7916160225868225
+      }
+    },
+    {
+      "case": "reordered",
+      "capacity": 16,
+      "wall_ms": {
+        "before": 26.299590477719903,
+        "after": 9.285138046834618
+      }
+    }
+  ]
+}

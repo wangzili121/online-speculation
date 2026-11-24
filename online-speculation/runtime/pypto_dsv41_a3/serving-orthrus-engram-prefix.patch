@@ -1,0 +1,37 @@
+--- a/models/deepseek_v41_a3/session.py
++++ b/models/deepseek_v41_a3/session.py
+@@ -58,6 +58,7 @@
+         self.compact_verifier = compact_verifier
+         self.short_speculative_dispatch = short_speculative_dispatch
+         self._draft_metadata = None
++        self._verified_engram = None
+         self.draft = None
+         self.ledger = self.native = self.decode = self.host = self.hbm = None
+         self.closed, self.calls, self.predecessor = False, 0, None
+@@ -177,7 +178,17 @@
+         ):
+             contract["capacity"] = ORTHRUS_DISPATCH_CAPACITY
+         inputs = dict(input_contract=actual, prepare_input_stage=True)
+-        inputs["engram_lookup"] = self.host.lookup(inputs, cache=cache, config=contract)
++        verified = self._verified_engram if phase == "accept" else None
++        self._verified_engram = None
++        lookup_options = {} if verified is None else {"verified": verified}
++        inputs["engram_lookup"] = self.host.lookup(inputs, cache=cache, config=contract, **lookup_options)
++        if phase == "verify":
++            # Keep just the shared decoded rows and hashes until this wave commits.
++            records = inputs["engram_lookup"]["cases"]["fresh"]
++            self._verified_engram = [
++                dict(requests=engine["requests"], hashes=record["hashes"], full=record["full"])
++                for engine, record in zip(actual["DP_engines"], records[::self.config.tp], strict=True)
++            ]
+         return dict(inputs=inputs, cache=cache, contract=contract, metadata_sources=sources)
+
+     @property
+@@ -481,6 +481,7 @@
+     def close(self):
+         if self.closed:
+             return
++        self._verified_engram = None
+         errors = []
+         # Prepared row tensors do not alias HOST tables. Release the HOST owner
+         # before the potentially slow 16-rank runtime shutdown.

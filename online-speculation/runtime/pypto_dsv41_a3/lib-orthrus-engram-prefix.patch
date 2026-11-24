@@ -1,0 +1,72 @@
+--- a/models/deepseek_v4_1_flash_a3/engram_host.py
++++ b/models/deepseek_v4_1_flash_a3/engram_host.py
+@@ -29,6 +29,32 @@
+     values = codes.gather(rows).float().reshape(*rows.shape, 8, 32)
+     factors = scales.gather(rows).unsqueeze(-1)
+     return (values * factors).reshape(*rows.shape, 256).to(torch.bfloat16)
++
++
++def verified_prefix_rows(verification, requests, lookback_depth):
++    """Find verifier rows with the same request ancestry and causal token prefix."""
++    if verification is None or not requests:
++        return None
++    candidates = {}
++    offset = 0
++    for request in verification["requests"]:
++        owner = request["request_slot"], request["generation"]
++        candidates[owner] = offset, request
++        offset += len(request["token_ids"])
++
++    rows = []
++    for request in requests:
++        owner = request["request_slot"], request["generation"]
++        if owner not in candidates:
++            return None
++        start, candidate = candidates[owner]
++        count = len(request["token_ids"])
++        if (request["initial_context_length"] != candidate["initial_context_length"]
++                or request["history_tokens"][-lookback_depth:] != candidate["history_tokens"][-lookback_depth:]
++                or request["token_ids"] != candidate["token_ids"][:count]):
++            return None
++        rows.extend(range(start, start + count))
++    return torch.tensor(rows, dtype=torch.long)
+
+
+ class HostEngram:
+@@ -129,7 +155,7 @@
+             self.arrays[key] = array
+         return self.arrays[key]
+
+-    def lookup(self, inputs, *, cache, config):
++    def lookup(self, inputs, *, cache, config, verified=None):
+         """Return ready rows for an explicit request, including single-token continuations.
+
+         Hashes use the request's explicit last three history tokens. No device
+@@ -182,7 +208,11 @@
+             dead = (ids == image_id) | (ids == image_pad_id)
+             hashes = torch.full((capacity, 2, 24), -1, dtype=torch.int32)
+             mask = torch.zeros(capacity, dtype=torch.int32)
+-            if tokens:
++            verification = None if verified is None else verified[dp]
++            selected = verified_prefix_rows(verification, engine["requests"], self.layout.lookback_depth)
++            if selected is not None:
++                hashes[:len(tokens)] = verification["hashes"].index_select(0, selected)
++            elif tokens:
+                 previous = torch.tensor(lookback, dtype=torch.int64)
+                 hashes[: len(tokens)] = hash_ids(
+                     ids,
+@@ -194,9 +224,12 @@
+                     lookback_token_ids=previous,
+                     lookback_dead_mask=(previous == image_id) | (previous == image_pad_id),
+                 )
+-                mask[: len(tokens)] = (~dead).to(torch.int32)
++            mask[:len(tokens)] = (~dead).to(torch.int32)
+             full = {layer: torch.zeros((capacity, 6144), dtype=torch.bfloat16) for layer in (1, 14)}
+-            if tokens:
++            if selected is not None:
++                for layer in full:
++                    full[layer][:len(tokens)] = verification["full"][layer].index_select(0, selected)
++            elif tokens:
+                 for layer, slot in ((1, 0), (14, 1)):
+                     for rank, shard in enumerate(self.contracts[layer]["engram_shards"]):
+                         begin, end = shard["head_range"]
