@@ -547,6 +547,7 @@ def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkey
     receipts.touch()
     session = SimpleNamespace(
         online=None, draft=SimpleNamespace(online_bank=bank), native=object(), devices=list(range(8)),
+        short_speculative_dispatch=True,
         receipt_path=receipts, cluster=SimpleNamespace(plan=SimpleNamespace(node=0),
                                                       link=SimpleNamespace(exchange=lambda tag, payload: payload)),
     )
@@ -572,6 +573,7 @@ def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkey
         cache_plan = SimpleNamespace(groups=[])
         config = SimpleNamespace(chunk_tokens=2)
         ledger = SimpleNamespace(requests={})
+        verify_candidate_limit = 7
 
         output_bytes = 0
 
@@ -630,6 +632,7 @@ def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkey
         return
     report = study(runner, session, online, prompts, entries, **options)
     assert report["passed"] and report["compared_tokens"] == {"initial": 12, "frozen": 12}
+    assert report["verify_candidate_limit"] == 7 and report["short_speculative_dispatch"] is True
     assert report["startup_compared_tokens"] == 8
     assert report["arms"]["ar"]["draft_head_versions"] == []
     assert report["arms"]["initial"]["draft_head_versions"] == [0]

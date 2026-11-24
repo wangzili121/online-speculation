@@ -94,7 +94,8 @@ if [[ "$mode" == report ]]; then
     --report-train-requests "$train_requests" --report-batch-size "$batch_size" \
     --online-study /workspace/online-speculation/configs/dsv41/gsm8k-online.json \
     --online-primitives blockspec.pypto_dsv41_resident_primitives:create_primitives \
-    --online-overrides "$online_overrides" "$dispatch_option"
+    --online-overrides "$online_overrides" "$dispatch_option" \
+    --verify-candidate-limit "${DSV41_VERIFY_CANDIDATES:-31}"
   exit $?
 fi
 
@@ -102,4 +103,5 @@ exec bash "$root/scripts/dsv41_pypto_env.sh" cluster-accept "$node" \
   --max-requests "$requests" --tokens "$tokens" --no-trace-prefill \
   --online-study /workspace/online-speculation/configs/dsv41/gsm8k-online.json \
   --online-primitives blockspec.pypto_dsv41_resident_primitives:create_primitives \
-  --online-overrides "$online_overrides" "${short_gate[@]}" "$dispatch_option"
+  --online-overrides "$online_overrides" "${short_gate[@]}" "$dispatch_option" \
+  --verify-candidate-limit "${DSV41_VERIFY_CANDIDATES:-31}"

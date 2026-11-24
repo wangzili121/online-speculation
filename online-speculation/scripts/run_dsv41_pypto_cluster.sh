@@ -73,6 +73,8 @@ git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-student-row
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-student-rows.patch"
 git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-short-dispatch.patch"
 git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-short-dispatch.patch"
+git -C "$PYPTO_SERVING_ROOT" apply --check "$patches/serving-orthrus-candidate-limit.patch"
+git -C "$PYPTO_SERVING_ROOT" apply "$patches/serving-orthrus-candidate-limit.patch"
 python -c 'from pypto_serving_a3.source import KernelSource; KernelSource.resolve(cluster=True)'
 
 if [[ "${1:-}" == --prepare-only ]]; then
@@ -88,6 +90,7 @@ import torch
 import blockspec.pypto_dsv41_runtime as draft_runtime
 from pypto_serving_a3.session import NativeSession
 from pypto_serving_a3.source import KernelSource
+from pypto_serving_a3.runner import A3Runner
 
 source = KernelSource.resolve(cluster=True)
 source.require_generation()
@@ -101,7 +104,7 @@ execute_source = getsource(NativeSession._execute)
 assert "self.online is not None and self.online.bound" in execute_source
 assert 'if phase != "accept":' in execute_source
 
-@dataclass
+@dataclass(frozen=True)
 class Handle:
     request_id: str = "target-only"
     dp: int = 0
@@ -125,6 +128,34 @@ session.closed = True
 session.clear_request(Handle())
 assert released == [(0, 0, 1)]
 session.closed = False
+
+# The verifier can take a shorter prefix of K32 without reusing the full
+# draft page metadata or overstating the count used to report acceptance.
+runner = A3Runner.__new__(A3Runner)
+runner.config = SimpleNamespace(max_context=256)
+runner.session = SimpleNamespace(draft_mask_token_id=129279)
+batch = SimpleNamespace(constraint_states=[], stop_token_masks={}, seq_lens=torch.tensor([4]),
+                        request_ids=["draft"], sampling_params=[SimpleNamespace(temperature=0)])
+draft_chunk = SimpleNamespace(handle=Handle(), tokens=(8,) + (129279,) * 31, start=3, output_row=0)
+draft_metadata = object()
+def batch_draft(_, phase, *, candidates):
+    assert phase == "draft" and candidates == [(129279,) * 31]
+    return (draft_chunk,)
+runner._batch = batch_draft
+runner.ledger = SimpleNamespace(
+    dispatches=lambda chunks: (chunks,),
+    prepare_chunk=lambda handle, tokens, start, output_row, phase: tokens,
+)
+runner._draft_wave = lambda wave: ({draft_chunk.handle: tuple(range(31))}, draft_metadata)
+for limit in (1, 7, 15, 31):
+    def verify_wave(wave, output, *, payloads):
+        assert wave == ((8, *range(limit)),)
+        assert payloads is (draft_metadata if limit == 31 else None)
+        output[0] = [0]
+    runner._verify_wave = verify_wave
+    runner.verify_candidate_limit = limit
+    result = runner.run_orthrus(batch)
+    assert result.num_draft_tokens == [limit] and result.accepted_token_ids == [[0]]
 
 class Binding:
     bound = False
@@ -490,6 +521,7 @@ print(json.dumps(dict(
     host_vocabulary_shard_order=True, compact_greedy_with_full_feedback=True,
     verify_copy_coalescing=True, verify_swa_written_rows=True, parallel_verifier_rollback=True,
     short_speculative_capacity_selection=True,
+    verify_candidate_limit_preserves_k32_draft=True,
 )))
 PY
 fi

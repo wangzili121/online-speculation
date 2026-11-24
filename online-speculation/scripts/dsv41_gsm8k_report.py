@@ -160,6 +160,8 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
     arms, comparisons = {}, {}
     report = dict(format="orthrus-dsv41-gsm8k-online-report-v1", complete=False,
                   max_concurrent_requests=batch_size, max_new_tokens=steps, updates_policy=online.config.contract(),
+                  verify_candidate_limit=runner.verify_candidate_limit,
+                  short_speculative_dispatch=session.short_speculative_dispatch,
                   training_requests=train_count, heldout_requests=len(entries) - train_count,
                   startup_seconds=startup, arms=arms, compared_tokens=comparisons)
     summary_path = output / "gsm8k-online-report.json"

@@ -1,0 +1,48 @@
+--- a/models/deepseek_v41_a3/runner.py
++++ b/models/deepseek_v41_a3/runner.py
+@@ -39,11 +39,15 @@
+
+ class A3Runner:
+     """Lower shared serving batches while keeping transactional request ownership."""
+-    def __init__(self, source, config, cache_plan, session: ResidentSession, vocabulary, *, greedy_tokens=False):
++    def __init__(self, source, config, cache_plan, session: ResidentSession, vocabulary, *,
++                 greedy_tokens=False, verify_candidate_limit=ORTHRUS_BLOCK - 1):
+         self.source, self.config, self.cache_plan, self.session = source, config, cache_plan, session
+         self.ledger = RequestLedger(config, cache_plan, vocabulary)
+         self.vocabulary = vocabulary
+         self.greedy_tokens = greedy_tokens
++        if not 1 <= verify_candidate_limit < ORTHRUS_BLOCK:
++            raise ValueError("Orthrus verifies between 1 and 31 draft candidates")
++        self.verify_candidate_limit = verify_candidate_limit
+         if callable(getattr(session, "bind_ledger", None)):
+             session.bind_ledger(self.ledger)
+         self.closed, self.failed = False, False
+@@ -173,22 +177,23 @@
+             return self.run(batch, "decode")
+         mask = self.session.draft_mask_token_id
+         chunks = self._batch(batch, "draft", candidates=[(mask,) * (ORTHRUS_BLOCK - 1)] * len(batch.request_ids))
++        limit = self.verify_candidate_limit
+         outputs = [None] * len(chunks)
+         try:
+             for wave in self.ledger.dispatches(chunks):
+                 tokens_by_handle, payloads = self._draft_wave(wave)
+                 checked = tuple(self.ledger.prepare_chunk(
+-                    chunk.handle, (*chunk.tokens[:1], *tokens_by_handle[chunk.handle]),
++                    chunk.handle, (*chunk.tokens[:1], *tokens_by_handle[chunk.handle][:limit]),
+                     chunk.start, chunk.output_row, "verify",
+                 ) for chunk in wave)
+-                # Candidate IDs change, but the anchor, span and page table are
+-                # the same 32 positions per request.
+-                self._verify_wave(checked, outputs, payloads=payloads)
++                # Reuse draft metadata only when verification covers the
++                # same full window. A capped verifier builds a shorter span.
++                self._verify_wave(checked, outputs, payloads=payloads if limit == ORTHRUS_BLOCK - 1 else None)
+         except Exception:
+             self._abort_speculation(batch.request_ids)
+             raise
+         return DecodeResult(None, None, accepted_token_ids=outputs,
+-                            num_draft_tokens=[ORTHRUS_BLOCK - 1] * len(chunks))
++                            num_draft_tokens=[limit] * len(chunks))
+
+     def _draft_wave(self, wave):
+         contract, order = self.ledger.input_contract(wave)

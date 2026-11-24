@@ -589,6 +589,8 @@ def compare_gsm8k_reports(baseline, candidate):
         stats["local_serving"] = [rows[name] for rows in receipts]
         comparisons[name] = stats
     return dict(node=after["node"], build_ids=[before["build_id"], after["build_id"]],
+                verify_candidate_limits=[report.get("verify_candidate_limit", 31) for report in (left, right)],
+                short_speculative_dispatch=[report.get("short_speculative_dispatch", False) for report in (left, right)],
                 compared_greedy=True, order=["baseline", "candidate"], arms=comparisons)
 
 

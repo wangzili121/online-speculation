@@ -162,13 +162,15 @@ def test_profile_launcher_uses_seven_teacher_rows_and_a_single_session(tmp_path)
     result = subprocess.run(
         ["bash", launcher, "node7", "profile", "1"], check=True,
         capture_output=True, text=True,
-        env=os.environ | {"DSV41_GSM8K_ROOT": str(tmp_path)},
+        env=os.environ | {"DSV41_GSM8K_ROOT": str(tmp_path), "DSV41_VERIFY_CANDIDATES": "7",
+                          "DSV41_SHORT_SPECULATIVE_DISPATCH": "1"},
     )
     factory_call, cluster_call = result.stdout.splitlines()
     assert factory_call == "online-factory-check"
     assert cluster_call.startswith("cluster-accept node7 --max-requests 5 --tokens 8 ")
     assert '"teacher_rows":7' in cluster_call
     assert "--orthrus-only --require-online-update --online-profile" in cluster_call
+    assert "--short-speculative-dispatch --verify-candidate-limit 7" in cluster_call
 
 
 def test_cluster_source_pairing_tracks_the_fully_patched_kernel_tree():

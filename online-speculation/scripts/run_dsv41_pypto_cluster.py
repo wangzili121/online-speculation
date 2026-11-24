@@ -403,6 +403,7 @@ def run(args):
                        tokens=args.tokens, context=args.context,
                        trace_prefill=args.trace_prefill, trace_position=args.trace_position,
                        short_speculative_dispatch=args.short_speculative_dispatch,
+                       verify_candidate_limit=args.verify_candidate_limit,
                        orthrus_only=args.orthrus_only, require_online_update=args.require_online_update,
                        online_profile=args.online_profile,
                        online_benchmark=args.online_benchmark,
@@ -436,7 +437,8 @@ def run(args):
                                 compact_verifier=args.report_train_requests is not None,
                                 short_speculative_dispatch=args.short_speculative_dispatch,
                                 online=None if args.online_benchmark or args.report_train_requests else online)
-        runner = A3Runner(source, config, cache_plan, session, checkpoint.text["vocab_size"], greedy_tokens=True)
+        runner = A3Runner(source, config, cache_plan, session, checkpoint.text["vocab_size"],
+                          greedy_tokens=True, verify_candidate_limit=args.verify_candidate_limit)
         profile = OnlineUpdateProfile(args.output / "online-profile.jsonl") if args.online_profile else None
         study = None
         try:
@@ -510,6 +512,8 @@ def run(args):
         summary = dict(passed=passed, node=plan.node, global_ranks=list(plan.local_ranks), build_id=identity,
                        topology=dict(dp=4, tp=4, ep=16), physical_to_runtime=mapping, compared_tokens=tokens,
                        checkpoint=checkpoint_identity, head_sha256=head_identity, head_role=head["artifact_role"],
+                       verify_candidate_limit=args.verify_candidate_limit,
+                       short_speculative_dispatch=args.short_speculative_dispatch,
                        target=audits.get("target"), orthrus=audits["orthrus"],
                        speculation=speculation,
                        online=online_summary)
@@ -634,6 +638,8 @@ def main():
                         help="Record one absolute token position (zero-based) in Decode and K32 Verify")
     parser.add_argument("--short-speculative-dispatch", action=argparse.BooleanOptionalAction, default=False,
                         help="Use the 16-row native program for verify/accept waves that fit on every DP")
+    parser.add_argument("--verify-candidate-limit", type=int, default=31,
+                        help="Maximum candidates sent per request after K32 draft (1 to 31)")
     parser.add_argument("--online-study", type=Path,
                         help="Versioned GSM8K online policy; enables resident last-N updates")
     parser.add_argument("--online-primitives", metavar="MODULE:CALLABLE",
@@ -654,6 +660,8 @@ def main():
     parser.add_argument("--connect-timeout", type=int, default=900)
     parser.add_argument("--timeout", type=int, default=3600, help="Maximum seconds of peer inactivity")
     args = parser.parse_args()
+    if not 1 <= args.verify_candidate_limit <= 31:
+        parser.error("--verify-candidate-limit must be in 1..31")
     if (args.tokens < 2 or args.host_threads < 1 or args.timeout < 1
             or args.max_requests is not None and args.max_requests < 1
             or args.workload is not None and args.prompt is not None

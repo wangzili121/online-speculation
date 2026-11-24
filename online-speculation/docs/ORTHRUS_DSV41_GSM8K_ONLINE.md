@@ -108,6 +108,8 @@ python3 online-speculation/scripts/summarize_dsv41_pypto_cluster.py \
 
 双机 `cluster-accept` 可在两端同时加 `--short-speculative-dispatch` 做整模对照。GSM8K 启动脚本可用 `DSV41_SHORT_SPECULATIVE_DISPATCH=1` 开启相同选项。当所有 DP 分区的 verify 或 accept 行数都不超过 16 时，该阶段复用基模的 16 行程序。起草仍执行 K32，提交超过 16 行时仍走 128 行程序。默认使用已验收的 128 行路径。
 
+验证窗口可单独限制。两端设置 `DSV41_VERIFY_CANDIDATES=7 DSV41_SHORT_SPECULATIVE_DISPATCH=1`，每个请求将 anchor 和前 7 个候选送入验证，便于和默认 31 候选做同 head 对照。起草和在线重放仍用同一个 K32 head。每轮按实际送入验证的候选数统计接受率，报告会记录窗口和使用的执行容量。
+
 111 上对齐 1、2、8、16 个活跃位置后，两个容量的原生缓存写入、Attention 和回滚逐字节一致，单卡耗时接近。两卡 FP32 TP reduce-scatter 加打包和转换实测，8 行输入从 9.35 降到 7.74 ms，每 rank 逻辑输入从 5,242,880 降到 655,360 字节。16 行整模程序已在固定离线环境完成 64 项入口的 PTO 编译，整模双机 token、缓存与收益还需用同一 workload 对照。
 
 ## 验收顺序
