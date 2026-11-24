@@ -466,3 +466,89 @@ class AcceptanceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(COMMAND.parent))
+    monkeypatch.setitem(sys.modules, "pypto_serving.config.types", SimpleNamespace(
+        DecodeBatch=SimpleNamespace, PrefillBatch=SimpleNamespace, SamplingParams=SimpleNamespace,
+    ))
+    study = runpy.run_path(str(COMMAND.with_name("dsv41_gsm8k_report.py")))["study_workload"]
+    bank = SimpleNamespace(active_version=0)
+    session = SimpleNamespace(
+        online=None, draft=SimpleNamespace(online_bank=bank), native=object(), devices=list(range(8)),
+        cluster=SimpleNamespace(link=SimpleNamespace(exchange=lambda tag, payload: payload)),
+    )
+    seen = []
+    records = []
+
+    class Learner:
+        config = SimpleNamespace(contract=lambda: {"objective": "tv", "last_layers": 1})
+        bridge = SimpleNamespace(controller=SimpleNamespace(records=records))
+
+        def bind(self, draft, native, cluster):
+            assert seen[-1] == ("initial", [0, 1, 2, 3])
+            assert (draft, native, cluster) == (session.draft, session.native, session.cluster)
+            assert session.online is None and bank.active_version == 0
+
+        def summary(self):
+            return dict(updates=bank.active_version, publications=bank.active_version,
+                        update_seconds=0.0, publication_seconds=0.0)
+
+    online = Learner()
+
+    class Runner:
+        cache_plan = SimpleNamespace(groups=[])
+        config = SimpleNamespace(chunk_tokens=2)
+        ledger = SimpleNamespace(requests={})
+
+        def run(self, batch, phase):
+            if phase == "prefill":
+                tokens = batch.token_ids.tolist()
+                assert sum(batch.chunk_lens) == len(tokens)
+                for name, offset, length, start in zip(
+                    batch.request_ids, batch.chunk_offsets, batch.chunk_lens, batch.chunk_starts, strict=True,
+                ):
+                    state = self.ledger.requests.setdefault(name, SimpleNamespace(history=[]))
+                    assert start == len(state.history)
+                    state.history.extend(tokens[offset:offset + length])
+                return SimpleNamespace(sampled_token_ids=torch.ones(len(batch.request_ids), dtype=torch.long))
+            for name, token in zip(batch.request_ids, batch.token_ids.tolist(), strict=True):
+                self.ledger.requests[name].history.append(token)
+            return SimpleNamespace(accepted_token_ids=None, sampled_token_ids=batch.token_ids + 1)
+
+        def run_orthrus(self, batch):
+            phase = batch.request_ids[0].split("-")[2]
+            seen.append((phase, batch.cache_partitions))
+            if phase in ("draft_warmup", "initial"):
+                assert session.online is None and bank.active_version == 0
+            elif phase == "online":
+                assert session.online is online
+                bank.active_version += 1
+                records.append(dict(update_seconds=0.0, publication_seconds=0.0))
+            elif phase == "frozen":
+                assert session.online is None and bank.active_version > 0
+            self.run(batch, "decode")
+            return SimpleNamespace(accepted_token_ids=[[token + 1] for token in batch.token_ids.tolist()],
+                                   num_draft_tokens=[31] * len(batch.request_ids))
+
+        def release_finished_requests(self, names):
+            for name in names:
+                del self.ledger.requests[name]
+
+    runner = Runner()
+    prompts = [[100 + i] * (i % 4 + 1) for i in range(12)]
+    entries = [dict(id=f"gsm8k-{i}", reference_answer="#### 2") for i in range(len(prompts))]
+    report = study(runner, session, online, prompts, entries, train_count=8, steps=4, batch_size=4,
+                   eos_ids={3}, decoder=lambda tokens: "#### 2", output=tmp_path, engram_seconds=5.0)
+    assert report["passed"] and report["compared_tokens"] == {"initial": 12, "frozen": 12}
+    assert report["arms"]["online"]["requests"] == 8
+    assert report["arms"]["frozen"]["requests"] == 4
+    assert report["arms"]["frozen"]["stopped"] == 4
+    assert report["arms"]["frozen"]["head_version"] == report["arms"]["online"]["publications"]
+    assert report["arms"]["online"]["wall_tok_s_excluding_all_updates_estimate"] > 0
+    assert all(partitions == [0, 1, 2, 3] for _, partitions in seen)
+    train = json.loads((tmp_path / "gsm8k-online-online.json").read_text())
+    eval_ = json.loads((tmp_path / "gsm8k-online-frozen.json").read_text())
+    assert {row["workload_id"] for row in train["requests"]}.isdisjoint(row["workload_id"] for row in eval_["requests"])
+    assert not runner.ledger.requests

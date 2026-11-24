@@ -15,6 +15,7 @@ import time
 from blockspec.pypto_dsv41_cluster import ClusterDispatcher, ControlLink, RankPlan
 from blockspec.dsv41_online import read_workload
 from blockspec.dsv41_online_profile import OnlineUpdateProfile, active_profile, profile_online
+from dsv41_gsm8k_report import study_workload
 from summarize_dsv41_pypto_cluster import profile_comparisons, profile_head_versions
 from validate_dsv41_pypto_cluster import check_visible_devices
 from verify_dsv41_pypto_acceptance import (
@@ -361,6 +362,12 @@ def run(args):
         raise ValueError("Online profiling needs five distinct GSM8K prompts")
     if args.online_benchmark and len(prompts) < 2:
         raise ValueError("The benchmark needs one warmup prompt and at least one measured prompt")
+    if args.report_train_requests is not None:
+        split = args.report_train_requests
+        if not 0 < split < len(prompts):
+            raise ValueError("The GSM8K report needs both online training and held-out requests")
+        if set(map(tuple, prompts[:split])).intersection(map(tuple, prompts[split:])):
+            raise ValueError("GSM8K training and held-out prompts overlap after tokenization")
     assignments = [index % config.topology["dp"] for index in range(len(prompts))]
     if args.orthrus_only and args.require_online_update and not args.online_profile:
         # The short capture gate exercises feedback ownership on both hosts.
@@ -378,6 +385,7 @@ def run(args):
     build = dict(
         adapter=integration_identity()["adapter_files_sha256"],
         orthrus=fingerprint([Path(__file__), scripts / "verify_dsv41_pypto_acceptance.py",
+                             scripts / "dsv41_gsm8k_report.py", scripts / "summarize_dsv41_gsm8k.py",
                              scripts / "summarize_dsv41_pypto_cluster.py"]
                           + sorted(blockspec.glob("pypto_dsv41_*.py"))
                           + sorted(blockspec.glob("dsv41_*.py"))),
@@ -397,6 +405,7 @@ def run(args):
                        orthrus_only=args.orthrus_only, require_online_update=args.require_online_update,
                        online_profile=args.online_profile,
                        online_benchmark=args.online_benchmark,
+                       report_train_requests=args.report_train_requests, report_batch_size=args.report_batch_size,
                        online=None if online is None else online.config.contract())
         peer_request = link.exchange("acceptance/configuration", request)
         if peer_request != request:
@@ -422,9 +431,11 @@ def run(args):
         session = NativeSession(source, args.model, devices, native_dir, config, checkpoint.text["vocab_size"],
                                 cache_plan, orthrus_head=str(args.head), cluster=cluster, prepared_cache=cache,
                                 defer_draft=True, trace_prefill=args.trace_prefill,
-                                trace_position=args.trace_position, online=None if args.online_benchmark else online)
+                                trace_position=args.trace_position,
+                                online=None if args.online_benchmark or args.report_train_requests else online)
         runner = A3Runner(source, config, cache_plan, session, checkpoint.text["vocab_size"], greedy_tokens=True)
         profile = OnlineUpdateProfile(args.output / "online-profile.jsonl") if args.online_profile else None
+        study = None
         try:
             if profile is not None:
                 profile_arms, comparisons = profile_workload(
@@ -434,6 +445,14 @@ def run(args):
             elif args.online_benchmark:
                 results, warmup_seconds = benchmark_workload(
                     runner, session, online, prompts, entries, args.tokens, decoder, devices, args.output,
+                )
+            elif args.report_train_requests is not None:
+                eos = checkpoint.text.get("eos_token_id", checkpoint.raw.get("eos_token_id"))
+                eos_ids = frozenset(eos if isinstance(eos, list) else () if eos is None else (eos,))
+                study = study_workload(
+                    runner, session, online, prompts, entries, train_count=args.report_train_requests,
+                    steps=args.tokens, batch_size=args.report_batch_size, eos_ids=eos_ids, decoder=decoder,
+                    output=args.output, engram_seconds=engram_seconds,
                 )
             else:
                 for mode in modes:
@@ -466,7 +485,7 @@ def run(args):
         for mode in modes:
             _, dispatch_counts, restored = audit_session(
                 native_dir, speculative=mode == "orthrus", node_local=True, request_prefix=f"{mode}-request-",
-                require_updated_draft=mode == "orthrus" and args.require_online_update,
+                require_updated_draft=mode == "orthrus" and args.require_online_update and study is None,
             )
             audits[mode] = dict(phases=dispatch_counts, verifier_restored_bytes=restored)
         tokens = (request_parity(results["target"], results["orthrus"])
@@ -478,6 +497,11 @@ def run(args):
                                       teacher_rows=online.config.teacher_rows, publications=online_summary["publications"])
             passed, tokens = gate["passed"], gate["compared_tokens"]
             expected_updates, speculation = gate["expected_updates"], gate["speculation"]
+        elif study is not None:
+            passed, tokens = study["passed"], sum(study["compared_tokens"].values())
+            trained = study["arms"]["online"]
+            speculation = dict(draft_rounds=trained["draft_rounds"], proposed_candidates=trained["proposed"],
+                               accepted_candidates=trained["accepted"])
         else:
             speculation = results["orthrus"]["speculation"]
         summary = dict(passed=passed, node=plan.node, global_ranks=list(plan.local_ranks), build_id=identity,
@@ -494,6 +518,11 @@ def run(args):
             audit_online_update(online_summary, peer["online"],
                                 publish_every=online.config.publish_every,
                                 require_update=args.require_online_update)
+        if study is not None:
+            study["complete"] = True
+            write_report(args.output / "gsm8k-online-report.json", study)
+            summary["gsm8k_online_report"] = study
+            print(json.dumps(dict(stage="gsm8k_online_report", **study)), flush=True)
         if args.online_benchmark:
             fixed_tokens = request_parity(results["target"], results["fixed"])
             elapsed = {name: result["elapsed_seconds"] for name, result in results.items()}
@@ -614,6 +643,9 @@ def main():
                         help="Run matched greedy probes and profile four to six updates in one session")
     parser.add_argument("--online-benchmark", action="store_true",
                         help="Benchmark AR, fixed draft, and online draft within one resident session")
+    parser.add_argument("--report-train-requests", type=int,
+                        help="Run a batched GSM8K study using this many initial training requests")
+    parser.add_argument("--report-batch-size", type=int, choices=(1, 2, 3, 4), default=4)
     parser.add_argument("--connect-timeout", type=int, default=900)
     parser.add_argument("--timeout", type=int, default=3600, help="Maximum seconds of peer inactivity")
     args = parser.parse_args()
@@ -624,6 +656,9 @@ def main():
             or args.online_study is not None and args.online_primitives is None
             or args.require_online_update and args.online_study is None
             or args.online_profile and not (args.orthrus_only and args.require_online_update)
+            or args.report_train_requests is not None and (
+                args.report_train_requests < 1 or args.online_profile or args.online_benchmark
+                or args.orthrus_only or not args.require_online_update or args.workload is None)
             or args.online_benchmark and (args.orthrus_only or not args.require_online_update or args.workload is None)):
         parser.error("Require valid dimensions and exactly one prompt source")
     if args.trace_position is not None and not 0 <= args.trace_position < args.context:

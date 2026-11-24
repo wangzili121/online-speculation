@@ -101,6 +101,14 @@ python3 online-speculation/scripts/summarize_dsv41_pypto_cluster.py /workspace/o
 
 对已完成生成的在线 profile 加 `--online-profile` 可直接读取保留的各阶段结果和更新日志，查看贪心输出对照、draft 版本、接受数及本机冷启动和稳定更新耗时。
 
+### GSM8K 在线更新报告
+
+在两台公司节点使用同一份 checkout，分别执行 `run_dsv41_pypto_company_online.sh node7 report 1` 和 `run_dsv41_pypto_company_online.sh node8 report 1`。脚本使用现有 GSM8K 目录，从 `tuning.jsonl` 取 8 题在线更新，从 `quality_test.jsonl` 取 4 道留出题。默认每个 DP 分区放 1 个请求，最多 4 个并发，每题最多生成 32 个 token。两端可用相同的 `DSV41_REPORT_TRAIN`、`DSV41_REPORT_EVAL`、`DSV41_REPORT_TOKENS` 调整规模。
+
+一次加载基模，依次跑 AR、初始固定 head、在线更新和更新后冻结 head。在线阶段只用主模型反馈，last-1 默认使用全词表 TV、学习率 `1e-5`，前两次升到目标学习率，前四次每 4 轮检查是否可收集一块反馈，之后间隔 8 轮，每次更新后发布。AR 和两组固定 head 使用相同留出题并做贪心输出对照。短输出上限会截断部分解题过程，报告记录停止和截断数。
+
+`acceptance/gsm8k-online-report.json` 每批覆盖保存，包含 AR 和 draft 预热、含更新与发布的在线吞吐、扣除这些耗时的估算、实际冻结吞吐和接受率。首轮更新保留在在线实测中，并另外列出。完整实验结束后 `complete` 为 `true`，原始更新记录在 `acceptance/gsm8k-online-updates.json`。
+
 如遇到 `verify/accept` 分叉，在持有该请求的节点用离线镜像读已有 logits。脚本会先比对两个输入直到待预测位置的前缀，再输出同一位置的最大误差、平均误差和两边的 Top-5。
 
 ```bash
