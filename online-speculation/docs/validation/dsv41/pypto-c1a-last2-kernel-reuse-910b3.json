@@ -1,0 +1,39 @@
+{
+  "passed": true,
+  "baseline": "d02817f",
+  "phase": "last-2 C1A rank-local VJP kernel reuse",
+  "hardware": "Ascend 910B3",
+  "physical_devices": [
+    2,
+    3,
+    6,
+    7
+  ],
+  "tp": 4,
+  "layers": [
+    38,
+    39
+  ],
+  "index_sources": [
+    36
+  ],
+  "anchor": 257,
+  "block": 32,
+  "tensors_per_layer_rank": 9,
+  "byte_exact": true,
+  "hot_repeat_count": 8,
+  "input": "W8A8 checkpoint-initialized draft head, real captured C1A states, seeded gradients and history",
+  "timing_method": "per-variant warmup followed by consecutive steady measurements",
+  "before": {
+    "first_dispatch_ms": 212088.5867930483,
+    "kernels_compiled": 56,
+    "steady_wall_ms": 214.18764651753008,
+    "steady_callable_evictions": 0
+  },
+  "after": {
+    "first_dispatch_ms": 104800.59068580158,
+    "kernels_compiled": 28,
+    "steady_wall_ms": 169.3867874564603,
+    "steady_callable_evictions": 0
+  }
+}

@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--head", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--last-layers", type=int, choices=(1, 2, 4), default=1)
     parser.add_argument("--baseline-file", type=Path, action="append", default=[],
                         help="Previous resident-primitives source to compare under the same TP4 scheduler")
     args = parser.parse_args()
@@ -31,9 +32,8 @@ def main():
     topology = dict(dp=1, tp=4, ep=4)
     with native("prefill_resident").ResidentNetworkRuntime(ranks, topology) as runtime:
         draft = ResidentDraftAttention(args.model, args.head, runtime, topology, args.output)
-        plan = draft.enable_online(1)
-        layer, = plan.layers
-        source = native("cache").resolve_layer_role(layer)["index_source"]
+        plan = draft.enable_online(args.last_layers)
+        sources = {native("cache").resolve_layer_role(layer)["index_source"] for layer in plan.layers}
         anchor = 257
         table, _pinned, _, record, width, hidden, cos, sin = prepare_round(
             runtime, draft, ranks, (anchor,), 1,
@@ -46,11 +46,12 @@ def main():
             output = runtime.workspace(hidden.shape, hidden.dtype, rank)
             round_state.project_layer(rank, current_layer, record, hidden, cos, sin, output)
 
-        for current_layer in sorted({source, layer}):
+        for current_layer in sorted(sources.union(plan.layers)):
             runtime.map_ranks(project)
             runtime.release_values(round_state.finish_layer(current_layer))
 
-        snapshots = {rank: round_state.captured_attention[rank, layer, owner] for rank in ranks}
+        snapshots = {(layer, rank): round_state.captured_attention[rank, layer, owner]
+                     for layer in plan.layers for rank in ranks}
         upstream = {rank: (torch.randn(32, width) * 0.1).bfloat16() for rank in ranks}
         for rank, value in upstream.items():
             runtime.pin(value, (rank,), readonly=True, name=f"test/upstream/{rank}")
@@ -58,76 +59,93 @@ def main():
             engine = cls.__new__(cls)
             engine.resident, engine.draft, engine.ranks = runtime, draft, ranks
 
-            def reverse(rank):
-                return engine._reverse_c1a_rank(layer, rank, snapshots[rank], upstream[rank])
+            def reverse(layer, parallel):
+                def run(rank):
+                    return engine._reverse_c1a_rank(layer, rank, snapshots[layer, rank], upstream[rank])
 
-            return engine, reverse
+                if parallel:
+                    return engine._map_owner_ranks(ranks, run)
+                return {rank: run(rank) for rank in ranks}
 
-        engine, reverse = make_reverse(DSV41ResidentPrimitives)
+            def run_layers(*, parallel=True):
+                return {layer: reverse(layer, parallel) for layer in reversed(plan.layers)}
 
-        def parallel():
-            return engine._map_owner_ranks(ranks, reverse)
+            return run_layers
 
+        parallel = make_reverse(DSV41ResidentPrimitives)
         if not args.baseline_file:
             def serial():
-                return {rank: reverse(rank) for rank in ranks}
+                return parallel(parallel=False)
 
             variants = {"serial": serial, "parallel": parallel}
         else:
             def load_variant(path):
                 module = runpy.run_path(str(path), run_name="blockspec.c1a_vjp_baseline")
-                implementation, reverse_rank = make_reverse(module["DSV41ResidentPrimitives"])
-
-                def run():
-                    return implementation._map_owner_ranks(ranks, reverse_rank)
-
-                return run
-
+                return make_reverse(module["DSV41ResidentPrimitives"])
             variants = {f"baseline_{index + 1}": load_variant(path)
                         for index, path in enumerate(args.baseline_file)}
             variants["candidate"] = parallel
 
         def read(outputs):
             copies = {}
-            for rank, (boundary, grads) in outputs.items():
-                copies[rank] = {"boundary": runtime.read_output(boundary, rank).clone()}
-                copies[rank].update({name: runtime.read_output(value, rank).clone()
-                                     for name, value in grads.items()})
+            for layer, rows in outputs.items():
+                for rank, (boundary, grads) in rows.items():
+                    copies[layer, rank] = {
+                        name: runtime.read_output(value, rank).clone()
+                        for name, value in dict(boundary=boundary, **grads).items()
+                    }
             return copies
 
         # Compile and warm every rank before measuring. Keep compilation out
         # of both arms, but include rank scheduling and kernel runtime.
-        def check(function):
-            result = read(function())
+        first_dispatch = {}
+
+        def check(name, function):
+            prior = len(draft.programs)
+            started = perf_counter()
+            outputs = function()
+            first_dispatch[name] = {
+                "milliseconds": (perf_counter() - started) * 1e3,
+                "programs_compiled": len(draft.programs) - prior,
+            }
+            result = read(outputs)
             runtime.release_values()
             return result
 
-        comparisons = iter(variants.values())
-        baseline = check(next(comparisons))
+        comparisons = iter(variants.items())
+        baseline = check(*next(comparisons))
         for rank, tensors in baseline.items():
             assert len(tensors) == 9
             for name, value in tensors.items():
                 assert value.isfinite().all() and value.count_nonzero(), (rank, name)
-        for function in comparisons:
-            candidate = check(function)
+        for name, function in comparisons:
+            candidate = check(name, function)
             for rank, tensors in baseline.items():
                 for name, value in tensors.items():
                     assert torch.equal(value, candidate[rank][name]), (rank, name)
-        samples = {name: [] for name in variants}
-        fills = {name: [] for name in variants}
-        for _ in range(8):
-            for name, function in variants.items():
+        samples, fills, evictions = {}, {}, {}
+        for name, function in variants.items():
+            # Measure one active variant at a time. Alternating the two
+            # overfills the hardware callable cache with duplicate kernels.
+            function()
+            runtime.release_values()
+            first_evictions = runtime.stats.get("program_evictions", 0)
+            samples[name], fills[name] = [], []
+            for _ in range(8):
                 prior = runtime.stats["workspace_fill_bytes"]
                 start = perf_counter()
                 function()
                 samples[name].append((perf_counter() - start) * 1e3)
                 fills[name].append(runtime.stats["workspace_fill_bytes"] - prior)
                 runtime.release_values()
+            evictions[name] = runtime.stats.get("program_evictions", 0) - first_evictions
         print(json.dumps({
-            "passed": True, "ranks": ranks, "layer": layer, "index_source": source,
-            "anchor": anchor, "block": 32, "tensors_per_rank": 9, "byte_exact": True,
+            "passed": True, "ranks": ranks, "layers": plan.layers, "index_sources": sorted(sources),
+            "anchor": anchor, "block": 32, "tensors_per_layer_rank": 9, "byte_exact": True,
+            "first_dispatch": first_dispatch,
             "repeat_count": 8, "wall_ms": {name: median(rows) for name, rows in samples.items()},
             "workspace_fill_bytes": {name: median(rows) for name, rows in fills.items()},
+            "steady_callable_evictions": evictions,
         }), flush=True)
         runtime.release_replay_values()
 

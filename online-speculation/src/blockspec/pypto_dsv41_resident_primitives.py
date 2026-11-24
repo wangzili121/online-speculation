@@ -1241,6 +1241,8 @@ class DSV41ResidentPrimitives:
         if contribution_gradient.shape != (ROWS, HIDDEN):
             raise ValueError("local contribution gradient changed shape")
 
+        # C1A suffix layers have the same kernel geometry; weights and replay
+        # rows are passed per call. Reuse compiled entries across layers.
         # Wo-B and grouped Wo-A VJPs. Group-major staging lets the generic
         # batched GEMM preserve the native two-group ownership exactly.
         grouped = qkv["grouped"]
@@ -1248,7 +1250,7 @@ class DSV41ResidentPrimitives:
         # These dW programs overwrite every tile and never accumulate into scratch.
         dwo_b = self._workspace(rank, operands["wo_b"].shape, torch.float32, fill=None)
         self._execute(
-            ("attn-wo-b-weight-vjp", layer), rank,
+            ("attn-wo-b-weight-vjp",), rank,
             lambda: make_linear(
                 (ROWS, 2048), (ROWS, HIDDEN), transpose_a=True,
                 transpose_b=False, gradient_weight=True,
@@ -1257,25 +1259,25 @@ class DSV41ResidentPrimitives:
         )
         dgrouped = self._workspace(rank, (ROWS, 2048))
         self._execute(
-            ("attn-wo-b-input-vjp", layer), rank,
+            ("attn-wo-b-input-vjp",), rank,
             lambda: make_linear((ROWS, HIDDEN), (2048, HIDDEN)),
             a=contribution_gradient, b=operands["wo_b"], output=dgrouped,
         )
         grouped_gradient = self._workspace(rank, (2 * ROWS, 1024))
         grouped_input = self._workspace(rank, (2 * ROWS, 4096))
         self._execute(
-            ("attn-grouped-gradient-split", layer), rank,
+            ("attn-grouped-gradient-split",), rank,
             lambda: _make_group_layout(ROWS, 2, 1024, split=True),
             source=dgrouped, output=grouped_gradient,
         )
         self._execute(
-            ("attn-grouped-input-split", layer), rank,
+            ("attn-grouped-input-split",), rank,
             lambda: _make_group_layout(ROWS, 2, 4096, split=True),
             source=unrotated, output=grouped_input,
         )
         dwo_a_flat = self._workspace(rank, (2 * 1024, 4096), torch.float32, fill=None)
         self._execute(
-            ("attn-wo-a-weight-vjp", layer), rank,
+            ("attn-wo-a-weight-vjp",), rank,
             lambda: make_linear(
                 (ROWS, 1024), (ROWS, 4096), transpose_a=True,
                 transpose_b=False, gradient_weight=True, batches=2,
@@ -1284,7 +1286,7 @@ class DSV41ResidentPrimitives:
         )
         dunrotated_grouped = self._workspace(rank, (2 * ROWS, 4096))
         self._execute(
-            ("attn-wo-a-input-vjp", layer), rank,
+            ("attn-wo-a-input-vjp",), rank,
             lambda: make_linear(
                 (ROWS, 1024), (1024, 4096), transpose_b=False, batches=2,
             ),
@@ -1293,13 +1295,13 @@ class DSV41ResidentPrimitives:
         )
         dunrotated = self._workspace(rank, (ROWS, 8192))
         self._execute(
-            ("attn-grouped-input-merge", layer), rank,
+            ("attn-grouped-input-merge",), rank,
             lambda: _make_group_layout(ROWS, 2, 4096, split=False),
             source=dunrotated_grouped, output=dunrotated,
         )
         context_gradient = self._workspace(rank, (ROWS, 8192))
         self._execute(
-            ("attn-output-rope-vjp", layer), rank,
+            ("attn-output-rope-vjp",), rank,
             lambda: _make_rope_vjp(self.draft.native, 16, inverse=False),
             x=dunrotated, cos=captured["cos"], sin=captured["sin"],
             output=context_gradient, active=ROWS,
@@ -1314,7 +1316,7 @@ class DSV41ResidentPrimitives:
             rank, (geometry.rows, geometry.padded_columns), torch.float32,
         )
         self._execute(
-            ("attn-c1a-probability-replay", layer), rank,
+            ("attn-c1a-probability-replay",), rank,
             factories["probability_replay"],
             query=query, joined_key=joined, history_bias=history_bias,
             compressed_bias=selection["bias"], sink=operands["sink"],
@@ -1324,7 +1326,7 @@ class DSV41ResidentPrimitives:
             rank, (geometry.rows, geometry.padded_columns),
         )
         self._execute(
-            ("attn-c1a-probability-gradient", layer), rank,
+            ("attn-c1a-probability-gradient",), rank,
             factories["d_probability"],
             a=context_gradient.view(geometry.rows, 512), b=joined,
             output=probability_gradient,
@@ -1336,7 +1338,7 @@ class DSV41ResidentPrimitives:
         block_score = self._workspace(rank, (geometry.rows, ROWS))
         block_probability = self._workspace(rank, (geometry.rows, ROWS))
         self._execute(
-            ("attn-c1a-softmax-block-vjp", layer), rank,
+            ("attn-c1a-softmax-block-vjp",), rank,
             factories["softmax_block_vjp"],
             probability=probability, probability_gradient=probability_gradient,
             score_gradient=score_gradient, sink_rows=sink_rows,
@@ -1344,23 +1346,23 @@ class DSV41ResidentPrimitives:
         )
         query_gradient = self._workspace(rank, (geometry.rows, 512))
         self._execute(
-            ("attn-c1a-query-vjp", layer), rank, factories["d_query"],
+            ("attn-c1a-query-vjp",), rank, factories["d_query"],
             a=score_gradient, b=joined, output=query_gradient,
         )
         key_gradient = self._workspace(rank, (ROWS, 512), torch.float32)
         value_gradient = self._workspace(rank, (ROWS, 512), torch.float32)
         self._execute(
-            ("attn-c1a-key-block-vjp", layer), rank, factories["d_key_block"],
+            ("attn-c1a-key-block-vjp",), rank, factories["d_key_block"],
             a=block_score, b=query, output=key_gradient,
         )
         self._execute(
-            ("attn-c1a-value-block-vjp", layer), rank, factories["d_value_block"],
+            ("attn-c1a-value-block-vjp",), rank, factories["d_value_block"],
             a=block_probability, b=context_gradient.view(geometry.rows, 512),
             output=value_gradient,
         )
         temporary_gradient = self._workspace(rank, (ROWS, 512))
         self._execute(
-            ("attn-c1a-temporary-add", layer), rank,
+            ("attn-c1a-temporary-add",), rank,
             lambda: make_element(
                 (ROWS, 512), "add", input_fp32=(True, True),
             ),
@@ -1369,11 +1371,11 @@ class DSV41ResidentPrimitives:
         sink_padded = self._workspace(rank, (geometry.local_heads, 16), torch.float32)
         sink_gradient = self._workspace(rank, (1, 16), torch.float32)
         self._execute(
-            ("attn-c1a-sink-reduce", layer), rank, factories["sink_reduce"],
+            ("attn-c1a-sink-reduce",), rank, factories["sink_reduce"],
             sink_rows=sink_rows, sink_gradient=sink_padded,
         )
         self._execute(
-            ("attn-c1a-sink-compact", layer), rank, _make_sink_compact,
+            ("attn-c1a-sink-compact",), rank, _make_sink_compact,
             source=sink_padded, output=sink_gradient,
         )
 
@@ -1381,13 +1383,13 @@ class DSV41ResidentPrimitives:
         query_projection_gradient = self._workspace(rank, (ROWS, 8192))
         temporary_norm_gradient = self._workspace(rank, (ROWS, 512))
         self._execute(
-            ("attn-query-rope-vjp", layer), rank,
+            ("attn-query-rope-vjp",), rank,
             lambda: _make_rope_vjp(self.draft.native, 16, inverse=True),
             x=query_gradient.view(ROWS, 8192), cos=captured["cos"],
             sin=captured["sin"], output=query_projection_gradient, active=ROWS,
         )
         self._execute(
-            ("attn-kv-rope-vjp", layer), rank,
+            ("attn-kv-rope-vjp",), rank,
             lambda: _make_rope_vjp(self.draft.native, 1, inverse=True),
             x=temporary_gradient, cos=captured["cos"], sin=captured["sin"],
             output=temporary_norm_gradient, active=ROWS,
@@ -1396,12 +1398,12 @@ class DSV41ResidentPrimitives:
         dlatent = self._workspace(rank, (ROWS, 1280))
         dwq_b = self._workspace(rank, operands["wq_b"].shape, torch.float32, fill=None)
         self._execute(
-            ("attn-wq-b-input-vjp", layer), rank,
+            ("attn-wq-b-input-vjp",), rank,
             lambda: make_linear((ROWS, 8192), (1280, 8192)),
             a=query_projection_gradient, b=operands["wq_b"], output=dlatent,
         )
         self._execute(
-            ("attn-wq-b-weight-vjp", layer), rank,
+            ("attn-wq-b-weight-vjp",), rank,
             lambda: make_linear(
                 (ROWS, 1280), (ROWS, 8192), transpose_a=True,
                 transpose_b=False, gradient_weight=True,
@@ -1412,7 +1414,7 @@ class DSV41ResidentPrimitives:
         dqa = self._workspace(rank, (ROWS, 1280), fill=None)
         dq_norm = self._workspace(rank, (1, 1280), torch.float32, fill=None)
         self._execute(
-            ("attn-q-norm-vjp", layer), rank,
+            ("attn-q-norm-vjp", str(q_gamma.dtype)), rank,
             lambda: make_rms(
                 ROWS, 1280, mode="trainable", epsilon=1e-20,
                 gamma_bf16=q_gamma.dtype == torch.bfloat16,
@@ -1422,7 +1424,7 @@ class DSV41ResidentPrimitives:
         dwq_a = self._workspace(rank, operands["wq_a"].shape, torch.float32, fill=None)
         query_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
         self._execute(
-            ("attn-wq-a-weight-vjp", layer), rank,
+            ("attn-wq-a-weight-vjp",), rank,
             lambda: make_linear(
                 (ROWS, HIDDEN), (ROWS, 1280), transpose_a=True,
                 transpose_b=False, gradient_weight=True,
@@ -1430,7 +1432,7 @@ class DSV41ResidentPrimitives:
             a=qkv["hidden"], b=dqa, output=dwq_a,
         )
         self._execute(
-            ("attn-wq-a-input-vjp", layer), rank,
+            ("attn-wq-a-input-vjp",), rank,
             lambda: make_linear((ROWS, 1280), (HIDDEN, 1280)),
             a=dqa, b=operands["wq_a"], output=query_input_gradient,
         )
@@ -1439,7 +1441,7 @@ class DSV41ResidentPrimitives:
         dkv = self._workspace(rank, (ROWS, 512), fill=None)
         dkv_norm = self._workspace(rank, (1, 512), torch.float32, fill=None)
         self._execute(
-            ("attn-kv-norm-vjp", layer), rank,
+            ("attn-kv-norm-vjp", str(kv_gamma.dtype)), rank,
             lambda: make_rms(
                 ROWS, 512, mode="trainable", epsilon=1e-20,
                 gamma_bf16=kv_gamma.dtype == torch.bfloat16,
@@ -1449,7 +1451,7 @@ class DSV41ResidentPrimitives:
         dwkv = self._workspace(rank, operands["wkv"].shape, torch.float32, fill=None)
         kv_input_gradient = self._workspace(rank, (ROWS, HIDDEN))
         self._execute(
-            ("attn-wkv-weight-vjp", layer), rank,
+            ("attn-wkv-weight-vjp",), rank,
             lambda: make_linear(
                 (ROWS, HIDDEN), (ROWS, 512), transpose_a=True,
                 transpose_b=False, gradient_weight=True,
@@ -1457,13 +1459,13 @@ class DSV41ResidentPrimitives:
             a=qkv["hidden"], b=dkv, output=dwkv,
         )
         self._execute(
-            ("attn-wkv-input-vjp", layer), rank,
+            ("attn-wkv-input-vjp",), rank,
             lambda: make_linear((ROWS, 512), (HIDDEN, 512)),
             a=dkv, b=operands["wkv"], output=kv_input_gradient,
         )
         input_gradient = self._workspace(rank, (ROWS, HIDDEN))
         self._execute(
-            ("attn-q-kv-input-add", layer), rank,
+            ("attn-q-kv-input-add",), rank,
             lambda: make_element((ROWS, HIDDEN), "add"),
             a=query_input_gradient, b=kv_input_gradient, output=input_gradient,
         )
