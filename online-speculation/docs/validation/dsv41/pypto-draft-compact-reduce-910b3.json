@@ -1,0 +1,96 @@
+{
+  "passed": true,
+  "host": "111",
+  "physical_cards": [
+    3,
+    4,
+    6,
+    7
+  ],
+  "device": "Ascend 910B3",
+  "reference_checkout": "64ded3f",
+  "native_overlay_tree": "a1594019e6326ceeafc648f8ec06b34d466128d5",
+  "matched_operator": {
+    "passed": true,
+    "phase": "orthrus-compact-draft-tp-reduce-scatter",
+    "capacity_rows": [
+      128
+    ],
+    "physical_devices": 4,
+    "tp": 4,
+    "hidden": 5120,
+    "cases": [
+      {
+        "active_rows": 0,
+        "iterations": 15,
+        "exact": true,
+        "wide_ms": 7.435763021931052,
+        "narrow_ms": 6.612390978261828,
+        "packet_rows_per_rank": 16,
+        "wide_send_bytes_per_rank": 10485760,
+        "narrow_send_bytes_per_rank": 1310720
+      },
+      {
+        "active_rows": 32,
+        "iterations": 15,
+        "exact": true,
+        "wide_ms": 10.53115795366466,
+        "narrow_ms": 10.067707160487771,
+        "packet_rows_per_rank": 16,
+        "wide_send_bytes_per_rank": 10485760,
+        "narrow_send_bytes_per_rank": 1310720
+      },
+      {
+        "active_rows": 64,
+        "iterations": 15,
+        "exact": true,
+        "wide_ms": 9.877447038888931,
+        "narrow_ms": 9.287705877795815,
+        "packet_rows_per_rank": 16,
+        "wide_send_bytes_per_rank": 10485760,
+        "narrow_send_bytes_per_rank": 1310720
+      },
+      {
+        "active_rows": 96,
+        "iterations": 15,
+        "exact": true,
+        "wide_ms": 11.137529043480754,
+        "narrow_ms": 10.578867979347706,
+        "packet_rows_per_rank": 32,
+        "wide_send_bytes_per_rank": 10485760,
+        "narrow_send_bytes_per_rank": 2621440
+      },
+      {
+        "active_rows": 128,
+        "iterations": 15,
+        "exact": true,
+        "wide_ms": 12.0489199180156,
+        "narrow_ms": 11.322778882458806,
+        "packet_rows_per_rank": 32,
+        "wide_send_bytes_per_rank": 10485760,
+        "narrow_send_bytes_per_rank": 2621440
+      }
+    ]
+  },
+  "real_head_attention": {
+    "passed": true,
+    "layers": 40,
+    "ranks": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "anchors": [
+      257,
+      129
+    ],
+    "block": 32,
+    "output_byte_exact": true,
+    "history_unchanged": true,
+    "collective_max_abs_error": 5.960464477539063e-8,
+    "reference_collective_max_abs_error": 5.960464477539063e-8,
+    "output_sha256": "0c66c207d483c09f060ae70496f0b0575ca34eba1e791d12e8c7bafcb450a0ed"
+  },
+  "scope": "Matched pack, local TP4 FP32 reduce-scatter and BF16 writeback. The 40-layer run checked logical per-rank contributions and FP32 reductions using a W8A8 checkpoint-initialized Orthrus head."
+}

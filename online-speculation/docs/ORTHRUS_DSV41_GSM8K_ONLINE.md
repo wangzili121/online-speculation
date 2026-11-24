@@ -112,6 +112,7 @@ Orthrus 专用前向与在线反向算子默认复用本机 `PYPTO_CLUSTER_STATE
 - Verify 阶段直接使用本轮准备好的 HOST Engram 行，将物理历史写入留给 accept。固定离线镜像用真实校验入口、构造的 lookup 和历史页测试，四 rank 每 rank 128 页时，Engram 准备与历史处理从 12.25 降到 0.44 ms。两层的 lookup 行、哈希和校验结束后的物理历史逐元素一致，模拟 verify 中止时历史也一致。
 - Serving 提交已接受前缀时复用同一轮 verifier 查得的 HOST Engram 行。按请求代数、位置、三 token 历史和已验证前缀匹配，提交仍执行原有 target KV 计算。固定离线镜像的主机对照使用原生 lookup 和构造 W8A8 表，单请求准备从 5.61 降到 2.76 ms，四 DP 并发从 33.88 降到 7.79 ms。请求重排后的哈希和 BF16 行逐元素一致，历史、代数或候选不匹配时执行正常查表。
 - 起草前向将 Wo-B 分片打包和转 FP32 融合为一次设备调用，沿用原 TP reduce-scatter 的 FP32 数据和布局。111 四卡同输入实测，32～128 个活跃位置的打包、归约与回写合计从 12.34～12.93 降到 7.31～7.89 ms。每 rank 每层少用 5 MiB BF16 中间缓冲，回写结果逐元素一致。使用 W8A8 基模的初始化 draft head 和两请求的构造历史，四卡执行全部 40 层的打包和 FP32 TP 归约。打包逐元素一致，归约对 Torch FP32 参考的最大绝对差为 `5.96e-8`，主模型缓存保持原样。用 `validate_dsv41_pypto_short_reduce.py --tp 4 --draft-pack --output <报告路径>` 复验阶段对照。
+- 起草时按各 rank 的实占行数用 16 或 32 行 TP 包。FP32 归约后一次写入 BF16 层边界，同时补齐 FFN 布局要求的零行。111 四卡同输入对照中，32～128 个活跃位置的打包、归约和回写每层少用 0.46～0.73 ms，每 rank 逻辑发送量从 10 MiB 降到 1.25 或 2.50 MiB。空批次和四种活跃宽度的 BF16 回写逐元素一致。真实初始化 head 的全部 40 层 Attention 也通过本机 TP4 对照，历史缓存保持原样。记录见 [紧凑归约对照](validation/dsv41/pypto-draft-compact-reduce-910b3.json)。
 
 以上数字均为各阶段的微基准。双机报告用同一组输入核对 greedy 输出、权重发布版本、接受长度和整体吞吐。
 

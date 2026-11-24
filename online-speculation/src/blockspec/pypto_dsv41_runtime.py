@@ -10,6 +10,7 @@ from time import monotonic_ns, perf_counter
 import torch
 
 from .pypto_dsv41_draft import (
+    make_draft_attention_reduce_narrow,
     make_draft_attention_reduce_pack,
     make_output_program,
     make_qkv_program,
@@ -647,19 +648,36 @@ class DraftRound:
         self.attention.execute(("reduce_pack", capacity), rank, program,
                                dict(value=contribution, packed=packed, physical=physical, active=total))
 
-    def pack_fp32(self, rank, contribution, physical, total):
+    @staticmethod
+    def reduce_rows(physical):
+        """Use one aligned TP lane for the physically live sequence rows."""
+        return max(16, (physical + 15) // 16 * 16)
+
+    def pack_fp32(self, rank, contribution, physical, total, *, packet_rows=None):
         capacity, hidden = contribution.shape
         tp = self.attention.topology["tp"]
+        rows = capacity if packet_rows is None else packet_rows
         local = self.attention.rank_ids[rank]
         packed = self.attention.resident.workspace(
-            (tp * capacity, hidden), torch.float32, local, fill=None,
+            (tp * rows, hidden), torch.float32, local, fill=None,
         )
         self.attention.execute(
-            ("draft_fp32_reduce_pack", capacity), rank,
-            lambda: make_draft_attention_reduce_pack(capacity, hidden, tp),
+            ("draft_fp32_reduce_pack", capacity, rows), rank,
+            lambda: make_draft_attention_reduce_pack(capacity, hidden, tp, packet_rows=rows),
             dict(value=contribution, packed=packed, physical=physical, active=total),
         )
         return packed
+
+    def narrow_fp32(self, rank, value, capacity):
+        rows, hidden = value.shape
+        local = self.attention.rank_ids[rank]
+        output = self.attention.resident.workspace((capacity, hidden), torch.bfloat16, local, fill=None)
+        self.attention.execute(
+            ("draft_fp32_reduce_narrow", rows, capacity), rank,
+            lambda: make_draft_attention_reduce_narrow(rows, capacity, hidden),
+            dict(value=value, output=output),
+        )
+        return output
 
     def project_block(self, rank, layer, owner, hidden, cos, sin, contribution, *, record):
         attention = self.attention

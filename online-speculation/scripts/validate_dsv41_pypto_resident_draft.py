@@ -90,7 +90,7 @@ def prepare_round(runtime, attention, ranks, anchors, generation):
     return table, pinned, active, record, width, hidden, cos, sin
 
 
-def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
+def run_round(runtime, attention, args, ranks, anchors, generation, prepared, *, compact_reduce=False):
     block_size = attention.block_size
     table, pinned, active, record, width, hidden, cos, sin = prepared
     capacity = hidden.shape[0]
@@ -99,7 +99,7 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
     collective_error = 0.0
     prefix = record["request_token_map"][0]["token_begin"]
     comparison = (args.compare_joined_attention or args.compare_scratch_fill
-                  or args.compare_swa_controls or args.compare_index_scratch)
+                  or args.compare_swa_controls or args.compare_index_scratch or args.compare_compact_reduce)
     fingerprint = hashlib.sha256() if args.replay or args.startup_only or comparison else None
     for layer in range(40):
         role = native("cache").resolve_layer_role(layer)
@@ -120,8 +120,9 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
                     assert (runtime.read_control(rows["lengths"], local) == min(TOPK, anchor // role["ratio"])).all()
             if args.cards == 4:
                 physical = active // 4
-                widened = draft.pack_fp32(rank, contribution, physical=physical, total=active)
-                packet = runtime.read_output(widened, local).view(4, capacity, width)
+                rows = draft.reduce_rows(physical) if compact_reduce else capacity
+                widened = draft.pack_fp32(rank, contribution, physical=physical, total=active, packet_rows=rows)
+                packet = runtime.read_output(widened, local).view(4, rows, width)
                 assert torch.equal(packet[:, :physical].reshape(active, width), output[:active].float())
                 assert not packet[:, physical:].any()
                 return [contribution, widened], packet.flatten(0, 1)
@@ -141,6 +142,10 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared):
         values, outputs = zip(*result, strict=True)
         if fingerprint is not None:
             for output in outputs:
+                if args.compare_compact_reduce:
+                    # TP packet padding is a transport detail. Fingerprint the
+                    # logical contributors in the same order in both arms.
+                    output = output.view(4, -1, width)[:, :active // 4]
                 fingerprint.update(output.contiguous().view(torch.uint8).numpy())
         if args.cards > 1:
             method = "reduce_scatter" if args.cards == 4 else "all_reduce"
@@ -176,9 +181,13 @@ def main():
                             help="Compare fresh vs resident SWA controls across all draft layers")
     comparison.add_argument("--compare-index-scratch", action="store_true",
                             help="Compare zero-filled vs overwritten full-block indexer scratch")
+    comparison.add_argument("--compare-compact-reduce", action="store_true",
+                            help="Verify compact and full draft FP32 TP packets across all layers")
     args = parser.parse_args()
     if args.anchors is not None and (len(args.anchors) > 4 or min(args.anchors) < 0):
         parser.error("--anchors requires one to four nonnegative context lengths")
+    if args.compare_compact_reduce and args.cards != 4:
+        parser.error("--compare-compact-reduce requires TP4")
     sys.path.insert(0, str(args.lib.resolve()))
     args.output.mkdir()
     torch.set_num_threads(4)
@@ -201,6 +210,17 @@ def main():
         counters = cache_stats()
         roles, collective_error, fingerprint = run_round(runtime, attention, args, ranks, anchors, 1, primary)
         startup = perf_counter() - clock
+        if args.compare_compact_reduce:
+            _, compact_error, compact_hash = run_round(runtime, attention, args, ranks, anchors, 1, primary,
+                                                       compact_reduce=True)
+            assert compact_hash == fingerprint
+            assert before == [runtime.stats.get(name, 0) for name in upload_counts]
+            print(json.dumps(dict(
+                passed=True, layers=len(roles), ranks=ranks, anchors=anchors, block=args.block_size,
+                output_byte_exact=True, history_unchanged=True, collective_max_abs_error=compact_error,
+                reference_collective_max_abs_error=collective_error, output_sha256=fingerprint,
+            )), flush=True)
+            return
         if args.startup_only:
             after = cache_stats()
             warm = []

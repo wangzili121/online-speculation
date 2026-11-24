@@ -145,19 +145,21 @@ def make_qkv_program(native_module, config, *, tp=4, block_size=BLOCK):
     return native_module("prefill_layer").compose_l2("orthrus_qkv", definitions, steps, block_size)
 
 
-def make_draft_attention_reduce_pack(capacity, hidden, tp):
+def make_draft_attention_reduce_pack(capacity, hidden, tp, *, packet_rows=None):
     """Pack BF16 draft contributions into FP32 collective buffers."""
     import pypto.language as pl
+
+    rows = capacity if packet_rows is None else packet_rows
 
     @pl.jit
     def pack(
         value: pl.Tensor[[capacity, hidden], pl.BF16],
-        packed: pl.Out[pl.Tensor[[tp * capacity, hidden], pl.FP32]],
+        packed: pl.Out[pl.Tensor[[tp * rows, hidden], pl.FP32]],
         physical: pl.Scalar[pl.INT32],
         active: pl.Scalar[pl.INT32],
     ):
-        for row in pl.spmd(tp * capacity, name_hint="orthrus_attn_forward_reduce_pack"):
-            peer, local = row // capacity, row % capacity
+        for row in pl.spmd(tp * rows, name_hint="orthrus_attn_forward_reduce_pack"):
+            peer, local = row // rows, row % rows
             source = peer * physical + local
             if local < physical and source < active:
                 picked = pl.slice(value, [1, hidden], [source, 0])
@@ -167,6 +169,26 @@ def make_draft_attention_reduce_pack(capacity, hidden, tp):
         return packed
 
     return pack
+
+
+def make_draft_attention_reduce_narrow(packet_rows, capacity, hidden):
+    """Round received rows once and write the padded FFN boundary directly."""
+    import pypto.language as pl
+
+    @pl.jit
+    def narrow(
+        value: pl.Tensor[[packet_rows, hidden], pl.FP32],
+        output: pl.Out[pl.Tensor[[capacity, hidden], pl.BF16]],
+    ):
+        for row in pl.spmd(capacity, name_hint="orthrus_draft_reduce_narrow"):
+            if row < packet_rows:
+                values = pl.cast(pl.slice(value, [1, hidden], [row, 0]), pl.BF16, mode="rint")
+                output[row:row + 1, :] = values
+            else:
+                output[row:row + 1, :] = pl.full([1, hidden], dtype=pl.BF16, value=0.)
+        return output
+
+    return narrow
 
 
 def make_output_program(native_module, config, *, tp=4, head_major_input=False, block_size=BLOCK):

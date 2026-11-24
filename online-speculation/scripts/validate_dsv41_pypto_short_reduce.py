@@ -14,7 +14,9 @@ import torch
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tp", type=int, choices=(2, 4), required=True)
-    parser.add_argument("--draft-pack", action="store_true", help="Compare the fused draft pack at 128 rows")
+    experiment = parser.add_mutually_exclusive_group()
+    experiment.add_argument("--draft-pack", action="store_true", help="Compare the fused draft pack at 128 rows")
+    experiment.add_argument("--draft-compact", action="store_true", help="Compare compact and full fused draft packets")
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -30,8 +32,14 @@ def main():
     torch.set_num_threads(2)
     rng = torch.Generator().manual_seed(41129)
     ranks, hidden = tuple(range(args.tp)), 5120
-    active_rows = (32, 64, 96, 128) if args.draft_pack else (1, 8, 16)
-    variants = ((128, False), (128, True)) if args.draft_pack else ((128, False), (16, False))
+    active_rows = (32, 64, 96, 128) if args.draft_pack or args.draft_compact else (1, 8, 16)
+    if args.draft_compact:
+        active_rows = (0, *active_rows)
+        variants = ((128, True, False), (128, True, True))
+    elif args.draft_pack:
+        variants = ((128, False, False), (128, True, False))
+    else:
+        variants = ((128, False, False), (16, False, False))
     contributions = [torch.randn((max(active_rows), hidden), dtype=torch.bfloat16, generator=rng) for _ in ranks]
     summed = torch.stack(contributions).sum(dim=0, dtype=torch.float32).bfloat16()
     programs, reports = {}, []
@@ -46,7 +54,7 @@ def main():
         draft = DraftRound.__new__(DraftRound)
         draft.attention = attention
         inputs = {}
-        for capacity in sorted({capacity for capacity, _ in variants}):
+        for capacity in sorted({capacity for capacity, _, _ in variants}):
             inputs[capacity] = [torch.zeros((capacity, hidden), dtype=torch.bfloat16) for _ in ranks]
             for rank, operand in enumerate(inputs[capacity]):
                 operand[:max(active_rows)].copy_(contributions[rank])
@@ -55,12 +63,18 @@ def main():
         for live in active_rows:
             physical = (live + args.tp - 1) // args.tp
 
-            def call(capacity, fused, check=False):
+            def call(capacity, fused, compact, check=False):
+                packet_rows = draft.reduce_rows(physical) if compact else capacity
                 started = perf_counter()
 
                 def pack_rank(rank):
                     if fused:
-                        widened = draft.pack_fp32(rank, inputs[capacity][rank], physical, live)
+                        if live:
+                            widened = draft.pack_fp32(
+                                rank, inputs[capacity][rank], physical, live, packet_rows=packet_rows,
+                            )
+                        else:
+                            widened = runtime.workspace((args.tp * packet_rows, hidden), torch.float32, rank)
                         return {"wo-b": {"value": widened}}
                     packed_shape = (args.tp * capacity, hidden)
                     packed = runtime.workspace(packed_shape, torch.bfloat16, rank)
@@ -81,10 +95,13 @@ def main():
                 result, _ = runtime.exchange("wo-b-fp32", packed, "reduce_scatter", "tp")
 
                 def finish_rank(rank):
+                    value = result[rank]["wo-b"]["value"]
+                    if compact:
+                        return draft.narrow_fp32(rank, value, capacity)
                     output = runtime.workspace((capacity, hidden), torch.bfloat16, rank)
                     attention.execute(
                         ("narrow", capacity), rank, lambda: make_sp_reduce_narrow(capacity, hidden),
-                        dict(value=result[rank]["wo-b"]["value"], output=output),
+                        dict(value=value, output=output),
                     )
                     return output
 
@@ -107,7 +124,13 @@ def main():
                     timing[variant].append(call(*variant))
             before, after = (median(timing[variant]) for variant in variants)
             case = dict(active_rows=live, iterations=args.iterations, exact=True)
-            if args.draft_pack:
+            if args.draft_compact:
+                case.update(
+                    wide_ms=before, narrow_ms=after, packet_rows_per_rank=draft.reduce_rows(physical),
+                    wide_send_bytes_per_rank=args.tp * 128 * hidden * 4,
+                    narrow_send_bytes_per_rank=args.tp * draft.reduce_rows(physical) * hidden * 4,
+                )
+            elif args.draft_pack:
                 case.update(before_ms=before, after_ms=after,
                             saved_bf16_staging_bytes_per_rank=args.tp * 128 * hidden * 2)
             else:
@@ -116,8 +139,12 @@ def main():
                             narrow_send_bytes_per_rank=args.tp * 16 * hidden * 4)
             reports.append(case)
 
-    phase = ("orthrus-draft-fp32-pack-with-tp-reduce-scatter" if args.draft_pack
-             else "native-tp-pack-widen-reduce-scatter-narrow")
+    if args.draft_compact:
+        phase = "orthrus-compact-draft-tp-reduce-scatter"
+    elif args.draft_pack:
+        phase = "orthrus-draft-fp32-pack-with-tp-reduce-scatter"
+    else:
+        phase = "native-tp-pack-widen-reduce-scatter-narrow"
     report = dict(passed=True, phase=phase, capacity_rows=list(inputs),
                   physical_devices=args.tp, tp=args.tp, hidden=hidden, cases=reports)
     args.output.write_text(json.dumps(report, indent=2) + "\n")

@@ -1,0 +1,35 @@
+diff --git a/models/deepseek_v4_1_flash_a3/prefill_layer.py b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+index 172f8bb..518f945 100644
+--- a/models/deepseek_v4_1_flash_a3/prefill_layer.py
++++ b/models/deepseek_v4_1_flash_a3/prefill_layer.py
+@@ -493,4 +493,7 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+     reduction = [{} for _ in range(world)]
+     for case in batch["cases"]:
++        if draft is not None:
++            packet_rows = draft.reduce_rows(max(row["SP_physical_rows"] for row in batch["cases"][case]))
++
+         def project_rank(rank):
+             state, tp_rank = states[rank][case], rank % tp
+@@ -498,6 +501,6 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+             if draft is not None:
+                 packed = (
+-                    draft.pack_fp32(rank, state["draft_contribution"], physical, total)
+-                    if total else zeros(rank, tp * capacity, 5120, dtype=torch.float32)
++                    draft.pack_fp32(rank, state["draft_contribution"], physical, total, packet_rows=packet_rows)
++                    if total else zeros(rank, tp * packet_rows, 5120, dtype=torch.float32)
+                 )
+                 state["reduction_wide"] = packed
+@@ -552,7 +555,10 @@ def run_prefill_layer_inmemory(role, batch, local_hidden, local_pre, cache_state
+     def select_rank_output(rank):
+         for case, value in reduced[rank].items():
+-            output = zeros(rank, capacity, 5120)
+-            execute("reduce_narrow", rank, case, [value, output],
+-                    {"output": output}, "output_projection")
++            if draft is not None:
++                output = draft.narrow_fp32(rank, value, capacity)
++            else:
++                output = zeros(rank, capacity, 5120)
++                execute("reduce_narrow", rank, case, [value, output],
++                        {"output": output}, "output_projection")
+             scattered[rank][case] = output
+             states[rank][case].update(attention_reduced=value, attention_scattered=scattered[rank][case])

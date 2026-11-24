@@ -50,7 +50,7 @@ for patch in lib-rank-weights.patch lib-rank-cache.patch lib-cluster-execution.p
     lib-orthrus-short-dispatch.patch lib-orthrus-draft-reduce-pack.patch lib-orthrus-engram-prefix.patch lib-orthrus-short-greedy.patch \
     lib-orthrus-auxiliary-pin.patch lib-orthrus-engram-verify-readonly.patch \
     lib-orthrus-verify-compressed-cache.patch lib-orthrus-verify-index-reuse.patch \
-    lib-orthrus-draft-expert-capture.patch; do
+    lib-orthrus-draft-expert-capture.patch lib-orthrus-draft-compact-reduce.patch; do
   git -C "$PYPTO_LIB_ROOT" apply --check "$patches/$patch"
   git -C "$PYPTO_LIB_ROOT" apply "$patches/$patch"
 done
