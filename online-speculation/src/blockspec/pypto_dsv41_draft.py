@@ -165,6 +165,14 @@ def make_packed_draft_qkv(config, *, tp=4, capacity=16):
                         128, 256, 32, "orthrus_qb", 0, 0, False, 16, 2)
         query = q_rope(q_raw, cosine, sine, query, active)
         temporary = kv_rope(kv_normalized, cosine, sine, temporary, active)
+        if active < capacity:
+            # K8 uses a 16-row KV carrier. Cube multiplies the masked lanes
+            # as well, so those values must be zero even with reused buffers.
+            for task in pl.spmd((capacity - active + 7) // 8, name_hint="orthrus_zero_kv_padding"):
+                row = active + task * 8
+                rows = pl.min(8, capacity - row)
+                zero = pl.tile.full([8, dim], dtype=pl.BF16, value=0.0)
+                pl.store(pl.set_validshape(zero, rows, dim), [row, 0], temporary)
         return low_rank, query, temporary
 
     return project
@@ -189,6 +197,54 @@ def prepare_output(weights, config, *, tp_rank, tp=4):
     low, high = tp_rank * local_groups, (tp_rank + 1) * local_groups
     return dict(wo_a=wo_a.view(groups, o_rank, width // groups)[low:high].contiguous(),
                 wo_b=wo_b[:, low * o_rank:high * o_rank].T.contiguous())
+
+
+def pack_draft_output_projection(operands):
+    """Use the same resident Cube layout as the 1122 target Wo projection."""
+    from models.deepseek_v4_1_flash_a3.weights import pack_bf16_nz
+
+    return dict(wo_a=pack_bf16_nz(operands["wo_a"].transpose(-2, -1).contiguous()),
+                wo_b=pack_bf16_nz(operands["wo_b"]))
+
+
+def make_packed_draft_output(*, block_size, head_major=False):
+    """Rotate and project the local Attention result with the native A3 Wo."""
+    import pypto.language as pl
+    from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
+    from models.deepseek_v4_1_flash_a3.o_proj import decode_o_proj_nz_from_attention
+
+    dim = FLASH.head_dim
+    heads = FLASH.num_attention_heads // TP_SIZE
+    groups = FLASH.o_groups // TP_SIZE
+    group_width = heads * dim // groups
+    output_rank, hidden = FLASH.o_lora_rank, FLASH.hidden_size
+    width = heads * dim
+
+    @pl.jit
+    def project(
+        attention: pl.Tensor[[block_size * heads, dim], pl.FP32],
+        wo_a: pl.Tensor[[groups, group_width, output_rank], pl.BF16, pl.NZ],
+        wo_b: pl.Tensor[[groups * output_rank, hidden], pl.BF16, pl.NZ],
+        cosine: pl.Tensor[[block_size, 32], pl.FP32],
+        sine: pl.Tensor[[block_size, 32], pl.FP32],
+        contribution: pl.Out[pl.Tensor[[block_size, hidden], pl.BF16]],
+    ):
+        attended = pl.create_tensor([block_size, width], dtype=pl.BF16)
+        if head_major:
+            for task in pl.spmd(block_size * heads, name_hint="orthrus_swa_to_wo"):
+                token, head = task // heads, task % heads
+                row = head * block_size + token
+                values = pl.load(attention, [row, 0], [1, dim])
+                pl.store(pl.cast(values, pl.BF16, mode="rint"), [token, head * dim], attended)
+        else:
+            flat = pl.reshape(attention, [block_size, width])
+            for token in pl.spmd(block_size, name_hint="orthrus_context_to_wo"):
+                for column in pl.range(0, width, dim * 4):
+                    values = pl.load(flat, [token, column], [1, dim * 4])
+                    pl.store(pl.cast(values, pl.BF16, mode="rint"), [token, column], attended)
+        return decode_o_proj_nz_from_attention(attended, wo_a, wo_b, cosine, sine, contribution, block_size)
+
+    return project
 
 
 def make_qkv_program(native_module, config, *, tp=4, block_size=BLOCK):

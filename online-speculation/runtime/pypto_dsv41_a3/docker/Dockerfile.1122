@@ -44,7 +44,9 @@ RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca set -e; \
 
 COPY online-speculation/src/blockspec /opt/dsv41-1122/orthrus/blockspec
 COPY online-speculation/scripts/validate_dsv41_pypto_packed_history.py \
-     online-speculation/scripts/validate_dsv41_pypto_packed_qkv.py /opt/dsv41-1122/
+     online-speculation/scripts/validate_dsv41_pypto_packed_qkv.py \
+     online-speculation/scripts/validate_dsv41_pypto_packed_indexer.py \
+     online-speculation/scripts/validate_dsv41_pypto_packed_layer.py /opt/dsv41-1122/
 
 ENV PYTHONPATH=/opt/dsv41-1122/pypto/python:/opt/dsv41-1122/pypto-lib:/opt/dsv41-1122/orthrus
 ENTRYPOINT ["/bin/bash", "-lc", "source /opt/pypto/bin/pypto-activate.sh && exec python \"$@\"", "dsv41-1122"]

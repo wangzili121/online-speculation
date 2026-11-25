@@ -1,6 +1,7 @@
 import pytest
 
 from blockspec.pypto_dsv41_packed_history import compressed_plan, window_plan
+from blockspec.pypto_dsv41_packed_indexer import packed_index_controls
 
 
 def test_swa_window_wraps_to_a_nonadjacent_page_once():
@@ -29,6 +30,17 @@ def test_c2a_pages_have_128_compressed_rows_and_page_zero_is_valid():
 def test_c1a_rejects_unmapped_committed_page():
     with pytest.raises(ValueError, match="no physical page"):
         compressed_plan((2, -1), 256, 1, 4, [128] * 16)
+
+
+@pytest.mark.parametrize(("ratio", "anchor"), [(1, 129), (2, 259)])
+def test_packed_index_prefix_excludes_partial_groups_and_keeps_page_zero(ratio, anchor):
+    bucket, table, request_ids, lengths = packed_index_controls((3, 0, 2), anchor, ratio, 8)
+    assert bucket == 512
+    assert table.tolist() == [[3, 0, -1, -1]]
+    assert request_ids.tolist() == [0] * 16
+    assert lengths.tolist() == [129] * 16
+    with pytest.raises(ValueError, match="allocated physical pages"):
+        packed_index_controls((3, -1), anchor, ratio, 8)
 
 
 def test_verifier_journal_covers_only_written_source_rows_and_rolling_state():

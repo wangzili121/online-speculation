@@ -69,6 +69,12 @@ BF16 draft QKV 复用新版 GEMM 和 RoPE。Q-A 和 KV 权重在装载时打包�
 
 压缩 Attention 接收设备 Indexer 的每行物理索引、有效长度和掩码。一个 PyPTO 提交内完成 FP8 滑窗、整个临时双向块和 FP4 压缩历史的 Attention。每个被选中的 FP4 历史块解包后由该 query 的 16 个头共用，压缩段与滑窗结果按 LSE 合并，sink 计入一次。61 单张 910B3 覆盖 K8/K16/K32、乱序页表及每行 0 到 512 个选择，FP32 参考最大输出误差为 `3.94e-6`，LSE 最大误差为 `9.54e-7`，缓存和选择元数据逐字节一致。验证入口为 `validate_dsv41_pypto_packed_history.py --compressed --pages 16`。[实卡结果](validation/dsv41/pypto-1122-packed-compressed-910b3.json)
 
+新版 Indexer 使用 draft 的 BF16 投影，经原生 FP4 量化、分页打分和 Top-K 选择，输出物理行号、有效长度与掩码。已提交的 C2A 位置数为 `anchor // 2`，每页仍有 128 个压缩行。C1A 的 2048 个候选块覆盖本版本最大 16K 上下文，因此 Full 和 Reindex 都可以直接打分已提交前缀。历史不超过 512 行时直接枚举物理行。融合入口保留设备上的选择结果，供后续 Reuse 使用。
+
+61 的单张 910B3 在 K8、K16、K32 的 15 组输入上验证了完整 Top-K 集合、输出和 LSE。融合与拆分提交的结果逐位相同，目标索引缓存逐字节一致。相对 FP64 参考的最大绝对误差为 `1.32e-5`，LSE 为 `9.54e-7`。同一 worker 交替计时，15 组的调用中位数从 36.45 ms 降到 18.60 ms，包含宿主提交。可用 `validate_dsv41_pypto_packed_indexer.py --fused-attention` 复验。
+
+同一设备程序已连接 mHC 输入归一化、BF16 QKV、Indexer、只读分页 Attention 和原生 NZ 布局 Wo，返回单个 TP rank 对隐状态的贡献。用真实 W8A8 checkpoint 初始化第 0 层 QKV/Wo，并使用测试索引缓存，在 K8、K16、K32 上通过数值验证，最大相对 L2 误差为 `2.04e-3`。复验入口为 `validate_dsv41_pypto_packed_layer.py --checkpoint <W8A8目录>`。该入口覆盖 Attention 子层，整模的 TP 归约、MoE、Engram 和请求调度还需连接。[单卡原始数据](validation/dsv41/pypto-1122-packed-draft-layer-910b3.json)
+
 ## 内网权重预检
 
 默认权重目录为 `/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8`，对应同事文档指向的公开版本。脚本优先使用 `--model` 指定的目录，其次读取环境变量 `TARGET_WEIGHTS`，最后使用默认目录。在任意 Python 3.10+ 环境下执行下列检查，只读取本地配置、索引和实际 safetensors header，无需安装 PyPTO，也无需 NPU。报告列出当前 A3 loader 所需的投影和 Engram 格式，以及每个不匹配的实际张量。此命令收集布局，成功退出表示报告生成完成。

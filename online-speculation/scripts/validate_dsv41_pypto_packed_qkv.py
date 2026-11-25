@@ -9,7 +9,10 @@ from time import perf_counter
 
 import torch
 
-from blockspec.pypto_dsv41_draft import make_packed_draft_qkv, pack_draft_input_projection
+from blockspec.pypto_dsv41_draft import (
+    make_packed_draft_output, make_packed_draft_qkv, pack_draft_input_projection,
+    pack_draft_output_projection, prepare_output,
+)
 
 
 def checkpoint_operands(path, layer, rank):
@@ -30,6 +33,50 @@ def checkpoint_operands(path, layer, rank):
     return weights.lookup_rows(torch.arange(150, 182)), result
 
 
+def validate_output_projection(args, config, generator):
+    from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
+    from models.deepseek_v4_1_flash_a3.o_proj import golden_o_proj
+    from models.deepseek_v4_1_flash_a3.weights import Checkpoint
+    from pypto.runtime import ChipWorker
+
+    checkpoint = Checkpoint(args.checkpoint)
+    prefix = f"layers.{args.layer}.attn."
+    weights = {key: checkpoint.tensor(prefix + key) for key in ("wo_a.weight", "wo_b.weight")}
+    operands = prepare_output(weights, asdict(FLASH), tp_rank=args.tp_rank, tp=TP_SIZE)
+    packed = pack_draft_output_projection(operands)
+    heads = FLASH.num_attention_heads // TP_SIZE
+    for block in (8, 16, 32):
+        attention = torch.randn(block, heads, FLASH.head_dim, generator=generator)
+        phase = torch.randn(block, FLASH.qk_rope_head_dim // 2, generator=generator)
+        cosine, sine = phase.cos(), phase.sin()
+        reference = golden_o_proj(attention.bfloat16(), cosine, sine,
+                                  operands["wo_a"].transpose(-2, -1), operands["wo_b"]).float()
+        layouts = []
+        for head_major in (False, True):
+            local = attention.transpose(0, 1).contiguous() if head_major else attention
+            contribution = torch.empty_like(reference, dtype=torch.bfloat16)
+            values = (local.flatten(0, 1), packed["wo_a"], packed["wo_b"], cosine, sine, contribution)
+            program = make_packed_draft_output(block_size=block, head_major=head_major).compile(
+                *values, config=config,
+            )
+            with ChipWorker(config) as worker:
+                handles = [worker.alloc_tensor(value.shape, value.dtype) for value in values]
+                for value, handle in zip(values[:-1], handles[:-1], strict=True):
+                    worker.copy_to(handle.data_ptr, value.data_ptr(), value.nbytes)
+                worker.run(program, *handles, config=config)
+                worker.copy_from(contribution.data_ptr(), handles[-1].data_ptr, contribution.nbytes)
+            layouts.append(contribution)
+        torch.testing.assert_close(*layouts, atol=0, rtol=0)
+        difference = (layouts[0].float() - reference).abs()
+        relative_l2 = (difference.norm() / reference.norm().clamp_min(1e-30)).item()
+        exceeds = (difference > 0.005 + 0.02 * reference.abs()).float().mean().item()
+        print(json.dumps(dict(stage="output_projection", layer=args.layer, tp_rank=args.tp_rank,
+                              block=block, max_abs=difference.max().item(), relative_l2=relative_l2,
+                              rtol_atol_failure_ratio=exceeds)), flush=True)
+        if relative_l2 > 0.005 or exceeds > 0.005:
+            raise RuntimeError("draft output projection differs from the BF16 Torch reference")
+
+
 def main():
     from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
     from models.deepseek_v4_1_flash_a3.qkv_proj_rope import golden_rope_tail
@@ -44,6 +91,7 @@ def main():
     parser.add_argument("--tp-rank", type=int, choices=range(TP_SIZE), default=0)
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--iterations", type=int, default=15)
+    parser.add_argument("--output-projection", action="store_true", help="Also check the packed Wo projection")
     args = parser.parse_args()
     torch.set_num_threads(3)
     geometry = asdict(FLASH)
@@ -70,6 +118,8 @@ def main():
             for value, handle in zip(values, handles, strict=True):
                 worker.copy_to(handle.data_ptr, value.data_ptr(), value.nbytes)
             for block in blocks:
+                outputs[-1].fill_(float("nan"))
+                worker.copy_to(handles[-1].data_ptr, outputs[-1].data_ptr(), outputs[-1].nbytes)
                 worker.run(program, *handles, block, config=config)
                 durations = []
                 for _ in range(args.iterations):
@@ -78,6 +128,8 @@ def main():
                     durations.append(perf_counter() - start)
                 for value, handle in zip(outputs, handles[len(inputs):], strict=True):
                     worker.copy_from(value.data_ptr(), handle.data_ptr, value.nbytes)
+                torch.testing.assert_close(outputs[-1][block:], torch.zeros_like(outputs[-1][block:]),
+                                           atol=0, rtol=0)
                 source = x[:block].float()
                 query_latent = golden_rms_norm((source @ wa.float()).bfloat16(), q_gamma)
                 raw_query = (query_latent.float() @ wb.float()).bfloat16().reshape(block, heads, dim)
@@ -98,6 +150,8 @@ def main():
                 if any(stat["rtol_atol_failure_ratio"] > 0.005 or stat["relative_l2"] > 0.005
                        for stat in errors.values()):
                     raise RuntimeError("draft QKV differs from the BF16 Torch reference")
+    if args.output_projection:
+        validate_output_projection(args, config, generator)
 
 
 if __name__ == "__main__":
