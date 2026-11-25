@@ -67,8 +67,23 @@ def _loss_entry(compute, *, inline, position_weighted):
     return with_resident_entry(entry, compute)
 
 
+def _make_loss_tile(width, input_fp32):
+    import pypto.language as pl
+
+    @pl.jit.inline
+    def load(value: pl.Tensor, row: pl.Scalar[pl.INT32], column: pl.Scalar[pl.INT32]):
+        tile = pl.slice(value, [1, width], [row, column])
+        if input_fp32:
+            result = pl.reshape(tile, [8, width // 8])
+        else:
+            result = pl.reshape(pl.cast(tile, pl.FP32), [8, width // 8])
+        return result
+
+    return load
+
+
 def make_tv(rows, vocabulary, *, inline=False, focus_weight=1, position_weighted=False,
-            log_overlap=False):
+            log_overlap=False, input_fp32=False):
     """完整词表 TV 及 d(logits)，只监督 verifier 真正走到的行。"""
     if rows < 1 or vocabulary % 64:
         raise ValueError("positive rows and a 64-aligned vocabulary required")
@@ -79,6 +94,7 @@ def make_tv(rows, vocabulary, *, inline=False, focus_weight=1, position_weighted
     T = loss_vocabulary_tile(vocabulary)
     import pypto.language as pl
 
+    load = _make_loss_tile(T, input_fp32)
     focus_reciprocal = 1.0 / focus_weight
     kernel = pl.jit.inline if inline else pl.jit
     @kernel
@@ -97,8 +113,8 @@ def make_tv(rows, vocabulary, *, inline=False, focus_weight=1, position_weighted
                 sm = pl.full([8, 8], dtype=pl.FP32, value=-3.4028234663852886e38)
                 tm = pl.full([8, 8], dtype=pl.FP32, value=-3.4028234663852886e38)
                 for tile in pl.range(vocabulary // T):
-                    s = pl.reshape(pl.cast(pl.slice(student, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
-                    t = pl.reshape(pl.cast(pl.slice(teacher, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
+                    s = load(student, row, tile * T)
+                    t = load(teacher, row, tile * T)
                     sr = pl.row_expand_add(pl.full([8, 8], dtype=pl.FP32, value=0.), pl.row_max(s))
                     tr = pl.row_expand_add(pl.full([8, 8], dtype=pl.FP32, value=0.), pl.row_max(t))
                     sx = pl.row_expand_add(pl.full([8, 8], dtype=pl.FP32, value=0.), pl.row_max(pl.transpose(sr, 0, 1)))
@@ -108,8 +124,8 @@ def make_tv(rows, vocabulary, *, inline=False, focus_weight=1, position_weighted
                 sz = pl.full([8, 8], dtype=pl.FP32, value=0.)
                 tz = pl.full([8, 8], dtype=pl.FP32, value=0.)
                 for tile in pl.range(vocabulary // T):
-                    s = pl.reshape(pl.cast(pl.slice(student, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
-                    t = pl.reshape(pl.cast(pl.slice(teacher, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
+                    s = load(student, row, tile * T)
+                    t = load(teacher, row, tile * T)
                     se = pl.exp(pl.row_expand_sub(s, pl.row_max(sm)))
                     te = pl.exp(pl.row_expand_sub(t, pl.row_max(tm)))
                     sr = pl.row_expand_mul(pl.full([8, 8], dtype=pl.FP32, value=1.), pl.row_sum(se))
@@ -121,8 +137,8 @@ def make_tv(rows, vocabulary, *, inline=False, focus_weight=1, position_weighted
                 dot = pl.full([8, 8], dtype=pl.FP32, value=0.)
                 loss = pl.full([8, 8], dtype=pl.FP32, value=0.)
                 for tile in pl.range(vocabulary // T):
-                    s = pl.reshape(pl.cast(pl.slice(student, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
-                    t = pl.reshape(pl.cast(pl.slice(teacher, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
+                    s = load(student, row, tile * T)
+                    t = load(teacher, row, tile * T)
                     p = pl.row_expand_div(pl.exp(pl.row_expand_sub(s, pl.row_max(sm))), pl.mul(pl.row_sum(sz), .125))
                     q = pl.row_expand_div(pl.exp(pl.row_expand_sub(t, pl.row_max(tm))), pl.mul(pl.row_sum(tz), .125))
                     diff = pl.sub(p, q)
@@ -150,8 +166,8 @@ def make_tv(rows, vocabulary, *, inline=False, focus_weight=1, position_weighted
                     loss_value = loss
                 losses[row:row + 1, 0:8] = pl.div(pl.slice(loss_value, [1, 8], [0, 0]), denominator)
                 for tile in pl.range(vocabulary // T):
-                    s = pl.reshape(pl.cast(pl.slice(student, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
-                    t = pl.reshape(pl.cast(pl.slice(teacher, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
+                    s = load(student, row, tile * T)
+                    t = load(teacher, row, tile * T)
                     p = pl.row_expand_div(pl.exp(pl.row_expand_sub(s, pl.row_max(sm))), pl.mul(pl.row_sum(sz), .125))
                     q = pl.row_expand_div(pl.exp(pl.row_expand_sub(t, pl.row_max(tm))), pl.mul(pl.row_sum(tz), .125))
                     diff = pl.sub(p, q)
@@ -171,13 +187,14 @@ def make_tv(rows, vocabulary, *, inline=False, focus_weight=1, position_weighted
     return _loss_entry(tv, inline=inline, position_weighted=position_weighted)
 
 
-def make_kl(rows, vocabulary, *, inline=False, position_weighted=False):
+def make_kl(rows, vocabulary, *, inline=False, position_weighted=False, input_fp32=False):
     """完整词表 KL(teacher || draft) 及 d(logits)，用于干净序列的全块监督。"""
     if rows < 1 or vocabulary % 64:
         raise ValueError("positive rows and a 64-aligned vocabulary required")
     T = loss_vocabulary_tile(vocabulary)
     import pypto.language as pl
 
+    load = _make_loss_tile(T, input_fp32)
     kernel = pl.jit.inline if inline else pl.jit
     @kernel
     def kl(student: pl.Tensor, teacher: pl.Tensor, position_weights: pl.Tensor,
@@ -192,8 +209,8 @@ def make_kl(rows, vocabulary, *, inline=False, position_weighted=False):
                 sm = pl.full([8, 8], dtype=pl.FP32, value=-3.4028234663852886e38)
                 tm = pl.full([8, 8], dtype=pl.FP32, value=-3.4028234663852886e38)
                 for tile in pl.range(vocabulary // T):
-                    s = pl.reshape(pl.cast(pl.slice(student, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
-                    t = pl.reshape(pl.cast(pl.slice(teacher, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
+                    s = load(student, row, tile * T)
+                    t = load(teacher, row, tile * T)
                     sr = pl.row_expand_add(pl.full([8, 8], dtype=pl.FP32, value=0.), pl.row_max(s))
                     tr = pl.row_expand_add(pl.full([8, 8], dtype=pl.FP32, value=0.), pl.row_max(t))
                     sx = pl.row_expand_add(pl.full([8, 8], dtype=pl.FP32, value=0.), pl.row_max(pl.transpose(sr, 0, 1)))
@@ -203,8 +220,8 @@ def make_kl(rows, vocabulary, *, inline=False, position_weighted=False):
                 sz = pl.full([8, 8], dtype=pl.FP32, value=0.)
                 tz = pl.full([8, 8], dtype=pl.FP32, value=0.)
                 for tile in pl.range(vocabulary // T):
-                    s = pl.reshape(pl.cast(pl.slice(student, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
-                    t = pl.reshape(pl.cast(pl.slice(teacher, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
+                    s = load(student, row, tile * T)
+                    t = load(teacher, row, tile * T)
                     se = pl.exp(pl.row_expand_sub(s, pl.row_max(sm)))
                     te = pl.exp(pl.row_expand_sub(t, pl.row_max(tm)))
                     sr = pl.row_expand_mul(pl.full([8, 8], dtype=pl.FP32, value=1.), pl.row_sum(se))
@@ -218,8 +235,8 @@ def make_kl(rows, vocabulary, *, inline=False, position_weighted=False):
                 ltz = pl.log(pl.mul(pl.row_sum(tz), .125))
                 loss = pl.full([8, 8], dtype=pl.FP32, value=0.)
                 for tile in pl.range(vocabulary // T):
-                    s = pl.reshape(pl.cast(pl.slice(student, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
-                    t = pl.reshape(pl.cast(pl.slice(teacher, [1, T], [row, tile * T]), pl.FP32), [8, T // 8])
+                    s = load(student, row, tile * T)
+                    t = load(teacher, row, tile * T)
                     log_student = pl.row_expand_sub(pl.row_expand_sub(s, pl.row_max(sm)), lsz)
                     log_teacher = pl.row_expand_sub(pl.row_expand_sub(t, pl.row_max(tm)), ltz)
                     p = pl.exp(log_student)

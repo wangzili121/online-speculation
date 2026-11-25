@@ -1,0 +1,89 @@
+{
+  "base_lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "host_label": "61",
+  "device_model": "Ascend 910B3",
+  "cann": "9.2.0",
+  "physical_devices": [
+    2,
+    3
+  ],
+  "scope": "resident PackedLoss FP32 input and BF16 dLogits; synthetic full-vocabulary input on two L3 workers",
+  "runner": "validate_dsv41_pypto_packed_student.py --devices 0,1 --loss both",
+  "latency_scope": "host elapsed, including teacher H2D, device loss and gradient, and scalar loss readback; excludes teacher row verification",
+  "cpu_gates": {
+    "packed_contract_checks": 17,
+    "local_dsv41_tests": 207,
+    "subtests": 5,
+    "legacy_bf16_loss_compiled": [
+      "tv",
+      "forward_kl"
+    ]
+  },
+  "production_compile": {
+    "dp": 4,
+    "tp": 4,
+    "ep": 16,
+    "rows": 16,
+    "vocabulary": 129280,
+    "tv_seconds": 1.496,
+    "forward_kl_seconds": 0.796,
+    "executed": false
+  },
+  "four_device_attempt": {
+    "executed": false,
+    "failure": "ACL device initialization reported EL0020 on a mounted device"
+  },
+  "passed": true,
+  "devices": [
+    0,
+    1
+  ],
+  "tp": 1,
+  "retained_rows": 16,
+  "columns": 129280,
+  "exact": true,
+  "released": true,
+  "next_dispatch_passed": true,
+  "loss": {
+    "tv": [
+      {
+        "owner": 0,
+        "rows": 1,
+        "loss": 0.08772777020931244,
+        "max_abs_loss_error": 2.2349654085762616e-08,
+        "relative_l2": 0.0016317984833373825,
+        "median_ms": 21.223565097898245,
+        "teacher_upload_bytes": 517120
+      },
+      {
+        "owner": 1,
+        "rows": 7,
+        "loss": 0.08759687840938568,
+        "max_abs_loss_error": 7.89634881093182e-09,
+        "relative_l2": 0.001877555226324899,
+        "median_ms": 27.81803859397769,
+        "teacher_upload_bytes": 3619840
+      }
+    ],
+    "forward_kl": [
+      {
+        "owner": 0,
+        "rows": 1,
+        "loss": 0.024219045415520668,
+        "max_abs_loss_error": 6.230164456902387e-08,
+        "relative_l2": 0.0016522206103581542,
+        "median_ms": 21.027783397585154,
+        "teacher_upload_bytes": 517120
+      },
+      {
+        "owner": 1,
+        "rows": 7,
+        "loss": 0.024289948865771294,
+        "max_abs_loss_error": 4.949964216988123e-08,
+        "relative_l2": 0.0016555646074422501,
+        "median_ms": 27.091650292277336,
+        "teacher_upload_bytes": 3619840
+      }
+    ]
+  }
+}

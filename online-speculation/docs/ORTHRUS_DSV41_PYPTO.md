@@ -95,6 +95,10 @@ Serving 在启动时装载 head 并在 TP 间分片。Draft 直接借用目标�
 
 Packed 会话可在选定的 draft 轮次捕获一个请求的学生分布。起草图在该 DP owner 上把完整词表的指定行写入独立设备缓冲，普通候选仍只回读 token ID。后续轮次使用原有输出缓冲，捕获数据留给学习器收齐纠正后的教师反馈。调用方在使用结束时释放捕获，请求释放时也会归还缓冲。用 `validate_dsv41_pypto_packed_student.py --devices 0,1` 可以在两个可见设备上复验输出重绑定。61 的两张 910B3 上通过了 16 × 128 测试张量的逐元素比较、缓冲释放和下一次 dispatch。整模 last-N 的激活反向和更新发布仍需接入新版图。
 
+在 packed 会话的启动选项中设置 `orthrus_online_loss` 为 `tv` 或 `forward_kl`，可在同一个驻留 worker 上注册全词表损失图。选定轮次通过 `student_capture=(handle, rows)` 捕获学生分布。会话跨 Verify 和普通 Decode 收集教师行，首个候选被拒绝时只取修正 token 对应的行，再沿修正后的已提交位置继续收集。`loss_vjp(handle)` 收齐后返回损失标量与驻留在 owner 上的 BF16 logits 梯度，生成结束时可用 `finished=True` 消费已收集的尾部。损失图直接读取 FP32 学生 logits，当前教师行经宿主上传。
+
+61 的两张 910B3 使用 129,280 词表的合成 logits，验证了分别提交 1 行和 7 行的 TV、KL。与 Torch FP64 比较，损失最大绝对误差为 `6.23e-8`，梯度最大相对 L2 为 0.188%，无效行梯度全零。7 行的驻留调用中位数约 27–28 ms，包含教师上传和标量读回。DP4/TP4 形状已编译。17 项 packed 主机回归覆盖了拒绝后的两种续跑方式。实卡复验给上一条命令追加 `--loss both`。[原始结果](validation/dsv41/pypto-1122-949a-packed-online-loss-910b3.json)
+
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
 ```bash
