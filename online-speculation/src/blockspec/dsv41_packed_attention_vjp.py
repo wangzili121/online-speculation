@@ -1,10 +1,14 @@
 """Resident VJP of SWA, the shared draft KV block, and per-token compressed history."""
 
+from dataclasses import dataclass
+from math import prod
+from time import perf_counter
+
 from .pypto_dsv41_sparse import HEAD_TILE, PARTS, TILE, TOPK
 from .pypto_dsv41_swa import HEAD_DIM, WINDOW
 
 
-def make_packed_attention_vjp(block, *, world=1, tp=4):
+def make_packed_attention_vjp(block, *, world=1, tp=4, physical_pages=None):
     """Replay global probabilities and return rank-local FP32 Q, shared KV, and sink gradients."""
     import pypto.language as pl
     import pypto.language.distributed as pld
@@ -237,6 +241,9 @@ def make_packed_attention_vjp(block, *, world=1, tp=4):
             sink_gradient[group:group + 1, :] = grad
         return query_gradient, temporary_gradient, sink_gradient
 
+    if physical_pages is not None:
+        return _make_packed_replay(reverse, block, world, tp, physical_pages)
+
     @pl.jit.host
     def dispatch(
         q: pl.Tensor[[world, rows, dim], pl.BF16],
@@ -262,3 +269,173 @@ def make_packed_attention_vjp(block, *, world=1, tp=4):
                         lengths[idx], context[idx], lse[idx], sink[idx], incoming[idx], dq[idx], dkv[idx],
                         dsink[idx], active, device=idx)
     return dispatch
+
+
+def _make_packed_replay(entry, block, world, tp, pages):
+    """Read the original committed FP8/FP4 rows and run the VJP in one dispatch."""
+    import pypto.language as pl
+    import pypto.language.distributed as pld
+
+    from .pypto_dsv41_packed_history import PAGE_ROWS, ROW_TILE, make_packed_history_gather
+
+    dim, heads, rows, selected_rows = HEAD_DIM, HEAD_TILE, block * HEAD_TILE, block * TOPK
+    fp8 = (pages, PAGE_ROWS, 1, dim)
+    fp8_scales = (pages, PAGE_ROWS, 1, dim // 32)
+    fp4 = (pages, PAGE_ROWS, 1, dim // 2)
+    fp4_scales = (pages, PAGE_ROWS, 1, dim // 16)
+    row_shape = (WINDOW // ROW_TILE, ROW_TILE)
+    starts_shape = (WINDOW // ROW_TILE,)
+    gather_window = pl.jit.inline(auto_scope=False)(make_packed_history_gather("fp8", pages, WINDOW)._func)
+    gather_selected = pl.jit.inline(auto_scope=False)(
+        make_packed_history_gather("fp4", pages, selected_rows, queries=block)._func,
+    )
+    reverse = pl.jit.inline(auto_scope=False)(entry._func)
+
+    @pl.jit
+    def replay(
+        q: pl.Tensor[[rows, dim], pl.BF16], temporary: pl.Tensor[[block, dim], pl.BF16],
+        context: pl.Tensor[[rows, dim], pl.FP32], lse: pl.Tensor[[rows, 1], pl.FP32],
+        lengths: pl.Tensor[[block], pl.INT32], selection: pl.Tensor[[block, TOPK], pl.INT32],
+        window_payload: pl.Tensor[fp8, pl.UINT8], window_scales: pl.Tensor[fp8_scales, pl.BF16],
+        window_lookup: pl.Tensor[[1, 256], pl.INT32], window_rows: pl.Tensor[row_shape, pl.INT32],
+        starts: pl.Tensor[starts_shape, pl.INT32], bias: pl.Tensor[[1, WINDOW], pl.FP32],
+        selected_payload: pl.Tensor[fp4, pl.UINT8], selected_scales: pl.Tensor[fp4_scales, pl.BF16],
+        selected_lookup: pl.Tensor[[1, 256], pl.INT32], sink: pl.Tensor[[1, heads], pl.FP32],
+        incoming: pl.Tensor[[rows, dim], pl.FP32], dq: pl.Out[pl.Tensor[[rows, dim], pl.FP32]],
+        dkv: pl.Out[pl.Tensor[[block, dim], pl.FP32]], dsink: pl.Out[pl.Tensor[[1, heads], pl.FP32]],
+        compressed: pl.Scalar[pl.INT32], active: pl.Scalar[pl.INT32],
+    ):
+        window = pl.create_tensor([WINDOW, dim], dtype=pl.BF16)
+        selected = pl.create_tensor([selected_rows, dim], dtype=pl.BF16)
+        selected_bias = pl.create_tensor([block, TOPK], dtype=pl.FP32)
+        window = gather_window(window_payload, window_scales, window_rows, starts, window_lookup, window)
+        if compressed != 0:
+            plan = pl.reshape(selection, [selected_rows // ROW_TILE, ROW_TILE])
+            selected = gather_selected(selected_payload, selected_scales, plan, lengths, selected_lookup, selected)
+        for token in pl.spmd(active, name_hint="orthrus_restore_attention_history_mask"):
+            mask = pl.tile.full([1, TOPK], dtype=pl.FP32, value=-1e30)
+            if compressed != 0:
+                ids = pl.cast(pl.load(selection, [token, 0], [1, TOPK]), pl.FP32)
+                valid = pl.tile.cmps(ids, -1.0, cmp_type=4)
+                keep = pl.tile.full([1, TOPK], dtype=pl.FP32, value=0.)
+                mask = pl.tile.select(valid, keep, mask)
+            pl.store(mask, [token, 0], selected_bias)
+        return reverse(q, temporary, window, selected, bias, selected_bias, lengths, context,
+                       lse, sink, incoming, dq, dkv, dsink, active)
+
+    @pl.jit.host
+    def dispatch(
+        q: pl.Tensor[[world, rows, dim], pl.BF16], temporary: pl.Tensor[[world, block, dim], pl.BF16],
+        context: pl.Tensor[[world, rows, dim], pl.FP32], lse: pl.Tensor[[world, rows, 1], pl.FP32],
+        lengths: pl.Tensor[[world, block], pl.INT32], selection: pl.Tensor[[world, block, TOPK], pl.INT32],
+        window_payload: pl.Tensor[[world, *fp8], pl.UINT8], window_scales: pl.Tensor[[world, *fp8_scales], pl.BF16],
+        window_lookup: pl.Tensor[[world, 1, 256], pl.INT32], window_rows: pl.Tensor[[world, *row_shape], pl.INT32],
+        starts: pl.Tensor[[world, *starts_shape], pl.INT32], bias: pl.Tensor[[world, 1, WINDOW], pl.FP32],
+        selected_payload: pl.Tensor[[world, *fp4], pl.UINT8], selected_scales: pl.Tensor[[world, *fp4_scales], pl.BF16],
+        selected_lookup: pl.Tensor[[world, 1, 256], pl.INT32], sink: pl.Tensor[[world, 1, heads], pl.FP32],
+        incoming: pl.Tensor[[world, rows, dim], pl.FP32], dq: pl.Out[pl.Tensor[[world, rows, dim], pl.FP32]],
+        dkv: pl.Out[pl.Tensor[[world, block, dim], pl.FP32]], dsink: pl.Out[pl.Tensor[[world, 1, heads], pl.FP32]],
+        owner: pl.Scalar[pl.INT32], compressed: pl.Scalar[pl.INT32], active: pl.Scalar[pl.INT32],
+    ):
+        for idx in pl.range(pld.world_size()):
+            if idx >= owner and idx < owner + tp:
+                replay(q[idx], temporary[idx], context[idx], lse[idx], lengths[idx], selection[idx],
+                       window_payload[idx], window_scales[idx], window_lookup[idx], window_rows[idx], starts[idx],
+                       bias[idx], selected_payload[idx], selected_scales[idx], selected_lookup[idx], sink[idx],
+                       incoming[idx], dq[idx], dkv[idx], dsink[idx], compressed, active, device=idx)
+    return dispatch
+
+
+@dataclass(frozen=True)
+class PackedAttentionGradient:
+    owner: int
+    layer: int
+    rows: int
+    query: object
+    temporary: object
+    residual: object
+    parameter_gradients: dict
+    seconds: float
+
+
+class PackedAttentionVJP:
+    """Use live target pages and the captured per-TP draft tensors."""
+
+    def __init__(self, proposer, graph, model):
+        import torch
+        from pypto.runtime import DeviceTensor, StackedDeviceTensor
+
+        self.runtime, self.config, self.graph = proposer.runtime, proposer.config, graph
+        self.banks = proposer.ranks
+        self.ranks = tuple(range(proposer.world))
+        self.block, self.tp, self.pages = proposer.block, proposer.tp, proposer.pages
+        self.first_layer = model.num_hidden_layers - proposer.last_layers
+        self.device_tensor, self.stacked = DeviceTensor, StackedDeviceTensor
+        rows = self.block * HEAD_TILE
+        self.tape_shapes = {
+            "attention_tape_query": (rows, HEAD_DIM),
+            "attention_tape_temporary": (self.block, HEAD_DIM),
+            "attention_tape_context": (rows, HEAD_DIM),
+            "attention_tape_lse": (rows, 1),
+            "attention_tape_lengths": (self.block,),
+            "attention_tape_selection": (self.block, TOPK),
+        }
+        self.controls = tuple(self._allocate(shape, dtype) for shape, dtype in (
+            ((WINDOW // 16, 16), torch.int32), ((WINDOW // 16,), torch.int32), ((1, WINDOW), torch.float32),
+        ))
+        self.control_key = None
+        self.outputs = tuple(self._allocate(shape, torch.float32) for shape in (
+            (rows, HEAD_DIM), (self.block, HEAD_DIM), (1, HEAD_TILE),
+        ))
+
+    def _stack(self, shards):
+        return self.stacked(shards, (len(shards), *shards[0].shape), self.ranks)
+
+    def _allocate(self, shape, dtype):
+        return self._stack([self.runtime.alloc_tensor(shape, dtype, worker_id=rank) for rank in self.ranks])
+
+    def _view(self, bank, shape, offset):
+        offset *= bank.dtype.itemsize
+        return self.device_tensor(bank.data_ptr + offset, shape, bank.dtype, buffer=bank.buffer,
+                                  byte_offset=bank.byte_offset + offset)
+
+    def _cache(self, name, source):
+        shape = (self.pages, *self.banks[0][name].shape[1:])
+        return self._stack([self._view(bank[name], shape, source * prod(shape)) for bank in self.banks])
+
+    def __call__(self, student, seed):
+        from .pypto_dsv41_packed_swa import packed_swa_controls
+
+        layer = seed.layer
+        slot = layer - self.first_layer
+        if (slot < 0 or seed.owner != student.owner or not 1 <= seed.rows <= student.rows
+                or student.ffn_tape is None or student.pages is None):
+            raise ValueError("Attention backward requires the live student capture and its original history pages")
+        start = perf_counter()
+        key = (student.owner, student.position, student.pages)
+        if key != self.control_key:
+            rows, starts, _, bias = packed_swa_controls(student.pages, student.position, self.pages)
+            for values, tensor in zip((rows, starts, bias), self.controls, strict=True):
+                for rank in range(seed.owner, seed.owner + self.tp):
+                    shard = tensor.shards[rank]
+                    self.runtime.copy_to(shard.data_ptr, values.data_ptr(), values.nbytes, worker_id=rank)
+            self.control_key = key
+        captured = tuple(self._stack([
+            self._view(student.ffn_tape.get(rank, bank)[name], shape, slot * prod(shape))
+            for rank, bank in enumerate(self.banks)
+        ]) for name, shape in self.tape_shapes.items())
+        # C1A layers share source 3. C2A uses sources 0, 1 and 2.
+        compressed = layer >= 2
+        source = min(3, (layer - 2) // 6) if compressed else 0
+        window = (self._cache("window_cache_pool", layer), self._cache("window_cache_scale_pool", layer),
+                  self._stack([bank["window_lookup"] for bank in self.banks]), *self.controls)
+        history = (self._cache("compressed_cache_pool", source), self._cache("compressed_cache_scale_pool", source),
+                   self._stack([bank["compressed_lookup"] for bank in self.banks]))
+        sink = self._stack([self._view(bank["draft_sink"], (1, HEAD_TILE), layer * HEAD_TILE)
+                            for bank in self.banks])
+        self.runtime.run(self.graph, *captured, *window, *history, sink, seed.context, *self.outputs,
+                         seed.owner, int(compressed), seed.rows, config=self.config)
+        dq, dkv, dsink = self.outputs
+        gradients = {**(seed.parameter_gradients or {}), "draft_sink": dsink}
+        return PackedAttentionGradient(seed.owner, layer, seed.rows, dq, dkv, seed.residual,
+                                       gradients, perf_counter() - start)

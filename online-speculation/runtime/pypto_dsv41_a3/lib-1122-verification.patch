@@ -97,10 +97,10 @@ index 407560a..7968afe 100644
          parser.error("--profile-all-steps requires full checkpoint generation")
      if args.warmup_requests < 0 or args.measured_requests < 1:
 diff --git a/models/deepseek_v4_1_flash_a3/generation.py b/models/deepseek_v4_1_flash_a3/generation.py
-index ef6a2b2..5baf26b 100644
+index ef6a2b2..c74a776 100644
 --- a/models/deepseek_v4_1_flash_a3/generation.py
 +++ b/models/deepseek_v4_1_flash_a3/generation.py
-@@ -199,6 +199,20 @@ class ResidentGraphs:
+@@ -199,6 +199,21 @@ class ResidentGraphs:
      config: RunConfig
      host_io: dict
      decode_inputs: DecodeInputs
@@ -118,17 +118,18 @@ index ef6a2b2..5baf26b 100644
 +    draft_ffn_mhc_program: DistributedCompiledProgram | None = None
 +    draft_attn_post_program: DistributedCompiledProgram | None = None
 +    draft_wo_input_program: DistributedCompiledProgram | None = None
++    draft_attention_program: DistributedCompiledProgram | None = None
 
      def reset(self):
          reset_caches(self.runtime, self.ranks, self.host_cache)
-@@ -232,6 +246,63 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+@@ -232,6 +247,69 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
      for phase_names, supported in zip(names, prepare_windows, strict=True):
          if supported:
              phase_names.pop()
 +    draft_graph, draft_head_artifact = None, None
 +    draft_loss, draft_lm_head_vjp, draft_final_vjp, draft_ffn_post_vjp = None, None, None, None
 +    draft_expert_dispatch, draft_expert_reverse, draft_ffn_input = None, None, None
-+    draft_ffn_mhc, draft_attn_post, draft_wo_input = None, None, None
++    draft_ffn_mhc, draft_attn_post, draft_wo_input, draft_attention = None, None, None, None
 +    draft_block = getattr(args, "orthrus_draft_block", 32)
 +    draft_last_layers = getattr(args, "orthrus_online_last_layers", 0)
 +    if getattr(args, "orthrus_draft_head", None) is not None:
@@ -155,7 +156,9 @@ index ef6a2b2..5baf26b 100644
 +        draft_final_vjp = make_packed_final_vjp(MAX_LOGIT_ROWS, M.hidden_size, M.hc_mult, C.DP_SIZE, C.TP_SIZE,
 +                                                M.rms_norm_eps).compile(config=config)
 +        if draft_last_layers:
++            from blockspec.dsv41_packed_attention_vjp import make_packed_attention_vjp
 +            from blockspec.dsv41_packed_attn_post_vjp import make_packed_attn_post_vjp
++            from blockspec.dsv41_packed_proposer import draft_geometry
 +            from blockspec.dsv41_packed_ep_dispatch import make_packed_ep_dispatch
 +            from blockspec.dsv41_packed_ep_reverse import make_packed_ep_reverse
 +            from blockspec.dsv41_packed_ffn_input_vjp import make_packed_ffn_input_vjp
@@ -182,22 +185,27 @@ index ef6a2b2..5baf26b 100644
 +                                                       C.TP_SIZE).compile(config=config)
 +            draft_wo_input = make_packed_wo_input_vjp(draft_block, M, C.TP_SIZE,
 +                                                    world=C.EP_SIZE, parameters=True).compile(config=config)
++            pages, *_ = draft_geometry(args.context_capacity)
++            draft_attention = make_packed_attention_vjp(
++                draft_block, world=C.EP_SIZE, tp=C.TP_SIZE, physical_pages=pages,
++            ).compile(config=config)
      cache_names = set(DECODE_CACHE_NAMES.values())
      constants = set(weights.tensor_layouts) | cache_names | {"freqs_cos", "freqs_sin"}
      counts = {name: torch.zeros(16, dtype=torch.int32).share_memory_()
-@@ -266,7 +337,10 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+@@ -266,7 +344,11 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
                  template = prefill_template[name]
                  host_io["prefill_" + name] = torch.empty((2, *template.shape), dtype=template.dtype).share_memory_()
          worker = SwimlaneWorker if args.profile_all_steps is not None else DistributedWorker
 -        with worker(programs, config, persistent=True, reset_persistent_windows=False,
 +        online_graphs = (draft_graph, draft_loss, draft_lm_head_vjp, draft_final_vjp, draft_ffn_post_vjp,
-+                         draft_expert_dispatch, draft_expert_reverse, draft_ffn_input, draft_ffn_mhc, draft_attn_post, draft_wo_input)
++                         draft_expert_dispatch, draft_expert_reverse, draft_ffn_input, draft_ffn_mhc,
++                         draft_attn_post, draft_wo_input, draft_attention)
 +        registered = [*programs, *(graph for graph in online_graphs if graph is not None)]
 +        with worker(registered, config, persistent=True, reset_persistent_windows=False,
                      inherited_host_tensors=[*counts.values(), *host_io.values(), decode_inputs.images]) as runtime:
              host_io["idle_inputs"] = tuple(
                  {name: template[name] for name in phase_names if name in template and name not in constants}
-@@ -354,7 +428,10 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+@@ -354,7 +436,10 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
 
              host_io["prefill_dirty_groups"] = ()
              yield ResidentGraphs(runtime, programs, arguments, names, ranks, weights, engram, host_cache,
@@ -205,11 +213,11 @@ index ef6a2b2..5baf26b 100644
 +                                 rope_tables, config, host_io, decode_inputs, draft_graph, draft_head_artifact,
 +                                 draft_block, draft_loss, draft_lm_head_vjp, draft_final_vjp, draft_last_layers,
 +                                 draft_ffn_post_vjp, draft_expert_dispatch, draft_expert_reverse, draft_ffn_input,
-+                                 draft_ffn_mhc, draft_attn_post, draft_wo_input)
++                                 draft_ffn_mhc, draft_attn_post, draft_wo_input, draft_attention)
      finally:
          torch.set_num_threads(saved_threads)
 
-@@ -444,11 +521,45 @@ def generate(args, devices, *, manifests):
+@@ -444,11 +529,45 @@ def generate(args, devices, *, manifests):
                      )
                  except LogitValidationError as error:
                      report["teacher_forced_error"] = str(error)
@@ -257,7 +265,7 @@ index ef6a2b2..5baf26b 100644
                  replay_report = {}
                  capture_dir = args.profile_all_steps if iteration == args.warmup_requests else None
                  if capture_dir is not None:
-@@ -462,20 +573,28 @@ def generate(args, devices, *, manifests):
+@@ -462,20 +581,28 @@ def generate(args, devices, *, manifests):
                          config, memory, replay_report, options=args, host_io=host_io, decode_inputs=decode_inputs, reference=reference, teacher_forced=args.teacher_forced,
                          audit=audit_caches if audit_request else None, save_logits=args.save_logits, label=label,
                          profile=capture_dir is not None, profile_dir=capture_dir,
@@ -372,7 +380,7 @@ index 502fa5b..365e535 100644
  @pl.jit.inline(auto_scope=False)
  def decode_o_proj_nz_from_attention(
 diff --git a/models/deepseek_v4_1_flash_a3/packed.py b/models/deepseek_v4_1_flash_a3/packed.py
-index 98f9f0c..1d5c171 100644
+index 98f9f0c..e2d256c 100644
 --- a/models/deepseek_v4_1_flash_a3/packed.py
 +++ b/models/deepseek_v4_1_flash_a3/packed.py
 @@ -11,6 +11,7 @@
@@ -383,7 +391,7 @@ index 98f9f0c..1d5c171 100644
 
  import torch
 
-@@ -37,14 +38,42 @@ class _History:
+@@ -37,14 +38,43 @@ class _History:
      pages: list[int] = field(default_factory=list)
 
 
@@ -407,7 +415,7 @@ index 98f9f0c..1d5c171 100644
 +    def __init__(self, graphs, slots, context, capacities, *, draft=None, draft_loss=None,
 +                 draft_lm_head_vjp=None, draft_final_vjp=None, draft_ffn_post_vjp=None,
 +                 draft_expert_dispatch=None, draft_expert_reverse=None, draft_ffn_input=None, draft_ffn_mhc=None,
-+                 draft_attn_post=None, draft_wo_input=None):
++                 draft_attn_post=None, draft_wo_input=None, draft_attention=None):
          self.graphs = graphs
          self.slots = slots
          self.context = context
@@ -423,11 +431,12 @@ index 98f9f0c..1d5c171 100644
 +        self.draft_ffn_mhc = draft_ffn_mhc
 +        self.draft_attn_post = draft_attn_post
 +        self.draft_wo_input = draft_wo_input
++        self.draft_attention = draft_attention
 +        self.feedback = {}
          self.history = {}
          self._idle_values = {}
          self._active_dps = [set(), set()]
-@@ -99,6 +128,7 @@ class PackedSession:
+@@ -99,6 +129,7 @@ class PackedSession:
              owner = handle.dp * C.TP_SIZE
              with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
                  list(workers.map(reset_rank, range(owner, owner + C.TP_SIZE)))
@@ -435,7 +444,7 @@ index 98f9f0c..1d5c171 100644
          except BaseException:
              self.failed = True
              raise
-@@ -108,11 +138,218 @@ class PackedSession:
+@@ -108,11 +139,228 @@ class PackedSession:
 
      def advance_batch(self, phase, queries):
          """Run (handle, token IDs) pairs in caller order. Return sampled rows keyed by handle."""
@@ -566,6 +575,16 @@ index 98f9f0c..1d5c171 100644
 +        loss, seed = boundary
 +        return loss, self.draft_wo_input(self.feedback[handle].student, seed)
 +
++    def last_attention_vjp(self, handle, *, finished=False):
++        """Return the last layer’s draft Q, temporary KV and sink derivatives."""
++        if self.draft_attention is None:
++            raise ValueError("Packed Attention backward requires a compiled suffix tape")
++        boundary = self.last_attention_context_vjp(handle, finished=finished)
++        if boundary is None:
++            return None
++        loss, seed = boundary
++        return loss, self.draft_attention(self.feedback[handle].student, seed)
++
 +    def verify_batch(self, queries, *, teacher_limits=None):
 +        """Verify (handle, anchor followed by candidates) on the native Decode graph."""
 +        feedback = {}
@@ -654,7 +673,7 @@ index 98f9f0c..1d5c171 100644
          groups = [[] for _ in range(C.DP_SIZE)]
          seen = set()
          queries = list(queries)
-@@ -124,27 +361,63 @@ class PackedSession:
+@@ -124,27 +372,63 @@ class PackedSession:
              if handle in seen or not tokens or any(type(t) is not int or not 0 <= t < C.FLASH.vocab_size for t in tokens):
                  raise ValueError("Invalid or repeated query")
              end = record.committed + len(tokens)
@@ -724,7 +743,7 @@ index 98f9f0c..1d5c171 100644
          g = self.graphs
          # Prefill and Decode share the same packed positions, page maps and cache allocations.
          template = g.host_io["idle_inputs"][0]
-@@ -161,7 +434,7 @@ class PackedSession:
+@@ -161,7 +445,7 @@ class PackedSession:
              end = start + len(tokens)
              needed = (end + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              record.pages.extend(self.free_pages[dp].pop() for _ in range(needed - len(record.pages)))
@@ -733,7 +752,7 @@ index 98f9f0c..1d5c171 100644
              table[row, :needed] = physical
              n_half = (end // 2 + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              half[row, :n_half] = physical[:n_half]
-@@ -171,7 +444,9 @@ class PackedSession:
+@@ -171,7 +455,9 @@ class PackedSession:
              positions.extend(range(start, end))
              owners.extend([row] * len(tokens))
              lengths.append(len(ids))
@@ -744,7 +763,7 @@ index 98f9f0c..1d5c171 100644
                  sampled.append((handle, len(ids) - 1))
          count = len(ids)
          values = dict(g.host_io["idle_inputs"][0 if not index else 1])
-@@ -210,7 +485,7 @@ class PackedSession:
+@@ -210,7 +496,7 @@ class PackedSession:
                            identity_rows=order, replay_rows=order)
          return values, sampled, count
 
@@ -753,7 +772,7 @@ index 98f9f0c..1d5c171 100644
          g = self.graphs
          selections = []
          with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
-@@ -221,7 +496,7 @@ class PackedSession:
+@@ -221,7 +507,7 @@ class PackedSession:
                  if not group and dp not in self._active_dps[index]:
                      continue
                  if group:
@@ -762,7 +781,7 @@ index 98f9f0c..1d5c171 100644
                  else:
                      if index not in self._idle_values:
                          self._idle_values[index] = self._inputs(dp, [], index, capacity)
-@@ -243,6 +518,19 @@ class PackedSession:
+@@ -243,6 +529,19 @@ class PackedSession:
          self._active_dps[index] = {dp for dp, group in enumerate(groups) if group}
          args = [g.arguments[index][name] for name in g.names[index]]
          g.runtime.run(g.programs[index], *args, config=g.config)
@@ -782,7 +801,7 @@ index 98f9f0c..1d5c171 100644
          result = {}
          for handle, rank, row in selections:
              logits = g.host_io["logits"][0]
-@@ -282,9 +570,62 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
+@@ -282,9 +581,65 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
                                                 (args.decode_runtime_dir, "decode", args.decode_capacity))]
      if any(m["history_capacity"] != args.context_capacity for m in manifests):
          raise ValueError("History capacity differs from the compiled graph pair")
@@ -805,7 +824,7 @@ index 98f9f0c..1d5c171 100644
 +            )
 +        loss, lm_head_vjp, final_vjp, ffn_post_vjp = None, None, None, None
 +        expert_dispatch, expert_reverse, ffn_input, ffn_mhc = None, None, None, None
-+        attn_post, wo_input = None, None
++        attn_post, wo_input, attention = None, None, None
 +        if graphs.draft_loss_program is not None:
 +            from blockspec.dsv41_packed_final_vjp import PackedFinalVJP
 +            from blockspec.dsv41_packed_lm_head_vjp import PackedLMHeadVJP
@@ -815,6 +834,7 @@ index 98f9f0c..1d5c171 100644
 +            lm_head_vjp = PackedLMHeadVJP(draft, loss, graphs.draft_lm_head_vjp_program)
 +            final_vjp = PackedFinalVJP(draft, lm_head_vjp, graphs.draft_final_vjp_program)
 +            if graphs.draft_ffn_post_vjp_program is not None:
++                from blockspec.dsv41_packed_attention_vjp import PackedAttentionVJP
 +                from blockspec.dsv41_packed_attn_post_vjp import PackedAttentionPostVJP
 +                from blockspec.dsv41_packed_ep_dispatch import PackedExpertDispatch
 +                from blockspec.dsv41_packed_ep_reverse import PackedExpertReverse
@@ -838,11 +858,13 @@ index 98f9f0c..1d5c171 100644
 +                attn_post = PackedAttentionPostVJP(draft, ffn_mhc, graphs.draft_attn_post_program,
 +                                                   graphs.ranks[0], C.FLASH)
 +                wo_input = PackedWoInputVJP(draft, graphs.draft_wo_input_program, C.FLASH, parameters=True)
++                attention = PackedAttentionVJP(draft, graphs.draft_attention_program, C.FLASH)
 +        session = PackedSession(graphs, request_slots, args.context_capacity, (args.capacity, args.decode_capacity),
 +                                draft=draft, draft_loss=loss, draft_lm_head_vjp=lm_head_vjp, draft_final_vjp=final_vjp,
 +                                draft_ffn_post_vjp=ffn_post_vjp, draft_expert_dispatch=expert_dispatch,
 +                                draft_expert_reverse=expert_reverse, draft_ffn_input=ffn_input,
-+                                draft_ffn_mhc=ffn_mhc, draft_attn_post=attn_post, draft_wo_input=wo_input)
++                                draft_ffn_mhc=ffn_mhc, draft_attn_post=attn_post, draft_wo_input=wo_input,
++                                draft_attention=attention)
          try:
              yield session
          finally:
@@ -973,10 +995,10 @@ index f11f2da..4fbce18 100644
      if reference is not None:
          report["numerical_acceptance"] = reference["policy"]
 diff --git a/tests/contract/test_ds41_packed.py b/tests/contract/test_ds41_packed.py
-index 961d34e..6c1ba9a 100644
+index 961d34e..b832f6e 100644
 --- a/tests/contract/test_ds41_packed.py
 +++ b/tests/contract/test_ds41_packed.py
-@@ -64,3 +64,243 @@ def test_packed_page_boundary_and_recycled_handle():
+@@ -64,3 +64,247 @@ def test_packed_page_boundary_and_recycled_handle():
      with pytest.raises(ValueError, match="Expired"):
          session.advance_batch("decode", [(a, [1])])
      assert new is not a and live.pages == live_pages
@@ -1165,7 +1187,8 @@ index 961d34e..6c1ba9a 100644
 +                            draft_ffn_input=lambda student, packets, returned: (student.rows, packets, returned),
 +                            draft_ffn_mhc=lambda student, post, collapsed: (student.rows, post, collapsed),
 +                            draft_attn_post=lambda student, seed: (student.owner, seed),
-+                            draft_wo_input=lambda student, seed: (student.position, seed))
++                            draft_wo_input=lambda student, seed: (student.position, seed),
++                            draft_attention=lambda student, seed: (student.pages, seed))
 +    handle = session.admit("a", 0, 2)
 +    session._lookup(handle).committed = 2
 +    history[handle] = (1, 2)
@@ -1192,6 +1215,7 @@ index 961d34e..6c1ba9a 100644
 +    assert session.last_ffn_mhc_vjp(handle) is None
 +    assert session.last_attention_post_vjp(handle) is None
 +    assert session.last_attention_context_vjp(handle) is None
++    assert session.last_attention_vjp(handle) is None
 +    assert history[handle] == (1, 2, 5)
 +    if continue_with_ar:
 +        assert session.decode_greedy_batch([(handle, (55,))]) == {handle: 23}
@@ -1217,6 +1241,8 @@ index 961d34e..6c1ba9a 100644
 +    mhc = (3, gradient, (3, packets, ("returned", *packets)))
 +    assert session.last_ffn_mhc_vjp(handle) == (loss, mhc)
 +    assert session.last_attention_post_vjp(handle) == (loss, (first.student.owner, mhc))
-+    assert session.last_attention_context_vjp(handle) == (loss, (first.student.position, (first.student.owner, mhc)))
++    wo = (first.student.position, (first.student.owner, mhc))
++    assert session.last_attention_context_vjp(handle) == (loss, wo)
++    assert session.last_attention_vjp(handle) == (loss, (first.student.pages, wo))
 +    session.release_student(handle)
 +    assert not draft.student and not session.feedback

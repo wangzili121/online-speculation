@@ -1,0 +1,130 @@
+{
+  "model_base": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "hardware": "Ascend 910B3, TP4, host 111",
+  "weights": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8, layer 39 Q/KV and sink",
+  "scope": "Device Attention subgraphs and serving replay binder, synthetic paged prefix and append; whole model compile-only",
+  "command": "python validate_dsv41_pypto_packed_attention_replay.py --checkpoint /model --block {16,32} --devices 0,1,2,3",
+  "timer": "Wall time for resident host binding, FP8/FP4 gather, and Attention VJP; excludes validation copies",
+  "results": [
+    {
+      "passed": true,
+      "block": 16,
+      "world": 4,
+      "cases": [
+        {
+          "layer": 1,
+          "slot": 0,
+          "ratio": 0,
+          "active": 7,
+          "max_relative_l2": 3.5489720151388766e-06,
+          "post_capture_append": true,
+          "repeated_byte_exact": 8,
+          "first_ms": 44.39015011303127,
+          "warm_median_ms": 32.74530894123018
+        },
+        {
+          "layer": 14,
+          "slot": 1,
+          "ratio": 2,
+          "active": 7,
+          "max_relative_l2": 3.577018455295457e-06,
+          "post_capture_append": true,
+          "repeated_byte_exact": 8,
+          "first_ms": 43.705777963623405,
+          "warm_median_ms": 34.066690830513835
+        },
+        {
+          "layer": 39,
+          "slot": 1,
+          "ratio": 1,
+          "active": 7,
+          "max_relative_l2": 3.560638296874487e-06,
+          "post_capture_append": true,
+          "repeated_byte_exact": 8,
+          "first_ms": 43.051896849647164,
+          "warm_median_ms": 31.47980710491538
+        }
+      ]
+    },
+    {
+      "passed": true,
+      "block": 32,
+      "world": 4,
+      "cases": [
+        {
+          "layer": 1,
+          "slot": 0,
+          "ratio": 0,
+          "active": 7,
+          "max_relative_l2": 3.831082406715428e-06,
+          "post_capture_append": true,
+          "repeated_byte_exact": 8,
+          "first_ms": 59.08916611224413,
+          "warm_median_ms": 46.65907402522862
+        },
+        {
+          "layer": 14,
+          "slot": 1,
+          "ratio": 2,
+          "active": 7,
+          "max_relative_l2": 3.626990761308542e-06,
+          "post_capture_append": true,
+          "repeated_byte_exact": 8,
+          "first_ms": 58.89445613138378,
+          "warm_median_ms": 44.84643088653684
+        },
+        {
+          "layer": 39,
+          "slot": 1,
+          "ratio": 1,
+          "active": 7,
+          "max_relative_l2": 3.4972501277736214e-06,
+          "post_capture_append": true,
+          "repeated_byte_exact": 8,
+          "first_ms": 46.63859400898218,
+          "warm_median_ms": 31.300676986575127
+        }
+      ]
+    }
+  ],
+  "compile_only": [
+    {
+      "compiled": true,
+      "npu_execution": false,
+      "layers": 40,
+      "block": 16,
+      "context": 512,
+      "last_layers": 4,
+      "seconds": 46.89348706486635
+    },
+    {
+      "passed": true,
+      "compiled": true,
+      "block": 32,
+      "world": 16
+    },
+    {
+      "compiled": true,
+      "npu_execution": false,
+      "layers": 40,
+      "block": 32,
+      "context": 512,
+      "last_layers": 4,
+      "seconds": 45.49116500001401
+    },
+    {
+      "compiled": true,
+      "npu_execution": false,
+      "layers": 40,
+      "block": 32,
+      "context": 512,
+      "last_layers": 0,
+      "seconds": 51.581046090926975
+    }
+  ],
+  "tests": {
+    "dsv41_cpu": 209,
+    "subtests": 5,
+    "native_packed_contract": 7
+  }
+}

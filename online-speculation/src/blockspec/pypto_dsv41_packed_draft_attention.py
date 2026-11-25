@@ -40,7 +40,7 @@ def make_packed_indexed_attention(window_pages, compressed_pages, bucket, ratio,
     return attend
 
 
-def _draft_projection(block_size, *, head_major=False, context_only=False):
+def make_packed_draft_projection(block_size):
     """Bind the native mHC normalization and BF16 draft projections."""
     from dataclasses import asdict
 
@@ -48,7 +48,7 @@ def _draft_projection(block_size, *, head_major=False, context_only=False):
     from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
     from models.deepseek_v4_1_flash_a3.hc import hc_head_norm
 
-    from .pypto_dsv41_draft import make_packed_draft_output, make_packed_draft_qkv
+    from .pypto_dsv41_draft import make_packed_draft_qkv
 
     capacity = max(16, block_size)
     hidden, dim, latent = FLASH.hidden_size, FLASH.head_dim, FLASH.q_lora_rank
@@ -75,7 +75,16 @@ def _draft_projection(block_size, *, head_major=False, context_only=False):
         )
         return x, low_rank, pl.slice(query, [block_size, width], [0, 0]), temporary
 
-    shapes = (capacity, mix, hidden, heads, dim, width, groups, output_rank)
+    return prepare, (capacity, mix, hidden, heads, dim, width, groups, output_rank)
+
+
+def _draft_projection(block_size, *, head_major=False, context_only=False):
+    import pypto.language as pl
+
+    from .pypto_dsv41_draft import make_packed_draft_output
+
+    prepare, shapes = make_packed_draft_projection(block_size)
+    _, _, hidden, heads, dim, _, _, _ = shapes
     if context_only:
         @pl.jit.inline(auto_scope=False)
         def use_output(output: pl.Tensor[[block_size * heads, dim], pl.FP32]):
@@ -148,8 +157,7 @@ def make_packed_scored_draft_layer(window_pages, compressed_pages, bucket, ratio
             window_starts, spans, window_bias, compressed, compressed_scales, compressed_lookup,
             query_rows, temporary, sink, zeros, rows, lengths, bias, context, lse,
         )
-        contribution_or_context = finish(context, wo_a, wo_b, cosine, sine, contribution)
-        return rows, lengths, bias, contribution_or_context
+        return rows, lengths, bias, finish(context, wo_a, wo_b, cosine, sine, contribution)
 
     return layer
 

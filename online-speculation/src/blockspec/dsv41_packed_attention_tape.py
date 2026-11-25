@@ -17,6 +17,85 @@ def packed_wo_tape_shapes(block, last_layers, model, tp):
     }
 
 
+def packed_core_tape_shapes(block, last_layers, model, tp):
+    rows = max(block, last_layers * block)
+    heads, dim = model.num_attention_heads // tp, model.head_dim
+    return {
+        "attention_tape_normed": ((rows, model.hidden_size), "bfloat16"),
+        "attention_tape_query": ((rows * heads, dim), "bfloat16"),
+        "attention_tape_temporary": ((rows, dim), "bfloat16"),
+        "attention_tape_context": ((rows * heads, dim), "float32"),
+        "attention_tape_lse": ((rows, heads), "float32"),
+        "attention_tape_selection": ((rows, model.index_topk), "int32"),
+        "attention_tape_lengths": ((rows,), "int32"),
+    }
+
+
+def make_packed_attention_core_capture(block, last_layers, model, tp):
+    """Retain exact forward operands in the token-major layout used by the VJP."""
+    import pypto.language as pl
+
+    heads, dim = model.num_attention_heads // tp, model.head_dim
+    hidden, topk = model.hidden_size, model.index_topk
+    rows = block * heads
+    shapes = packed_core_tape_shapes(block, last_layers, model, tp)
+    saved_rows = shapes["attention_tape_lengths"][0][0]
+
+    @pl.jit.inline(auto_scope=False)
+    def save(
+        normed: pl.Tensor[[block, hidden], pl.BF16],
+        query: pl.Tensor[[block, heads * dim], pl.BF16],
+        temporary: pl.Tensor[[block, dim], pl.BF16],
+        context: pl.Tensor[[rows, dim], pl.FP32],
+        lse: pl.Tensor[[rows, 1], pl.FP32],
+        selection: pl.Tensor[[block, topk], pl.INT32],
+        lengths: pl.Tensor[[block], pl.INT32],
+        saved_normed: pl.Out[pl.Tensor[[saved_rows, hidden], pl.BF16]],
+        saved_query: pl.Out[pl.Tensor[[saved_rows * heads, dim], pl.BF16]],
+        saved_temporary: pl.Out[pl.Tensor[[saved_rows, dim], pl.BF16]],
+        saved_context: pl.Out[pl.Tensor[[saved_rows * heads, dim], pl.FP32]],
+        saved_lse: pl.Out[pl.Tensor[[saved_rows, heads], pl.FP32]],
+        saved_selection: pl.Out[pl.Tensor[[saved_rows, topk], pl.INT32]],
+        saved_lengths: pl.Out[pl.Tensor[[saved_rows], pl.INT32]],
+        swa: pl.Scalar[pl.BOOL], slot: pl.Scalar[pl.INT32],
+    ):
+        if slot >= 0:
+            first = slot * block
+            flat_query = pl.reshape(query, [rows, dim])
+            with pl.spmd(rows, name_hint="orthrus_save_attention_context"):
+                row = pl.tile.get_block_idx()
+                token, head = row // heads, row % heads
+                source = row
+                if swa:
+                    source = head * block + token
+                dest = first * heads + row
+                saved_query[dest:dest + 1, :] = flat_query[row:row + 1, :]
+                saved_context[dest:dest + 1, :] = context[source:source + 1, :]
+            with pl.spmd(block, name_hint="orthrus_save_attention_inputs"):
+                token = pl.tile.get_block_idx()
+                dest = first + token
+                saved_normed[dest:dest + 1, :] = normed[token:token + 1, :]
+                saved_temporary[dest:dest + 1, :] = temporary[token:token + 1, :]
+                values = pl.tile.full([1, heads], dtype=pl.FP32, value=0.)
+                for head in pl.range(heads):
+                    source = token * heads + head
+                    if swa:
+                        source = head * block + token
+                    pl.tile.write(values, [0, head], pl.read(lse, [source, 0]))
+                pl.store(values, [dest, 0], saved_lse)
+                if not swa:
+                    saved_selection[dest:dest + 1, :] = selection[token:token + 1, :]
+            length_input = pl.reshape(lengths, [1, block])
+            length_output = pl.reshape(saved_lengths, [1, saved_rows])
+            for lane in pl.spmd(1, name_hint="orthrus_save_attention_lengths"):
+                length_row = pl.tile.full([1, block], dtype=pl.INT32, value=0)
+                if not swa:
+                    length_row = pl.load(length_input, [0, 0], [1, block])
+                pl.store(length_row, [lane, first], length_output)
+
+    return save
+
+
 def make_packed_attention_post_capture(block, last_layers, model, tp):
     import pypto.language as pl
     import pypto.language.distributed as pld

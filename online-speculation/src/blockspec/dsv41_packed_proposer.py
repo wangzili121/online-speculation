@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from time import perf_counter
 
-from .dsv41_packed_attention_tape import packed_attention_tape_shapes, packed_wo_tape_shapes
+from .dsv41_packed_attention_tape import packed_attention_tape_shapes, packed_core_tape_shapes, packed_wo_tape_shapes
 from .dsv41_packed_ffn_tape import packed_ffn_tape_shapes
 from .pypto_dsv41_draft import (
     pack_draft_input_projection,
@@ -169,6 +169,7 @@ class PackedStudentRows:
     logits: object
     final_state: PackedFinalState | None = None
     ffn_tape: dict | None = None
+    pages: tuple[int, ...] | None = None
 
 
 class PackedDraftProposer:
@@ -201,6 +202,7 @@ class PackedDraftProposer:
             **packed_ffn_tape_shapes(block, last_layers, tp, FLASH.hidden_size, FLASH.hc_mult),
             **packed_attention_tape_shapes(block, last_layers, FLASH.hidden_size, FLASH.hc_mult),
             **packed_wo_tape_shapes(block, last_layers, FLASH, tp),
+            **packed_core_tape_shapes(block, last_layers, FLASH, tp),
         }
         capacity = max(16, block)
         geometry = (FLASH.hc_mult, FLASH.hidden_size)
@@ -379,7 +381,10 @@ class PackedDraftProposer:
                 for name, (index, parameter) in self._tape_arguments.items():
                     arguments[index] = self._rank_argument(name, parameter,
                                                            replacement={rank: record[name] for rank, record in tape.items()})
-            self.student[key] = PackedStudentRows(owner, capture_request.position, capture_rows, retained, state, tape)
+            pages = capture_request.pages
+            if pages is None:
+                pages = tuple(map(int, self.page_tables[0]))
+            self.student[key] = PackedStudentRows(owner, capture_request.position, capture_rows, retained, state, tape, pages)
 
         for request in requests:
             start = perf_counter()

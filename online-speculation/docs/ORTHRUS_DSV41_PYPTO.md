@@ -137,6 +137,10 @@ Wo 的输入反向从该 TP 梯度继续计算，依次通过 Wo-B、分组 Wo-A
 
 验证图用第 39 层真实 Q/KV 投影权重生成 BF16 输入，将原有 SWA 和压缩合并的设备输出直接交给反向。四卡 TP4 验证 K16/K32，覆盖空历史、每行 0–512 个压缩历史选择，以及 1 行、7 行和满块反馈。每组重复 24 次，结果逐字节一致，历史掩码保持原值。Q、临时 KV 和 sink 对照 FP64 的最大相对 L2 分别为 `5.77e-6`、`4.88e-6` 和 `3.91e-6`，热态中位数为 20.6–44.3 ms，计入宿主提交。两个宽度的 EP16 形状均通过编译。复验入口为 `validate_dsv41_pypto_packed_attention_vjp.py --checkpoint /model --devices 0,1,2,3 --block 32 --iterations 24`。Serving 还需将请求保留的前向状态和驻留页表接到此入口，并将 TP 内共享 KV 的梯度归并到投影反向。[验证记录](validation/dsv41/pypto-1122-949a-packed-attention-vjp-910b3.json)
 
+末 N 层的起草图会保留归一化输入、投影后的 Q 和临时 KV、FP32 Attention 输出与全局 LSE、压缩历史选择。反向用起草时的页表从目标缓存重读已提交的 FP8/FP4 历史，在一次设备提交内完成解包和梯度计算。分页缓存按位置追加，因此采集反馈期间写入的新 token 不改变这段历史。窗口寻址元数据在同一前缀的各层间复用。普通起草关闭留存。
+
+111 的四张 910B3 上，用真实第 39 层权重构造 Q、KV 和 sink，测了 K16、K32 的 SWA、C2A、C1A。每个用例在保存前向状态后改写第一个未提交位置，再对 7 行反馈求梯度。每组 8 次结果逐字节一致，最大相对 L2 为 `3.84e-6`，热态耗时为 31.3–46.7 ms，含宿主绑定和设备历史解包。40 层 K16/K32 last-4 起草图及 EP16 反向入口已编译。这些测试覆盖 Attention 子图和 Serving 的反向绑定，整模在线更新需继续接通投影参数梯度和权重发布后验收。[实卡与编译记录](validation/dsv41/pypto-1122-949a-packed-attention-replay-910b3.json)
+
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
 ```bash
