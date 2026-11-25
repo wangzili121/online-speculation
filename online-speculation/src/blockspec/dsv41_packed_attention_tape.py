@@ -9,6 +9,14 @@ def packed_attention_tape_shapes(block, last_layers, hidden, copies):
     }
 
 
+def packed_wo_tape_shapes(block, last_layers, model, tp):
+    rows = max(1, last_layers * block)
+    return {
+        "attention_tape_wo_input": ((rows, model.num_attention_heads // tp * model.head_dim), "bfloat16"),
+        "attention_tape_wo_latent": ((rows, model.o_groups // tp * model.o_lora_rank), "bfloat16"),
+    }
+
+
 def make_packed_attention_post_capture(block, last_layers, model, tp):
     import pypto.language as pl
     import pypto.language.distributed as pld

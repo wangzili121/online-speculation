@@ -1,0 +1,354 @@
+{
+  "native_lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "image": "orthrus-dsv41-pypto:1122-7abc0df",
+  "hardware": "Ascend 910B3 on 111",
+  "scope": "Actual layer-39 NZ Wo weights, generated Attention contexts and FP32 upstream gradients. Compare BF16 forward with and without capture and check both FP32 parameter VJPs and the context VJP against FP64. Device K32 runs one TP lane; K16 runs every lane of TP4. The whole-layer-stack and EP16 backward checks are compile only.",
+  "forward_modes": {
+    "-2": "original Wo entry",
+    "-1": "tape-capable Wo with capture off",
+    "1": "Wo stores to nonzero slot of a suffix tape"
+  },
+  "timing": "Median of seven warm forward calls or four warm backward calls; includes host submission.",
+  "backward_compile_ep16": [
+    {
+      "passed": true,
+      "compiled": true,
+      "block": 32,
+      "tp": 4,
+      "world": 16
+    },
+    {
+      "passed": true,
+      "compiled": true,
+      "block": 16,
+      "tp": 4,
+      "world": 16
+    }
+  ],
+  "device": [
+    {
+      "passed": true,
+      "block": 32,
+      "tp": 4,
+      "world": 1,
+      "layer": 39,
+      "output_byte_exact": true,
+      "earlier_slot_untouched": true,
+      "capture_median_ms": {
+        "-2": 17.217941116541624,
+        "-1": 17.195730935782194,
+        "1": 17.200781032443047
+      },
+      "cases": [
+        {
+          "active_rows": 1,
+          "median_ms": 20.528036984615028,
+          "lanes": [
+            {
+              "wo_a": {
+                "relative_l2": 3.4589378843179116e-06,
+                "max_abs": 5.285671727972563e-06
+              },
+              "wo_b": {
+                "relative_l2": 2.3879617262301513e-06,
+                "max_abs": 6.973743438720703e-06
+              },
+              "context": {
+                "relative_l2": 2.997081853438179e-06,
+                "max_abs": 8.540793188238638e-06
+              }
+            }
+          ]
+        },
+        {
+          "active_rows": 7,
+          "median_ms": 20.716007449664176,
+          "lanes": [
+            {
+              "wo_a": {
+                "relative_l2": 3.4828242473913113e-06,
+                "max_abs": 8.630640865869843e-06
+              },
+              "wo_b": {
+                "relative_l2": 2.4485163928011023e-06,
+                "max_abs": 7.959984941408038e-06
+              },
+              "context": {
+                "relative_l2": 3.2189628445747694e-06,
+                "max_abs": 1.3423121160038853e-05
+              }
+            }
+          ]
+        },
+        {
+          "active_rows": 32,
+          "median_ms": 21.879089064896107,
+          "lanes": [
+            {
+              "wo_a": {
+                "relative_l2": 3.4801907111462432e-06,
+                "max_abs": 1.2614232533042502e-05
+              },
+              "wo_b": {
+                "relative_l2": 2.4434457047096234e-06,
+                "max_abs": 1.0955673133139499e-05
+              },
+              "context": {
+                "relative_l2": 3.107701880440685e-06,
+                "max_abs": 2.078652250891988e-05
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "passed": true,
+      "block": 16,
+      "tp": 4,
+      "world": 4,
+      "layer": 39,
+      "output_byte_exact": true,
+      "earlier_slot_untouched": true,
+      "capture_median_ms": {
+        "-2": 21.940728882327676,
+        "-1": 21.283467998728156,
+        "1": 21.392008056864142
+      },
+      "cases": [
+        {
+          "active_rows": 1,
+          "median_ms": 25.690151494927704,
+          "lanes": [
+            {
+              "wo_a": {
+                "relative_l2": 3.4621577138960286e-06,
+                "max_abs": 6.614806582261323e-06
+              },
+              "wo_b": {
+                "relative_l2": 2.4051438334131667e-06,
+                "max_abs": 6.04335218667984e-06
+              },
+              "context": {
+                "relative_l2": 3.0464421413031315e-06,
+                "max_abs": 5.690696637250525e-06
+              }
+            },
+            {
+              "wo_a": {
+                "relative_l2": 3.545974478543476e-06,
+                "max_abs": 7.786045622681925e-06
+              },
+              "wo_b": {
+                "relative_l2": 2.4051854663615288e-06,
+                "max_abs": 8.272938430309296e-06
+              },
+              "context": {
+                "relative_l2": 3.2296179313197027e-06,
+                "max_abs": 5.008440944198611e-06
+              }
+            },
+            {
+              "wo_a": {
+                "relative_l2": 3.3010414303829296e-06,
+                "max_abs": 6.825126713905227e-06
+              },
+              "wo_b": {
+                "relative_l2": 2.405111516604144e-06,
+                "max_abs": 6.688758730888367e-06
+              },
+              "context": {
+                "relative_l2": 2.989597160539579e-06,
+                "max_abs": 4.939221708855079e-06
+              }
+            },
+            {
+              "wo_a": {
+                "relative_l2": 3.430009417771109e-06,
+                "max_abs": 5.456786691171445e-06
+              },
+              "wo_b": {
+                "relative_l2": 2.4052054694859946e-06,
+                "max_abs": 5.573965609073639e-06
+              },
+              "context": {
+                "relative_l2": 3.048245540507892e-06,
+                "max_abs": 5.258027071741722e-06
+              }
+            }
+          ]
+        },
+        {
+          "active_rows": 7,
+          "median_ms": 28.065510443411767,
+          "lanes": [
+            {
+              "wo_a": {
+                "relative_l2": 3.463931628872653e-06,
+                "max_abs": 8.090587903408775e-06
+              },
+              "wo_b": {
+                "relative_l2": 2.4223208421687583e-06,
+                "max_abs": 1.0422980267321691e-05
+              },
+              "context": {
+                "relative_l2": 3.041647920888418e-06,
+                "max_abs": 1.1337196641703073e-05
+              }
+            },
+            {
+              "wo_a": {
+                "relative_l2": 3.5045953400181853e-06,
+                "max_abs": 1.2181782327758128e-05
+              },
+              "wo_b": {
+                "relative_l2": 2.4190172723895615e-06,
+                "max_abs": 1.0337410458305385e-05
+              },
+              "context": {
+                "relative_l2": 3.2280064282738003e-06,
+                "max_abs": 8.106627187753901e-06
+              }
+            },
+            {
+              "wo_a": {
+                "relative_l2": 3.5044950337174002e-06,
+                "max_abs": 1.0167545314132553e-05
+              },
+              "wo_b": {
+                "relative_l2": 2.4196098594945944e-06,
+                "max_abs": 9.473355021327734e-06
+              },
+              "context": {
+                "relative_l2": 3.120254441957564e-06,
+                "max_abs": 9.930775688005156e-06
+              }
+            },
+            {
+              "wo_a": {
+                "relative_l2": 3.444330058914621e-06,
+                "max_abs": 7.612518365784915e-06
+              },
+              "wo_b": {
+                "relative_l2": 2.421396819961563e-06,
+                "max_abs": 8.420734957326204e-06
+              },
+              "context": {
+                "relative_l2": 3.036111548315657e-06,
+                "max_abs": 1.0463405201832643e-05
+              }
+            }
+          ]
+        },
+        {
+          "active_rows": 16,
+          "median_ms": 25.174525449983776,
+          "lanes": [
+            {
+              "wo_a": {
+                "relative_l2": 3.5051874877749665e-06,
+                "max_abs": 1.0796030849302696e-05
+              },
+              "wo_b": {
+                "relative_l2": 2.453480401963936e-06,
+                "max_abs": 9.597993084753398e-06
+              },
+              "context": {
+                "relative_l2": 3.1785171429914536e-06,
+                "max_abs": 1.5031607287108173e-05
+              }
+            },
+            {
+              "wo_a": {
+                "relative_l2": 3.5165958922144402e-06,
+                "max_abs": 1.0504298690205971e-05
+              },
+              "wo_b": {
+                "relative_l2": 2.453622441941738e-06,
+                "max_abs": 1.1234988051000983e-05
+              },
+              "context": {
+                "relative_l2": 3.338254433436616e-06,
+                "max_abs": 9.725694426698794e-06
+              }
+            },
+            {
+              "wo_a": {
+                "relative_l2": 3.522481154659416e-06,
+                "max_abs": 9.668982274169124e-06
+              },
+              "wo_b": {
+                "relative_l2": 2.4536351206705198e-06,
+                "max_abs": 9.45244391914457e-06
+              },
+              "context": {
+                "relative_l2": 3.341361063216732e-06,
+                "max_abs": 1.2602284745089065e-05
+              }
+            },
+            {
+              "wo_a": {
+                "relative_l2": 3.481172917036926e-06,
+                "max_abs": 9.65595324964319e-06
+              },
+              "wo_b": {
+                "relative_l2": 2.4542036242336428e-06,
+                "max_abs": 9.645050113249454e-06
+              },
+              "context": {
+                "relative_l2": 3.157740110574395e-06,
+                "max_abs": 1.0730255850299741e-05
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "forward_compile_ep16": [
+    {
+      "compiled": true,
+      "npu_execution": false,
+      "layers": 40,
+      "block": 32,
+      "context": 512,
+      "last_layers": 4,
+      "seconds": 49.065594936022535,
+      "work_dir": "/results/build_output/_jit_draft_forward_20261125_205210_hr6szj30"
+    },
+    {
+      "compiled": true,
+      "npu_execution": false,
+      "layers": 40,
+      "block": 16,
+      "context": 512,
+      "last_layers": 0,
+      "seconds": 48.79096182179637,
+      "work_dir": "/results/build_output/_jit_draft_forward_20261125_205303_batgz43o"
+    }
+  ],
+  "standalone_forward_regression": {
+    "checkpoint_layer": 0,
+    "tp_rank": 0,
+    "block": [
+      8,
+      16,
+      32
+    ],
+    "max_relative_l2": 0.0020300557371228933,
+    "caches_byte_exact": true,
+    "same_input_reuse_byte_exact": true
+  },
+  "reloaded_compiled_forward": [
+    {
+      "block": 32,
+      "last_layers": 4,
+      "parameter_count": 73
+    },
+    {
+      "block": 16,
+      "last_layers": 0,
+      "parameter_count": 73
+    }
+  ]
+}

@@ -247,6 +247,63 @@ def make_packed_draft_output(*, block_size, head_major=False):
     return project
 
 
+
+def make_packed_draft_output_tape(block, last_layers):
+    """Direct the original Wo intermediates to the requested suffix slot."""
+    import pypto.language as pl
+    from models.deepseek_v4_1_flash_a3.config import FLASH as model, TP_SIZE as tp
+    from models.deepseek_v4_1_flash_a3.o_proj import decode_o_proj_nz_capture
+
+    heads, dim = model.num_attention_heads // tp, model.head_dim
+    groups, rank, hidden = model.o_groups // tp, model.o_lora_rank, model.hidden_size
+    width, middle, phase = heads * dim, groups * rank, model.qk_rope_head_dim // 2
+    tape_rows = max(1, last_layers * block)
+
+    @pl.jit.inline(auto_scope=False)
+    def project(
+        attention: pl.Tensor[[block * heads, dim], pl.FP32],
+        wo_a: pl.Tensor[[groups, width // groups, rank], pl.BF16, pl.NZ],
+        wo_b: pl.Tensor[[middle, hidden], pl.BF16, pl.NZ],
+        cosine: pl.Tensor[[block, phase], pl.FP32],
+        sine: pl.Tensor[[block, phase], pl.FP32],
+        contribution: pl.Tensor[[block, hidden], pl.BF16],
+        tape_input: pl.Tensor[[tape_rows, width], pl.BF16],
+        tape_latent: pl.Tensor[[tape_rows, middle], pl.BF16],
+        head_major: pl.Scalar[pl.INT32],
+        slot: pl.Scalar[pl.INT32],
+    ):
+        attended = pl.create_tensor([block, width], dtype=pl.BF16)
+        if head_major != 0:
+            for task in pl.spmd(block * heads, name_hint="orthrus_swa_to_wo"):
+                token, head = task // heads, task % heads
+                head_values = pl.load(attention, [head * block + token, 0], [1, dim])
+                pl.store(pl.cast(head_values, pl.BF16, mode="rint"), [token, head * dim], attended)
+        else:
+            flat = pl.reshape(attention, [block, width])
+            for token in pl.spmd(block, name_hint="orthrus_context_to_wo"):
+                for column in pl.range(0, width, dim * 4):
+                    quartet = pl.load(flat, [token, column], [1, dim * 4])
+                    pl.store(pl.cast(quartet, pl.BF16, mode="rint"), [token, column], attended)
+        if last_layers > 0:
+            if slot >= 0:
+                saved_input = pl.slice(tape_input, [block, width], [slot * block, 0])
+                saved_latent = pl.slice(tape_latent, [block, middle], [slot * block, 0])
+                decode_o_proj_nz_capture(attended, wo_a, wo_b, cosine, sine, contribution, block,
+                                          saved_input, saved_latent)
+            else:
+                rotated = pl.create_tensor([block, width], dtype=pl.BF16)
+                projected = pl.create_tensor([block, middle], dtype=pl.BF16)
+                decode_o_proj_nz_capture(attended, wo_a, wo_b, cosine, sine, contribution, block, rotated, projected)
+        else:
+            unused_rotation = pl.create_tensor([block, width], dtype=pl.BF16)
+            unused_latent = pl.create_tensor([block, middle], dtype=pl.BF16)
+            decode_o_proj_nz_capture(attended, wo_a, wo_b, cosine, sine, contribution, block,
+                                      unused_rotation, unused_latent)
+        return contribution
+
+    return project
+
+
 def make_qkv_program(native_module, config, *, tp=4, block_size=BLOCK):
     """Compose the native BF16 matmul, weighted RMSNorm and adjacent RoPE leaves.
 

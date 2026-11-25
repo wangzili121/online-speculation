@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from time import perf_counter
 
-from .dsv41_packed_attention_tape import packed_attention_tape_shapes
+from .dsv41_packed_attention_tape import packed_attention_tape_shapes, packed_wo_tape_shapes
 from .dsv41_packed_ffn_tape import packed_ffn_tape_shapes
 from .pypto_dsv41_draft import (
     pack_draft_input_projection,
@@ -52,7 +52,7 @@ def draft_graph_manifest(context, block, *, last_layers=0):
     native_sources = ("config.py", "decode_fwd.py", "decode_indexer.py", "engram.py",
                       "gemm.py", "hc.py", "lm_head.py", "moe.py", "o_proj.py", "rope.py")
     return dict(
-        schema=3, context=context, block=block, last_layers=last_layers, geometry=list(draft_geometry(context)),
+        schema=4, context=context, block=block, last_layers=last_layers, geometry=list(draft_geometry(context)),
         weight_layout=native.WEIGHT_LAYOUT_VERSION, cache_layout=native.CACHE_LAYOUT_VERSION,
         topology=dict(dp=native.DP_SIZE, tp=native.TP_SIZE, ep=native.EP_SIZE),
         sources={name: sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in sources},
@@ -99,7 +99,8 @@ def _resident_head(runtime, head, world, tp, artifact):
             if bank is None:
                 shape = (slots * payload.shape[0], *payload.shape[1:])
                 bank = banks[rank][name] = runtime.alloc_tensor(shape, payload.dtype, worker_id=rank)
-            runtime.copy_to(bank.data_ptr + slot * row_bytes, payload.data_ptr(), row_bytes, worker_id=rank)
+            runtime.copy_to(bank.data_ptr, payload.data_ptr(), row_bytes,
+                            dst_offset=slot * row_bytes, worker_id=rank)
         return len(ranks) * row_bytes
 
     for layer in range(len(layers)):
@@ -199,6 +200,7 @@ class PackedDraftProposer:
         self.tape_specs = {
             **packed_ffn_tape_shapes(block, last_layers, tp, FLASH.hidden_size, FLASH.hc_mult),
             **packed_attention_tape_shapes(block, last_layers, FLASH.hidden_size, FLASH.hc_mult),
+            **packed_wo_tape_shapes(block, last_layers, FLASH, tp),
         }
         capacity = max(16, block)
         geometry = (FLASH.hc_mult, FLASH.hidden_size)

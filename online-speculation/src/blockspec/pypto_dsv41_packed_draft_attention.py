@@ -40,7 +40,7 @@ def make_packed_indexed_attention(window_pages, compressed_pages, bucket, ratio,
     return attend
 
 
-def _draft_projection(block_size, *, head_major=False):
+def _draft_projection(block_size, *, head_major=False, context_only=False):
     """Bind the native mHC normalization and BF16 draft projections."""
     from dataclasses import asdict
 
@@ -57,9 +57,7 @@ def _draft_projection(block_size, *, head_major=False):
     mix = FLASH.hc_mult
     groups, output_rank = FLASH.o_groups // TP_SIZE, FLASH.o_lora_rank
     qkv_entry = make_packed_draft_qkv(asdict(FLASH), tp=TP_SIZE, capacity=capacity)
-    wo_entry = make_packed_draft_output(block_size=block_size, head_major=head_major)
     project = pl.jit.inline(auto_scope=False)(qkv_entry._func)
-    project_output = pl.jit.inline(auto_scope=False)(wo_entry._func)
 
     @pl.jit.inline(auto_scope=False)
     def prepare(
@@ -77,6 +75,26 @@ def _draft_projection(block_size, *, head_major=False):
         )
         return x, low_rank, pl.slice(query, [block_size, width], [0, 0]), temporary
 
+    shapes = (capacity, mix, hidden, heads, dim, width, groups, output_rank)
+    if context_only:
+        @pl.jit.inline(auto_scope=False)
+        def use_output(output: pl.Tensor[[block_size * heads, dim], pl.FP32]):
+            return output
+
+        @pl.jit.inline(auto_scope=False)
+        def keep_output(context: pl.Tensor, wo_a: pl.Tensor, wo_b: pl.Tensor,
+                        cosine: pl.Tensor, sine: pl.Tensor, output: pl.Tensor[[block_size * heads, dim], pl.FP32]):
+            return output
+
+        return prepare, use_output, keep_output, shapes, (block_size * heads, dim), pl.FP32
+
+    @pl.jit.inline(auto_scope=False)
+    def scratch(output: pl.Tensor[[block_size, hidden], pl.BF16]):
+        return pl.create_tensor([block_size * heads, dim], dtype=pl.FP32)
+
+    wo_entry = make_packed_draft_output(block_size=block_size, head_major=head_major)
+    project_output = pl.jit.inline(auto_scope=False)(wo_entry._func)
+
     @pl.jit.inline(auto_scope=False)
     def finish(context: pl.Tensor, wo_a: pl.Tensor, wo_b: pl.Tensor,
                cosine: pl.Tensor, sine: pl.Tensor, contribution: pl.Tensor):
@@ -84,14 +102,15 @@ def _draft_projection(block_size, *, head_major=False):
         sin_rows = pl.slice(sine, [block_size, 32], [0, 0])
         return project_output(context, wo_a, wo_b, cos_rows, sin_rows, contribution)
 
-    return prepare, finish, (capacity, mix, hidden, heads, dim, width, groups, output_rank)
+    return prepare, scratch, finish, shapes, (block_size, hidden), pl.BF16
 
 
-def make_packed_scored_draft_layer(window_pages, compressed_pages, bucket, ratio, block_size, *, table_bucket=None):
+def make_packed_scored_draft_layer(window_pages, compressed_pages, bucket, ratio, block_size, *,
+                                  table_bucket=None, context_only=False):
     """Emit the local TP contribution and retained selection for a scored layer."""
     import pypto.language as pl
 
-    prepare, finish, shape = _draft_projection(block_size)
+    prepare, attention_buffer, finish, shape, output_shape, output_dtype = _draft_projection(block_size, context_only=context_only)
     capacity, mix, hidden, heads, dim, width, groups, output_rank = shape
     attention = make_packed_indexed_attention(
         window_pages, compressed_pages, bucket, ratio, block_size, table_bucket=table_bucket,
@@ -116,12 +135,12 @@ def make_packed_scored_draft_layer(window_pages, compressed_pages, bucket, ratio
         rows: pl.Out[pl.Tensor[[block_size, TOPK], pl.INT32]],
         lengths: pl.Out[pl.Tensor[[block_size], pl.INT32]],
         bias: pl.Out[pl.Tensor[[block_size, TOPK], pl.FP32]],
-        contribution: pl.Out[pl.Tensor[[block_size, hidden], pl.BF16]],
+        contribution: pl.Out[pl.Tensor[output_shape, output_dtype]],
     ):
         x, low_rank, query_rows, temporary = prepare(
             x_hc, pre_mix, norm, wq_a_kv, q_gamma, wq_b, kv_gamma, cosine, sine,
         )
-        context = pl.create_tensor([block_size * heads, dim], dtype=pl.FP32)
+        context = attention_buffer(contribution)
         lse = pl.create_tensor([block_size * heads, 1], dtype=pl.FP32)
         rows, lengths, bias, context, lse = attend(
             x, low_rank, idx_wq, idx_weight, cosine, sine, index_keys, index_scales,
@@ -129,17 +148,17 @@ def make_packed_scored_draft_layer(window_pages, compressed_pages, bucket, ratio
             window_starts, spans, window_bias, compressed, compressed_scales, compressed_lookup,
             query_rows, temporary, sink, zeros, rows, lengths, bias, context, lse,
         )
-        contribution = finish(context, wo_a, wo_b, cosine, sine, contribution)
-        return rows, lengths, bias, contribution
+        contribution_or_context = finish(context, wo_a, wo_b, cosine, sine, contribution)
+        return rows, lengths, bias, contribution_or_context
 
     return layer
 
 
-def make_packed_swa_draft_layer(window_pages, block_size):
+def make_packed_swa_draft_layer(window_pages, block_size, *, context_only=False):
     """Project a draft block against only the local history and temporary KV."""
     import pypto.language as pl
 
-    prepare, finish, shape = _draft_projection(block_size, head_major=True)
+    prepare, attention_buffer, finish, shape, output_shape, output_dtype = _draft_projection(block_size, head_major=True, context_only=context_only)
     capacity, mix, hidden, heads, dim, width, groups, output_rank = shape
     attention = make_packed_swa_chain(window_pages, heads, block_size)
     attend = pl.jit.inline(auto_scope=False)(attention._func)
@@ -156,12 +175,12 @@ def make_packed_swa_draft_layer(window_pages, block_size):
         sink: pl.Tensor, zeros: pl.Tensor,
         wo_a: pl.Tensor[[groups, width // groups, output_rank], pl.BF16, pl.NZ],
         wo_b: pl.Tensor[[groups * output_rank, hidden], pl.BF16, pl.NZ],
-        contribution: pl.Out[pl.Tensor[[block_size, hidden], pl.BF16]],
+        contribution: pl.Out[pl.Tensor[output_shape, output_dtype]],
     ):
         normalized, low_rank, query, temporary = prepare(
             x_hc, pre_mix, norm, wq_a_kv, q_gamma, wq_b, kv_gamma, cosine, sine,
         )
-        context = pl.create_tensor([block_size * heads, dim], dtype=pl.FP32)
+        context = attention_buffer(contribution)
         lse = pl.create_tensor([block_size * heads, 1], dtype=pl.FP32)
         context, lse = attend(window, window_scales, window_lookup, window_rows, window_starts,
                               spans, window_bias, query, temporary, sink, zeros, context, lse)
@@ -170,11 +189,11 @@ def make_packed_swa_draft_layer(window_pages, block_size):
     return layer
 
 
-def make_packed_reuse_draft_layer(window_pages, compressed_pages, block_size):
+def make_packed_reuse_draft_layer(window_pages, compressed_pages, block_size, *, context_only=False):
     """Read retained Top-K rows with this layer's own queries and draft KV."""
     import pypto.language as pl
 
-    prepare, finish, shape = _draft_projection(block_size)
+    prepare, attention_buffer, finish, shape, output_shape, output_dtype = _draft_projection(block_size, context_only=context_only)
     capacity, mix, hidden, heads, dim, width, groups, output_rank = shape
     attention = make_packed_compressed_chain(window_pages, compressed_pages, block_size)
     attend = pl.jit.inline(auto_scope=False)(attention._func)
@@ -195,12 +214,12 @@ def make_packed_reuse_draft_layer(window_pages, compressed_pages, block_size):
         sink: pl.Tensor, zeros: pl.Tensor,
         wo_a: pl.Tensor[[groups, width // groups, output_rank], pl.BF16, pl.NZ],
         wo_b: pl.Tensor[[groups * output_rank, hidden], pl.BF16, pl.NZ],
-        contribution: pl.Out[pl.Tensor[[block_size, hidden], pl.BF16]],
+        contribution: pl.Out[pl.Tensor[output_shape, output_dtype]],
     ):
         normalized, low_rank, query, temporary = prepare(
             x_hc, pre_mix, norm, wq_a_kv, q_gamma, wq_b, kv_gamma, cosine, sine,
         )
-        context = pl.create_tensor([block_size * heads, dim], dtype=pl.FP32)
+        context = attention_buffer(contribution)
         lse = pl.create_tensor([block_size * heads, 1], dtype=pl.FP32)
         context, lse = attend(
             window, window_scales, window_lookup, window_rows, window_starts, spans, window_bias,

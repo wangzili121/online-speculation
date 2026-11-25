@@ -97,7 +97,7 @@ index 407560a..7968afe 100644
          parser.error("--profile-all-steps requires full checkpoint generation")
      if args.warmup_requests < 0 or args.measured_requests < 1:
 diff --git a/models/deepseek_v4_1_flash_a3/generation.py b/models/deepseek_v4_1_flash_a3/generation.py
-index ef6a2b2..c242167 100644
+index ef6a2b2..5baf26b 100644
 --- a/models/deepseek_v4_1_flash_a3/generation.py
 +++ b/models/deepseek_v4_1_flash_a3/generation.py
 @@ -199,6 +199,20 @@ class ResidentGraphs:
@@ -181,7 +181,7 @@ index ef6a2b2..c242167 100644
 +            draft_attn_post = make_packed_attn_post_vjp(draft_block, draft_last_layers, M, C.DP_SIZE,
 +                                                       C.TP_SIZE).compile(config=config)
 +            draft_wo_input = make_packed_wo_input_vjp(draft_block, M, C.TP_SIZE,
-+                                                    world=C.EP_SIZE).compile(config=config)
++                                                    world=C.EP_SIZE, parameters=True).compile(config=config)
      cache_names = set(DECODE_CACHE_NAMES.values())
      constants = set(weights.tensor_layouts) | cache_names | {"freqs_cos", "freqs_sin"}
      counts = {name: torch.zeros(16, dtype=torch.int32).share_memory_()
@@ -294,8 +294,85 @@ index ef6a2b2..c242167 100644
              if args.profile_last_decode:
                  reset_caches(runtime, ranks, host_cache)
                  profiled = {}
+diff --git a/models/deepseek_v4_1_flash_a3/o_proj.py b/models/deepseek_v4_1_flash_a3/o_proj.py
+index 502fa5b..365e535 100644
+--- a/models/deepseek_v4_1_flash_a3/o_proj.py
++++ b/models/deepseek_v4_1_flash_a3/o_proj.py
+@@ -306,9 +306,9 @@ gemm_bf16_native = make_gemm_bf16_native(k_subtile=0)
+ prefill_bf16_native = make_gemm_bf16_native(k_subtile=PREFILL_BF16_K_SUBTILE)
+
+
+-def make_native_project_output(*, prefill, b1_rotated):
++def make_native_project_output(*, prefill, b1_rotated, capture=False):
+     @pl.jit.inline(auto_scope=False)
+-    def project_output(
++    def project_into(
+         attended: pl.Tensor[[T_DYN, LOCAL_H * HEAD_DIM], pl.BF16],
+         wo_a: pl.Tensor[[LOCAL_O_GROUPS, O_GROUP_IN, O_LORA], pl.BF16, pl.NZ],
+         wo_b: pl.Tensor[[LOCAL_O_WIDTH, D], pl.BF16, pl.NZ],
+@@ -316,15 +316,16 @@ def make_native_project_output(*, prefill, b1_rotated):
+         rope_sin: pl.Tensor[[T_DYN, ROPE_DIM // 2], pl.FP32],
+         output: pl.Tensor[[T_DYN, D], pl.BF16],
+         num_tokens: pl.Scalar[pl.INT32],
++        rotated_buffer: pl.Tensor[[T_DYN, LOCAL_H * HEAD_DIM], pl.BF16],
++        projected: pl.Tensor[[T_DYN, LOCAL_O_WIDTH], pl.BF16],
+     ):
+         """Apply inverse RoPE and grouped BF16 O-A/O-B projections. Prefill consumes attention scratch."""
+-        tokens = pl.tensor.dim(output, 0)
+         if prefill:
+             rotated = rotate_output(attended, rope_cos, rope_sin, attended, num_tokens)
+         elif b1_rotated:
+             rotated = attended
+         else:
+-            rotated = pl.create_tensor([tokens, LOCAL_H * HEAD_DIM], dtype=pl.BF16)
++            rotated = rotated_buffer
+             if num_tokens == 1:
+                 rotated = rotate_decode_b1(attended, rope_cos, rope_sin, rotated, num_tokens)
+             else:
+@@ -332,7 +333,6 @@ def make_native_project_output(*, prefill, b1_rotated):
+                     attended, rotated, rope_cos, rope_sin, 0, num_tokens,
+                     LOCAL_H, HEAD_DIM, "inverse_rope_o", True, True,
+                 )
+-        projected = pl.create_tensor([tokens, LOCAL_O_WIDTH], dtype=pl.BF16)
+         ready = pl.system.task_dummy(deps=[])
+         for group in pl.parallel(LOCAL_O_GROUPS):
+             source_col = pl.cast(group * O_GROUP_IN, pl.INT32)
+@@ -385,6 +385,24 @@ def make_native_project_output(*, prefill, b1_rotated):
+             )
+         return output
+
++    if capture:
++        return project_into
++
++    @pl.jit.inline(auto_scope=False)
++    def project_output(
++        attended: pl.Tensor[[T_DYN, LOCAL_H * HEAD_DIM], pl.BF16],
++        wo_a: pl.Tensor[[LOCAL_O_GROUPS, O_GROUP_IN, O_LORA], pl.BF16, pl.NZ],
++        wo_b: pl.Tensor[[LOCAL_O_WIDTH, D], pl.BF16, pl.NZ],
++        rope_cos: pl.Tensor[[T_DYN, ROPE_DIM // 2], pl.FP32],
++        rope_sin: pl.Tensor[[T_DYN, ROPE_DIM // 2], pl.FP32],
++        output: pl.Tensor[[T_DYN, D], pl.BF16],
++        num_tokens: pl.Scalar[pl.INT32],
++    ):
++        tokens = pl.tensor.dim(output, 0)
++        projected = pl.create_tensor([tokens, LOCAL_O_WIDTH], dtype=pl.BF16)
++        scratch = pl.create_tensor([tokens, LOCAL_H * HEAD_DIM], dtype=pl.BF16)
++        return project_into(attended, wo_a, wo_b, rope_cos, rope_sin, output, num_tokens, scratch, projected)
++
+     return project_output
+
+
+@@ -392,6 +410,8 @@ prefill_o_proj_nz = make_native_project_output(prefill=True, b1_rotated=False)
+ _decode_o_proj_nz_rotated = make_native_project_output(prefill=False, b1_rotated=True)
+ decode_o_proj_nz = make_native_project_output(prefill=False, b1_rotated=False)
+
++decode_o_proj_nz_capture = make_native_project_output(prefill=False, b1_rotated=False, capture=True)
++
+
+ @pl.jit.inline(auto_scope=False)
+ def decode_o_proj_nz_from_attention(
 diff --git a/models/deepseek_v4_1_flash_a3/packed.py b/models/deepseek_v4_1_flash_a3/packed.py
-index 98f9f0c..e435167 100644
+index 98f9f0c..1d5c171 100644
 --- a/models/deepseek_v4_1_flash_a3/packed.py
 +++ b/models/deepseek_v4_1_flash_a3/packed.py
 @@ -11,6 +11,7 @@
@@ -760,7 +837,7 @@ index 98f9f0c..e435167 100644
 +                                          graphs.ranks[0], C.FLASH)
 +                attn_post = PackedAttentionPostVJP(draft, ffn_mhc, graphs.draft_attn_post_program,
 +                                                   graphs.ranks[0], C.FLASH)
-+                wo_input = PackedWoInputVJP(draft, graphs.draft_wo_input_program, C.FLASH)
++                wo_input = PackedWoInputVJP(draft, graphs.draft_wo_input_program, C.FLASH, parameters=True)
 +        session = PackedSession(graphs, request_slots, args.context_capacity, (args.capacity, args.decode_capacity),
 +                                draft=draft, draft_loss=loss, draft_lm_head_vjp=lm_head_vjp, draft_final_vjp=final_vjp,
 +                                draft_ffn_post_vjp=ffn_post_vjp, draft_expert_dispatch=expert_dispatch,
