@@ -1,0 +1,581 @@
+{
+  "native_lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "image": "orthrus-dsv41-pypto:1122-7abc0df",
+  "hardware": "Ascend 910B3 on 111",
+  "scope": "Real layer-39 W8A8 projection weights form BF16 Q and temporary shared latent KV. Synthetic gathered history tests SWA and per-query compressed masks. Device forward output and global LSE feed the reverse device-to-device. Full packed-page replay and serving online update are outside this test.",
+  "timing": "Median of 23 warm calls; includes host submission, excludes D2H validation and forward.",
+  "compile_ep16": [
+    {
+      "passed": true,
+      "block": 16,
+      "world": 16,
+      "compiled": true
+    },
+    {
+      "passed": true,
+      "block": 32,
+      "world": 16,
+      "compiled": true
+    }
+  ],
+  "hardware_tp4": [
+    {
+      "passed": true,
+      "block": 16,
+      "world": 4,
+      "layer": 39,
+      "cases": [
+        {
+          "active_rows": 16,
+          "history_rows": 128,
+          "unique_selections": [
+            0,
+            1,
+            127,
+            128,
+            129,
+            255,
+            256,
+            385,
+            511,
+            512
+          ],
+          "owner": 0,
+          "repeated_byte_exact": 24,
+          "resident_call_median_ms": 34.710580948740244,
+          "lanes": [
+            {
+              "query": {
+                "relative_l2": 3.2293295983869633e-06,
+                "max_abs": 7.833900673905742e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 3.309014615099706e-06,
+                "max_abs": 3.477258609246858e-07
+              },
+              "sink": {
+                "relative_l2": 3.322798210645988e-06,
+                "max_abs": 5.425700040184549e-09
+              },
+              "forward": {
+                "relative_l2": 2.1146647668501828e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 3.305576435500036e-06,
+                "max_abs": 6.72834035500558e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 3.786809699797215e-06,
+                "max_abs": 4.257319706491014e-07
+              },
+              "sink": {
+                "relative_l2": 2.913746572567388e-06,
+                "max_abs": 1.2278557468513307e-08
+              },
+              "forward": {
+                "relative_l2": 2.1274745449773036e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 3.219368245894248e-06,
+                "max_abs": 3.531073386941683e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 3.4805248322718707e-06,
+                "max_abs": 8.372875179470107e-08
+              },
+              "sink": {
+                "relative_l2": 1.81898396137089e-06,
+                "max_abs": 4.714901539505656e-09
+              },
+              "forward": {
+                "relative_l2": 2.226834340035566e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 3.2905499798976705e-06,
+                "max_abs": 5.1160880302179856e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 3.556532484931864e-06,
+                "max_abs": 1.4542033560313583e-07
+              },
+              "sink": {
+                "relative_l2": 3.9119448702459e-06,
+                "max_abs": 7.494948928740523e-09
+              },
+              "forward": {
+                "relative_l2": 2.1126311366970185e-06,
+                "lse_max_abs": 9.5367431640625e-07
+              }
+            }
+          ]
+        },
+        {
+          "active_rows": 7,
+          "history_rows": 73,
+          "unique_selections": [
+            0,
+            1,
+            127,
+            128,
+            129,
+            511,
+            512
+          ],
+          "owner": 0,
+          "repeated_byte_exact": 24,
+          "resident_call_median_ms": 35.07928200997412,
+          "lanes": [
+            {
+              "query": {
+                "relative_l2": 3.613802498428105e-06,
+                "max_abs": 1.0558091834839134e-07
+              },
+              "temporary_kv": {
+                "relative_l2": 3.4027726984292815e-06,
+                "max_abs": 5.230384229337748e-07
+              },
+              "sink": {
+                "relative_l2": 1.4949720003132516e-06,
+                "max_abs": 7.762205076616846e-09
+              },
+              "forward": {
+                "relative_l2": 2.052400077445782e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 3.592907623057148e-06,
+                "max_abs": 9.088796754878198e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 4.242448485079789e-06,
+                "max_abs": 6.405026877834286e-07
+              },
+              "sink": {
+                "relative_l2": 2.2568205668141384e-06,
+                "max_abs": 1.2190914152026677e-08
+              },
+              "forward": {
+                "relative_l2": 2.3275733838090673e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 3.23844458546626e-06,
+                "max_abs": 3.436028910095562e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 3.43253292684908e-06,
+                "max_abs": 1.417723900195081e-07
+              },
+              "sink": {
+                "relative_l2": 1.6520447233562309e-06,
+                "max_abs": 6.17785477332114e-09
+              },
+              "forward": {
+                "relative_l2": 2.205988948844606e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 3.3617734541666383e-06,
+                "max_abs": 3.830562582060604e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 3.475789709846248e-06,
+                "max_abs": 1.076666465453166e-07
+              },
+              "sink": {
+                "relative_l2": 2.0560089656201756e-06,
+                "max_abs": 6.189898943669697e-09
+              },
+              "forward": {
+                "relative_l2": 2.064291720671463e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            }
+          ]
+        },
+        {
+          "active_rows": 1,
+          "history_rows": 0,
+          "unique_selections": [
+            0
+          ],
+          "owner": 0,
+          "repeated_byte_exact": 24,
+          "resident_call_median_ms": 44.34246802702546,
+          "lanes": [
+            {
+              "query": {
+                "relative_l2": 5.1888892004994405e-06,
+                "max_abs": 1.737816386418456e-07
+              },
+              "temporary_kv": {
+                "relative_l2": 3.925190538584319e-06,
+                "max_abs": 1.333131063124826e-06
+              },
+              "sink": {
+                "relative_l2": 1.2458379814871333e-06,
+                "max_abs": 3.181560655554638e-08
+              },
+              "forward": {
+                "relative_l2": 1.7183650697916164e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 5.767061994585733e-06,
+                "max_abs": 2.251638629401087e-07
+              },
+              "temporary_kv": {
+                "relative_l2": 3.3706442300081185e-06,
+                "max_abs": 9.293105867891338e-07
+              },
+              "sink": {
+                "relative_l2": 1.9612197909543185e-06,
+                "max_abs": 7.218721116176996e-08
+              },
+              "forward": {
+                "relative_l2": 1.5553197272311081e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 4.173592930664549e-06,
+                "max_abs": 8.471087673250083e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 3.507002704236766e-06,
+                "max_abs": 3.2463241274316434e-07
+              },
+              "sink": {
+                "relative_l2": 1.6662106861362184e-06,
+                "max_abs": 6.138211480419264e-08
+              },
+              "forward": {
+                "relative_l2": 1.4615262671213713e-06,
+                "lse_max_abs": 2.384185791015625e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 4.186506981208281e-06,
+                "max_abs": 1.2481398064569105e-07
+              },
+              "temporary_kv": {
+                "relative_l2": 3.6469743362385097e-06,
+                "max_abs": 4.7172616778057286e-07
+              },
+              "sink": {
+                "relative_l2": 1.4131587775491608e-06,
+                "max_abs": 5.600677010705879e-08
+              },
+              "forward": {
+                "relative_l2": 1.4793970422033453e-06,
+                "lse_max_abs": 2.384185791015625e-07
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "passed": true,
+      "block": 32,
+      "world": 4,
+      "layer": 39,
+      "cases": [
+        {
+          "active_rows": 32,
+          "history_rows": 128,
+          "unique_selections": [
+            0,
+            1,
+            127,
+            128,
+            129,
+            255,
+            256,
+            385,
+            511,
+            512
+          ],
+          "owner": 0,
+          "repeated_byte_exact": 24,
+          "resident_call_median_ms": 31.666766153648496,
+          "lanes": [
+            {
+              "query": {
+                "relative_l2": 3.261259898409933e-06,
+                "max_abs": 1.1077178291817036e-07
+              },
+              "temporary_kv": {
+                "relative_l2": 3.628816792209828e-06,
+                "max_abs": 3.032533225158507e-07
+              },
+              "sink": {
+                "relative_l2": 2.0671591595137586e-06,
+                "max_abs": 6.997232645730711e-09
+              },
+              "forward": {
+                "relative_l2": 1.6796130921648e-06,
+                "lse_max_abs": 9.5367431640625e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 3.4340372862248483e-06,
+                "max_abs": 1.596256193501719e-07
+              },
+              "temporary_kv": {
+                "relative_l2": 3.556574993634363e-06,
+                "max_abs": 3.604489996061888e-07
+              },
+              "sink": {
+                "relative_l2": 2.2138249959725717e-06,
+                "max_abs": 6.677293475955415e-09
+              },
+              "forward": {
+                "relative_l2": 1.6702189213901875e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 3.170397439839882e-06,
+                "max_abs": 3.8285895967438144e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 3.4960851303900065e-06,
+                "max_abs": 1.4484574763912184e-07
+              },
+              "sink": {
+                "relative_l2": 1.2600813643965098e-06,
+                "max_abs": 5.267539624322429e-09
+              },
+              "forward": {
+                "relative_l2": 1.9217548015149077e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 3.1862984550985183e-06,
+                "max_abs": 3.737242458253312e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 3.4942238277997898e-06,
+                "max_abs": 1.3409233535696674e-07
+              },
+              "sink": {
+                "relative_l2": 2.648892205050127e-06,
+                "max_abs": 8.050570097714593e-09
+              },
+              "forward": {
+                "relative_l2": 1.8522831624068203e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            }
+          ]
+        },
+        {
+          "active_rows": 7,
+          "history_rows": 73,
+          "unique_selections": [
+            0,
+            1,
+            127,
+            128,
+            129,
+            511,
+            512
+          ],
+          "owner": 0,
+          "repeated_byte_exact": 24,
+          "resident_call_median_ms": 30.471544014289975,
+          "lanes": [
+            {
+              "query": {
+                "relative_l2": 3.3348628430717823e-06,
+                "max_abs": 7.179724058792476e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 3.403852783644372e-06,
+                "max_abs": 2.827558160493904e-07
+              },
+              "sink": {
+                "relative_l2": 1.0310103794161376e-06,
+                "max_abs": 4.278109816272316e-09
+              },
+              "forward": {
+                "relative_l2": 1.6584726836299524e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 3.316966456722899e-06,
+                "max_abs": 7.509360170742784e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 3.614048916106948e-06,
+                "max_abs": 3.58824921227463e-07
+              },
+              "sink": {
+                "relative_l2": 2.6431639785562376e-06,
+                "max_abs": 9.348505889111153e-09
+              },
+              "forward": {
+                "relative_l2": 1.525451125417021e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 3.4196570371718456e-06,
+                "max_abs": 9.057791366950951e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 3.4935933609913673e-06,
+                "max_abs": 1.0507324684980168e-07
+              },
+              "sink": {
+                "relative_l2": 1.6991707633431541e-06,
+                "max_abs": 7.359041056869894e-09
+              },
+              "forward": {
+                "relative_l2": 1.7229377817784552e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 3.238636198575781e-06,
+                "max_abs": 5.8205577158423893e-08
+              },
+              "temporary_kv": {
+                "relative_l2": 3.5353987574928907e-06,
+                "max_abs": 1.2361951990877418e-07
+              },
+              "sink": {
+                "relative_l2": 9.778319221963244e-07,
+                "max_abs": 3.579045159280694e-09
+              },
+              "forward": {
+                "relative_l2": 1.7816336139730993e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            }
+          ]
+        },
+        {
+          "active_rows": 1,
+          "history_rows": 0,
+          "unique_selections": [
+            0
+          ],
+          "owner": 0,
+          "repeated_byte_exact": 24,
+          "resident_call_median_ms": 20.61257604509592,
+          "lanes": [
+            {
+              "query": {
+                "relative_l2": 5.662258904161601e-06,
+                "max_abs": 1.7854566691007795e-07
+              },
+              "temporary_kv": {
+                "relative_l2": 4.883771235181657e-06,
+                "max_abs": 1.0772297353370264e-06
+              },
+              "sink": {
+                "relative_l2": 1.3408324071005486e-06,
+                "max_abs": 2.6460370400847866e-08
+              },
+              "forward": {
+                "relative_l2": 1.1825652563857147e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 5.502117528333589e-06,
+                "max_abs": 1.5421554370792165e-07
+              },
+              "temporary_kv": {
+                "relative_l2": 3.3749450418628897e-06,
+                "max_abs": 1.0322521334926726e-06
+              },
+              "sink": {
+                "relative_l2": 9.631217051112167e-07,
+                "max_abs": 1.7363566335616698e-08
+              },
+              "forward": {
+                "relative_l2": 1.185461428576673e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 4.566294008696787e-06,
+                "max_abs": 1.187531800984909e-07
+              },
+              "temporary_kv": {
+                "relative_l2": 3.3159152374632076e-06,
+                "max_abs": 1.693212685538112e-07
+              },
+              "sink": {
+                "relative_l2": 9.902391380784644e-07,
+                "max_abs": 1.8672806949976417e-08
+              },
+              "forward": {
+                "relative_l2": 1.0394518312750733e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            },
+            {
+              "query": {
+                "relative_l2": 4.556983310140302e-06,
+                "max_abs": 1.1271446540526975e-07
+              },
+              "temporary_kv": {
+                "relative_l2": 3.4352225111721935e-06,
+                "max_abs": 1.878482805779593e-07
+              },
+              "sink": {
+                "relative_l2": 9.130160354725016e-07,
+                "max_abs": 1.80195571849312e-08
+              },
+              "forward": {
+                "relative_l2": 1.0244571058137808e-06,
+                "lse_max_abs": 4.76837158203125e-07
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "max_relative_l2": {
+    "query": 5.767061994585733e-06,
+    "temporary_kv": 4.883771235181657e-06,
+    "sink": 3.9119448702459e-06,
+    "forward": 2.3275733838090673e-06
+  },
+  "min_median_ms": 20.61257604509592,
+  "max_median_ms": 44.34246802702546
+}

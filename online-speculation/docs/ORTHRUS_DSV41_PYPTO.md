@@ -133,6 +133,10 @@ Wo 的输入反向从该 TP 梯度继续计算，依次通过 Wo-B、分组 Wo-A
 
 末 N 层起草时，原生 Wo 将逆 RoPE 后和 Wo-A 后的 BF16 张量直接写入留存缓冲区。反向使用这两份实际参与前向的张量计算 Wo-A 和 Wo-B 的参数梯度，按驻留权重的物理 NZ 顺序输出 FP32，并复用 Wo-B 的输入梯度继续反传。第 39 层真实权重的 K32 单 rank 和 K16 四卡 TP4 用例中，留存前后输出逐字节一致。Wo-A、Wo-B 和 Attention context 梯度对照 FP64 的最大相对 L2 分别为 `3.55e-6`、`2.45e-6` 和 `3.34e-6`。四卡反向热态中位数为 25.2–28.1 ms，包含宿主提交，两种宽度的 EP16 反向通过编译。40 层前向已编译 K32/last-4 和 K16/last-0，manifest 升为 schema 4，需要重新生成整图。权重逐层上传使用原始设备分配地址和 `dst_offset`。复验入口为 `validate_dsv41_pypto_packed_wo_training.py --checkpoint /model`。[实卡与编译结果](validation/dsv41/pypto-1122-949a-packed-wo-training-910b3.json)
 
+双向 Attention 反向以同一次前向的 context 和全局 LSE 为准，按滑窗、每个 query 的压缩历史选择以及共享临时块恢复概率。每段用 `dContext · Context` 作为 softmax 校正项。sink 只参与归一化和自身梯度计算。各 rank 返回本地 Q、临时 KV 和 sink 的 FP32 梯度。临时块同时作为 K 和 V，所以只有前几行有教师反馈时，后面的临时 KV 行也可能收到梯度。历史段按整行写入各自的 Q 梯度，再由向量核按固定顺序累加。
+
+验证图用第 39 层真实 Q/KV 投影权重生成 BF16 输入，将原有 SWA 和压缩合并的设备输出直接交给反向。四卡 TP4 验证 K16/K32，覆盖空历史、每行 0–512 个压缩历史选择，以及 1 行、7 行和满块反馈。每组重复 24 次，结果逐字节一致，历史掩码保持原值。Q、临时 KV 和 sink 对照 FP64 的最大相对 L2 分别为 `5.77e-6`、`4.88e-6` 和 `3.91e-6`，热态中位数为 20.6–44.3 ms，计入宿主提交。两个宽度的 EP16 形状均通过编译。复验入口为 `validate_dsv41_pypto_packed_attention_vjp.py --checkpoint /model --devices 0,1,2,3 --block 32 --iterations 24`。Serving 还需将请求保留的前向状态和驻留页表接到此入口，并将 TP 内共享 KV 的梯度归并到投影反向。[验证记录](validation/dsv41/pypto-1122-949a-packed-attention-vjp-910b3.json)
+
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
 ```bash
