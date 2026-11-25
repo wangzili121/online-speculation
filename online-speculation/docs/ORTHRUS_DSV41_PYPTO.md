@@ -28,7 +28,7 @@ A3 W8A8 开发分支 `deepseek_v4.1_flash_1122` 更新到 `4e198fa`，包含 Pre
 
 在独立 checkout 和 111 的 `72a62d1-offline` 镜像上，1122 的两个 CLI 可导入。用各自 checkout 自带的 golden runner 在 111 和 167 复测 `c33efdd`、`4e198fa`，容量 16、上下文容量 256 的 Prefill 和 Decode 编译均在旧版工具链的 JIT 形状特化时失败。Prefill 首处报 `_gate_panel_from_fp32__16/xg_buf` 缺少张量元数据，Decode 首处报 `gemm_int8_tiled__13/payload` 缺少张量元数据。编译阶段未使用 NPU。现有 Lib 补丁依赖的 `network.py`、`prefill_layer.py`、`prefill_resident.py` 等文件在 1122 已被替换。源码配对检查保留当前验收基线。
 
-167 的独立候选镜像使用 PyPTO `2e31e0c2`、Simpler `a5349f4` 和 PTOAS `v0.78`。只构建 Simpler 的 `build_package_a2a3`，沿用 `runtime-release.patch` 解决 Release 下的未使用变量。用 `4e198fa` 源码编出 Prefill 容量 16、Decode 容量 16、上下文容量 256 的两张图，编译分别为 154.05 秒和 195.48 秒。设备探针另需备好该 Simpler 版本的 PTO-ISA checkout。167 的物理卡 7 在新版和原镜像下均报初始化错误 `507899`，因此整图通过的范围是编译阶段。Decode 编译器同时报告了并发标量写入告警，原生 AR 实卡验收仍需检查重复输出和缓存。
+167 的独立候选镜像使用 PyPTO `2e31e0c2`、Simpler `a5349f4` 和 PTOAS `v0.78`。只构建 Simpler 的 `build_package_a2a3`，沿用 `runtime-release.patch` 解决 Release 下的未使用变量。用 `4e198fa` 源码编出 Prefill 容量 16、Decode 容量 16、上下文容量 256 的两张图，编译分别为 154.05 秒和 195.48 秒。开启通信窗口预分配后，上下文容量 512 的 Prefill 容量 32 和 Decode 容量 16 同样通过，分别为 153.54 秒和 186.46 秒。设备探针另需备好该 Simpler 版本的 PTO-ISA checkout。167 的物理卡 7 在新版和原镜像下均报初始化错误 `507899`，因此整图通过的范围是编译阶段。Decode 编译器同时报告了并发标量写入告警，原生 AR 实卡验收仍需检查重复输出和缓存。
 
 接下来在相同 W8A8 输入上验证原生 AR。随后为 1122 的 Prefill/Decode 图接入双机 rank 所有权以及请求缓存的读取、临时写入和提交边界。Verify 需保持候选因果可见性和拒绝恢复，Accept 需保持已接受前缀的缓存提交。Draft 接入只读分页历史，在线更新最后核对真实冻结层边界、梯度和驻留权重发布。逐阶段对照保留相同贪心 token、缓存指纹和计时口径。
 

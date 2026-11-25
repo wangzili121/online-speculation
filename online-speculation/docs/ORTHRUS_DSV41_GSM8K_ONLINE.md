@@ -76,7 +76,7 @@ bash online-speculation/scripts/dsv41_pypto_env.sh gsm8k-summary \
 DSV41_REPORT_MIN_UPDATES=64 bash online-speculation/scripts/run_dsv41_pypto_company_online.sh node7 report 1
 ```
 
-`DSV41_REPORT_TRAIN`、`DSV41_REPORT_EVAL`、`DSV41_REPORT_TOKENS` 可以覆盖题目预算和输出上限。报告每批保存已用题数、`updates`、`publications` 和最新的 `published_update`。训练预算耗尽时仍完成留出评测，步数未达标会标记失败。比较运行版本时还需检查两边实际消耗的训练题及生成 token 一致。
+`DSV41_REPORT_TRAIN`、`DSV41_REPORT_EVAL`、`DSV41_REPORT_TOKENS` 可以覆盖题目预算和输出上限。报告每批保存已用题数、`updates`、`publications` 和最新的 `published_update`。训练预算耗尽时仍完成留出评测，步数未达标会标记失败。比较运行版本时还需检查两边实际消耗的训练题及生成 token 一致。用真实 W8A8 tokenizer 预检默认的 64 道训练题与 16 道留出题，最长 prompt 为 164 token，保留 192 个输出位置和 K32 临时块后总共需要 387 个位置，低于默认的 512。
 
 ## 性能记录
 
