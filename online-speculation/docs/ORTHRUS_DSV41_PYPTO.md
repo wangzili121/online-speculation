@@ -101,10 +101,20 @@ python /opt/dsv41-1122/compile_dsv41_pypto_packed_draft.py \
 
 # 原生 generate 的附加参数
 # --orthrus-draft-head <BF16 head 目录> --orthrus-draft-runtime-dir /results/graphs/draft
-# --orthrus-verify-k 16 --orthrus-cache-mode retain --audit-caches
+# --orthrus-verify-k 16 --orthrus-cache-mode retain
 ```
 
-`--audit-caches` 在 Verify 提交后额外检查 TP 副本与非活跃 DP 的缓存，吞吐计时应单独运行。当前证据覆盖编译、产物重载、驻留参数 ABI 和主机历史管理。整模 NPU 执行、双机 EP16 以及该图的 last-N 在线更新需要继续验收。[整图验证记录](validation/dsv41/pypto-1122-packed-draft-graph.json)
+也可以在同一个 packed 会话里验多请求。准备按同一版本编译的 Prefill 及 Decode，两个阶段各保留每 DP 一个请求槽。workload 使用每行包含 `id` 和 `prompt` 的 JSONL。下面每波最多四个请求，覆盖四个 DP。两条路径先各预热一波，再对同一批输入按固定长度生成并逐 token 核对。JSON 记录每波 Prefill、Draft、Verify/Accept、释放和吞吐，Verify/Accept 计时含该轮的调度。启动及预热单独计时。
+
+```bash
+python /opt/dsv41-1122/validate_dsv41_pypto_packed_generation.py \
+  --checkpoint /models/DeepSeek-V4.1-Flash-w8a8 \
+  --graph-dir /results/graphs --draft-graph /results/graphs/draft \
+  --head /results/initialized-head --workload /results/prompts.jsonl \
+  --concurrency 4 --width 8 --tokens 16 --output /results/packed-generation.json
+```
+
+该入口使用当前能枚举 16 个逻辑设备的 L3 运行时。整模 NPU 执行、双机 EP16 及 last-N 在线更新仍需分别验收。[整图验证记录](validation/dsv41/pypto-1122-packed-draft-graph.json)
 
 ## 内网权重预检
 

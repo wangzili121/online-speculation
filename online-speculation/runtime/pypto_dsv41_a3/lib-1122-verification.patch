@@ -222,7 +222,7 @@ index ef6a2b2..85d953d 100644
                  reset_caches(runtime, ranks, host_cache)
                  profiled = {}
 diff --git a/models/deepseek_v4_1_flash_a3/packed.py b/models/deepseek_v4_1_flash_a3/packed.py
-index 98f9f0c..74a58bc 100644
+index 98f9f0c..6622398 100644
 --- a/models/deepseek_v4_1_flash_a3/packed.py
 +++ b/models/deepseek_v4_1_flash_a3/packed.py
 @@ -11,6 +11,7 @@
@@ -262,11 +262,16 @@ index 98f9f0c..74a58bc 100644
          self.history = {}
          self._idle_values = {}
          self._active_dps = [set(), set()]
-@@ -108,11 +122,67 @@ class PackedSession:
+@@ -108,11 +122,75 @@ class PackedSession:
 
      def advance_batch(self, phase, queries):
          """Run (handle, token IDs) pairs in caller order. Return sampled rows keyed by handle."""
 +        return self._advance(phase, queries)
++
++    def prefill_greedy_batch(self, queries):
++        """Prefill chunks and return the first token for requests that finish Prefill."""
++        sampled = self._advance("prefill", queries, greedy=True)
++        return {handle: rows[0] for handle, rows in sampled.items()}
 +
 +    def decode_greedy_batch(self, queries):
 +        """Run one AR decode input per request and return device-greedy IDs."""
@@ -280,7 +285,7 @@ index 98f9f0c..74a58bc 100644
 +                                teacher_limits=teacher_limits, teacher_logits=feedback)
 +        return VerifiedBatch(emitted, feedback)
 +
-+    def speculate_batch(self, anchors, *, width=8, teacher_limits=None):
++    def speculate_batch(self, anchors, *, width=8, teacher_limits=None, output_limits=None):
 +        """Draft one request per DP and verify the resulting candidates in one wave."""
 +        from blockspec.dsv41_packed_proposer import DraftRequest
 +
@@ -298,8 +303,11 @@ index 98f9f0c..74a58bc 100644
 +            if owner in by_owner:
 +                raise ValueError("The draft wave supports one live request per DP")
 +            by_owner[owner] = handle, anchor
-+            if record.committed + self.draft.block <= self.context:
-+                scheduled.append(DraftRequest(anchor, record.committed, owner, width - 1, handle, tuple(record.pages)))
++            limit = width if output_limits is None else output_limits[handle]
++            if type(limit) is not int or not 1 <= limit <= width:
++                raise ValueError("Speculative output limit must be within the verification width")
++            if limit > 1 and record.committed + self.draft.block <= self.context:
++                scheduled.append(DraftRequest(anchor, record.committed, owner, limit - 1, handle, tuple(record.pages)))
 +        if not by_owner:
 +            raise ValueError("Empty dispatch")
 +
@@ -330,7 +338,7 @@ index 98f9f0c..74a58bc 100644
          groups = [[] for _ in range(C.DP_SIZE)]
          seen = set()
          queries = list(queries)
-@@ -124,27 +194,63 @@ class PackedSession:
+@@ -124,27 +202,63 @@ class PackedSession:
              if handle in seen or not tokens or any(type(t) is not int or not 0 <= t < C.FLASH.vocab_size for t in tokens):
                  raise ValueError("Invalid or repeated query")
              end = record.committed + len(tokens)
@@ -400,7 +408,7 @@ index 98f9f0c..74a58bc 100644
          g = self.graphs
          # Prefill and Decode share the same packed positions, page maps and cache allocations.
          template = g.host_io["idle_inputs"][0]
-@@ -161,7 +267,7 @@ class PackedSession:
+@@ -161,7 +275,7 @@ class PackedSession:
              end = start + len(tokens)
              needed = (end + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              record.pages.extend(self.free_pages[dp].pop() for _ in range(needed - len(record.pages)))
@@ -409,7 +417,7 @@ index 98f9f0c..74a58bc 100644
              table[row, :needed] = physical
              n_half = (end // 2 + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              half[row, :n_half] = physical[:n_half]
-@@ -171,7 +277,9 @@ class PackedSession:
+@@ -171,7 +285,9 @@ class PackedSession:
              positions.extend(range(start, end))
              owners.extend([row] * len(tokens))
              lengths.append(len(ids))
@@ -420,7 +428,7 @@ index 98f9f0c..74a58bc 100644
                  sampled.append((handle, len(ids) - 1))
          count = len(ids)
          values = dict(g.host_io["idle_inputs"][0 if not index else 1])
-@@ -210,7 +318,7 @@ class PackedSession:
+@@ -210,7 +326,7 @@ class PackedSession:
                            identity_rows=order, replay_rows=order)
          return values, sampled, count
 
@@ -429,7 +437,7 @@ index 98f9f0c..74a58bc 100644
          g = self.graphs
          selections = []
          with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
-@@ -221,7 +329,7 @@ class PackedSession:
+@@ -221,7 +337,7 @@ class PackedSession:
                  if not group and dp not in self._active_dps[index]:
                      continue
                  if group:
@@ -438,7 +446,7 @@ index 98f9f0c..74a58bc 100644
                  else:
                      if index not in self._idle_values:
                          self._idle_values[index] = self._inputs(dp, [], index, capacity)
-@@ -243,6 +351,19 @@ class PackedSession:
+@@ -243,6 +359,19 @@ class PackedSession:
          self._active_dps[index] = {dp for dp, group in enumerate(groups) if group}
          args = [g.arguments[index][name] for name in g.names[index]]
          g.runtime.run(g.programs[index], *args, config=g.config)
@@ -458,7 +466,7 @@ index 98f9f0c..74a58bc 100644
          result = {}
          for handle, rank, row in selections:
              logits = g.host_io["logits"][0]
-@@ -282,9 +403,21 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
+@@ -282,9 +411,21 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
                                                 (args.decode_runtime_dir, "decode", args.decode_capacity))]
      if any(m["history_capacity"] != args.context_capacity for m in manifests):
          raise ValueError("History capacity differs from the compiled graph pair")
@@ -579,10 +587,10 @@ index f11f2da..cb48be8 100644
      if reference is not None:
          report["numerical_acceptance"] = reference["policy"]
 diff --git a/tests/contract/test_ds41_packed.py b/tests/contract/test_ds41_packed.py
-index 961d34e..625460a 100644
+index 961d34e..776e21b 100644
 --- a/tests/contract/test_ds41_packed.py
 +++ b/tests/contract/test_ds41_packed.py
-@@ -64,3 +64,140 @@ def test_packed_page_boundary_and_recycled_handle():
+@@ -64,3 +64,145 @@ def test_packed_page_boundary_and_recycled_handle():
      with pytest.raises(ValueError, match="Expired"):
          session.advance_batch("decode", [(a, [1])])
      assert new is not a and live.pages == live_pages
@@ -649,7 +657,8 @@ index 961d34e..625460a 100644
 +    assert values["c1a_index_block_table"][0].tolist() == [a.pages[0], -1]
 +
 +
-+def test_greedy_packed_decode_transfers_one_sample_packet_per_owner():
++@pytest.mark.parametrize("phase", ["prefill", "decode"])
++def test_greedy_packed_dispatch_transfers_one_sample_packet_per_owner(phase):
 +    from models.deepseek_v4_1_flash_a3.lm_head import SAMPLED_IDS_PAD
 +    from models.deepseek_v4_1_flash_a3.packed import PackedSession
 +
@@ -669,23 +678,26 @@ index 961d34e..625460a 100644
 +        ranks[owner]["sampled_ids"] = SimpleNamespace(data_ptr=packet.data_ptr())
 +    counts = {key: torch.zeros(16, dtype=torch.int32) for key in ("moe_num_tokens", "attention_num_tokens")}
 +    graphs = SimpleNamespace(
-+        ranks=[[], ranks], arguments=[{}, counts], names=[[], list(counts)],
++        ranks=[ranks, ranks], arguments=[{}, counts], names=[[], list(counts)],
 +        programs=[None, None], config=None,
 +        decode_inputs=SimpleNamespace(fields=[{}, {}, {}], upload=lambda *args: None),
 +        runtime=SimpleNamespace(run=lambda *args, **kwargs: None, copy_from=cp),
 +    )
 +    session = PackedSession(graphs, 2, 256, (16, 16))
 +    a, b, d = session.admit("a", 0, 1), session.admit("b", 0, 1), session.admit("d", 1, 1)
-+    for record in session.history.values():
-+        record.committed = 1
++    if phase == "decode":
++        for record in session.history.values():
++            record.committed = 1
 +
 +    def inputs(dp, group, index, capacity, *, sample_all):
-+        assert not sample_all and index == 1 and capacity == 16
++        assert not sample_all and index == int(phase == "decode") and capacity == 16
 +        sampled = [(record.handle, row) for row, (record, _) in enumerate(group)]
 +        return {}, sampled, len(group)
 +
 +    session._inputs = inputs
-+    assert session.decode_greedy_batch([(d, (40,)), (a, (30,)), (b, (39,))]) == {d: 63, a: 50, b: 52}
++    session._upload_prefill_group = lambda *args: None
++    run = session.prefill_greedy_batch if phase == "prefill" else session.decode_greedy_batch
++    assert run([(d, (40,)), (a, (30,)), (b, (39,))]) == {d: 63, a: 50, b: 52}
 +    assert readbacks == [(0, packets[0].nbytes), (4, packets[1].nbytes)]
 +
 +
@@ -696,7 +708,7 @@ index 961d34e..625460a 100644
 +
 +    def propose(rows, *, uploads):
 +        staged.extend(rows)
-+        return {0: [11] * 7, 8: [22] * 7}
++        return {row.owner: [11 if row.owner == 0 else 22] * row.candidates for row in rows}
 +
 +    draft = SimpleNamespace(block=32, propose_batch=propose)
 +    session = PackedSession(None, 1, 384, (32, 16), draft=draft)
@@ -715,11 +727,12 @@ index 961d34e..625460a 100644
 +        return VerifiedBatch({a: (11, 54), b: (42,), c: (72,)}, {b: "teacher"})
 +
 +    session.verify_batch = verify
-+    wave = session.speculate_batch([(a, 5), (b, 6), (c, 7)], teacher_limits={b: 1})
++    wave = session.speculate_batch([(a, 5), (b, 6), (c, 7)], teacher_limits={b: 1},
++                                   output_limits={a: 7, b: 2, c: 1})
 +    assert [(r.history_key, r.pages, r.position, r.owner) for r in staged] == [
 +        (a, (2, 0), 131, 0), (b, (1, 2), 137, 8),
 +    ]
-+    assert wave.proposals == {a: (11,) * 7, b: (22,) * 7, c: ()}
-+    assert verified == [(a, (5, *(11,) * 7)), (b, (6, *(22,) * 7)), (c, (7,))]
++    assert wave.proposals == {a: (11,) * 6, b: (22,), c: ()}
++    assert verified == [(a, (5, *(11,) * 6)), (b, (6, 22)), (c, (7,))]
 +    assert wave.verified.emitted == {a: (11, 54), b: (42,), c: (72,)}
 +    assert wave.verified.teacher_logits == {b: "teacher"}

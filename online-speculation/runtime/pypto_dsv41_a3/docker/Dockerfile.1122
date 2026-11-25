@@ -46,6 +46,7 @@ RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca set -e; \
 
 COPY online-speculation/src/blockspec /opt/dsv41-1122/orthrus/blockspec
 COPY online-speculation/scripts/validate_dsv41_pypto_packed_history.py \
+     online-speculation/scripts/validate_dsv41_pypto_packed_generation.py \
      online-speculation/scripts/compile_dsv41_pypto_packed_draft.py \
      online-speculation/scripts/validate_dsv41_pypto_packed_qkv.py \
      online-speculation/scripts/validate_dsv41_pypto_packed_indexer.py \

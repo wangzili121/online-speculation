@@ -1,4 +1,6 @@
 from ctypes import memmove
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
 from types import SimpleNamespace
 import sys
 
@@ -6,6 +8,62 @@ import pytest
 import torch
 
 from blockspec.dsv41_packed_serving import PackedDecodeVerifier
+
+
+def test_packed_benchmark_matches_tokens_with_ragged_prefill_and_final_round():
+    from blockspec.dsv41_packed_proposer import DraftRoundStats
+
+    path = Path(__file__).parents[1] / "scripts" / "validate_dsv41_pypto_packed_generation.py"
+    spec = spec_from_file_location("packed_generation", path)
+    runner = module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    class Session:
+        def __init__(self):
+            self.draft = SimpleNamespace(stats=DraftRoundStats())
+            self.prefill = {}
+            self.limits = []
+
+        def admit(self, request_id, dp, size):
+            assert request_id not in self.prefill
+            self.prefill[request_id] = size
+            return _Handle(request_id, dp)
+
+        def prefill_greedy_batch(self, queries):
+            result = {}
+            for handle, prompt in queries:
+                self.prefill[handle.request_id] -= len(prompt)
+                if self.prefill[handle.request_id] == 0:
+                    result[handle] = prompt[-1] + 1
+            return result
+
+        def decode_greedy_batch(self, queries):
+            return {handle: values[0] + 1 for handle, values in queries}
+
+        def speculate_batch(self, queries, *, width, output_limits):
+            self.limits.append(sorted(output_limits.values()))
+            emitted = {}
+            for handle, anchor in queries:
+                size = min(output_limits[handle], 2 if handle.dp else 3)
+                emitted[handle] = tuple(range(anchor + 1, anchor + size + 1))
+            proposals = {handle: rows[:-1] for handle, rows in emitted.items()}
+            return SimpleNamespace(proposals=proposals, verified=SimpleNamespace(emitted=emitted))
+
+        def release(self, handle):
+            assert self.prefill.pop(handle.request_id) == 0
+
+    from collections import namedtuple
+
+    _Handle = namedtuple("Handle", "request_id dp")
+    session = Session()
+    result = runner.benchmark(session, [("a", [3]), ("b", [1, 2, 3, 4, 5])],
+                              chunk=2, tokens=6, width=8, concurrency=2, warmup=1)
+    assert result["passed"] and result["greedy_tokens_matched"] == 12
+    assert session.limits == [[5, 5], [2, 3], [1]] * 2
+    orthrus = result["arms"]["orthrus"]["waves"][0]
+    assert orthrus["accepted_candidates"] == orthrus["proposed_candidates"] == 5
+    assert orthrus["rounds"] == 3
+    assert not session.prefill
 
 
 @pytest.mark.parametrize("state_capacity", [3, 32])
