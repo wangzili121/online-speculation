@@ -1,0 +1,183 @@
+diff --git a/models/deepseek_v4_1_flash_a3/decode_fwd.py b/models/deepseek_v4_1_flash_a3/decode_fwd.py
+index 945d575..389ac91 100644
+--- a/models/deepseek_v4_1_flash_a3/decode_fwd.py
++++ b/models/deepseek_v4_1_flash_a3/decode_fwd.py
+@@ -701,6 +701,7 @@ def l2_decode_fwd(
+     output_arrived: pld.DistributedTensor[[TP_SIZE, 1], pl.INT32],
+     ffn_window: pld.DistributedTensor[[DECODE_CAPACITY, D], pl.BF16],
+     ffn_arrived: pld.DistributedTensor[[TP_SIZE, 1], pl.INT32],
++    execute_layers: pl.Scalar[pl.INT32],
+ ):
+     compressed_token_rope_cos = pl.create_tensor([DECODE_CAPACITY, ROPE_DIM // 2], dtype=pl.FP32)
+     compressed_token_rope_sin = pl.create_tensor([DECODE_CAPACITY, ROPE_DIM // 2], dtype=pl.FP32)
+@@ -712,13 +713,17 @@ def l2_decode_fwd(
+              )
+     retire_prefill_signals(result, output_arrived, rank // TP_SIZE * TP_SIZE, rank % TP_SIZE)
+     retire_prefill_signals(result, ffn_arrived, rank // TP_SIZE * TP_SIZE, rank % TP_SIZE)
+-    final_logits, final_sampled_ids = final_output(
+-        result, encoder_pre_mix, final_norm_weight, lm_head_weight,
+-        logit_row_indices, logits, sampled_ids,
+-        hidden_window, hidden_done, logits_window, logits_done,
+-        rank // TP_SIZE * TP_SIZE, rank % TP_SIZE, 1, 1,
+-    )
+-    return final_logits, final_sampled_ids
++    # The host supplies one mode for every rank. Skipping the head is
++    # collective-safe only when the complete TP group takes the same branch.
++    if execute_layers == 1:
++        logits, sampled_ids = final_output(
++            result, encoder_pre_mix, final_norm_weight, lm_head_weight,
++            logit_row_indices, logits, sampled_ids,
++            hidden_window, hidden_done, logits_window, logits_done,
++            rank // TP_SIZE * TP_SIZE, rank % TP_SIZE, 1, 1,
++        )
++    return logits, sampled_ids
++
+
+
+ @pl.jit.host
+@@ -942,7 +947,7 @@ def l3_decode_fwd(
+         head_logits_done = pld.window(head_logits_done_buffer, [TP_SIZE, 1], dtype=pl.INT32)
+         if execute_layers != 0:
+             l2_decode_fwd(
+-                engram_lookup[rank], engram_wkv[rank], engram_weight[rank], engram_rotation[rank], x_hc[rank], pre_mix[rank], hc_attn_fn[rank], hc_attn_scale[rank], hc_attn_base[rank], attn_norm_weight[rank], wq_a[rank], q_norm_weight[rank], wq_b[rank], wkv[rank], kv_norm_weight[rank], attn_sink[rank], wo_a[rank], wo_b[rank], freqs_cos[rank], freqs_sin[rank], window_slots[rank], window_indices[rank], window_cache_pool[rank], window_cache_scale_pool[rank], compressed_cache_pool[rank], compressed_cache_scale_pool[rank], token_to_req_indices[rank], position_ids[rank], index_cache_pool[rank], index_cache_scale_pool[rank], c2a_index_block_table[rank], c1a_index_block_table[rank], c2a_compressor_wkv[rank], c2a_compressor_wgate[rank], c1a_compressor_wkv[rank], query_start_loc[rank], state_block_table[rank], state_cache_pool[rank], compressor_norm_weight[rank], c2a_compressed_slots[rank], c1a_compressed_slots[rank], index_wk[rank], index_norm_weight[rank], index_wq_b[rank], index_weights_proj[rank], hc_ffn_fn[rank], hc_ffn_scale[rank], hc_ffn_base[rank], ffn_norm_weight[rank], gate_weight[rank], correction_bias[rank], routed_w1[rank], routed_w2[rank], routed_w3[rank],  shared_w13[rank], shared_w2[rank], recv_meta, recv_x, recv_weights, arrived, data_arrived, routed_output, combine_arrived, moe_num_tokens, attention_num_tokens, rank, wq_a_scale[rank], wq_b_scale[rank], wkv_scale[rank], index_wq_b_scale[rank], routed_w1_scale[rank], routed_w2_scale[rank], routed_w3_scale[rank], shared_w1_scale[rank], shared_w2_scale[rank], shared_w3_scale[rank], final_norm_weight[rank], lm_head_weight[rank], logit_row_indices[rank], logits[rank], sampled_ids[rank], head_hidden, head_hidden_done, head_logits, head_logits_done, output_window, output_arrived, ffn_window, ffn_arrived, device=rank,
++                engram_lookup[rank], engram_wkv[rank], engram_weight[rank], engram_rotation[rank], x_hc[rank], pre_mix[rank], hc_attn_fn[rank], hc_attn_scale[rank], hc_attn_base[rank], attn_norm_weight[rank], wq_a[rank], q_norm_weight[rank], wq_b[rank], wkv[rank], kv_norm_weight[rank], attn_sink[rank], wo_a[rank], wo_b[rank], freqs_cos[rank], freqs_sin[rank], window_slots[rank], window_indices[rank], window_cache_pool[rank], window_cache_scale_pool[rank], compressed_cache_pool[rank], compressed_cache_scale_pool[rank], token_to_req_indices[rank], position_ids[rank], index_cache_pool[rank], index_cache_scale_pool[rank], c2a_index_block_table[rank], c1a_index_block_table[rank], c2a_compressor_wkv[rank], c2a_compressor_wgate[rank], c1a_compressor_wkv[rank], query_start_loc[rank], state_block_table[rank], state_cache_pool[rank], compressor_norm_weight[rank], c2a_compressed_slots[rank], c1a_compressed_slots[rank], index_wk[rank], index_norm_weight[rank], index_wq_b[rank], index_weights_proj[rank], hc_ffn_fn[rank], hc_ffn_scale[rank], hc_ffn_base[rank], ffn_norm_weight[rank], gate_weight[rank], correction_bias[rank], routed_w1[rank], routed_w2[rank], routed_w3[rank],  shared_w13[rank], shared_w2[rank], recv_meta, recv_x, recv_weights, arrived, data_arrived, routed_output, combine_arrived, moe_num_tokens, attention_num_tokens, rank, wq_a_scale[rank], wq_b_scale[rank], wkv_scale[rank], index_wq_b_scale[rank], routed_w1_scale[rank], routed_w2_scale[rank], routed_w3_scale[rank], shared_w1_scale[rank], shared_w2_scale[rank], shared_w3_scale[rank], final_norm_weight[rank], lm_head_weight[rank], logit_row_indices[rank], logits[rank], sampled_ids[rank], head_hidden, head_hidden_done, head_logits, head_logits_done, output_window, output_arrived, ffn_window, ffn_arrived, execute_layers, device=rank,
+             )
+     return logits, sampled_ids
+
+diff --git a/models/deepseek_v4_1_flash_a3/driver.py b/models/deepseek_v4_1_flash_a3/driver.py
+index 469fa8a..ab7f3e4 100644
+--- a/models/deepseek_v4_1_flash_a3/driver.py
++++ b/models/deepseek_v4_1_flash_a3/driver.py
+@@ -157,6 +157,8 @@ def main(function, *, mode, capacity, argv=None):
+     parser.add_argument("--full-graph", action="store_true", help=argparse.SUPPRESS)
+     parser.add_argument("--logits-mode", choices=["last"], default="last")
+     parser.add_argument("--max-new-tokens", type=int)
++    parser.add_argument("--orthrus-verify-k", type=int, choices=(8, 16),
++                        help="Compare greedy generation with same-residency candidate verification")
+     parser.add_argument("--reference-dir", type=Path)
+     parser.add_argument("--teacher-forced", action="store_true")
+     parser.add_argument("--audit-caches", action="store_true")
+@@ -180,6 +182,12 @@ def main(function, *, mode, capacity, argv=None):
+     requested_chunk = args.chunk_size
+     if requested_chunk is None:
+         args.chunk_size = min(chunk_default, args.capacity or chunk_default)
++    if args.orthrus_verify_k and (
++        args.checkpoint is None or args.compile_only or args.reference_dir is not None
++        or args.audit_caches or args.save_logits or args.dump_logits or args.profile_last_decode
++        or args.profile_all_steps is not None or args.max_new_tokens < 3
++    ):
++        parser.error("--orthrus-verify-k requires checkpoint generation of at least three tokens")
+     if args.profile_all_steps is not None and (args.checkpoint is None or args.validation_only or args.compile_only):
+         parser.error("--profile-all-steps requires full checkpoint generation")
+     if args.warmup_requests < 0 or args.measured_requests < 1:
+diff --git a/models/deepseek_v4_1_flash_a3/generation.py b/models/deepseek_v4_1_flash_a3/generation.py
+index 85f018d..f28ed9d 100644
+--- a/models/deepseek_v4_1_flash_a3/generation.py
++++ b/models/deepseek_v4_1_flash_a3/generation.py
+@@ -375,6 +375,18 @@ def generate(args, devices, *, manifests):
+                     )
+                 except LogitValidationError as error:
+                     report["teacher_forced_error"] = str(error)
++            verify_targets = None
++            if args.orthrus_verify_k:
++                ar = {}
++                run_request(
++                    runtime, programs, arguments, names, ranks,
++                    weights, engram, tokenizer, request, host_cache, rope_tables,
++                    config, memory, ar, options=args, host_io=host_io, decode_inputs=decode_inputs,
++                    label="orthrus_ar_control",
++                )
++                report["orthrus_ar_control"] = ar
++                verify_targets = ar["output_sequences"][0]["token_ids"]
++                reset_caches(runtime, ranks, host_cache)
+             total = args.warmup_requests + args.measured_requests
+             for iteration in range(total):
+                 if iteration or args.validate_teacher_forced:
+@@ -393,6 +405,7 @@ def generate(args, devices, *, manifests):
+                         config, memory, replay_report, options=args, host_io=host_io, decode_inputs=decode_inputs, reference=reference, teacher_forced=args.teacher_forced,
+                         audit=audit_caches if audit_request else None, save_logits=args.save_logits, label=label,
+                         profile=capture_dir is not None, profile_dir=capture_dir,
++                        verify_targets=verify_targets,
+                     )
+                 finally:
+                     report.update(replay_report)
+diff --git a/models/deepseek_v4_1_flash_a3/replay.py b/models/deepseek_v4_1_flash_a3/replay.py
+index f11f2da..fc43679 100644
+--- a/models/deepseek_v4_1_flash_a3/replay.py
++++ b/models/deepseek_v4_1_flash_a3/replay.py
+@@ -104,7 +104,7 @@ def run_request(
+     runtime, programs, arguments, names, ranks,
+     weights, engram, tokenizer, request, host_cache, rope_tables,
+     config, memory, report, *, options, host_io, decode_inputs, reference=None, teacher_forced=False,
+-    audit=None, save_logits=None, label="greedy", profile=False, profile_dir=None,
++    audit=None, save_logits=None, label="greedy", profile=False, profile_dir=None, verify_targets=None,
+ ):
+     """Submit prompt chunks followed by one Decode call per subsequent token."""
+     if teacher_forced and reference is None:
+@@ -134,9 +134,54 @@ def run_request(
+         # The idle TP group has no token history for this request.
+         engram.hash_ids([], 0, request_id=idle_rank)
+     with ThreadPoolExecutor(max_workers=8) as uploads:
++        verifier = None
++        if verify_targets is not None:
++            from blockspec.dsv41_packed_serving import PackedDecodeVerifier
++
++            verifier = PackedDecodeVerifier(
++                runtime, programs[1], config, [arguments[1][name] for name in names[1]],
++                counts.values(), decode_inputs, ranks[0], ranks[1], weights, engram, uploads,
++                tp_size=C.TP_SIZE, has_replay_mode=names[1][-1] == "execute_layers",
++            )
++            report["orthrus_verify_replay"] = dict(k=options.orthrus_verify_k, rounds=[])
++
+         for call in range(chunks + options.max_new_tokens - 1):
+             step = call - chunks + 1
+             index = int(step > 0)
++            if index and verifier is not None:
++                replay = report["orthrus_verify_replay"]
++                if not replay["rounds"] and generated != verify_targets[:len(generated)]:
++                    raise LogitValidationError("Orthrus replay diverged before the first verification")
++                start_offset = len(generated)
++                remaining = len(verify_targets) - start_offset
++                if remaining <= 0:
++                    break
++                width = min(options.orthrus_verify_k, remaining)
++                candidates = list(verify_targets[start_offset:start_offset + width - 1])
++                # Alternate a correct block with a known rejection while
++                # preserving exactly the same prompts and model residency.
++                if candidates and len(replay["rounds"]) % 2:
++                    middle = len(candidates) // 2
++                    candidates[middle] = (candidates[middle] + 1) % C.FLASH.vocab_size
++                before = time.monotonic()
++                memory.phase = "orthrus_verify"
++                emitted, accepted = verifier.verify(generated[-1], candidates, position=committed, owner=owner)
++                now = time.monotonic()
++                engine_times.append(now - before)
++                replay["rounds"].append(dict(proposed=len(candidates), accepted=accepted, emitted=len(emitted)))
++                replay["stats"] = dataclasses.asdict(verifier.stats)
++                expected = verify_targets[start_offset:start_offset + len(emitted)]
++                if tuple(expected) != emitted:
++                    replay["divergence"] = dict(offset=start_offset, expected=expected, observed=emitted)
++                    raise LogitValidationError(f"Orthrus verification diverged after {start_offset} tokens")
++                generated.extend(emitted)
++                committed += accepted + 1
++                token_times.extend([now] * len(emitted))
++                report["decode_calls"] = verifier.stats.verify_calls + verifier.stats.replay_calls
++                report["output_sequences"] = [{"request_id": request["request_id"], "token_ids": generated.copy()}]
++                if len(generated) == len(verify_targets):
++                    break
++                continue
+             capacity = options.decode_capacity if index else options.capacity
+             if index:
+                 current_ids = [trace[step - 1] if trace is not None else generated[-1]]
+@@ -250,6 +295,11 @@ def run_request(
+                   end_to_end_seconds=token_times[-1] - start,
+                   token_intervals_seconds=[b - a for a, b in zip(token_times, token_times[1:])],
+                   engine_seconds=engine_times, text=tokenizer.decode(generated, skip_special_tokens=False))
++    if verify_targets is not None:
++        if generated != verify_targets:
++            raise LogitValidationError("Orthrus replay did not reproduce the complete greedy sequence")
++        report["orthrus_verify_replay"]["matched_tokens"] = len(generated)
++        report["status"] = "passed"
+     report["prefill_routing"] = route_distribution(runtime, ranks, owner, len(prompt) - (chunks - 1) * options.chunk_size)
+     if reference is not None:
+         report["numerical_acceptance"] = reference["policy"]

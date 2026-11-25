@@ -47,6 +47,15 @@ A2/A3 模拟器通过了 129 个物理页、Top‑512、K8/K16/K32 共 12 个用
 
 新版 `generation.py` 通过一个 L3 worker 管理 16 个本地设备。双机 Serving 要将全局 EP rank 的分派移到 L4，并接入 Simpler 的 A3 Fabric 跨机设备窗口。旧 Serving 的 HCCL 验收覆盖逐层通信。新版的 `global_tload_mixed_l3` 已在单机回环模拟中验证一个本地和一个服务端 L3 worker，两个 rank 的小张量结果误差均为零。真实跨机 Fabric 仍待验证。随后用同一 checkpoint 核对 AR、Draft/Verify/Accept 的逐 token 一致性。在线更新还需绑定新版的反向输入和 head 发布路径。当前 GSM8K 命令走独立旧版基线。 [Simpler 跨机验证用例](https://github.com/hw-native-sys/simpler/tree/a5349f42c71666bb8cacfb3759f34eeda1572beb/examples/workers/l4/global_tload_mixed_l3)
 
+### 1122 最新基线与 Verify/Accept
+
+当前接入镜像固定上游 `7abc0df`，启用 v8 权重布局。通信窗口预分配、上下文容量 512 的原生 Prefill 32 和 Decode 16 编译分别通过，耗时 141.63 秒和 200.21 秒。加入 Orthrus 回放模式的 Decode 图以相同形状重新编译通过。 [最新上游](https://github.com/Adelaide999/pypto-lib/tree/7abc0df731143f8cee99c9bfc2bb731523384deb/models/deepseek_v4_1_flash_a3)
+
+- FP8 和 FP4 的码表每种占 1 KiB，可随权重上传一次，供同一 worker 的各层复用。129 页和 Top-512 下，12 个 A2/A3 模拟器用例通过。解包输出逐元素一致，K8/K16/K32 滑窗链路的最大输出误差为 `3.82e-6`。
+- Verify 直接调用新版驻留 Decode 图。固定 head 的贪心路径只回读每行 32 字节的采样结果，最多 16 行。每轮只上传当前 TP 组的输入，DP 归属切换时清空前一组。C2A 的滚动状态需提前备份，页缓存的未提交后缀由绝对位置和因果可见范围控制。
+- 整块接受时保留当前图写入的缓存。遇拒绝时恢复 C2A 状态，再回放 anchor 和接受前缀，复用本轮已读出的 embedding 与 Engram 行。使用 `--prepare-windows` 编出的 Decode 图可在回放时跳过 LM Head。Serving 分别记录输入准备、上传、图调用、备份、回滚与采样回读量。
+- 镜像中的 `generate --orthrus-verify-k 8` 或 `16` 在同一次权重加载下先取 AR 序列，再交替注入正确块和有意拒绝的块，逐 token 对照，并记录 Verify/Accept 分段数据。它需要配套的 Prefill/Decode 编译产物和原生入口要求的设备。当前完成编译、模拟和软件回归，实卡整模逐 token 结果待验收。此入口用于验证候选处理，真实 draft 及在线更新仍需接入新版整图。
+
 ## 内网权重预检
 
 默认权重目录为 `/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8`，对应同事文档指向的公开版本。脚本优先使用 `--model` 指定的目录，其次读取环境变量 `TARGET_WEIGHTS`，最后使用默认目录。在任意 Python 3.10+ 环境下执行下列检查，只读取本地配置、索引和实际 safetensors header，无需安装 PyPTO，也无需 NPU。报告列出当前 A3 loader 所需的投影和 Engram 格式，以及每个不匹配的实际张量。此命令收集布局，成功退出表示报告生成完成。

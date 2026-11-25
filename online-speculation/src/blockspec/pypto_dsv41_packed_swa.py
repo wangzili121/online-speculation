@@ -40,11 +40,11 @@ def packed_swa_programs(physical_pages, heads, block_size):
     return gather, attention
 
 
-def run_packed_swa(worker, programs, packed, scales, controls, scratch,
+def run_packed_swa(worker, programs, packed, scales, lookup, controls, scratch,
                    query, temporary, sink, zeros, output, lse, *, config):
     """Use one scratch allocation for all draft queries without host readback."""
     gather, attention = programs
     rows, starts, spans, bias = controls
-    worker.run(gather, packed, scales, rows, starts, scratch, config=config)
+    worker.run(gather, packed, scales, rows, starts, lookup, scratch, config=config)
     worker.run(attention, query, scratch, spans, temporary, bias, sink, zeros,
                output, lse, config=config)

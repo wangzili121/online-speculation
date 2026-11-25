@@ -10,7 +10,7 @@ from time import perf_counter
 import torch
 
 from blockspec.pypto_dsv41_packed_history import (
-    PAGE_ROWS, ROW_TILE, compressed_plan, make_packed_history_gather, window_plan,
+    PAGE_ROWS, ROW_TILE, compressed_plan, make_packed_history_gather, packed_history_lookup, window_plan,
 )
 from blockspec.pypto_dsv41_swa import HEAD_DIM, WINDOW
 
@@ -24,6 +24,7 @@ def validate_swa(args, config, code, scale, golden, page_table):
     from blockspec.vllm_ascend.dsv41_attention import PagedRows, draft_attention
 
     pages = code.shape[0]
+    lookup = packed_history_lookup("fp8")
     generator = torch.Generator().manual_seed(41123)
     heads = 16
     reports = []
@@ -41,13 +42,13 @@ def validate_swa(args, config, code, scale, golden, page_table):
         q = query.flatten(1)
         gather, attention = packed_swa_programs(pages, heads, block)
         programs = (
-            gather.compile(code, scale, rows, starts, scratch, config=config),
+            gather.compile(code, scale, rows, starts, lookup, scratch, config=config),
             attention.compile(q, scratch, spans, temporary, bias, sink, zeros, out, lse, config=config),
         )
         if args.compile_only:
             reports.append(dict(kind="swa", block=block, compiled=True))
             continue
-        fields = [code[None], scale[None], *controls, scratch, q, temporary, sink, zeros, out, lse]
+        fields = [code[None], scale[None], lookup, *controls, scratch, q, temporary, sink, zeros, out, lse]
         resident = [field.clone() for field in fields]
         with ChipWorker(config) as worker:
             handles = [worker.alloc_tensor(tuple(field.shape), field.dtype) for field in resident]
@@ -55,7 +56,7 @@ def validate_swa(args, config, code, scale, golden, page_table):
                 worker.copy_to(device.data_ptr, host.data_ptr(), host.nbytes)
             caches = dict(zip(("window_cache", "window_scales"), handles[:2], strict=True))
             packed, scales = packed_swa_views(worker, caches, 0, worker_id=0)
-            run_packed_swa(worker, programs, packed, scales, handles[2:6], *handles[6:], config=config)
+            run_packed_swa(worker, programs, packed, scales, handles[2], handles[3:7], *handles[7:], config=config)
             for host, device in zip(resident[-2:], handles[-2:], strict=True):
                 worker.copy_from(host.data_ptr(), device.data_ptr, host.nbytes)
 
@@ -116,8 +117,9 @@ def validate(args):
         output = torch.empty(count, HEAD_DIM, dtype=torch.bfloat16)
         rows = torch.empty((count // ROW_TILE, ROW_TILE), dtype=torch.int32)
         starts = torch.empty((count // ROW_TILE,), dtype=torch.int32)
+        lookup = packed_history_lookup(kind)
         gather = make_packed_history_gather(kind, pages, count).compile(
-            code, scale, rows, starts, output, config=config,
+            code, scale, rows, starts, lookup, output, config=config,
         )
         if kind == "fp8" and args.swa:
             reports.extend(validate_swa(args, config, code, scale, golden, page_table))
@@ -125,29 +127,29 @@ def validate(args):
             reports.append(dict(kind=kind, compiled=True))
             continue
         with ChipWorker(config) as worker:
-            fields = (code, scale, rows, starts, output)
+            fields = (code, scale, lookup, rows, starts, output)
             buffers = [worker.alloc_tensor(tuple(field.shape), field.dtype) for field in fields]
-            for host, device in zip(fields[:2], buffers[:2], strict=True):
+            for host, device in zip(fields[:3], buffers[:3], strict=True):
                 worker.copy_to(device.data_ptr, host.data_ptr(), host.nbytes)
             for anchor, plan in items:
                 selected = torch.tensor(plan.rows)
                 rows.copy_(selected.reshape_as(rows))
                 starts.copy_(torch.tensor(plan.contiguous_starts))
                 expected = flat[selected.clamp_min(0)].masked_fill((selected < 0)[:, None], 0)
-                for host, device in zip(fields[2:4], buffers[2:4], strict=True):
+                for host, device in zip(fields[3:5], buffers[3:5], strict=True):
                     worker.copy_to(device.data_ptr, host.data_ptr(), host.nbytes)
-                worker.run(gather, *buffers, config=config)
+                worker.run(gather, *buffers[:2], *buffers[3:5], buffers[2], buffers[-1], config=config)
                 timings = []
                 for _ in range(args.iterations):
                     start = perf_counter()
-                    worker.run(gather, *buffers, config=config)
+                    worker.run(gather, *buffers[:2], *buffers[3:5], buffers[2], buffers[-1], config=config)
                     timings.append(perf_counter() - start)
                     worker.copy_from(output.data_ptr(), buffers[-1].data_ptr, output.nbytes)
                     torch.testing.assert_close(output, expected, atol=0, rtol=0)
                 reports.append(dict(kind=kind, anchor=anchor, max_abs=0,
                                     contiguous_tiles=sum(start >= 0 for start in plan.contiguous_starts),
                                     resident_call_median_us=median(timings) * 1e6))
-            for host, device in zip(fields[:2], buffers[:2], strict=True):
+            for host, device in zip(fields[:3], buffers[:3], strict=True):
                 retained = torch.empty_like(host)
                 worker.copy_from(retained.data_ptr(), device.data_ptr, retained.nbytes)
                 torch.testing.assert_close(retained, host, atol=0, rtol=0)

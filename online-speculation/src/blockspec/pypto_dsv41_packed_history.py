@@ -60,12 +60,25 @@ def compressed_plan(page_table, anchor, ratio, physical_pages, selected):
     return _row_plan(rows)
 
 
+def packed_history_lookup(kind):
+    """Build a 1 KiB table to upload once per worker and reuse across layers."""
+    import torch
+
+    if kind == "fp8":
+        codes = torch.arange(-128, 128, dtype=torch.int8).view(torch.float8_e4m3fn)
+        return codes.float().view(torch.int32).reshape(1, 256)
+    if kind == "fp4":
+        magnitudes = torch.tensor((0., .5, 1., 1.5, 2., 3., 4., 6.), dtype=torch.bfloat16)
+        bits = torch.cat((magnitudes, -magnitudes)).view(torch.int16).to(torch.int32) & 65535
+        byte = torch.arange(256)
+        return (bits[byte & 15] | (bits[byte >> 4] << 16)).reshape(1, 256)
+    raise ValueError("invalid packed cache codec")
+
+
 def make_packed_history_gather(kind, physical_pages, selected_rows):
     """Read packed rows directly from the target bank and round to BF16 once."""
     import pypto.language as pl
-    from models.deepseek_v4_1_flash_a3.quant import (
-        decode_fp8_cache_values, make_fp8_cache_table,
-    )
+    from models.deepseek_v4_1_flash_a3.quant import decode_fp8_cache_values
 
     if kind not in ("fp8", "fp4") or physical_pages <= 0:
         raise ValueError("invalid packed cache")
@@ -79,35 +92,21 @@ def make_packed_history_gather(kind, physical_pages, selected_rows):
     workers = min(tiles, 32)
     pair_count = ROW_TILE * (HEAD_DIM // 2)
 
-    @pl.jit.inline(auto_scope=False)
-    def fp4_bits(code: pl.Tile[[1, 256], pl.INT16]):
-        magnitude = pl.ands(code, 7)
-        normal = pl.add(pl.shls(magnitude, 6), 0x3F00)
-        subnormal = pl.mul(pl.ands(magnitude, 1), 0x3F00)
-        has_exponent = pl.minimum(pl.shrs(magnitude, 1), 1)
-        bits = pl.add(subnormal, pl.mul(has_exponent, pl.sub(normal, subnormal)))
-        return pl.or_(bits, pl.shls(pl.ands(code, 8), 12))
-
     @pl.jit
     def gather(
         payload: pl.Tensor[[physical_pages, PAGE_ROWS, 1, width], pl.UINT8],
         scales: pl.Tensor[[physical_pages, PAGE_ROWS, 1, groups], pl.BF16],
         rows: pl.Tensor[[tiles, ROW_TILE], pl.INT32],
         starts: pl.Tensor[[tiles], pl.INT32],
+        lookup: pl.Tensor[[1, 256], pl.INT32],
         output: pl.Out[pl.Tensor[[selected_rows, HEAD_DIM], pl.BF16]],
     ):
         packed = pl.reshape(payload, [physical_pages * PAGE_ROWS, width])
         factors = pl.reshape(scales, [physical_pages * PAGE_ROWS, groups])
         with pl.spmd(workers, name_hint="orthrus_v41_packed_history"):
             worker = pl.tile.get_block_idx()
-            if window:
-                table = make_fp8_cache_table()
-            else:
-                byte = pl.cast(pl.tile.arange(0, [1, 256], dtype=pl.INT32), pl.INT16, mode="rint")
-                low = pl.cast(pl.cast(fp4_bits(byte), pl.FP32), pl.INT32, mode="rint")
-                high = pl.cast(pl.cast(fp4_bits(pl.shrs(byte, 4)), pl.FP32), pl.INT32, mode="rint")
-                low_unsigned = pl.sub(low, pl.mul(pl.shrs(low, 31), 65536))
-                pair_table = pl.add(low_unsigned, pl.shls(high, 16))
+            table = pl.tile.load(lookup, [0, 0], [1, 256])
+            if not window:
                 pair_scratch = pl.create_tile([1, pair_count], dtype=pl.INT32)
             for block in pl.range(worker, tiles, workers):
                 start = pl.read(starts, [block])
@@ -149,7 +148,7 @@ def make_packed_history_gather(kind, physical_pages, selected_rows):
                         byte_ids = pl.ands(pl.cast(half, pl.INT16, mode="rint"), 255)
                         wide_ids = pl.cast(pl.cast(byte_ids, pl.FP32), pl.INT32, mode="rint")
                         pair_ids = pl.reshape(wide_ids, [1, pair_count])
-                        pairs = pl.tile.gather(pair_table, pair_ids, pair_scratch)
+                        pairs = pl.tile.gather(table, pair_ids, pair_scratch)
                         bits = pl.reinterpret_view(pairs, pl.BF16, shape=[ROW_TILE, HEAD_DIM])
                         values = pl.cast(bits, pl.FP32)
                     grouped = pl.reshape(values, [ROW_TILE * groups, group])
