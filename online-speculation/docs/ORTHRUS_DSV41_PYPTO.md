@@ -127,6 +127,8 @@ FFN 的 mHC 反向将直接残差、折叠路径和冻结门控的梯度汇合�
 
 起草图在采集请求的末 N 层留存 Attention 输入残差、门控系数与 TP 归约后的 BF16 投影。采集使用前向已计算的张量，额外写入仅在请求的 DP owner 发生。四卡 K32 对照原路径，前向隐状态、混合系数和折叠输出均逐字节一致。同一驻留 worker 内交替运行时，两个分支的热态中位数为 41.91 和 42.50 ms。16 卡形状的 40 层 K16（普通推理）和 K32（last-4）均已编译。起草图 manifest 现为 schema 3，旧编译产物需重新生成。采集单测使用 `validate_dsv41_pypto_packed_attention_tape.py --checkpoint /model`。[实卡与编译结果](validation/dsv41/pypto-1122-949a-packed-attention-tape-910b3.json)
 
+Attention 的 mHC 反向接收 FFN 返回的两路梯度，在请求所属的 DP rank 上计算残差梯度，再将输出投影梯度以 FP32 送到该 TP 组的各个 rank。四张 910B3 分别验证了 K32/TP2 和 K16/TP4，使用第 36、39 层真实系数及构造的前向留存状态。对照 FP64 自动微分，最大相对 L2 误差为 `5.21e-7`，各参与 TP rank 收到的投影梯度逐字节相同。K16/K32 的 EP16 形状均通过编译。复验入口为 `validate_dsv41_pypto_packed_attn_post.py --checkpoint /model`。[实卡与编译结果](validation/dsv41/pypto-1122-949a-packed-attn-post-vjp-910b3.json)
+
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
 ```bash
