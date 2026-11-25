@@ -1,0 +1,171 @@
+{
+  "host": "111",
+  "board": "Ascend 910B3",
+  "baseline_revision": "84c5b68",
+  "native_overlay_tree": "a1594019e6326ceeafc648f8ec06b34d466128d5",
+  "kernel": "Draft KV RMSNorm + RoPE with the BF16 normalization rounding kept on-chip",
+  "head": "W8A8 checkpoint-initialized Orthrus draft head",
+  "single_rank": {
+    "physical_device": 6,
+    "timed_calls_per_arm": 30,
+    "warmed_calls_per_arm": 5,
+    "cases": [
+      {
+        "passed": true,
+        "K": 32,
+        "matched": [
+          "qa",
+          "latent",
+          "qb",
+          "query",
+          "kv",
+          "temporary"
+        ],
+        "baseline_ms": 1.0207120794802904,
+        "candidate_ms": 0.9874219540506601
+      },
+      {
+        "passed": true,
+        "K": 8,
+        "matched": [
+          "qa",
+          "latent",
+          "qb",
+          "query",
+          "kv",
+          "temporary"
+        ],
+        "baseline_ms": 0.971996458247304,
+        "candidate_ms": 0.9568821405991912
+      },
+      {
+        "passed": true,
+        "K": 16,
+        "matched": [
+          "qa",
+          "latent",
+          "qb",
+          "query",
+          "kv",
+          "temporary"
+        ],
+        "baseline_ms": 0.9565710788592696,
+        "candidate_ms": 0.947346561588347
+      }
+    ]
+  },
+  "draft_tp4": {
+    "physical_devices": [
+      4,
+      5,
+      6,
+      7
+    ],
+    "passed": true,
+    "layers": 40,
+    "block": 32,
+    "anchors": [
+      257,
+      129
+    ],
+    "ranks": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "same_runtime": true,
+    "median": {
+      "baseline": {
+        "wall_seconds": 1.99214954697527,
+        "qkv_rank_seconds": 1.795552943
+      },
+      "fused": {
+        "wall_seconds": 2.0609294280875474,
+        "qkv_rank_seconds": 1.7294037939999996
+      }
+    },
+    "samples": {
+      "baseline": [
+        {
+          "wall_seconds": 2.4548368889372796,
+          "qkv_rank_seconds": 1.948040449
+        },
+        {
+          "wall_seconds": 1.9781183840241283,
+          "qkv_rank_seconds": 1.7629738729999997
+        },
+        {
+          "wall_seconds": 2.1806854230817407,
+          "qkv_rank_seconds": 1.8891752830000001
+        },
+        {
+          "wall_seconds": 2.051512202946469,
+          "qkv_rank_seconds": 1.810892511
+        },
+        {
+          "wall_seconds": 2.0736900689080358,
+          "qkv_rank_seconds": 1.8405763100000003
+        },
+        {
+          "wall_seconds": 1.99214954697527,
+          "qkv_rank_seconds": 1.795552943
+        },
+        {
+          "wall_seconds": 1.954047585139051,
+          "qkv_rank_seconds": 1.227132811
+        },
+        {
+          "wall_seconds": 1.9304380570538342,
+          "qkv_rank_seconds": 1.579082145
+        },
+        {
+          "wall_seconds": 1.8946174778975546,
+          "qkv_rank_seconds": 1.5408435070000002
+        }
+      ],
+      "fused": [
+        {
+          "wall_seconds": 2.0609294280875474,
+          "qkv_rank_seconds": 1.7294037939999996
+        },
+        {
+          "wall_seconds": 2.0652538160793483,
+          "qkv_rank_seconds": 1.7513027229999998
+        },
+        {
+          "wall_seconds": 2.168728553922847,
+          "qkv_rank_seconds": 1.7860848689999997
+        },
+        {
+          "wall_seconds": 2.1200262650381774,
+          "qkv_rank_seconds": 1.8251301100000004
+        },
+        {
+          "wall_seconds": 2.025836681947112,
+          "qkv_rank_seconds": 1.7119700719999997
+        },
+        {
+          "wall_seconds": 2.035829607862979,
+          "qkv_rank_seconds": 1.528670236
+        },
+        {
+          "wall_seconds": 2.1414648690260947,
+          "qkv_rank_seconds": 1.797315997
+        },
+        {
+          "wall_seconds": 1.9738532369956374,
+          "qkv_rank_seconds": 1.7006320819999998
+        },
+        {
+          "wall_seconds": 1.8694098070263863,
+          "qkv_rank_seconds": 1.5887857629999997
+        }
+      ]
+    }
+  },
+  "output_sha256": "0c66c207d483c09f060ae70496f0b0575ca34eba1e791d12e8c7bafcb450a0ed",
+  "last1_reverse_byte_exact_tensors": 36,
+  "integrated": false,
+  "reason": "The QKV dispatch improved locally but the matched 40-layer wall median did not improve"
+}

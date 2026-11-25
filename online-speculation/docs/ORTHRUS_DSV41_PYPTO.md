@@ -22,6 +22,16 @@ Serving 校验 Lib 的工作树状态和 Git tree。可通过 `--speculative-con
 
 在干净检出中重放两份补丁并通过源码配对检查。使用 PyPTO `72a62d13` 及其固定的 Simpler `6b6b88f`，Lib 的 13 项常驻资源和缓存测试、Serving 的 75 项 CPU 测试全部通过。PTOAS 使用该工具链要求的 v0.70。 [PyPTO 提交](https://github.com/hw-native-sys/pypto/commit/72a62d13efabbb25d240e35944f68ba5bcc22b7f) · [PTOAS v0.70](https://github.com/hw-native-sys/PTOAS/releases/tag/v0.70)
 
+### 1122 迁移检查（2026-11-25）
+
+A3 W8A8 开发分支 `deepseek_v4.1_flash_1122` 更新到 `4e198fa`，包含 Prefill MoE 和 Indexer、Decode RMSNorm/RoPE、SWA、激活量化及宽批次归约的优化。公开主仓 `f957537` 的 V4.1/DSpark 实现面向 A5。已提供的 A3 Serving `27efbcb` 固定配对 `1121/dabf9e9`。 [A3 1122](https://github.com/Adelaide999/pypto-lib/tree/4e198fa9d10caf1911ddbe30d87e44bdc0337ac1/models/deepseek_v4_1_flash_a3) · [A3 1121 Serving](https://github.com/Adelaide999/pypto-serving/tree/27efbcb1cd3466547823955cb80fe09c63b3f754/models/deepseek_v41_a3) · [A5 V4.1](https://github.com/hw-native-sys/pypto-lib/blob/f957537eb0d3b1f5c3072569330e521554e38e40/docs/models/deepseek_v4_1_flash/index.md)
+
+在独立 checkout 和 111 的 `72a62d1-offline` 镜像上，1122 的两个 CLI 可导入。用各自 checkout 自带的 golden runner 在 111 和 167 复测 `c33efdd`、`4e198fa`，容量 16、上下文容量 256 的 Prefill 和 Decode 编译均在旧版工具链的 JIT 形状特化时失败。Prefill 首处报 `_gate_panel_from_fp32__16/xg_buf` 缺少张量元数据，Decode 首处报 `gemm_int8_tiled__13/payload` 缺少张量元数据。编译阶段未使用 NPU。现有 Lib 补丁依赖的 `network.py`、`prefill_layer.py`、`prefill_resident.py` 等文件在 1122 已被替换。源码配对检查保留当前验收基线。
+
+167 的独立候选镜像使用 PyPTO `2e31e0c2`、Simpler `a5349f4` 和 PTOAS `v0.78`。只构建 Simpler 的 `build_package_a2a3`，沿用 `runtime-release.patch` 解决 Release 下的未使用变量。用 `4e198fa` 源码编出 Prefill 容量 16、Decode 容量 16、上下文容量 256 的两张图，编译分别为 154.05 秒和 195.48 秒。设备探针另需备好该 Simpler 版本的 PTO-ISA checkout。167 的物理卡 7 在新版和原镜像下均报初始化错误 `507899`，因此整图通过的范围是编译阶段。Decode 编译器同时报告了并发标量写入告警，原生 AR 实卡验收仍需检查重复输出和缓存。
+
+接下来在相同 W8A8 输入上验证原生 AR。随后为 1122 的 Prefill/Decode 图接入双机 rank 所有权以及请求缓存的读取、临时写入和提交边界。Verify 需保持候选因果可见性和拒绝恢复，Accept 需保持已接受前缀的缓存提交。Draft 接入只读分页历史，在线更新最后核对真实冻结层边界、梯度和驻留权重发布。逐阶段对照保留相同贪心 token、缓存指纹和计时口径。
+
 ## 内网权重预检
 
 默认权重目录为 `/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8`，对应同事文档指向的公开版本。脚本优先使用 `--model` 指定的目录，其次读取环境变量 `TARGET_WEIGHTS`，最后使用默认目录。在任意 Python 3.10+ 环境下执行下列检查，只读取本地配置、索引和实际 safetensors header，无需安装 PyPTO，也无需 NPU。报告列出当前 A3 loader 所需的投影和 Engram 格式，以及每个不匹配的实际张量。此命令收集布局，成功退出表示报告生成完成。
