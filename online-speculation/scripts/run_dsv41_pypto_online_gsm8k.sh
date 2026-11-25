@@ -20,9 +20,17 @@ case "$mode" in
   benchmark) split=online_eval; requests=33; tokens=96 ;;
   eval) split=online_eval; requests=384; tokens=192 ;;
   report)
-    train_requests="${DSV41_REPORT_TRAIN:-8}"
-    eval_requests="${DSV41_REPORT_EVAL:-4}"
-    tokens="${DSV41_REPORT_TOKENS:-32}"
+    min_updates="${DSV41_REPORT_MIN_UPDATES:-0}"
+    if [[ ! "$min_updates" =~ ^(0|[1-9][0-9]*)$ ]]; then
+      echo "DSV41_REPORT_MIN_UPDATES must be a nonnegative integer" >&2; exit 2
+    fi
+    default_train=8 default_eval=4 default_tokens=32 warm_steps=4 publish_every=1
+    if (( min_updates > 0 )); then
+      default_train=64 default_eval=16 default_tokens=192 warm_steps=16 publish_every=4
+    fi
+    train_requests="${DSV41_REPORT_TRAIN:-$default_train}"
+    eval_requests="${DSV41_REPORT_EVAL:-$default_eval}"
+    tokens="${DSV41_REPORT_TOKENS:-$default_tokens}"
     batch_size="${DSV41_REPORT_BATCH:-4}"
     if [[ ! "$train_requests" =~ ^[1-9][0-9]*$ || ! "$eval_requests" =~ ^[1-9][0-9]*$ ||
           ! "$tokens" =~ ^[1-9][0-9]*$ || "$tokens" -lt 16 || ! "$batch_size" =~ ^[1-4]$ ]]; then
@@ -88,10 +96,11 @@ if [[ "$mode" == report ]]; then
   trap 'rm -f -- "$report_workload"' EXIT
   { head -n "$train_requests" "$workload"; head -n "$eval_requests" "$heldout"; } >"$report_workload"
   export ORTHRUS_WORKLOAD="$report_workload" PYPTO_REUSE_PREVIOUS_HEAD=0
-  online_overrides="{\"last_layers\":$last_layers,\"teacher_rows\":7,\"warmup_updates\":2,\"warm_update_stride\":4,\"warm_update_steps\":4,\"steady_update_stride\":8,\"publish_every\":1}"
+  online_overrides="{\"last_layers\":$last_layers,\"teacher_rows\":7,\"warmup_updates\":2,\"warm_update_stride\":4,\"warm_update_steps\":$warm_steps,\"steady_update_stride\":8,\"publish_every\":$publish_every}"
   bash "$root/scripts/dsv41_pypto_env.sh" cluster-accept "$node" \
     --max-requests "$requests" --tokens "$tokens" --no-trace-prefill --require-online-update \
     --report-train-requests "$train_requests" --report-batch-size "$batch_size" \
+    --report-min-updates "$min_updates" \
     --online-study /workspace/online-speculation/configs/dsv41/gsm8k-online.json \
     --online-primitives blockspec.pypto_dsv41_resident_primitives:create_primitives \
     --online-overrides "$online_overrides" "$dispatch_option" \

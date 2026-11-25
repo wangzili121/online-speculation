@@ -153,7 +153,7 @@ def _collect_phases(path, offset, previous, totals, draft_versions):
 
 
 def study_workload(runner, session, online, prompts, entries, *, train_count, steps,
-                   batch_size, eos_ids, decoder, output, engram_seconds):
+                   batch_size, eos_ids, decoder, output, engram_seconds, min_published_update=0):
     """Persist each wave; compare fixed versions on the identical held-out requests."""
     link = session.cluster.link
     startup = {"engram_seconds": engram_seconds}
@@ -163,6 +163,7 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
                   verify_candidate_limit=runner.verify_candidate_limit,
                   short_speculative_dispatch=session.short_speculative_dispatch,
                   training_requests=train_count, heldout_requests=len(entries) - train_count,
+                  min_published_update=min_published_update,
                   startup_seconds=startup, arms=arms, compared_tokens=comparisons)
     summary_path = output / "gsm8k-online-report.json"
     output.mkdir(parents=True, exist_ok=True)
@@ -234,9 +235,12 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
                 first_update=None, head_version=version, phase_totals=phase_totals,
                 draft_head_versions=sorted(draft_versions),
             )
-            if name == "online" and online.bridge.controller.records:
-                record = online.bridge.controller.records[0]
-                local["first_update"] = record["update_seconds"] + record["publication_seconds"]
+            if name == "online":
+                records = online.bridge.controller.records
+                local["published_update"] = next((row["update"] for row in reversed(records) if row["published"]), 0)
+                if records:
+                    record = records[0]
+                    local["first_update"] = record["update_seconds"] + record["publication_seconds"]
             peer = link.exchange(f"report/progress/{name}/{first}", local)
             if any(local[key] != peer[key] for key in ("requests", "output_tokens", "head_version", "draft_head_versions")):
                 raise ValueError(f"Hosts disagree on {name} workload progress or executed draft versions")
@@ -272,28 +276,37 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
             )
             if name == "online":
                 learners = local["learner"], peer["learner"]
+                if (local["published_update"] != peer["published_update"]
+                        or learners[0]["updates"] != learners[1]["updates"]):
+                    raise ValueError("Hosts disagree on the completed or published optimizer step")
                 costs = [item["update_seconds"] + item["publication_seconds"] for item in learners]
                 adjusted = max(a["wall_seconds"] - cost for a, cost in zip((local, peer), costs, strict=True))
                 after_first = max(a["wall_seconds"] - (a["first_update"] or 0.0) for a in (local, peer))
                 stats.update(
                     updates=learners[0]["updates"], publications=learners[0]["publications"],
+                    published_update=local["published_update"],
                     first_update_and_publish_seconds=max(local["first_update"] or 0.0, peer["first_update"] or 0.0),
                     update_seconds=max(item["update_seconds"] for item in learners),
                     publication_seconds=max(item["publication_seconds"] for item in learners),
                     wall_tok_s_excluding_first_update_estimate=n_tokens / after_first,
                     wall_tok_s_excluding_all_updates_estimate=n_tokens / adjusted,
                 )
-                _write(output / "gsm8k-online-updates.json", online.bridge.controller.records)
+                _write(output / "gsm8k-online-updates.json", records)
             _write(output / f"gsm8k-online-{name}.json", result)
             _write(summary_path, report)
             print(json.dumps(dict(stage="gsm8k_online_progress", phase=name, **stats)), flush=True)
+            if name == "online" and min_published_update and stats["published_update"] >= min_published_update:
+                break
         if name in ("initial", "frozen"):
             comparisons[name] = request_parity(run_results["ar"], run_results[name])
         _write(summary_path, report)
     trained = arms["online"]
     report["passed"] = bool(
-        trained["publications"] and arms["frozen"]["draft_head_versions"] == [trained["head_version"]]
+        trained["publications"] and trained["published_update"] >= min_published_update
+        and arms["frozen"]["draft_head_versions"] == [trained["head_version"]]
     )
+    if trained["published_update"] < min_published_update:
+        report["failure_reason"] = "training request budget ended before the requested optimizer step was published"
     report["frozen_speedup_vs_initial"] = arms["frozen"]["wall_tok_s"] / arms["initial"]["wall_tok_s"]
     report["frozen_speedup_vs_ar"] = arms["frozen"]["wall_tok_s"] / arms["ar"]["wall_tok_s"]
     return report

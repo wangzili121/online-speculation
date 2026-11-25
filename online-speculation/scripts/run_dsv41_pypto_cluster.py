@@ -409,6 +409,7 @@ def run(args):
                        online_profile=args.online_profile,
                        online_benchmark=args.online_benchmark,
                        report_train_requests=args.report_train_requests, report_batch_size=args.report_batch_size,
+                       report_min_updates=args.report_min_updates,
                        orthrus_jit_cache=orthrus_jit_cache,
                        online=None if online is None else online.config.contract())
         peer_request = link.exchange("acceptance/configuration", request)
@@ -460,6 +461,7 @@ def run(args):
                     runner, session, online, prompts, entries, train_count=args.report_train_requests,
                     steps=args.tokens, batch_size=args.report_batch_size, eos_ids=eos_ids, decoder=decoder,
                     output=args.output, engram_seconds=engram_seconds,
+                    min_published_update=args.report_min_updates,
                 )
             else:
                 for mode in modes:
@@ -659,12 +661,16 @@ def main():
                         help="Benchmark AR, fixed draft, and online draft within one resident session")
     parser.add_argument("--report-train-requests", type=int,
                         help="Run a batched GSM8K study using this many initial training requests")
+    parser.add_argument("--report-min-updates", type=int, default=0,
+                        help="Stop training after a full wave publishes at least this optimizer step")
     parser.add_argument("--report-batch-size", type=int, choices=(1, 2, 3, 4), default=4)
     parser.add_argument("--connect-timeout", type=int, default=900)
     parser.add_argument("--timeout", type=int, default=3600, help="Maximum seconds of peer inactivity")
     args = parser.parse_args()
     if not 1 <= args.verify_candidate_limit <= 31:
         parser.error("--verify-candidate-limit must be in 1..31")
+    if args.report_min_updates < 0 or (args.report_min_updates and args.report_train_requests is None):
+        parser.error("--report-min-updates requires a report and must be nonnegative")
     if (args.tokens < 2 or args.host_threads < 1 or args.timeout < 1
             or args.max_requests is not None and args.max_requests < 1
             or args.workload is not None and args.prompt is not None

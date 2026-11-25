@@ -550,8 +550,12 @@ def test_gsm8k_revision_comparison_recovers_old_phase_receipts_and_requires_matc
         compare(*dirs)
 
 
-@pytest.mark.parametrize("stale_frozen_draft", [False, True])
-def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkeypatch, stale_frozen_draft):
+@pytest.mark.parametrize(("stale_frozen_draft", "min_updates", "publish_every", "completed_requests"), [
+    (False, 0, 1, 8), (True, 0, 1, 8), (False, 2, 1, 4), (False, 9, 1, 8), (False, 3, 2, 8),
+])
+def test_online_report_batches_and_freezes_on_heldout_questions(
+    tmp_path, monkeypatch, stale_frozen_draft, min_updates, publish_every, completed_requests,
+):
     monkeypatch.syspath_prepend(str(COMMAND.parent))
     monkeypatch.setitem(sys.modules, "pypto_serving.config.types", SimpleNamespace(
         DecodeBatch=SimpleNamespace, PrefillBatch=SimpleNamespace, SamplingParams=SimpleNamespace,
@@ -579,7 +583,7 @@ def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkey
             assert session.online is None and bank.active_version == 0
 
         def summary(self):
-            return dict(updates=bank.active_version, publications=bank.active_version,
+            return dict(updates=len(records), publications=bank.active_version,
                         update_seconds=0.0, publication_seconds=0.0)
 
     online = Learner()
@@ -623,8 +627,11 @@ def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkey
                 assert session.online is None and bank.active_version == 0
             elif phase == "online":
                 assert session.online is online
-                bank.active_version += 1
-                records.append(dict(update_seconds=0.0, publication_seconds=0.0))
+                update = len(records) + 1
+                published = update % publish_every == 0
+                bank.active_version += int(published)
+                records.append(dict(update=update, published=published,
+                                    update_seconds=0.0, publication_seconds=0.0))
             elif phase == "frozen":
                 assert session.online is None and bank.active_version > 0
             self.run(batch, "decode")
@@ -639,20 +646,26 @@ def test_online_report_batches_and_freezes_on_heldout_questions(tmp_path, monkey
     prompts = [[100 + i] * (i % 4 + 1) for i in range(12)]
     entries = [dict(id=f"gsm8k-{i}", reference_answer="#### 2") for i in range(len(prompts))]
     options = dict(train_count=8, steps=4, batch_size=4, eos_ids={3},
-                   decoder=lambda tokens: "#### 2", output=tmp_path, engram_seconds=5.0)
+                   decoder=lambda tokens: "#### 2", output=tmp_path, engram_seconds=5.0,
+                   min_published_update=min_updates)
     if stale_frozen_draft:
         with pytest.raises(ValueError, match="frozen executed draft versions"):
             study(runner, session, online, prompts, entries, **options)
         assert not json.loads((tmp_path / "gsm8k-online-report.json").read_text())["complete"]
         return
     report = study(runner, session, online, prompts, entries, **options)
-    assert report["passed"] and report["compared_tokens"] == {"initial": 12, "frozen": 12}
+    published = report["arms"]["online"]["published_update"]
+    assert report["min_published_update"] == min_updates
+    assert published == len(records) // publish_every * publish_every
+    assert report["passed"] == (published >= min_updates)
+    assert ("failure_reason" in report) == (published < min_updates)
+    assert report["compared_tokens"] == {"initial": 12, "frozen": 12}
     assert report["verify_candidate_limit"] == 7 and report["short_speculative_dispatch"] is True
     assert report["startup_compared_tokens"] == 8
     assert report["arms"]["ar"]["draft_head_versions"] == []
     assert report["arms"]["initial"]["draft_head_versions"] == [0]
     assert report["arms"]["frozen"]["draft_head_versions"] == [report["arms"]["online"]["publications"]]
-    assert report["arms"]["online"]["requests"] == 8
+    assert report["arms"]["online"]["requests"] == completed_requests
     assert report["arms"]["frozen"]["requests"] == 4
     assert report["arms"]["frozen"]["stopped"] == 4
     prefill = report["arms"]["ar"]["serving_phases_by_host"]["0"]["prefill"]

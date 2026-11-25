@@ -67,6 +67,17 @@ bash online-speculation/scripts/dsv41_pypto_env.sh gsm8k-summary \
 
 在线版本必须额外满足三件事才允许扩大样本：保存真实修正前缀上的完整教师 logits；从同一 anchor 重放最后一层并完成有效梯度更新；TP4/DP4 在 verifier 轮次边界原子切换同一 head 版本。缺少其中任何一项都只能称为 fixed-head 推理。
 
+## 按实际更新步数运行 GSM8K
+
+`report 1` 可按发布到设备的优化器步数确定训练长度。在两个节点设置同一个 `DSV41_REPORT_MIN_UPDATES`。例如配置 64 时，训练在达到第 64 次或更晚一次发布后完成当前请求批次，再冻结已发布的版本跑留出集。默认最多使用 64 道独立训练题，留出 16 题，每题最多生成 192 token。last-1 采用 7 行教师反馈和 TV 损失，前 16 次更新每 4 轮检查是否采集，随后每 8 轮检查，每 4 次更新发布。
+
+```bash
+# node7；另一台把 node7 改成 node8
+DSV41_REPORT_MIN_UPDATES=64 bash online-speculation/scripts/run_dsv41_pypto_company_online.sh node7 report 1
+```
+
+`DSV41_REPORT_TRAIN`、`DSV41_REPORT_EVAL`、`DSV41_REPORT_TOKENS` 可以覆盖题目预算和输出上限。报告每批保存已用题数、`updates`、`publications` 和最新的 `published_update`。训练预算耗尽时仍完成留出评测，步数未达标会标记失败。比较运行版本时还需检查两边实际消耗的训练题及生成 token 一致。
+
 ## 性能记录
 
 两组预热使用相同输入，并对比生成的 token。每个评测臂记录 Serving 实际执行过的 `draft_head_versions`，冻结评测只有实际使用最终发布版本才通过。

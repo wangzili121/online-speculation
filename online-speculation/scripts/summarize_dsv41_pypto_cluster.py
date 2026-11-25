@@ -567,6 +567,8 @@ def compare_gsm8k_reports(baseline, candidate, *, require_matched_dispatch=False
     fields = ("training_requests", "heldout_requests", "max_concurrent_requests", "max_new_tokens", "updates_policy")
     if not left["complete"] or not right["complete"] or not all(left[key] == right[key] for key in fields):
         raise ValueError("GSM8K comparison requires the same completed workload and update policy")
+    if left.get("min_published_update", 0) != right.get("min_published_update", 0):
+        raise ValueError("GSM8K comparison requires the same optimizer-step target")
     limits = [report.get("verify_candidate_limit", 31) for report in (left, right)]
     short_dispatch = [report.get("short_speculative_dispatch", False) for report in (left, right)]
     dispatch_matched = limits[0] == limits[1] and short_dispatch[0] == short_dispatch[1]
