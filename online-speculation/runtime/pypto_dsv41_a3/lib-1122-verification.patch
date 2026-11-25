@@ -1,5 +1,5 @@
 diff --git a/models/deepseek_v4_1_flash_a3/config.py b/models/deepseek_v4_1_flash_a3/config.py
-index 0a2ae0c..3ba7702 100644
+index 9326c02..f491c4b 100644
 --- a/models/deepseek_v4_1_flash_a3/config.py
 +++ b/models/deepseek_v4_1_flash_a3/config.py
 @@ -237,7 +237,8 @@ FLASH = DeepSeekV41Config(
@@ -13,10 +13,10 @@ index 0a2ae0c..3ba7702 100644
  DSPARK_SPEC_TOKENS = 5
  DSPARK_DRAFT_LAYERS = 3
 diff --git a/models/deepseek_v4_1_flash_a3/decode_fwd.py b/models/deepseek_v4_1_flash_a3/decode_fwd.py
-index 246a95d..b2ad4d9 100644
+index e37b371..5973e81 100644
 --- a/models/deepseek_v4_1_flash_a3/decode_fwd.py
 +++ b/models/deepseek_v4_1_flash_a3/decode_fwd.py
-@@ -701,6 +701,7 @@ def l2_decode_fwd(
+@@ -707,6 +707,7 @@ def l2_decode_fwd(
      output_arrived: pld.DistributedTensor[[TP_SIZE, 1], pl.INT32],
      ffn_window: pld.DistributedTensor[[DECODE_CAPACITY, D], pl.BF16],
      ffn_arrived: pld.DistributedTensor[[TP_SIZE, 1], pl.INT32],
@@ -24,7 +24,7 @@ index 246a95d..b2ad4d9 100644
  ):
      compressed_token_rope_cos = pl.create_tensor([DECODE_CAPACITY, ROPE_DIM // 2], dtype=pl.FP32)
      compressed_token_rope_sin = pl.create_tensor([DECODE_CAPACITY, ROPE_DIM // 2], dtype=pl.FP32)
-@@ -712,13 +713,17 @@ def l2_decode_fwd(
+@@ -718,13 +719,17 @@ def l2_decode_fwd(
               )
      retire_prefill_signals(result, output_arrived, rank // TP_SIZE * TP_SIZE, rank % TP_SIZE)
      retire_prefill_signals(result, ffn_arrived, rank // TP_SIZE * TP_SIZE, rank % TP_SIZE)
@@ -49,23 +49,27 @@ index 246a95d..b2ad4d9 100644
 
 
  @pl.jit.host
-@@ -942,7 +947,7 @@ def l3_decode_fwd(
+@@ -950,7 +955,7 @@ def l3_decode_fwd(
          head_logits_done = pld.window(head_logits_done_buffer, [TP_SIZE, 1], dtype=pl.INT32)
          if execute_layers != 0:
              l2_decode_fwd(
--                engram_lookup[rank], engram_wkv[rank], engram_weight[rank], engram_rotation[rank], x_hc[rank], pre_mix[rank], hc_attn_fn[rank], hc_attn_scale[rank], hc_attn_base[rank], attn_norm_weight[rank], wq_a[rank], q_norm_weight[rank], wq_b[rank], wkv[rank], kv_norm_weight[rank], attn_sink[rank], wo_a[rank], wo_b[rank], freqs_cos[rank], freqs_sin[rank], window_slots[rank], window_indices[rank], window_cache_pool[rank], window_cache_scale_pool[rank], compressed_cache_pool[rank], compressed_cache_scale_pool[rank], token_to_req_indices[rank], position_ids[rank], index_cache_pool[rank], index_cache_scale_pool[rank], c2a_index_block_table[rank], c1a_index_block_table[rank], c2a_compressor_wkv[rank], c2a_compressor_wgate[rank], c1a_compressor_wkv[rank], query_start_loc[rank], state_block_table[rank], state_cache_pool[rank], compressor_norm_weight[rank], c2a_compressed_slots[rank], c1a_compressed_slots[rank], index_wk[rank], index_norm_weight[rank], index_wq_b[rank], index_weights_proj[rank], hc_ffn_fn[rank], hc_ffn_scale[rank], hc_ffn_base[rank], ffn_norm_weight[rank], gate_weight[rank], correction_bias[rank], routed_w1[rank], routed_w2[rank], routed_w3[rank],  shared_w13[rank], shared_w2[rank], recv_meta, recv_x, recv_weights, arrived, data_arrived, routed_output, combine_arrived, moe_num_tokens, attention_num_tokens, rank, wq_a_scale[rank], wq_b_scale[rank], wkv_scale[rank], index_wq_b_scale[rank], routed_w1_scale[rank], routed_w2_scale[rank], routed_w3_scale[rank], shared_w1_scale[rank], shared_w2_scale[rank], shared_w3_scale[rank], final_norm_weight[rank], lm_head_weight[rank], logit_row_indices[rank], logits[rank], sampled_ids[rank], head_hidden, head_hidden_done, head_logits, head_logits_done, output_window, output_arrived, ffn_window, ffn_arrived, device=rank,
-+                engram_lookup[rank], engram_wkv[rank], engram_weight[rank], engram_rotation[rank], x_hc[rank], pre_mix[rank], hc_attn_fn[rank], hc_attn_scale[rank], hc_attn_base[rank], attn_norm_weight[rank], wq_a[rank], q_norm_weight[rank], wq_b[rank], wkv[rank], kv_norm_weight[rank], attn_sink[rank], wo_a[rank], wo_b[rank], freqs_cos[rank], freqs_sin[rank], window_slots[rank], window_indices[rank], window_cache_pool[rank], window_cache_scale_pool[rank], compressed_cache_pool[rank], compressed_cache_scale_pool[rank], token_to_req_indices[rank], position_ids[rank], index_cache_pool[rank], index_cache_scale_pool[rank], c2a_index_block_table[rank], c1a_index_block_table[rank], c2a_compressor_wkv[rank], c2a_compressor_wgate[rank], c1a_compressor_wkv[rank], query_start_loc[rank], state_block_table[rank], state_cache_pool[rank], compressor_norm_weight[rank], c2a_compressed_slots[rank], c1a_compressed_slots[rank], index_wk[rank], index_norm_weight[rank], index_wq_b[rank], index_weights_proj[rank], hc_ffn_fn[rank], hc_ffn_scale[rank], hc_ffn_base[rank], ffn_norm_weight[rank], gate_weight[rank], correction_bias[rank], routed_w1[rank], routed_w2[rank], routed_w3[rank],  shared_w13[rank], shared_w2[rank], recv_meta, recv_x, recv_weights, arrived, data_arrived, routed_output, combine_arrived, moe_num_tokens, attention_num_tokens, rank, wq_a_scale[rank], wq_b_scale[rank], wkv_scale[rank], index_wq_b_scale[rank], routed_w1_scale[rank], routed_w2_scale[rank], routed_w3_scale[rank], shared_w1_scale[rank], shared_w2_scale[rank], shared_w3_scale[rank], final_norm_weight[rank], lm_head_weight[rank], logit_row_indices[rank], logits[rank], sampled_ids[rank], head_hidden, head_hidden_done, head_logits, head_logits_done, output_window, output_arrived, ffn_window, ffn_arrived, execute_layers, device=rank,
+-                engram_lookup[rank], engram_wkv[rank], engram_weight[rank], engram_rotation[rank], x_hc[rank], pre_mix[rank], hc_attn_fn[rank], hc_attn_scale[rank], hc_attn_base[rank], attn_norm_weight[rank], wq_a[rank], q_norm_weight[rank], wq_b[rank], wkv[rank], kv_norm_weight[rank], attn_sink[rank], wo_a[rank], wo_b[rank], swa_wo_a[rank], swa_wo_b[rank], freqs_cos[rank], freqs_sin[rank], window_slots[rank], window_indices[rank], window_cache_pool[rank], window_cache_scale_pool[rank], compressed_cache_pool[rank], compressed_cache_scale_pool[rank], token_to_req_indices[rank], position_ids[rank], index_cache_pool[rank], index_cache_scale_pool[rank], c2a_index_block_table[rank], c1a_index_block_table[rank], c2a_compressor_wkv[rank], c2a_compressor_wgate[rank], c1a_compressor_wkv[rank], query_start_loc[rank], state_block_table[rank], state_cache_pool[rank], compressor_norm_weight[rank], c2a_compressed_slots[rank], c1a_compressed_slots[rank], index_wk[rank], index_norm_weight[rank], index_wq_b[rank], index_weights_proj[rank], hc_ffn_fn[rank], hc_ffn_scale[rank], hc_ffn_base[rank], ffn_norm_weight[rank], gate_weight[rank], correction_bias[rank], routed_w1[rank], routed_w2[rank], routed_w3[rank],  shared_w13[rank], shared_w2[rank], recv_meta, recv_x, recv_weights, arrived, data_arrived, routed_output, combine_arrived, moe_num_tokens, attention_num_tokens, rank, wq_a_scale[rank], wq_b_scale[rank], wkv_scale[rank], index_wq_b_scale[rank], routed_w1_scale[rank], routed_w2_scale[rank], routed_w3_scale[rank], shared_w1_scale[rank], shared_w2_scale[rank], shared_w3_scale[rank], final_norm_weight[rank], lm_head_weight[rank], logit_row_indices[rank], logits[rank], sampled_ids[rank], head_hidden, head_hidden_done, head_logits, head_logits_done, output_window, output_arrived, ffn_window, ffn_arrived, device=rank,
++                engram_lookup[rank], engram_wkv[rank], engram_weight[rank], engram_rotation[rank], x_hc[rank], pre_mix[rank], hc_attn_fn[rank], hc_attn_scale[rank], hc_attn_base[rank], attn_norm_weight[rank], wq_a[rank], q_norm_weight[rank], wq_b[rank], wkv[rank], kv_norm_weight[rank], attn_sink[rank], wo_a[rank], wo_b[rank], swa_wo_a[rank], swa_wo_b[rank], freqs_cos[rank], freqs_sin[rank], window_slots[rank], window_indices[rank], window_cache_pool[rank], window_cache_scale_pool[rank], compressed_cache_pool[rank], compressed_cache_scale_pool[rank], token_to_req_indices[rank], position_ids[rank], index_cache_pool[rank], index_cache_scale_pool[rank], c2a_index_block_table[rank], c1a_index_block_table[rank], c2a_compressor_wkv[rank], c2a_compressor_wgate[rank], c1a_compressor_wkv[rank], query_start_loc[rank], state_block_table[rank], state_cache_pool[rank], compressor_norm_weight[rank], c2a_compressed_slots[rank], c1a_compressed_slots[rank], index_wk[rank], index_norm_weight[rank], index_wq_b[rank], index_weights_proj[rank], hc_ffn_fn[rank], hc_ffn_scale[rank], hc_ffn_base[rank], ffn_norm_weight[rank], gate_weight[rank], correction_bias[rank], routed_w1[rank], routed_w2[rank], routed_w3[rank],  shared_w13[rank], shared_w2[rank], recv_meta, recv_x, recv_weights, arrived, data_arrived, routed_output, combine_arrived, moe_num_tokens, attention_num_tokens, rank, wq_a_scale[rank], wq_b_scale[rank], wkv_scale[rank], index_wq_b_scale[rank], routed_w1_scale[rank], routed_w2_scale[rank], routed_w3_scale[rank], shared_w1_scale[rank], shared_w2_scale[rank], shared_w3_scale[rank], final_norm_weight[rank], lm_head_weight[rank], logit_row_indices[rank], logits[rank], sampled_ids[rank], head_hidden, head_hidden_done, head_logits, head_logits_done, output_window, output_arrived, ffn_window, ffn_arrived, execute_layers, device=rank,
              )
      return logits, sampled_ids
 
 diff --git a/models/deepseek_v4_1_flash_a3/driver.py b/models/deepseek_v4_1_flash_a3/driver.py
-index acc5b48..5127b58 100644
+index acc5b48..e35c4df 100644
 --- a/models/deepseek_v4_1_flash_a3/driver.py
 +++ b/models/deepseek_v4_1_flash_a3/driver.py
-@@ -157,6 +157,10 @@ def main(function, *, mode, capacity, argv=None):
+@@ -157,6 +157,14 @@ def main(function, *, mode, capacity, argv=None):
      parser.add_argument("--full-graph", action="store_true", help=argparse.SUPPRESS)
      parser.add_argument("--logits-mode", choices=["last"], default="last")
      parser.add_argument("--max-new-tokens", type=int)
++    parser.add_argument("--orthrus-draft-head", type=Path,
++                        help="Run the resident Orthrus draft head and compare with target-only Decode")
++    parser.add_argument("--orthrus-draft-runtime-dir", type=Path,
++                        help="Directory of compiled packed K32 draft artifacts")
 +    parser.add_argument("--orthrus-verify-k", type=int, choices=(8, 16),
 +                        help="Compare greedy generation with same-residency candidate verification")
 +    parser.add_argument("--orthrus-cache-mode", choices=("retain", "replay", "compare"), default="retain",
@@ -73,10 +77,14 @@ index acc5b48..5127b58 100644
      parser.add_argument("--reference-dir", type=Path)
      parser.add_argument("--teacher-forced", action="store_true")
      parser.add_argument("--audit-caches", action="store_true")
-@@ -180,6 +184,12 @@ def main(function, *, mode, capacity, argv=None):
+@@ -180,6 +188,16 @@ def main(function, *, mode, capacity, argv=None):
      requested_chunk = args.chunk_size
      if requested_chunk is None:
          args.chunk_size = min(chunk_default, args.capacity or chunk_default)
++    if (args.orthrus_draft_head is None) != (args.orthrus_draft_runtime_dir is None):
++        parser.error("Specify both the Orthrus draft head and its compiled graph")
++    if args.orthrus_draft_head is not None:
++        args.orthrus_verify_k = args.orthrus_verify_k or 16
 +    if args.orthrus_verify_k and (
 +        args.checkpoint is None or args.compile_only or args.reference_dir is not None
 +        or args.audit_caches or args.save_logits or args.dump_logits or args.profile_last_decode
@@ -87,10 +95,31 @@ index acc5b48..5127b58 100644
          parser.error("--profile-all-steps requires full checkpoint generation")
      if args.warmup_requests < 0 or args.measured_requests < 1:
 diff --git a/models/deepseek_v4_1_flash_a3/generation.py b/models/deepseek_v4_1_flash_a3/generation.py
-index 85f018d..ca0c72b 100644
+index 51fd052..6c06148 100644
 --- a/models/deepseek_v4_1_flash_a3/generation.py
 +++ b/models/deepseek_v4_1_flash_a3/generation.py
-@@ -375,11 +375,30 @@ def generate(args, devices, *, manifests):
+@@ -218,6 +218,11 @@ def generate(args, devices, *, manifests):
+     for phase_names, supported in zip(names, prepare_windows, strict=True):
+         if supported:
+             phase_names.pop()
++    draft_graph = None
++    if args.orthrus_draft_head is not None:
++        from blockspec.dsv41_packed_proposer import load_packed_draft_graph
++
++        draft_graph = load_packed_draft_graph(args.orthrus_draft_runtime_dir, config, context=args.context_capacity)
+     cache_names = set(DECODE_CACHE_NAMES.values())
+     constants = set(weights.tensor_layouts) | cache_names | {"freqs_cos", "freqs_sin"}
+     counts = {name: torch.zeros(16, dtype=torch.int32).share_memory_()
+@@ -261,7 +266,7 @@ def generate(args, devices, *, manifests):
+                 template = prefill_template[name]
+                 host_io["prefill_" + name] = torch.empty((2, *template.shape), dtype=template.dtype).share_memory_()
+         worker = SwimlaneWorker if args.profile_all_steps is not None else DistributedWorker
+-        with worker(programs, config, persistent=True, reset_persistent_windows=False,
++        with worker([*programs, *([draft_graph] if draft_graph is not None else [])], config, persistent=True, reset_persistent_windows=False,
+                     inherited_host_tensors=[*counts.values(), *host_io.values(), decode_inputs.images]) as runtime:
+             host_io["idle_inputs"] = tuple(
+                 {name: template[name] for name in phase_names if name in template and name not in constants}
+@@ -386,11 +391,44 @@ def generate(args, devices, *, manifests):
                      )
                  except LogitValidationError as error:
                      report["teacher_forced_error"] = str(error)
@@ -106,6 +135,20 @@ index 85f018d..ca0c72b 100644
 +                report["orthrus_ar_control"] = ar
 +                verify_targets = ar["output_sequences"][0]["token_ids"]
 +                reset_caches(runtime, ranks, host_cache)
++            proposer = None
++            if draft_graph is not None:
++                from blockspec.dsv41_packed_proposer import PackedDraftProposer
++
++                draft_start = time.monotonic()
++                proposer = PackedDraftProposer(
++                    runtime, draft_graph, config, ranks[0], decode_inputs, weights, engram, rope_tables,
++                    counts["moe_num_tokens"], draft_head=args.orthrus_draft_head, block=32,
++                    context=args.context_capacity, tp=C.TP_SIZE,
++                )
++                report["orthrus_draft"] = dict(
++                    block=proposer.block, head_role=proposer.head_role, head_bytes=proposer.resident_head_bytes,
++                    initialization_seconds=time.monotonic() - draft_start,
++                )
 +            modes = (None,)
 +            if verify_targets is not None:
 +                modes = ("replay", "retain") if args.orthrus_cache_mode == "compare" else (args.orthrus_cache_mode,)
@@ -123,11 +166,11 @@ index 85f018d..ca0c72b 100644
                  replay_report = {}
                  capture_dir = args.profile_all_steps if iteration == args.warmup_requests else None
                  if capture_dir is not None:
-@@ -393,20 +412,28 @@ def generate(args, devices, *, manifests):
+@@ -404,20 +442,28 @@ def generate(args, devices, *, manifests):
                          config, memory, replay_report, options=args, host_io=host_io, decode_inputs=decode_inputs, reference=reference, teacher_forced=args.teacher_forced,
                          audit=audit_caches if audit_request else None, save_logits=args.save_logits, label=label,
                          profile=capture_dir is not None, profile_dir=capture_dir,
-+                        verify_targets=verify_targets, verify_mode=mode,
++                        verify_targets=verify_targets, verify_mode=mode, draft_proposer=proposer,
                      )
                  finally:
                      report.update(replay_report)
@@ -161,19 +204,20 @@ index 85f018d..ca0c72b 100644
                  reset_caches(runtime, ranks, host_cache)
                  profiled = {}
 diff --git a/models/deepseek_v4_1_flash_a3/replay.py b/models/deepseek_v4_1_flash_a3/replay.py
-index f11f2da..12be240 100644
+index f11f2da..cb48be8 100644
 --- a/models/deepseek_v4_1_flash_a3/replay.py
 +++ b/models/deepseek_v4_1_flash_a3/replay.py
-@@ -104,7 +104,7 @@ def run_request(
+@@ -104,7 +104,8 @@ def run_request(
      runtime, programs, arguments, names, ranks,
      weights, engram, tokenizer, request, host_cache, rope_tables,
      config, memory, report, *, options, host_io, decode_inputs, reference=None, teacher_forced=False,
 -    audit=None, save_logits=None, label="greedy", profile=False, profile_dir=None,
 +    audit=None, save_logits=None, label="greedy", profile=False, profile_dir=None, verify_targets=None, verify_mode=None,
++    draft_proposer=None,
  ):
      """Submit prompt chunks followed by one Decode call per subsequent token."""
      if teacher_forced and reference is None:
-@@ -134,9 +134,55 @@ def run_request(
+@@ -134,9 +135,70 @@ def run_request(
          # The idle TP group has no token history for this request.
          engram.hash_ids([], 0, request_id=idle_rank)
      with ThreadPoolExecutor(max_workers=8) as uploads:
@@ -187,7 +231,13 @@ index f11f2da..12be240 100644
 +                tp_size=C.TP_SIZE, has_replay_mode=names[1][-1] == "execute_layers",
 +                retain_prefix=verify_mode == "retain",
 +            )
-+            report["orthrus_verify_replay"] = dict(k=options.orthrus_verify_k, cache_mode=verify_mode, rounds=[])
++            source = "draft" if draft_proposer is not None else "target-probe"
++            report["orthrus_verify_replay"] = dict(k=options.orthrus_verify_k, cache_mode=verify_mode,
++                                                    candidate_source=source, rounds=[])
++            if draft_proposer is not None:
++                from blockspec.dsv41_packed_proposer import DraftRoundStats
++
++                draft_proposer.stats = DraftRoundStats()
 +
          for call in range(chunks + options.max_new_tokens - 1):
              step = call - chunks + 1
@@ -201,13 +251,20 @@ index f11f2da..12be240 100644
 +                if remaining <= 0:
 +                    break
 +                width = min(options.orthrus_verify_k, remaining)
-+                candidates = list(verify_targets[start_offset:start_offset + width - 1])
-+                # Alternate a correct block with a known rejection while
-+                # preserving exactly the same prompts and model residency.
-+                if candidates and len(replay["rounds"]) % 2:
-+                    middle = len(candidates) // 2
-+                    candidates[middle] = (candidates[middle] + 1) % C.FLASH.vocab_size
 +                before = time.monotonic()
++                if draft_proposer is None:
++                    candidates = list(verify_targets[start_offset:start_offset + width - 1])
++                    if candidates and len(replay["rounds"]) % 2:
++                        middle = len(candidates) // 2
++                        candidates[middle] = (candidates[middle] + 1) % C.FLASH.vocab_size
++                elif width > 1 and committed + draft_proposer.block <= draft_proposer.context:
++                    memory.phase = "orthrus_draft"
++                    candidates = draft_proposer.propose(
++                        generated[-1], position=committed, owner=owner, candidates=width - 1, uploads=uploads,
++                    )
++                    replay["draft_stats"] = dataclasses.asdict(draft_proposer.stats)
++                else:
++                    candidates = ()
 +                memory.phase = "orthrus_verify"
 +                emitted, accepted = verifier.verify(generated[-1], candidates, position=committed, owner=owner)
 +                now = time.monotonic()
@@ -223,13 +280,15 @@ index f11f2da..12be240 100644
 +                token_times.extend([now] * len(emitted))
 +                report["decode_calls"] = verifier.stats.verify_calls + verifier.stats.replay_calls
 +                report["output_sequences"] = [{"request_id": request["request_id"], "token_ids": generated.copy()}]
++                if audit is not None:
++                    report["cache_checks"].append(audit(runtime, ranks, host_cache, owner, len(generated) - 1))
 +                if len(generated) == len(verify_targets):
 +                    break
 +                continue
              capacity = options.decode_capacity if index else options.capacity
              if index:
                  current_ids = [trace[step - 1] if trace is not None else generated[-1]]
-@@ -250,6 +296,11 @@ def run_request(
+@@ -250,6 +312,11 @@ def run_request(
                    end_to_end_seconds=token_times[-1] - start,
                    token_intervals_seconds=[b - a for a, b in zip(token_times, token_times[1:])],
                    engine_seconds=engine_times, text=tokenizer.decode(generated, skip_special_tokens=False))

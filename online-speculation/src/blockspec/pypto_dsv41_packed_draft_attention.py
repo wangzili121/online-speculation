@@ -5,11 +5,11 @@ from .pypto_dsv41_packed_swa import make_packed_compressed_chain, make_packed_sw
 from .pypto_dsv41_sparse import TOPK
 
 
-def make_packed_indexed_attention(window_pages, compressed_pages, bucket, ratio, block_size):
+def make_packed_indexed_attention(window_pages, compressed_pages, bucket, ratio, block_size, *, table_bucket=None):
     """Keep selection on device for this layer and subsequent Reuse layers."""
     import pypto.language as pl
 
-    index_entry = make_packed_draft_indexer(compressed_pages, bucket, ratio, block_size)
+    index_entry = make_packed_draft_indexer(compressed_pages, bucket, ratio, block_size, table_bucket=table_bucket)
     attention_entry = make_packed_compressed_chain(window_pages, compressed_pages, block_size)
     index = pl.jit.inline(auto_scope=False)(index_entry._func)
     attention = pl.jit.inline(auto_scope=False)(attention_entry._func)
@@ -87,13 +87,15 @@ def _draft_projection(block_size, *, head_major=False):
     return prepare, finish, (capacity, mix, hidden, heads, dim, width, groups, output_rank)
 
 
-def make_packed_scored_draft_layer(window_pages, compressed_pages, bucket, ratio, block_size):
+def make_packed_scored_draft_layer(window_pages, compressed_pages, bucket, ratio, block_size, *, table_bucket=None):
     """Emit the local TP contribution and retained selection for a scored layer."""
     import pypto.language as pl
 
     prepare, finish, shape = _draft_projection(block_size)
     capacity, mix, hidden, heads, dim, width, groups, output_rank = shape
-    attention = make_packed_indexed_attention(window_pages, compressed_pages, bucket, ratio, block_size)
+    attention = make_packed_indexed_attention(
+        window_pages, compressed_pages, bucket, ratio, block_size, table_bucket=table_bucket,
+    )
     attend = pl.jit.inline(auto_scope=False)(attention._func)
 
     @pl.jit

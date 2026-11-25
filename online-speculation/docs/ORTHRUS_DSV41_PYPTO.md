@@ -59,7 +59,7 @@ A2/A3 模拟器通过了 129 个物理页、Top‑512、K8/K16/K32 共 12 个用
 
 #### 2d72687 与拒绝后直接保留前缀
 
-镜像源码已更新到同事的 `2d72687`。在 167 上重新编译通过 Prefill 32 和 Decode 16，两图启用通信窗口预分配并设上下文容量为 512，编译分别用时 142.45 和 203.67 秒。111 上用真实 W8A8 checkpoint 通过新版 v9 布局 67 项投影、TP 分片及 Engram 检查。新版加载器统计的静态权重为每 rank 36.55 GiB。新版验证图把每个 C2A 源的 FP32 状态环从 4 行扩到 32 行。K8 或 K16 的验证即使跨环，也会把前一已提交位置到最后一个候选位置写到不同槽位。拒绝后保留下一步要读的前一个已提交行，裁剪 Engram 历史，下一轮按提交的位置覆盖被拒绝的分页数据。这样一次 Verify 就能提交已接受前缀，省掉状态备份和 Accept 的基模重放。状态环每 rank 额外占 336 KiB（3 个 C2A 源，每行 1024 个 FP32 元素）。
+在同事的 `2d72687` 上重新编译通过 Prefill 32 和 Decode 16，两图启用通信窗口预分配并设上下文容量为 512，编译分别用时 142.45 和 203.67 秒。111 上用真实 W8A8 checkpoint 通过新版 v9 布局 67 项投影、TP 分片及 Engram 检查。新版加载器统计的静态权重为每 rank 36.55 GiB。新版验证图把每个 C2A 源的 FP32 状态环从 4 行扩到 32 行。K8 或 K16 的验证即使跨环，也会把前一已提交位置到最后一个候选位置写到不同槽位。拒绝后保留下一步要读的前一个已提交行，裁剪 Engram 历史，下一轮按提交的位置覆盖被拒绝的分页数据。这样一次 Verify 就能提交已接受前缀，省掉状态备份和 Accept 的基模重放。状态环每 rank 额外占 336 KiB（3 个 C2A 源，每行 1024 个 FP32 元素）。
 
 新版 `generate --orthrus-verify-k 8` 或 `16` 默认使用上述路径。追加 `--orthrus-cache-mode compare` 可在一次装载权重内运行 AR 参考、备份回放和直接保留两组，分别报告结果和耗时。报告分别记录 `verify_calls`、`replay_calls`、`retained_prefix_calls`、备份字节数、上传和图调用时间。用新版 C2A 的 Torch golden 对照了 1080 次状态推进，覆盖跨环、跨页、连续拒绝和全接受，保留前缀的压缩结果及下一步所需状态逐元素一致。167 上再用原生 C2A 的设备函数做了 28 次前缀推进，结果逐位相同。[上游 2d72687](https://github.com/Adelaide999/pypto-lib/tree/2d7268765e78447f7127682b19bc9c1bc4441530/models/deepseek_v4_1_flash_a3)
 
@@ -79,9 +79,30 @@ BF16 draft QKV 复用新版 GEMM 和 RoPE。Q-A 和 KV 权重在装载时打包�
 
 BF16 子层输出用 FP32 Torch golden 逐元素比对，保留模型约定的中间舍入边界。每组按 CANN OpenBase BF16 规则检查 `atol = rtol = 1/128`、匹配率至少 99%、最坏点绝对误差不超过 `max(0.1, 32 × ULP)`，同时检查有限值和原有相对 L2 门槛。报告另列上游单测 Wo 投影的严格容差 `0.003 + |golden|/128` 下的超差点。该上游单测给两边相同的 Attention context，融合子层的比对还包含前置阶段的累计舍入。整模验收需要逐 token 核对验证输出及目标 KV 提交。[CANN OpenBase 精度标准](https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/mixed_tolerance_standard.md) · [上游 Wo 验收](https://github.com/Adelaide999/pypto-lib/blob/2d7268765e78447f7127682b19bc9c1bc4441530/models/deepseek_v4_1_flash_a3/o_proj.py#L785)
 
-第 0 层 rank 0 和第 13 层 rank 2 的 18 组输出均通过 CANN BF16 门槛，每组匹配率均为 100%，对 FP32 golden 的最大绝对误差为 `0.0099051`。把上游 Wo 单测容差应用到完整子层时，第 0 层有 66 个元素超差，单组最大比例为 0.054%。第 0 层单独执行 Wo 在 K8、K16、K32 上超差数均为零。[精度逐项记录](validation/dsv41/pypto-1122-packed-draft-layer-910b3.json)
+第 0 层 rank 0 和第 13 层 rank 2 的 18 组输出均通过 CANN BF16 门槛，每组逐元素匹配率均为 100%，对 FP32 golden 的最大绝对误差为 `0.0099051`。对收窄到 BF16 的 golden，最大相对 L2 误差为 0.203%，用于描述这批张量的整体偏差。把上游 Wo 单测容差应用到完整子层时，第 0 层有 66 个元素超差，单组最大比例为 0.054%。第 0 层单独执行 Wo 在 K8、K16、K32 上超差数均为零。[精度逐项记录](validation/dsv41/pypto-1122-packed-draft-layer-910b3.json)
 
 Wo 投影之后复用原生 TP4 归约和 mHC Post，输出给 MoE 的隐状态、预混合系数和折叠后的 FFN 输入。用真实 checkpoint 的 mHC 权重和四张 910B3 测试 K8、K16、K32，三个输出在四个 rank 间逐字节一致，最大相对 L2 为 `7.40e-5`。测试用各 rank 独立的 BF16 投影贡献，并在驻留窗口重复运行。真实 W8A8 初始化的 SWA 投影也与 TP4/mHC 组成同一张图，在 K8、K16、K32 四卡实测通过。12 份 rank 投影输出均通过 CANN BF16 门槛，回写给 MoE 的三个张量在四卡间逐字节一致。运行时补丁把编译后的 NZ 完整切片映射回原有驻留分片，不复制权重。入口为 `validate_dsv41_pypto_packed_draft_tp.py --checkpoint <W8A8目录> --devices <四个设备编号>`，加 `--swa` 复验同图的 SWA 路径。[TP4 验证记录](validation/dsv41/pypto-1122-packed-draft-tp-910b3.json)
+
+#### 40 层驻留起草图
+
+镜像更新到上游 `44108e8`，保留单 token SWA 投影精度和 Decode 的修订，并使用这个版本的驻留分片视图。[上游源码](https://github.com/Adelaide999/pypto-lib/tree/44108e82ea2a1e840f71ec768f9d6e75013c7987/models/deepseek_v4_1_flash_a3)
+
+起草图在同一张图中执行 40 层 Attention、TP4 和冻结的原生 MoE，并在第 1、14 层复用原生 Engram，最后复用 TP 词表层。图内使用 K32 原始 head 契约。目标验证窗口可以设为 K8 或 K16，按从 anchor 开始的连续源行取前 7 或 15 个候选。独立编译入口也支持 K16 起草形状，供后续短块 head 验证。
+
+Serving 在启动时装载 head 并在 TP 间分片。Draft 直接借用目标设备上的六个滑窗、压缩和索引缓存缓冲，Engram 使用 anchor 与 MASK 的临时历史，退出准备函数即恢复原有历史。目标模型沿当前已提交前缀验证。比较命令先运行同输入的 AR，再记录候选来源、起草准备、上传、图执行、token ID 回读以及全轮接受结果。
+
+在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
+
+```bash
+python /opt/dsv41-1122/compile_dsv41_pypto_packed_draft.py \
+  --block 32 --context 512 --decode-capacity 16 --artifact-dir /results/graphs/draft
+
+# 原生 generate 的附加参数
+# --orthrus-draft-head <BF16 head 目录> --orthrus-draft-runtime-dir /results/graphs/draft
+# --orthrus-verify-k 16 --orthrus-cache-mode retain --audit-caches
+```
+
+`--audit-caches` 在 Verify 提交后额外检查 TP 副本与非活跃 DP 的缓存，吞吐计时应单独运行。当前证据覆盖编译、产物重载、驻留参数 ABI 和主机历史管理。整模 NPU 执行、双机 EP16 以及该图的 last-N 在线更新需要继续验收。[整图验证记录](validation/dsv41/pypto-1122-packed-draft-graph.json)
 
 ## 内网权重预检
 

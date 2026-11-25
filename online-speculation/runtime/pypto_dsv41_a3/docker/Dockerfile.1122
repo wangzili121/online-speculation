@@ -37,7 +37,7 @@ COPY online-speculation/runtime/pypto_dsv41_a3/lib-1122-verification.patch ./
 RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca set -e; \
     source ./build-network.sh; \
     git init pypto-lib; \
-    git -C pypto-lib fetch --depth 1 https://github.com/Adelaide999/pypto-lib.git 2d7268765e78447f7127682b19bc9c1bc4441530; \
+    git -C pypto-lib fetch --depth 1 https://github.com/Adelaide999/pypto-lib.git 44108e82ea2a1e840f71ec768f9d6e75013c7987; \
     git -C pypto-lib checkout --detach FETCH_HEAD; \
     git -C pypto-lib apply "$PWD/lib-1122-verification.patch"; \
     cp "$PYPTO_SRC/docker/scripts/pypto-activate.sh" /opt/pypto/bin/pypto-activate.sh; \
@@ -46,6 +46,7 @@ RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca set -e; \
 
 COPY online-speculation/src/blockspec /opt/dsv41-1122/orthrus/blockspec
 COPY online-speculation/scripts/validate_dsv41_pypto_packed_history.py \
+     online-speculation/scripts/compile_dsv41_pypto_packed_draft.py \
      online-speculation/scripts/validate_dsv41_pypto_packed_qkv.py \
      online-speculation/scripts/validate_dsv41_pypto_packed_indexer.py \
      online-speculation/scripts/validate_dsv41_pypto_packed_draft_tp.py \

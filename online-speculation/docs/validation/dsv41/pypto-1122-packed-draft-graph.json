@@ -1,0 +1,42 @@
+{
+  "scope": "CPU compilation, compiled graph loading and rank-local resident buffer binding",
+  "base_lib": "44108e82ea2a1e840f71ec768f9d6e75013c7987",
+  "pypto": "2e31e0c2a604c3c859c1268a937f97b0ee2d747f",
+  "simpler": "a5349f42c71666bb8cacfb3759f34eeda1572beb",
+  "ptoas": "0.78",
+  "topology": {"dp": 4, "tp": 4, "ep": 16},
+  "compilations": [
+    {"graph": "draft", "rows": 16, "context": 512, "layers": 40, "seconds": 57.57},
+    {"graph": "draft", "rows": 32, "context": 512, "layers": 40, "seconds": 57.50},
+    {"graph": "draft", "rows": 32, "context": 512, "layers": 40, "seconds": 57.40, "explicit_artifact_dir": true},
+    {"graph": "draft", "rows": 32, "context": 2048, "layers": 40, "seconds": 62.88},
+    {"graph": "prefill", "rows": 32, "context": 512, "seconds": 112},
+    {"graph": "decode", "rows": 16, "context": 512, "seconds": 170}
+  ],
+  "draft_reload": {
+    "contexts": [512, 2048],
+    "rows": 32,
+    "checked_arguments_per_graph": 62,
+    "ranks": 16,
+    "target_cache_bank_aliases_per_rank": 6,
+    "used_native_resident_nz_binder": true,
+    "used_pypto_nz_compatibility_patch": false
+  },
+  "head_cpu_audit": {
+    "base_lib": "2d7268765e78447f7127682b19bc9c1bc4441530",
+    "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+    "head_role": "initialized-plumbing",
+    "rows": 32,
+    "layers": 40,
+    "ranks": 16,
+    "checked_uploads": 4736,
+    "bytes_per_rank": 3169466880,
+    "total_bytes": 50711470080,
+    "seconds": 31.16,
+    "device_allocator": "host stand-in checking shapes and offsets"
+  },
+  "cpu_regression": {"passed": 217, "skipped": 1, "subtests_passed": 5},
+  "whole_graph_npu_execution": false,
+  "dual_node_ep16_execution": false,
+  "resident_online_update_execution": false
+}

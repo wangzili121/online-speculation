@@ -5,14 +5,17 @@ from .pypto_dsv41_sparse import TOPK
 from .pypto_dsv41_swa import WINDOW
 
 
-def packed_index_controls(page_table, anchor, ratio, block_size):
+def packed_index_controls(page_table, anchor, ratio, block_size, *, bucket=None):
     """Prepare one committed prefix for all queries of a draft request."""
     import torch
 
     if ratio not in (1, 2) or not 0 <= anchor <= INDEX_CAPACITIES[-1]:
         raise ValueError("invalid packed index prefix")
     visible = anchor // ratio
-    bucket = next(size for size in INDEX_CAPACITIES if size >= visible)
+    if bucket is None:
+        bucket = next(size for size in INDEX_CAPACITIES if size >= visible)
+    elif bucket not in INDEX_CAPACITIES or bucket < visible:
+        raise ValueError("packed index bucket does not cover the committed prefix")
     count = (visible + WINDOW - 1) // WINDOW
     pages = torch.as_tensor(page_table, dtype=torch.int32)[:count]
     if pages.numel() != count or bool((pages < 0).any()):
@@ -23,7 +26,7 @@ def packed_index_controls(page_table, anchor, ratio, block_size):
     return bucket, table, torch.zeros(capacity, dtype=torch.int32), torch.full((capacity,), visible, dtype=torch.int32)
 
 
-def make_packed_draft_indexer(physical_pages, bucket, ratio, block_size):
+def make_packed_draft_indexer(physical_pages, bucket, ratio, block_size, *, table_bucket=None):
     """Project draft queries, score the target prefix and emit physical Top-K rows.
 
     C1A Full and Reindex use the same complete-prefix scorer in this serving
@@ -40,6 +43,9 @@ def make_packed_draft_indexer(physical_pages, bucket, ratio, block_size):
 
     if ratio == 1 and bucket > FLASH.candidate_topk_blocks * FLASH.candidate_block_size:
         raise ValueError("C1A candidate pool must cover the committed prefix")
+    table_bucket = bucket if table_bucket is None else table_bucket
+    if table_bucket < bucket or table_bucket % WINDOW:
+        raise ValueError("Packed index table must cover the score bucket")
     capacity = max(16, block_size)
     hidden, latent = FLASH.hidden_size, FLASH.q_lora_rank
     index_width = INDEX_HEADS * INDEX_DIM
@@ -57,7 +63,7 @@ def make_packed_draft_indexer(physical_pages, bucket, ratio, block_size):
         sine: pl.Tensor[[capacity, 32], pl.FP32],
         key: pl.Tensor[[physical_pages, WINDOW, 1, INDEX_DIM // 2], pl.UINT8],
         key_scale: pl.Tensor[[physical_pages, WINDOW, 1, INDEX_DIM // INDEX_CACHE_GROUP], pl.UINT8],
-        table: pl.Tensor[[1, bucket // WINDOW], pl.INT32],
+        table: pl.Tensor[[1, table_bucket // WINDOW], pl.INT32],
         request_ids: pl.Tensor[[capacity], pl.INT32],
         visible: pl.Tensor[[capacity], pl.INT32],
         rows: pl.Out[pl.Tensor[[block_size, TOPK], pl.INT32]],
