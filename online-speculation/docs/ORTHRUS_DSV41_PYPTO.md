@@ -111,6 +111,8 @@ Packed 会话可在选定的 draft 轮次捕获一个请求的学生分布。起
 
 当前起草图的 manifest 升为 schema 2。旧的起草编译产物需要重新生成，普通推理使用默认的 `--last-layers 0`。DP4/TP4/EP16 下已编译完整 K16 普通起草图、K32 last-4 起草图和 FFN post 反向。四张 910B3 上用真实 checkpoint 的第 39 层 router 权重和合成 FFN 激活，验证了 K16 last-1、K32 last-4 的设备捕获与 mHC post 反向。专家编号和权重与捕获前逐字节一致，两种形状的反向相对 Torch FP64 最大 L2 误差为 `1.03e-7`，热态中位数为 16.38–18.28 ms。复验使用 `validate_dsv41_pypto_packed_ffn_post.py --devices 0,1,2,3 --block 32 --last-layers 4 --checkpoint /model`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-ffn-post-910b3.json)
 
+MoE 反向的第一步将每个有效 token 的 FFN 输出梯度按原始布局送回 TP lane，再依据前向捕获的路由把激活、梯度和系数发给相关专家。默认将 owner 的两次下发合并到同一个设备任务中，梯度在设备上保持 FP32，路由系数随包单独传递。111 四张 910B3 用真实第 39 层 router 权重构造路由，32、7、1 行的数据与元数据均逐字节一致。DP2/TP2 额外覆盖请求从 owner 0 切到 owner 2 再切回 0。TP4 两轮分别计时，融合版热态中位数为 21.66–44.08 ms、拆分版为 38.60–88.63 ms，短反馈单项存在波动。EP16 已通过编译。复验使用 `validate_dsv41_pypto_packed_ep_dispatch.py --checkpoint /model`，追加 `--split-tp` 可运行拆分对照。[实卡结果](validation/dsv41/pypto-1122-949a-packed-ep-dispatch-910b3.json)
+
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
 ```bash

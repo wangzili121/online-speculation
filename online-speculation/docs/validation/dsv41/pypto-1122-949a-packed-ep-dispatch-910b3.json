@@ -1,0 +1,286 @@
+{
+  "native_lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "image": "orthrus-dsv41-pypto:1122-7abc0df",
+  "hardware": "4 Ascend 910B3 on 111",
+  "scope": "K32 resident TP-to-EP dispatch with actual layer-39 router matrices, Torch-generated routes and synthetic gradients. Output count and payload checked byte for byte. Host wall-time includes dispatch. Nine warm submissions per case. EP16 compiled only.",
+  "compile_ep16": {
+    "passed": true,
+    "compiled": true,
+    "ep": 16,
+    "tp": 4,
+    "dp": 4,
+    "fused_tp": true
+  },
+  "tp4": {
+    "first": [
+      {
+        "passed": true,
+        "byte_exact": true,
+        "ep": 4,
+        "dp": 1,
+        "tp": 4,
+        "checkpoint": "/model",
+        "cases": [
+          {
+            "owner": 0,
+            "active_rows": 32,
+            "packets": [
+              56,
+              50,
+              42,
+              44
+            ],
+            "warm_median_ms": 38.59962709248066
+          },
+          {
+            "owner": 0,
+            "active_rows": 7,
+            "packets": [
+              13,
+              9,
+              9,
+              11
+            ],
+            "warm_median_ms": 39.34794897213578
+          },
+          {
+            "owner": 0,
+            "active_rows": 1,
+            "packets": [
+              1,
+              0,
+              2,
+              3
+            ],
+            "warm_median_ms": 39.86025997437537
+          }
+        ],
+        "fused_tp": false
+      },
+      {
+        "passed": true,
+        "byte_exact": true,
+        "ep": 4,
+        "dp": 1,
+        "tp": 4,
+        "fused_tp": true,
+        "checkpoint": "/model",
+        "cases": [
+          {
+            "owner": 0,
+            "active_rows": 32,
+            "packets": [
+              56,
+              50,
+              42,
+              44
+            ],
+            "warm_median_ms": 21.655906923115253
+          },
+          {
+            "owner": 0,
+            "active_rows": 7,
+            "packets": [
+              13,
+              9,
+              9,
+              11
+            ],
+            "warm_median_ms": 43.57653600163758
+          },
+          {
+            "owner": 0,
+            "active_rows": 1,
+            "packets": [
+              1,
+              0,
+              2,
+              3
+            ],
+            "warm_median_ms": 44.08189607784152
+          }
+        ]
+      }
+    ],
+    "repeat": [
+      {
+        "passed": true,
+        "byte_exact": true,
+        "ep": 4,
+        "dp": 1,
+        "tp": 4,
+        "fused_tp": false,
+        "checkpoint": "/model",
+        "cases": [
+          {
+            "owner": 0,
+            "active_rows": 32,
+            "packets": [
+              56,
+              50,
+              42,
+              44
+            ],
+            "warm_median_ms": 83.59996718354523
+          },
+          {
+            "owner": 0,
+            "active_rows": 7,
+            "packets": [
+              13,
+              9,
+              9,
+              11
+            ],
+            "warm_median_ms": 88.63020595163107
+          },
+          {
+            "owner": 0,
+            "active_rows": 1,
+            "packets": [
+              1,
+              0,
+              2,
+              3
+            ],
+            "warm_median_ms": 69.7431128937751
+          }
+        ]
+      },
+      {
+        "passed": true,
+        "byte_exact": true,
+        "ep": 4,
+        "dp": 1,
+        "tp": 4,
+        "fused_tp": true,
+        "checkpoint": "/model",
+        "cases": [
+          {
+            "owner": 0,
+            "active_rows": 32,
+            "packets": [
+              56,
+              50,
+              42,
+              44
+            ],
+            "warm_median_ms": 31.882185954600573
+          },
+          {
+            "owner": 0,
+            "active_rows": 7,
+            "packets": [
+              13,
+              9,
+              9,
+              11
+            ],
+            "warm_median_ms": 35.562092904001474
+          },
+          {
+            "owner": 0,
+            "active_rows": 1,
+            "packets": [
+              1,
+              0,
+              2,
+              3
+            ],
+            "warm_median_ms": 27.113917050883174
+          }
+        ]
+      }
+    ]
+  },
+  "tp2": [
+    {
+      "passed": true,
+      "byte_exact": true,
+      "ep": 4,
+      "dp": 2,
+      "tp": 2,
+      "checkpoint": "/model",
+      "cases": [
+        {
+          "owner": 0,
+          "active_rows": 32,
+          "packets": [
+            56,
+            50,
+            42,
+            44
+          ],
+          "warm_median_ms": 36.667024018242955
+        },
+        {
+          "owner": 2,
+          "active_rows": 7,
+          "packets": [
+            10,
+            6,
+            12,
+            14
+          ],
+          "warm_median_ms": 38.70683815330267
+        },
+        {
+          "owner": 0,
+          "active_rows": 1,
+          "packets": [
+            1,
+            0,
+            2,
+            3
+          ],
+          "warm_median_ms": 36.732064094394445
+        }
+      ],
+      "fused_tp": false
+    },
+    {
+      "passed": true,
+      "byte_exact": true,
+      "ep": 4,
+      "dp": 2,
+      "tp": 2,
+      "fused_tp": true,
+      "checkpoint": "/model",
+      "cases": [
+        {
+          "owner": 0,
+          "active_rows": 32,
+          "packets": [
+            56,
+            50,
+            42,
+            44
+          ],
+          "warm_median_ms": 32.27078588679433
+        },
+        {
+          "owner": 2,
+          "active_rows": 7,
+          "packets": [
+            10,
+            6,
+            12,
+            14
+          ],
+          "warm_median_ms": 33.516217954456806
+        },
+        {
+          "owner": 0,
+          "active_rows": 1,
+          "packets": [
+            1,
+            0,
+            2,
+            3
+          ],
+          "warm_median_ms": 23.15417001955211
+        }
+      ]
+    }
+  ]
+}

@@ -180,7 +180,8 @@ def main():
         reverse = PackedFFNPostVJP(proposer, final, reverse_graph, FLASH.num_hidden_layers)
         for slot, owner in enumerate(owners):
             student = SimpleNamespace(owner=owner, ffn_tape=dict(enumerate(ranks)))
-            incoming = SimpleNamespace(owner=owner, streams=final.grad_streams.shards[slot], premix=final.grad_premix.shards[slot])
+            incoming = SimpleNamespace(owner=owner, rows=7, streams=final.grad_streams.shards[slot],
+                                       premix=final.grad_premix.shards[slot])
             outputs = [reverse(student, incoming) for _ in range(10)]
             result = outputs[-1]
             value, residual, gating = [read(tensor, owner) for tensor in (result.value, result.residual, result.mixes)]

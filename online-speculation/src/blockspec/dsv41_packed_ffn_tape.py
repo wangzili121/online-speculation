@@ -166,6 +166,7 @@ class PackedFFNPostGradient:
 
     owner: int
     layer: int
+    rows: int
     value: object
     residual: object
     mixes: object
@@ -214,5 +215,5 @@ class PackedFFNPostVJP:
         start = perf_counter()
         self.runtime.run(self.graph, *args, self.grad_streams, self.grad_pre, *self.outputs,
                          owner, self.last_layer - self.first_layer, config=self.config)
-        return PackedFFNPostGradient(owner, self.last_layer, *(output.shards[replica] for output in self.outputs),
+        return PackedFFNPostGradient(owner, self.last_layer, gradient.rows, *(output.shards[replica] for output in self.outputs),
                                      perf_counter() - start)
