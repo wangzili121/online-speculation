@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from time import perf_counter
 
+from .dsv41_packed_ffn_tape import packed_ffn_tape_shapes
 from .pypto_dsv41_draft import (
     pack_draft_input_projection,
     pack_draft_output_projection,
@@ -39,17 +40,17 @@ def draft_geometry(context):
     return pages, *buckets
 
 
-def draft_graph_manifest(context, block):
+def draft_graph_manifest(context, block, *, last_layers=0):
     from models.deepseek_v4_1_flash_a3 import config as native
 
     sources = ("pypto_dsv41_packed_graph.py", "pypto_dsv41_packed_draft_attention.py",
                "pypto_dsv41_packed_swa.py", "pypto_dsv41_packed_history.py", "pypto_dsv41_packed_indexer.py",
-               "pypto_dsv41_draft.py", "pypto_dsv41_sparse.py", "pypto_dsv41_swa.py")
+               "pypto_dsv41_draft.py", "pypto_dsv41_sparse.py", "pypto_dsv41_swa.py", "dsv41_packed_ffn_tape.py")
     native_root = Path(native.__file__).parent
     native_sources = ("config.py", "decode_fwd.py", "decode_indexer.py", "engram.py",
                       "gemm.py", "hc.py", "lm_head.py", "moe.py", "o_proj.py", "rope.py")
     return dict(
-        schema=1, context=context, block=block, geometry=list(draft_geometry(context)),
+        schema=2, context=context, block=block, last_layers=last_layers, geometry=list(draft_geometry(context)),
         weight_layout=native.WEIGHT_LAYOUT_VERSION, cache_layout=native.CACHE_LAYOUT_VERSION,
         topology=dict(dp=native.DP_SIZE, tp=native.TP_SIZE, ep=native.EP_SIZE),
         sources={name: sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in sources},
@@ -57,12 +58,12 @@ def draft_graph_manifest(context, block):
     )
 
 
-def load_packed_draft_graph(directory, config, *, context, block=32):
+def load_packed_draft_graph(directory, config, *, context, block=32, last_layers=0):
     from pypto.ir.distributed_compiled_program import DistributedCompiledProgram
 
     manifest = json.loads((directory / "orthrus_draft_manifest.json").read_text())
-    if block not in (16, 32) or manifest != draft_graph_manifest(context, block):
-        raise ValueError(f"Compiled draft graph does not match K{block}, context, model layout or source")
+    if block not in (16, 32) or manifest != draft_graph_manifest(context, block, last_layers=last_layers):
+        raise ValueError(f"Compiled draft graph does not match K{block}, last-{last_layers}, context or model source")
     return DistributedCompiledProgram.from_dir(
         directory, backend_type=config.arch, execution_mode=config.execution_mode,
         distributed_config=config.distributed_config,
@@ -164,6 +165,7 @@ class PackedStudentRows:
     rows: int
     logits: object
     final_state: PackedFinalState | None = None
+    ffn_tape: dict | None = None
 
 
 class PackedDraftProposer:
@@ -171,7 +173,7 @@ class PackedDraftProposer:
 
     def __init__(self, runtime, graph, config, target_ranks, decode_inputs, weights, engram,
                  rope_tables, counts, *, draft_head, block, context, tp, head_artifact=None,
-                 retain_final_state=False):
+                 retain_final_state=False, last_layers=0):
         import torch
         from models.deepseek_v4_1_flash_a3.config import BLOCK_SIZE, FLASH
         from models.deepseek_v4_1_flash_a3.engram import ENGRAM_K
@@ -191,6 +193,8 @@ class PackedDraftProposer:
         self.previous_owners = set()
         self.student = {}
         self.retain_final_state = retain_final_state
+        self.last_layers = last_layers
+        self.tape_specs = packed_ffn_tape_shapes(block, last_layers, tp, FLASH.hidden_size, FLASH.hc_mult)
         capacity = max(16, block)
         geometry = (FLASH.hc_mult, FLASH.hidden_size)
         template = {
@@ -237,24 +241,38 @@ class PackedDraftProposer:
             # touch the target graph's logits or sampled IDs.
             bound["logits"] = runtime.alloc_tensor((MAX_LOGIT_ROWS, FLASH.vocab_size), torch.float32, worker_id=rank)
             bound["sampled_ids"] = runtime.alloc_tensor(self.sampled.shape, self.sampled.dtype, worker_id=rank)
+            bound.update(self._alloc_tape(rank))
             self.inputs.upload(runtime, rank, owner=-tp)
             self.ranks.append(bound)
         self.arguments = []
         self._input_arguments = {}
+        self._tape_arguments = {}
         for index, parameter in enumerate(graph._get_metadata()[0]):
             name = parameter.name.removesuffix("__ssa_v0")
-            argument = counts if name == "moe_num_tokens" else self._rank_argument(name, parameter)
+            if name == "ffn_capture_owner":
+                self._capture_owner_argument = index
+                argument = -1
+            else:
+                argument = counts if name == "moe_num_tokens" else self._rank_argument(name, parameter)
             self.arguments.append(argument)
             if name == "logits":
                 self._logits_argument = index, parameter
             elif name in template:
                 self._input_arguments[name] = index, parameter
+            elif name in self.tape_specs:
+                self._tape_arguments[name] = index, parameter
+
+    def _alloc_tape(self, rank):
+        import torch
+
+        return {name: self.runtime.alloc_tensor(shape, getattr(torch, dtype), worker_id=rank)
+                for name, (shape, dtype) in self.tape_specs.items()}
 
     def _rank_argument(self, name, parameter, *, replacement=None):
         from models.deepseek_v4_1_flash_a3.device_views import resident_graph_argument
 
-        rank, value = replacement if replacement is not None else (-1, None)
-        shards = [value if index == rank else operands[name] for index, operands in enumerate(self.ranks)]
+        replacement = replacement or {}
+        shards = [replacement.get(index, operands[name]) for index, operands in enumerate(self.ranks)]
         return resident_graph_argument(shards, tuple(range(self.world)), parameter)
 
     def _stage(self, request, *, student_rows=0):
@@ -339,15 +357,22 @@ class PackedDraftProposer:
             output = self.ranks[owner]["logits"]
             retained = self.runtime.alloc_tensor(output.shape, output.dtype, worker_id=owner)
             state = None
+            tape = None
             index, parameter = self._logits_argument
             arguments = list(self.arguments)
-            arguments[index] = self._rank_argument("logits", parameter, replacement=(owner, retained))
+            arguments[index] = self._rank_argument("logits", parameter, replacement={owner: retained})
             if self.retain_final_state:
                 allocation, views = self.inputs.reserve(self.runtime, owner)
                 state = PackedFinalState(allocation, views["x_hc"], views["pre_mix"])
                 for name, (index, parameter) in self._input_arguments.items():
-                    arguments[index] = self._rank_argument(name, parameter, replacement=(owner, views[name]))
-            self.student[key] = PackedStudentRows(owner, capture_request.position, capture_rows, retained, state)
+                    arguments[index] = self._rank_argument(name, parameter, replacement={owner: views[name]})
+            if self.last_layers:
+                tape = {rank: self._alloc_tape(rank) for rank in range(owner, owner + self.tp)}
+                arguments[self._capture_owner_argument] = owner
+                for name, (index, parameter) in self._tape_arguments.items():
+                    arguments[index] = self._rank_argument(name, parameter,
+                                                           replacement={rank: record[name] for rank, record in tape.items()})
+            self.student[key] = PackedStudentRows(owner, capture_request.position, capture_rows, retained, state, tape)
 
         for request in requests:
             start = perf_counter()
@@ -386,4 +411,7 @@ class PackedDraftProposer:
             self.runtime.free_tensor(value.logits, worker_id=value.owner)
             if value.final_state is not None:
                 self.runtime.free_tensor(value.final_state.allocation, worker_id=value.owner)
+            for rank, record in (value.ffn_tape or {}).items():
+                for tensor in record.values():
+                    self.runtime.free_tensor(tensor, worker_id=rank)
             del self.student[history_key]

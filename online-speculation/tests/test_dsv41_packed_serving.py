@@ -247,8 +247,8 @@ def test_resident_draft_uses_only_committed_history(lookup_fails, block):
     assert history[owner] is original
 
 
-@pytest.mark.parametrize("retain_state", [False, True])
-def test_draft_wave_dispatches_once_without_changing_target_counts(retain_state):
+@pytest.mark.parametrize(("retain_state", "last_layers"), [(False, 0), (True, 0), (True, 4)])
+def test_draft_wave_dispatches_once_without_changing_target_counts(retain_state, last_layers):
     from blockspec.dsv41_packed_proposer import DraftRequest, DraftRoundStats, PackedDraftProposer
 
     draft = PackedDraftProposer.__new__(PackedDraftProposer)
@@ -261,11 +261,19 @@ def test_draft_wave_dispatches_once_without_changing_target_counts(retain_state)
     draft.arguments, draft.graph, draft.config = [draft.ranks[8]["logits"]], object(), None
     draft.student = {}
     draft.retain_final_state = retain_state
+    draft.last_layers = last_layers
     draft._logits_argument = 0, "logits"
     draft._input_arguments = {"x_hc": (1, "x_hc"), "pre_mix": (2, "pre_mix")}
     live = torch.zeros(1), torch.zeros(1)
     draft.arguments.extend(live)
-    draft._rank_argument = lambda name, parameter, *, replacement: replacement[1]
+    tape_name = "ffn_tape_residual"
+    draft._capture_owner_argument = 3
+    draft._tape_arguments = {tape_name: (4, tape_name)}
+    draft.tape_specs = {tape_name: ((1,), "float32")}
+    draft.arguments.extend((-1, {}))
+    draft._rank_argument = lambda name, parameter, *, replacement: (
+        replacement if name == tape_name else next(iter(replacement.values()))
+    )
     staged, uploaded, launches = [], [], []
     draft._stage = lambda request, *, student_rows: staged.append((request, student_rows))
     image = object()
@@ -279,6 +287,10 @@ def test_draft_wave_dispatches_once_without_changing_target_counts(retain_state)
         args[1].fill_(len(launches))
         args[2].fill_(len(launches) * 10)
         args[3].fill_(len(launches) * -10)
+        if args[4] != -1:
+            assert args[4] == 8 and tuple(args[5]) == (8, 9, 10, 11)
+            for rank, tape in args[5].items():
+                tape.fill_(rank)
 
     def readback(dst, src, size, *, worker_id):
         assert src == worker_id
@@ -306,6 +318,11 @@ def test_draft_wave_dispatches_once_without_changing_target_counts(retain_state)
         assert captured.final_state.streams.item() == 10
         assert captured.final_state.premix.item() == -10
         assert live[0].item() == 20
+    if last_layers:
+        assert {rank: tape[tape_name].item() for rank, tape in captured.ffn_tape.items()} == {r: r for r in range(8, 12)}
     draft.release_student("r2")
-    assert freed == [(captured.logits, 8)] + ([(image, 8)] if retain_state else [])
+    expected_freed = [(captured.logits, 8)] + ([(image, 8)] if retain_state else [])
+    if last_layers:
+        expected_freed.extend((tape[tape_name], rank) for rank, tape in captured.ffn_tape.items())
+    assert freed == expected_freed
     assert not draft.student

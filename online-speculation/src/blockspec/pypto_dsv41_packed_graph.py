@@ -1,5 +1,6 @@
 """Full resident draft graph using the 1122 A3 frozen model layers."""
 
+from .dsv41_packed_ffn_tape import make_packed_ffn_capture, packed_ffn_tape_shapes
 from .pypto_dsv41_packed_draft_attention import (
     make_packed_draft_tp_post,
     make_packed_reuse_draft_layer,
@@ -8,7 +9,7 @@ from .pypto_dsv41_packed_draft_attention import (
 )
 
 
-def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block):
+def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers=0):
     """Compile the 40-layer rank program for one fixed-width draft request per DP group."""
     import pypto.language as pl
     import pypto.language.distributed as pld
@@ -19,6 +20,8 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block):
     capacity = block
     m = native.M
     ep, tp, layers = native.EP_SIZE, native.TP_SIZE, m.num_hidden_layers
+    if not 0 <= last_layers <= layers:
+        raise ValueError("Packed draft tape must cover a suffix of the model")
     hidden, mix, mix_width, mix_input = m.hidden_size, m.hc_mult, m.mix_hc, m.hc_dim
     dim, latent, heads = m.head_dim, m.q_lora_rank, native.LOCAL_H
     groups, wo_in, wo_rank = native.LOCAL_O_GROUPS, native.O_GROUP_IN, m.o_lora_rank
@@ -30,6 +33,13 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block):
     head_rows, local_vocab = native.MAX_LOGIT_ROWS, native.VOCAB_PER_TP
     group_logit_rows, sampled_pad, vocab = native.GROUP_LOGIT_ROWS, native.SAMPLED_IDS_PAD, m.vocab_size
     engram_k, engram_out = native.ENGRAM_K, native.KV_OUT
+    tape_shapes = packed_ffn_tape_shapes(block, last_layers, tp, hidden, mix)
+    tape_residual = tape_shapes["ffn_tape_residual"][0]
+    tape_mixes = tape_shapes["ffn_tape_mixes"][0]
+    tape_vectors = tape_shapes["ffn_tape_vectors"][0]
+    tape_routes = tape_shapes["ffn_tape_route_ids"][0]
+    first_saved_layer = layers - last_layers
+    save_ffn = make_packed_ffn_capture(block, last_layers, tp, hidden, mix, fanout)
     page = native.BLOCK_SIZE
     norm_span = native.ROPE_DIM // 2
     win_scale, kv_scale, key_scale = native.WINDOW_CACHE_GROUP, native.COMPRESSED_CACHE_GROUP, native.INDEX_CACHE_GROUP
@@ -115,6 +125,12 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block):
         logit_row_indices: pl.Tensor[[head_rows], pl.INT32],
         logits: pl.Out[pl.Tensor[[head_rows, vocab], pl.FP32]],
         sampled_ids: pl.Out[pl.Tensor[[head_rows, sampled_pad], pl.INT32]],
+        ffn_tape_residual: pl.Out[pl.Tensor[tape_residual, pl.FP32]],
+        ffn_tape_mixes: pl.Out[pl.Tensor[tape_mixes, pl.FP32]],
+        ffn_tape_vectors: pl.Out[pl.Tensor[tape_vectors, pl.BF16]],
+        ffn_tape_route_ids: pl.Out[pl.Tensor[tape_routes, pl.INT32]],
+        ffn_tape_route_weights: pl.Out[pl.Tensor[tape_routes, pl.FP32]],
+        ffn_capture_owner: pl.Scalar[pl.INT32],
         recv_meta: pld.DistributedTensor[[ep, experts], pl.INT32],
         recv_x: pld.DistributedTensor[[recv_rows, hidden], pl.INT8],
         recv_weights: pld.DistributedTensor[[recv_rows, aux], pl.FP32],
@@ -239,6 +255,11 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block):
                 mixed = pl.create_tensor([block, hidden], dtype=pl.BF16)
                 restore(h_attention, ffn_owned, ffn_post, ffn_residual, ffn_window, ffn_arrived,
                         mixed, live_x, group, lane, count, layer + 1, prefill=False)
+                if last_layers > 0:
+                    if group == ffn_capture_owner and layer >= first_saved_layer:
+                        save_ffn(h_attention, pre_attention, ffn_post, ffn_residual, ffn_input, mixed,
+                                 local_normed, local_indices, local_weights, ffn_tape_residual, ffn_tape_mixes,
+                                 ffn_tape_vectors, ffn_tape_route_ids, ffn_tape_route_weights, layer - first_saved_layer)
         clear(live_x, arrived, data_arrived, combine_arrived, anchor_indices=(0, 0, 0))
         retire(live_x, output_arrived, group, lane)
         retire(live_x, ffn_arrived, group, lane)
@@ -313,6 +334,12 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block):
         logit_row_indices: pl.Tensor[[ep, head_rows], pl.INT32],
         logits: pl.Out[pl.Tensor[[ep, head_rows, vocab], pl.FP32]],
         sampled_ids: pl.Out[pl.Tensor[[ep, head_rows, sampled_pad], pl.INT32]],
+        ffn_tape_residual: pl.Out[pl.Tensor[[ep, *tape_residual], pl.FP32]],
+        ffn_tape_mixes: pl.Out[pl.Tensor[[ep, *tape_mixes], pl.FP32]],
+        ffn_tape_vectors: pl.Out[pl.Tensor[[ep, *tape_vectors], pl.BF16]],
+        ffn_tape_route_ids: pl.Out[pl.Tensor[[ep, *tape_routes], pl.INT32]],
+        ffn_tape_route_weights: pl.Out[pl.Tensor[[ep, *tape_routes], pl.FP32]],
+        ffn_capture_owner: pl.Scalar[pl.INT32],
     ):
         meta_buf = pld.alloc_window_buffer([ep, experts], dtype=pl.INT32)
         recv_buf = pld.alloc_window_buffer([recv_rows, hidden], dtype=pl.INT8)
@@ -360,6 +387,8 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block):
                 routed_w2_scale[rank], routed_w3_scale[rank], shared_w13[rank], shared_w2[rank], shared_w1_scale[rank],
                 shared_w2_scale[rank], shared_w3_scale[rank], final_norm_weight[rank], lm_head_weight[rank],
                 moe_num_tokens, logit_row_indices[rank], logits[rank], sampled_ids[rank],
+                ffn_tape_residual[rank], ffn_tape_mixes[rank], ffn_tape_vectors[rank],
+                ffn_tape_route_ids[rank], ffn_tape_route_weights[rank], ffn_capture_owner,
                 recv_meta, recv_x, recv_weights, arrived, data_arrived, routed_output, combine_arrived,
                 output_window, output_arrived, ffn_window, ffn_arrived,
                 head_hidden, head_hidden_done, head_logits, head_logits_done, rank, device=rank,

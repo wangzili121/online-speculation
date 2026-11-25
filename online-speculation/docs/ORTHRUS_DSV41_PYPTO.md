@@ -107,6 +107,10 @@ Packed 会话可在选定的 draft 轮次捕获一个请求的学生分布。起
 
 在 910B3 实卡上，验证脚本先让一个设备图就地更新并保留末端激活，再覆盖普通缓冲，确认更新仍读取前一次捕获。TP4 复验使用真实 checkpoint 的 `head.weight` 和 `norm.weight`、合成激活与 logits，实际执行驻留 TV、LM head VJP 和末端反向。覆盖 1、7、16 行，两个末端梯度相对 Torch FP64 的最大 L2 误差为 `1.51e-7`，无效行全零。末端反向热态中位数为 17.93–18.55 ms，包含其独立提交和 collapse 重算。DP4/TP4 末端反向形状通过编译。复验使用 `validate_dsv41_pypto_packed_final_vjp.py --devices 0,1,2,3 --fixture-tp 4 --checkpoint /model --chain`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-final-vjp-910b3.json)
 
+起草图新增 `--last-layers N` 编译选项。会话的 `orthrus_online_last_layers` 与该参数一致时，选中的反馈轮次按层保留 FFN 输入残差、mHC 系数、已归约的 MoE 输出和各 rank 的本地归一化输入与路由。路由行沿用原生的交错分配，第 `i` 个本地行对应块内第 `i × TP + rank % TP` 行。捕获缓冲区按请求保留在设备上。`last_ffn_post_vjp(handle)` 使用末端梯度反向穿过最后一层的 mHC post，得到传给 MoE 的输出梯度、直接残差梯度和门控系数梯度。专家输入反向和再往前的层内反向仍待接续。
+
+当前起草图的 manifest 升为 schema 2。旧的起草编译产物需要重新生成，普通推理使用默认的 `--last-layers 0`。DP4/TP4/EP16 下已编译完整 K16 普通起草图、K32 last-4 起草图和 FFN post 反向。四张 910B3 上用真实 checkpoint 的第 39 层 router 权重和合成 FFN 激活，验证了 K16 last-1、K32 last-4 的设备捕获与 mHC post 反向。专家编号和权重与捕获前逐字节一致，两种形状的反向相对 Torch FP64 最大 L2 误差为 `1.03e-7`，热态中位数为 16.38–18.28 ms。复验使用 `validate_dsv41_pypto_packed_ffn_post.py --devices 0,1,2,3 --block 32 --last-layers 4 --checkpoint /model`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-ffn-post-910b3.json)
+
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
 ```bash

@@ -14,6 +14,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--block", type=int, choices=(16, 32), default=32)
     parser.add_argument("--context", type=int, default=512)
+    parser.add_argument("--last-layers", type=int, choices=range(41), default=0,
+                        metavar="N", help="Capture native MoE state for the last N layers")
     parser.add_argument("--decode-capacity", type=int, choices=(16,), required=True,
                         help="Use the native 16-row MoE dispatch configuration")
     parser.add_argument("--artifact-dir", type=Path,
@@ -27,7 +29,7 @@ def main():
     from pypto.runtime import ExecutionMode, RunConfig
 
     pages, c1a_bucket, c2a_bucket = draft_geometry(args.context)
-    graph = make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, args.block)
+    graph = make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, args.block, last_layers=args.last_layers)
     extra = {}
     if args.artifact_dir is not None:
         args.artifact_dir.mkdir(parents=True, exist_ok=False)
@@ -38,10 +40,10 @@ def main():
 
     start = perf_counter()
     program = graph.compile(config=config)
-    manifest = draft_graph_manifest(args.context, args.block)
+    manifest = draft_graph_manifest(args.context, args.block, last_layers=args.last_layers)
     (program.output_dir / "orthrus_draft_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     report = dict(compiled=True, npu_execution=False, layers=FLASH.num_hidden_layers,
-                  block=args.block, context=args.context, seconds=perf_counter() - start,
+                  block=args.block, context=args.context, last_layers=args.last_layers, seconds=perf_counter() - start,
                   work_dir=str(program.output_dir))
     payload = json.dumps(report, indent=2)
     if args.output is not None:

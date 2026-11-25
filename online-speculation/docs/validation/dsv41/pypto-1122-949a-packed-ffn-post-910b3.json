@@ -1,0 +1,88 @@
+{
+  "lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "image": "orthrus-dsv41-pypto:1122-7abc0df",
+  "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+  "loaded_checkpoint_tensors": [
+    "layers.39.ffn.gate.weight",
+    "layers.39.ffn.gate.bias"
+  ],
+  "device": "Ascend 910B3",
+  "physical_devices": [
+    2,
+    3,
+    4,
+    5
+  ],
+  "fixture": "Synthetic layer activations and seven feedback rows. The native router runs on each TP lane. The fixture captures the native router output and synthetic FFN states, then reverses mHC post-mix. Routed experts and the full forward graph are outside this device fixture.",
+  "reference": "Native router Torch FP64 reference; FP64 autograd for FFN post-mix residual, value and gate adjoints",
+  "timing_scope": "Synchronous resident FFN post-mix VJP only, including dispatch. Nine warm samples per case.",
+  "draft_graph_compilations": [
+    {
+      "compiled": true,
+      "npu_execution": false,
+      "layers": 40,
+      "block": 16,
+      "context": 512,
+      "last_layers": 0,
+      "seconds": 58.70864651002921
+    },
+    {
+      "compiled": true,
+      "npu_execution": false,
+      "layers": 40,
+      "block": 32,
+      "context": 512,
+      "last_layers": 4,
+      "seconds": 58.69490386615507
+    }
+  ],
+  "ffn_post_vjp_compiled_unexecuted_topology": {
+    "dp": 4,
+    "tp": 4,
+    "world": 16
+  },
+  "runs": [
+    {
+      "passed": true,
+      "devices": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "tp": 4,
+      "block": 16,
+      "last_layers": 1,
+      "rows_with_gradient": 7,
+      "capture_byte_exact": true,
+      "max_relative_l2": 1.029265002923864e-07,
+      "warm_median_ms": [
+        18.272181041538715
+      ],
+      "checkpoint_routes": true,
+      "max_route_weight_error": 1.7881393432617188e-07
+    },
+    {
+      "passed": true,
+      "devices": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "tp": 4,
+      "block": 32,
+      "last_layers": 4,
+      "rows_with_gradient": 7,
+      "capture_byte_exact": true,
+      "distinct_layer_slots": true,
+      "max_relative_l2": 9.413271736204384e-08,
+      "warm_median_ms": [
+        16.37857803143561
+      ],
+      "checkpoint_routes": true,
+      "max_route_weight_error": 1.7881393432617188e-07
+    }
+  ],
+  "reproduce": "python online-speculation/scripts/validate_dsv41_pypto_packed_ffn_post.py --devices 0,1,2,3 --block 32 --last-layers 4 --checkpoint /model"
+}

@@ -69,7 +69,7 @@ def main():
         proposer.student = {"request": PackedStudentRows(second_owner, 471, 7, retained)}
         inputs = proposer._rank_argument("source", source_param)
         regular = proposer._rank_argument("logits", logits_param)
-        capture = proposer._rank_argument("logits", logits_param, replacement=(second_owner, retained))
+        capture = proposer._rank_argument("logits", logits_param, replacement={second_owner: retained})
         runtime.run(graph, inputs, capture, config=config)
         changed = row_values + 10
         runtime.copy_to(proposer.ranks[second_owner]["source"].data_ptr, changed.data_ptr(),
