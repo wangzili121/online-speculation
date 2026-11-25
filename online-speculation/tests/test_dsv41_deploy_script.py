@@ -173,6 +173,40 @@ def test_profile_launcher_uses_seven_teacher_rows_and_a_single_session(tmp_path)
     assert "--short-speculative-dispatch --verify-candidate-limit 7" in cluster_call
 
 
+def test_company_accept_and_gsm8k_modes_start_matched_ar_reports(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    original = ROOT / "scripts" / "run_dsv41_pypto_online_gsm8k.sh"
+    launcher = scripts / original.name
+    launcher.write_bytes(original.read_bytes())
+    for relative in ("configs/dsv41/gsm8k-online.json", "src/blockspec/pypto_dsv41_resident_primitives.py"):
+        fixture = tmp_path / relative
+        fixture.parent.mkdir(parents=True)
+        fixture.touch()
+    (scripts / "dsv41_pypto_env.sh").write_text(
+        'case "$1" in\n'
+        '  online-factory-check) exit 0 ;;\n'
+        '  gsm8k-prepare) mkdir -p "$2"; seq 20 >"$2/tuning.jsonl"; seq 4 >"$2/quality_test.jsonl" ;;\n'
+        '  cluster-accept) printf "%s\\n" "$*"; wc -l <"$ORTHRUS_WORKLOAD" ;;\n'
+        'esac\n',
+    )
+    data = tmp_path / "data"
+    environment = os.environ | {"DSV41_GSM8K_ROOT": str(data)}
+    for mode, requests, tokens, updates, teacher in (("accept", 8, 4, 1, 1), ("gsm8k", 20, 64, 16, 7)):
+        result = subprocess.run(
+            ["bash", launcher, "node7", mode, "1"], env=environment,
+            check=True, capture_output=True, text=True,
+        )
+        call, rows = result.stdout.splitlines()
+        assert int(rows) == requests
+        assert f"--max-requests {requests} --tokens {tokens}" in call
+        assert f"--report-min-updates {updates} --report-online-ar" in call
+        assert f'"teacher_rows":{teacher}' in call
+        assert "--report-batch-size 4" in call
+        assert "--short-speculative-dispatch --verify-candidate-limit 7" in call
+        assert data.exists() == (mode == "gsm8k")
+
+
 def test_cluster_source_pairing_tracks_the_fully_patched_kernel_tree():
     launcher = (ROOT / "scripts" / "run_dsv41_pypto_cluster.sh").read_text()
     patch = (ROOT / "runtime" / "pypto_dsv41_a3" / "serving-cluster.patch").read_text()

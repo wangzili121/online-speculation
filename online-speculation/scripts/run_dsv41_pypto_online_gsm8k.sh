@@ -2,7 +2,7 @@
 # Launch the paired DSV4.1 resident online-update study with one stable command.
 set -euo pipefail
 
-[[ $# -ge 1 ]] || { echo "usage: $0 <node7|node8> <capture|profile|smoke|tuning|benchmark|eval|report> [last-N]" >&2; exit 2; }
+[[ $# -ge 1 ]] || { echo "usage: $0 <node7|node8> <accept|gsm8k|capture|profile|smoke|tuning|benchmark|eval|report> [last-N]" >&2; exit 2; }
 node="$1"
 mode="${2:-smoke}"
 last_layers="${3:-1}"
@@ -19,34 +19,62 @@ case "$mode" in
   tuning) split=tuning; requests=32; tokens=192 ;;
   benchmark) split=online_eval; requests=33; tokens=96 ;;
   eval) split=online_eval; requests=384; tokens=192 ;;
-  report)
-    min_updates="${DSV41_REPORT_MIN_UPDATES:-0}"
+  accept|gsm8k|report)
+    split=tuning
+    report_options=()
+    verify_candidates="${DSV41_VERIFY_CANDIDATES:-31}"
+    warm_steps=4 publish_every=1 teacher_rows=7 warmup_updates=2 warm_stride=4 steady_stride=8
+    case "$mode" in
+      accept)
+        default_train=4 default_eval=4 default_tokens=4 default_min_updates=1
+        teacher_rows=1 warmup_updates=1 warm_steps=1 warm_stride=1 steady_stride=1
+        verify_candidates="${DSV41_VERIFY_CANDIDATES:-7}"
+        report_options+=(--report-online-ar)
+        ;;
+      gsm8k)
+        default_train=16 default_eval=4 default_tokens=64 default_min_updates=16
+        warmup_updates=4 warm_steps=16 publish_every=4
+        verify_candidates="${DSV41_VERIFY_CANDIDATES:-7}"
+        report_options+=(--report-online-ar)
+        ;;
+      report)
+        default_train=8 default_eval=4 default_tokens=32 default_min_updates=0
+        ;;
+    esac
+    min_updates="${DSV41_REPORT_MIN_UPDATES:-$default_min_updates}"
     if [[ ! "$min_updates" =~ ^(0|[1-9][0-9]*)$ ]]; then
       echo "DSV41_REPORT_MIN_UPDATES must be a nonnegative integer" >&2; exit 2
     fi
-    default_train=8 default_eval=4 default_tokens=32 warm_steps=4 publish_every=1
-    if (( min_updates > 0 )); then
+    if [[ "$mode" == report ]] && (( min_updates > 0 )); then
       default_train=64 default_eval=16 default_tokens=192 warm_steps=16 publish_every=4
     fi
     train_requests="${DSV41_REPORT_TRAIN:-$default_train}"
     eval_requests="${DSV41_REPORT_EVAL:-$default_eval}"
     tokens="${DSV41_REPORT_TOKENS:-$default_tokens}"
     batch_size="${DSV41_REPORT_BATCH:-4}"
+    min_tokens=16
+    if [[ "$mode" == accept ]]; then
+      train_requests=4 eval_requests=4 tokens=4 batch_size=4 min_updates=1 min_tokens=4
+    fi
     if [[ ! "$train_requests" =~ ^[1-9][0-9]*$ || ! "$eval_requests" =~ ^[1-9][0-9]*$ ||
-          ! "$tokens" =~ ^[1-9][0-9]*$ || "$tokens" -lt 16 || ! "$batch_size" =~ ^[1-4]$ ]]; then
-      echo "report requires positive train/eval counts, at least 16 tokens and batch size 1..4" >&2
+          ! "$tokens" =~ ^[1-9][0-9]*$ || "$tokens" -lt "$min_tokens" || ! "$batch_size" =~ ^[1-4]$ ]]; then
+      echo "report requires positive train/eval counts, at least $min_tokens tokens and batch size 1..4" >&2
       exit 2
     fi
     requests=$((train_requests + eval_requests))
-    split=tuning
     ;;
-  *) echo "mode must be capture, profile, smoke, tuning, benchmark, eval or report" >&2; exit 2 ;;
+  *) echo "mode must be accept, gsm8k, capture, profile, smoke, tuning, benchmark, eval or report" >&2; exit 2 ;;
 esac
 
 workload="$data_root/$split.jsonl"
 study="$root/configs/dsv41/gsm8k-online.json"
 factory="$root/src/blockspec/pypto_dsv41_resident_primitives.py"
-for path in "$workload" "$study" "$factory"; do
+if [[ "$mode" == gsm8k && ( ! -r "$workload" || ! -r "$data_root/quality_test.jsonl" ) ]]; then
+  bash "$root/scripts/dsv41_pypto_env.sh" gsm8k-prepare "$data_root"
+fi
+inputs=("$study" "$factory")
+if [[ "$mode" != accept ]]; then inputs+=("$workload"); fi
+for path in "${inputs[@]}"; do
   [[ -r "$path" ]] || { echo "required online-update input is missing: $path" >&2; exit 2; }
 done
 
@@ -60,8 +88,10 @@ export ORTHRUS_WORKLOAD="$workload"
 export CLUSTER_KEY_FILE="${CLUSTER_KEY_FILE:-/root/.orthrus-cluster.key}"
 export NPU_DEVICES="${NPU_DEVICES:-0,1,2,3,4,5,6,7}"
 
+short_dispatch=0
+if [[ "$mode" == accept || "$mode" == gsm8k ]]; then short_dispatch=1; fi
 dispatch_option=--no-short-speculative-dispatch
-if [[ "${DSV41_SHORT_SPECULATIVE_DISPATCH:-0}" == 1 ]]; then
+if [[ "${DSV41_SHORT_SPECULATIVE_DISPATCH:-$short_dispatch}" == 1 ]]; then
   dispatch_option=--short-speculative-dispatch
 fi
 
@@ -86,25 +116,38 @@ else
   fi
 fi
 
-if [[ "$mode" == report ]]; then
-  heldout="$data_root/quality_test.jsonl"
-  if [[ ! -r "$heldout" ]] || (( $(wc -l <"$workload") < train_requests || $(wc -l <"$heldout") < eval_requests )); then
-    echo "report needs $train_requests tuning rows and $eval_requests held-out GSM8K test rows" >&2
-    exit 2
-  fi
+if [[ "$mode" == accept || "$mode" == gsm8k || "$mode" == report ]]; then
   report_workload="$(mktemp)"
   trap 'rm -f -- "$report_workload"' EXIT
-  { head -n "$train_requests" "$workload"; head -n "$eval_requests" "$heldout"; } >"$report_workload"
+  if [[ "$mode" == accept ]]; then
+    cat >"$report_workload" <<'JSONL'
+{"id":"train-0","prompt":"Write three short facts about water."}
+{"id":"train-1","prompt":"Explain why plants need sunlight."}
+{"id":"train-2","prompt":"List the first five prime numbers."}
+{"id":"train-3","prompt":"Name and describe two musical instruments."}
+{"id":"heldout-0","prompt":"Explain how a paper plane flies."}
+{"id":"heldout-1","prompt":"Name the planets in the solar system."}
+{"id":"heldout-2","prompt":"Describe what happens when snow melts."}
+{"id":"heldout-3","prompt":"List three animals that live in the ocean."}
+JSONL
+  else
+    heldout="$data_root/quality_test.jsonl"
+    if [[ ! -r "$heldout" ]] || (( $(wc -l <"$workload") < train_requests || $(wc -l <"$heldout") < eval_requests )); then
+      echo "report needs $train_requests tuning rows and $eval_requests held-out GSM8K test rows" >&2
+      exit 2
+    fi
+    { head -n "$train_requests" "$workload"; head -n "$eval_requests" "$heldout"; } >"$report_workload"
+  fi
   export ORTHRUS_WORKLOAD="$report_workload" PYPTO_REUSE_PREVIOUS_HEAD=0
-  online_overrides="{\"last_layers\":$last_layers,\"teacher_rows\":7,\"warmup_updates\":2,\"warm_update_stride\":4,\"warm_update_steps\":$warm_steps,\"steady_update_stride\":8,\"publish_every\":$publish_every}"
+  online_overrides="{\"last_layers\":$last_layers,\"teacher_rows\":$teacher_rows,\"warmup_updates\":$warmup_updates,\"warm_update_stride\":$warm_stride,\"warm_update_steps\":$warm_steps,\"steady_update_stride\":$steady_stride,\"publish_every\":$publish_every}"
   bash "$root/scripts/dsv41_pypto_env.sh" cluster-accept "$node" \
     --max-requests "$requests" --tokens "$tokens" --no-trace-prefill --require-online-update \
     --report-train-requests "$train_requests" --report-batch-size "$batch_size" \
-    --report-min-updates "$min_updates" \
+    --report-min-updates "$min_updates" "${report_options[@]}" \
     --online-study /workspace/online-speculation/configs/dsv41/gsm8k-online.json \
     --online-primitives blockspec.pypto_dsv41_resident_primitives:create_primitives \
     --online-overrides "$online_overrides" "$dispatch_option" \
-    --verify-candidate-limit "${DSV41_VERIFY_CANDIDATES:-31}"
+    --verify-candidate-limit "$verify_candidates"
   exit $?
 fi
 

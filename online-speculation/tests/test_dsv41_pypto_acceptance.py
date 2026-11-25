@@ -278,6 +278,16 @@ class AcceptanceTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("resident draft", report["error"])
 
+        audit = runpy.run_path(str(COMMAND))["audit_session"]
+        _, phases, _ = audit(session, speculative=False, node_local=True, request_prefix="target-request-",
+                             allow_resident_draft=True)
+        self.assertEqual(phases, dict(prefill=1, decode=1, release=1))
+        rows[1].update(phase="draft", draft_resident=True)
+        receipt.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        with self.assertRaisesRegex(ValueError, "Unexpected draft dispatch"):
+            audit(session, speculative=False, node_local=True, request_prefix="target-request-",
+                  allow_resident_draft=True)
+
     def test_single_request_peer_does_not_need_to_restore_unowned_kv(self):
         session = self.root / "native" / "session-1"
         session.mkdir(parents=True)
@@ -647,7 +657,7 @@ def test_online_report_batches_and_freezes_on_heldout_questions(
     entries = [dict(id=f"gsm8k-{i}", reference_answer="#### 2") for i in range(len(prompts))]
     options = dict(train_count=8, steps=4, batch_size=4, eos_ids={3},
                    decoder=lambda tokens: "#### 2", output=tmp_path, engram_seconds=5.0,
-                   min_published_update=min_updates)
+                   min_published_update=min_updates, compare_online_ar=bool(min_updates))
     if stale_frozen_draft:
         with pytest.raises(ValueError, match="frozen executed draft versions"):
             study(runner, session, online, prompts, entries, **options)
@@ -659,7 +669,13 @@ def test_online_report_batches_and_freezes_on_heldout_questions(
     assert published == len(records) // publish_every * publish_every
     assert report["passed"] == (published >= min_updates)
     assert ("failure_reason" in report) == (published < min_updates)
-    assert report["compared_tokens"] == {"initial": 12, "frozen": 12}
+    expected_comparisons = {"initial": 12, "frozen": 12}
+    if min_updates:
+        expected_comparisons["online"] = 3 * completed_requests
+        assert report["arms"]["ar_online"]["requests"] == completed_requests
+        assert report["arms"]["ar_online"]["draft_rounds"] == 0
+        assert report["online_speedup_vs_ar"] > 0
+    assert report["compared_tokens"] == expected_comparisons
     assert report["verify_candidate_limit"] == 7 and report["short_speculative_dispatch"] is True
     assert report["startup_compared_tokens"] == 8
     assert report["arms"]["ar"]["draft_head_versions"] == []
@@ -678,6 +694,11 @@ def test_online_report_batches_and_freezes_on_heldout_questions(
     assert report["arms"]["online"]["wall_tok_s_excluding_all_updates_estimate"] > 0
     assert all(partitions == [0, 1, 2, 3] for _, partitions in seen)
     train = json.loads((tmp_path / "gsm8k-online-online.json").read_text())
+    if min_updates:
+        matched_ar = json.loads((tmp_path / "gsm8k-online-ar_online.json").read_text())
+        assert [(row["workload_id"], row["token_ids"]) for row in matched_ar["requests"]] == [
+            (row["workload_id"], row["token_ids"]) for row in train["requests"]
+        ]
     eval_ = json.loads((tmp_path / "gsm8k-online-frozen.json").read_text())
     assert {row["workload_id"] for row in train["requests"]}.isdisjoint(row["workload_id"] for row in eval_["requests"])
     assert not runner.ledger.requests

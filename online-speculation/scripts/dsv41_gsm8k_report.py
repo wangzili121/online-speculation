@@ -153,7 +153,8 @@ def _collect_phases(path, offset, previous, totals, draft_versions):
 
 
 def study_workload(runner, session, online, prompts, entries, *, train_count, steps,
-                   batch_size, eos_ids, decoder, output, engram_seconds, min_published_update=0):
+                   batch_size, eos_ids, decoder, output, engram_seconds, min_published_update=0,
+                   compare_online_ar=False):
     """Persist each wave; compare fixed versions on the identical held-out requests."""
     link = session.cluster.link
     startup = {"engram_seconds": engram_seconds}
@@ -194,7 +195,10 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
         return result
 
     warmup_target = warmup("ar_warmup", speculative=False)
-    for name, subset in (("ar", heldout), ("initial", heldout), ("online", train), ("frozen", heldout)):
+    phases = [("ar", heldout), ("initial", heldout), ("online", train), ("frozen", heldout)]
+    if compare_online_ar:
+        phases.append(("ar_online", train))
+    for name, subset in phases:
         if name == "initial":
             warmup("draft_warmup", speculative=True, expected=warmup_target)
         print(json.dumps(dict(stage="gsm8k_online_phase", phase=name)), flush=True)
@@ -206,6 +210,8 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
             startup["learner_bind"] = max(elapsed, link.exchange("report/seconds/learner-bind", elapsed))
         if name == "frozen":
             session.online = None  # The last published operands remain active in ResidentDraftAttention.
+        if name == "ar_online":
+            subset = slice(0, len(run_results["online"]["requests"]))
         rows, speculation, timing = [], Counter(), Counter()
         phase_totals = defaultdict(Counter)
         draft_versions = set()
@@ -215,10 +221,12 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
             baseline = run_results["ar"]["requests"][first - train_count:last - train_count] if (
                 name in ("initial", "frozen")
             ) else None
+            if name == "ar_online":
+                baseline = run_results["online"]["requests"][first:last]
             emitted, counts, spans = generate_wave(
                 runner, prompts[first:last], entries[first:last], steps,
                 start_index=first - subset.start, phase=name, decoder=decoder, eos_ids=eos_ids,
-                speculative=name != "ar", expected=baseline,
+                speculative=name not in ("ar", "ar_online"), expected=baseline,
             )
             rows.extend(emitted)
             speculation.update(counts)
@@ -299,6 +307,8 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
                 break
         if name in ("initial", "frozen"):
             comparisons[name] = request_parity(run_results["ar"], run_results[name])
+        elif name == "ar_online":
+            comparisons["online"] = request_parity(run_results[name], run_results["online"])
         _write(summary_path, report)
     trained = arms["online"]
     report["passed"] = bool(
@@ -309,4 +319,13 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
         report["failure_reason"] = "training request budget ended before the requested optimizer step was published"
     report["frozen_speedup_vs_initial"] = arms["frozen"]["wall_tok_s"] / arms["initial"]["wall_tok_s"]
     report["frozen_speedup_vs_ar"] = arms["frozen"]["wall_tok_s"] / arms["ar"]["wall_tok_s"]
+    if compare_online_ar:
+        baseline = arms["ar_online"]["wall_tok_s"]
+        report["online_speedup_vs_ar"] = trained["wall_tok_s"] / baseline
+        report["online_speedup_vs_ar_excluding_first_update_estimate"] = (
+            trained["wall_tok_s_excluding_first_update_estimate"] / baseline
+        )
+        report["online_speedup_vs_ar_excluding_all_updates_estimate"] = (
+            trained["wall_tok_s_excluding_all_updates_estimate"] / baseline
+        )
     return report

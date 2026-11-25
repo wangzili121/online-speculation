@@ -68,7 +68,7 @@ def audit_online_update(local, peer, *, publish_every, require_update):
 
 
 def audit_session(directory, *, speculative, node_local=False, request_prefix=None,
-                  require_updated_draft=False):
+                  require_updated_draft=False, allow_resident_draft=False):
     receipts = list(directory.rglob("serving-dispatches.jsonl"))
     if len(receipts) != 1:
         raise ValueError(f"Expected exactly one native session receipt in {directory}, found {len(receipts)}")
@@ -96,7 +96,7 @@ def audit_session(directory, *, speculative, node_local=False, request_prefix=No
                 belongs = [item["request_id"].startswith(request_prefix) for item in owners_on_row]
                 if not any(belongs):
                     continue
-                if not all(belongs) or (not speculative and row["draft_resident"]):
+                if not all(belongs) or (not speculative and row["draft_resident"] and not allow_resident_draft):
                     raise ValueError("Mismatched request or resident draft during target-only acceptance")
                 if phase in sequence and not row["draft_resident"]:
                     raise ValueError("Speculation ran without the resident draft head")
