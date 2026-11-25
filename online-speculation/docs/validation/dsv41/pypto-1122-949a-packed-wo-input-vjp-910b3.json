@@ -1,0 +1,314 @@
+{
+  "native_lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "image": "orthrus-dsv41-pypto:1122-7abc0df",
+  "hardware": "Ascend 910B3 on 111",
+  "scope": "Wo input VJP with actual layer-0, layer-36 and layer-39 BF16 NZ shards, synthetic FP32 seeds and FP32 position tables, compared with a FP64 reference. TP fixtures exercise typed resident weight and RoPE aliases. Seven warm samples include host submission. EP16 compile only.",
+  "compile_ep16": [
+    {
+      "passed": true,
+      "compiled": [
+        "compensated"
+      ],
+      "block": 16,
+      "tp": 4,
+      "world": 16
+    },
+    {
+      "passed": true,
+      "compiled": [
+        "compensated"
+      ],
+      "block": 32,
+      "tp": 4,
+      "world": 16
+    }
+  ],
+  "device": [
+    {
+      "passed": true,
+      "block": 32,
+      "tp": 4,
+      "checkpoint": "/model",
+      "cases": [
+        {
+          "layer": 36,
+          "tp_rank": 3,
+          "active_rows": 1,
+          "metrics": {
+            "bf16": {
+              "relative_l2": 0.002238280779762709,
+              "max_abs": 0.021395880038370674,
+              "warm_median_ms": 32.12312678806484
+            },
+            "compensated": {
+              "relative_l2": 3.3799055191289614e-06,
+              "max_abs": 3.244313732686521e-05,
+              "warm_median_ms": 31.705705914646387
+            },
+            "compensated_full": {
+              "relative_l2": 3.3799055191289614e-06,
+              "max_abs": 3.244313732686521e-05,
+              "warm_median_ms": 32.75415697135031
+            }
+          }
+        },
+        {
+          "layer": 36,
+          "tp_rank": 3,
+          "active_rows": 7,
+          "metrics": {
+            "bf16": {
+              "relative_l2": 0.0022341080505778716,
+              "max_abs": 0.030925308008121544,
+              "warm_median_ms": 31.579995062202215
+            },
+            "compensated": {
+              "relative_l2": 3.349172945726329e-06,
+              "max_abs": 4.981490388544785e-05,
+              "warm_median_ms": 32.800948014482856
+            },
+            "compensated_full": {
+              "relative_l2": 3.349172945726329e-06,
+              "max_abs": 4.981490388544785e-05,
+              "warm_median_ms": 33.632009057328105
+            }
+          }
+        },
+        {
+          "layer": 36,
+          "tp_rank": 3,
+          "active_rows": 32,
+          "metrics": {
+            "bf16": {
+              "relative_l2": 0.00223587587318407,
+              "max_abs": 0.03502623742604882,
+              "warm_median_ms": 32.31354686431587
+            },
+            "compensated": {
+              "relative_l2": 3.3676823331900337e-06,
+              "max_abs": 6.809189363643497e-05,
+              "warm_median_ms": 33.25799806043506
+            }
+          }
+        },
+        {
+          "layer": 39,
+          "tp_rank": 0,
+          "active_rows": 1,
+          "metrics": {
+            "bf16": {
+              "relative_l2": 0.002140798042425229,
+              "max_abs": 0.02984809397535848,
+              "warm_median_ms": 20.36960585974157
+            },
+            "compensated": {
+              "relative_l2": 3.277446610459379e-06,
+              "max_abs": 3.944669759547992e-05,
+              "warm_median_ms": 21.254247054457664
+            },
+            "compensated_full": {
+              "relative_l2": 3.277446610459379e-06,
+              "max_abs": 3.944669759547992e-05,
+              "warm_median_ms": 21.44346688874066
+            }
+          }
+        },
+        {
+          "layer": 39,
+          "tp_rank": 0,
+          "active_rows": 7,
+          "metrics": {
+            "bf16": {
+              "relative_l2": 0.0021180830535584387,
+              "max_abs": 0.06386729038851513,
+              "warm_median_ms": 20.792935974895954
+            },
+            "compensated": {
+              "relative_l2": 3.1701041566150105e-06,
+              "max_abs": 0.00017659402762237875,
+              "warm_median_ms": 20.86060680449009
+            },
+            "compensated_full": {
+              "relative_l2": 3.1701041566150105e-06,
+              "max_abs": 0.00017659402762237875,
+              "warm_median_ms": 22.65876019373536
+            }
+          }
+        },
+        {
+          "layer": 39,
+          "tp_rank": 0,
+          "active_rows": 32,
+          "metrics": {
+            "bf16": {
+              "relative_l2": 0.0021271847976903555,
+              "max_abs": 0.09618916709934666,
+              "warm_median_ms": 19.870654912665486
+            },
+            "compensated": {
+              "relative_l2": 3.156281506142628e-06,
+              "max_abs": 0.0001179601438230371,
+              "warm_median_ms": 19.594645127654076
+            }
+          }
+        }
+      ]
+    },
+    {
+      "passed": true,
+      "block": 32,
+      "tp": 2,
+      "world": 4,
+      "checkpoint": "/model",
+      "cases": [
+        {
+          "owner": 0,
+          "layer": 39,
+          "position": 3,
+          "active_rows": 1,
+          "lanes": [
+            {
+              "relative_l2": 3.1341200046885043e-06,
+              "max_abs": 4.395559376746405e-05,
+              "warm_median_ms": 41.123681934550405
+            },
+            {
+              "relative_l2": 3.2961299166708897e-06,
+              "max_abs": 0.00010803304385831325,
+              "warm_median_ms": 41.123681934550405
+            }
+          ]
+        },
+        {
+          "owner": 2,
+          "layer": 0,
+          "position": 39,
+          "active_rows": 7,
+          "lanes": [
+            {
+              "relative_l2": 3.0084709411880214e-06,
+              "max_abs": 2.991514394912187e-05,
+              "warm_median_ms": 20.291015971451998
+            },
+            {
+              "relative_l2": 3.036622561164781e-06,
+              "max_abs": 3.294837125666916e-05,
+              "warm_median_ms": 20.291015971451998
+            }
+          ]
+        },
+        {
+          "owner": 0,
+          "layer": 39,
+          "position": 64,
+          "active_rows": 32,
+          "lanes": [
+            {
+              "relative_l2": 3.229568476239964e-06,
+              "max_abs": 0.00012613173794662202,
+              "warm_median_ms": 47.30061301961541
+            },
+            {
+              "relative_l2": 3.2373139631764084e-06,
+              "max_abs": 0.00014598548979272152,
+              "warm_median_ms": 47.30061301961541
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "passed": true,
+      "block": 16,
+      "tp": 4,
+      "world": 4,
+      "checkpoint": "/model",
+      "cases": [
+        {
+          "owner": 0,
+          "layer": 39,
+          "position": 3,
+          "active_rows": 1,
+          "lanes": [
+            {
+              "relative_l2": 3.263648273143291e-06,
+              "max_abs": 5.6841815737840307e-05,
+              "warm_median_ms": 31.81654610671103
+            },
+            {
+              "relative_l2": 3.2877870724869916e-06,
+              "max_abs": 4.644895634342561e-05,
+              "warm_median_ms": 31.81654610671103
+            },
+            {
+              "relative_l2": 3.291450587731307e-06,
+              "max_abs": 7.767873785624602e-05,
+              "warm_median_ms": 31.81654610671103
+            },
+            {
+              "relative_l2": 3.533713865008953e-06,
+              "max_abs": 4.540384265716568e-05,
+              "warm_median_ms": 31.81654610671103
+            }
+          ]
+        },
+        {
+          "owner": 0,
+          "layer": 0,
+          "position": 23,
+          "active_rows": 7,
+          "lanes": [
+            {
+              "relative_l2": 2.96865362588976e-06,
+              "max_abs": 2.353784590414243e-05,
+              "warm_median_ms": 31.52224514633417
+            },
+            {
+              "relative_l2": 3.0209898952042644e-06,
+              "max_abs": 2.6166782905345798e-05,
+              "warm_median_ms": 31.52224514633417
+            },
+            {
+              "relative_l2": 3.0412665235164675e-06,
+              "max_abs": 3.101150947237841e-05,
+              "warm_median_ms": 31.52224514633417
+            },
+            {
+              "relative_l2": 3.0178929151614366e-06,
+              "max_abs": 2.9653056682787948e-05,
+              "warm_median_ms": 31.52224514633417
+            }
+          ]
+        },
+        {
+          "owner": 0,
+          "layer": 39,
+          "position": 32,
+          "active_rows": 16,
+          "lanes": [
+            {
+              "relative_l2": 3.17615434854642e-06,
+              "max_abs": 0.00011360020581108188,
+              "warm_median_ms": 31.328495126217604
+            },
+            {
+              "relative_l2": 3.2868251501611976e-06,
+              "max_abs": 8.295020057857982e-05,
+              "warm_median_ms": 31.328495126217604
+            },
+            {
+              "relative_l2": 3.230588386023762e-06,
+              "max_abs": 0.00011851012177288567,
+              "warm_median_ms": 31.328495126217604
+            },
+            {
+              "relative_l2": 3.2692969122397827e-06,
+              "max_abs": 0.00011425342823301321,
+              "warm_median_ms": 31.328495126217604
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

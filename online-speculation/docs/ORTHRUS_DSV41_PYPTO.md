@@ -129,6 +129,8 @@ FFN 的 mHC 反向将直接残差、折叠路径和冻结门控的梯度汇合�
 
 Attention 的 mHC 反向接收 FFN 返回的两路梯度，在请求所属的 DP rank 上计算残差梯度，再将输出投影梯度以 FP32 送到该 TP 组的各个 rank。四张 910B3 分别验证了 K32/TP2 和 K16/TP4，使用第 36、39 层真实系数及构造的前向留存状态。对照 FP64 自动微分，最大相对 L2 误差为 `5.21e-7`，各参与 TP rank 收到的投影梯度逐字节相同。K16/K32 的 EP16 形状均通过编译。复验入口为 `validate_dsv41_pypto_packed_attn_post.py --checkpoint /model`。[实卡与编译结果](validation/dsv41/pypto-1122-949a-packed-attn-post-vjp-910b3.json)
 
+Wo 的输入反向从该 TP 梯度继续计算，依次通过 Wo-B、分组 Wo-A 和逆 RoPE 的伴随变换。每个 rank 使用已有的 NZ 权重和目标模型驻留的 RoPE 表。算子逐 tile 读取权重，并按实际反馈行数分配矩阵计算，填充行输出为零。将 FP32 梯度拆成两份 BF16、在 FP32 中累加后，单卡最大相对 L2 误差从 `2.24e-3` 降至 `3.38e-6`。K32 的四组短反馈同图对照中，跳过无反馈矩阵块节省了约 0.2–1.8 ms，计时包含宿主提交。四张 910B3 验证 K32/TP2 切换 DP owner 及 K16/TP4，最大相对 L2 误差为 `3.54e-6`。K16/K32 的 EP16 形状已编译。这个接口输出 Attention context 梯度，后续还需计算 Wo 参数梯度。复验入口为 `validate_dsv41_pypto_packed_wo.py --checkpoint /model`。[实卡与编译结果](validation/dsv41/pypto-1122-949a-packed-wo-input-vjp-910b3.json)
+
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
 ```bash
