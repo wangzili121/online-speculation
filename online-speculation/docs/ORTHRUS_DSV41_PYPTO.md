@@ -116,6 +116,10 @@ python /opt/dsv41-1122/validate_dsv41_pypto_packed_generation.py \
 
 该入口使用当前能枚举 16 个逻辑设备的 L3 运行时。整模 NPU 执行、双机 EP16 及 last-N 在线更新仍需分别验收。[整图验证记录](validation/dsv41/pypto-1122-packed-draft-graph.json)
 
+在 111 上以 `949a18d` 源码、公开 W8A8 checkpoint 的第 0 层和一张 910B3 复验 K8/K16/K32 的 SWA、带 Indexer 的压缩 Attention 和 Reuse。9 个 BF16 输出均通过 CANN 精度门槛，最大相对 L2 为 0.203%，目标缓存逐字节一致。原始报告另列仅适用于单独 Wo 检查的严格容差结果。同一工具链容器的 11 项 packed CPU 回归通过，覆盖多 DP 采样回读和短尾验收。[实卡结果](validation/dsv41/pypto-1122-949a-packed-draft-layer-910b3.json)
+
+在 61 的两张 910B3 上，用配套 Simpler `a5349f4` 和 CANN 9.2 跑上游 `global_tload_mixed_l3` 回环。两个 L3 的设备 worker 均已就绪，创建全局域时，rank 0 的 Fabric 窗口句柄导出返回 `207000 / ACL_ERROR_RT_FEATURE_NOT_SUPPORT`。测试在 peer TLOAD 之前退出。这给当前 910B3 环境确认了一个运行时兼容性问题。公司 node7/node8 的 Fabric 能力还需单独核对。旧版通过的跨机 HCCL collective 使用另一条通信路径。[上游探针](https://github.com/hw-native-sys/simpler/tree/a5349f42c71666bb8cacfb3759f34eeda1572beb/examples/workers/l4/global_tload_mixed_l3) · [CANN 错误码](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/910/API/runtimeapi/aclcppdevg_03_1345.html)
+
 ## 内网权重预检
 
 默认权重目录为 `/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8`，对应同事文档指向的公开版本。脚本优先使用 `--model` 指定的目录，其次读取环境变量 `TARGET_WEIGHTS`，最后使用默认目录。在任意 Python 3.10+ 环境下执行下列检查，只读取本地配置、索引和实际 safetensors header，无需安装 PyPTO，也无需 NPU。报告列出当前 A3 loader 所需的投影和 Engram 格式，以及每个不匹配的实际张量。此命令收集布局，成功退出表示报告生成完成。
