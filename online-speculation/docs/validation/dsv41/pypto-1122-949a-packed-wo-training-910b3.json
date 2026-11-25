@@ -350,5 +350,23 @@
       "last_layers": 0,
       "parameter_count": 73
     }
-  ]
+  ],
+  "native_forward_regression": {
+    "scope": "Compile only, with communication-window reservation, DP4/TP4/EP16 and history capacity 512.",
+    "prefill": {
+      "compiled": true,
+      "capacity": 16,
+      "compile_seconds": 112.57
+    },
+    "decode": {
+      "compiled": true,
+      "capacity": 16,
+      "compile_seconds": 179.16
+    }
+  },
+  "host_tests": {
+    "orthrus_dsv41": 209,
+    "orthrus_subtests": 5,
+    "native_packed_contract": 7
+  }
 }
