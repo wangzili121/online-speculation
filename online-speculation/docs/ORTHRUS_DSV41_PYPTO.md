@@ -109,7 +109,7 @@ Packed 会话可在选定的 draft 轮次捕获一个请求的学生分布。起
 
 起草图新增 `--last-layers N` 编译选项。会话的 `orthrus_online_last_layers` 与该参数一致时，选中的反馈轮次按层保留 FFN 输入残差、mHC 系数、已归约的 MoE 输出和各 rank 的本地归一化输入与路由。路由行沿用原生的交错分配，第 `i` 个本地行对应块内第 `i × TP + rank % TP` 行。捕获缓冲区按请求保留在设备上。`last_ffn_post_vjp(handle)` 使用末端梯度反向穿过最后一层的 mHC post，得到传给 MoE 的输出梯度、直接残差梯度和门控系数梯度。专家输入反向和再往前的层内反向仍待接续。
 
-当前起草图的 manifest 升为 schema 2。旧的起草编译产物需要重新生成，普通推理使用默认的 `--last-layers 0`。DP4/TP4/EP16 下已编译完整 K16 普通起草图、K32 last-4 起草图和 FFN post 反向。四张 910B3 上用真实 checkpoint 的第 39 层 router 权重和合成 FFN 激活，验证了 K16 last-1、K32 last-4 的设备捕获与 mHC post 反向。专家编号和权重与捕获前逐字节一致，两种形状的反向相对 Torch FP64 最大 L2 误差为 `1.03e-7`，热态中位数为 16.38–18.28 ms。复验使用 `validate_dsv41_pypto_packed_ffn_post.py --devices 0,1,2,3 --block 32 --last-layers 4 --checkpoint /model`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-ffn-post-910b3.json)
+普通推理使用默认的 `--last-layers 0`。DP4/TP4/EP16 下已编译完整 K16 普通起草图、K32 last-4 起草图和 FFN post 反向。四张 910B3 上用真实 checkpoint 的第 39 层 router 权重和合成 FFN 激活，验证了 K16 last-1、K32 last-4 的设备捕获与 mHC post 反向。专家编号和权重与捕获前逐字节一致，两种形状的反向相对 Torch FP64 最大 L2 误差为 `1.03e-7`，热态中位数为 16.38–18.28 ms。复验使用 `validate_dsv41_pypto_packed_ffn_post.py --devices 0,1,2,3 --block 32 --last-layers 4 --checkpoint /model`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-ffn-post-910b3.json)
 
 MoE 反向的第一步将每个有效 token 的 FFN 输出梯度按原始布局送回 TP lane，再依据前向捕获的路由把激活、梯度和系数发给相关专家。默认将 owner 的两次下发合并到同一个设备任务中，梯度在设备上保持 FP32，路由系数随包单独传递。111 四张 910B3 用真实第 39 层 router 权重构造路由，32、7、1 行的数据与元数据均逐字节一致。DP2/TP2 额外覆盖请求从 owner 0 切到 owner 2 再切回 0。TP4 两轮分别计时，融合版热态中位数为 21.66–44.08 ms、拆分版为 38.60–88.63 ms，短反馈单项存在波动。EP16 已通过编译。复验使用 `validate_dsv41_pypto_packed_ep_dispatch.py --checkpoint /model`，追加 `--split-tp` 可运行拆分对照。[实卡结果](validation/dsv41/pypto-1122-949a-packed-ep-dispatch-910b3.json)
 
@@ -122,6 +122,10 @@ Router 的输入反向使用前向保留的 6 个专家编号。每行只重算�
 共享专家的反向直接读取 1122 已驻留的 INT8 NZ 权重。Gate 和 Up 按原布局交错读取，使用原生 token 量化重算 BF16 激活边界。反向每次仅将当前权重 tile 转成 BF16，在 Cube 上累加 FP32，整个权重 bank 保留 INT8。111 的单张 910B3 使用第 36、39 层的真实共享专家权重验证 1 行和 7 行反馈，输入梯度相对 FP32 参考的最大 L2 误差为 0.2293%，填充行梯度为零。热态调用中位数为 19.57–19.66 ms，包含宿主提交。复验使用 `validate_dsv41_pypto_packed_shared.py --checkpoint /model`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-shared-vjp-910b3.json)
 
 同一张图在各 TP lane 汇合共享专家、路由专家和 Router 的输入梯度，执行 FFN RMSNorm 的反向，再按 token 原顺序把 FP32 梯度送回请求的 DP owner。分发图保留本 rank 已收到的 FFN 梯度供共享专家复用。四张 910B3 验证 K32/TP2、K8/TP4、跨 DP 切换、空 lane 和非零 tape 槽。K8/TP4 另用真实第 39 层 Router 选出的 39 个 W8A8 专家，贯通 TP 分发、EP 专家梯度与回传、共享专家、Router 和 RMSNorm，最大相对 L2 误差为 0.2703%。最后一张图的热态中位数为 22.15–37.44 ms，包含宿主提交和 TP 回传。K8/K32 的 DP4/TP4/EP16 形状通过编译。复验使用 `validate_dsv41_pypto_packed_ffn_input.py --checkpoint /model --block 8 --tp 4 --routed`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-ffn-input-vjp-910b3.json)
+
+FFN 的 mHC 反向将直接残差、折叠路径和冻结门控的梯度汇合成 Attention 输出边界上的两份 FP32 梯度。门控复用原生 Decode RMS 和 split-K 投影，反向利用归一化投影输出计算 RMS 校正项，省去对宽残差矩阵的一次扫描。使用第 36、39 层真实权重对照 FP64 自动微分，K16/DP2/TP2 与单卡 K32 覆盖 1、7、16、32 行，任一非零梯度的最大相对 L2 为 `1.80e-7`。其中 7 行只保留门控梯度，并在另一 DP owner 上执行。热态中位数为 17.87–19.02 ms，包含宿主提交。复验使用 `validate_dsv41_pypto_packed_ffn_mhc.py --checkpoint /model --block 16 --fixture-tp 2 --devices 0,1,2,3`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-ffn-mhc-vjp-910b3.json)
+
+起草图在采集请求的末 N 层留存 Attention 输入残差、门控系数与 TP 归约后的 BF16 投影。采集使用前向已计算的张量，额外写入仅在请求的 DP owner 发生。四卡 K32 对照原路径，前向隐状态、混合系数和折叠输出均逐字节一致。同一驻留 worker 内交替运行时，两个分支的热态中位数为 41.91 和 42.50 ms。16 卡形状的 40 层 K16（普通推理）和 K32（last-4）均已编译。起草图 manifest 现为 schema 3，旧编译产物需重新生成。采集单测使用 `validate_dsv41_pypto_packed_attention_tape.py --checkpoint /model`。[实卡与编译结果](validation/dsv41/pypto-1122-949a-packed-attention-tape-910b3.json)
 
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 

@@ -1,0 +1,215 @@
+{
+  "native_lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "image": "orthrus-dsv41-pypto:1122-7abc0df",
+  "hardware": "Ascend 910B3 on 111",
+  "scope": "FFN mHC input VJP with actual layer-36 and layer-39 coefficients and synthetic captured activations and gradients. The DP2 fixture switches owner and isolates the gate/Sinkhorn gradient in the 7-row case. FP64 autograd reference. Seven warm samples per case include host submission. EP16 compile only.",
+  "compile_ep16": [
+    {
+      "passed": true,
+      "compiled": true,
+      "block": 32,
+      "tp": 4,
+      "dp": 4,
+      "last_layers": 4
+    },
+    {
+      "passed": true,
+      "compiled": true,
+      "block": 16,
+      "tp": 4,
+      "dp": 4,
+      "last_layers": 4
+    }
+  ],
+  "device": [
+    {
+      "passed": true,
+      "block": 32,
+      "tp": 1,
+      "dp": 1,
+      "checkpoint": "/model",
+      "last_layers": 4,
+      "cases": [
+        {
+          "owner": 0,
+          "active_rows": 1,
+          "checkpoint_layer": 39,
+          "tape_slot": 3,
+          "metrics": {
+            "stream": {
+              "relative_l2": 2.5980085052082566e-08,
+              "max_abs": 7.660832135325535e-09
+            },
+            "premix": {
+              "relative_l2": 1.5421989983927743e-07,
+              "max_abs": 7.239632099365068e-08
+            }
+          },
+          "warm_median_ms": 17.892921110615134
+        },
+        {
+          "owner": 0,
+          "active_rows": 7,
+          "checkpoint_layer": 36,
+          "tape_slot": 2,
+          "metrics": {
+            "stream": {
+              "relative_l2": 2.6667538197951725e-08,
+              "max_abs": 9.322944444223324e-09
+            },
+            "premix": {
+              "relative_l2": 9.170226574349577e-08,
+              "max_abs": 1.3878980698045496e-07
+            }
+          },
+          "warm_median_ms": 17.873911187052727
+        },
+        {
+          "owner": 0,
+          "active_rows": 32,
+          "checkpoint_layer": 39,
+          "tape_slot": 3,
+          "metrics": {
+            "stream": {
+              "relative_l2": 2.588505161954189e-08,
+              "max_abs": 9.550374019395846e-09
+            },
+            "premix": {
+              "relative_l2": 8.998147349891982e-08,
+              "max_abs": 1.4878210607971454e-07
+            }
+          },
+          "warm_median_ms": 18.125561997294426
+        }
+      ]
+    },
+    {
+      "passed": true,
+      "block": 16,
+      "tp": 1,
+      "dp": 1,
+      "checkpoint": "/model",
+      "last_layers": 4,
+      "cases": [
+        {
+          "owner": 0,
+          "active_rows": 1,
+          "checkpoint_layer": 39,
+          "tape_slot": 3,
+          "mode": "all",
+          "metrics": {
+            "stream": {
+              "relative_l2": 2.5863226818501192e-08,
+              "max_abs": 7.990382189237977e-09
+            },
+            "premix": {
+              "relative_l2": 8.27174717467428e-08,
+              "max_abs": 8.875332135893643e-08
+            }
+          },
+          "warm_median_ms": 19.016603007912636
+        },
+        {
+          "owner": 0,
+          "active_rows": 7,
+          "checkpoint_layer": 36,
+          "tape_slot": 2,
+          "mode": "gate",
+          "metrics": {
+            "stream": {
+              "relative_l2": 1.6624968532973782e-07,
+              "max_abs": 5.8425362985115026e-09
+            },
+            "premix": {
+              "relative_l2": 0.0,
+              "max_abs": 0.0
+            }
+          },
+          "warm_median_ms": 18.397802021354437
+        },
+        {
+          "owner": 0,
+          "active_rows": 16,
+          "checkpoint_layer": 39,
+          "tape_slot": 3,
+          "mode": "all",
+          "metrics": {
+            "stream": {
+              "relative_l2": 2.5825450610779172e-08,
+              "max_abs": 9.07800806748682e-09
+            },
+            "premix": {
+              "relative_l2": 1.0602034017397167e-07,
+              "max_abs": 1.8703776061279598e-07
+            }
+          },
+          "warm_median_ms": 18.454822013154626
+        }
+      ]
+    },
+    {
+      "passed": true,
+      "block": 16,
+      "tp": 2,
+      "dp": 2,
+      "checkpoint": "/model",
+      "last_layers": 4,
+      "cases": [
+        {
+          "owner": 0,
+          "active_rows": 1,
+          "checkpoint_layer": 39,
+          "tape_slot": 3,
+          "mode": "all",
+          "metrics": {
+            "stream": {
+              "relative_l2": 2.5822164749083027e-08,
+              "max_abs": 8.071373180928987e-09
+            },
+            "premix": {
+              "relative_l2": 7.482058395594615e-08,
+              "max_abs": 1.0641890568763301e-07
+            }
+          },
+          "warm_median_ms": 18.9101230353117
+        },
+        {
+          "owner": 2,
+          "active_rows": 7,
+          "checkpoint_layer": 36,
+          "tape_slot": 2,
+          "mode": "gate",
+          "metrics": {
+            "stream": {
+              "relative_l2": 1.7926424572146598e-07,
+              "max_abs": 9.892552981644043e-09
+            },
+            "premix": {
+              "relative_l2": 0.0,
+              "max_abs": 0.0
+            }
+          },
+          "warm_median_ms": 18.245932180434465
+        },
+        {
+          "owner": 0,
+          "active_rows": 16,
+          "checkpoint_layer": 39,
+          "tape_slot": 3,
+          "mode": "all",
+          "metrics": {
+            "stream": {
+              "relative_l2": 2.601485885628913e-08,
+              "max_abs": 8.552975883091563e-09
+            },
+            "premix": {
+              "relative_l2": 8.343523432205141e-08,
+              "max_abs": 1.7466828516887745e-07
+            }
+          },
+          "warm_median_ms": 18.640262074768543
+        }
+      ]
+    }
+  ]
+}

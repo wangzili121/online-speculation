@@ -1,0 +1,45 @@
+{
+  "native_lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "image": "orthrus-dsv41-pypto:1122-7abc0df",
+  "hardware": "4 Ascend 910B3 on 111",
+  "scope": "K32 TP4 comparison of existing and instrumented native attention output mixing with real layer-39 mHC matrices and synthetic rank partials. Same worker and alternating dispatches. Eight warm samples per arm. EP16 full draft graphs compiled only.",
+  "device": {
+    "passed": true,
+    "checkpoint_layer": 39,
+    "checkpoint": "/model",
+    "tp": 4,
+    "block": 32,
+    "last_layers": 4,
+    "forward_byte_exact": true,
+    "saved_rows": 32,
+    "reduction_byte_exact": true,
+    "capture_owner": 0,
+    "tape_slot": 3,
+    "warm_median_ms": {
+      "off": 41.91095242276788,
+      "on": 42.49755898490548
+    }
+  },
+  "compile_ep16": [
+    {
+      "compiled": true,
+      "npu_execution": false,
+      "layers": 40,
+      "block": 16,
+      "context": 256,
+      "last_layers": 0,
+      "seconds": 58.38974792417139,
+      "work_dir": "/results/build_output/_jit_draft_forward_20261125_202128_bp3h94eb"
+    },
+    {
+      "compiled": true,
+      "npu_execution": false,
+      "layers": 40,
+      "block": 32,
+      "context": 256,
+      "last_layers": 4,
+      "seconds": 58.99928656104021,
+      "work_dir": "/results/build_output/_jit_draft_forward_20261125_202230_0lwfbiu4"
+    }
+  ]
+}

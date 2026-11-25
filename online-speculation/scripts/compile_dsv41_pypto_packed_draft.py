@@ -15,7 +15,7 @@ def main():
     parser.add_argument("--block", type=int, choices=(16, 32), default=32)
     parser.add_argument("--context", type=int, default=512)
     parser.add_argument("--last-layers", type=int, choices=range(41), default=0,
-                        metavar="N", help="Capture native MoE state for the last N layers")
+                        metavar="N", help="Capture Attention and MoE state for the last N layers")
     parser.add_argument("--decode-capacity", type=int, choices=(16,), required=True,
                         help="Use the native 16-row MoE dispatch configuration")
     parser.add_argument("--artifact-dir", type=Path,

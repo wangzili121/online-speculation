@@ -1,8 +1,8 @@
 """Full resident draft graph using the 1122 A3 frozen model layers."""
 
+from .dsv41_packed_attention_tape import make_packed_attention_post_capture, packed_attention_tape_shapes
 from .dsv41_packed_ffn_tape import make_packed_ffn_capture, packed_ffn_tape_shapes
 from .pypto_dsv41_packed_draft_attention import (
-    make_packed_draft_tp_post,
     make_packed_reuse_draft_layer,
     make_packed_scored_draft_layer,
     make_packed_swa_draft_layer,
@@ -38,6 +38,10 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
     tape_mixes = tape_shapes["ffn_tape_mixes"][0]
     tape_vectors = tape_shapes["ffn_tape_vectors"][0]
     tape_routes = tape_shapes["ffn_tape_route_ids"][0]
+    attention_shapes = packed_attention_tape_shapes(block, last_layers, hidden, mix)
+    attention_residual = attention_shapes["attention_tape_residual"][0]
+    attention_mixes = attention_shapes["attention_tape_mixes"][0]
+    attention_delta = attention_shapes["attention_tape_delta"][0]
     first_saved_layer = layers - last_layers
     save_ffn = make_packed_ffn_capture(block, last_layers, tp, hidden, mix, fanout)
     page = native.BLOCK_SIZE
@@ -53,7 +57,7 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
     # metadata and keep C2A's score and Top-K arenas half-width.
     c2a = inline(make_packed_scored_draft_layer(pages, pages, c2a_bucket, 2, block, table_bucket=c1a_bucket))
     reuse = inline(make_packed_reuse_draft_layer(pages, pages, block))
-    post = make_packed_draft_tp_post(block)
+    post = make_packed_attention_post_capture(block, last_layers, m, tp)
 
     # Bind the original Decode entries. The same collective protocol is used
     # for every rank, including ranks that only own remote experts this round.
@@ -130,6 +134,9 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
         ffn_tape_vectors: pl.Out[pl.Tensor[tape_vectors, pl.BF16]],
         ffn_tape_route_ids: pl.Out[pl.Tensor[tape_routes, pl.INT32]],
         ffn_tape_route_weights: pl.Out[pl.Tensor[tape_routes, pl.FP32]],
+        attention_tape_residual: pl.Out[pl.Tensor[attention_residual, pl.FP32]],
+        attention_tape_mixes: pl.Out[pl.Tensor[attention_mixes, pl.FP32]],
+        attention_tape_delta: pl.Out[pl.Tensor[attention_delta, pl.BF16]],
         ffn_capture_owner: pl.Scalar[pl.INT32],
         recv_meta: pld.DistributedTensor[[ep, experts], pl.INT32],
         recv_x: pld.DistributedTensor[[recv_rows, hidden], pl.INT8],
@@ -215,8 +222,9 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
                                 sink, zero_kv, wo_a, wo_b, delta,
                             )
                     h_attention, pre_attention, ffn_input = post(
-                        x_hc, delta, fn, scale, base, output_window, output_arrived, rank, layer + 1,
-                        h_attention, pre_attention, ffn_input,
+                        live_x, live_mix, delta, fn, scale, base, output_window, output_arrived, rank, layer + 1,
+                        h_attention, pre_attention, ffn_input, attention_tape_residual, attention_tape_mixes,
+                        attention_tape_delta, ffn_capture_owner, pl.cast(layer, pl.INT32) - first_saved_layer,
                     )
                 else:
                     h_attention, pre_attention = live_x, live_mix
@@ -339,6 +347,9 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
         ffn_tape_vectors: pl.Out[pl.Tensor[[ep, *tape_vectors], pl.BF16]],
         ffn_tape_route_ids: pl.Out[pl.Tensor[[ep, *tape_routes], pl.INT32]],
         ffn_tape_route_weights: pl.Out[pl.Tensor[[ep, *tape_routes], pl.FP32]],
+        attention_tape_residual: pl.Out[pl.Tensor[[ep, *attention_residual], pl.FP32]],
+        attention_tape_mixes: pl.Out[pl.Tensor[[ep, *attention_mixes], pl.FP32]],
+        attention_tape_delta: pl.Out[pl.Tensor[[ep, *attention_delta], pl.BF16]],
         ffn_capture_owner: pl.Scalar[pl.INT32],
     ):
         meta_buf = pld.alloc_window_buffer([ep, experts], dtype=pl.INT32)
@@ -388,7 +399,8 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
                 shared_w2_scale[rank], shared_w3_scale[rank], final_norm_weight[rank], lm_head_weight[rank],
                 moe_num_tokens, logit_row_indices[rank], logits[rank], sampled_ids[rank],
                 ffn_tape_residual[rank], ffn_tape_mixes[rank], ffn_tape_vectors[rank],
-                ffn_tape_route_ids[rank], ffn_tape_route_weights[rank], ffn_capture_owner,
+                ffn_tape_route_ids[rank], ffn_tape_route_weights[rank], attention_tape_residual[rank],
+                attention_tape_mixes[rank], attention_tape_delta[rank], ffn_capture_owner,
                 recv_meta, recv_x, recv_weights, arrived, data_arrived, routed_output, combine_arrived,
                 output_window, output_arrived, ffn_window, ffn_arrived,
                 head_hidden, head_hidden_done, head_logits, head_logits_done, rank, device=rank,
