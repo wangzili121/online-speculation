@@ -40,6 +40,7 @@ def make_packed_ep_dispatch(block, last_layers, hidden, copies, topk, experts, d
         out_weights: pl.Out[pl.Tensor[[packets, 16], pl.FP32]],
         out_x: pl.Out[pl.Tensor[[packets, hidden], pl.BF16]],
         out_dy: pl.Out[pl.Tensor[[packets, hidden], pl.FP32]],
+        local_dy: pl.Out[pl.Tensor[[local, hidden], pl.FP32]],
         grad_window: pld.DistributedTensor[[local, hidden], pl.FP32],
         grad_ready: pld.DistributedTensor[[1, 1], pl.INT32],
         ep_metadata: pld.DistributedTensor[[packets, 16], pl.INT32],
@@ -52,7 +53,6 @@ def make_packed_ep_dispatch(block, last_layers, hidden, copies, topk, experts, d
     ):
         if rank >= owner and rank < owner + tp:
             lane = rank - owner
-            local_dy = pl.create_tensor([local, hidden], dtype=pl.FP32)
             headers = pl.create_tensor([local * topk, 16], dtype=pl.INT32)
             coefficients = pl.create_tensor([local * topk, 16], dtype=pl.FP32)
             with pl.at(level=pl.Level.CORE_GROUP, allow_early_resolve=False) as ready:
@@ -75,6 +75,8 @@ def make_packed_ep_dispatch(block, last_layers, hidden, copies, topk, experts, d
                         pl.tile.write(coefficient, [0, 0], factor)
                         pl.store(header, [row * topk + choice, 0], headers)
                         pl.store(coefficient, [row * topk + choice, 0], coefficients)
+                else:
+                    local_dy[row:row + 1, :] = pl.full([1, hidden], dtype=pl.FP32, value=0.)
 
             with pl.spmd(local, deps=[packed], name_hint="orthrus_moe_ep_packet_send") as sent:
                 row = pl.tile.get_block_idx()
@@ -112,7 +114,7 @@ def make_packed_ep_dispatch(block, last_layers, hidden, copies, topk, experts, d
                     out_dy[packet:packet + 1, :] = ep_dy[packet:packet + 1, :]
                 else:
                     out_metadata[packet:packet + 1, :] = zero_header
-        return out_metadata, out_weights, out_x, out_dy
+        return out_metadata, out_weights, out_x, out_dy, local_dy
 
     tp_send = pl.jit(scatter_tp)
     tp_inline = pl.jit.inline(auto_scope=False)(scatter_tp)
@@ -129,6 +131,7 @@ def make_packed_ep_dispatch(block, last_layers, hidden, copies, topk, experts, d
         out_weights: pl.Out[pl.Tensor[[packets, 16], pl.FP32]],
         out_x: pl.Out[pl.Tensor[[packets, hidden], pl.BF16]],
         out_dy: pl.Out[pl.Tensor[[packets, hidden], pl.FP32]],
+        local_dy: pl.Out[pl.Tensor[[local, hidden], pl.FP32]],
         grad_window: pld.DistributedTensor[[local, hidden], pl.FP32],
         grad_ready: pld.DistributedTensor[[1, 1], pl.INT32],
         ep_metadata: pld.DistributedTensor[[packets, 16], pl.INT32],
@@ -140,7 +143,7 @@ def make_packed_ep_dispatch(block, last_layers, hidden, copies, topk, experts, d
         active: pl.Scalar[pl.INT32], epoch: pl.Scalar[pl.INT32], slot: pl.Scalar[pl.INT32],
     ):
         tp_inline(value, grad_window, grad_ready, owner, active, epoch)
-        return ep_inline(vectors, ids, weights, out_metadata, out_weights, out_x, out_dy,
+        return ep_inline(vectors, ids, weights, out_metadata, out_weights, out_x, out_dy, local_dy,
                          grad_window, grad_ready, ep_metadata, ep_weights, ep_x, ep_dy,
                          ep_ready, rank, owner, active, epoch, slot)
 
@@ -154,6 +157,7 @@ def make_packed_ep_dispatch(block, last_layers, hidden, copies, topk, experts, d
         out_weights: pl.Out[pl.Tensor[[world, packets, 16], pl.FP32]],
         out_x: pl.Out[pl.Tensor[[world, packets, hidden], pl.BF16]],
         out_dy: pl.Out[pl.Tensor[[world, packets, hidden], pl.FP32]],
+        local_dy: pl.Out[pl.Tensor[[world, local, hidden], pl.FP32]],
         owner: pl.Scalar[pl.INT32], active: pl.Scalar[pl.INT32],
         epoch: pl.Scalar[pl.INT32], slot: pl.Scalar[pl.INT32],
     ):
@@ -176,19 +180,19 @@ def make_packed_ep_dispatch(block, last_layers, hidden, copies, topk, experts, d
                 if rank == owner:
                     replica = rank // tp
                     owner_dispatch(value[replica], vectors[rank], ids[rank], weights[rank],
-                                   out_metadata[rank], out_weights[rank], out_x[rank], out_dy[rank],
+                                   out_metadata[rank], out_weights[rank], out_x[rank], out_dy[rank], local_dy[rank],
                                    grad_window, grad_ready, ep_metadata, ep_weights, ep_x, ep_dy,
                                    ep_ready, rank, owner, active, epoch, slot, device=rank)
                 else:
                     ep_send(vectors[rank], ids[rank], weights[rank], out_metadata[rank], out_weights[rank],
-                            out_x[rank], out_dy[rank], grad_window, grad_ready, ep_metadata, ep_weights, ep_x, ep_dy,
+                            out_x[rank], out_dy[rank], local_dy[rank], grad_window, grad_ready, ep_metadata, ep_weights, ep_x, ep_dy,
                             ep_ready, rank, owner, active, epoch, slot, device=rank)
             else:
                 if rank == owner:
                     replica = rank // tp
                     tp_send(value[replica], grad_window, grad_ready, owner, active, epoch, device=rank)
                 ep_send(vectors[rank], ids[rank], weights[rank], out_metadata[rank], out_weights[rank],
-                        out_x[rank], out_dy[rank], grad_window, grad_ready, ep_metadata, ep_weights, ep_x, ep_dy,
+                        out_x[rank], out_dy[rank], local_dy[rank], grad_window, grad_ready, ep_metadata, ep_weights, ep_x, ep_dy,
                         ep_ready, rank, owner, active, epoch, slot, device=rank)
 
     return dispatch
@@ -206,6 +210,7 @@ class PackedExpertPackets:
     weights: object
     input: object
     gradient: object
+    local_gradient: object
     seconds: float
 
 
@@ -224,12 +229,14 @@ class PackedExpertDispatch:
             for name in ("ffn_tape_vectors", "ffn_tape_route_ids", "ffn_tape_route_weights")
         }
         packets = proposer.block * topk
+        local = proposer.block * len(post_vjp.owners) // len(self.ranks)
 
         def allocate(shape, dtype):
             return self._stack([self.runtime.alloc_tensor(shape, dtype, worker_id=rank) for rank in self.ranks])
 
         self.outputs = (allocate((packets, 16), torch.int32), allocate((packets, 16), torch.float32),
-                        allocate((packets, hidden), torch.bfloat16), allocate((packets, hidden), torch.float32))
+                        allocate((packets, hidden), torch.bfloat16), allocate((packets, hidden), torch.float32),
+                        allocate((local, hidden), torch.float32))
 
     def _stack(self, shards):
         return self.stacked(shards, (len(shards), *shards[0].shape), self.ranks)

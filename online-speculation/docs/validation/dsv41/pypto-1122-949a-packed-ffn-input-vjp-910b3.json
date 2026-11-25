@@ -1,0 +1,131 @@
+{
+  "native_lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "image": "orthrus-dsv41-pypto:1122-7abc0df",
+  "hardware": "4 Ascend 910B3 on 111",
+  "scope": "Shared expert, selected Router and RMSNorm input VJPs with a TP return. Five warm samples per case. Timings include the host submission and TP return for this graph. The routed case also executes the separate resident TP/EP dispatch and expert return graphs using the real Top-K selected matrices, excluded from the timing.",
+  "compile_ep16": [
+    {
+      "passed": true,
+      "compiled": true,
+      "block": 32,
+      "tp": 4,
+      "dp": 4,
+      "ep": 16,
+      "last_n": 4
+    },
+    {
+      "passed": true,
+      "compiled": true,
+      "block": 8,
+      "tp": 4,
+      "dp": 4,
+      "ep": 16,
+      "last_n": 4
+    }
+  ],
+  "device": [
+    {
+      "passed": true,
+      "block": 32,
+      "tp": 2,
+      "dp": 2,
+      "ep": 4,
+      "checkpoint": "/model",
+      "checkpoint_layer": 39,
+      "resident_layer": 1,
+      "tape_slot": 3,
+      "cases": [
+        {
+          "owner": 0,
+          "active_rows": 1,
+          "relative_l2": 0.002325352881808017,
+          "max_abs": 0.0003558892494849048,
+          "warm_median_ms": 37.70633600652218
+        },
+        {
+          "owner": 2,
+          "active_rows": 7,
+          "relative_l2": 0.0021207530193542577,
+          "max_abs": 0.00042076709291588577,
+          "warm_median_ms": 21.097945980727673
+        },
+        {
+          "owner": 0,
+          "active_rows": 3,
+          "relative_l2": 0.002387265381031439,
+          "max_abs": 0.00035577245631608287,
+          "warm_median_ms": 25.027293944731355
+        }
+      ]
+    },
+    {
+      "passed": true,
+      "block": 8,
+      "tp": 4,
+      "dp": 1,
+      "ep": 4,
+      "checkpoint": "/model",
+      "checkpoint_layer": 39,
+      "resident_layer": 1,
+      "tape_slot": 3,
+      "cases": [
+        {
+          "owner": 0,
+          "active_rows": 1,
+          "relative_l2": 0.0020453346146313296,
+          "max_abs": 0.00035448818659109677,
+          "warm_median_ms": 48.12134406529367
+        },
+        {
+          "owner": 0,
+          "active_rows": 7,
+          "relative_l2": 0.0021256216484695644,
+          "max_abs": 0.00047259217231200145,
+          "warm_median_ms": 26.035615941509604
+        },
+        {
+          "owner": 0,
+          "active_rows": 3,
+          "relative_l2": 0.00205501921953107,
+          "max_abs": 0.0003544495702000987,
+          "warm_median_ms": 26.068995939567685
+        }
+      ]
+    }
+  ],
+  "with_routed": {
+    "passed": true,
+    "block": 8,
+    "tp": 4,
+    "dp": 1,
+    "ep": 4,
+    "checkpoint": "/model",
+    "checkpoint_layer": 39,
+    "resident_layer": 1,
+    "tape_slot": 3,
+    "routed_experts": 39,
+    "cases": [
+      {
+        "owner": 0,
+        "active_rows": 1,
+        "relative_l2": 0.0027022369936702704,
+        "max_abs": 0.0009173570167979039,
+        "warm_median_ms": 22.145628929138184
+      },
+      {
+        "owner": 0,
+        "active_rows": 7,
+        "relative_l2": 0.0018966512191419334,
+        "max_abs": 0.016419853478102153,
+        "warm_median_ms": 37.438795901834965
+      },
+      {
+        "owner": 0,
+        "active_rows": 3,
+        "relative_l2": 0.001740570021155356,
+        "max_abs": 0.009014764040341072,
+        "warm_median_ms": 29.877691995352507
+      }
+    ]
+  }
+}

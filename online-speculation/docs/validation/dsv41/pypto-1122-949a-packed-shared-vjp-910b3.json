@@ -1,0 +1,36 @@
+{
+  "passed": true,
+  "compiled": true,
+  "executed": true,
+  "checkpoint": "/model",
+  "cases": [
+    {
+      "layer": 39,
+      "active_rows": 1,
+      "native_golden_byte_exact": true,
+      "relative_l2": 0.0022624039590729244,
+      "max_abs": 0.00030538206920027733,
+      "warm_median_ms": 19.57012410275638
+    },
+    {
+      "layer": 39,
+      "active_rows": 7,
+      "native_golden_byte_exact": true,
+      "relative_l2": 0.0020545131959161782,
+      "max_abs": 0.0003473609685897827,
+      "warm_median_ms": 19.594304030761123
+    },
+    {
+      "layer": 36,
+      "active_rows": 7,
+      "native_golden_byte_exact": true,
+      "relative_l2": 0.00229246538279653,
+      "max_abs": 0.00044955313205718994,
+      "warm_median_ms": 19.657914992421865
+    }
+  ],
+  "native_lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "image": "orthrus-dsv41-pypto:1122-7abc0df",
+  "hardware": "Ascend 910B3 on 111",
+  "scope": "Shared expert VJP reads checkpoint W8A8 gate/up and down in native NZ order. Synthetic activations and incoming gradients. Timing includes host submission. Seven warm submissions per case."
+}

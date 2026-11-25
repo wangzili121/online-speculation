@@ -119,6 +119,10 @@ MoE 反向的第一步将每个有效 token 的 FFN 输出梯度按原始布局�
 
 Router 的输入反向使用前向保留的 6 个专家编号。每行只重算这 6 个 logit，在同一算子内完成归一化、sqrt-softplus 的梯度和权重投影，直接累加到专家返回的输入梯度。单张 910B3 上用真实第 39 层 router 权重和前向 Top-K 对照 Torch FP64，1 行和 7 行的最大相对 L2 误差为 `1.27e-7`，驻留调用中位数为 17.74–17.83 ms，包含宿主提交。验证入口为 `validate_dsv41_pypto_packed_router.py --checkpoint /model`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-router-vjp-910b3.json)
 
+共享专家的反向直接读取 1122 已驻留的 INT8 NZ 权重。Gate 和 Up 按原布局交错读取，使用原生 token 量化重算 BF16 激活边界。反向每次仅将当前权重 tile 转成 BF16，在 Cube 上累加 FP32，整个权重 bank 保留 INT8。111 的单张 910B3 使用第 36、39 层的真实共享专家权重验证 1 行和 7 行反馈，输入梯度相对 FP32 参考的最大 L2 误差为 0.2293%，填充行梯度为零。热态调用中位数为 19.57–19.66 ms，包含宿主提交。复验使用 `validate_dsv41_pypto_packed_shared.py --checkpoint /model`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-shared-vjp-910b3.json)
+
+同一张图在各 TP lane 汇合共享专家、路由专家和 Router 的输入梯度，执行 FFN RMSNorm 的反向，再按 token 原顺序把 FP32 梯度送回请求的 DP owner。分发图保留本 rank 已收到的 FFN 梯度供共享专家复用。四张 910B3 验证 K32/TP2、K8/TP4、跨 DP 切换、空 lane 和非零 tape 槽。K8/TP4 另用真实第 39 层 Router 选出的 39 个 W8A8 专家，贯通 TP 分发、EP 专家梯度与回传、共享专家、Router 和 RMSNorm，最大相对 L2 误差为 0.2703%。最后一张图的热态中位数为 22.15–37.44 ms，包含宿主提交和 TP 回传。K8/K32 的 DP4/TP4/EP16 形状通过编译。复验使用 `validate_dsv41_pypto_packed_ffn_input.py --checkpoint /model --block 8 --tp 4 --routed`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-ffn-input-vjp-910b3.json)
+
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
 ```bash
