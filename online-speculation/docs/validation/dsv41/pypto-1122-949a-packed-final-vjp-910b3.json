@@ -1,0 +1,82 @@
+{
+  "lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "image": "orthrus-dsv41-pypto:1122-7abc0df",
+  "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+  "loaded_checkpoint_tensors": [
+    "head.weight",
+    "norm.weight"
+  ],
+  "device": "Ascend 910B3",
+  "physical_devices": [
+    2,
+    3,
+    4,
+    5
+  ],
+  "fixture": "Device graph mutates reserved owner input images in place. Subsequent upload overwrites ordinary activation storage. Student and teacher logits are synthetic.",
+  "reference": "Torch FP64, native FP32 pairwise BF16 mHC collapse forward boundary and straight-through BF16 rounding derivative",
+  "timing_scope": "resident final RMSNorm and mHC VJP, including its dispatch and native collapse recomputation",
+  "repetitions_per_case": 10,
+  "warm_repetitions_per_case": 9,
+  "log_level": "warn",
+  "compiled_unexecuted_topology": {
+    "dp": 4,
+    "tp": 4,
+    "world": 16
+  },
+  "run": {
+    "passed": true,
+    "executed": true,
+    "devices": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "tp": 4,
+    "cases": [
+      {
+        "owner": 0,
+        "rows": 16,
+        "streams": {
+          "relative_l2": 7.679538597774376e-08,
+          "max_abs": 6.042057445457185e-12
+        },
+        "premix": {
+          "relative_l2": 1.5005563003974732e-07,
+          "max_abs": 1.1978058310838091e-09
+        },
+        "median_ms": 17.933839932084084
+      },
+      {
+        "owner": 0,
+        "rows": 7,
+        "streams": {
+          "relative_l2": 6.894208303999013e-08,
+          "max_abs": 1.253284005438629e-11
+        },
+        "premix": {
+          "relative_l2": 1.273229659852839e-07,
+          "max_abs": 1.786968505460007e-09
+        },
+        "median_ms": 18.5444219969213
+      },
+      {
+        "owner": 0,
+        "rows": 1,
+        "streams": {
+          "relative_l2": 6.648516292095928e-08,
+          "max_abs": 6.348489924945869e-11
+        },
+        "premix": {
+          "relative_l2": 9.150414001179345e-08,
+          "max_abs": 8.235140708245936e-09
+        },
+        "median_ms": 18.539122072979808
+      }
+    ],
+    "checkpoint": "/model",
+    "loss_lm_head_chain": true
+  },
+  "reproduce": "python online-speculation/scripts/validate_dsv41_pypto_packed_final_vjp.py --devices 0,1,2,3 --fixture-tp 4 --checkpoint /model --chain"
+}

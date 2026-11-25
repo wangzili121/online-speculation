@@ -247,7 +247,8 @@ def test_resident_draft_uses_only_committed_history(lookup_fails, block):
     assert history[owner] is original
 
 
-def test_draft_wave_dispatches_once_without_changing_target_counts():
+@pytest.mark.parametrize("retain_state", [False, True])
+def test_draft_wave_dispatches_once_without_changing_target_counts(retain_state):
     from blockspec.dsv41_packed_proposer import DraftRequest, DraftRoundStats, PackedDraftProposer
 
     draft = PackedDraftProposer.__new__(PackedDraftProposer)
@@ -259,15 +260,25 @@ def test_draft_wave_dispatches_once_without_changing_target_counts():
     draft.ranks = [{"sampled_ids": SimpleNamespace(data_ptr=i), "logits": torch.empty(16, 10)} for i in range(16)]
     draft.arguments, draft.graph, draft.config = [draft.ranks[8]["logits"]], object(), None
     draft.student = {}
+    draft.retain_final_state = retain_state
     draft._logits_argument = 0, "logits"
+    draft._input_arguments = {"x_hc": (1, "x_hc"), "pre_mix": (2, "pre_mix")}
+    live = torch.zeros(1), torch.zeros(1)
+    draft.arguments.extend(live)
     draft._rank_argument = lambda name, parameter, *, replacement: replacement[1]
     staged, uploaded, launches = [], [], []
     draft._stage = lambda request, *, student_rows: staged.append((request, student_rows))
-    draft.inputs = SimpleNamespace(images=torch.zeros(3, 8), upload=lambda rt, rank, owner: uploaded.append((rank, owner)))
+    image = object()
+    views = dict(x_hc=torch.zeros(1), pre_mix=torch.zeros(1))
+    draft.inputs = SimpleNamespace(images=torch.zeros(3, 8), reserve=lambda rt, rank: (image, views),
+                                   upload=lambda rt, rank, owner, allocation=None:
+                                   uploaded.append((rank, owner, allocation)))
 
     def run(*args, **kwargs):
         launches.append(draft.counts.tolist())
         args[1].fill_(len(launches))
+        args[2].fill_(len(launches) * 10)
+        args[3].fill_(len(launches) * -10)
 
     def readback(dst, src, size, *, worker_id):
         assert src == worker_id
@@ -281,7 +292,9 @@ def test_draft_wave_dispatches_once_without_changing_target_counts():
     uploads = SimpleNamespace(map=map)
     assert draft.propose_batch(requests, uploads=uploads, capture=("r2", 7)) == {0: [0, 1, 2], 8: [80, 81]}
     assert staged == [(requests[0], 0), (requests[1], 7)]
-    assert uploaded == [(r, 0) for r in range(4)] + [(r, 8) for r in range(8, 12)] + [(r, -4) for r in range(4, 8)]
+    assert uploaded == ([(r, 0, None) for r in range(4)]
+                        + [(r, 8, image if retain_state and r == 8 else None) for r in range(8, 12)]
+                        + [(r, -4, None) for r in range(4, 8)])
     assert launches == [[32] * 4 + [0] * 4 + [32] * 4 + [0] * 4]
     assert torch.equal(draft.counts, counts)
     captured = draft.student["r2"]
@@ -289,5 +302,10 @@ def test_draft_wave_dispatches_once_without_changing_target_counts():
     draft.propose_batch(requests, uploads=uploads)
     assert torch.all(captured.logits == 1)
     assert torch.all(draft.ranks[8]["logits"] == 2)
+    if retain_state:
+        assert captured.final_state.streams.item() == 10
+        assert captured.final_state.premix.item() == -10
+        assert live[0].item() == 20
     draft.release_student("r2")
-    assert freed == [(captured.logits, 8)] and not draft.student
+    assert freed == [(captured.logits, 8)] + ([(image, 8)] if retain_state else [])
+    assert not draft.student

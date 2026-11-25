@@ -147,6 +147,15 @@ class DraftRequest:
 
 
 @dataclass(frozen=True)
+class PackedFinalState:
+    """The draft's final in-place residual streams and delayed pre-mix."""
+
+    allocation: object
+    streams: object
+    premix: object
+
+
+@dataclass(frozen=True)
 class PackedStudentRows:
     """Full-vocabulary rows on the rank that owns one draft request."""
 
@@ -154,13 +163,15 @@ class PackedStudentRows:
     position: int
     rows: int
     logits: object
+    final_state: PackedFinalState | None = None
 
 
 class PackedDraftProposer:
     """Dispatch one request per TP group while all ranks serve frozen experts."""
 
     def __init__(self, runtime, graph, config, target_ranks, decode_inputs, weights, engram,
-                 rope_tables, counts, *, draft_head, block, context, tp, head_artifact=None):
+                 rope_tables, counts, *, draft_head, block, context, tp, head_artifact=None,
+                 retain_final_state=False):
         import torch
         from models.deepseek_v4_1_flash_a3.config import BLOCK_SIZE, FLASH
         from models.deepseek_v4_1_flash_a3.engram import ENGRAM_K
@@ -179,6 +190,7 @@ class PackedDraftProposer:
         self.stats = DraftRoundStats()
         self.previous_owners = set()
         self.student = {}
+        self.retain_final_state = retain_final_state
         capacity = max(16, block)
         geometry = (FLASH.hc_mult, FLASH.hidden_size)
         template = {
@@ -228,12 +240,15 @@ class PackedDraftProposer:
             self.inputs.upload(runtime, rank, owner=-tp)
             self.ranks.append(bound)
         self.arguments = []
+        self._input_arguments = {}
         for index, parameter in enumerate(graph._get_metadata()[0]):
             name = parameter.name.removesuffix("__ssa_v0")
             argument = counts if name == "moe_num_tokens" else self._rank_argument(name, parameter)
             self.arguments.append(argument)
             if name == "logits":
                 self._logits_argument = index, parameter
+            elif name in template:
+                self._input_arguments[name] = index, parameter
 
     def _rank_argument(self, name, parameter, *, replacement=None):
         from models.deepseek_v4_1_flash_a3.device_views import resident_graph_argument
@@ -306,31 +321,42 @@ class PackedDraftProposer:
         if not requests:
             return {}
 
-        def upload_group(owner, active):
+        def upload_group(owner, active, allocation=None):
             before = perf_counter()
-            list(uploads.map(lambda rank: self.inputs.upload(self.runtime, rank, active),
-                             range(owner, owner + self.tp)))
+            def upload(rank):
+                if rank == owner and allocation is not None:
+                    return self.inputs.upload(self.runtime, rank, active, allocation=allocation)
+                return self.inputs.upload(self.runtime, rank, active)
+
+            list(uploads.map(upload, range(owner, owner + self.tp)))
             self.stats.upload_seconds += perf_counter() - before
             self.stats.input_bytes += self.tp * self.inputs.images[0].nbytes
+
+        arguments = self.arguments
+        allocation = None
+        if capture_request is not None:
+            owner = capture_request.owner
+            output = self.ranks[owner]["logits"]
+            retained = self.runtime.alloc_tensor(output.shape, output.dtype, worker_id=owner)
+            state = None
+            index, parameter = self._logits_argument
+            arguments = list(self.arguments)
+            arguments[index] = self._rank_argument("logits", parameter, replacement=(owner, retained))
+            if self.retain_final_state:
+                allocation, views = self.inputs.reserve(self.runtime, owner)
+                state = PackedFinalState(allocation, views["x_hc"], views["pre_mix"])
+                for name, (index, parameter) in self._input_arguments.items():
+                    arguments[index] = self._rank_argument(name, parameter, replacement=(owner, views[name]))
+            self.student[key] = PackedStudentRows(owner, capture_request.position, capture_rows, retained, state)
 
         for request in requests:
             start = perf_counter()
             self._stage(request, student_rows=capture_rows if request is capture_request else 0)
             self.stats.prepare_seconds += perf_counter() - start
-            upload_group(request.owner, request.owner)
+            upload_group(request.owner, request.owner, allocation if request is capture_request else None)
         for owner in sorted(self.previous_owners - owners):
             upload_group(owner, -self.tp)
         self.previous_owners = owners
-
-        arguments = self.arguments
-        if capture_request is not None:
-            owner = capture_request.owner
-            output = self.ranks[owner]["logits"]
-            retained = self.runtime.alloc_tensor(output.shape, output.dtype, worker_id=owner)
-            self.student[key] = PackedStudentRows(owner, capture_request.position, capture_rows, retained)
-            index, parameter = self._logits_argument
-            arguments = list(self.arguments)
-            arguments[index] = self._rank_argument("logits", parameter, replacement=(owner, retained))
         saved_counts = self.counts.clone()
         self.counts.zero_()
         for owner in owners:
@@ -358,4 +384,6 @@ class PackedDraftProposer:
         value = self.student.get(history_key)
         if value is not None:
             self.runtime.free_tensor(value.logits, worker_id=value.owner)
+            if value.final_state is not None:
+                self.runtime.free_tensor(value.final_state.allocation, worker_id=value.owner)
             del self.student[history_key]

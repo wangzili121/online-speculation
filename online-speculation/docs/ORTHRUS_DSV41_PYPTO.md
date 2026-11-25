@@ -103,6 +103,10 @@ Packed 会话可在选定的 draft 轮次捕获一个请求的学生分布。起
 
 111 的四张 910B3 使用真实 W8A8 checkpoint 的 `head.weight`，覆盖 1 行和 7 行反馈。TP4 对照中，两版各执行 72 次。融合 owner 的梯度发送和局部反向后，各用例的热态中位数从 38.77–39.15 ms 降至 20.54–20.98 ms。两版与 Torch FP64 比较的最大相对 L2 均为 `8.14e-7`，填充行全零。DP2/TP2 验证了 owner 从 0 切到 2 再切回 0。计时包含 PyPTO 提交和通信，范围为 LM head 输入反向。DP4/TP4 形状通过编译，整模在线更新仍待接续。复验使用 `validate_dsv41_pypto_packed_lm_head_vjp.py --devices 0,1,2,3 --tp 4 --repeats 24 --checkpoint /model`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-lm-head-vjp-910b3.json)
 
+`suffix_vjp(handle)` 把 LM head 输入梯度继续传过 final RMSNorm 和四路 mHC collapse，返回最后一层输出的两个 FP32 梯度，分别对应 residual streams 和延迟 pre-mix。在线采样轮次将原有的输入上传指向独立设备缓冲，起草图就地写入其中的最终激活。后续解码使用各自的缓冲，已捕获的激活保留至学习器消费或请求释放。反向使用原生 `hc_head` 重建与前向一致的 BF16 collapse，复用同一份驻留的 `norm.weight`。这段接续保留了原起草图的编译接口。
+
+在 910B3 实卡上，验证脚本先让一个设备图就地更新并保留末端激活，再覆盖普通缓冲，确认更新仍读取前一次捕获。TP4 复验使用真实 checkpoint 的 `head.weight` 和 `norm.weight`、合成激活与 logits，实际执行驻留 TV、LM head VJP 和末端反向。覆盖 1、7、16 行，两个末端梯度相对 Torch FP64 的最大 L2 误差为 `1.51e-7`，无效行全零。末端反向热态中位数为 17.93–18.55 ms，包含其独立提交和 collapse 重算。DP4/TP4 末端反向形状通过编译。复验使用 `validate_dsv41_pypto_packed_final_vjp.py --devices 0,1,2,3 --fixture-tp 4 --checkpoint /model --chain`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-final-vjp-910b3.json)
+
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
 ```bash

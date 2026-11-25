@@ -97,10 +97,10 @@ index 407560a..7968afe 100644
          parser.error("--profile-all-steps requires full checkpoint generation")
      if args.warmup_requests < 0 or args.measured_requests < 1:
 diff --git a/models/deepseek_v4_1_flash_a3/generation.py b/models/deepseek_v4_1_flash_a3/generation.py
-index ef6a2b2..7e00864 100644
+index ef6a2b2..34eb1c1 100644
 --- a/models/deepseek_v4_1_flash_a3/generation.py
 +++ b/models/deepseek_v4_1_flash_a3/generation.py
-@@ -199,6 +199,11 @@ class ResidentGraphs:
+@@ -199,6 +199,12 @@ class ResidentGraphs:
      config: RunConfig
      host_io: dict
      decode_inputs: DecodeInputs
@@ -109,14 +109,16 @@ index ef6a2b2..7e00864 100644
 +    draft_block: int = 32
 +    draft_loss_program: DistributedCompiledProgram | None = None
 +    draft_lm_head_vjp_program: DistributedCompiledProgram | None = None
++    draft_final_vjp_program: DistributedCompiledProgram | None = None
 
      def reset(self):
          reset_caches(self.runtime, self.ranks, self.host_cache)
-@@ -232,6 +237,28 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+@@ -232,6 +238,32 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
      for phase_names, supported in zip(names, prepare_windows, strict=True):
          if supported:
              phase_names.pop()
-+    draft_graph, draft_head_artifact, draft_loss, draft_lm_head_vjp = None, None, None, None
++    draft_graph, draft_head_artifact = None, None
++    draft_loss, draft_lm_head_vjp, draft_final_vjp = None, None, None
 +    draft_block = getattr(args, "orthrus_draft_block", 32)
 +    if getattr(args, "orthrus_draft_head", None) is not None:
 +        from blockspec.dsv41_packed_proposer import load_packed_draft_graph, read_packed_head
@@ -130,6 +132,7 @@ index ef6a2b2..7e00864 100644
 +    if loss_kind is not None:
 +        if draft_graph is None:
 +            raise ValueError("Packed online loss requires a bound draft graph")
++        from blockspec.dsv41_packed_final_vjp import make_packed_final_vjp
 +        from blockspec.dsv41_packed_lm_head_vjp import make_packed_lm_head_vjp
 +        from blockspec.dsv41_packed_loss import make_packed_loss_graph
 +        from .lm_head import MAX_LOGIT_ROWS
@@ -138,30 +141,33 @@ index ef6a2b2..7e00864 100644
 +        draft_loss = draft_loss.compile(config=config)
 +        draft_lm_head_vjp = make_packed_lm_head_vjp(MAX_LOGIT_ROWS, M.vocab_size, M.hidden_size, C.DP_SIZE, C.TP_SIZE)
 +        draft_lm_head_vjp = draft_lm_head_vjp.compile(config=config)
++        draft_final_vjp = make_packed_final_vjp(MAX_LOGIT_ROWS, M.hidden_size, M.hc_mult, C.DP_SIZE, C.TP_SIZE,
++                                                M.rms_norm_eps).compile(config=config)
      cache_names = set(DECODE_CACHE_NAMES.values())
      constants = set(weights.tensor_layouts) | cache_names | {"freqs_cos", "freqs_sin"}
      counts = {name: torch.zeros(16, dtype=torch.int32).share_memory_()
-@@ -266,7 +293,8 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+@@ -266,7 +298,9 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
                  template = prefill_template[name]
                  host_io["prefill_" + name] = torch.empty((2, *template.shape), dtype=template.dtype).share_memory_()
          worker = SwimlaneWorker if args.profile_all_steps is not None else DistributedWorker
 -        with worker(programs, config, persistent=True, reset_persistent_windows=False,
-+        registered = [*programs, *(graph for graph in (draft_graph, draft_loss, draft_lm_head_vjp) if graph is not None)]
++        online_graphs = (draft_graph, draft_loss, draft_lm_head_vjp, draft_final_vjp)
++        registered = [*programs, *(graph for graph in online_graphs if graph is not None)]
 +        with worker(registered, config, persistent=True, reset_persistent_windows=False,
                      inherited_host_tensors=[*counts.values(), *host_io.values(), decode_inputs.images]) as runtime:
              host_io["idle_inputs"] = tuple(
                  {name: template[name] for name in phase_names if name in template and name not in constants}
-@@ -354,7 +382,8 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+@@ -354,7 +388,8 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
 
              host_io["prefill_dirty_groups"] = ()
              yield ResidentGraphs(runtime, programs, arguments, names, ranks, weights, engram, host_cache,
 -                                 rope_tables, config, host_io, decode_inputs)
 +                                 rope_tables, config, host_io, decode_inputs, draft_graph, draft_head_artifact,
-+                                 draft_block, draft_loss, draft_lm_head_vjp)
++                                 draft_block, draft_loss, draft_lm_head_vjp, draft_final_vjp)
      finally:
          torch.set_num_threads(saved_threads)
 
-@@ -444,11 +473,44 @@ def generate(args, devices, *, manifests):
+@@ -444,11 +479,44 @@ def generate(args, devices, *, manifests):
                      )
                  except LogitValidationError as error:
                      report["teacher_forced_error"] = str(error)
@@ -208,7 +214,7 @@ index ef6a2b2..7e00864 100644
                  replay_report = {}
                  capture_dir = args.profile_all_steps if iteration == args.warmup_requests else None
                  if capture_dir is not None:
-@@ -462,20 +524,28 @@ def generate(args, devices, *, manifests):
+@@ -462,20 +530,28 @@ def generate(args, devices, *, manifests):
                          config, memory, replay_report, options=args, host_io=host_io, decode_inputs=decode_inputs, reference=reference, teacher_forced=args.teacher_forced,
                          audit=audit_caches if audit_request else None, save_logits=args.save_logits, label=label,
                          profile=capture_dir is not None, profile_dir=capture_dir,
@@ -246,7 +252,7 @@ index ef6a2b2..7e00864 100644
                  reset_caches(runtime, ranks, host_cache)
                  profiled = {}
 diff --git a/models/deepseek_v4_1_flash_a3/packed.py b/models/deepseek_v4_1_flash_a3/packed.py
-index 98f9f0c..67c7dfb 100644
+index 98f9f0c..e568292 100644
 --- a/models/deepseek_v4_1_flash_a3/packed.py
 +++ b/models/deepseek_v4_1_flash_a3/packed.py
 @@ -11,6 +11,7 @@
@@ -257,7 +263,7 @@ index 98f9f0c..67c7dfb 100644
 
  import torch
 
-@@ -37,14 +38,31 @@ class _History:
+@@ -37,14 +38,33 @@ class _History:
      pages: list[int] = field(default_factory=list)
 
 
@@ -278,7 +284,8 @@ index 98f9f0c..67c7dfb 100644
      """A synchronous execution context for one scheduler thread."""
 
 -    def __init__(self, graphs, slots, context, capacities):
-+    def __init__(self, graphs, slots, context, capacities, *, draft=None, draft_loss=None, draft_lm_head_vjp=None):
++    def __init__(self, graphs, slots, context, capacities, *, draft=None, draft_loss=None,
++                 draft_lm_head_vjp=None, draft_final_vjp=None):
          self.graphs = graphs
          self.slots = slots
          self.context = context
@@ -286,11 +293,12 @@ index 98f9f0c..67c7dfb 100644
 +        self.draft = draft
 +        self.draft_loss = draft_loss
 +        self.draft_lm_head_vjp = draft_lm_head_vjp
++        self.draft_final_vjp = draft_final_vjp
 +        self.feedback = {}
          self.history = {}
          self._idle_values = {}
          self._active_dps = [set(), set()]
-@@ -99,6 +117,7 @@ class PackedSession:
+@@ -99,6 +119,7 @@ class PackedSession:
              owner = handle.dp * C.TP_SIZE
              with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
                  list(workers.map(reset_rank, range(owner, owner + C.TP_SIZE)))
@@ -298,7 +306,7 @@ index 98f9f0c..67c7dfb 100644
          except BaseException:
              self.failed = True
              raise
-@@ -108,11 +127,137 @@ class PackedSession:
+@@ -108,11 +129,147 @@ class PackedSession:
 
      def advance_batch(self, phase, queries):
          """Run (handle, token IDs) pairs in caller order. Return sampled rows keyed by handle."""
@@ -347,6 +355,16 @@ index 98f9f0c..67c7dfb 100644
 +        if loss is None:
 +            return None
 +        return loss, self.draft_lm_head_vjp(loss)
++
++    def suffix_vjp(self, handle, *, finished=False):
++        """Return the loss and resident gradient at the final draft layer output."""
++        if self.draft_final_vjp is None:
++            raise ValueError("Packed final RMSNorm and mHC VJP are not configured")
++        terminal = self.terminal_vjp(handle, finished=finished)
++        if terminal is None:
++            return None
++        loss, head_gradient = terminal
++        return loss, self.draft_final_vjp(self.feedback[handle].student, head_gradient)
 +
 +    def verify_batch(self, queries, *, teacher_limits=None):
 +        """Verify (handle, anchor followed by candidates) on the native Decode graph."""
@@ -436,7 +454,7 @@ index 98f9f0c..67c7dfb 100644
          groups = [[] for _ in range(C.DP_SIZE)]
          seen = set()
          queries = list(queries)
-@@ -124,27 +269,63 @@ class PackedSession:
+@@ -124,27 +281,63 @@ class PackedSession:
              if handle in seen or not tokens or any(type(t) is not int or not 0 <= t < C.FLASH.vocab_size for t in tokens):
                  raise ValueError("Invalid or repeated query")
              end = record.committed + len(tokens)
@@ -506,7 +524,7 @@ index 98f9f0c..67c7dfb 100644
          g = self.graphs
          # Prefill and Decode share the same packed positions, page maps and cache allocations.
          template = g.host_io["idle_inputs"][0]
-@@ -161,7 +342,7 @@ class PackedSession:
+@@ -161,7 +354,7 @@ class PackedSession:
              end = start + len(tokens)
              needed = (end + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              record.pages.extend(self.free_pages[dp].pop() for _ in range(needed - len(record.pages)))
@@ -515,7 +533,7 @@ index 98f9f0c..67c7dfb 100644
              table[row, :needed] = physical
              n_half = (end // 2 + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              half[row, :n_half] = physical[:n_half]
-@@ -171,7 +352,9 @@ class PackedSession:
+@@ -171,7 +364,9 @@ class PackedSession:
              positions.extend(range(start, end))
              owners.extend([row] * len(tokens))
              lengths.append(len(ids))
@@ -526,7 +544,7 @@ index 98f9f0c..67c7dfb 100644
                  sampled.append((handle, len(ids) - 1))
          count = len(ids)
          values = dict(g.host_io["idle_inputs"][0 if not index else 1])
-@@ -210,7 +393,7 @@ class PackedSession:
+@@ -210,7 +405,7 @@ class PackedSession:
                            identity_rows=order, replay_rows=order)
          return values, sampled, count
 
@@ -535,7 +553,7 @@ index 98f9f0c..67c7dfb 100644
          g = self.graphs
          selections = []
          with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
-@@ -221,7 +404,7 @@ class PackedSession:
+@@ -221,7 +416,7 @@ class PackedSession:
                  if not group and dp not in self._active_dps[index]:
                      continue
                  if group:
@@ -544,7 +562,7 @@ index 98f9f0c..67c7dfb 100644
                  else:
                      if index not in self._idle_values:
                          self._idle_values[index] = self._inputs(dp, [], index, capacity)
-@@ -243,6 +426,19 @@ class PackedSession:
+@@ -243,6 +438,19 @@ class PackedSession:
          self._active_dps[index] = {dp for dp, group in enumerate(groups) if group}
          args = [g.arguments[index][name] for name in g.names[index]]
          g.runtime.run(g.programs[index], *args, config=g.config)
@@ -564,7 +582,7 @@ index 98f9f0c..67c7dfb 100644
          result = {}
          for handle, rank, row in selections:
              logits = g.host_io["logits"][0]
-@@ -282,9 +478,29 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
+@@ -282,9 +490,32 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
                                                 (args.decode_runtime_dir, "decode", args.decode_capacity))]
      if any(m["history_capacity"] != args.context_capacity for m in manifests):
          raise ValueError("History capacity differs from the compiled graph pair")
@@ -582,24 +600,56 @@ index 98f9f0c..67c7dfb 100644
 +                weights, engram, graphs.rope_tables, graphs.arguments[1]["moe_num_tokens"],
 +                draft_head=args.orthrus_draft_head, block=graphs.draft_block,
 +                context=args.context_capacity, tp=C.TP_SIZE, head_artifact=graphs.draft_head_artifact,
++                retain_final_state=graphs.draft_final_vjp_program is not None,
 +            )
-+        loss, lm_head_vjp = None, None
++        loss, lm_head_vjp, final_vjp = None, None, None
 +        if graphs.draft_loss_program is not None:
++            from blockspec.dsv41_packed_final_vjp import PackedFinalVJP
 +            from blockspec.dsv41_packed_lm_head_vjp import PackedLMHeadVJP
 +            from blockspec.dsv41_packed_loss import PackedLoss
 +
 +            loss = PackedLoss(draft, graphs.draft_loss_program)
 +            lm_head_vjp = PackedLMHeadVJP(draft, loss, graphs.draft_lm_head_vjp_program)
++            final_vjp = PackedFinalVJP(draft, lm_head_vjp, graphs.draft_final_vjp_program)
 +        session = PackedSession(graphs, request_slots, args.context_capacity, (args.capacity, args.decode_capacity),
-+                                draft=draft, draft_loss=loss, draft_lm_head_vjp=lm_head_vjp)
++                                draft=draft, draft_loss=loss, draft_lm_head_vjp=lm_head_vjp, draft_final_vjp=final_vjp)
          try:
              yield session
          finally:
 diff --git a/models/deepseek_v4_1_flash_a3/replay.py b/models/deepseek_v4_1_flash_a3/replay.py
-index f11f2da..cb48be8 100644
+index f11f2da..4fbce18 100644
 --- a/models/deepseek_v4_1_flash_a3/replay.py
 +++ b/models/deepseek_v4_1_flash_a3/replay.py
-@@ -104,7 +104,8 @@ def run_request(
+@@ -50,6 +50,14 @@ class DecodeInputs:
+         image = self.images[0]
+         allocation = runtime.alloc_tensor(image.shape, image.dtype, init=image, worker_id=rank)
+         self.devices[rank] = allocation
++        return self.views(allocation)
++
++    def reserve(self, runtime, rank):
++        image = self.images[0]
++        allocation = runtime.alloc_tensor(image.shape, image.dtype, worker_id=rank)
++        return allocation, self.views(allocation)
++
++    def views(self, allocation):
+         return {name: _device_view(allocation, field) for name, field in self.fields[0].items()}
+
+     def stage(self, inputs, logit_rows):
+@@ -82,10 +90,11 @@ class DecodeInputs:
+             fields["query_start_loc"][1] = 1
+             fields["logit_row_indices"][0] = 0 if image == 2 else -1
+
+-    def upload(self, runtime, rank, owner):
++    def upload(self, runtime, rank, owner, *, allocation=None):
+         slot = 2 if rank == owner else int(rank // C.TP_SIZE == owner // C.TP_SIZE)
+         image = self.images[slot]
+-        runtime.copy_to(self.devices[rank].data_ptr, image.data_ptr(), image.nbytes, worker_id=rank)
++        destination = self.devices[rank] if allocation is None else allocation
++        runtime.copy_to(destination.data_ptr, image.data_ptr(), image.nbytes, worker_id=rank)
+
+
+ class LogitValidationError(ValueError):
+@@ -104,7 +113,8 @@ def run_request(
      runtime, programs, arguments, names, ranks,
      weights, engram, tokenizer, request, host_cache, rope_tables,
      config, memory, report, *, options, host_io, decode_inputs, reference=None, teacher_forced=False,
@@ -609,7 +659,7 @@ index f11f2da..cb48be8 100644
  ):
      """Submit prompt chunks followed by one Decode call per subsequent token."""
      if teacher_forced and reference is None:
-@@ -134,9 +135,70 @@ def run_request(
+@@ -134,9 +144,70 @@ def run_request(
          # The idle TP group has no token history for this request.
          engram.hash_ids([], 0, request_id=idle_rank)
      with ThreadPoolExecutor(max_workers=8) as uploads:
@@ -680,7 +730,7 @@ index f11f2da..cb48be8 100644
              capacity = options.decode_capacity if index else options.capacity
              if index:
                  current_ids = [trace[step - 1] if trace is not None else generated[-1]]
-@@ -250,6 +312,11 @@ def run_request(
+@@ -250,6 +321,11 @@ def run_request(
                    end_to_end_seconds=token_times[-1] - start,
                    token_intervals_seconds=[b - a for a, b in zip(token_times, token_times[1:])],
                    engine_seconds=engine_times, text=tokenizer.decode(generated, skip_special_tokens=False))
@@ -693,10 +743,10 @@ index f11f2da..cb48be8 100644
      if reference is not None:
          report["numerical_acceptance"] = reference["policy"]
 diff --git a/tests/contract/test_ds41_packed.py b/tests/contract/test_ds41_packed.py
-index 961d34e..a337b71 100644
+index 961d34e..f971394 100644
 --- a/tests/contract/test_ds41_packed.py
 +++ b/tests/contract/test_ds41_packed.py
-@@ -64,3 +64,213 @@ def test_packed_page_boundary_and_recycled_handle():
+@@ -64,3 +64,217 @@ def test_packed_page_boundary_and_recycled_handle():
      with pytest.raises(ValueError, match="Expired"):
          session.advance_batch("decode", [(a, [1])])
      assert new is not a and live.pages == live_pages
@@ -877,7 +927,8 @@ index 961d34e..a337b71 100644
 +                             ranks=[[], [{"logits": SimpleNamespace(data_ptr=logits.data_ptr())}]])
 +    session = PackedSession(graphs, 1, 256, (16, 16), draft=draft,
 +                            draft_loss=lambda student, teacher: (student, teacher[:, 0].tolist()),
-+                            draft_lm_head_vjp=lambda loss: tuple(loss[1]))
++                            draft_lm_head_vjp=lambda loss: tuple(loss[1]),
++                            draft_final_vjp=lambda student, gradient: (student.position, gradient))
 +    handle = session.admit("a", 0, 2)
 +    session._lookup(handle).committed = 2
 +    history[handle] = (1, 2)
@@ -896,12 +947,15 @@ index 961d34e..a337b71 100644
 +    first = session.speculate_batch([(handle, 5)], width=4, student_capture=(handle, 3))
 +    assert first.verified.emitted == {handle: (55,)}
 +    assert session.terminal_vjp(handle) is None
++    assert session.suffix_vjp(handle) is None
 +    assert history[handle] == (1, 2, 5)
 +    if continue_with_ar:
 +        assert session.decode_greedy_batch([(handle, (55,))]) == {handle: 23}
 +        assert session.loss_vjp(handle) is None
 +        assert session.decode_greedy_batch([(handle, (23,))]) == {handle: 24}
 +        assert session.terminal_vjp(handle) == ((first.student, [10.0, 20.0, 30.0]), (10.0, 20.0, 30.0))
++        assert session.suffix_vjp(handle) == ((first.student, [10.0, 20.0, 30.0]),
++                                             (first.student.position, (10.0, 20.0, 30.0)))
 +        assert reads == [1, 1, 1] and calls == [(5, 7, 8, 9), (55,), (23,)]
 +    else:
 +        second = session.speculate_batch([(handle, 55)], width=4, output_limits={handle: 3})
