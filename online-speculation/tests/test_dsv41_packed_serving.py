@@ -2,12 +2,15 @@ from ctypes import memmove
 from types import SimpleNamespace
 import sys
 
+import pytest
 import torch
 
 from blockspec.dsv41_packed_serving import PackedDecodeVerifier
 
 
-def test_native_verifier_reuses_host_rows_and_keeps_device_reads_small(monkeypatch):
+@pytest.mark.parametrize("state_capacity", [3, 32])
+def test_native_verifier_reuses_host_rows_and_keeps_device_reads_small(monkeypatch, state_capacity):
+    retain = state_capacity == 32
     def metadata(positions, requests, table):
         slots = positions + int(table[0, 0]) * 128
         return slots, slots[:, None].expand(-1, 128), positions + 1
@@ -36,7 +39,7 @@ def test_native_verifier_reuses_host_rows_and_keeps_device_reads_small(monkeypat
     inputs = SimpleNamespace(fields=fields, images=images,
                              upload=lambda runtime, rank, owner: uploads.append((rank, owner)))
     sampled = [torch.zeros(16, 8, dtype=torch.int32) for _ in range(8)]
-    states = [torch.full((3, 1, 4, 4), float(rank)) for rank in range(8)]
+    states = [torch.full((3, 1, state_capacity, 4), float(rank)) for rank in range(8)]
 
     def handle(value):
         return SimpleNamespace(data_ptr=value.data_ptr(), shape=value.shape, dtype=value.dtype)
@@ -80,12 +83,18 @@ def test_native_verifier_reuses_host_rows_and_keeps_device_reads_small(monkeypat
     )
     assert verifier.verify(11, (12, 13), position=10, owner=0) == ((12, 44), 1)
     assert verifier.verify(11, (12, 13), position=10, owner=4) == ((12, 13, 14), 2)
-    assert launches == [(0, 3, False), (0, 2, True), (4, 3, False)]
+    if retain:
+        assert launches == [(0, 3, False), (4, 3, False)]
+    else:
+        assert launches == [(0, 3, False), (0, 2, True), (4, 3, False)]
     assert rows == [(0, [11, 12, 13]), (4, [11, 12, 13])]
     assert history[0].tolist()[-2:] == [11, 12]
     assert history[4].tolist()[-3:] == [11, 12, 13]
-    assert set(uploads[:8]) == {(rank, 0) for rank in range(4)}
-    assert set(uploads[8:]) == {(rank, 4) for rank in range(8)}
+    first_uploads = 4 if retain else 8
+    assert uploads[:first_uploads] == [(rank, 0) for rank in range(4)] * (first_uploads // 4)
+    assert set(uploads[first_uploads:]) == {(rank, 4) for rank in range(8)}
     assert verifier.stats.sampled_id_bytes == 2 * 3 * 8 * 4
-    assert verifier.stats.restore_bytes == 4 * states[0].nbytes
-    assert verifier.stats.replay_calls == 1
+    assert verifier.stats.restore_bytes == (0 if retain else 4 * states[0].nbytes)
+    assert verifier.stats.snapshot_bytes == (0 if retain else 8 * states[0].nbytes)
+    assert verifier.stats.replay_calls == (0 if retain else 1)
+    assert verifier.stats.retained_prefix_calls == (2 if retain else 0)

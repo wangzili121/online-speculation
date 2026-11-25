@@ -1,5 +1,19 @@
+diff --git a/models/deepseek_v4_1_flash_a3/config.py b/models/deepseek_v4_1_flash_a3/config.py
+index 0a2ae0c..3ba7702 100644
+--- a/models/deepseek_v4_1_flash_a3/config.py
++++ b/models/deepseek_v4_1_flash_a3/config.py
+@@ -237,7 +237,8 @@ FLASH = DeepSeekV41Config(
+
+
+ BLOCK_SIZE = 128
+-STATE_CAPACITY = 4
++# Keep the predecessor and a whole verifier block in distinct ring slots.
++STATE_CAPACITY = 32
+ MAX_BATCH_PER_DP = 12
+ DSPARK_SPEC_TOKENS = 5
+ DSPARK_DRAFT_LAYERS = 3
 diff --git a/models/deepseek_v4_1_flash_a3/decode_fwd.py b/models/deepseek_v4_1_flash_a3/decode_fwd.py
-index 945d575..389ac91 100644
+index 246a95d..b2ad4d9 100644
 --- a/models/deepseek_v4_1_flash_a3/decode_fwd.py
 +++ b/models/deepseek_v4_1_flash_a3/decode_fwd.py
 @@ -701,6 +701,7 @@ def l2_decode_fwd(
@@ -45,19 +59,21 @@ index 945d575..389ac91 100644
      return logits, sampled_ids
 
 diff --git a/models/deepseek_v4_1_flash_a3/driver.py b/models/deepseek_v4_1_flash_a3/driver.py
-index 469fa8a..ab7f3e4 100644
+index acc5b48..5127b58 100644
 --- a/models/deepseek_v4_1_flash_a3/driver.py
 +++ b/models/deepseek_v4_1_flash_a3/driver.py
-@@ -157,6 +157,8 @@ def main(function, *, mode, capacity, argv=None):
+@@ -157,6 +157,10 @@ def main(function, *, mode, capacity, argv=None):
      parser.add_argument("--full-graph", action="store_true", help=argparse.SUPPRESS)
      parser.add_argument("--logits-mode", choices=["last"], default="last")
      parser.add_argument("--max-new-tokens", type=int)
 +    parser.add_argument("--orthrus-verify-k", type=int, choices=(8, 16),
 +                        help="Compare greedy generation with same-residency candidate verification")
++    parser.add_argument("--orthrus-cache-mode", choices=("retain", "replay", "compare"), default="retain",
++                        help="Candidate acceptance path to profile, including both paths in one run")
      parser.add_argument("--reference-dir", type=Path)
      parser.add_argument("--teacher-forced", action="store_true")
      parser.add_argument("--audit-caches", action="store_true")
-@@ -180,6 +182,12 @@ def main(function, *, mode, capacity, argv=None):
+@@ -180,6 +184,12 @@ def main(function, *, mode, capacity, argv=None):
      requested_chunk = args.chunk_size
      if requested_chunk is None:
          args.chunk_size = min(chunk_default, args.capacity or chunk_default)
@@ -71,10 +87,10 @@ index 469fa8a..ab7f3e4 100644
          parser.error("--profile-all-steps requires full checkpoint generation")
      if args.warmup_requests < 0 or args.measured_requests < 1:
 diff --git a/models/deepseek_v4_1_flash_a3/generation.py b/models/deepseek_v4_1_flash_a3/generation.py
-index 85f018d..f28ed9d 100644
+index 85f018d..ca0c72b 100644
 --- a/models/deepseek_v4_1_flash_a3/generation.py
 +++ b/models/deepseek_v4_1_flash_a3/generation.py
-@@ -375,6 +375,18 @@ def generate(args, devices, *, manifests):
+@@ -375,11 +375,30 @@ def generate(args, devices, *, manifests):
                      )
                  except LogitValidationError as error:
                      report["teacher_forced_error"] = str(error)
@@ -90,19 +106,62 @@ index 85f018d..f28ed9d 100644
 +                report["orthrus_ar_control"] = ar
 +                verify_targets = ar["output_sequences"][0]["token_ids"]
 +                reset_caches(runtime, ranks, host_cache)
++            modes = (None,)
++            if verify_targets is not None:
++                modes = ("replay", "retain") if args.orthrus_cache_mode == "compare" else (args.orthrus_cache_mode,)
              total = args.warmup_requests + args.measured_requests
-             for iteration in range(total):
-                 if iteration or args.validate_teacher_forced:
-@@ -393,6 +405,7 @@ def generate(args, devices, *, manifests):
+-            for iteration in range(total):
+-                if iteration or args.validate_teacher_forced:
++            for run_index in range(total * len(modes)):
++                iteration, mode_index = divmod(run_index, len(modes))
++                mode = modes[mode_index]
++                if run_index or args.validate_teacher_forced:
+                     reset_caches(runtime, ranks, host_cache)
+                 label = f"warmup_{iteration}" if iteration < args.warmup_requests else f"measured_{iteration}"
++                if mode is not None:
++                    label = f"{label}/{mode}"
+                 replay_report = {}
+                 capture_dir = args.profile_all_steps if iteration == args.warmup_requests else None
+                 if capture_dir is not None:
+@@ -393,20 +412,28 @@ def generate(args, devices, *, manifests):
                          config, memory, replay_report, options=args, host_io=host_io, decode_inputs=decode_inputs, reference=reference, teacher_forced=args.teacher_forced,
                          audit=audit_caches if audit_request else None, save_logits=args.save_logits, label=label,
                          profile=capture_dir is not None, profile_dir=capture_dir,
-+                        verify_targets=verify_targets,
++                        verify_targets=verify_targets, verify_mode=mode,
                      )
                  finally:
                      report.update(replay_report)
+-            measured = replays[args.warmup_requests:]
+-            timed = [replay for replay in measured if not replay["profiled"]] or measured
++            measured = replays[args.warmup_requests * len(modes):]
++            metrics = ("ttft_seconds", "tpot_seconds", "end_to_end_seconds")
+             report["benchmark"] = dict(warmup_requests=args.warmup_requests,
+                                        measured_requests=args.measured_requests,
+-                                       sample_labels=[replay["label"] for replay in timed],
+-                                       instrumented=any(r["profiled"] or r["instrumented_cache_audits"] for r in timed),
+                                        clock="host monotonic")
+-            for metric in ("ttft_seconds", "tpot_seconds", "end_to_end_seconds"):
+-                values = torch.tensor([replay[metric] for replay in timed], dtype=torch.float64)
+-                report["benchmark"][metric] = dict(median=float(values.quantile(0.5)),
+-                                                  p95=float(values.quantile(0.95)), samples=values.tolist())
++            for mode_index, mode in enumerate(modes):
++                samples = measured[mode_index::len(modes)]
++                timed = [row for row in samples if not row["profiled"]] or samples
++                benchmark = report["benchmark"]
++                if mode is not None:
++                    benchmark = {}
++                    report["benchmark"].setdefault("orthrus_cache_modes", {})[mode] = benchmark
++                benchmark["sample_labels"] = [row["label"] for row in timed]
++                benchmark["instrumented"] = any(r["profiled"] or r["instrumented_cache_audits"] for r in timed)
++                for metric in metrics:
++                    values = torch.tensor([row[metric] for row in timed], dtype=torch.float64)
++                    benchmark[metric] = dict(median=float(values.quantile(0.5)),
++                                             p95=float(values.quantile(0.95)), samples=values.tolist())
+             if args.profile_last_decode:
+                 reset_caches(runtime, ranks, host_cache)
+                 profiled = {}
 diff --git a/models/deepseek_v4_1_flash_a3/replay.py b/models/deepseek_v4_1_flash_a3/replay.py
-index f11f2da..fc43679 100644
+index f11f2da..12be240 100644
 --- a/models/deepseek_v4_1_flash_a3/replay.py
 +++ b/models/deepseek_v4_1_flash_a3/replay.py
 @@ -104,7 +104,7 @@ def run_request(
@@ -110,11 +169,11 @@ index f11f2da..fc43679 100644
      weights, engram, tokenizer, request, host_cache, rope_tables,
      config, memory, report, *, options, host_io, decode_inputs, reference=None, teacher_forced=False,
 -    audit=None, save_logits=None, label="greedy", profile=False, profile_dir=None,
-+    audit=None, save_logits=None, label="greedy", profile=False, profile_dir=None, verify_targets=None,
++    audit=None, save_logits=None, label="greedy", profile=False, profile_dir=None, verify_targets=None, verify_mode=None,
  ):
      """Submit prompt chunks followed by one Decode call per subsequent token."""
      if teacher_forced and reference is None:
-@@ -134,9 +134,54 @@ def run_request(
+@@ -134,9 +134,55 @@ def run_request(
          # The idle TP group has no token history for this request.
          engram.hash_ids([], 0, request_id=idle_rank)
      with ThreadPoolExecutor(max_workers=8) as uploads:
@@ -126,8 +185,9 @@ index f11f2da..fc43679 100644
 +                runtime, programs[1], config, [arguments[1][name] for name in names[1]],
 +                counts.values(), decode_inputs, ranks[0], ranks[1], weights, engram, uploads,
 +                tp_size=C.TP_SIZE, has_replay_mode=names[1][-1] == "execute_layers",
++                retain_prefix=verify_mode == "retain",
 +            )
-+            report["orthrus_verify_replay"] = dict(k=options.orthrus_verify_k, rounds=[])
++            report["orthrus_verify_replay"] = dict(k=options.orthrus_verify_k, cache_mode=verify_mode, rounds=[])
 +
          for call in range(chunks + options.max_new_tokens - 1):
              step = call - chunks + 1
@@ -169,7 +229,7 @@ index f11f2da..fc43679 100644
              capacity = options.decode_capacity if index else options.capacity
              if index:
                  current_ids = [trace[step - 1] if trace is not None else generated[-1]]
-@@ -250,6 +295,11 @@ def run_request(
+@@ -250,6 +296,11 @@ def run_request(
                    end_to_end_seconds=token_times[-1] - start,
                    token_intervals_seconds=[b - a for a, b in zip(token_times, token_times[1:])],
                    engine_seconds=engine_times, text=tokenizer.decode(generated, skip_special_tokens=False))

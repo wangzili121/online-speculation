@@ -6,6 +6,7 @@ from time import perf_counter
 import torch
 
 from .dsv41_packed_verification import verify_packed_round
+from .pypto_dsv41_greedy import verified_prefix
 
 
 _LIVE_ROWS = (
@@ -18,6 +19,7 @@ _LIVE_ROWS = (
 class DecodeRoundStats:
     verify_calls: int = 0
     replay_calls: int = 0
+    retained_prefix_calls: int = 0
     input_bytes: int = 0
     sampled_id_bytes: int = 0
     snapshot_bytes: int = 0
@@ -39,7 +41,7 @@ class PackedDecodeVerifier:
     """
 
     def __init__(self, runtime, graph, config, graph_args, counts, decode_inputs,
-                 cache_ranks, decode_ranks, weights, engram, uploads, *, tp_size, has_replay_mode=False):
+                 cache_ranks, decode_ranks, weights, engram, uploads, *, tp_size, has_replay_mode=False, retain_prefix=True):
         self.runtime = runtime
         self.graph = graph
         self.config = config
@@ -56,7 +58,8 @@ class PackedDecodeVerifier:
         self.world = len(decode_ranks)
         self.sampled = torch.empty(decode_ranks[0]["sampled_ids"].shape, dtype=torch.int32)
         state = cache_ranks[0]["state_cache"]
-        self._state_snapshot = [torch.empty(state.shape, dtype=state.dtype) for _ in range(tp_size)]
+        self.state_capacity = state.shape[-2] if retain_prefix else 0
+        self._state_snapshot = None
         # Native generation initializes all inputs from the empty Decode image.
         self._previous_owner = None
         self.stats = DecodeRoundStats()
@@ -83,6 +86,9 @@ class PackedDecodeVerifier:
 
         def save(_writes):
             start = perf_counter()
+            if self._state_snapshot is None:
+                state = states[0]
+                self._state_snapshot = [torch.empty(state.shape, dtype=state.dtype) for _ in active_ranks]
             for rank, handle, snapshot in zip(active_ranks, states, self._state_snapshot, strict=True):
                 self.runtime.copy_from(snapshot.data_ptr(), handle.data_ptr, snapshot.nbytes, worker_id=rank)
                 self.stats.snapshot_bytes += snapshot.nbytes
@@ -151,6 +157,22 @@ class PackedDecodeVerifier:
 
         if not candidates:
             return tuple(forward((anchor_token,))), 0
+        if self.state_capacity > len(candidates) + 1:
+            # The C2A compressor may read position-1 before the next block.
+            # Every slot from that predecessor through the last candidate is
+            # distinct, including at a ring wrap. A rejected suffix therefore
+            # leaves all state needed at the next committed frontier intact.
+            try:
+                emitted = verified_prefix(candidates, forward((anchor_token, *candidates)))
+            except Exception:
+                if engram_history is None:
+                    self.engram.history.pop(owner, None)
+                else:
+                    self.engram.history[owner] = engram_history
+                raise
+            self.engram.history[owner] = verified_history[:position + len(emitted)]
+            self.stats.retained_prefix_calls += 1
+            return emitted, len(emitted) - 1
         return verify_packed_round(anchor_token, candidates, (), forward=forward, save=save, restore=restore)
 
     def _stage_rows(self, tokens, position, owner, *, block_size, paged_slots, window_metadata):

@@ -49,13 +49,21 @@ A2/A3 模拟器通过了 129 个物理页、Top‑512、K8/K16/K32 共 12 个用
 
 ### 1122 最新基线与 Verify/Accept
 
-当前接入镜像固定上游 `7abc0df`，启用 v8 权重布局。通信窗口预分配、上下文容量 512 的原生 Prefill 32 和 Decode 16 编译分别通过，耗时 141.63 秒和 200.21 秒。加入 Orthrus 回放模式的 Decode 图以相同形状重新编译通过。 [最新上游](https://github.com/Adelaide999/pypto-lib/tree/7abc0df731143f8cee99c9bfc2bb731523384deb/models/deepseek_v4_1_flash_a3)
+首轮迁移使用上游 `7abc0df`，启用 v8 权重布局。通信窗口预分配、上下文容量 512 的原生 Prefill 32 和 Decode 16 编译分别通过，耗时 141.63 秒和 200.21 秒。加入 Orthrus 回放模式的 Decode 图以相同形状重新编译通过。 [首轮上游](https://github.com/Adelaide999/pypto-lib/tree/7abc0df731143f8cee99c9bfc2bb731523384deb/models/deepseek_v4_1_flash_a3)
 
 - FP8 和 FP4 的码表每种占 1 KiB，可随权重上传一次，供同一 worker 的各层复用。129 页和 Top-512 下，12 个 A2/A3 模拟器用例通过。解包输出逐元素一致，K8/K16/K32 滑窗链路的最大输出误差为 `3.82e-6`。附加 `--compare-swa-chain` 比较驻留输入的单次与两次提交，三种块宽的输出和 LSE 在模拟器中逐元素相同。
 - Verify 直接调用新版驻留 Decode 图。固定 head 的贪心路径只回读每行 32 字节的采样结果，最多 16 行。每轮只上传当前 TP 组的输入，DP 归属切换时清空前一组。C2A 的滚动状态需提前备份，页缓存的未提交后缀由绝对位置和因果可见范围控制。
 - 整块接受时保留当前图写入的缓存。遇拒绝时恢复 C2A 状态，再回放 anchor 和接受前缀，复用本轮已读出的 embedding 与 Engram 行。使用 `--prepare-windows` 编出的 Decode 图可在回放时跳过 LM Head。Serving 分别记录输入准备、上传、图调用、备份、回滚与采样回读量。
 - 镜像中的 `generate --orthrus-verify-k 8` 或 `16` 在同一次权重加载下先取 AR 序列，再交替注入正确块和有意拒绝的块，逐 token 对照，并记录 Verify/Accept 分段数据。它需要配套的 Prefill/Decode 编译产物和原生入口要求的设备。当前完成编译、模拟和软件回归，实卡整模逐 token 结果待验收。此入口用于验证候选处理，真实 draft 及在线更新仍需接入新版整图。
 - 以新版原生单 token 打包为参考，核对 5 个 anchor 和 1、2、8、16 行输入的真实页表、mHC embedding、Engram 及 C2A 发布位置。20 组输入逐行相同，覆盖乱序物理页和跨页边界。
+
+#### 2d72687 与拒绝后直接保留前缀
+
+镜像源码已更新到同事的 `2d72687`。在 167 上重新编译通过 Prefill 32 和 Decode 16，两图启用通信窗口预分配并设上下文容量为 512，编译分别用时 142.45 和 203.67 秒。111 上用真实 W8A8 checkpoint 通过新版 v9 布局 67 项投影、TP 分片及 Engram 检查。新版加载器统计的静态权重为每 rank 36.55 GiB。新版验证图把每个 C2A 源的 FP32 状态环从 4 行扩到 32 行。K8 或 K16 的验证即使跨环，也会把前一已提交位置到最后一个候选位置写到不同槽位。拒绝后保留下一步要读的前一个已提交行，裁剪 Engram 历史，下一轮按提交的位置覆盖被拒绝的分页数据。这样一次 Verify 就能提交已接受前缀，省掉状态备份和 Accept 的基模重放。状态环每 rank 额外占 336 KiB（3 个 C2A 源，每行 1024 个 FP32 元素）。
+
+新版 `generate --orthrus-verify-k 8` 或 `16` 默认使用上述路径。追加 `--orthrus-cache-mode compare` 可在一次装载权重内运行 AR 参考、备份回放和直接保留两组，分别报告结果和耗时。报告分别记录 `verify_calls`、`replay_calls`、`retained_prefix_calls`、备份字节数、上传和图调用时间。用新版 C2A 的 Torch golden 对照了 1080 次状态推进，覆盖跨环、跨页、连续拒绝和全接受，保留前缀的压缩结果及下一步所需状态逐元素一致。167 上再用原生 C2A 的设备函数做了 28 次前缀推进，结果逐位相同。[上游 2d72687](https://github.com/Adelaide999/pypto-lib/tree/2d7268765e78447f7127682b19bc9c1bc4441530/models/deepseek_v4_1_flash_a3)
+
+167 的 910B3 上，关闭详细运行时日志后，采用同一个驻留 worker 交替计时 25 次，K8/K16/K32 的滑窗解包加双向 Attention 分别从 36.50/36.59/37.37 ms 降到 18.50/18.57/18.70 ms。该时间包含宿主提交。融合与拆分的输出和 LSE 逐元素相同，与 FP32 golden 比较的最大输出误差为 3.40e-6。新版整模尚待实机验证端到端逐 token 一致性和性能。[单卡原始数据](validation/dsv41/pypto-1122-packed-attention-910b3.json)
 
 ## 内网权重预检
 
