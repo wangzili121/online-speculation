@@ -161,5 +161,6 @@ def make_packed_history_gather(kind, physical_pages, selected_rows):
                         for lane in pl.range(ROW_TILE):
                             if pl.tile.read(ids, [0, lane]) < 0:
                                 pl.tile.store(zero, [block * ROW_TILE + lane, 0], output)
+        return output
 
     return gather

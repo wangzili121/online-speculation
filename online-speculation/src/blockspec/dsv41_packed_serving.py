@@ -165,7 +165,7 @@ class PackedDecodeVerifier:
         embedding = self.weights.lookup_rows(ids)
         lookup = self.engram.lookup(ids, live, position, request_id=owner)
         for image in self.inputs.fields[1:]:
-            image["x_hc"][:live].copy_(embedding)
+            image["x_hc"][:live].copy_(embedding[:, None, :])
             image["engram_lookup"][:, :live].copy_(lookup)
             for name, values in zip(
                 _LIVE_ROWS, (pos, slots, window, slots, compressed_slots, request), strict=True

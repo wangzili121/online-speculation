@@ -40,6 +40,38 @@ def packed_swa_programs(physical_pages, heads, block_size):
     return gather, attention
 
 
+def make_packed_swa_chain(physical_pages, heads, block_size):
+    """Fuse the packed gather and staged SWA into a single device dispatch."""
+    import pypto.language as pl
+
+    gather_entry, attention_entry = packed_swa_programs(physical_pages, heads, block_size)
+    gather = pl.jit.inline(auto_scope=False)(gather_entry._func)
+    attention = pl.jit.inline(attention_entry._func)
+    tiles = WINDOW // ROW_TILE
+
+    @pl.jit
+    def attend(
+        packed: pl.Tensor[[physical_pages, WINDOW, 1, HEAD_DIM], pl.UINT8],
+        scales: pl.Tensor[[physical_pages, WINDOW, 1, HEAD_DIM // 32], pl.BF16],
+        lookup: pl.Tensor[[1, 256], pl.INT32],
+        rows: pl.Tensor[[tiles, ROW_TILE], pl.INT32],
+        starts: pl.Tensor[[tiles], pl.INT32],
+        spans: pl.Tensor,
+        bias: pl.Tensor,
+        query: pl.Tensor,
+        temporary: pl.Tensor,
+        sink: pl.Tensor,
+        zeros: pl.Tensor,
+        output: pl.Out[pl.Tensor],
+        lse: pl.Out[pl.Tensor],
+    ):
+        scratch = pl.create_tensor([WINDOW, HEAD_DIM], dtype=pl.BF16)
+        scratch = gather(packed, scales, rows, starts, lookup, scratch)
+        return attention(query, scratch, spans, temporary, bias, sink, zeros, output, lse)
+
+    return attend
+
+
 def run_packed_swa(worker, programs, packed, scales, lookup, controls, scratch,
                    query, temporary, sink, zeros, output, lse, *, config):
     """Use one scratch allocation for all draft queries without host readback."""

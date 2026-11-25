@@ -19,7 +19,7 @@ def validate_swa(args, config, code, scale, golden, page_table):
     from pypto.runtime import ChipWorker
 
     from blockspec.pypto_dsv41_packed_swa import (
-        packed_swa_controls, packed_swa_programs, packed_swa_views, run_packed_swa,
+        make_packed_swa_chain, packed_swa_controls, packed_swa_programs, packed_swa_views, run_packed_swa,
     )
     from blockspec.vllm_ascend.dsv41_attention import PagedRows, draft_attention
 
@@ -45,11 +45,17 @@ def validate_swa(args, config, code, scale, golden, page_table):
             gather.compile(code, scale, rows, starts, lookup, scratch, config=config),
             attention.compile(q, scratch, spans, temporary, bias, sink, zeros, out, lse, config=config),
         )
+        chain = None
+        if args.compare_swa_chain:
+            chain = make_packed_swa_chain(pages, heads, block).compile(
+                code, scale, lookup, *controls, q, temporary, sink, zeros, out, lse, config=config,
+            )
         if args.compile_only:
-            reports.append(dict(kind="swa", block=block, compiled=True))
+            reports.append(dict(kind="swa", block=block, compiled=True, chain_compiled=chain is not None))
             continue
         fields = [code[None], scale[None], lookup, *controls, scratch, q, temporary, sink, zeros, out, lse]
         resident = [field.clone() for field in fields]
+        comparison = {}
         with ChipWorker(config) as worker:
             handles = [worker.alloc_tensor(tuple(field.shape), field.dtype) for field in resident]
             for host, device in zip(resident[:-2], handles[:-2], strict=True):
@@ -59,6 +65,25 @@ def validate_swa(args, config, code, scale, golden, page_table):
             run_packed_swa(worker, programs, packed, scales, handles[2], handles[3:7], *handles[7:], config=config)
             for host, device in zip(resident[-2:], handles[-2:], strict=True):
                 worker.copy_from(host.data_ptr(), device.data_ptr, host.nbytes)
+            if chain is not None:
+                chain_args = (packed, scales, *handles[2:7], *handles[8:])
+                chain_values = [torch.empty_like(tensor) for tensor in resident[-2:]]
+                worker.run(chain, *chain_args, config=config)
+                pair_times, chain_times = [], []
+                for _ in range(args.iterations):
+                    start = perf_counter()
+                    run_packed_swa(worker, programs, packed, scales, handles[2], handles[3:7],
+                                   *handles[7:], config=config)
+                    pair_times.append(perf_counter() - start)
+                    start = perf_counter()
+                    worker.run(chain, *chain_args, config=config)
+                    chain_times.append(perf_counter() - start)
+                    for host, device in zip(chain_values, handles[-2:], strict=True):
+                        worker.copy_from(host.data_ptr(), device.data_ptr, host.nbytes)
+                    for actual, expected in zip(chain_values, resident[-2:], strict=True):
+                        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+                comparison = dict(resident_pair_median_us=median(pair_times) * 1e6,
+                                  resident_chain_median_us=median(chain_times) * 1e6)
 
         pv, plse = draft_attention(
             query[None], temporary[None, :block],
@@ -71,7 +96,8 @@ def validate_swa(args, config, code, scale, golden, page_table):
         torch.testing.assert_close(resident[-1], expected_lse, atol=2e-5, rtol=2e-6)
         reports.append(dict(kind="swa", block=block, anchor=anchor,
                             max_abs=(resident[-2] - expected_out).abs().max().item(),
-                            lse_max_abs=(resident[-1] - expected_lse).abs().max().item()))
+                            lse_max_abs=(resident[-1] - expected_lse).abs().max().item(),
+                            **comparison))
     return reports
 
 
@@ -166,10 +192,14 @@ def main():
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--simulator", action="store_true")
     parser.add_argument("--swa", action="store_true", help="Also check the device-resident SWA chain")
+    parser.add_argument("--compare-swa-chain", action="store_true",
+                        help="Compare single-dispatch and split SWA with resident inputs")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.iterations < 1 or args.pages < 4:
         parser.error("require positive iterations and at least four physical pages")
+    if args.compare_swa_chain:
+        args.swa = True
     payload = json.dumps(validate(args), indent=2)
     if args.output:
         args.output.write_text(payload + "\n")

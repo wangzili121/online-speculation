@@ -23,7 +23,7 @@ def test_native_verifier_reuses_host_rows_and_keeps_device_reads_small(monkeypat
             "position_ids", "window_slots", "c1a_compressed_slots",
             "c2a_compressed_slots", "token_to_req_indices", "logit_row_indices",
         )}
-        fields.update(x_hc=torch.zeros(16, 4), engram_lookup=torch.zeros(2, 16, 4),
+        fields.update(x_hc=torch.zeros(16, 4, 4), engram_lookup=torch.zeros(2, 16, 4),
                       window_indices=torch.full((16, 128), -1, dtype=torch.int32),
                       c1a_index_block_table=torch.ones(1, 1, dtype=torch.int32),
                       c2a_index_block_table=torch.ones(1, 1, dtype=torch.int32),
@@ -58,6 +58,8 @@ def test_native_verifier_reuses_host_rows_and_keeps_device_reads_small(monkeypat
         assert args[-1] == (2 if is_replay else 1)
         launches.append((owner, live, is_replay))
         assert (fields[2]["position_ids"][live:] == -1).all()
+        expected_embedding = torch.tensor((11, 12, 13)[:live])[:, None, None].expand(-1, 4, 4)
+        torch.testing.assert_close(fields[2]["x_hc"][:live], expected_embedding.float())
         if is_replay:
             for rank in range(owner, owner + 4):
                 assert (states[rank] == rank).all()
@@ -73,7 +75,7 @@ def test_native_verifier_reuses_host_rows_and_keeps_device_reads_small(monkeypat
         runtime, object(), None, (1,), counts, inputs,
         [{"state_cache": handle(t)} for t in states],
         [{"sampled_ids": handle(t)} for t in sampled],
-        SimpleNamespace(lookup_rows=lambda ids: torch.ones(len(ids), 4)),
+        SimpleNamespace(lookup_rows=lambda ids: ids.float()[:, None].expand(-1, 4)),
         SimpleNamespace(history=history, lookup=lookup), SimpleNamespace(map=map), tp_size=4, has_replay_mode=True,
     )
     assert verifier.verify(11, (12, 13), position=10, owner=0) == ((12, 44), 1)
