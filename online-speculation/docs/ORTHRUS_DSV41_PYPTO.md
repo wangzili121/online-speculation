@@ -30,7 +30,20 @@ A3 W8A8 开发分支 `deepseek_v4.1_flash_1122` 更新到 `4e198fa`，包含 Pre
 
 167 的独立候选镜像使用 PyPTO `2e31e0c2`、Simpler `a5349f4` 和 PTOAS `v0.78`。只构建 Simpler 的 `build_package_a2a3`，沿用 `runtime-release.patch` 解决 Release 下的未使用变量。用 `4e198fa` 源码编出 Prefill 容量 16、Decode 容量 16、上下文容量 256 的两张图，编译分别为 154.05 秒和 195.48 秒。开启通信窗口预分配后，上下文容量 512 的 Prefill 容量 32 和 Decode 容量 16 同样通过，分别为 153.54 秒和 186.46 秒。设备探针另需备好该 Simpler 版本的 PTO-ISA checkout。167 的物理卡 7 在新版和原镜像下均报初始化错误 `507899`，因此整图通过的范围是编译阶段。Decode 编译器同时报告了并发标量写入告警，原生 AR 实卡验收仍需检查重复输出和缓存。
 
-接下来在相同 W8A8 输入上验证原生 AR。随后为 1122 的 Prefill/Decode 图接入双机 rank 所有权以及请求缓存的读取、临时写入和提交边界。Verify 需保持候选因果可见性和拒绝恢复，Accept 需保持已接受前缀的缓存提交。Draft 接入只读分页历史，在线更新最后核对真实冻结层边界、梯度和驻留权重发布。逐阶段对照保留相同贪心 token、缓存指纹和计时口径。
+新版接入分支以 `94d5dfc` 为基线。该版本进一步复用 Prefill 投影的片上 tile，并修正单 token Decode 的 mHC 精度。PTOAS v0.78 下，通信窗口预分配、上下文容量 512 的 Prefill 32 和 Decode 16 分别在 156.24 秒和 188.23 秒完成编译。 [上游源码](https://github.com/Adelaide999/pypto-lib/tree/94d5dfc19b900a15860fd4bdc1d57e8c4bc156be/models/deepseek_v4_1_flash_a3)
+
+Orthrus 直接读取 1122 的 packed KV。滑窗 FP8 以 16 行为一组，连续行用整块加载，跨页用索引加载，空 tile 直接置零。每层的 128 行滑窗只解包一次，供同一 draft 块内所有 query 共用。FP4 支持按所选物理行解包，C2A 以每页 128 个**压缩后**的行寻址。Verify 的字节区间覆盖写入的 SWA、压缩 KV、Indexer 数据及各 C2A 源的滚动状态。全接受时可以保留验证图已写入的缓存，发生拒绝时恢复快照并重放已接受前缀。当前快照调用和测试使用独立接口，尚待绑定整图的驻留缓冲区。
+
+在 1122 的配套工具链中，把 1122 checkout 放入 `PYTHONPATH`，可独立检查压缩历史的读取和 K8/K16/K32 滑窗链路。
+
+```bash
+PYTHONPATH="$PWD/online-speculation/src:$PYPTO_LIB_ROOT:${PYTHONPATH:-}" \
+  python online-speculation/scripts/validate_dsv41_pypto_packed_history.py --compile-only --swa
+```
+
+A2/A3 模拟器通过了 129 个物理页、Top‑512、K8/K16/K32 共 12 个用例。FP8 和 FP4 解包与 Torch 参考逐元素一致。双向滑窗输出最大绝对误差为 `3.82e-6`，LSE 为 `9.54e-7`。这些结果覆盖独立 kernel 和驻留缓冲区交接。实卡启动需要另验，167 的单卡探针在 `rtSetDevice` 报 `507899`。
+
+新版 `generation.py` 通过一个 L3 worker 管理 16 个本地设备。双机 Serving 要将全局 EP rank 的分派移到 L4，并接入 Simpler 的 A3 Fabric 跨机设备窗口。旧 Serving 的 HCCL 验收覆盖逐层通信。新版先用 `global_tload_mixed_l3` 小张量用例验证跨机窗口，再用同一 checkpoint 核对 AR、Draft/Verify/Accept 的逐 token 一致性。在线更新还需绑定新版的反向输入和 head 发布路径。当前 GSM8K 命令走独立旧版基线。 [Simpler 跨机验证用例](https://github.com/hw-native-sys/simpler/tree/a5349f42c71666bb8cacfb3759f34eeda1572beb/examples/workers/l4/global_tload_mixed_l3)
 
 ## 内网权重预检
 

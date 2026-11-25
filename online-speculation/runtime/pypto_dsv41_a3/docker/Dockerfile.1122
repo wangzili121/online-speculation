@@ -1,0 +1,48 @@
+ARG BASE_IMAGE=orthrus-dsv41-pypto:72a62d1-offline
+FROM ${BASE_IMAGE}
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+USER root
+
+ENV PYPTO_SRC=/opt/dsv41-1122/pypto \
+    PYPTO_LIB_ROOT=/opt/dsv41-1122/pypto-lib \
+    PYPTO_LIB_SRC=/opt/dsv41-1122/pypto-lib \
+    PYPTO_MOTD_SHOWN=1
+WORKDIR /opt/dsv41-1122
+COPY online-speculation/runtime/pypto_dsv41_a3/runtime-release.patch ./
+COPY online-speculation/runtime/pypto_dsv41_a3/docker/build-network.sh ./
+COPY online-speculation/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh ./
+
+RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca --mount=type=secret,id=pypto_pypi \
+    set -e; \
+    source ./build-network.sh; \
+    source /opt/pypto/bin/pypto-activate.sh; \
+    if [[ -s /run/secrets/pypto_pypi ]]; then \
+        UV_DEFAULT_INDEX="$(cat /run/secrets/pypto_pypi)"; export UV_DEFAULT_INDEX; \
+    fi; \
+    git init pypto; \
+    git -C pypto fetch --depth 1 https://github.com/hw-native-sys/pypto.git 2e31e0c2a604c3c859c1268a937f97b0ee2d747f; \
+    git -C pypto checkout --detach FETCH_HEAD; \
+    git -C pypto submodule update --init --recursive --depth 1; \
+    test "$(git -C pypto/runtime rev-parse HEAD)" = a5349f42c71666bb8cacfb3759f34eeda1572beb; \
+    git -C pypto/runtime apply "$PWD/runtime-release.patch"; \
+    uv pip install --python /opt/pypto/venv/bin/python \
+        -c "$PYPTO_SRC/build-constraints.txt" cmake ninja nanobind scikit-build-core; \
+    bash "$PYPTO_SRC/docker/scripts/pypto-install-ptoas.sh"; \
+    PYPTO_RUNTIME_BUILD_TARGETS=build_package_a2a3 PYPTO_BUILD_JOBS=4 \
+        bash "$PYPTO_SRC/docker/scripts/pypto-build"
+
+RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca set -e; \
+    source ./build-network.sh; \
+    git init pypto-lib; \
+    git -C pypto-lib fetch --depth 1 https://github.com/Adelaide999/pypto-lib.git 94d5dfc19b900a15860fd4bdc1d57e8c4bc156be; \
+    git -C pypto-lib checkout --detach FETCH_HEAD; \
+    cp "$PYPTO_SRC/docker/scripts/pypto-activate.sh" /opt/pypto/bin/pypto-activate.sh; \
+    source /opt/pypto/bin/pypto-activate.sh; \
+    bash ./cache-pto-isa.sh
+
+COPY online-speculation/src/blockspec /opt/dsv41-1122/orthrus/blockspec
+COPY online-speculation/scripts/validate_dsv41_pypto_packed_history.py /opt/dsv41-1122/
+
+ENV PYTHONPATH=/opt/dsv41-1122/pypto/python:/opt/dsv41-1122/pypto-lib:/opt/dsv41-1122/orthrus
+ENTRYPOINT ["/bin/bash", "-lc", "source /opt/pypto/bin/pypto-activate.sh && exec python \"$@\"", "dsv41-1122"]
+CMD ["validate_dsv41_pypto_packed_history.py", "--compile-only", "--swa"]
