@@ -762,8 +762,7 @@ class DraftRound:
                                   lambda: make_sparse_attention(head_major_swa=True, block_size=block_size),
                                   dict(sparse_args, query=flat_query, local_output=local, local_lse=local_lse))
 
-        values.update(attention=context, context=workspace((block_size, width)),
-                      unrotated=workspace((block_size, width)),
+        values.update(attention=context, unrotated=workspace((block_size, width)),
                       grouped=workspace((block_size, operands["wo_b"].shape[0])),
                       contribution=contribution)
         attention.execute(("output", compressed), rank,

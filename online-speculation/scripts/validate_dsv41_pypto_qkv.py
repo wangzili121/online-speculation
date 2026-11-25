@@ -142,7 +142,7 @@ def main():
     attention = sparse_args[-2] if args.ratio else local[-2]
     output_projection = make_output_program(native, config, head_major_input=not args.ratio)
     output_shapes = (
-        ("context", width), ("unrotated", width), ("grouped", operands["wo_b"].shape[0]),
+        ("unrotated", width), ("grouped", operands["wo_b"].shape[0]),
         ("contribution", hidden),
     )
     buffers["attention"] = attention
@@ -262,8 +262,7 @@ def main():
     context = active_attention.reshape(BLOCK, width).bfloat16()
     groups, _, grouped_input = operands["wo_a"].shape
     output_reference = {
-        "context": context,
-        "unrotated": rope(output_buffers["context"], cos, -sin, heads, HEAD_DIM, rope_dim),
+        "unrotated": rope(context, cos, -sin, heads, HEAD_DIM, rope_dim),
         "grouped": torch.einsum("tgd,god->tgo", output_buffers["unrotated"].float().view(
             BLOCK, groups, grouped_input), operands["wo_a"].float()).flatten(1).bfloat16(),
         "contribution": linear(output_buffers["grouped"], operands["wo_b"]),

@@ -201,27 +201,44 @@ def make_output_program(native_module, config, *, tp=4, head_major_input=False, 
     projection = native_module("qkv_proj_rope")
     head_stride, token_stride = (block_size, 1) if head_major_input else (1, heads)
 
+    plain_width = dim - rope_width
+
     @pl.jit
-    def narrow(
+    def inverse(
         attention: pl.Tensor[[block_size * heads, dim], pl.FP32],
-        context: pl.Out[pl.Tensor[[block_size, width], pl.BF16]],
+        cos: pl.Tensor[[block_size, rope_width // 2], pl.FP32],
+        sin: pl.Tensor[[block_size, rope_width // 2], pl.FP32],
+        unrotated: pl.Out[pl.Tensor[[block_size, width], pl.BF16]],
+        active: pl.Scalar[pl.INT32],
     ):
-        for task in pl.spmd(block_size * heads, name_hint="orthrus_output_layout"):
+        for task in pl.spmd(active * heads, name_hint="orthrus_output_inverse_rope"):
             token, head = task // heads, task % heads
             row = head * head_stride + token * token_stride
-            value = pl.slice(attention, [1, dim], [row, 0])
-            context[token:token + 1, head * dim:(head + 1) * dim] = pl.cast(value, pl.BF16, mode="rint")
-        return context
+            column = head * dim
+            plain = pl.slice(attention, [1, plain_width], [row, 0])
+            unrotated[token:token + 1, column:column + plain_width] = pl.cast(plain, pl.BF16, mode="rint")
+            tail = pl.slice(attention, [1, rope_width], [row, plain_width])
+            # Preserve the intermediate BF16 rounding of the serving output.
+            tail = pl.cast(pl.cast(tail, pl.BF16, mode="rint"), pl.FP32)
+            even = pl.gather(tail, mask_pattern=pl.tile.MaskPattern.P0101)
+            odd = pl.gather(tail, mask_pattern=pl.tile.MaskPattern.P1010)
+            c = cos[token:token + 1, :]
+            s = pl.mul(sin[token:token + 1, :], -1.0)
+            re = pl.sub(pl.mul(even, c), pl.mul(odd, s))
+            im = pl.add(pl.mul(even, s), pl.mul(odd, c))
+            rotated = pl.full([1, rope_width], dtype=pl.FP32, value=0.0)
+            rotated = pl.tensor.scatter(re, mask_pattern=pl.tile.MaskPattern.P0101, dst=rotated)
+            rotated = pl.tensor.scatter(im, mask_pattern=pl.tile.MaskPattern.P1010, dst=rotated)
+            unrotated[token:token + 1, column + plain_width:column + dim] = pl.cast(rotated, pl.BF16, mode="rint")
+        return unrotated
 
     definitions = dict(
-        narrow=narrow,
-        inverse=pl.jit(projection.make_rope(heads, inverse=True, head_dim=dim, rope_dim=rope_width)._func),
+        inverse=inverse,
         grouped=pl.jit(projection.make_prefill_grouped_output(tp)._func),
         down=projection.make_bf16_projection_staged(local_out, config["hidden_size"], capacity=block_size),
     )
     steps = (
-        ("narrow", ("attention", "context")),
-        ("inverse", ("context", "cos", "sin", "unrotated", "active")),
+        ("inverse", ("attention", "cos", "sin", "unrotated", "active")),
         ("grouped", ("unrotated", "wo_a", "grouped", "active")),
         ("down", ("grouped", "wo_b", "contribution", "active")),
     )

@@ -1,12 +1,13 @@
 """Check the 40-layer draft sequence with one or more real TP4 head shards."""
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import sys
 from pathlib import Path
 from statistics import median
-from time import perf_counter
+from time import perf_counter, perf_counter_ns
 
 import torch
 
@@ -99,7 +100,8 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared, *,
     collective_error = 0.0
     prefix = record["request_token_map"][0]["token_begin"]
     comparison = (args.compare_joined_attention or args.compare_scratch_fill
-                  or args.compare_swa_controls or args.compare_index_scratch or args.compare_compact_reduce)
+                  or args.compare_swa_controls or args.compare_index_scratch
+                  or args.compare_compact_reduce or args.steady_profile)
     fingerprint = hashlib.sha256() if args.replay or args.startup_only or comparison else None
     for layer in range(40):
         role = native("cache").resolve_layer_role(layer)
@@ -142,7 +144,7 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared, *,
         values, outputs = zip(*result, strict=True)
         if fingerprint is not None:
             for output in outputs:
-                if args.compare_compact_reduce:
+                if args.compare_compact_reduce or args.steady_profile:
                     # TP packet padding is a transport detail. Fingerprint the
                     # logical contributors in the same order in both arms.
                     output = output.view(4, -1, width)[:, :active // 4]
@@ -157,6 +159,58 @@ def run_round(runtime, attention, args, ranks, anchors, generation, prepared, *,
         for value in pinned:
             assert torch.equal(value.view(torch.uint8), runtime.read_output(value, rank).view(torch.uint8))
     return roles, collective_error, fingerprint.hexdigest() if fingerprint is not None else None
+
+
+def profile_steady_rounds(runtime, attention, ranks, prepared):
+    """Measure resident draft Attention and TP without the validation readbacks."""
+    table, _, active, record, _, hidden, cos, sin = prepared
+    capacity = hidden.shape[0]
+    physical = active // len(ranks)
+
+    runs = []
+    execute = attention.execute
+    for _ in range(4):
+        draft = attention.start_round(table)
+        packet_rows = draft.reduce_rows(physical)
+        rank_seconds = {rank: Counter() for rank in ranks}
+        rank_calls = {rank: Counter() for rank in ranks}
+        stages = Counter()
+
+        def track(key, rank, factory, inputs):
+            kind = key[0] if isinstance(key, tuple) else key
+            start = perf_counter_ns()
+            execute(key, rank, factory, inputs)
+            rank_seconds[rank][kind] += (perf_counter_ns() - start) / 1e9
+            rank_calls[rank][kind] += 1
+
+        def project(local):
+            rank = ranks[local]
+            contribution = runtime.workspace(hidden.shape, hidden.dtype, local)
+            draft.project_layer(rank, layer, record, hidden, cos, sin, contribution)
+            packed = draft.pack_fp32(rank, contribution, physical, active, packet_rows=packet_rows)
+            return {"draft": {"value": packed}}
+
+        attention.execute = track
+        started = perf_counter()
+        try:
+            for layer in range(40):
+                before = perf_counter()
+                packets = runtime.map_ranks(project)
+                stages["project_and_pack"] += perf_counter() - before
+                before = perf_counter()
+                received, _ = runtime.exchange(f"steady/layer{layer}", packets, "reduce_scatter", "tp")
+                stages["tp_reduce_scatter"] += perf_counter() - before
+                before = perf_counter()
+                runtime.map_ranks(lambda local: draft.narrow_fp32(ranks[local], received[local]["draft"]["value"], capacity))
+                runtime.release_values(draft.finish_layer(layer))
+                stages["boundary_and_release"] += perf_counter() - before
+        finally:
+            attention.execute = execute
+        assert not draft.selection
+        runs.append(dict(wall_seconds=perf_counter() - started, stages=stages,
+                         operator_rank_dispatch_seconds=sum(rank_seconds.values(), Counter()),
+                         operator_calls=sum(rank_calls.values(), Counter())))
+    return runs[1:]
 
 
 def main():
@@ -183,11 +237,13 @@ def main():
                             help="Compare zero-filled vs overwritten full-block indexer scratch")
     comparison.add_argument("--compare-compact-reduce", action="store_true",
                             help="Verify compact and full draft FP32 TP packets across all layers")
+    comparison.add_argument("--steady-profile", action="store_true",
+                            help="Measure hot draft Attention and TP separately from verification reads")
     args = parser.parse_args()
     if args.anchors is not None and (len(args.anchors) > 4 or min(args.anchors) < 0):
         parser.error("--anchors requires one to four nonnegative context lengths")
-    if args.compare_compact_reduce and args.cards != 4:
-        parser.error("--compare-compact-reduce requires TP4")
+    if (args.compare_compact_reduce or args.steady_profile) and args.cards != 4:
+        parser.error("Compact reduction comparisons and the steady profile require TP4")
     sys.path.insert(0, str(args.lib.resolve()))
     args.output.mkdir()
     torch.set_num_threads(4)
@@ -208,8 +264,19 @@ def main():
         from pypto import cache_stats
         clock = perf_counter()
         counters = cache_stats()
-        roles, collective_error, fingerprint = run_round(runtime, attention, args, ranks, anchors, 1, primary)
+        roles, collective_error, fingerprint = run_round(
+            runtime, attention, args, ranks, anchors, 1, primary, compact_reduce=args.steady_profile,
+        )
         startup = perf_counter() - clock
+        if args.steady_profile:
+            runs = profile_steady_rounds(runtime, attention, ranks, primary)
+            assert before == [runtime.stats.get(name, 0) for name in upload_counts]
+            report = dict(passed=True, anchors=anchors, block=args.block_size, ranks=ranks,
+                          layers=len(roles), collective_max_abs_error=collective_error,
+                          output_sha256=fingerprint, timed_readback=False, samples=runs)
+            (args.output / "steady-profile.json").write_text(json.dumps(report, indent=2) + "\n")
+            print(json.dumps(report), flush=True)
+            return
         if args.compare_compact_reduce:
             _, compact_error, compact_hash = run_round(runtime, attention, args, ranks, anchors, 1, primary,
                                                        compact_reduce=True)
