@@ -220,5 +220,53 @@
       "relative_l2": 2.691152440092992e-05,
       "rtol_atol_failure_ratio": 0.0
     }
-  ]
+  ],
+  "indexed_attention_extended": {
+    "iterations": 6,
+    "physical_pages": 128,
+    "passed": true,
+    "npu_execution": true,
+    "cases": [
+      {
+        "block": 8,
+        "ratio": 1,
+        "anchor": 8192,
+        "exact_topk_rows": 8,
+        "resident_call_median_us": 19008.08187201619,
+        "split_call_median_us": 37163.45364227891,
+        "attention_max_abs": 1.2516975402832031e-06,
+        "lse_max_abs": 4.76837158203125e-07
+      },
+      {
+        "block": 8,
+        "ratio": 1,
+        "anchor": 16384,
+        "exact_topk_rows": 8,
+        "resident_call_median_us": 22105.632349848747,
+        "split_call_median_us": 43020.84119990468,
+        "attention_max_abs": 1.6391277313232422e-06,
+        "lse_max_abs": 4.76837158203125e-07
+      },
+      {
+        "block": 8,
+        "ratio": 2,
+        "anchor": 8193,
+        "exact_topk_rows": 8,
+        "resident_call_median_us": 29683.633940294385,
+        "split_call_median_us": 70289.60203751922,
+        "attention_max_abs": 8.791685104370117e-07,
+        "lse_max_abs": 4.76837158203125e-07
+      },
+      {
+        "block": 8,
+        "ratio": 2,
+        "anchor": 16384,
+        "exact_topk_rows": 8,
+        "resident_call_median_us": 16876.132460311055,
+        "split_call_median_us": 32911.990536376834,
+        "attention_max_abs": 9.685754776000977e-07,
+        "lse_max_abs": 4.76837158203125e-07
+      }
+    ]
+  }
 }
