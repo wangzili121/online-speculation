@@ -101,6 +101,81 @@ def validate_swa(args, config, code, scale, golden, page_table):
     return reports
 
 
+def validate_compressed(args, config, swa, compressed):
+    from pypto.runtime import ChipWorker
+
+    from blockspec.pypto_dsv41_packed_swa import make_packed_compressed_chain, packed_swa_controls
+    from blockspec.pypto_dsv41_sparse import HEAD_TILE, TOPK
+    from blockspec.vllm_ascend.dsv41_attention import PagedRows, draft_attention
+
+    code, scale, golden = swa
+    long_code, long_scale, long_golden = compressed
+    pages = code.shape[0]
+    generator = torch.Generator().manual_seed(41124)
+    window_lookup, long_lookup = packed_history_lookup("fp8"), packed_history_lookup("fp4")
+    page_table = torch.randperm(pages, generator=generator).tolist()
+    long_table = page_table[::-1]
+    zeros = torch.zeros(WINDOW, HEAD_DIM, dtype=torch.bfloat16)
+    sink = torch.linspace(-4, 4, HEAD_TILE)
+    reports = []
+    for block in (8, 16, 32):
+        anchor, ratio = 1025, 1 if block == 8 else 2
+        query = torch.randn(block, HEAD_TILE, HEAD_DIM, generator=generator).bfloat16()
+        temporary = torch.zeros(max(16, block), HEAD_DIM, dtype=torch.bfloat16)
+        temporary[:block] = torch.randn(block, HEAD_DIM, generator=generator).bfloat16()
+        varied = [0, 1, 15, 127, 128, 129, 300, TOPK]
+        lengths = torch.tensor(varied * (block // len(varied)), dtype=torch.int32)
+        logical = torch.full((block, TOPK), -1, dtype=torch.int32)
+        physical = torch.empty_like(logical)
+        for row, count in enumerate(lengths.tolist()):
+            logical[row, :count] = torch.randperm(anchor // ratio, generator=generator)[:count].int()
+            plan = compressed_plan(long_table, anchor, ratio, pages, logical[row].tolist())
+            physical[row] = torch.tensor(plan.rows, dtype=torch.int32)
+        bias = torch.zeros_like(physical, dtype=torch.float32).masked_fill_(physical < 0, -1e30)
+        fields = (code, scale, window_lookup, *packed_swa_controls(page_table, anchor, pages),
+                  long_code, long_scale, long_lookup, physical, lengths, bias,
+                  query.flatten(1), temporary, sink, zeros)
+        output = torch.empty(block * HEAD_TILE, HEAD_DIM, dtype=torch.float32)
+        lse = torch.empty(block * HEAD_TILE, 1, dtype=torch.float32)
+        program = make_packed_compressed_chain(pages, pages, block).compile(*fields, output, lse, config=config)
+        if args.compile_only:
+            reports.append(dict(kind="compressed", block=block, compiled=True))
+            continue
+        with ChipWorker(config) as worker:
+            values = (*fields, output, lse)
+            handles = [worker.alloc_tensor(tuple(value.shape), value.dtype) for value in values]
+            for value, handle in zip(fields, handles[:-2], strict=True):
+                worker.copy_to(handle.data_ptr, value.data_ptr(), value.nbytes)
+            worker.run(program, *handles, config=config)
+            timings = []
+            for _ in range(args.iterations):
+                start = perf_counter()
+                worker.run(program, *handles, config=config)
+                timings.append(perf_counter() - start)
+            for value, handle in zip(values[-2:], handles[-2:], strict=True):
+                worker.copy_from(value.data_ptr(), handle.data_ptr, value.nbytes)
+            for index in (0, 1, 7, 8, 10, 11):
+                original = values[index]
+                result = torch.empty_like(original)
+                worker.copy_from(result.data_ptr(), handles[index].data_ptr, result.nbytes)
+                torch.testing.assert_close(result, original, atol=0, rtol=0)
+        expected, expected_lse = draft_attention(
+            query[None], temporary[None, :block],
+            PagedRows(golden.squeeze(-2).bfloat16(), torch.tensor([page_table])),
+            torch.tensor([anchor]), sink, window=WINDOW,
+            global_kv=PagedRows(long_golden.squeeze(-2).bfloat16(), torch.tensor([long_table])),
+            global_indices=logical[None],
+        )
+        expected, expected_lse = expected.reshape_as(output), expected_lse.reshape_as(lse)
+        torch.testing.assert_close(output, expected, atol=1e-5, rtol=1.3e-6)
+        torch.testing.assert_close(lse, expected_lse, atol=2e-5, rtol=2e-6)
+        reports.append(dict(kind="compressed", block=block, ratio=ratio,
+                            max_abs=(output - expected).abs().max().item(),
+                            lse_max_abs=(lse - expected_lse).abs().max().item(),
+                            resident_call_median_us=median(timings) * 1e6))
+    return reports
+
+
 def validate(args):
     from models.deepseek_v4_1_flash_a3.quant import (
         dequantize_mxfp4_cache, dequantize_mxfp8_cache,
@@ -132,8 +207,13 @@ def validate(args):
         if kind == "fp8":
             code, scale = quantize_mxfp8_cache(values)
             golden = dequantize_mxfp8_cache(code, scale)
+            if args.compressed:
+                swa_cache = (code.view(torch.uint8), scale, golden)
         else:
             code, scale = quantize_mxfp4_cache(values, 16, "bf16")
+            if args.compressed:
+                baseline = dequantize_mxfp4_cache(code, scale, 16, "bf16")
+                reports.extend(validate_compressed(args, config, swa_cache, (code.view(torch.uint8), scale, baseline)))
             # The FP32 scale product must also work outside the FP16 range.
             scale[0, 3, 0, :].fill_(2**20)
             golden = dequantize_mxfp4_cache(code, scale, 16, "bf16")
@@ -194,10 +274,13 @@ def main():
     parser.add_argument("--swa", action="store_true", help="Also check the device-resident SWA chain")
     parser.add_argument("--compare-swa-chain", action="store_true",
                         help="Compare single-dispatch and split SWA with resident inputs")
+    parser.add_argument("--compressed", action="store_true", help="Check the joined FP8/FP4 Attention")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.iterations < 1 or args.pages < 4:
         parser.error("require positive iterations and at least four physical pages")
+    if args.compressed and args.pages < 9:
+        parser.error("compressed Attention coverage requires at least nine physical pages")
     if args.compare_swa_chain:
         args.swa = True
     payload = json.dumps(validate(args), indent=2)

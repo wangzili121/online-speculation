@@ -67,6 +67,8 @@ A2/A3 模拟器通过了 129 个物理页、Top‑512、K8/K16/K32 共 12 个用
 
 BF16 draft QKV 复用新版 GEMM 和 RoPE。Q-A 和 KV 权重在装载时打包为连续列，用一个 GEMM 读入隐状态，RMSNorm 直接按融合输出的行跨度分别读取两段。输出为 Indexer 所需的归一化低秩 Q、旋转后的多头 Q，以及临时 latent KV。61 的单张 910B3 已对照合成输入和真实 W8A8 checkpoint 初始化的第 0 层 TP rank 0、第 13 层 TP rank 3。K8/K16/K32 均通过，真实权重用例的最大相对 L2 误差为 `2.41e-4`。可用 `validate_dsv41_pypto_packed_qkv.py --checkpoint <W8A8目录>` 验证由真实 checkpoint 初始化的单层权重。此入口独立于整模起草。 [实现](../src/blockspec/pypto_dsv41_draft.py) · [实卡结果](validation/dsv41/pypto-1122-packed-qkv-910b3.json)
 
+压缩 Attention 接收设备 Indexer 的每行物理索引、有效长度和掩码。一个 PyPTO 提交内完成 FP8 滑窗、整个临时双向块和 FP4 压缩历史的 Attention。每个被选中的 FP4 历史块解包后由该 query 的 16 个头共用，压缩段与滑窗结果按 LSE 合并，sink 计入一次。61 单张 910B3 覆盖 K8/K16/K32、乱序页表及每行 0 到 512 个选择，FP32 参考最大输出误差为 `3.94e-6`，LSE 最大误差为 `9.54e-7`，缓存和选择元数据逐字节一致。验证入口为 `validate_dsv41_pypto_packed_history.py --compressed --pages 16`。[实卡结果](validation/dsv41/pypto-1122-packed-compressed-910b3.json)
+
 ## 内网权重预检
 
 默认权重目录为 `/workspace/models/Eco-Tech/DeepSeek-V4.1-Flash-w8a8`，对应同事文档指向的公开版本。脚本优先使用 `--model` 指定的目录，其次读取环境变量 `TARGET_WEIGHTS`，最后使用默认目录。在任意 Python 3.10+ 环境下执行下列检查，只读取本地配置、索引和实际 safetensors header，无需安装 PyPTO，也无需 NPU。报告列出当前 A3 loader 所需的投影和 Engram 格式，以及每个不匹配的实际张量。此命令收集布局，成功退出表示报告生成完成。

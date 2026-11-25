@@ -1,0 +1,34 @@
+{
+  "upstream": "2d7268765e78447f7127682b19bc9c1bc4441530",
+  "device": "Ascend 910B3",
+  "physical_pages": 16,
+  "anchor": 1025,
+  "iterations": 10,
+  "npu_execution": true,
+  "cases": [
+    {
+      "kind": "compressed",
+      "block": 8,
+      "ratio": 1,
+      "max_abs": 3.084540367126465e-06,
+      "lse_max_abs": 9.5367431640625e-07,
+      "resident_call_median_us": 22844.020277261734
+    },
+    {
+      "kind": "compressed",
+      "block": 16,
+      "ratio": 2,
+      "max_abs": 3.933906555175781e-06,
+      "lse_max_abs": 4.76837158203125e-07,
+      "resident_call_median_us": 18414.28061015904
+    },
+    {
+      "kind": "compressed",
+      "block": 32,
+      "ratio": 2,
+      "max_abs": 3.0994415283203125e-06,
+      "lse_max_abs": 9.5367431640625e-07,
+      "resident_call_median_us": 16803.622245788574
+    }
+  ]
+}

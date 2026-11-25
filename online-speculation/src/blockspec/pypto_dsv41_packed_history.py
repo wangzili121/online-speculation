@@ -75,7 +75,7 @@ def packed_history_lookup(kind):
     raise ValueError("invalid packed cache codec")
 
 
-def make_packed_history_gather(kind, physical_pages, selected_rows):
+def make_packed_history_gather(kind, physical_pages, selected_rows, *, queries=None):
     """Read packed rows directly from the target bank and round to BF16 once."""
     import pypto.language as pl
     from models.deepseek_v4_1_flash_a3.quant import decode_fp8_cache_values
@@ -84,6 +84,8 @@ def make_packed_history_gather(kind, physical_pages, selected_rows):
         raise ValueError("invalid packed cache")
     if selected_rows <= 0 or selected_rows % ROW_TILE:
         raise ValueError("invalid packed gather capacity")
+    if queries is not None and (kind != "fp4" or queries <= 0 or selected_rows % (queries * ROW_TILE)):
+        raise ValueError("compressed gather requires equal tiled capacity per query")
     window = kind == "fp8"
     width = HEAD_DIM if window else HEAD_DIM // 2
     group = 32 if window else 16
@@ -91,13 +93,16 @@ def make_packed_history_gather(kind, physical_pages, selected_rows):
     tiles = selected_rows // ROW_TILE
     workers = min(tiles, 32)
     pair_count = ROW_TILE * (HEAD_DIM // 2)
+    device_plan = queries is not None
+    controls = tiles if queries is None else queries
+    tiles_per_query = tiles if queries is None else tiles // queries
 
     @pl.jit
     def gather(
         payload: pl.Tensor[[physical_pages, PAGE_ROWS, 1, width], pl.UINT8],
         scales: pl.Tensor[[physical_pages, PAGE_ROWS, 1, groups], pl.BF16],
         rows: pl.Tensor[[tiles, ROW_TILE], pl.INT32],
-        starts: pl.Tensor[[tiles], pl.INT32],
+        starts_or_lengths: pl.Tensor[[controls], pl.INT32],
         lookup: pl.Tensor[[1, 256], pl.INT32],
         output: pl.Out[pl.Tensor[[selected_rows, HEAD_DIM], pl.BF16]],
     ):
@@ -109,7 +114,13 @@ def make_packed_history_gather(kind, physical_pages, selected_rows):
             if not window:
                 pair_scratch = pl.create_tile([1, pair_count], dtype=pl.INT32)
             for block in pl.range(worker, tiles, workers):
-                start = pl.read(starts, [block])
+                if device_plan:
+                    live = pl.read(starts_or_lengths, [block // tiles_per_query])
+                    start = pl.cast(PADDED_TILE, pl.INT32)
+                    if block % tiles_per_query * ROW_TILE < live:
+                        start = pl.cast(SCATTER_TILE, pl.INT32)
+                else:
+                    start = pl.read(starts_or_lengths, [block])
                 if start == PADDED_TILE:
                     zero_tile = pl.tile.full([ROW_TILE, HEAD_DIM], dtype=pl.BF16, value=0.0)
                     pl.tile.store(zero_tile, [block * ROW_TILE, 0], output)

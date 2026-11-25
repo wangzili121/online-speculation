@@ -1,7 +1,8 @@
-"""Compose the A3 packed cache reader with Orthrus's resident SWA draft kernel."""
+"""Compose A3 packed cache readers with resident Orthrus draft Attention."""
 
 from .pypto_dsv41_packed_history import ROW_TILE, make_packed_history_gather, window_plan
 from .pypto_dsv41_swa import HEAD_DIM, WINDOW, make_swa_attention
+from .pypto_dsv41_sparse import HEAD_TILE, TOPK, make_sparse_attention
 
 
 def packed_swa_controls(page_table, anchor, physical_pages):
@@ -68,6 +69,40 @@ def make_packed_swa_chain(physical_pages, heads, block_size):
         scratch = pl.create_tensor([WINDOW, HEAD_DIM], dtype=pl.BF16)
         scratch = gather(packed, scales, rows, starts, lookup, scratch)
         return attention(query, scratch, spans, temporary, bias, sink, zeros, output, lse)
+
+    return attend
+
+
+def make_packed_compressed_chain(window_pages, compressed_pages, block_size):
+    """Combine SWA, temporary KV and the device Indexer's packed-cache selection."""
+    import pypto.language as pl
+
+    swa_entry = make_packed_swa_chain(window_pages, HEAD_TILE, block_size)
+    gather_entry = make_packed_history_gather("fp4", compressed_pages, block_size * TOPK, queries=block_size)
+    sparse_entry = make_sparse_attention(head_major_swa=True, block_size=block_size, gathered_selection=True)
+    swa = pl.jit.inline(auto_scope=False)(swa_entry._func)
+    gather = pl.jit.inline(auto_scope=False)(gather_entry._func)
+    sparse = pl.jit.inline(auto_scope=False)(sparse_entry._func)
+
+    @pl.jit
+    def attend(
+        window: pl.Tensor, window_scales: pl.Tensor, window_lookup: pl.Tensor,
+        window_rows: pl.Tensor, window_starts: pl.Tensor, spans: pl.Tensor, window_bias: pl.Tensor,
+        compressed: pl.Tensor, compressed_scales: pl.Tensor, compressed_lookup: pl.Tensor,
+        selected_rows: pl.Tensor[[block_size, TOPK], pl.INT32],
+        lengths: pl.Tensor[[block_size], pl.INT32], selection_bias: pl.Tensor,
+        query: pl.Tensor, temporary: pl.Tensor, sink: pl.Tensor, zeros: pl.Tensor,
+        output: pl.Out[pl.Tensor], lse: pl.Out[pl.Tensor],
+    ):
+        local = pl.create_tensor([block_size * HEAD_TILE, HEAD_DIM], dtype=pl.FP32)
+        local_lse = pl.create_tensor([block_size * HEAD_TILE, 1], dtype=pl.FP32)
+        local, local_lse = swa(window, window_scales, window_lookup, window_rows, window_starts,
+                               spans, window_bias, query, temporary, sink, zeros, local, local_lse)
+        bank = pl.create_tensor([block_size * TOPK, HEAD_DIM], dtype=pl.BF16)
+        tiles = pl.reshape(selected_rows, [block_size * TOPK // ROW_TILE, ROW_TILE])
+        bank = gather(compressed, compressed_scales, tiles, lengths, compressed_lookup, bank)
+        flat = pl.reshape(query, [block_size * HEAD_TILE, HEAD_DIM])
+        return sparse(flat, bank, selected_rows, lengths, selection_bias, zeros, local, local_lse, output, lse)
 
     return attend
 

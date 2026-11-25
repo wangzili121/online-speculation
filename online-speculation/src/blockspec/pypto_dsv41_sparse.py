@@ -39,7 +39,7 @@ def compressed_physical_rows(selected, page_table, *, anchor, ratio, physical_pa
     return rows, lengths
 
 
-def make_sparse_attention(*, head_major_swa=False, block_size=BLOCK):
+def make_sparse_attention(*, head_major_swa=False, block_size=BLOCK, gathered_selection=False):
     import pypto.language as pl
 
     @pl.jit
@@ -75,10 +75,13 @@ def make_sparse_attention(*, head_major_swa=False, block_size=BLOCK):
             count = pl.cast(pl.read(lengths, [token]), pl.INDEX)
             if offset < count:
                 kv = pl.create_l1([TILE, HEAD_DIM], pl.BF16)
-                kv = pl.gather_row(kv, zeros, [0, 0], [0, 0], [TILE, HEAD_DIM])
-                for row in pl.range(pl.min(TILE, count - offset)):
-                    physical = pl.cast(pl.read(rows, [token, offset + row]), pl.INDEX)
-                    kv = pl.gather_row(kv, pages, [row, 0], [physical, 0], [1, HEAD_DIM])
+                if gathered_selection:
+                    kv = pl.gather_row(kv, pages, [0, 0], [token * TOPK + offset, 0], [TILE, HEAD_DIM])
+                else:
+                    kv = pl.gather_row(kv, zeros, [0, 0], [0, 0], [TILE, HEAD_DIM])
+                    for row in pl.range(pl.min(TILE, count - offset)):
+                        physical = pl.cast(pl.read(rows, [token, offset + row]), pl.INDEX)
+                        kv = pl.gather_row(kv, pages, [row, 0], [physical, 0], [1, HEAD_DIM])
                 q = pl.slice(query, [HEAD_TILE, HEAD_DIM], [token * HEAD_TILE, 0])
                 scores = pl.mul(pl.matmul(q, kv, b_trans=True, out_dtype=pl.FP32), HEAD_DIM ** -0.5)
                 scores = pl.col_expand_add(scores, pl.slice(bias, [1, TILE], [token, offset]))
