@@ -4,6 +4,7 @@
 import argparse
 from dataclasses import asdict
 import json
+from math import frexp
 from pathlib import Path
 from statistics import median
 from time import perf_counter
@@ -19,6 +20,33 @@ from blockspec.pypto_dsv41_packed_draft_attention import (
 from blockspec.pypto_dsv41_packed_indexer import packed_index_controls
 from validate_dsv41_pypto_packed_indexer import attention_fixture, attention_reference, fixtures
 from validate_dsv41_pypto_packed_qkv import checkpoint_operands
+
+
+def compare_bf16_contribution(actual, expected):
+    """Gate the complete sublayer with CANN BF16 and report the stricter Wo-only comparison."""
+    actual, expected = actual.float(), expected.float()
+    if not bool(torch.isfinite(actual).all() and torch.isfinite(expected).all()):
+        raise AssertionError("Draft output or golden contains NaN/Inf")
+    error = (actual - expected).abs()
+    max_abs, worst = error.flatten().max(dim=0)
+    # CANN uses the ULP of the narrowed golden where the largest error occurs.
+    rounded = expected.bfloat16().float()
+    narrowed = rounded.flatten()[worst].abs().item()
+    _, exponent = frexp(max(narrowed, 2.0 ** -126))
+    ulp = 2.0 ** (exponent - 8)
+    cann_limit = max(0.1, 32 * ulp)
+    cann_matches = (error <= (1 + expected.abs()) / 128).float().mean().item()
+    wo_error = (actual - rounded).abs()
+    wo_tolerance = 0.003 + rounded.abs() / 128
+    wo_outliers = wo_error > wo_tolerance
+    relative_l2 = (wo_error.norm() / rounded.norm().clamp_min(1e-30)).item()
+    return dict(
+        passed=relative_l2 <= 0.005 and cann_matches >= 0.99 and max_abs.item() <= cann_limit,
+        relative_l2=relative_l2, max_abs=max_abs.item(),
+        native_wo_tolerance_passed=not bool(wo_outliers.any()),
+        native_wo_outliers=wo_outliers.sum().item(), native_wo_worst_ratio=(wo_error / wo_tolerance).max().item(),
+        elements=error.numel(), cann_bf16_matched_ratio=cann_matches, cann_bf16_abs_limit=cann_limit,
+    )
 
 
 def reference(hidden_rows, norm, operands, wo, rope, history, selected, sink, anchor):
@@ -39,7 +67,7 @@ def reference(hidden_rows, norm, operands, wo, rope, history, selected, sink, an
     kv = golden_rope_tail(kv, cosine[:block], sine[:block])
     context, _ = attention_reference(query, kv, window, compressed, selected, sink, anchor)
     return golden_o_proj(context.bfloat16(), cosine[:block], sine[:block],
-                         wo["wo_a"].transpose(-2, -1), wo["wo_b"]).float()
+                         wo["wo_a"].transpose(-2, -1), wo["wo_b"], output_dtype=torch.float32)
 
 
 def validate(args):
@@ -156,7 +184,7 @@ def validate(args):
         assert bool((rows[:, count:] == -1).all())
         # The packed Indexer fixture independently tests exact selected sets.
         # Use the selected rows here to isolate the connected projection path.
-        errors = {}
+        precision = {}
         for role, result, hidden_rows, selected in (
             ("scored", contribution, x_hc, rows),
             ("reuse_next", next_contribution, next_hidden, rows),
@@ -165,14 +193,14 @@ def validate(args):
             expected = reference(
                 hidden_rows, norm, operands, wo, (cosine, sine), (window, compressed), selected, sink, anchor,
             )
-            errors[role] = ((result.float() - expected).norm() / expected.norm().clamp_min(1e-30)).item()
-            if errors[role] > 0.005:
-                raise RuntimeError(f"{role} draft attention sublayer differs from the Torch reference: {errors[role]}")
-        case = dict(block=block, ratio=ratio, anchor=anchor, relative_l2=errors,
+            precision[role] = compare_bf16_contribution(result, expected)
+        case = dict(block=block, ratio=ratio, anchor=anchor, precision=precision,
+                    relative_l2={role: stats["relative_l2"] for role, stats in precision.items()},
                     resident_call_median_us=timings, same_input_reuse_byte_exact=True, caches_byte_exact=True)
         print(json.dumps(case), flush=True)
         cases.append(case)
-    return dict(passed=True, npu_execution=True, layer=args.layer, tp_rank=args.tp_rank, cases=cases)
+    passed = all(stats["passed"] for case in cases for stats in case["precision"].values())
+    return dict(passed=passed, npu_execution=True, layer=args.layer, tp_rank=args.tp_rank, cases=cases)
 
 
 def main():
@@ -184,10 +212,13 @@ def main():
     parser.add_argument("--iterations", type=int, default=5)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    payload = json.dumps(validate(args), indent=2)
+    report = validate(args)
+    payload = json.dumps(report, indent=2)
     if args.output is not None:
         args.output.write_text(payload + "\n")
     print(payload)
+    if not report["passed"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

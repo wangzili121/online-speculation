@@ -75,7 +75,13 @@ BF16 draft QKV 复用新版 GEMM 和 RoPE。Q-A 和 KV 权重在装载时打包�
 
 新版起草 Attention 子层均从 mHC 输入归一化执行到原生 NZ 布局 Wo，输出本地 TP rank 的贡献。SWA 层使用滑窗和临时双向块。Full/Reindex 层写出每个 query 的历史选择，Reuse 层直接读取同一份驻留选择，使用本层的 Q、临时 KV 和 Wo 重新计算 Attention。三种路径都以只读方式访问目标缓存。
 
-单卡复验使用真实 W8A8 checkpoint 初始化 QKV/Wo，配合构造的分页历史。验证入口 `validate_dsv41_pypto_packed_layer.py --checkpoint <W8A8目录>` 覆盖 K8、K16、K32 和两种压缩率。相同输入下，带 Indexer 与复用选择的输出逐字节一致；更换复用层的隐状态后，输出与 Torch 参考一致；目标 SWA、压缩历史和 Indexer 缓存逐字节一致。本测试覆盖单 rank Attention 子层，整模 TP 归约、MoE、Engram 和请求调度仍待接入。[单卡原始数据](validation/dsv41/pypto-1122-packed-draft-layer-910b3.json)
+单卡复验使用真实 W8A8 checkpoint 初始化 QKV/Wo，配合构造的分页历史。验证入口 `validate_dsv41_pypto_packed_layer.py --checkpoint <W8A8目录>` 覆盖 K8、K16、K32 和两种压缩率。相同输入下，带 Indexer 与复用选择的输出逐字节一致。更换复用层的隐状态后，输出与 Torch 参考一致。目标 SWA、压缩历史和 Indexer 缓存逐字节一致。[单卡原始数据](validation/dsv41/pypto-1122-packed-draft-layer-910b3.json)
+
+BF16 子层输出用 FP32 Torch golden 逐元素比对，保留模型约定的中间舍入边界。每组按 CANN OpenBase BF16 规则检查 `atol = rtol = 1/128`、匹配率至少 99%、最坏点绝对误差不超过 `max(0.1, 32 × ULP)`，同时检查有限值和原有相对 L2 门槛。报告另列上游单测 Wo 投影的严格容差 `0.003 + |golden|/128` 下的超差点。该上游单测给两边相同的 Attention context，融合子层的比对还包含前置阶段的累计舍入。整模验收需要逐 token 核对验证输出及目标 KV 提交。[CANN OpenBase 精度标准](https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/mixed_tolerance_standard.md) · [上游 Wo 验收](https://github.com/Adelaide999/pypto-lib/blob/2d7268765e78447f7127682b19bc9c1bc4441530/models/deepseek_v4_1_flash_a3/o_proj.py#L785)
+
+第 0 层 rank 0 和第 13 层 rank 2 的 18 组输出均通过 CANN BF16 门槛，每组匹配率均为 100%，对 FP32 golden 的最大绝对误差为 `0.0099051`。把上游 Wo 单测容差应用到完整子层时，第 0 层有 66 个元素超差，单组最大比例为 0.054%。第 0 层单独执行 Wo 在 K8、K16、K32 上超差数均为零。[精度逐项记录](validation/dsv41/pypto-1122-packed-draft-layer-910b3.json)
+
+Wo 投影之后复用原生 TP4 归约和 mHC Post，输出给 MoE 的隐状态、预混合系数和折叠后的 FFN 输入。用真实 checkpoint 的 mHC 权重和四张 910B3 测试 K8、K16、K32，三个输出在四个 rank 间逐字节一致，最大相对 L2 为 `7.40e-5`。测试用各 rank 独立的 BF16 投影贡献，并在驻留窗口重复运行。真实 W8A8 初始化的 SWA 投影也与 TP4/mHC 组成同一张图，在 K8、K16、K32 四卡实测通过。12 份 rank 投影输出均通过 CANN BF16 门槛，回写给 MoE 的三个张量在四卡间逐字节一致。运行时补丁把编译后的 NZ 完整切片映射回原有驻留分片，不复制权重。入口为 `validate_dsv41_pypto_packed_draft_tp.py --checkpoint <W8A8目录> --devices <四个设备编号>`，加 `--swa` 复验同图的 SWA 路径。[TP4 验证记录](validation/dsv41/pypto-1122-packed-draft-tp-910b3.json)
 
 ## 内网权重预检
 

@@ -70,10 +70,12 @@ def validate_output_projection(args, config, generator):
         difference = (layouts[0].float() - reference).abs()
         relative_l2 = (difference.norm() / reference.norm().clamp_min(1e-30)).item()
         exceeds = (difference > 0.005 + 0.02 * reference.abs()).float().mean().item()
+        # Match the upstream A3 Wo gate with the same input context on both paths.
+        native_wo_outliers = (difference > 0.003 + reference.abs() / 128).sum().item()
         print(json.dumps(dict(stage="output_projection", layer=args.layer, tp_rank=args.tp_rank,
                               block=block, max_abs=difference.max().item(), relative_l2=relative_l2,
-                              rtol_atol_failure_ratio=exceeds)), flush=True)
-        if relative_l2 > 0.005 or exceeds > 0.005:
+                              rtol_atol_failure_ratio=exceeds, native_wo_outliers=native_wo_outliers)), flush=True)
+        if not bool(torch.isfinite(difference).all()) or relative_l2 > 0.005 or native_wo_outliers:
             raise RuntimeError("draft output projection differs from the BF16 Torch reference")
 
 

@@ -9,6 +9,7 @@ ENV PYPTO_SRC=/opt/dsv41-1122/pypto \
     PYPTO_MOTD_SHOWN=1
 WORKDIR /opt/dsv41-1122
 COPY online-speculation/runtime/pypto_dsv41_a3/runtime-release.patch ./
+COPY online-speculation/runtime/pypto_dsv41_a3/pypto-1122-stacked-nz.patch ./
 COPY online-speculation/runtime/pypto_dsv41_a3/docker/build-network.sh ./
 COPY online-speculation/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh ./
 
@@ -22,6 +23,7 @@ RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca --mount=t
     git init pypto; \
     git -C pypto fetch --depth 1 https://github.com/hw-native-sys/pypto.git 2e31e0c2a604c3c859c1268a937f97b0ee2d747f; \
     git -C pypto checkout --detach FETCH_HEAD; \
+    git -C pypto apply "$PWD/pypto-1122-stacked-nz.patch"; \
     git -C pypto submodule update --init --recursive --depth 1; \
     test "$(git -C pypto/runtime rev-parse HEAD)" = a5349f42c71666bb8cacfb3759f34eeda1572beb; \
     git -C pypto/runtime apply "$PWD/runtime-release.patch"; \
@@ -46,6 +48,7 @@ COPY online-speculation/src/blockspec /opt/dsv41-1122/orthrus/blockspec
 COPY online-speculation/scripts/validate_dsv41_pypto_packed_history.py \
      online-speculation/scripts/validate_dsv41_pypto_packed_qkv.py \
      online-speculation/scripts/validate_dsv41_pypto_packed_indexer.py \
+     online-speculation/scripts/validate_dsv41_pypto_packed_draft_tp.py \
      online-speculation/scripts/validate_dsv41_pypto_packed_layer.py /opt/dsv41-1122/
 
 ENV PYTHONPATH=/opt/dsv41-1122/pypto/python:/opt/dsv41-1122/pypto-lib:/opt/dsv41-1122/orthrus

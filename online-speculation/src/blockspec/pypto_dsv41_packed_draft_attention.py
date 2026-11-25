@@ -208,3 +208,39 @@ def make_packed_reuse_draft_layer(window_pages, compressed_pages, block_size):
         return finish(context, wo_a, wo_b, cosine, sine, contribution)
 
     return layer
+
+
+def make_packed_draft_tp_post(block_size):
+    """Use the native TP4 and mHC post path after a draft Attention projection."""
+    import pypto.language as pl
+    import pypto.language.distributed as pld
+    from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
+    from models.deepseek_v4_1_flash_a3.hc import hc_decode_mixes
+    from models.deepseek_v4_1_flash_a3.o_proj import decode_tp_output_post
+
+    hidden, mix = FLASH.hidden_size, FLASH.hc_mult
+
+    @pl.jit.inline(auto_scope=False)
+    def draft_tp_post(
+        x_hc: pl.Tensor, contribution: pl.Tensor,
+        hc_fn: pl.Tensor, hc_scale: pl.Tensor, hc_base: pl.Tensor,
+        output_window: pld.DistributedTensor,
+        output_arrived: pld.DistributedTensor[[TP_SIZE, 1], pl.INT32],
+        rank: pl.Scalar[pl.INT32], attention_epoch: pl.Scalar[pl.INT32],
+        attention_hidden: pl.Tensor, attention_pre_mix: pl.Tensor, ffn_input: pl.Tensor,
+    ):
+        # K8 QKV has a 16-row carrier. Publish and mix only the draft rows.
+        residual = pl.slice(x_hc, [block_size, mix, hidden], [0, 0, 0])
+        post = pl.create_tensor([block_size, mix], dtype=pl.FP32)
+        residual_mix = pl.create_tensor([block_size, mix, mix], dtype=pl.FP32)
+        hc_decode_mixes(
+            residual, hc_fn, hc_scale, hc_base, attention_pre_mix, post, residual_mix, block_size,
+        )
+        decode_tp_output_post(
+            contribution, output_window, output_arrived, rank // TP_SIZE * TP_SIZE, rank % TP_SIZE,
+            block_size, attention_epoch, residual, post, residual_mix, attention_pre_mix,
+            attention_hidden, ffn_input,
+        )
+        return attention_hidden, attention_pre_mix, ffn_input
+
+    return draft_tp_post

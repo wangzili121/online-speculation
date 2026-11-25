@@ -1,0 +1,41 @@
+diff --git a/python/pypto/ir/compiled_program.py b/python/pypto/ir/compiled_program.py
+index 4ab8659..04f6a2a 100644
+--- a/python/pypto/ir/compiled_program.py
++++ b/python/pypto/ir/compiled_program.py
+@@ -195,7 +195,13 @@ def _validate_stacked_tensor(arg: StackedDeviceTensor, info: _ParamInfo) -> None
+         TypeError: when ``full_shape`` rank/dims or dtype disagree with ``info``.
+     """
+     if info.shape is not None:
+-        blocked_full_shape = _arg_shape_as_declared(arg.full_shape, info)
++        physical_shape = arg.full_shape
++        if info.layout == "NZ" and len(info.shape) == 5 and len(physical_shape) == 6:
++            # Lowering folds the rank and rank-local matrix axes into one.
++            ranks, matrices, *tiles = physical_shape
++            blocked_full_shape = (ranks * matrices, *tiles)
++        else:
++            blocked_full_shape = _arg_shape_as_declared(physical_shape, info)
+         if len(info.shape) != len(blocked_full_shape):
+             raise TypeError(
+                 f"Parameter {info.name!r} expects rank {len(info.shape)} "
+diff --git a/python/pypto/runtime/device_tensor.py b/python/pypto/runtime/device_tensor.py
+index 9047261..1a359e4 100644
+--- a/python/pypto/runtime/device_tensor.py
++++ b/python/pypto/runtime/device_tensor.py
+@@ -234,6 +234,17 @@ class StackedDeviceTensor:
+             rank, rest = idx[0], idx[1:]
+         else:
+             rank, rest = idx, ()
++        if isinstance(rank, slice):
++            span = self.full_shape[1]
++            start, stop = rank.start, rank.stop
++            if (
++                len(self.full_shape) != 6 or rank.step not in (None, 1)
++                or type(start) is not int or type(stop) is not int or span < 1
++                or start % span or stop != start + span
++            ):
++                raise TypeError("StackedDeviceTensor NZ slice must select one complete physical shard")
++            rank = start // span
++            rest = (slice(None), *rest)
+         if type(rank) is not int:
+             raise TypeError(f"StackedDeviceTensor leading index must be int, got {type(rank).__name__}")
+         if not 0 <= rank < len(self.shards):
