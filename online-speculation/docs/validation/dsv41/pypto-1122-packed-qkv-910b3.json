@@ -1,0 +1,146 @@
+{
+  "upstream": "2d7268765e78447f7127682b19bc9c1bc4441530",
+  "device": "Ascend 910B3",
+  "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+  "iterations": 15,
+  "cases": [
+    {
+      "layer": 0,
+      "tp_rank": 0,
+      "block": 8,
+      "median_us": 17237.165942788124,
+      "errors": {
+        "q_latent": {
+          "max_abs": 0.0,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 0.0
+        },
+        "query": {
+          "max_abs": 0.015625,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 3.270759043516591e-05
+        },
+        "kv": {
+          "max_abs": 0.0,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 0.0
+        }
+      }
+    },
+    {
+      "layer": 0,
+      "tp_rank": 0,
+      "block": 16,
+      "median_us": 37275.275215506554,
+      "errors": {
+        "q_latent": {
+          "max_abs": 0.001953125,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 1.3799837688566186e-05
+        },
+        "query": {
+          "max_abs": 0.015625,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 5.772077201982029e-05
+        },
+        "kv": {
+          "max_abs": 0.0009765625,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 4.3119547626702115e-05
+        }
+      }
+    },
+    {
+      "layer": 0,
+      "tp_rank": 0,
+      "block": 32,
+      "median_us": 19702.414982020855,
+      "errors": {
+        "q_latent": {
+          "max_abs": 0.00390625,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 2.3229731596075e-05
+        },
+        "query": {
+          "max_abs": 0.03125,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 9.2511618277058e-05
+        },
+        "kv": {
+          "max_abs": 0.0009765625,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 2.885170943045523e-05
+        }
+      }
+    },
+    {
+      "layer": 13,
+      "tp_rank": 3,
+      "block": 8,
+      "median_us": 18162.196967750788,
+      "errors": {
+        "q_latent": {
+          "max_abs": 0.0009765625,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 9.885457075142767e-06
+        },
+        "query": {
+          "max_abs": 0.015625,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 0.00013743279851041734
+        },
+        "kv": {
+          "max_abs": 1.9073486328125e-06,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 6.566897070570121e-08
+        }
+      }
+    },
+    {
+      "layer": 13,
+      "tp_rank": 3,
+      "block": 16,
+      "median_us": 18237.51674965024,
+      "errors": {
+        "q_latent": {
+          "max_abs": 0.0078125,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 5.794764365418814e-05
+        },
+        "query": {
+          "max_abs": 0.015625,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 0.00024018982367124408
+        },
+        "kv": {
+          "max_abs": 0.00390625,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 0.00016513769514858723
+        }
+      }
+    },
+    {
+      "layer": 13,
+      "tp_rank": 3,
+      "block": 32,
+      "median_us": 16866.93262308836,
+      "errors": {
+        "q_latent": {
+          "max_abs": 0.0078125,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 4.848605749430135e-05
+        },
+        "query": {
+          "max_abs": 0.015625,
+          "rtol_atol_failure_ratio": 3.0517578125e-05,
+          "relative_l2": 0.0002358830242883414
+        },
+        "kv": {
+          "max_abs": 0.0078125,
+          "rtol_atol_failure_ratio": 0.0,
+          "relative_l2": 0.0001989763550227508
+        }
+      }
+    }
+  ]
+}

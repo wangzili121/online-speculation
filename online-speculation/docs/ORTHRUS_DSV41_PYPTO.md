@@ -65,7 +65,7 @@ A2/A3 模拟器通过了 129 个物理页、Top‑512、K8/K16/K32 共 12 个用
 
 167 的 910B3 上，关闭详细运行时日志后，采用同一个驻留 worker 交替计时 25 次，K8/K16/K32 的滑窗解包加双向 Attention 分别从 36.50/36.59/37.37 ms 降到 18.50/18.57/18.70 ms。该时间包含宿主提交。融合与拆分的输出和 LSE 逐元素相同，与 FP32 golden 比较的最大输出误差为 3.40e-6。新版整模尚待实机验证端到端逐 token 一致性和性能。[单卡原始数据](validation/dsv41/pypto-1122-packed-attention-910b3.json)
 
-BF16 draft QKV 复用新版 GEMM 和 RoPE。Q-A 和 KV 权重在装载时打包为连续列，用一个 GEMM 读入隐状态，RMSNorm 直接按融合输出的行跨度分别读取两段。输出为 Indexer 所需的归一化低秩 Q、旋转后的多头 Q，以及临时 latent KV。61 的单张 910B3 已对照 K8/K16/K32 的合成输入。可用 `validate_dsv41_pypto_packed_qkv.py --checkpoint <W8A8目录>` 验证由真实 checkpoint 初始化的单层权重。此入口独立于整模起草。 [实现](../src/blockspec/pypto_dsv41_draft.py)
+BF16 draft QKV 复用新版 GEMM 和 RoPE。Q-A 和 KV 权重在装载时打包为连续列，用一个 GEMM 读入隐状态，RMSNorm 直接按融合输出的行跨度分别读取两段。输出为 Indexer 所需的归一化低秩 Q、旋转后的多头 Q，以及临时 latent KV。61 的单张 910B3 已对照合成输入和真实 W8A8 checkpoint 初始化的第 0 层 TP rank 0、第 13 层 TP rank 3。K8/K16/K32 均通过，真实权重用例的最大相对 L2 误差为 `2.41e-4`。可用 `validate_dsv41_pypto_packed_qkv.py --checkpoint <W8A8目录>` 验证由真实 checkpoint 初始化的单层权重。此入口独立于整模起草。 [实现](../src/blockspec/pypto_dsv41_draft.py) · [实卡结果](validation/dsv41/pypto-1122-packed-qkv-910b3.json)
 
 ## 内网权重预检
 
