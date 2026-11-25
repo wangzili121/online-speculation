@@ -1,0 +1,46 @@
+{
+  "passed": true,
+  "compiled": true,
+  "executed": true,
+  "checkpoint": "/model",
+  "cases": [
+    {
+      "layer": 39,
+      "expert": 0,
+      "active_rows": 1,
+      "native_golden_byte_exact": true,
+      "warm_median_ms": 17.861110856756568,
+      "metrics": {
+        "expert_input": {
+          "relative_l2": 0.002322571926311965,
+          "max_abs": 6.596429739147425e-05
+        },
+        "route_weight": {
+          "relative_l2": 0.00011896535112751766,
+          "max_abs": 0.0009279251098632812
+        }
+      }
+    },
+    {
+      "layer": 39,
+      "expert": 247,
+      "active_rows": 7,
+      "native_golden_byte_exact": true,
+      "warm_median_ms": 17.391371075063944,
+      "metrics": {
+        "expert_input": {
+          "relative_l2": 0.002299127496141438,
+          "max_abs": 0.0009473785758018494
+        },
+        "route_weight": {
+          "relative_l2": 0.0024423407587378402,
+          "max_abs": 0.02680659294128418
+        }
+      }
+    }
+  ],
+  "native_lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "image": "orthrus-dsv41-pypto:1122-7abc0df",
+  "hardware": "Ascend 910B3 on 111",
+  "scope": "Individual expert VJP with authentic checkpoint matrices and synthetic input, route factors and output gradients. Gradient comparison uses the FP32 straight-through reference and BF16 matmul device path. Seven warm samples per case."
+}

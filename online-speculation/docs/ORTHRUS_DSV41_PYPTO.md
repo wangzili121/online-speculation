@@ -113,6 +113,8 @@ Packed 会话可在选定的 draft 轮次捕获一个请求的学生分布。起
 
 MoE 反向的第一步将每个有效 token 的 FFN 输出梯度按原始布局送回 TP lane，再依据前向捕获的路由把激活、梯度和系数发给相关专家。默认将 owner 的两次下发合并到同一个设备任务中，梯度在设备上保持 FP32，路由系数随包单独传递。111 四张 910B3 用真实第 39 层 router 权重构造路由，32、7、1 行的数据与元数据均逐字节一致。DP2/TP2 额外覆盖请求从 owner 0 切到 owner 2 再切回 0。TP4 两轮分别计时，融合版热态中位数为 21.66–44.08 ms、拆分版为 38.60–88.63 ms，短反馈单项存在波动。EP16 已通过编译。复验使用 `validate_dsv41_pypto_packed_ep_dispatch.py --checkpoint /model`，追加 `--split-tp` 可运行拆分对照。[实卡结果](validation/dsv41/pypto-1122-949a-packed-ep-dispatch-910b3.json)
 
+专家反向按原版 W8A8 路径用 INT8 重新计算 gate/up，并在对齐 BF16 前向取值后，对 SwiGLU 及其中的路由系数求梯度。反向读取驻留的 INT8 权重 tile，将通道 scale 合到梯度 operand 上，在 Cube 中累加 FP32，无需生成整份 BF16 专家副本。单张 910B3 使用第 39 层两个真实专家的权重验证 1 行和 7 行，参考前向与原生 golden 逐字节一致。专家输入梯度和路由系数梯度相对 FP32 参考的最大 L2 误差分别为 0.2323% 和 0.2443%，填充行梯度为零。单专家调用的热态中位数为 17.39–17.86 ms，包含宿主提交。复验使用 `validate_dsv41_pypto_packed_expert.py --checkpoint /model`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-expert-vjp-910b3.json)
+
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
 ```bash
