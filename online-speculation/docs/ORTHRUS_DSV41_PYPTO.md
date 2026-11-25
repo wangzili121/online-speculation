@@ -89,9 +89,11 @@ Wo 投影之后复用原生 TP4 归约和 mHC Post，输出给 MoE 的隐状态�
 
 新 packed 会话可把四个 DP 的活动请求合成一次起草和一次验证。它为每条请求绑定自己的页表和 Engram 历史，并在验证拒绝后只提交已接受前缀。纯 AR 和普通验证都从设备回读贪心 ID。启用教师反馈时，仅为选中的请求回读已接受前缀和首个修正位置所对应的词表行。主机测试覆盖跨页拒绝、请求隔离、教师切片，以及 TP 组切换时的设备采样回读。这些入口仍使用原生整图的单机 L3 worker，双机 EP16 传输和新版在线反向及权重发布待接通。
 
-起草图在同一张图中执行 40 层 Attention、TP4 和冻结的原生 MoE，并在第 1、14 层复用原生 Engram，最后复用 TP 词表层。图内使用 K32 原始 head 契约。目标验证窗口可以设为 K8 或 K16，按从 anchor 开始的连续源行取前 7 或 15 个候选。独立编译入口也支持 K16 起草形状，供后续短块 head 验证。
+起草图在同一张图中执行 40 层 Attention、TP4 和冻结的原生 MoE，并在第 1、14 层复用原生 Engram，最后复用 TP 词表层。Serving 默认使用 K32 起草，也可用初始化 head 运行实际只计算 16 行的起草图。训练过的 head 按原有块宽绑定。目标验证窗口可独立设为 K8 或 K16，分别取前 7 或 15 个候选。
 
 Serving 在启动时装载 head 并在 TP 间分片。Draft 直接借用目标设备上的六个滑窗、压缩和索引缓存缓冲，Engram 使用 anchor 与 MASK 的临时历史，退出准备函数即恢复原有历史。目标模型沿当前已提交前缀验证。比较命令先运行同输入的 AR，再记录候选来源、起草准备、上传、图执行、token ID 回读以及全轮接受结果。
+
+Packed 会话可在选定的 draft 轮次捕获一个请求的学生分布。起草图在该 DP owner 上把完整词表的指定行写入独立设备缓冲，普通候选仍只回读 token ID。后续轮次使用原有输出缓冲，捕获数据留给学习器收齐纠正后的教师反馈。调用方在使用结束时释放捕获，请求释放时也会归还缓冲。用 `validate_dsv41_pypto_packed_student.py --devices 0,1` 可以在两个可见设备上复验输出重绑定。61 的两张 910B3 上通过了 16 × 128 测试张量的逐元素比较、缓冲释放和下一次 dispatch。整模 last-N 的激活反向和更新发布仍需接入新版图。
 
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
@@ -113,6 +115,10 @@ python /opt/dsv41-1122/validate_dsv41_pypto_packed_generation.py \
   --head /results/initialized-head --workload /results/prompts.jsonl \
   --concurrency 4 --width 8 --tokens 16 --output /results/packed-generation.json
 ```
+
+比较 K16 起草时，用 `compile_dsv41_pypto_packed_draft.py --block 16` 编译一份图，在上述命令中指向该图并追加 `--draft-block 16`。保持 head、workload 和 `--width` 一致。原生单请求入口通过 `--orthrus-draft-block 16` 启用同样的图。
+
+167 上用 `949a18d` 将 K16 的 40 层起草图编译并重载，历史容量为 512，耗时 60.16 秒，重载得到 62 个图参数。111 上用真实第 0 层投影权重，固定 1,091-token 历史、页表和输入前缀，每个形状计时 15 次。12 项输出全部通过 CANN BF16 检查，最大相对 L2 为 0.189%，目标缓存逐字节一致。单层驻留调用中位数约 18–19 ms。K16 在六个配对比较中快五组，幅度为 0.7%–1.9%，另一组慢 0.3%。这些数据包含宿主提交，整图收益还要在相同请求及验证窗口下实测。复验时给单卡入口追加 `--paired-widths --iterations 15`。[配对结果](validation/dsv41/pypto-1122-949a-draft-widths-910b3.json)
 
 该入口使用当前能枚举 16 个逻辑设备的 L3 运行时。整模 NPU 执行、双机 EP16 及 last-N 在线更新仍需分别验收。[整图验证记录](validation/dsv41/pypto-1122-packed-draft-graph.json)
 

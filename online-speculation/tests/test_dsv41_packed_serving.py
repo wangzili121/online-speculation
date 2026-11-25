@@ -158,16 +158,31 @@ def test_native_verifier_reuses_host_rows_and_keeps_device_reads_small(monkeypat
     assert verifier.stats.retained_prefix_calls == (2 if retain else 0)
 
 
+@pytest.mark.parametrize("role", ["initialized-plumbing", "trained"])
+def test_short_draft_uses_only_a_compatible_head(monkeypatch, role):
+    from blockspec import dsv41_packed_proposer as proposer
+
+    head = ({}, {"artifact_role": role, "block_size": 32}, {})
+    monkeypatch.setattr(proposer, "read_draft_artifact", lambda *_: head)
+    assert proposer.read_packed_head(SimpleNamespace(root=None), None, 32) == head
+    if role == "trained":
+        with pytest.raises(ValueError, match="trained draft head"):
+            proposer.read_packed_head(SimpleNamespace(root=None), None, 16)
+    else:
+        assert proposer.read_packed_head(SimpleNamespace(root=None), None, 16) == head
+
+
+@pytest.mark.parametrize("block", [16, 32])
 @pytest.mark.parametrize("lookup_fails", [False, True])
-def test_resident_draft_uses_only_committed_history(lookup_fails):
+def test_resident_draft_uses_only_committed_history(lookup_fails, block):
     from blockspec.dsv41_packed_proposer import DraftRoundStats, PackedDraftProposer
 
-    position, block, owner = 129, 32, 4
+    position, owner = 129, 4
     original = torch.arange(position)
     history = {owner: original}
 
     def lookup(tokens, capacity, start, *, request_id):
-        assert tokens.tolist() == [7] + [99] * 31
+        assert tokens.tolist() == [7] + [99] * (block - 1)
         assert (capacity, start, request_id) == (block, position, owner)
         history[owner] = torch.cat((original, tokens))
         if lookup_fails:
@@ -217,7 +232,7 @@ def test_resident_draft_uses_only_committed_history(lookup_fails):
         assert active["c2a_visible"].unique().item() == position // 2
         assert active["window_rows"].flatten()[0].item() == 257
         torch.testing.assert_close(active["x_hc"][0], torch.full((4, 4), 7.0))
-        torch.testing.assert_close(active["x_hc"][1:], torch.full((31, 4, 4), 99.0))
+        torch.testing.assert_close(active["x_hc"][1:], torch.full((block - 1, 4, 4), 99.0))
 
     draft.runtime.run = run
     if lookup_fails:
@@ -241,23 +256,38 @@ def test_draft_wave_dispatches_once_without_changing_target_counts():
     draft.sampled = torch.empty(16, 8, dtype=torch.int32)
     counts = torch.tensor([9] * 4 + [0] * 4 + [3] * 4 + [0] * 4, dtype=torch.int32)
     draft.counts = counts.clone()
-    draft.ranks = [{"sampled_ids": SimpleNamespace(data_ptr=i)} for i in range(16)]
-    draft.arguments, draft.graph, draft.config = (), object(), None
+    draft.ranks = [{"sampled_ids": SimpleNamespace(data_ptr=i), "logits": torch.empty(16, 10)} for i in range(16)]
+    draft.arguments, draft.graph, draft.config = [draft.ranks[8]["logits"]], object(), None
+    draft.student = {}
+    draft._logits_argument = 0, "logits"
+    draft._rank_argument = lambda name, parameter, *, replacement: replacement[1]
     staged, uploaded, launches = [], [], []
-    draft._stage = staged.append
+    draft._stage = lambda request, *, student_rows: staged.append((request, student_rows))
     draft.inputs = SimpleNamespace(images=torch.zeros(3, 8), upload=lambda rt, rank, owner: uploaded.append((rank, owner)))
 
     def run(*args, **kwargs):
         launches.append(draft.counts.tolist())
+        args[1].fill_(len(launches))
 
     def readback(dst, src, size, *, worker_id):
         assert src == worker_id
         draft.sampled[:, 0] = torch.arange(16) + worker_id * 10
 
-    draft.runtime = SimpleNamespace(run=run, copy_from=readback)
+    freed = []
+    draft.runtime = SimpleNamespace(run=run, copy_from=readback,
+                                    alloc_tensor=lambda shape, dtype, **_: torch.empty(shape, dtype=dtype),
+                                    free_tensor=lambda value, *, worker_id: freed.append((value, worker_id)))
     requests = [DraftRequest(7, 129, 0, 3, "r0", (2, 1)), DraftRequest(14, 95, 8, 2, "r2", (3,))]
-    assert draft.propose_batch(requests, uploads=SimpleNamespace(map=map)) == {0: [0, 1, 2], 8: [80, 81]}
-    assert staged == requests
+    uploads = SimpleNamespace(map=map)
+    assert draft.propose_batch(requests, uploads=uploads, capture=("r2", 7)) == {0: [0, 1, 2], 8: [80, 81]}
+    assert staged == [(requests[0], 0), (requests[1], 7)]
     assert uploaded == [(r, 0) for r in range(4)] + [(r, 8) for r in range(8, 12)] + [(r, -4) for r in range(4, 8)]
     assert launches == [[32] * 4 + [0] * 4 + [32] * 4 + [0] * 4]
     assert torch.equal(draft.counts, counts)
+    captured = draft.student["r2"]
+    assert (captured.owner, captured.position, captured.rows) == (8, 95, 7)
+    draft.propose_batch(requests, uploads=uploads)
+    assert torch.all(captured.logits == 1)
+    assert torch.all(draft.ranks[8]["logits"] == 2)
+    draft.release_student("r2")
+    assert freed == [(captured.logits, 8)] and not draft.student

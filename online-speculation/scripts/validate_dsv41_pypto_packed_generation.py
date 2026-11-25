@@ -120,6 +120,7 @@ def main():
     parser.add_argument("--concurrency", type=int, choices=range(1, 5), default=4)
     parser.add_argument("--tokens", type=int, default=16)
     parser.add_argument("--width", type=int, choices=(8, 16), default=8)
+    parser.add_argument("--draft-block", type=int, choices=(16, 32), default=32)
     parser.add_argument("--warmup", type=int, default=1)
     args = parser.parse_args()
     devices = [int(device) for device in args.devices.split(",")]
@@ -150,7 +151,7 @@ def main():
                               context_capacity=context, capacity=prefill["capacity"],
                               decode_capacity=decode["capacity"], max_new_tokens=args.tokens,
                               profile_all_steps=None, orthrus_draft_head=args.head,
-                              orthrus_draft_runtime_dir=args.draft_graph)
+                              orthrus_draft_runtime_dir=args.draft_graph, orthrus_draft_block=args.draft_block)
     report = dict(
         checkpoint_identity=checkpoint.identity,
         graph_capacities={phase: manifest["capacity"] for phase, manifest in (("prefill", prefill), ("decode", decode))},
@@ -165,6 +166,7 @@ def main():
         report.update(benchmark(session, workload, chunk=prefill["capacity"], tokens=args.tokens,
                                 width=args.width, concurrency=args.concurrency, warmup=args.warmup))
         report["draft_head_role"] = session.draft.head_role
+        report["draft_block"] = session.draft.block
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({key: report[key] for key in ("passed", "greedy_tokens_matched", "divergence")}))
     if not report["passed"]:

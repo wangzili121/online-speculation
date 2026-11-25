@@ -59,17 +59,19 @@ index e37b371..5973e81 100644
      return logits, sampled_ids
 
 diff --git a/models/deepseek_v4_1_flash_a3/driver.py b/models/deepseek_v4_1_flash_a3/driver.py
-index 407560a..568edf2 100644
+index 407560a..7968afe 100644
 --- a/models/deepseek_v4_1_flash_a3/driver.py
 +++ b/models/deepseek_v4_1_flash_a3/driver.py
-@@ -174,6 +174,14 @@ def main(function, *, mode, capacity, argv=None):
+@@ -174,6 +174,16 @@ def main(function, *, mode, capacity, argv=None):
      parser.add_argument("--full-graph", action="store_true", help=argparse.SUPPRESS)
      parser.add_argument("--logits-mode", choices=["last"], default="last")
      parser.add_argument("--max-new-tokens", type=int)
 +    parser.add_argument("--orthrus-draft-head", type=Path,
 +                        help="Run the resident Orthrus draft head and compare with target-only Decode")
 +    parser.add_argument("--orthrus-draft-runtime-dir", type=Path,
-+                        help="Directory of compiled packed K32 draft artifacts")
++                        help="Directory of compiled packed draft artifacts")
++    parser.add_argument("--orthrus-draft-block", type=int, choices=(16, 32), default=32,
++                        help="Logical width of the packed draft graph, independent of verification width")
 +    parser.add_argument("--orthrus-verify-k", type=int, choices=(8, 16),
 +                        help="Compare greedy generation with same-residency candidate verification")
 +    parser.add_argument("--orthrus-cache-mode", choices=("retain", "replay", "compare"), default="retain",
@@ -77,7 +79,7 @@ index 407560a..568edf2 100644
      parser.add_argument("--reference-dir", type=Path)
      parser.add_argument("--teacher-forced", action="store_true")
      parser.add_argument("--audit-caches", action="store_true")
-@@ -200,6 +208,16 @@ def main(function, *, mode, capacity, argv=None):
+@@ -200,6 +210,16 @@ def main(function, *, mode, capacity, argv=None):
      requested_chunk = args.chunk_size
      if requested_chunk is None:
          args.chunk_size = min(chunk_default, args.capacity or chunk_default)
@@ -95,30 +97,37 @@ index 407560a..568edf2 100644
          parser.error("--profile-all-steps requires full checkpoint generation")
      if args.warmup_requests < 0 or args.measured_requests < 1:
 diff --git a/models/deepseek_v4_1_flash_a3/generation.py b/models/deepseek_v4_1_flash_a3/generation.py
-index ef6a2b2..85d953d 100644
+index ef6a2b2..e863ae1 100644
 --- a/models/deepseek_v4_1_flash_a3/generation.py
 +++ b/models/deepseek_v4_1_flash_a3/generation.py
-@@ -199,6 +199,7 @@ class ResidentGraphs:
+@@ -199,6 +199,9 @@ class ResidentGraphs:
      config: RunConfig
      host_io: dict
      decode_inputs: DecodeInputs
 +    draft_program: DistributedCompiledProgram | None = None
++    draft_head_artifact: tuple | None = None
++    draft_block: int = 32
 
      def reset(self):
          reset_caches(self.runtime, self.ranks, self.host_cache)
-@@ -232,6 +233,11 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+@@ -232,6 +235,16 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
      for phase_names, supported in zip(names, prepare_windows, strict=True):
          if supported:
              phase_names.pop()
-+    draft_graph = None
++    draft_graph, draft_head_artifact = None, None
++    draft_block = getattr(args, "orthrus_draft_block", 32)
 +    if getattr(args, "orthrus_draft_head", None) is not None:
-+        from blockspec.dsv41_packed_proposer import load_packed_draft_graph
++        from blockspec.dsv41_packed_proposer import load_packed_draft_graph, read_packed_head
 +
-+        draft_graph = load_packed_draft_graph(args.orthrus_draft_runtime_dir, config, context=args.context_capacity)
++        draft_graph = load_packed_draft_graph(
++            args.orthrus_draft_runtime_dir, config, context=args.context_capacity,
++            block=draft_block,
++        )
++        draft_head_artifact = read_packed_head(weights.checkpoint, args.orthrus_draft_head, draft_block)
      cache_names = set(DECODE_CACHE_NAMES.values())
      constants = set(weights.tensor_layouts) | cache_names | {"freqs_cos", "freqs_sin"}
      counts = {name: torch.zeros(16, dtype=torch.int32).share_memory_()
-@@ -266,7 +272,8 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+@@ -266,7 +279,8 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
                  template = prefill_template[name]
                  host_io["prefill_" + name] = torch.empty((2, *template.shape), dtype=template.dtype).share_memory_()
          worker = SwimlaneWorker if args.profile_all_steps is not None else DistributedWorker
@@ -128,16 +137,17 @@ index ef6a2b2..85d953d 100644
                      inherited_host_tensors=[*counts.values(), *host_io.values(), decode_inputs.images]) as runtime:
              host_io["idle_inputs"] = tuple(
                  {name: template[name] for name in phase_names if name in template and name not in constants}
-@@ -354,7 +361,7 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+@@ -354,7 +368,8 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
 
              host_io["prefill_dirty_groups"] = ()
              yield ResidentGraphs(runtime, programs, arguments, names, ranks, weights, engram, host_cache,
 -                                 rope_tables, config, host_io, decode_inputs)
-+                                 rope_tables, config, host_io, decode_inputs, draft_graph)
++                                 rope_tables, config, host_io, decode_inputs, draft_graph, draft_head_artifact,
++                                 draft_block)
      finally:
          torch.set_num_threads(saved_threads)
 
-@@ -444,11 +451,44 @@ def generate(args, devices, *, manifests):
+@@ -444,11 +459,44 @@ def generate(args, devices, *, manifests):
                      )
                  except LogitValidationError as error:
                      report["teacher_forced_error"] = str(error)
@@ -160,8 +170,8 @@ index ef6a2b2..85d953d 100644
 +                draft_start = time.monotonic()
 +                proposer = PackedDraftProposer(
 +                    runtime, graphs.draft_program, config, ranks[0], decode_inputs, weights, engram, rope_tables,
-+                    arguments[1]["moe_num_tokens"], draft_head=args.orthrus_draft_head, block=32,
-+                    context=args.context_capacity, tp=C.TP_SIZE,
++                    arguments[1]["moe_num_tokens"], draft_head=args.orthrus_draft_head, block=graphs.draft_block,
++                    context=args.context_capacity, tp=C.TP_SIZE, head_artifact=graphs.draft_head_artifact,
 +                )
 +                report["orthrus_draft"] = dict(
 +                    block=proposer.block, head_role=proposer.head_role, head_bytes=proposer.resident_head_bytes,
@@ -184,7 +194,7 @@ index ef6a2b2..85d953d 100644
                  replay_report = {}
                  capture_dir = args.profile_all_steps if iteration == args.warmup_requests else None
                  if capture_dir is not None:
-@@ -462,20 +502,28 @@ def generate(args, devices, *, manifests):
+@@ -462,20 +510,28 @@ def generate(args, devices, *, manifests):
                          config, memory, replay_report, options=args, host_io=host_io, decode_inputs=decode_inputs, reference=reference, teacher_forced=args.teacher_forced,
                          audit=audit_caches if audit_request else None, save_logits=args.save_logits, label=label,
                          profile=capture_dir is not None, profile_dir=capture_dir,
@@ -222,7 +232,7 @@ index ef6a2b2..85d953d 100644
                  reset_caches(runtime, ranks, host_cache)
                  profiled = {}
 diff --git a/models/deepseek_v4_1_flash_a3/packed.py b/models/deepseek_v4_1_flash_a3/packed.py
-index 98f9f0c..6622398 100644
+index 98f9f0c..9aef9ad 100644
 --- a/models/deepseek_v4_1_flash_a3/packed.py
 +++ b/models/deepseek_v4_1_flash_a3/packed.py
 @@ -11,6 +11,7 @@
@@ -233,7 +243,7 @@ index 98f9f0c..6622398 100644
 
  import torch
 
-@@ -37,14 +38,27 @@ class _History:
+@@ -37,14 +38,28 @@ class _History:
      pages: list[int] = field(default_factory=list)
 
 
@@ -247,6 +257,7 @@ index 98f9f0c..6622398 100644
 +class SpeculativeWave:
 +    verified: VerifiedBatch
 +    proposals: dict
++    student: object | None = None
 +
 +
  class PackedSession:
@@ -262,7 +273,15 @@ index 98f9f0c..6622398 100644
          self.history = {}
          self._idle_values = {}
          self._active_dps = [set(), set()]
-@@ -108,11 +122,75 @@ class PackedSession:
+@@ -99,6 +114,7 @@ class PackedSession:
+             owner = handle.dp * C.TP_SIZE
+             with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
+                 list(workers.map(reset_rank, range(owner, owner + C.TP_SIZE)))
++            self.release_student(handle)
+         except BaseException:
+             self.failed = True
+             raise
+@@ -108,11 +124,91 @@ class PackedSession:
 
      def advance_batch(self, phase, queries):
          """Run (handle, token IDs) pairs in caller order. Return sampled rows keyed by handle."""
@@ -278,6 +297,12 @@ index 98f9f0c..6622398 100644
 +        sampled = self._advance("decode", queries, greedy=True)
 +        return {handle: rows[0] for handle, rows in sampled.items()}
 +
++    def release_student(self, handle):
++        """Release one capture after the learner has consumed it."""
++        self._lookup(handle)
++        if self.draft is not None:
++            self.draft.release_student(handle)
++
 +    def verify_batch(self, queries, *, teacher_limits=None):
 +        """Verify (handle, anchor followed by candidates) on the native Decode graph."""
 +        feedback = {}
@@ -285,7 +310,7 @@ index 98f9f0c..6622398 100644
 +                                teacher_limits=teacher_limits, teacher_logits=feedback)
 +        return VerifiedBatch(emitted, feedback)
 +
-+    def speculate_batch(self, anchors, *, width=8, teacher_limits=None, output_limits=None):
++    def speculate_batch(self, anchors, *, width=8, teacher_limits=None, output_limits=None, student_capture=None):
 +        """Draft one request per DP and verify the resulting candidates in one wave."""
 +        from blockspec.dsv41_packed_proposer import DraftRequest
 +
@@ -310,10 +335,20 @@ index 98f9f0c..6622398 100644
 +                scheduled.append(DraftRequest(anchor, record.committed, owner, limit - 1, handle, tuple(record.pages)))
 +        if not by_owner:
 +            raise ValueError("Empty dispatch")
++        if student_capture is not None:
++            handle, rows = student_capture
++            self._lookup(handle)
++            if not any(request.history_key is handle for request in scheduled):
++                raise ValueError("Student capture requires an active draft for the request")
 +
 +        try:
 +            with ThreadPoolExecutor(max_workers=C.TP_SIZE) as uploads:
-+                tokens = self.draft.propose_batch(scheduled, uploads=uploads)
++                if student_capture is None:
++                    tokens = self.draft.propose_batch(scheduled, uploads=uploads)
++                    student = None
++                else:
++                    tokens = self.draft.propose_batch(scheduled, uploads=uploads, capture=(handle, rows))
++                    student = self.draft.student[handle]
 +            proposals = {handle: tuple(tokens.get(owner, ())) for owner, (handle, _) in by_owner.items()}
 +            verified = self.verify_batch(
 +                ((handle, (anchor, *proposals[handle])) for handle, anchor in by_owner.values()),
@@ -322,7 +357,7 @@ index 98f9f0c..6622398 100644
 +        except BaseException:
 +            self.failed = True
 +            raise
-+        return SpeculativeWave(verified, proposals)
++        return SpeculativeWave(verified, proposals, student)
 +
 +    def _advance(self, phase, queries, *, verify=False, greedy=False, teacher_limits=None, teacher_logits=None):
          self._ready()
@@ -338,7 +373,7 @@ index 98f9f0c..6622398 100644
          groups = [[] for _ in range(C.DP_SIZE)]
          seen = set()
          queries = list(queries)
-@@ -124,27 +202,63 @@ class PackedSession:
+@@ -124,27 +220,63 @@ class PackedSession:
              if handle in seen or not tokens or any(type(t) is not int or not 0 <= t < C.FLASH.vocab_size for t in tokens):
                  raise ValueError("Invalid or repeated query")
              end = record.committed + len(tokens)
@@ -408,7 +443,7 @@ index 98f9f0c..6622398 100644
          g = self.graphs
          # Prefill and Decode share the same packed positions, page maps and cache allocations.
          template = g.host_io["idle_inputs"][0]
-@@ -161,7 +275,7 @@ class PackedSession:
+@@ -161,7 +293,7 @@ class PackedSession:
              end = start + len(tokens)
              needed = (end + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              record.pages.extend(self.free_pages[dp].pop() for _ in range(needed - len(record.pages)))
@@ -417,7 +452,7 @@ index 98f9f0c..6622398 100644
              table[row, :needed] = physical
              n_half = (end // 2 + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              half[row, :n_half] = physical[:n_half]
-@@ -171,7 +285,9 @@ class PackedSession:
+@@ -171,7 +303,9 @@ class PackedSession:
              positions.extend(range(start, end))
              owners.extend([row] * len(tokens))
              lengths.append(len(ids))
@@ -428,7 +463,7 @@ index 98f9f0c..6622398 100644
                  sampled.append((handle, len(ids) - 1))
          count = len(ids)
          values = dict(g.host_io["idle_inputs"][0 if not index else 1])
-@@ -210,7 +326,7 @@ class PackedSession:
+@@ -210,7 +344,7 @@ class PackedSession:
                            identity_rows=order, replay_rows=order)
          return values, sampled, count
 
@@ -437,7 +472,7 @@ index 98f9f0c..6622398 100644
          g = self.graphs
          selections = []
          with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
-@@ -221,7 +337,7 @@ class PackedSession:
+@@ -221,7 +355,7 @@ class PackedSession:
                  if not group and dp not in self._active_dps[index]:
                      continue
                  if group:
@@ -446,7 +481,7 @@ index 98f9f0c..6622398 100644
                  else:
                      if index not in self._idle_values:
                          self._idle_values[index] = self._inputs(dp, [], index, capacity)
-@@ -243,6 +359,19 @@ class PackedSession:
+@@ -243,6 +377,19 @@ class PackedSession:
          self._active_dps[index] = {dp for dp, group in enumerate(groups) if group}
          args = [g.arguments[index][name] for name in g.names[index]]
          g.runtime.run(g.programs[index], *args, config=g.config)
@@ -466,7 +501,7 @@ index 98f9f0c..6622398 100644
          result = {}
          for handle, rank, row in selections:
              logits = g.host_io["logits"][0]
-@@ -282,9 +411,21 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
+@@ -282,9 +429,22 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
                                                 (args.decode_runtime_dir, "decode", args.decode_capacity))]
      if any(m["history_capacity"] != args.context_capacity for m in manifests):
          raise ValueError("History capacity differs from the compiled graph pair")
@@ -482,7 +517,8 @@ index 98f9f0c..6622398 100644
 +            draft = PackedDraftProposer(
 +                graphs.runtime, graphs.draft_program, graphs.config, graphs.ranks[0], graphs.decode_inputs,
 +                weights, engram, graphs.rope_tables, graphs.arguments[1]["moe_num_tokens"],
-+                draft_head=args.orthrus_draft_head, block=32, context=args.context_capacity, tp=C.TP_SIZE,
++                draft_head=args.orthrus_draft_head, block=graphs.draft_block,
++                context=args.context_capacity, tp=C.TP_SIZE, head_artifact=graphs.draft_head_artifact,
 +            )
 +        session = PackedSession(graphs, request_slots, args.context_capacity, (args.capacity, args.decode_capacity),
 +                                draft=draft)
@@ -587,10 +623,10 @@ index f11f2da..cb48be8 100644
      if reference is not None:
          report["numerical_acceptance"] = reference["policy"]
 diff --git a/tests/contract/test_ds41_packed.py b/tests/contract/test_ds41_packed.py
-index 961d34e..776e21b 100644
+index 961d34e..a7ee750 100644
 --- a/tests/contract/test_ds41_packed.py
 +++ b/tests/contract/test_ds41_packed.py
-@@ -64,3 +64,145 @@ def test_packed_page_boundary_and_recycled_handle():
+@@ -64,3 +64,148 @@ def test_packed_page_boundary_and_recycled_handle():
      with pytest.raises(ValueError, match="Expired"):
          session.advance_batch("decode", [(a, [1])])
      assert new is not a and live.pages == live_pages
@@ -706,11 +742,13 @@ index 961d34e..776e21b 100644
 +
 +    staged = []
 +
-+    def propose(rows, *, uploads):
++    def propose(rows, *, uploads, capture):
 +        staged.extend(rows)
++        handle, count = capture
++        draft.student[handle] = ("device-logits", count)
 +        return {row.owner: [11 if row.owner == 0 else 22] * row.candidates for row in rows}
 +
-+    draft = SimpleNamespace(block=32, propose_batch=propose)
++    draft = SimpleNamespace(block=32, propose_batch=propose, student={})
 +    session = PackedSession(None, 1, 384, (32, 16), draft=draft)
 +    a = session.admit("a", 0, 131)
 +    b = session.admit("b", 2, 137)
@@ -728,7 +766,7 @@ index 961d34e..776e21b 100644
 +
 +    session.verify_batch = verify
 +    wave = session.speculate_batch([(a, 5), (b, 6), (c, 7)], teacher_limits={b: 1},
-+                                   output_limits={a: 7, b: 2, c: 1})
++                                   output_limits={a: 7, b: 2, c: 1}, student_capture=(b, 5))
 +    assert [(r.history_key, r.pages, r.position, r.owner) for r in staged] == [
 +        (a, (2, 0), 131, 0), (b, (1, 2), 137, 8),
 +    ]
@@ -736,3 +774,4 @@ index 961d34e..776e21b 100644
 +    assert verified == [(a, (5, *(11,) * 6)), (b, (6, 22)), (c, (7,))]
 +    assert wave.verified.emitted == {a: (11, 54), b: (42,), c: (72,)}
 +    assert wave.verified.teacher_logits == {b: "teacher"}
++    assert wave.student == ("device-logits", 5)

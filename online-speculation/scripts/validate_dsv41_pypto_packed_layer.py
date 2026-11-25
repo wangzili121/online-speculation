@@ -94,10 +94,16 @@ def validate(args):
     table = torch.arange(pages - 1, -1, -1, dtype=torch.int32)
     generator = torch.Generator().manual_seed(5319)
     cases = []
-    for block, ratio, anchor in ((8, 2, 257), (16, 1, 643), (32, 2, 1091)):
+    geometry = ((8, 2, 257), (16, 1, 643), (32, 2, 1091))
+    if args.paired_widths:
+        geometry = ((16, 1, 1091), (32, 1, 1091), (16, 2, 1091), (32, 2, 1091))
+    for block, ratio, anchor in geometry:
         capacity = max(16, block)
-        common, _ = fixtures(block, pages, generator)
+        if args.paired_widths:
+            generator.manual_seed(5319)
+        common, _ = fixtures(32 if args.paired_widths else block, pages, generator)
         _, _, idx_wq, idx_weight, cosine, sine, index_payload, index_scales = common
+        cosine, sine = cosine[:capacity], sine[:capacity]
         banks, (_, _, sink, zeros), _, (_, window, compressed) = attention_fixture(
             block, pages, table, anchor, generator,
         )
@@ -200,7 +206,8 @@ def validate(args):
         print(json.dumps(case), flush=True)
         cases.append(case)
     passed = all(stats["passed"] for case in cases for stats in case["precision"].values())
-    return dict(passed=passed, npu_execution=True, layer=args.layer, tp_rank=args.tp_rank, cases=cases)
+    return dict(passed=passed, npu_execution=True, layer=args.layer, tp_rank=args.tp_rank,
+                paired_widths=args.paired_widths, timed_iterations=args.iterations, cases=cases)
 
 
 def main():
@@ -210,6 +217,7 @@ def main():
     parser.add_argument("--tp-rank", type=int, default=0)
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--iterations", type=int, default=5)
+    parser.add_argument("--paired-widths", action="store_true", help="Compare K16/K32 on the same two history inputs")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     report = validate(args)

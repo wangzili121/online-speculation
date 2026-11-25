@@ -57,25 +57,33 @@ def draft_graph_manifest(context, block):
     )
 
 
-def load_packed_draft_graph(directory, config, *, context):
+def load_packed_draft_graph(directory, config, *, context, block=32):
     from pypto.ir.distributed_compiled_program import DistributedCompiledProgram
 
     manifest = json.loads((directory / "orthrus_draft_manifest.json").read_text())
-    if manifest != draft_graph_manifest(context, 32):
-        raise ValueError("Compiled K32 draft graph does not match native context, model layout or source")
+    if block not in (16, 32) or manifest != draft_graph_manifest(context, block):
+        raise ValueError(f"Compiled draft graph does not match K{block}, context, model layout or source")
     return DistributedCompiledProgram.from_dir(
         directory, backend_type=config.arch, execution_mode=config.execution_mode,
         distributed_config=config.distributed_config,
     )
 
 
-def _resident_head(runtime, checkpoint, head, world, tp, block):
+def read_packed_head(checkpoint, head, block):
+    """Validate the head and its intended draft width before resident loading."""
+    config, manifest, files = read_draft_artifact(checkpoint.root, head)
+    if manifest["block_size"] != block and not (
+        block == 16 and manifest["artifact_role"] == "initialized-plumbing"
+    ):
+        raise ValueError("Changing the trained draft head's block width requires a compatible artifact")
+    return config, manifest, files
+
+
+def _resident_head(runtime, head, world, tp, artifact):
     """Stream the exchange artifact into TP-sharded device banks once."""
     from models.deepseek_v4_1_flash_a3.weights import bf16_nz_shape
 
-    config, manifest, files = read_draft_artifact(checkpoint.root, head)
-    if manifest["block_size"] != block:
-        raise ValueError("Draft graph width must match the head artifact")
+    config, manifest, files = artifact
     layers = manifest["layers"]
     index_owners = tuple(layer for layer, role in enumerate(layers) if role["index_source"] == layer)
     banks = [{} for _ in range(world)]
@@ -138,14 +146,23 @@ class DraftRequest:
     pages: tuple | None = None
 
 
+@dataclass(frozen=True)
+class PackedStudentRows:
+    """Full-vocabulary rows on the rank that owns one draft request."""
+
+    owner: int
+    position: int
+    rows: int
+    logits: object
+
+
 class PackedDraftProposer:
     """Dispatch one request per TP group while all ranks serve frozen experts."""
 
     def __init__(self, runtime, graph, config, target_ranks, decode_inputs, weights, engram,
-                 rope_tables, counts, *, draft_head, block, context, tp):
+                 rope_tables, counts, *, draft_head, block, context, tp, head_artifact=None):
         import torch
         from models.deepseek_v4_1_flash_a3.config import BLOCK_SIZE, FLASH
-        from models.deepseek_v4_1_flash_a3.device_views import resident_graph_argument
         from models.deepseek_v4_1_flash_a3.engram import ENGRAM_K
         from models.deepseek_v4_1_flash_a3.lm_head import MAX_LOGIT_ROWS, SAMPLED_IDS_PAD
         from models.deepseek_v4_1_flash_a3.replay import DecodeInputs
@@ -161,6 +178,7 @@ class PackedDraftProposer:
         self.sampled = torch.empty((MAX_LOGIT_ROWS, SAMPLED_IDS_PAD), dtype=torch.int32)
         self.stats = DraftRoundStats()
         self.previous_owners = set()
+        self.student = {}
         capacity = max(16, block)
         geometry = (FLASH.hc_mult, FLASH.hidden_size)
         template = {
@@ -182,9 +200,9 @@ class PackedDraftProposer:
         }
         template["pre_mix"][:, 0] = 1
         self.inputs = DecodeInputs(template)
-        device_head, manifest, self.resident_head_bytes = _resident_head(
-            runtime, weights.checkpoint, draft_head, self.world, tp, block,
-        )
+        if head_artifact is None:
+            head_artifact = read_packed_head(weights.checkpoint, draft_head, block)
+        device_head, manifest, self.resident_head_bytes = _resident_head(runtime, draft_head, self.world, tp, head_artifact)
         self.mask_token_id = manifest["mask_token_id"]
         self.head_role = manifest["artifact_role"]
         self.context = context
@@ -209,16 +227,22 @@ class PackedDraftProposer:
             bound["sampled_ids"] = runtime.alloc_tensor(self.sampled.shape, self.sampled.dtype, worker_id=rank)
             self.inputs.upload(runtime, rank, owner=-tp)
             self.ranks.append(bound)
-        ranks = tuple(range(self.world))
         self.arguments = []
-        for parameter in graph._get_metadata()[0]:
+        for index, parameter in enumerate(graph._get_metadata()[0]):
             name = parameter.name.removesuffix("__ssa_v0")
-            argument = counts if name == "moe_num_tokens" else resident_graph_argument(
-                [rank[name] for rank in self.ranks], ranks, parameter,
-            )
+            argument = counts if name == "moe_num_tokens" else self._rank_argument(name, parameter)
             self.arguments.append(argument)
+            if name == "logits":
+                self._logits_argument = index, parameter
 
-    def _stage(self, request):
+    def _rank_argument(self, name, parameter, *, replacement=None):
+        from models.deepseek_v4_1_flash_a3.device_views import resident_graph_argument
+
+        rank, value = replacement if replacement is not None else (-1, None)
+        shards = [value if index == rank else operands[name] for index, operands in enumerate(self.ranks)]
+        return resident_graph_argument(shards, tuple(range(self.world)), parameter)
+
+    def _stage(self, request, *, student_rows=0):
         import torch
 
         anchor_token, position = request.anchor, request.position
@@ -254,14 +278,15 @@ class PackedDraftProposer:
                 image[f"{ratio}_table"].copy_(table)
                 image[f"{ratio}_visible"].copy_(visible)
         selected["logit_row_indices"].fill_(-1)
-        chosen = selected["logit_row_indices"][:request.candidates]
-        chosen.copy_(torch.arange(request.candidates, dtype=torch.int32))
+        rows = max(request.candidates, student_rows)
+        chosen = selected["logit_row_indices"][:rows]
+        chosen.copy_(torch.arange(rows, dtype=torch.int32))
 
     def propose(self, anchor_token, *, position, owner, candidates, uploads):
         request = DraftRequest(anchor_token, position, owner, candidates, history_key=owner)
         return self.propose_batch((request,), uploads=uploads)[owner]
 
-    def propose_batch(self, requests, *, uploads):
+    def propose_batch(self, requests, *, uploads, capture=None):
         """Upload distinct request controls, then dispatch one draft graph for the wave."""
         owners = {request.owner for request in requests}
         if len(owners) != len(requests) or any(not 0 <= owner < self.world or owner % self.tp for owner in owners):
@@ -270,6 +295,14 @@ class PackedDraftProposer:
             raise ValueError("Draft candidate count must fit the block and LM head")
         if any(row.position < 0 or row.position + self.block > self.context for row in requests):
             raise ValueError("Draft block exceeds the context capacity")
+        capture_request, capture_rows = None, 0
+        if capture is not None:
+            key, capture_rows = capture
+            capture_request = next((row for row in requests if row.history_key == key), None)
+            if (capture_request is None or key in self.student
+                    or type(capture_rows) is not int
+                    or not 1 <= capture_rows <= min(self.block - 1, self.sampled.shape[0])):
+                raise ValueError("Student capture requires live draft rows and a free request capture")
         if not requests:
             return {}
 
@@ -282,20 +315,29 @@ class PackedDraftProposer:
 
         for request in requests:
             start = perf_counter()
-            self._stage(request)
+            self._stage(request, student_rows=capture_rows if request is capture_request else 0)
             self.stats.prepare_seconds += perf_counter() - start
             upload_group(request.owner, request.owner)
         for owner in sorted(self.previous_owners - owners):
             upload_group(owner, -self.tp)
         self.previous_owners = owners
 
+        arguments = self.arguments
+        if capture_request is not None:
+            owner = capture_request.owner
+            output = self.ranks[owner]["logits"]
+            retained = self.runtime.alloc_tensor(output.shape, output.dtype, worker_id=owner)
+            self.student[key] = PackedStudentRows(owner, capture_request.position, capture_rows, retained)
+            index, parameter = self._logits_argument
+            arguments = list(self.arguments)
+            arguments[index] = self._rank_argument("logits", parameter, replacement=(owner, retained))
         saved_counts = self.counts.clone()
         self.counts.zero_()
         for owner in owners:
             self.counts[owner:owner + self.tp] = self.block
         start = perf_counter()
         try:
-            self.runtime.run(self.graph, *self.arguments, config=self.config)
+            self.runtime.run(self.graph, *arguments, config=self.config)
             self.stats.graph_seconds += perf_counter() - start
         finally:
             self.counts.copy_(saved_counts)
@@ -310,3 +352,10 @@ class PackedDraftProposer:
         self.stats.readback_seconds += perf_counter() - start
         self.stats.calls += 1
         return result
+
+    def release_student(self, history_key):
+        """Return a consumed or cancelled student capture to the device allocator."""
+        value = self.student.get(history_key)
+        if value is not None:
+            self.runtime.free_tensor(value.logits, worker_id=value.owner)
+            del self.student[history_key]
