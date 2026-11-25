@@ -59,10 +59,10 @@ index e37b371..5973e81 100644
      return logits, sampled_ids
 
 diff --git a/models/deepseek_v4_1_flash_a3/driver.py b/models/deepseek_v4_1_flash_a3/driver.py
-index acc5b48..e35c4df 100644
+index 407560a..568edf2 100644
 --- a/models/deepseek_v4_1_flash_a3/driver.py
 +++ b/models/deepseek_v4_1_flash_a3/driver.py
-@@ -157,6 +157,14 @@ def main(function, *, mode, capacity, argv=None):
+@@ -174,6 +174,14 @@ def main(function, *, mode, capacity, argv=None):
      parser.add_argument("--full-graph", action="store_true", help=argparse.SUPPRESS)
      parser.add_argument("--logits-mode", choices=["last"], default="last")
      parser.add_argument("--max-new-tokens", type=int)
@@ -77,7 +77,7 @@ index acc5b48..e35c4df 100644
      parser.add_argument("--reference-dir", type=Path)
      parser.add_argument("--teacher-forced", action="store_true")
      parser.add_argument("--audit-caches", action="store_true")
-@@ -180,6 +188,16 @@ def main(function, *, mode, capacity, argv=None):
+@@ -200,6 +208,16 @@ def main(function, *, mode, capacity, argv=None):
      requested_chunk = args.chunk_size
      if requested_chunk is None:
          args.chunk_size = min(chunk_default, args.capacity or chunk_default)
@@ -95,31 +95,49 @@ index acc5b48..e35c4df 100644
          parser.error("--profile-all-steps requires full checkpoint generation")
      if args.warmup_requests < 0 or args.measured_requests < 1:
 diff --git a/models/deepseek_v4_1_flash_a3/generation.py b/models/deepseek_v4_1_flash_a3/generation.py
-index 51fd052..6c06148 100644
+index ef6a2b2..85d953d 100644
 --- a/models/deepseek_v4_1_flash_a3/generation.py
 +++ b/models/deepseek_v4_1_flash_a3/generation.py
-@@ -218,6 +218,11 @@ def generate(args, devices, *, manifests):
+@@ -199,6 +199,7 @@ class ResidentGraphs:
+     config: RunConfig
+     host_io: dict
+     decode_inputs: DecodeInputs
++    draft_program: DistributedCompiledProgram | None = None
+
+     def reset(self):
+         reset_caches(self.runtime, self.ranks, self.host_cache)
+@@ -232,6 +233,11 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
      for phase_names, supported in zip(names, prepare_windows, strict=True):
          if supported:
              phase_names.pop()
 +    draft_graph = None
-+    if args.orthrus_draft_head is not None:
++    if getattr(args, "orthrus_draft_head", None) is not None:
 +        from blockspec.dsv41_packed_proposer import load_packed_draft_graph
 +
 +        draft_graph = load_packed_draft_graph(args.orthrus_draft_runtime_dir, config, context=args.context_capacity)
      cache_names = set(DECODE_CACHE_NAMES.values())
      constants = set(weights.tensor_layouts) | cache_names | {"freqs_cos", "freqs_sin"}
      counts = {name: torch.zeros(16, dtype=torch.int32).share_memory_()
-@@ -261,7 +266,7 @@ def generate(args, devices, *, manifests):
+@@ -266,7 +272,8 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
                  template = prefill_template[name]
                  host_io["prefill_" + name] = torch.empty((2, *template.shape), dtype=template.dtype).share_memory_()
          worker = SwimlaneWorker if args.profile_all_steps is not None else DistributedWorker
 -        with worker(programs, config, persistent=True, reset_persistent_windows=False,
-+        with worker([*programs, *([draft_graph] if draft_graph is not None else [])], config, persistent=True, reset_persistent_windows=False,
++        registered = programs if draft_graph is None else [*programs, draft_graph]
++        with worker(registered, config, persistent=True, reset_persistent_windows=False,
                      inherited_host_tensors=[*counts.values(), *host_io.values(), decode_inputs.images]) as runtime:
              host_io["idle_inputs"] = tuple(
                  {name: template[name] for name in phase_names if name in template and name not in constants}
-@@ -386,11 +391,44 @@ def generate(args, devices, *, manifests):
+@@ -354,7 +361,7 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+
+             host_io["prefill_dirty_groups"] = ()
+             yield ResidentGraphs(runtime, programs, arguments, names, ranks, weights, engram, host_cache,
+-                                 rope_tables, config, host_io, decode_inputs)
++                                 rope_tables, config, host_io, decode_inputs, draft_graph)
+     finally:
+         torch.set_num_threads(saved_threads)
+
+@@ -444,11 +451,44 @@ def generate(args, devices, *, manifests):
                      )
                  except LogitValidationError as error:
                      report["teacher_forced_error"] = str(error)
@@ -136,13 +154,13 @@ index 51fd052..6c06148 100644
 +                verify_targets = ar["output_sequences"][0]["token_ids"]
 +                reset_caches(runtime, ranks, host_cache)
 +            proposer = None
-+            if draft_graph is not None:
++            if graphs.draft_program is not None:
 +                from blockspec.dsv41_packed_proposer import PackedDraftProposer
 +
 +                draft_start = time.monotonic()
 +                proposer = PackedDraftProposer(
-+                    runtime, draft_graph, config, ranks[0], decode_inputs, weights, engram, rope_tables,
-+                    counts["moe_num_tokens"], draft_head=args.orthrus_draft_head, block=32,
++                    runtime, graphs.draft_program, config, ranks[0], decode_inputs, weights, engram, rope_tables,
++                    arguments[1]["moe_num_tokens"], draft_head=args.orthrus_draft_head, block=32,
 +                    context=args.context_capacity, tp=C.TP_SIZE,
 +                )
 +                report["orthrus_draft"] = dict(
@@ -166,7 +184,7 @@ index 51fd052..6c06148 100644
                  replay_report = {}
                  capture_dir = args.profile_all_steps if iteration == args.warmup_requests else None
                  if capture_dir is not None:
-@@ -404,20 +442,28 @@ def generate(args, devices, *, manifests):
+@@ -462,20 +502,28 @@ def generate(args, devices, *, manifests):
                          config, memory, replay_report, options=args, host_io=host_io, decode_inputs=decode_inputs, reference=reference, teacher_forced=args.teacher_forced,
                          audit=audit_caches if audit_request else None, save_logits=args.save_logits, label=label,
                          profile=capture_dir is not None, profile_dir=capture_dir,
@@ -203,6 +221,266 @@ index 51fd052..6c06148 100644
              if args.profile_last_decode:
                  reset_caches(runtime, ranks, host_cache)
                  profiled = {}
+diff --git a/models/deepseek_v4_1_flash_a3/packed.py b/models/deepseek_v4_1_flash_a3/packed.py
+index 98f9f0c..74a58bc 100644
+--- a/models/deepseek_v4_1_flash_a3/packed.py
++++ b/models/deepseek_v4_1_flash_a3/packed.py
+@@ -11,6 +11,7 @@
+ from concurrent.futures import ThreadPoolExecutor
+ from contextlib import contextmanager
+ from dataclasses import dataclass, field
++from itertools import groupby
+
+ import torch
+
+@@ -37,14 +38,27 @@ class _History:
+     pages: list[int] = field(default_factory=list)
+
+
++@dataclass(frozen=True)
++class VerifiedBatch:
++    emitted: dict
++    teacher_logits: dict
++
++
++@dataclass(frozen=True)
++class SpeculativeWave:
++    verified: VerifiedBatch
++    proposals: dict
++
++
+ class PackedSession:
+     """A synchronous execution context for one scheduler thread."""
+
+-    def __init__(self, graphs, slots, context, capacities):
++    def __init__(self, graphs, slots, context, capacities, *, draft=None):
+         self.graphs = graphs
+         self.slots = slots
+         self.context = context
+         self.capacities = capacities
++        self.draft = draft
+         self.history = {}
+         self._idle_values = {}
+         self._active_dps = [set(), set()]
+@@ -108,11 +122,67 @@ class PackedSession:
+
+     def advance_batch(self, phase, queries):
+         """Run (handle, token IDs) pairs in caller order. Return sampled rows keyed by handle."""
++        return self._advance(phase, queries)
++
++    def decode_greedy_batch(self, queries):
++        """Run one AR decode input per request and return device-greedy IDs."""
++        sampled = self._advance("decode", queries, greedy=True)
++        return {handle: rows[0] for handle, rows in sampled.items()}
++
++    def verify_batch(self, queries, *, teacher_limits=None):
++        """Verify (handle, anchor followed by candidates) on the native Decode graph."""
++        feedback = {}
++        emitted = self._advance("decode", queries, verify=True, greedy=True,
++                                teacher_limits=teacher_limits, teacher_logits=feedback)
++        return VerifiedBatch(emitted, feedback)
++
++    def speculate_batch(self, anchors, *, width=8, teacher_limits=None):
++        """Draft one request per DP and verify the resulting candidates in one wave."""
++        from blockspec.dsv41_packed_proposer import DraftRequest
++
++        self._ready()
++        if self.draft is None:
++            raise ValueError("Speculative dispatch requires a bound Orthrus head")
++        if not 2 <= width <= min(self.capacities[1], 16, self.draft.block):
++            raise ValueError("Speculative width exceeds the compiled draft or Verify capacity")
++        by_owner, scheduled = {}, []
++        for handle, anchor in anchors:
++            record = self._lookup(handle)
++            if not 0 <= anchor < C.FLASH.vocab_size or not record.prompt_length <= record.committed < self.context:
++                raise ValueError("Speculation requires a valid anchor after Prefill")
++            owner = handle.dp * C.TP_SIZE
++            if owner in by_owner:
++                raise ValueError("The draft wave supports one live request per DP")
++            by_owner[owner] = handle, anchor
++            if record.committed + self.draft.block <= self.context:
++                scheduled.append(DraftRequest(anchor, record.committed, owner, width - 1, handle, tuple(record.pages)))
++        if not by_owner:
++            raise ValueError("Empty dispatch")
++
++        try:
++            with ThreadPoolExecutor(max_workers=C.TP_SIZE) as uploads:
++                tokens = self.draft.propose_batch(scheduled, uploads=uploads)
++            proposals = {handle: tuple(tokens.get(owner, ())) for owner, (handle, _) in by_owner.items()}
++            verified = self.verify_batch(
++                ((handle, (anchor, *proposals[handle])) for handle, anchor in by_owner.values()),
++                teacher_limits=teacher_limits,
++            )
++        except BaseException:
++            self.failed = True
++            raise
++        return SpeculativeWave(verified, proposals)
++
++    def _advance(self, phase, queries, *, verify=False, greedy=False, teacher_limits=None, teacher_logits=None):
+         self._ready()
+         if phase not in ("prefill", "decode"):
+             raise ValueError("Expected prefill or decode")
++        if verify:
++            from .lm_head import MAX_LOGIT_ROWS
++            from blockspec.pypto_dsv41_greedy import verified_prefix
++
+         index = int(phase == "decode")
+         capacity = self.capacities[index]
++        row_limit = min(capacity, MAX_LOGIT_ROWS) if verify else capacity
+         groups = [[] for _ in range(C.DP_SIZE)]
+         seen = set()
+         queries = list(queries)
+@@ -124,27 +194,63 @@ class PackedSession:
+             if handle in seen or not tokens or any(type(t) is not int or not 0 <= t < C.FLASH.vocab_size for t in tokens):
+                 raise ValueError("Invalid or repeated query")
+             end = record.committed + len(tokens)
+-            if index and (len(tokens) != 1 or record.committed < record.prompt_length):
+-                raise ValueError("Decode requires completed Prefill and one new token")
++            if index and record.committed < record.prompt_length:
++                raise ValueError("Decode requires completed Prefill")
++            if index and not verify and len(tokens) != 1:
++                raise ValueError("Decode requires one new token")
++            if verify and len(tokens) >= C.STATE_CAPACITY:
++                raise ValueError("Verification would overwrite the committed C2A predecessor")
+             if end > self.context or (not index and end > record.prompt_length):
+                 raise ValueError("Query exceeds the admitted history")
+             groups[handle.dp].append((record, tokens))
+             seen.add(handle)
+-        if any(sum(len(ids) for _, ids in group) > capacity for group in groups):
++        if teacher_limits and any(handle not in seen or type(rows) is not int or rows < 1
++                                  for handle, rows in teacher_limits.items()):
++            raise ValueError("Teacher capture requires a positive row limit for a live Verify request")
++        if any(sum(len(ids) for _, ids in group) > row_limit for group in groups):
+             raise ValueError("Batch exceeds the artifact token capacity on a DP owner")
+         # All admission errors above leave the session reusable. Failure during staging or execution
+         # may have changed Engram history or device caches. Do not retry against that state.
+         try:
+-            result = self._dispatch(groups, index, capacity)
++            result = self._dispatch(groups, index, capacity, sample_all=verify, greedy=greedy)
++            if verify:
++                result = {
++                    record.handle: verified_prefix(ids[1:], result[record.handle])
++                    for group in groups for record, ids in group
++                }
++                if teacher_limits:
++                    self._capture_teacher(groups, result, teacher_limits, teacher_logits)
++                for handle, emitted in result.items():
++                    record = self._lookup(handle)
++                    stop = record.committed + len(emitted)
++                    history = self.graphs.engram.history
++                    history[handle] = history[handle][:stop]
+         except BaseException:
+             self.failed = True
+             raise
+         for group in groups:
+             for record, ids in group:
+-                record.committed += len(ids)
++                record.committed += len(result[record.handle]) if verify else len(ids)
+         return {handle: result[handle] for handle, _ in queries if handle in result}
+
+-    def _inputs(self, dp, group, index, capacity):
++    def _capture_teacher(self, groups, emitted, limits, feedback):
++        """Read only supervised rows along the accepted prefix and its correction."""
++        g = self.graphs
++        for dp, group in enumerate(groups):
++            owner = dp * C.TP_SIZE
++            first = 0
++            for record, tokens in group:
++                handle = record.handle
++                if handle in limits:
++                    count = min(limits[handle], len(emitted[handle]))
++                    values = torch.empty((count, C.FLASH.vocab_size), dtype=torch.float32)
++                    src = g.ranks[1][owner]["logits"]
++                    g.runtime.copy_from(values.data_ptr(), src.data_ptr, values.nbytes,
++                                        src_offset=first * values[0].nbytes, worker_id=owner)
++                    feedback[handle] = values
++                first += len(tokens)
++
++    def _inputs(self, dp, group, index, capacity, *, sample_all=False):
+         g = self.graphs
+         # Prefill and Decode share the same packed positions, page maps and cache allocations.
+         template = g.host_io["idle_inputs"][0]
+@@ -161,7 +267,7 @@ class PackedSession:
+             end = start + len(tokens)
+             needed = (end + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
+             record.pages.extend(self.free_pages[dp].pop() for _ in range(needed - len(record.pages)))
+-            physical = torch.tensor(record.pages, dtype=torch.int32)
++            physical = torch.tensor(record.pages[:needed], dtype=torch.int32)
+             table[row, :needed] = physical
+             n_half = (end // 2 + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
+             half[row, :n_half] = physical[:n_half]
+@@ -171,7 +277,9 @@ class PackedSession:
+             positions.extend(range(start, end))
+             owners.extend([row] * len(tokens))
+             lengths.append(len(ids))
+-            if end >= record.prompt_length:
++            if sample_all:
++                sampled.extend((handle, source) for source in range(len(ids) - len(tokens), len(ids)))
++            elif end >= record.prompt_length:
+                 sampled.append((handle, len(ids) - 1))
+         count = len(ids)
+         values = dict(g.host_io["idle_inputs"][0 if not index else 1])
+@@ -210,7 +318,7 @@ class PackedSession:
+                           identity_rows=order, replay_rows=order)
+         return values, sampled, count
+
+-    def _dispatch(self, groups, index, capacity):
++    def _dispatch(self, groups, index, capacity, *, sample_all=False, greedy=False):
+         g = self.graphs
+         selections = []
+         with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
+@@ -221,7 +329,7 @@ class PackedSession:
+                 if not group and dp not in self._active_dps[index]:
+                     continue
+                 if group:
+-                    values, sampled, count = self._inputs(dp, group, index, capacity)
++                    values, sampled, count = self._inputs(dp, group, index, capacity, sample_all=sample_all)
+                 else:
+                     if index not in self._idle_values:
+                         self._idle_values[index] = self._inputs(dp, [], index, capacity)
+@@ -243,6 +351,19 @@ class PackedSession:
+         self._active_dps[index] = {dp for dp, group in enumerate(groups) if group}
+         args = [g.arguments[index][name] for name in g.names[index]]
+         g.runtime.run(g.programs[index], *args, config=g.config)
++        if greedy:
++            from .lm_head import MAX_LOGIT_ROWS, SAMPLED_IDS_PAD
++
++            rows = torch.empty((MAX_LOGIT_ROWS, SAMPLED_IDS_PAD), dtype=torch.int32)
++            result = {}
++            for rank, items in groupby(selections, key=lambda item: item[1]):
++                selected = list(items)
++                view = rows[:len(selected)]
++                dst = g.ranks[index][rank]["sampled_ids"]
++                g.runtime.copy_from(view.data_ptr(), dst.data_ptr, view.nbytes, worker_id=rank)
++                for (handle, _, _), token in zip(selected, view[:, 0].tolist(), strict=True):
++                    result.setdefault(handle, []).append(token)
++            return result
+         result = {}
+         for handle, rank, row in selections:
+             logits = g.host_io["logits"][0]
+@@ -282,9 +403,21 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
+                                                (args.decode_runtime_dir, "decode", args.decode_capacity))]
+     if any(m["history_capacity"] != args.context_capacity for m in manifests):
+         raise ValueError("History capacity differs from the compiled graph pair")
++    if getattr(args, "orthrus_draft_head", None) is not None and request_slots != 1:
++        raise ValueError("The Orthrus draft graph requires one request slot per DP")
+     C.set_moe_tokens(manifests[0]["moe_slab_rows"])
+     with open_resident_graphs(args, devices, weights, engram, memory, report, request_slots=request_slots) as graphs:
+-        session = PackedSession(graphs, request_slots, args.context_capacity, (args.capacity, args.decode_capacity))
++        draft = None
++        if graphs.draft_program is not None:
++            from blockspec.dsv41_packed_proposer import PackedDraftProposer
++
++            draft = PackedDraftProposer(
++                graphs.runtime, graphs.draft_program, graphs.config, graphs.ranks[0], graphs.decode_inputs,
++                weights, engram, graphs.rope_tables, graphs.arguments[1]["moe_num_tokens"],
++                draft_head=args.orthrus_draft_head, block=32, context=args.context_capacity, tp=C.TP_SIZE,
++            )
++        session = PackedSession(graphs, request_slots, args.context_capacity, (args.capacity, args.decode_capacity),
++                                draft=draft)
+         try:
+             yield session
+         finally:
 diff --git a/models/deepseek_v4_1_flash_a3/replay.py b/models/deepseek_v4_1_flash_a3/replay.py
 index f11f2da..cb48be8 100644
 --- a/models/deepseek_v4_1_flash_a3/replay.py
@@ -300,3 +578,148 @@ index f11f2da..cb48be8 100644
      report["prefill_routing"] = route_distribution(runtime, ranks, owner, len(prompt) - (chunks - 1) * options.chunk_size)
      if reference is not None:
          report["numerical_acceptance"] = reference["policy"]
+diff --git a/tests/contract/test_ds41_packed.py b/tests/contract/test_ds41_packed.py
+index 961d34e..625460a 100644
+--- a/tests/contract/test_ds41_packed.py
++++ b/tests/contract/test_ds41_packed.py
+@@ -64,3 +64,140 @@ def test_packed_page_boundary_and_recycled_handle():
+     with pytest.raises(ValueError, match="Expired"):
+         session.advance_batch("decode", [(a, [1])])
+     assert new is not a and live.pages == live_pages
++
++
++def test_packed_verification_retains_only_committed_prefixes():
++    from models.deepseek_v4_1_flash_a3 import config as c
++    from models.deepseek_v4_1_flash_a3.host import prepare_prefill_inputs
++    from models.deepseek_v4_1_flash_a3.packed import PackedSession
++
++    slots, context, cap = 2, 256, 16
++    template = prepare_prefill_inputs(torch.empty(0, c.FLASH.hidden_size), cap, max_seq_len=context,
++                                      request_slots=slots)
++    history = {}
++
++    def lookup(ids, n, start, *, request_id):
++        history[request_id] = (*history.get(request_id, ())[:start], *ids)
++        return torch.zeros(2, n, 6144)
++
++    graphs = SimpleNamespace(
++        host_io={"idle_inputs": (template, {})},
++        weights=SimpleNamespace(lookup_rows=lambda ids: torch.zeros(len(ids), c.FLASH.hidden_size)),
++        engram=SimpleNamespace(lookup=lookup, history=history),
++    )
++    logits = torch.arange(6, dtype=torch.float32)[:, None].expand(-1, c.FLASH.vocab_size).contiguous()
++    reads = []
++
++    def read(dst, src, size, *, src_offset, worker_id):
++        reads.append((size, src_offset, worker_id))
++        ctypes.memmove(dst, src + src_offset, size)
++
++    graphs.ranks = [[], [{"logits": SimpleNamespace(data_ptr=logits.data_ptr())}]]
++    graphs.runtime = SimpleNamespace(copy_from=read)
++    session = PackedSession(graphs, slots, context, (cap, cap))
++    reject = session.admit("reject", 0, 126)
++    accept = session.admit("accept", 0, 2)
++    a, b = session.history["reject"], session.history["accept"]
++    a.committed, b.committed = 126, 2
++    history[reject], history[accept] = (1,) * 126, (2, 2)
++
++    def dispatch(groups, index, capacity, *, sample_all, greedy):
++        assert index == 1 and sample_all and greedy
++        values, sampled, count = session._inputs(0, groups[0], 0, capacity, sample_all=True)
++        assert count == 6
++        # Prefill formatting sorts by length. The selected positions retain their handle.
++        assert sampled == [(reject, 0), (reject, 1), (reject, 2), (reject, 3), (accept, 4), (accept, 5)]
++        assert values["state_block_table"].flatten().tolist() == [0, 1]
++        return {reject: [42, 13, 14, 15], accept: [24, 25]}
++
++    session._dispatch = dispatch
++    outcome = session.verify_batch([(accept, iter((23, 24))), (reject, (11, 12, 13, 14))],
++                                   teacher_limits={accept: 1, reject: 4})
++    result = outcome.emitted
++    assert list(result) == [accept, reject]
++    assert result == {accept: (24, 25), reject: (42,)}
++    assert (a.committed, b.committed) == (127, 4)
++    assert history[reject] == (*((1,) * 126), 11)
++    assert history[accept] == (2, 2, 23, 24)
++    assert outcome.teacher_logits[accept][:, 0].tolist() == [0.0]
++    assert outcome.teacher_logits[reject][:, 0].tolist() == [2.0]
++    assert reads == [(logits[0].nbytes, 0, 0), (logits[0].nbytes, 2 * logits[0].nbytes, 0)]
++    assert len(a.pages) == 2 and set(a.pages).isdisjoint(b.pages)
++    values, _, _ = session._inputs(0, [(a, [42])], 0, cap)
++    assert values["c1a_index_block_table"][0].tolist() == [a.pages[0], -1]
++
++
++def test_greedy_packed_decode_transfers_one_sample_packet_per_owner():
++    from models.deepseek_v4_1_flash_a3.lm_head import SAMPLED_IDS_PAD
++    from models.deepseek_v4_1_flash_a3.packed import PackedSession
++
++    def cp(dst, src, size, *, worker_id):
++        readbacks.append((worker_id, size))
++        ctypes.memmove(dst, src, size)
++
++    def packed_value(tokens):
++        rows = torch.zeros(len(tokens), SAMPLED_IDS_PAD, dtype=torch.int32)
++        rows[:, 0] = torch.tensor(tokens)
++        return rows
++
++    packets = [packed_value((50, 52)), packed_value((63,))]
++    readbacks = []
++    ranks = [{} for _ in range(16)]
++    for owner, packet in zip((0, 4), packets, strict=True):
++        ranks[owner]["sampled_ids"] = SimpleNamespace(data_ptr=packet.data_ptr())
++    counts = {key: torch.zeros(16, dtype=torch.int32) for key in ("moe_num_tokens", "attention_num_tokens")}
++    graphs = SimpleNamespace(
++        ranks=[[], ranks], arguments=[{}, counts], names=[[], list(counts)],
++        programs=[None, None], config=None,
++        decode_inputs=SimpleNamespace(fields=[{}, {}, {}], upload=lambda *args: None),
++        runtime=SimpleNamespace(run=lambda *args, **kwargs: None, copy_from=cp),
++    )
++    session = PackedSession(graphs, 2, 256, (16, 16))
++    a, b, d = session.admit("a", 0, 1), session.admit("b", 0, 1), session.admit("d", 1, 1)
++    for record in session.history.values():
++        record.committed = 1
++
++    def inputs(dp, group, index, capacity, *, sample_all):
++        assert not sample_all and index == 1 and capacity == 16
++        sampled = [(record.handle, row) for row, (record, _) in enumerate(group)]
++        return {}, sampled, len(group)
++
++    session._inputs = inputs
++    assert session.decode_greedy_batch([(d, (40,)), (a, (30,)), (b, (39,))]) == {d: 63, a: 50, b: 52}
++    assert readbacks == [(0, packets[0].nbytes), (4, packets[1].nbytes)]
++
++
++def test_packed_speculative_wave_uses_each_requests_physical_pages():
++    from models.deepseek_v4_1_flash_a3.packed import PackedSession, VerifiedBatch
++
++    staged = []
++
++    def propose(rows, *, uploads):
++        staged.extend(rows)
++        return {0: [11] * 7, 8: [22] * 7}
++
++    draft = SimpleNamespace(block=32, propose_batch=propose)
++    session = PackedSession(None, 1, 384, (32, 16), draft=draft)
++    a = session.admit("a", 0, 131)
++    b = session.admit("b", 2, 137)
++    c = session.admit("c", 3, 353)
++    for handle, position, pages in ((a, 131, [2, 0]), (b, 137, [1, 2]), (c, 353, [0, 2, 1])):
++        record = session._lookup(handle)
++        record.committed = position
++        record.pages = pages
++    verified = []
++
++    def verify(queries, *, teacher_limits):
++        assert teacher_limits == {b: 1}
++        verified.extend(queries)
++        return VerifiedBatch({a: (11, 54), b: (42,), c: (72,)}, {b: "teacher"})
++
++    session.verify_batch = verify
++    wave = session.speculate_batch([(a, 5), (b, 6), (c, 7)], teacher_limits={b: 1})
++    assert [(r.history_key, r.pages, r.position, r.owner) for r in staged] == [
++        (a, (2, 0), 131, 0), (b, (1, 2), 137, 8),
++    ]
++    assert wave.proposals == {a: (11,) * 7, b: (22,) * 7, c: ()}
++    assert verified == [(a, (5, *(11,) * 7)), (b, (6, *(22,) * 7)), (c, (7,))]
++    assert wave.verified.emitted == {a: (11, 54), b: (42,), c: (72,)}
++    assert wave.verified.teacher_logits == {b: "teacher"}

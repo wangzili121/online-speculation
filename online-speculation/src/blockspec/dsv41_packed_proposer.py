@@ -128,8 +128,18 @@ class DraftRoundStats:
     sampled_id_bytes: int = 0
 
 
+@dataclass(frozen=True)
+class DraftRequest:
+    anchor: int
+    position: int
+    owner: int
+    candidates: int
+    history_key: object
+    pages: tuple | None = None
+
+
 class PackedDraftProposer:
-    """Dispatch one request on its TP group while all ranks serve frozen experts."""
+    """Dispatch one request per TP group while all ranks serve frozen experts."""
 
     def __init__(self, runtime, graph, config, target_ranks, decode_inputs, weights, engram,
                  rope_tables, counts, *, draft_head, block, context, tp):
@@ -150,7 +160,7 @@ class PackedDraftProposer:
                                  ("c1a_index_block_table", "c2a_index_block_table"))
         self.sampled = torch.empty((MAX_LOGIT_ROWS, SAMPLED_IDS_PAD), dtype=torch.int32)
         self.stats = DraftRoundStats()
-        self.previous_owner = None
+        self.previous_owners = set()
         capacity = max(16, block)
         geometry = (FLASH.hc_mult, FLASH.hidden_size)
         template = {
@@ -208,23 +218,24 @@ class PackedDraftProposer:
             )
             self.arguments.append(argument)
 
-    def _stage(self, anchor_token, position, owner, candidates):
+    def _stage(self, request):
         import torch
 
+        anchor_token, position = request.anchor, request.position
         active, selected = self.inputs.fields[1:]
         indices = (anchor_token, self.mask_token_id)
         embeddings = self.weights.lookup_rows(torch.tensor(indices, dtype=torch.int64)).float()
         provisional = torch.full((self.block,), self.mask_token_id, dtype=torch.int64)
         provisional[0] = anchor_token
-        history = self.engram.history.get(owner)
+        history = self.engram.history.get(request.history_key)
         try:
-            engram_rows = self.engram.lookup(provisional, self.block, position, request_id=owner)
+            engram_rows = self.engram.lookup(provisional, self.block, position, request_id=request.history_key)
         finally:
             if history is None:
-                self.engram.history.pop(owner, None)
+                self.engram.history.pop(request.history_key, None)
             else:
-                self.engram.history[owner] = history
-        page_table, c2a_table = self.page_tables
+                self.engram.history[request.history_key] = history
+        page_table, c2a_table = self.page_tables if request.pages is None else (request.pages, request.pages)
         window = packed_swa_controls(page_table, position, self.pages)
         index = (
             packed_index_controls(page_table, position, 1, self.block, bucket=self.buckets[0]),
@@ -243,36 +254,59 @@ class PackedDraftProposer:
                 image[f"{ratio}_table"].copy_(table)
                 image[f"{ratio}_visible"].copy_(visible)
         selected["logit_row_indices"].fill_(-1)
-        selected["logit_row_indices"][:candidates].copy_(torch.arange(candidates, dtype=torch.int32))
+        chosen = selected["logit_row_indices"][:request.candidates]
+        chosen.copy_(torch.arange(request.candidates, dtype=torch.int32))
 
     def propose(self, anchor_token, *, position, owner, candidates, uploads):
-        if not 0 <= owner < self.world or owner % self.tp:
-            raise ValueError("Draft owner must be the first TP rank")
-        if not 0 < candidates < min(self.block, self.sampled.shape[0] + 1):
+        request = DraftRequest(anchor_token, position, owner, candidates, history_key=owner)
+        return self.propose_batch((request,), uploads=uploads)[owner]
+
+    def propose_batch(self, requests, *, uploads):
+        """Upload distinct request controls, then dispatch one draft graph for the wave."""
+        owners = {request.owner for request in requests}
+        if len(owners) != len(requests) or any(not 0 <= owner < self.world or owner % self.tp for owner in owners):
+            raise ValueError("Draft batch requires a unique TP owner per request")
+        if any(not 0 < row.candidates < min(self.block, self.sampled.shape[0] + 1) for row in requests):
             raise ValueError("Draft candidate count must fit the block and LM head")
-        if position < 0 or position + self.block > self.context:
+        if any(row.position < 0 or row.position + self.block > self.context for row in requests):
             raise ValueError("Draft block exceeds the context capacity")
-        start = perf_counter()
-        self._stage(anchor_token, position, owner, candidates)
-        self.stats.prepare_seconds += perf_counter() - start
-        dirty = tuple(range(owner, owner + self.tp))
-        if self.previous_owner is not None and self.previous_owner != owner:
-            dirty += tuple(range(self.previous_owner, self.previous_owner + self.tp))
-        self.previous_owner = owner
-        start = perf_counter()
-        list(uploads.map(lambda rank: self.inputs.upload(self.runtime, rank, owner), dirty))
-        self.stats.upload_seconds += perf_counter() - start
-        self.stats.input_bytes += len(dirty) * self.inputs.images[0].nbytes
+        if not requests:
+            return {}
+
+        def upload_group(owner, active):
+            before = perf_counter()
+            list(uploads.map(lambda rank: self.inputs.upload(self.runtime, rank, active),
+                             range(owner, owner + self.tp)))
+            self.stats.upload_seconds += perf_counter() - before
+            self.stats.input_bytes += self.tp * self.inputs.images[0].nbytes
+
+        for request in requests:
+            start = perf_counter()
+            self._stage(request)
+            self.stats.prepare_seconds += perf_counter() - start
+            upload_group(request.owner, request.owner)
+        for owner in sorted(self.previous_owners - owners):
+            upload_group(owner, -self.tp)
+        self.previous_owners = owners
+
+        saved_counts = self.counts.clone()
         self.counts.zero_()
-        self.counts[owner:owner + self.tp] = self.block
+        for owner in owners:
+            self.counts[owner:owner + self.tp] = self.block
         start = perf_counter()
-        self.runtime.run(self.graph, *self.arguments, config=self.config)
-        self.stats.graph_seconds += perf_counter() - start
+        try:
+            self.runtime.run(self.graph, *self.arguments, config=self.config)
+            self.stats.graph_seconds += perf_counter() - start
+        finally:
+            self.counts.copy_(saved_counts)
         start = perf_counter()
-        ids = self.sampled[:candidates]
-        handle = self.ranks[owner]["sampled_ids"]
-        self.runtime.copy_from(ids.data_ptr(), handle.data_ptr, ids.nbytes, worker_id=owner)
-        self.stats.sampled_id_bytes += ids.nbytes
+        result = {}
+        for request in requests:
+            ids = self.sampled[:request.candidates]
+            handle = self.ranks[request.owner]["sampled_ids"]
+            self.runtime.copy_from(ids.data_ptr(), handle.data_ptr, ids.nbytes, worker_id=request.owner)
+            self.stats.sampled_id_bytes += ids.nbytes
+            result[request.owner] = ids[:, 0].tolist()
         self.stats.readback_seconds += perf_counter() - start
         self.stats.calls += 1
-        return ids[:, 0].tolist()
+        return result

@@ -85,7 +85,9 @@ Wo 投影之后复用原生 TP4 归约和 mHC Post，输出给 MoE 的隐状态�
 
 #### 40 层驻留起草图
 
-镜像更新到上游 `44108e8`，保留单 token SWA 投影精度和 Decode 的修订，并使用这个版本的驻留分片视图。[上游源码](https://github.com/Adelaide999/pypto-lib/tree/44108e82ea2a1e840f71ec768f9d6e75013c7987/models/deepseek_v4_1_flash_a3)
+镜像固定上游 `949a18d`。该版本加入多请求 packed 会话，并对 Decode 每个有效位置保持单 token SWA 输出投影的 FP32 累加顺序。基于该提交在 PTOAS 0.78 上编译了上下文容量 512 的 packed Prefill 32、Decode 16 和 40 层 K32 Draft，分别用时 110.50、165.00 和 56.98 秒。Prefill 和 Decode 的编译用例每个 DP 预留两个请求槽，起草会话使用每个 DP 一个请求槽。[上游源码](https://github.com/Adelaide999/pypto-lib/tree/949a18db40fca66f677fb041e98b32f824e7afb1/models/deepseek_v4_1_flash_a3)
+
+新 packed 会话可把四个 DP 的活动请求合成一次起草和一次验证。它为每条请求绑定自己的页表和 Engram 历史，并在验证拒绝后只提交已接受前缀。纯 AR 和普通验证都从设备回读贪心 ID。启用教师反馈时，仅为选中的请求回读已接受前缀和首个修正位置所对应的词表行。主机测试覆盖跨页拒绝、请求隔离、教师切片，以及 TP 组切换时的设备采样回读。这些入口仍使用原生整图的单机 L3 worker，双机 EP16 传输和新版在线反向及权重发布待接通。
 
 起草图在同一张图中执行 40 层 Attention、TP4 和冻结的原生 MoE，并在第 1、14 层复用原生 Engram，最后复用 TP 词表层。图内使用 K32 原始 head 契约。目标验证窗口可以设为 K8 或 K16，按从 anchor 开始的连续源行取前 7 或 15 个候选。独立编译入口也支持 K16 起草形状，供后续短块 head 验证。
 

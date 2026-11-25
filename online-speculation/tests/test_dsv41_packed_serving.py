@@ -144,7 +144,7 @@ def test_resident_draft_uses_only_committed_history(lookup_fails):
     draft.rope_tables = torch.ones(2, 512, 4), torch.zeros(2, 512, 4)
     draft.inputs = SimpleNamespace(fields=fields, images=torch.zeros(3, 4096, dtype=torch.uint8),
                                    upload=lambda _, rank, active: uploaded.append((rank, active)))
-    draft.previous_owner, draft.stats = 0, DraftRoundStats()
+    draft.previous_owners, draft.stats = {0}, DraftRoundStats()
     uploads = SimpleNamespace(map=map)
 
     def run(*args, **kwargs):
@@ -168,6 +168,38 @@ def test_resident_draft_uses_only_committed_history(lookup_fails):
         assert not uploaded
     else:
         assert draft.propose(7, position=position, owner=owner, candidates=3, uploads=uploads) == [16, 17, 18]
-        assert set(uploaded) == {(rank, owner) for rank in range(8)}
+        assert uploaded == [(rank, owner) for rank in range(4, 8)] + [(rank, -4) for rank in range(4)]
         assert draft.stats.sampled_id_bytes == 3 * 8 * 4
+        assert not draft.counts.any()
     assert history[owner] is original
+
+
+def test_draft_wave_dispatches_once_without_changing_target_counts():
+    from blockspec.dsv41_packed_proposer import DraftRequest, DraftRoundStats, PackedDraftProposer
+
+    draft = PackedDraftProposer.__new__(PackedDraftProposer)
+    draft.world, draft.tp, draft.context, draft.block = 16, 4, 512, 32
+    draft.stats, draft.previous_owners = DraftRoundStats(), {4}
+    draft.sampled = torch.empty(16, 8, dtype=torch.int32)
+    counts = torch.tensor([9] * 4 + [0] * 4 + [3] * 4 + [0] * 4, dtype=torch.int32)
+    draft.counts = counts.clone()
+    draft.ranks = [{"sampled_ids": SimpleNamespace(data_ptr=i)} for i in range(16)]
+    draft.arguments, draft.graph, draft.config = (), object(), None
+    staged, uploaded, launches = [], [], []
+    draft._stage = staged.append
+    draft.inputs = SimpleNamespace(images=torch.zeros(3, 8), upload=lambda rt, rank, owner: uploaded.append((rank, owner)))
+
+    def run(*args, **kwargs):
+        launches.append(draft.counts.tolist())
+
+    def readback(dst, src, size, *, worker_id):
+        assert src == worker_id
+        draft.sampled[:, 0] = torch.arange(16) + worker_id * 10
+
+    draft.runtime = SimpleNamespace(run=run, copy_from=readback)
+    requests = [DraftRequest(7, 129, 0, 3, "r0", (2, 1)), DraftRequest(14, 95, 8, 2, "r2", (3,))]
+    assert draft.propose_batch(requests, uploads=SimpleNamespace(map=map)) == {0: [0, 1, 2], 8: [80, 81]}
+    assert staged == requests
+    assert uploaded == [(r, 0) for r in range(4)] + [(r, 8) for r in range(8, 12)] + [(r, -4) for r in range(4, 8)]
+    assert launches == [[32] * 4 + [0] * 4 + [32] * 4 + [0] * 4]
+    assert torch.equal(draft.counts, counts)
