@@ -1,0 +1,252 @@
+{
+  "native_lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "image": "orthrus-dsv41-pypto:1122-7abc0df",
+  "hardware": "4 Ascend 910B3 on 111",
+  "scope": "Device TP scatter, EP forward and EP return using authentic W8A8 layer-39 expert matrices, synthetic activations, gradients and routes. EP16 is compile-only. Reported milliseconds include host submission, device expert grouping, VJP and return; exclude forward EP dispatch and weight loading. Four warm samples per case.",
+  "compile_ep16": [
+    {
+      "passed": true,
+      "compiled": true,
+      "block": 32,
+      "tp": 4,
+      "dp": 4,
+      "ep": 16,
+      "experts_per_rank": 24
+    },
+    {
+      "passed": true,
+      "compiled": true,
+      "block": 8,
+      "tp": 4,
+      "dp": 4,
+      "ep": 16,
+      "experts_per_rank": 24
+    }
+  ],
+  "device": [
+    {
+      "passed": true,
+      "block": 32,
+      "dp": 2,
+      "tp": 2,
+      "ep": 4,
+      "checkpoint": "/model",
+      "checkpoint_layer": 39,
+      "resident_bank_layer": 1,
+      "actual_checkpoint_experts": [
+        0,
+        1,
+        2,
+        3,
+        96,
+        97,
+        98,
+        99,
+        192,
+        193,
+        194,
+        195,
+        288,
+        289,
+        290,
+        291
+      ],
+      "cases": [
+        {
+          "owner": 0,
+          "active_rows": 32,
+          "metrics": {
+            "input": {
+              "relative_l2": 0.002329235000934501,
+              "max_abs": 0.0012997090816497803
+            },
+            "route": {
+              "relative_l2": 0.0019084910180094524,
+              "max_abs": 0.028964638710021973
+            }
+          },
+          "warm_median_ms": 33.234957489185035
+        },
+        {
+          "owner": 2,
+          "active_rows": 7,
+          "metrics": {
+            "input": {
+              "relative_l2": 0.0022290998064477302,
+              "max_abs": 0.0012663323432207108
+            },
+            "route": {
+              "relative_l2": 0.0018626676276907186,
+              "max_abs": 0.02166748046875
+            }
+          },
+          "warm_median_ms": 24.63432855438441
+        },
+        {
+          "owner": 0,
+          "active_rows": 1,
+          "metrics": {
+            "input": {
+              "relative_l2": 0.00226338780390784,
+              "max_abs": 0.000813409686088562
+            },
+            "route": {
+              "relative_l2": 0.0026208734795575193,
+              "max_abs": 0.022051453590393066
+            }
+          },
+          "warm_median_ms": 23.539835936389863
+        }
+      ]
+    },
+    {
+      "passed": true,
+      "block": 8,
+      "dp": 1,
+      "tp": 4,
+      "ep": 4,
+      "checkpoint": "/model",
+      "checkpoint_layer": 39,
+      "resident_bank_layer": 1,
+      "actual_checkpoint_experts": [
+        0,
+        1,
+        2,
+        3,
+        96,
+        97,
+        98,
+        99,
+        192,
+        193,
+        194,
+        195,
+        288,
+        289,
+        290,
+        291
+      ],
+      "cases": [
+        {
+          "owner": 0,
+          "active_rows": 8,
+          "metrics": {
+            "input": {
+              "relative_l2": 0.002286999741750673,
+              "max_abs": 0.0012520328164100647
+            },
+            "route": {
+              "relative_l2": 0.001299331903155264,
+              "max_abs": 0.01279592514038086
+            }
+          },
+          "warm_median_ms": 22.315134527161717
+        },
+        {
+          "owner": 0,
+          "active_rows": 7,
+          "metrics": {
+            "input": {
+              "relative_l2": 0.002289077608872597,
+              "max_abs": 0.0012520328164100647
+            },
+            "route": {
+              "relative_l2": 0.0012710412739256743,
+              "max_abs": 0.012194633483886719
+            }
+          },
+          "warm_median_ms": 23.877621395513415
+        },
+        {
+          "owner": 0,
+          "active_rows": 1,
+          "metrics": {
+            "input": {
+              "relative_l2": 0.002429893390760874,
+              "max_abs": 0.0011282004415988922
+            },
+            "route": {
+              "relative_l2": 0.0017737949205518684,
+              "max_abs": 0.009035348892211914
+            }
+          },
+          "warm_median_ms": 24.129847530275583
+        }
+      ]
+    }
+  ],
+  "initial_k32": {
+    "passed": true,
+    "block": 32,
+    "dp": 2,
+    "tp": 2,
+    "ep": 4,
+    "checkpoint": "/model",
+    "checkpoint_layer": 39,
+    "actual_checkpoint_experts": [
+      0,
+      1,
+      2,
+      3,
+      96,
+      97,
+      98,
+      99,
+      192,
+      193,
+      194,
+      195,
+      288,
+      289,
+      290,
+      291
+    ],
+    "cases": [
+      {
+        "owner": 0,
+        "active_rows": 32,
+        "metrics": {
+          "input": {
+            "relative_l2": 0.002329235000934501,
+            "max_abs": 0.0012997090816497803
+          },
+          "route": {
+            "relative_l2": 0.0019084910180094524,
+            "max_abs": 0.028964638710021973
+          }
+        },
+        "warm_median_ms": 34.87833554390818
+      },
+      {
+        "owner": 2,
+        "active_rows": 7,
+        "metrics": {
+          "input": {
+            "relative_l2": 0.0022290998064477302,
+            "max_abs": 0.0012663323432207108
+          },
+          "route": {
+            "relative_l2": 0.0018626676276907186,
+            "max_abs": 0.02166748046875
+          }
+        },
+        "warm_median_ms": 26.16431552451104
+      },
+      {
+        "owner": 0,
+        "active_rows": 1,
+        "metrics": {
+          "input": {
+            "relative_l2": 0.00226338780390784,
+            "max_abs": 0.000813409686088562
+          },
+          "route": {
+            "relative_l2": 0.0026208734795575193,
+            "max_abs": 0.022051453590393066
+          }
+        },
+        "warm_median_ms": 25.36863903515041
+      }
+    ]
+  }
+}

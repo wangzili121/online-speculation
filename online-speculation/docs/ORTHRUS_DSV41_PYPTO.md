@@ -115,6 +115,10 @@ MoE 反向的第一步将每个有效 token 的 FFN 输出梯度按原始布局�
 
 专家反向按原版 W8A8 路径用 INT8 重新计算 gate/up，并在对齐 BF16 前向取值后，对 SwiGLU 及其中的路由系数求梯度。反向读取驻留的 INT8 权重 tile，将通道 scale 合到梯度 operand 上，在 Cube 中累加 FP32，无需生成整份 BF16 专家副本。单张 910B3 使用第 39 层两个真实专家的权重验证 1 行和 7 行，参考前向与原生 golden 逐字节一致。专家输入梯度和路由系数梯度相对 FP32 参考的最大 L2 误差分别为 0.2323% 和 0.2443%，填充行梯度为零。单专家调用的热态中位数为 17.39–17.86 ms，包含宿主提交。复验使用 `validate_dsv41_pypto_packed_expert.py --checkpoint /model`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-expert-vjp-910b3.json)
 
+设备端按专家分组，跳过空专家，每个专家按本轮有效反馈计算输入和路由系数梯度。输出按原 token 和 Top-K 槽位发回源 TP lane，由源 lane 以固定顺序规约输入梯度。该过程通过一张 PyPTO 图完成，复用对应层的驻留权重。111 的四张 910B3 使用真实第 39 层的 16 个专家权重验证 K8/TP4、K32/TP2，覆盖 1、7、8、32 行、请求归属切换和权重存储非零层偏移。两类梯度最大相对 L2 误差分别为 0.243% 和 0.262%，有效区间之外为零。设备端分组、计算与返回的热态中位数为 22.32–34.88 ms，包含宿主提交。K8 和 K32 的 EP16 形状已通过编译。复验使用 `validate_dsv41_pypto_packed_ep_reverse.py --checkpoint /model`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-ep-reverse-910b3.json)
+
+Router 的输入反向使用前向保留的 6 个专家编号。每行只重算这 6 个 logit，在同一算子内完成归一化、sqrt-softplus 的梯度和权重投影，直接累加到专家返回的输入梯度。单张 910B3 上用真实第 39 层 router 权重和前向 Top-K 对照 Torch FP64，1 行和 7 行的最大相对 L2 误差为 `1.27e-7`，驻留调用中位数为 17.74–17.83 ms，包含宿主提交。验证入口为 `validate_dsv41_pypto_packed_router.py --checkpoint /model`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-router-vjp-910b3.json)
+
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
 ```bash

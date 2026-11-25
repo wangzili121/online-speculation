@@ -198,7 +198,9 @@ def make_packed_ep_dispatch(block, last_layers, hidden, copies, topk, experts, d
 class PackedExpertPackets:
     """Output shards indexed by EP rank; only rows with matching metadata epoch are live."""
 
+    owner: int
     layer: int
+    rows: int
     epoch: int
     metadata: object
     weights: object
@@ -247,4 +249,4 @@ class PackedExpertDispatch:
         start = perf_counter()
         self.runtime.run(self.graph, self.post.outputs[0], *buffers, *self.outputs, owner, gradient.rows,
                          self.epoch, gradient.layer - self.post.first_layer, config=self.config)
-        return PackedExpertPackets(gradient.layer, self.epoch, *self.outputs, perf_counter() - start)
+        return PackedExpertPackets(owner, gradient.layer, gradient.rows, self.epoch, *self.outputs, perf_counter() - start)
