@@ -372,8 +372,9 @@ def reduction_tile(k, limit):
 
 
 def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradient_weight=False,
-                batches=1, b_repeats=1, inline=False, accumulate=False, reduction_limit=None, task_group=16):
-    """前向与显式线性 VJP 共用矩阵乘；激活/参数梯度按 BF16 执行语义舍入。"""
+                batches=1, b_repeats=1, inline=False, accumulate=False, reduction_limit=None, task_group=16,
+                output_fp32=False):
+    """线性前向和 VJP 共用矩阵乘，可为 TP 归约保留 FP32 局部激活梯度。"""
     import pypto.language as pl
     kernel = pl.jit.inline if inline else pl.jit
     M, K = a_shape[::-1] if transpose_a else a_shape
@@ -385,7 +386,7 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
     if type(task_group) is not int or not 1 <= task_group <= 16 or not gradient_weight and task_group != 16:
         raise ValueError("gradient task group must be an integer in 1..16")
     # 真实词表的 dLogits 行步长很大；先重排，避免长行二维读取错误。
-    if (not gradient_weight and not transpose_a and not transpose_b and batches==1
+    if (not output_fp32 and not gradient_weight and not transpose_a and not transpose_b and batches==1
             and K>=65536 and K%512==0):
         from .training_long_linear import make_long_linear
         return make_long_linear(M,K,N,inline=inline,
@@ -449,8 +450,11 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
                     w = pl.slice(b, [BR, BC], [head // b_repeats * b_shape[0] + TB * col + (1 - TB) * begin,
                                                TB * begin + (1 - TB) * col])
                     acc = pl.matmul_acc(acc, x, w, a_trans=transpose_a, b_trans=transpose_b, init_cond=(step == 0))
-                rounded = pl.cast(acc, pl.BF16, mode="rint")
-                output[head * M + row:head * M + row + MT, col:col + NT] = rounded
+                if output_fp32:
+                    output[head * M + row:head * M + row + MT, col:col + NT] = acc
+                else:
+                    rounded = pl.cast(acc, pl.BF16, mode="rint")
+                    output[head * M + row:head * M + row + MT, col:col + NT] = rounded
             return output
 
     @pl.jit.host

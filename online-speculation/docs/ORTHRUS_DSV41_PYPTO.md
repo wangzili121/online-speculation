@@ -99,6 +99,10 @@ Packed 会话可在选定的 draft 轮次捕获一个请求的学生分布。起
 
 61 的两张 910B3 使用 129,280 词表的合成 logits，验证了分别提交 1 行和 7 行的 TV、KL。与 Torch FP64 比较，损失最大绝对误差为 `6.23e-8`，梯度最大相对 L2 为 0.188%，无效行梯度全零。7 行的驻留调用中位数约 27–28 ms，包含教师上传和标量读回。DP4/TP4 形状已编译。17 项 packed 主机回归覆盖了拒绝后的两种续跑方式。实卡复验给上一条命令追加 `--loss both`。[原始结果](validation/dsv41/pypto-1122-949a-packed-online-loss-910b3.json)
 
+`terminal_vjp(handle)` 在同一个 worker 内接续 LM head 输入反向。DP owner 将 BF16 `dLogits` 的有效行按词表分片发给该组各 rank。各 rank 直接读取起草图已驻留的 `head.weight`，计算 FP32 局部梯度，再送回 owner 按 TP rank 顺序归约。多个 rank 用原子计数通知归约方，每个 DP 组维护自己的完成计数。设备梯度留在 owner，供后续 RMSNorm 和 mHC 反向消费。
+
+111 的四张 910B3 使用真实 W8A8 checkpoint 的 `head.weight`，覆盖 1 行和 7 行反馈。TP4 对照中，两版各执行 72 次。融合 owner 的梯度发送和局部反向后，各用例的热态中位数从 38.77–39.15 ms 降至 20.54–20.98 ms。两版与 Torch FP64 比较的最大相对 L2 均为 `8.14e-7`，填充行全零。DP2/TP2 验证了 owner 从 0 切到 2 再切回 0。计时包含 PyPTO 提交和通信，范围为 LM head 输入反向。DP4/TP4 形状通过编译，整模在线更新仍待接续。复验使用 `validate_dsv41_pypto_packed_lm_head_vjp.py --devices 0,1,2,3 --tp 4 --repeats 24 --checkpoint /model`。[实卡结果](validation/dsv41/pypto-1122-949a-packed-lm-head-vjp-910b3.json)
+
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
 ```bash
