@@ -43,6 +43,8 @@ PYTHONPATH="$PWD/online-speculation/src:$PYPTO_LIB_ROOT:${PYTHONPATH:-}" \
 
 A2/A3 模拟器通过了 129 个物理页、Top‑512、K8/K16/K32 共 12 个用例。FP8 和 FP4 解包与 Torch 参考逐元素一致。双向滑窗输出最大绝对误差为 `3.82e-6`，LSE 为 `9.54e-7`。这些结果覆盖独立 kernel 和驻留缓冲区交接。实卡启动需要另验，167 的单卡探针在 `rtSetDevice` 报 `507899`。
 
+167 已构建独立镜像 `orthrus-dsv41-pypto:1122-94d5dfc`，并在禁用网络的干净容器中通过 `--compile-only --swa --pages 129`。镜像入口用于 1122 算子验证。
+
 新版 `generation.py` 通过一个 L3 worker 管理 16 个本地设备。双机 Serving 要将全局 EP rank 的分派移到 L4，并接入 Simpler 的 A3 Fabric 跨机设备窗口。旧 Serving 的 HCCL 验收覆盖逐层通信。新版的 `global_tload_mixed_l3` 已在单机回环模拟中验证一个本地和一个服务端 L3 worker，两个 rank 的小张量结果误差均为零。真实跨机 Fabric 仍待验证。随后用同一 checkpoint 核对 AR、Draft/Verify/Accept 的逐 token 一致性。在线更新还需绑定新版的反向输入和 head 发布路径。当前 GSM8K 命令走独立旧版基线。 [Simpler 跨机验证用例](https://github.com/hw-native-sys/simpler/tree/a5349f42c71666bb8cacfb3759f34eeda1572beb/examples/workers/l4/global_tload_mixed_l3)
 
 ## 内网权重预检
