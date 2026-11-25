@@ -87,6 +87,7 @@ DSV41_REPORT_MIN_UPDATES=64 bash online-speculation/scripts/run_dsv41_pypto_comp
 Orthrus 专用前向与在线反向算子默认复用本机 `PYPTO_CLUSTER_STATE_DIR` 下的 `orthrus-jit` 中的 PyPTO 编译产物。首次运行构建缓存，随后相同源码、运行环境和算子形状可直接加载。双机冷启动对照可在两端同时设置 `PYPTO_DSV41_JIT_CACHE=0`。在线 Profile 分别记录主机编译或缓存查找、二进制构建或加载、首个 rank 调用和命中数。首次 rank 调用时间按各 rank 累加，更新总耗时以两端的实际 wall time 为准。
 
 - 111 四卡用 W8A8 基模初始化的 head 生成 capture。last-2 C1A 反向在空缓存中首次执行耗时 105.84 秒，重启进程后耗时 1.73 秒。主机二进制构建或加载从 92.78 秒降到 0.039 秒，28 个入口全部命中，72 个边界和梯度张量逐字节一致。该计时从反向开始，整模权重加载和跨机通信分别计时。实机记录见 [冷启动对照](validation/dsv41/pypto-online-jit-restart-910b3.json)。
+- 相同配置下复测 last-1，只对第 39 层做 C1A 反向。111 四卡首次反向从 100.64 秒降到重启后的 1.34 秒，36 个边界和梯度张量逐字节一致。两次均在前向 capture 完成后开始计时。 [last-1 实卡记录](validation/dsv41/pypto-last1-c1a-jit-910b3.json)
 - 同样的缓存覆盖起草前向。111 四卡、两个 K32 请求执行全部 40 层 draft Attention，关闭缓存、填充空缓存、重启命中三个进程的首轮耗时分别为 56.13、55.74 和 11.63 秒。重启后八个入口全部命中，三组输出逐字节相同，并核对历史 KV 原样保留。各进程的热态约 8 秒量级。测试包含本机 TP 归约与校验，权重加载在计时窗口之前。实机记录见 [起草首轮对照](validation/dsv41/pypto-draft-jit-restart-910b3.json)。
 - 启动门禁从实际在线配置读取教师窗口，核对 TV、KL 和词表梯度分片的输入形状。每次仍核对 ABI 并运行三个专家输入反向模拟用例。167 上旧门禁耗时 200.15 秒，填充空缓存耗时 210.65 秒，重启后为 18.84 秒。把教师窗口从 7 改为 1 时只重新生成这三个入口，门禁耗时 22.97 秒。三组专家模拟误差与基线一致。记录见 [启动门禁对照](validation/dsv41/pypto-online-abi-cache.json)。
 - 111 四卡关闭 Simpler 详细日志后，四轮起草少写约 20.8 MB trace，结果逐字节一致。热态中位数为 7.52 秒，原设置为 7.26 秒，目前保留默认日志。
