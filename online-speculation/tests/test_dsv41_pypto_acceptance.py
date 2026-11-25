@@ -560,11 +560,12 @@ def test_gsm8k_revision_comparison_recovers_old_phase_receipts_and_requires_matc
         compare(*dirs)
 
 
+@pytest.mark.parametrize("two_arm", [False, True])
 @pytest.mark.parametrize(("stale_frozen_draft", "min_updates", "publish_every", "completed_requests"), [
     (False, 0, 1, 8), (True, 0, 1, 8), (False, 2, 1, 4), (False, 9, 1, 8), (False, 3, 2, 8),
 ])
 def test_online_report_batches_and_freezes_on_heldout_questions(
-    tmp_path, monkeypatch, stale_frozen_draft, min_updates, publish_every, completed_requests,
+    tmp_path, monkeypatch, stale_frozen_draft, min_updates, publish_every, completed_requests, two_arm,
 ):
     monkeypatch.syspath_prepend(str(COMMAND.parent))
     monkeypatch.setitem(sys.modules, "pypto_serving.config.types", SimpleNamespace(
@@ -588,7 +589,7 @@ def test_online_report_batches_and_freezes_on_heldout_questions(
         bridge = SimpleNamespace(controller=SimpleNamespace(records=records))
 
         def bind(self, draft, native, cluster):
-            assert seen[-1] == ("initial", [0, 1, 2, 3])
+            assert seen[-1] == ("draft_warmup" if two_arm else "initial", [0, 1, 2, 3])
             assert (draft, native, cluster) == (session.draft, session.native, session.cluster)
             assert session.online is None and bank.active_version == 0
 
@@ -657,7 +658,15 @@ def test_online_report_batches_and_freezes_on_heldout_questions(
     entries = [dict(id=f"gsm8k-{i}", reference_answer="#### 2") for i in range(len(prompts))]
     options = dict(train_count=8, steps=4, batch_size=4, eos_ids={3},
                    decoder=lambda tokens: "#### 2", output=tmp_path, engram_seconds=5.0,
-                   min_published_update=min_updates, compare_online_ar=bool(min_updates))
+                   min_published_update=min_updates, compare_online_ar=bool(min_updates) or two_arm, two_arm=two_arm)
+    if two_arm:
+        report = study(runner, session, online, prompts, entries, **options)
+        assert set(report["arms"]) == {"ar_online", "online"}
+        assert report["compared_tokens"] == {"online": 24}
+        assert report["arms"]["online"]["requests"] == 8
+        assert report["passed"] == (len(records) // publish_every * publish_every >= min_updates)
+        assert not runner.ledger.requests
+        return
     if stale_frozen_draft:
         with pytest.raises(ValueError, match="frozen executed draft versions"):
             study(runner, session, online, prompts, entries, **options)

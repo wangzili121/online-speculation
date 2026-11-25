@@ -122,9 +122,9 @@ bash online-speculation/scripts/run_dsv41_pypto_company_online.sh node7 gsm8k 1
 bash online-speculation/scripts/run_dsv41_pypto_company_online.sh node8 gsm8k 1
 ```
 
-两套命令都从 W8A8 基模初始化 BF16 draft head，保持 K32 起草，每轮最多验证 7 个候选，Verify 和 Accept 在可容纳时走 16 行图。GSM8K 默认四并发，每个 DP 分区一个请求。使用最多 16 道训练题、4 道独立测试题，每题最多生成 64 token。仅更新最后一层 draft attention，采用全词表 TV、学习率 `1e-5`、前四次更新预热、每次最多七个教师位置。前 16 步每四个验证轮次检查一次更新，之后每八轮检查一次，每四步发布。发布达到第 16 步后完成当前批即停止训练。题目耗尽仍未达到最低步数时，结果保留并记录原因。已有 GSM8K 分区会直接复用，缺少数据时从固定来源准备到默认目录。
+两套命令都从 W8A8 基模初始化 BF16 draft head，保持 K32 起草，每轮最多验证 7 个候选，Verify 和 Accept 在可容纳时走 16 行图。GSM8K 默认四并发，每个 DP 分区一个请求。使用最多 16 道训练题、4 道独立测试题，每题最多生成 64 token。仅更新最后一层 draft attention，采用全词表 TV、学习率 `1e-5`、前四次更新预热、每次最多七个教师位置。前 16 步每四个验证轮次检查一次更新，之后每八轮检查一次，每四步发布。在线组和 AR 都跑完全部同序训练题，验收要求至少发布到第 16 步，并在后续起草中观察到已发布版本。题目耗尽仍未达到最低步数时，结果保留并记录原因。已有 GSM8K 分区会直接复用，缺少数据时从固定来源准备到默认目录。
 
-`acceptance/gsm8k-online-report.json` 中的 `online` 和 `ar_online` 使用相同的实际训练题、并发和生成上限。`ar`、`initial` 和 `frozen` 用相同的留出题。报告包含逐 token 对照、接受率、更新和发布耗时、计入所有更新的端到端吞吐、扣除首轮或全部更新成本的估算，以及冻结后的实测吞吐。AR 和起草预热单列。64-token 上限便于在一个双机窗口完成首轮比较，报告单列截断数据。
+`acceptance/gsm8k-online-report.json` 中的 `online` 和 `ar_online` 使用相同的实际训练题、并发和生成上限。`ar`、`initial` 和 `frozen` 用相同的留出题。报告包含逐 token 对照、接受率、更新和发布耗时、计入所有更新的端到端吞吐，以及扣除首轮或全部更新成本的估算。AR 和起草预热单列。64-token 上限便于在一个双机窗口完成首轮比较，报告单列截断数据。
 
 #### 保留原报告配置
 

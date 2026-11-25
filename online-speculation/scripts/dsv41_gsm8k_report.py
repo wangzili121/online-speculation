@@ -154,7 +154,7 @@ def _collect_phases(path, offset, previous, totals, draft_versions):
 
 def study_workload(runner, session, online, prompts, entries, *, train_count, steps,
                    batch_size, eos_ids, decoder, output, engram_seconds, min_published_update=0,
-                   compare_online_ar=False):
+                   compare_online_ar=False, two_arm=False):
     """Persist each wave; compare fixed versions on the identical held-out requests."""
     link = session.cluster.link
     startup = {"engram_seconds": engram_seconds}
@@ -179,7 +179,8 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
         print(json.dumps(dict(stage="gsm8k_online_startup", phase=name)), flush=True)
         started = perf_counter()
         warmup_rows, _, _ = generate_wave(
-            runner, prompts[:batch_size], entries[:batch_size], 2, start_index=0, phase=name,
+            runner, prompts[train_count:train_count + batch_size], entries[train_count:train_count + batch_size],
+            2, start_index=0, phase=name,
             eos_ids=eos_ids, decoder=decoder, speculative=speculative,
             expected=None if expected is None else expected["requests"],
         )
@@ -196,10 +197,12 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
 
     warmup_target = warmup("ar_warmup", speculative=False)
     phases = [("ar", heldout), ("initial", heldout), ("online", train), ("frozen", heldout)]
-    if compare_online_ar:
+    if two_arm:
+        phases = [("ar_online", train), ("online", train)]
+    elif compare_online_ar:
         phases.append(("ar_online", train))
     for name, subset in phases:
-        if name == "initial":
+        if name == ("online" if two_arm else "initial"):
             warmup("draft_warmup", speculative=True, expected=warmup_target)
         print(json.dumps(dict(stage="gsm8k_online_phase", phase=name)), flush=True)
         if name == "online":
@@ -210,7 +213,7 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
             startup["learner_bind"] = max(elapsed, link.exchange("report/seconds/learner-bind", elapsed))
         if name == "frozen":
             session.online = None  # The last published operands remain active in ResidentDraftAttention.
-        if name == "ar_online":
+        if name == "ar_online" and not two_arm:
             subset = slice(0, len(run_results["online"]["requests"]))
         rows, speculation, timing = [], Counter(), Counter()
         phase_totals = defaultdict(Counter)
@@ -221,8 +224,10 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
             baseline = run_results["ar"]["requests"][first - train_count:last - train_count] if (
                 name in ("initial", "frozen")
             ) else None
-            if name == "ar_online":
+            if name == "ar_online" and not two_arm:
                 baseline = run_results["online"]["requests"][first:last]
+            if name == "online" and two_arm:
+                baseline = run_results["ar_online"]["requests"][first:last]
             emitted, counts, spans = generate_wave(
                 runner, prompts[first:last], entries[first:last], steps,
                 start_index=first - subset.start, phase=name, decoder=decoder, eos_ids=eos_ids,
@@ -303,22 +308,24 @@ def study_workload(runner, session, online, prompts, entries, *, train_count, st
             _write(output / f"gsm8k-online-{name}.json", result)
             _write(summary_path, report)
             print(json.dumps(dict(stage="gsm8k_online_progress", phase=name, **stats)), flush=True)
-            if name == "online" and min_published_update and stats["published_update"] >= min_published_update:
+            if name == "online" and not two_arm and min_published_update and stats["published_update"] >= min_published_update:
                 break
         if name in ("initial", "frozen"):
             comparisons[name] = request_parity(run_results["ar"], run_results[name])
-        elif name == "ar_online":
-            comparisons["online"] = request_parity(run_results[name], run_results["online"])
+        elif name == ("online" if two_arm else "ar_online"):
+            comparisons["online"] = request_parity(run_results["ar_online"], run_results["online"])
         _write(summary_path, report)
     trained = arms["online"]
     report["passed"] = bool(
         trained["publications"] and trained["published_update"] >= min_published_update
-        and arms["frozen"]["draft_head_versions"] == [trained["head_version"]]
+        and (any(version > 0 for version in trained["draft_head_versions"]) if two_arm
+             else arms["frozen"]["draft_head_versions"] == [trained["head_version"]])
     )
     if trained["published_update"] < min_published_update:
         report["failure_reason"] = "training request budget ended before the requested optimizer step was published"
-    report["frozen_speedup_vs_initial"] = arms["frozen"]["wall_tok_s"] / arms["initial"]["wall_tok_s"]
-    report["frozen_speedup_vs_ar"] = arms["frozen"]["wall_tok_s"] / arms["ar"]["wall_tok_s"]
+    if not two_arm:
+        report["frozen_speedup_vs_initial"] = arms["frozen"]["wall_tok_s"] / arms["initial"]["wall_tok_s"]
+        report["frozen_speedup_vs_ar"] = arms["frozen"]["wall_tok_s"] / arms["ar"]["wall_tok_s"]
     if compare_online_ar:
         baseline = arms["ar_online"]["wall_tok_s"]
         report["online_speedup_vs_ar"] = trained["wall_tok_s"] / baseline

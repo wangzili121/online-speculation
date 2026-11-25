@@ -410,6 +410,7 @@ def run(args):
                        online_benchmark=args.online_benchmark,
                        report_train_requests=args.report_train_requests, report_batch_size=args.report_batch_size,
                        report_min_updates=args.report_min_updates, report_online_ar=args.report_online_ar,
+                       report_two_arm=args.report_two_arm,
                        orthrus_jit_cache=orthrus_jit_cache,
                        online=None if online is None else online.config.contract())
         peer_request = link.exchange("acceptance/configuration", request)
@@ -462,6 +463,7 @@ def run(args):
                     steps=args.tokens, batch_size=args.report_batch_size, eos_ids=eos_ids, decoder=decoder,
                     output=args.output, engram_seconds=engram_seconds,
                     min_published_update=args.report_min_updates, compare_online_ar=args.report_online_ar,
+                    two_arm=args.report_two_arm,
                 )
             else:
                 for mode in modes:
@@ -494,13 +496,13 @@ def run(args):
         for mode in modes:
             prefix = f"{mode}-request-"
             if mode == "target" and args.report_online_ar:
-                prefix += "ar-"
+                prefix += "ar_online-" if args.report_two_arm else "ar-"
             _, dispatch_counts, restored = audit_session(
                 native_dir, speculative=mode == "orthrus", node_local=True, request_prefix=prefix,
                 require_updated_draft=mode == "orthrus" and args.require_online_update and study is None,
             )
             audits[mode] = dict(phases=dispatch_counts, verifier_restored_bytes=restored)
-            if mode == "target" and args.report_online_ar:
+            if mode == "target" and args.report_online_ar and not args.report_two_arm:
                 _, same_online_phases, _ = audit_session(
                     native_dir, speculative=False, node_local=True, request_prefix="target-request-ar_online-",
                     allow_resident_draft=True,
@@ -672,12 +674,15 @@ def main():
                         help="Run a batched GSM8K study using this many initial training requests")
     parser.add_argument("--report-min-updates", type=int, default=0,
                         help="Stop training after a full wave publishes at least this optimizer step")
+    parser.add_argument("--report-two-arm", action="store_true")
     parser.add_argument("--report-online-ar", action="store_true",
                         help="Compare the online phase with AR on the exact requests it consumed")
     parser.add_argument("--report-batch-size", type=int, choices=(1, 2, 3, 4), default=4)
     parser.add_argument("--connect-timeout", type=int, default=900)
     parser.add_argument("--timeout", type=int, default=3600, help="Maximum seconds of peer inactivity")
     args = parser.parse_args()
+    if args.report_two_arm and not args.report_online_ar:
+        parser.error("--report-two-arm requires --report-online-ar")
     if not 1 <= args.verify_candidate_limit <= 31:
         parser.error("--verify-candidate-limit must be in 1..31")
     if args.report_min_updates < 0 or (

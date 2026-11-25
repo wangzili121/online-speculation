@@ -35,7 +35,7 @@ case "$mode" in
         default_train=16 default_eval=4 default_tokens=64 default_min_updates=16
         warmup_updates=4 warm_steps=16 publish_every=4
         verify_candidates="${DSV41_VERIFY_CANDIDATES:-7}"
-        report_options+=(--report-online-ar)
+        report_options+=(--report-online-ar --report-two-arm)
         ;;
       report)
         default_train=8 default_eval=4 default_tokens=32 default_min_updates=0
