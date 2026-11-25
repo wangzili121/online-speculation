@@ -69,6 +69,65 @@ class ClusterTest(unittest.TestCase):
                 with self.subTest(devices=devices), self.assertRaisesRegex(ValueError, "node-local logical"):
                     ClusterCollectives(SimpleNamespace(devices=devices), plan, link, native=native)
 
+    def test_local_tp_rejects_mismatched_shapes_before_device_transfer(self):
+        import torch
+
+        plan = RankPlan((4, 4), 4, 1)
+
+        def unexpected_control(*_):
+            self.fail("Local TP should never contact the other host")
+
+        link = SimpleNamespace(node=1, exchange=unexpected_control)
+        native = SimpleNamespace(CANNMemory=object, HCCLBytes=object, _check=None, _bind=lambda *_: None)
+        runtime = SimpleNamespace(devices=tuple(range(4)))
+        packets = [{"value": {"hidden": torch.zeros((rows, 8))}} for rows in (4, 4, 8, 4)]
+        with patch("blockspec.pypto_dsv41_cluster_transport.C.CDLL"):
+            with ClusterCollectives(runtime, plan, link, native=native) as transport:
+                with self.assertRaisesRegex(ValueError, r"HCCL tensor ABI differs in tp group .*4, 5, 6, 7"):
+                    transport.exchange("draft", packets, "reduce_scatter", "tp")
+
+    def test_local_tp_keeps_the_cross_host_collective_schedule(self):
+        import torch
+
+        def task(node, link):
+            plan = RankPlan((2, 2), 2, node)
+            local = list(plan.local_ranks)
+            runtime = SimpleNamespace(
+                devices=(0, 1),
+                map_ranks=lambda fn: [fn(0), fn(1)],
+                workspace=lambda shape, dtype, rank, fill: torch.empty(shape, dtype=dtype),
+                tensor=lambda value, rank: value,
+            )
+            native = SimpleNamespace(CANNMemory=object, HCCLBytes=object, _check=None, _bind=lambda *_: None)
+            packets = [{"wave": {"value": torch.zeros((4, 8))}} for _ in local]
+            stages = []
+            with ClusterCollectives(runtime, plan, link, native=native) as transport:
+                def channels(group):
+                    return {
+                        i: SimpleNamespace(
+                            world=len(members), group_ranks=list(members),
+                            _validate_device_transfer=lambda *_: None,
+                            exchange_device_batch=lambda *_: None,
+                        )
+                        for i, rank in enumerate(local) for members in plan.groups(group)
+                        if rank in members
+                    }
+
+                transport._channels = channels
+                dispatch = ClusterDispatcher(plan, link, build_id="tp-local")
+                for phase, group in (("prefill", "tp"), ("draft", "ep"), ("verify", "dp"), ("accept", "tp")):
+                    def execute(_):
+                        start = link.step
+                        _, receipts = transport.exchange(phase, packets, "all_gather", group)
+                        self.assertEqual([row["rank"] for row in receipts], local)
+                        stages.append(link.step - start)
+
+                    dispatch.execute(phase, execute)
+                return stages, dispatch.epoch
+
+        with patch("blockspec.pypto_dsv41_cluster_transport.C.CDLL"):
+            self.assertEqual(self.pair(task), [([0, 2, 2, 0], 2)] * 2)
+
     def test_wave_preserves_global_dp_and_empty_partitions(self):
         active = {"request_slot": 0, "generation": 7, "token_ids": [12, 13]}
         contract = dict(topology={"dp": 4, "tp": 4, "ep": 16},

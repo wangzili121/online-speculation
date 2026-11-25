@@ -125,14 +125,20 @@ class ClusterCollectives:
             [case, field, list(value.shape), str(value.dtype)]
             for case, values in packet.items() for field, value in values.items()
         ]} for rank, packet in zip(ranks, packets, strict=True)]
-        with timed_stage(f"{group}_schedule_control"):
-            peer = self.link.exchange(f"schedule/{stage}", dict(collective=collective, group=group, packets=signatures))
-        if peer["collective"] != collective or peer["group"] != group:
-            raise ValueError("Peers entered different HCCL collectives")
-        records = signatures + peer["packets"]
-        shapes = {row["rank"]: row["fields"] for row in records}
-        if len(records) != sum(self.plan.counts) or set(shapes) != set(range(sum(self.plan.counts))):
-            raise ValueError("HCCL packet ownership does not cover the global ranks")
+        if group == "tp":
+            # RankPlan places entire TP partitions on the same host.
+            # Only collectives with remote members require peer rendezvous.
+            groups = tuple(members for members in groups if members[0] in ranks)
+            shapes = {row["rank"]: row["fields"] for row in signatures}
+        else:
+            with timed_stage(f"{group}_schedule_control"):
+                peer = self.link.exchange(f"schedule/{stage}", dict(collective=collective, group=group, packets=signatures))
+            if peer["collective"] != collective or peer["group"] != group:
+                raise ValueError("Peers entered different HCCL collectives")
+            records = signatures + peer["packets"]
+            shapes = {row["rank"]: row["fields"] for row in records}
+            if len(records) != sum(self.plan.counts) or set(shapes) != set(range(sum(self.plan.counts))):
+                raise ValueError("HCCL packet ownership does not cover the global ranks")
         for members in groups:
             if not shapes[members[0]] or any(shapes[rank] != shapes[members[0]] for rank in members):
                 raise ValueError(f"HCCL tensor ABI differs in {group} group {members}")
@@ -160,8 +166,9 @@ class ClusterCollectives:
 
         with timed_stage(f"{group}_collective_buffer_prepare"):
             prepared = self.runtime.map_ranks(prepare)
-        with timed_stage(f"{group}_ready_control"):
-            self.link.exchange(f"ready/{stage}", None)
+        if group != "tp":
+            with timed_stage(f"{group}_ready_control"):
+                self.link.exchange(f"ready/{stage}", None)
 
         def transfer(rank):
             outputs, transfers = prepared[rank]

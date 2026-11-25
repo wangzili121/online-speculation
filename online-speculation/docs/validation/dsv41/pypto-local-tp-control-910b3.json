@@ -1,0 +1,46 @@
+{
+  "passed": true,
+  "samples": {
+    "reduce_scatter": {
+      "baseline_ms": 5.676559871062636,
+      "local_ms": 5.400249036028981,
+      "baseline_control_steps": [
+        2
+      ],
+      "local_control_steps": [
+        0
+      ],
+      "iterations": 35
+    },
+    "all_gather": {
+      "baseline_ms": 6.6420219372957945,
+      "local_ms": 5.846359999850392,
+      "baseline_control_steps": [
+        2
+      ],
+      "local_control_steps": [
+        0
+      ],
+      "iterations": 35
+    }
+  },
+  "tensor_shape": [
+    64,
+    5120
+  ],
+  "dtype": "fp32",
+  "tp": 4,
+  "control_peer": "socketpair; local HCCL TP4 on four 910B3",
+  "host": "111",
+  "physical_devices": [
+    4,
+    5,
+    6,
+    7
+  ],
+  "baseline_revision": "60d2369",
+  "result_byte_exact": true,
+  "scope": "Real local TP4 collectives with a control peer over socketpair",
+  "cross_host_schedule_test": "Both nodes passed prefill/draft/verify/accept in CPU contract test",
+  "device_cluster_smoke": "Loopback device init failed before the collective sequence; separate EP16 run pending"
+}
