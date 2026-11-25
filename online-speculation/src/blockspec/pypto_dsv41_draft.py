@@ -86,6 +86,90 @@ def prepare_qkv(weights, config, *, tp_rank, tp=4):
     )
 
 
+def pack_draft_input_projection(operands):
+    """Lay out the Q-A and KV channels consecutively for one resident GEMM."""
+    import torch
+
+    return torch.cat((operands["wq_a"], operands["wkv"]), dim=1)
+
+
+def make_packed_draft_qkv(config, *, tp=4, capacity=16):
+    """Project a BF16 draft head using the 1122 A3 GEMM, RMSNorm and RoPE."""
+    import pypto.language as pl
+    from models.deepseek_v4_1_flash_a3.gemm import gemm_bf16_to_bf16 as gemm
+    from models.deepseek_v4_1_flash_a3.qkv_proj_rope import _tile_rsqrt_for_norm
+    from models.deepseek_v4_1_flash_a3.rope import make_pipelined_rope
+
+    hidden, latent = config["hidden_size"], config["q_lora_rank"]
+    heads, dim = config["num_attention_heads"] // tp, config["head_dim"]
+    q_width, joint_width = heads * dim, latent + dim
+    eps = config["rms_norm_eps"]
+    q_rope = make_pipelined_rope(
+        capacity, heads, dim, inverse=False, name_hint="orthrus_q_rope", allow_early_resolve=False,
+    )
+    kv_rope = make_pipelined_rope(
+        capacity, 1, dim, inverse=False, name_hint="orthrus_kv_rope", allow_early_resolve=False,
+    )
+
+    @pl.jit.inline
+    def norm_projection(
+        joint: pl.Tensor[[capacity, joint_width], pl.BF16],
+        gamma: pl.Tensor,
+        output: pl.Tensor,
+        active: pl.Scalar[pl.INT32],
+        columns: pl.constexpr,
+        first_col: pl.constexpr,
+    ):
+        # Load directly from the joined GEMM's row stride. A view with a
+        # narrower declared width would require repacking before a native norm.
+        for task in pl.spmd((active + 7) // 8, name_hint="orthrus_qkv_norm"):
+            row = task * 8
+            rows = pl.min(8, active - row)
+            raw = pl.load(joint, [row, first_col], [8, columns], valid_shape=[rows, columns])
+            padded = pl.set_validshape(pl.fillpad(raw, pad_value=pl.PadValue.zero), 8, columns)
+            value = pl.cast(padded, pl.FP32)
+            weight_row = pl.tensor.view(gamma, [1, columns])
+            gamma_row = pl.cast(pl.load(weight_row, [0, 0], [1, columns]), pl.FP32)
+            sum_scratch = pl.create_tile([8, columns], dtype=pl.FP32)
+            mean = pl.mul(pl.row_sum(pl.mul(value, value), tmp_tile=sum_scratch), 1.0 / columns)
+            inverse_scratch = pl.create_tile([8, 1], dtype=pl.FP32)
+            inv = _tile_rsqrt_for_norm(pl.add(mean, eps), inverse_scratch)
+            normalized = pl.col_expand_mul(pl.row_expand_mul(value, inv), gamma_row)
+            narrowed = pl.cast(normalized, pl.BF16, mode="rint")
+            pl.store(pl.set_validshape(narrowed, rows, columns), [row, 0], output)
+        return output
+
+    @pl.jit
+    def project(
+        x: pl.Tensor[[capacity, hidden], pl.BF16],
+        wq_a_kv: pl.Tensor[[hidden, joint_width], pl.BF16],
+        q_gamma: pl.Tensor[[latent], pl.BF16],
+        wq_b: pl.Tensor[[latent, q_width], pl.BF16],
+        kv_gamma: pl.Tensor[[dim], pl.BF16],
+        cosine: pl.Tensor[[capacity, 32], pl.FP32],
+        sine: pl.Tensor[[capacity, 32], pl.FP32],
+        low_rank: pl.Out[pl.Tensor[[capacity, latent], pl.BF16]],
+        query: pl.Out[pl.Tensor[[capacity, q_width], pl.BF16]],
+        temporary: pl.Out[pl.Tensor[[capacity, dim], pl.BF16]],
+        active: pl.Scalar[pl.INT32],
+    ):
+        qa_kv = pl.create_tensor([capacity, joint_width], dtype=pl.BF16)
+        q_raw = pl.create_tensor([capacity, q_width], dtype=pl.BF16)
+        kv_normalized = pl.create_tensor([capacity, dim], dtype=pl.BF16)
+        start = pl.system.task_dummy(deps=[])
+        qa_kv, _ = gemm(x, wq_a_kv, qa_kv, active, start, hidden, joint_width,
+                        128, 256, 32, "orthrus_qa_kv", 0, 0, False, 16, 2)
+        low_rank = norm_projection(qa_kv, q_gamma, low_rank, active, latent, 0)
+        kv_normalized = norm_projection(qa_kv, kv_gamma, kv_normalized, active, dim, latent)
+        q_raw, _ = gemm(low_rank, wq_b, q_raw, active, start, latent, q_width,
+                        128, 256, 32, "orthrus_qb", 0, 0, False, 16, 2)
+        query = q_rope(q_raw, cosine, sine, query, active)
+        temporary = kv_rope(kv_normalized, cosine, sine, temporary, active)
+        return low_rank, query, temporary
+
+    return project
+
+
 def prepare_output(weights, config, *, tp_rank, tp=4):
     """Assign complete Wo-A groups and their matching Wo-B columns to this rank."""
     import torch
