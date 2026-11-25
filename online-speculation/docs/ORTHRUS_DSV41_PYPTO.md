@@ -73,7 +73,9 @@ BF16 draft QKV 复用新版 GEMM 和 RoPE。Q-A 和 KV 权重在装载时打包�
 
 61 的单张 910B3 在 K8、K16、K32 的 15 组输入上验证了完整 Top-K 集合、输出和 LSE。融合与拆分提交的结果逐位相同，目标索引缓存逐字节一致。相对 FP64 参考的最大绝对误差为 `1.32e-5`，LSE 为 `9.54e-7`。同一 worker 交替计时，15 组的调用中位数从 36.45 ms 降到 18.60 ms，包含宿主提交。可用 `validate_dsv41_pypto_packed_indexer.py --fused-attention` 复验。另以 K8 覆盖 8K 和 16K 的 C1A/C2A 历史，四组 Top-K 与 Torch 一致，融合与拆分输出逐位相同。扩展用例的最大输出误差为 `1.64e-6`，可追加 `--extended-context --blocks 8` 复验。
 
-同一设备程序已连接 mHC 输入归一化、BF16 QKV、Indexer、只读分页 Attention 和原生 NZ 布局 Wo，返回单个 TP rank 对隐状态的贡献。用真实 W8A8 checkpoint 初始化第 0 层 QKV/Wo，并使用测试索引缓存，在 K8、K16、K32 上通过数值验证，最大相对 L2 误差为 `2.04e-3`。复验入口为 `validate_dsv41_pypto_packed_layer.py --checkpoint <W8A8目录>`。该入口覆盖 Attention 子层，整模的 TP 归约、MoE、Engram 和请求调度还需连接。[单卡原始数据](validation/dsv41/pypto-1122-packed-draft-layer-910b3.json)
+新版起草 Attention 子层均从 mHC 输入归一化执行到原生 NZ 布局 Wo，输出本地 TP rank 的贡献。SWA 层使用滑窗和临时双向块。Full/Reindex 层写出每个 query 的历史选择，Reuse 层直接读取同一份驻留选择，使用本层的 Q、临时 KV 和 Wo 重新计算 Attention。三种路径都以只读方式访问目标缓存。
+
+单卡复验使用真实 W8A8 checkpoint 初始化 QKV/Wo，配合构造的分页历史。验证入口 `validate_dsv41_pypto_packed_layer.py --checkpoint <W8A8目录>` 覆盖 K8、K16、K32 和两种压缩率。相同输入下，带 Indexer 与复用选择的输出逐字节一致；更换复用层的隐状态后，输出与 Torch 参考一致；目标 SWA、压缩历史和 Indexer 缓存逐字节一致。本测试覆盖单 rank Attention 子层，整模 TP 归约、MoE、Engram 和请求调度仍待接入。[单卡原始数据](validation/dsv41/pypto-1122-packed-draft-layer-910b3.json)
 
 ## 内网权重预检
 

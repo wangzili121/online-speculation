@@ -268,5 +268,130 @@
         "lse_max_abs": 4.76837158203125e-07
       }
     ]
+  },
+  "swa_indexed_reuse": {
+    "scope": "One 910B3 rank per run, real W8A8-derived QKV/Wo and attention norm; test paging and indexer operands",
+    "kernel_call_samples_per_case_and_role": 5,
+    "relative_l2_max": 0.0020300557371228933,
+    "runs": [
+      {
+        "passed": true,
+        "npu_execution": true,
+        "layer": 13,
+        "tp_rank": 2,
+        "cases": [
+          {
+            "block": 8,
+            "ratio": 2,
+            "anchor": 257,
+            "relative_l2": {
+              "scored": 0.0017246775096282363,
+              "reuse_next": 0.0017895054770633578,
+              "swa": 0.0018834659131243825
+            },
+            "resident_call_median_us": {
+              "scored": 18582.392018288374,
+              "reuse": 42936.899699270725,
+              "swa": 42053.870391100645
+            },
+            "same_input_reuse_byte_exact": true,
+            "caches_byte_exact": true
+          },
+          {
+            "block": 16,
+            "ratio": 1,
+            "anchor": 643,
+            "relative_l2": {
+              "scored": 0.0017456476343795657,
+              "reuse_next": 0.0015993888955563307,
+              "swa": 0.001818890799768269
+            },
+            "resident_call_median_us": {
+              "scored": 23914.623074233532,
+              "reuse": 23697.30081409216,
+              "swa": 23663.190193474293
+            },
+            "same_input_reuse_byte_exact": true,
+            "caches_byte_exact": true
+          },
+          {
+            "block": 32,
+            "ratio": 2,
+            "anchor": 1091,
+            "relative_l2": {
+              "scored": 0.0016752813244238496,
+              "reuse_next": 0.0016924580559134483,
+              "swa": 0.0017630091169849038
+            },
+            "resident_call_median_us": {
+              "scored": 18470.220733433962,
+              "reuse": 18254.048191010952,
+              "swa": 18233.527895063162
+            },
+            "same_input_reuse_byte_exact": true,
+            "caches_byte_exact": true
+          }
+        ]
+      },
+      {
+        "passed": true,
+        "npu_execution": true,
+        "layer": 0,
+        "tp_rank": 0,
+        "cases": [
+          {
+            "block": 8,
+            "ratio": 2,
+            "anchor": 257,
+            "relative_l2": {
+              "scored": 0.0020300557371228933,
+              "reuse_next": 0.0018237833864986897,
+              "swa": 0.0019979397766292095
+            },
+            "resident_call_median_us": {
+              "scored": 17920.78511789441,
+              "reuse": 39412.49009221792,
+              "swa": 39030.924905091524
+            },
+            "same_input_reuse_byte_exact": true,
+            "caches_byte_exact": true
+          },
+          {
+            "block": 16,
+            "ratio": 1,
+            "anchor": 643,
+            "relative_l2": {
+              "scored": 0.0018089625518769026,
+              "reuse_next": 0.0018736234633252025,
+              "swa": 0.0017663388280197978
+            },
+            "resident_call_median_us": {
+              "scored": 23419.327102601528,
+              "reuse": 22751.268930733204,
+              "swa": 22422.9758605361
+            },
+            "same_input_reuse_byte_exact": true,
+            "caches_byte_exact": true
+          },
+          {
+            "block": 32,
+            "ratio": 2,
+            "anchor": 1091,
+            "relative_l2": {
+              "scored": 0.0017146983882412314,
+              "reuse_next": 0.0016344054602086544,
+              "swa": 0.001631567138247192
+            },
+            "resident_call_median_us": {
+              "scored": 20300.35201460123,
+              "reuse": 19686.995074152946,
+              "swa": 36667.48898103833
+            },
+            "same_input_reuse_byte_exact": true,
+            "caches_byte_exact": true
+          }
+        ]
+      }
+    ]
   }
 }

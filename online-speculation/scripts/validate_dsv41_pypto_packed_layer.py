@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the fused, rank-local scored draft attention sublayer."""
+"""Validate the fused, rank-local SWA, Indexer and Reuse draft sublayers."""
 
 import argparse
 from dataclasses import asdict
@@ -13,17 +13,37 @@ import torch
 from blockspec.pypto_dsv41_draft import (
     pack_draft_input_projection, pack_draft_output_projection, prepare_output,
 )
-from blockspec.pypto_dsv41_packed_draft_attention import make_packed_scored_draft_layer
+from blockspec.pypto_dsv41_packed_draft_attention import (
+    make_packed_reuse_draft_layer, make_packed_scored_draft_layer, make_packed_swa_draft_layer,
+)
 from blockspec.pypto_dsv41_packed_indexer import packed_index_controls
 from validate_dsv41_pypto_packed_indexer import attention_fixture, attention_reference, fixtures
 from validate_dsv41_pypto_packed_qkv import checkpoint_operands
 
 
-def validate(args):
+def reference(hidden_rows, norm, operands, wo, rope, history, selected, sink, anchor):
     from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
     from models.deepseek_v4_1_flash_a3.o_proj import golden_o_proj
     from models.deepseek_v4_1_flash_a3.qkv_proj_rope import golden_rope_tail
     from models.deepseek_v4_1_flash_a3.rmsnorm import golden_rms_norm
+
+    block = selected.shape[0]
+    heads = FLASH.num_attention_heads // TP_SIZE
+    cosine, sine = rope
+    window, compressed = history
+    x = golden_rms_norm(hidden_rows[:block, 0].bfloat16(), norm)
+    qr = golden_rms_norm((x.float() @ operands["wq_a"].float()).bfloat16(), operands["q_norm"])
+    query = (qr.float() @ operands["wq_b"].float()).bfloat16().view(block, heads, FLASH.head_dim)
+    query = golden_rope_tail(query, cosine[:block], sine[:block])
+    kv = golden_rms_norm((x.float() @ operands["wkv"].float()).bfloat16(), operands["kv_norm"])
+    kv = golden_rope_tail(kv, cosine[:block], sine[:block])
+    context, _ = attention_reference(query, kv, window, compressed, selected, sink, anchor)
+    return golden_o_proj(context.bfloat16(), cosine[:block], sine[:block],
+                         wo["wo_a"].transpose(-2, -1), wo["wo_b"]).float()
+
+
+def validate(args):
+    from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
     from models.deepseek_v4_1_flash_a3.weights import Checkpoint
     from pypto.backend import BackendType
     from pypto.ir import DistributedConfig
@@ -45,7 +65,6 @@ def validate(args):
     pages = 16
     table = torch.arange(pages - 1, -1, -1, dtype=torch.int32)
     generator = torch.Generator().manual_seed(5319)
-    heads = FLASH.num_attention_heads // TP_SIZE
     cases = []
     for block, ratio, anchor in ((8, 2, 257), (16, 1, 643), (32, 2, 1091)):
         capacity = max(16, block)
@@ -61,26 +80,74 @@ def validate(args):
         lengths = torch.empty((block,), dtype=torch.int32)
         bias = torch.empty_like(rows, dtype=torch.float32)
         contribution = torch.empty((block, FLASH.hidden_size), dtype=torch.bfloat16)
-        inputs = (x_hc, pre_mix, norm, packed_qkv, operands["q_norm"], operands["wq_b"], operands["kv_norm"],
-                  idx_wq, idx_weight, cosine, sine, index_payload, index_scales, index_table, request_ids,
-                  visible, *banks, sink, zeros, packed_wo["wo_a"], packed_wo["wo_b"])
-        outputs = (rows, lengths, bias, contribution)
-        program = make_packed_scored_draft_layer(pages, pages, bucket, ratio, block).compile(
-            *inputs, *outputs, config=config,
+        projection = (x_hc, pre_mix, norm, packed_qkv, operands["q_norm"], operands["wq_b"], operands["kv_norm"])
+        output_weights = (sink, zeros, packed_wo["wo_a"], packed_wo["wo_b"])
+        selection = (rows, lengths, bias)
+        reused = torch.empty_like(contribution)
+        next_contribution = torch.empty_like(contribution)
+        swa_contribution = torch.empty_like(contribution)
+        next_hidden = x_hc.roll(1, dims=0)
+        calls = dict(
+            scored=(
+                make_packed_scored_draft_layer(pages, pages, bucket, ratio, block),
+                (*projection, idx_wq, idx_weight, cosine, sine, index_payload, index_scales, index_table,
+                 request_ids, visible, *banks, *output_weights),
+                (*selection, contribution),
+            ),
+            reuse=(
+                make_packed_reuse_draft_layer(pages, pages, block),
+                (*projection, cosine, sine, *banks, *selection, *output_weights),
+                (reused,),
+            ),
+            swa=(
+                make_packed_swa_draft_layer(pages, block),
+                (*projection, cosine, sine, *banks[:7], *output_weights),
+                (swa_contribution,),
+            ),
         )
+        programs = {
+            role: entry.compile(*inputs, *outputs, config=config)
+            for role, (entry, inputs, outputs) in calls.items()
+        }
         with ChipWorker(config) as worker:
-            handles = [worker.alloc_tensor(t.shape, t.dtype) for t in (*inputs, *outputs)]
-            for tensor, handle in zip(inputs, handles[:len(inputs)], strict=True):
-                worker.copy_to(handle.data_ptr, tensor.data_ptr(), tensor.nbytes)
-            worker.run(program, *handles, config=config)
-            timings = []
-            for _ in range(args.iterations):
-                start = perf_counter()
-                worker.run(program, *handles, config=config)
-                timings.append(perf_counter() - start)
-            for tensor, handle in zip(outputs, handles[len(inputs):], strict=True):
-                worker.copy_from(tensor.data_ptr(), handle.data_ptr, tensor.nbytes)
+            handles = {}
+            for _, inputs, outputs in calls.values():
+                for tensor in (*inputs, *outputs):
+                    if id(tensor) not in handles:
+                        handles[id(tensor)] = worker.alloc_tensor(tensor.shape, tensor.dtype)
+            for tensor in calls["scored"][1]:
+                worker.copy_to(handles[id(tensor)].data_ptr, tensor.data_ptr(), tensor.nbytes)
 
+            timings = {}
+            for role, (_, inputs, outputs) in calls.items():
+                arguments = [handles[id(tensor)] for tensor in (*inputs, *outputs)]
+                worker.run(programs[role], *arguments, config=config)
+                samples = []
+                for _ in range(args.iterations):
+                    start = perf_counter()
+                    worker.run(programs[role], *arguments, config=config)
+                    samples.append(perf_counter() - start)
+                timings[role] = median(samples) * 1e6
+
+            # Keep the selected rows on the device across both calls.
+            next_input = worker.alloc_tensor(next_hidden.shape, next_hidden.dtype)
+            next_output = worker.alloc_tensor(next_contribution.shape, next_contribution.dtype)
+            worker.copy_to(next_input.data_ptr, next_hidden.data_ptr(), next_hidden.nbytes)
+            worker.run(programs["reuse"], next_input, *(
+                handles[id(tensor)] for tensor in calls["reuse"][1][1:]
+            ), next_output, config=config)
+
+            for _, _, outputs in calls.values():
+                for tensor in outputs:
+                    worker.copy_from(tensor.data_ptr(), handles[id(tensor)].data_ptr, tensor.nbytes)
+            worker.copy_from(next_contribution.data_ptr(), next_output.data_ptr, next_contribution.nbytes)
+
+            for original in (banks[0], banks[1], banks[7], banks[8], index_payload, index_scales):
+                observed = torch.empty_like(original)
+                worker.copy_from(observed.data_ptr(), handles[id(original)].data_ptr, observed.nbytes)
+                torch.testing.assert_close(observed.view(torch.uint8), original.view(torch.uint8), rtol=0, atol=0)
+
+        torch.testing.assert_close(contribution, reused, rtol=0, atol=0)
         committed = anchor // ratio
         count = min(committed, FLASH.index_topk)
         torch.testing.assert_close(lengths, torch.full_like(lengths, count), atol=0, rtol=0)
@@ -89,21 +156,21 @@ def validate(args):
         assert bool((rows[:, count:] == -1).all())
         # The packed Indexer fixture independently tests exact selected sets.
         # Use the selected rows here to isolate the connected projection path.
-        x = golden_rms_norm(embedding[:block], norm)
-        qr = golden_rms_norm((x.float() @ operands["wq_a"].float()).bfloat16(), operands["q_norm"])
-        query = (qr.float() @ operands["wq_b"].float()).bfloat16().view(block, heads, FLASH.head_dim)
-        query = golden_rope_tail(query, cosine[:block], sine[:block])
-        kv = golden_rms_norm((x.float() @ operands["wkv"].float()).bfloat16(), operands["kv_norm"])
-        kv = golden_rope_tail(kv, cosine[:block], sine[:block])
-        context, _ = attention_reference(query, kv, window, compressed, rows, sink, anchor)
-        expected = golden_o_proj(context.bfloat16(), cosine[:block], sine[:block],
-                                 wo["wo_a"].transpose(-2, -1), wo["wo_b"]).float()
-        relative_l2 = ((contribution.float() - expected).norm() / expected.norm().clamp_min(1e-30)).item()
-        case = dict(block=block, ratio=ratio, anchor=anchor, relative_l2=relative_l2,
-                    resident_call_median_us=median(timings) * 1e6)
+        errors = {}
+        for role, result, hidden_rows, selected in (
+            ("scored", contribution, x_hc, rows),
+            ("reuse_next", next_contribution, next_hidden, rows),
+            ("swa", swa_contribution, x_hc, rows[:, :0]),
+        ):
+            expected = reference(
+                hidden_rows, norm, operands, wo, (cosine, sine), (window, compressed), selected, sink, anchor,
+            )
+            errors[role] = ((result.float() - expected).norm() / expected.norm().clamp_min(1e-30)).item()
+            if errors[role] > 0.005:
+                raise RuntimeError(f"{role} draft attention sublayer differs from the Torch reference: {errors[role]}")
+        case = dict(block=block, ratio=ratio, anchor=anchor, relative_l2=errors,
+                    resident_call_median_us=timings, same_input_reuse_byte_exact=True, caches_byte_exact=True)
         print(json.dumps(case), flush=True)
-        if relative_l2 > 0.005:
-            raise RuntimeError("scored draft attention sublayer differs from the Torch reference")
         cases.append(case)
     return dict(passed=True, npu_execution=True, layer=args.layer, tp_rank=args.tp_rank, cases=cases)
 
