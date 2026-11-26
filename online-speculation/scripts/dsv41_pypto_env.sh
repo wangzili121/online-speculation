@@ -165,8 +165,9 @@ case "$action" in
       docker run --rm --network none "$refreshed" /opt/dsv41-1122/run_dsv41_pypto_staged_target.py --help >/dev/null
     else
       docker run --rm --network none --entrypoint /bin/bash "$refreshed" -lc \
-        'git -C /opt/orthrus/pypto-lib apply --reverse --check \
-          /opt/orthrus/online-speculation/runtime/pypto_dsv41_a3/lib-online-expert-capture.patch'
+        'patches=/opt/orthrus/online-speculation/runtime/pypto_dsv41_a3
+         git -C /opt/orthrus/pypto-lib apply --reverse "$patches/lib-online-state-capture.patch" &&
+         git -C /opt/orthrus/pypto-lib apply --reverse --check "$patches/lib-online-expert-capture.patch"'
     fi
     docker tag "$refreshed" "$image"
     echo "Refreshed $image from pinned base $base_image"
