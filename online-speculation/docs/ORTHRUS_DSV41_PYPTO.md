@@ -196,6 +196,14 @@ python /opt/dsv41-1122/validate_dsv41_pypto_packed_generation.py \
 
 ### 双机设备窗口检查
 
+在 node7 执行一条命令可连续检查两台机器的窗口导出、L4 调度及设备端读取对端张量。使用两台各一张空闲卡，无需模型权重。
+
+```bash
+bash online-speculation/scripts/run_dsv41_pypto_company_pair.sh native-fabric
+```
+
+默认使用 node7 的物理卡 1 和 node8 的物理卡 0，可用 `NODE7_FABRIC_NPU` 和 `NODE8_FABRIC_NPU` 覆盖。窗口导出通过后才会启动探针容器。成功时会报告两个 rank 的 `max_diff`，详细日志保存在 `native-fabric.*` 目录。
+
 公司节点可以各用一张空闲卡独立检查，无需启动远端进程或加载模型。
 
 ```bash
