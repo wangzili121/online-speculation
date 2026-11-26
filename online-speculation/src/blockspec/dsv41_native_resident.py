@@ -1,7 +1,6 @@
 """Rank-local resident buffers for the 1122 whole-model chip graphs."""
 
 from ctypes import memmove
-from math import prod
 from types import SimpleNamespace
 
 
@@ -254,12 +253,6 @@ class NativeResidentForward:
         for buffer in self.count_buffers.values():
             with buffer.host_view() as view:
                 view[:] = payload
-
-    def read(self, phase, dp, name, out, *, first_row=0):
-        worker = self.ranks.index(dp * self.tp)
-        tensor = self.buffers[phase][worker][name]
-        self.memory.copy_from(out.data_ptr(), tensor.data_ptr, out.nbytes, worker_id=worker,
-                              src_offset=first_row * prod(tensor.shape[1:]) * out.element_size())
 
     def clear(self, dp, slot, pages):
         workers = self._workers(dp)

@@ -30,7 +30,6 @@ PREFLIGHT, LOAD, PREFILL, DECODE, READ, CLEAR, DRAFT = range(7)
 PHASES = ("prefill", "decode")
 FORWARD_PHASES = (*PHASES, "draft")
 PHASE_OPS = (PREFILL, DECODE, DRAFT)
-OUTPUTS = ("sampled_ids", "logits")
 ROWS_AND_MASK = Struct("<4iB")
 DP_MASK = 0b1111  # Low bits carry input images, high bits reset the DP to its resident idle image.
 DRAFT_CAPTURE = Struct("<i")
@@ -39,6 +38,12 @@ RELEASE = Struct("<2i")
 
 _local_node = None
 _remote_node = None
+
+
+class NativeSampleError(RuntimeError):
+    def __init__(self, phase, dp, row, token, reason):
+        self.evidence = dict(phase=phase, dp=dp, row=row, token=token, reason=reason)
+        super().__init__(f"{phase} DP {dp} row {row}, token {token}: {reason}")
 
 
 class ForwardArtifacts:
@@ -85,6 +90,7 @@ class ForwardArtifacts:
                 program=DistributedCompiledProgram.from_dir(path), graph=NativeRankGraph(path, 16),
             )
         self.sample_shape = (MAX_LOGIT_ROWS, SAMPLED_IDS_PAD)
+        self.vocab_size = config.FLASH.vocab_size
         forward = {phase: (self.programs[phase], self.graphs[phase]) for phase in PHASES}
         if self.draft is not None:
             forward["draft"] = self.draft.program, self.draft.graph
@@ -276,15 +282,22 @@ class ForwardNode:
     def read(self, payload, output):
         import torch
 
-        phase, dp, field, row = READ_ROWS.unpack(payload)
-        phase, name = FORWARD_PHASES[phase], OUTPUTS[field]
-        handle = self.bank.buffers[phase][self.ranks.index(dp * self.bank.tp)][name]
-        row_bytes = prod(handle.shape[1:]) * torch.empty((), dtype=handle.dtype).element_size()
+        index, dp, row, capture_owner = READ_ROWS.unpack(payload)
+        phase = FORWARD_PHASES[index]
+        owner = dp * self.bank.tp
+        worker = self.ranks.index(owner)
+        if phase == "draft":
+            ranks = self.draft.draft.ranks
+            handle = self.draft.capture[owner]["logits"] if capture_owner == owner else ranks[worker]["logits"]
+        else:
+            handle = self.bank.buffers[phase][worker]["logits"]
+        row_bytes = prod(handle.shape[1:]) * handle.dtype.itemsize
         rows, remainder = divmod(len(output), row_bytes)
         if remainder or not 0 <= row < row + rows <= handle.shape[0]:
             raise ValueError("Native target readback range exceeds its bound output")
         value = torch.frombuffer(output, dtype=handle.dtype).reshape(rows, *handle.shape[1:])
-        self.bank.read(phase, dp, name, value, first_row=row)
+        self.bank.memory.copy_from(value.data_ptr(), handle.data_ptr, value.nbytes, worker_id=worker,
+                                   src_offset=row * row_bytes)
 
 
 def local_forward(orch, args, config):
@@ -344,7 +357,7 @@ class NativeForwardTarget:
             header = ROWS_AND_MASK.pack(*counts, mask)
             if phase == "draft":
                 header += DRAFT_CAPTURE.pack(capture_owner)
-            return b"".join((header, *(pending[dp] for dp in active)))
+            return (header, *(pending[dp] for dp in active))
 
         size = 2 * prod(self.sample_shape) * 4
         sampled = self.mailbox.exchange(self.config, PHASE_OPS[index], (pack_node(range(2)), pack_node(range(2, 4))),
@@ -357,12 +370,15 @@ class NativeForwardTarget:
         if name == "sampled_ids":
             out.copy_(self.read_sampled(index)[dp][row:row + out.shape[0]])
             if self.sample_checks is not None:
-                phase_checks = self.sample_checks.setdefault(PHASES[index], {})
-                if dp not in phase_checks:
-                    phase_checks[dp] = self.check_sample(index, dp, row, int(out[0, 0]))
+                self.check_samples(index, dp, row, out[:, 0])
             return
+        if name != "logits":
+            raise ValueError(f"Unsupported native forward output {name!r}")
+        self.read_logits(index, dp, out, row=row)
+
+    def read_logits(self, index, dp, out, *, row=0, capture_owner=-1):
         owner = dp // 2
-        request = READ_ROWS.pack(index, dp, OUTPUTS.index(name), row)
+        request = READ_ROWS.pack(index, dp, row, capture_owner)
         payloads = (request, b"") if owner == 0 else (b"", request)
         sizes = (out.nbytes, 0) if owner == 0 else (0, out.nbytes)
         result = self.mailbox.exchange(self.config, READ, payloads, sizes)[owner]
@@ -371,18 +387,24 @@ class NativeForwardTarget:
     def read_sampled(self, index):
         return self.sampled[index]
 
-    def check_sample(self, index, dp, row, token):
+    def check_samples(self, index, dp, row, tokens, *, capture_owner=-1):
         import torch
-        from models.deepseek_v4_1_flash_a3.config import FLASH
 
-        logits = torch.empty((1, FLASH.vocab_size), dtype=torch.float32)
-        self.read(index, dp, "logits", logits, row=row)
-        if not bool(torch.isfinite(logits).all()):
-            raise FloatingPointError(f"Non-finite {PHASES[index]} logits on DP {dp}, row {row}")
-        maximum = logits.max()
-        if not 0 <= token < FLASH.vocab_size or logits[0, token] != maximum:
-            raise ValueError(f"{PHASES[index]} greedy output disagrees with logits on DP {dp}, row {row}")
-        return dict(dp=dp, row=row, token=token, maximum=float(maximum))
+        phase, vocab = FORWARD_PHASES[index], self.artifacts.vocab_size
+        logits = torch.empty((tokens.numel(), vocab), dtype=torch.float32)
+        self.read_logits(index, dp, logits, row=row, capture_owner=capture_owner)
+        ids = tokens.long().view(-1, 1)
+        finite = torch.isfinite(logits).all(dim=1)
+        candidate = logits.gather(1, ids.clamp(0, vocab - 1)).flatten()
+        greedy = (ids.flatten() >= 0) & (ids.flatten() < vocab) & (candidate == logits.amax(dim=1))
+        invalid = (~(finite & greedy)).nonzero(as_tuple=True)[0]
+        if invalid.numel():
+            offset = int(invalid[0])
+            reason = "non-finite logits" if not finite[offset] else "sampled ID disagrees with greedy logits"
+            raise NativeSampleError(phase, dp, row + offset, int(tokens[offset]), reason)
+        checks = self.sample_checks.setdefault(phase, {}).setdefault(dp, dict(dispatches=0, rows=0))
+        checks["dispatches"] += 1
+        checks["rows"] += tokens.numel()
 
     def clear(self, dp, slot, pages, _workers):
         request = RELEASE.pack(dp, slot) + array("i", pages).tobytes()
@@ -459,6 +481,11 @@ class NativeDraftProposer:
         values = self.target.read_sampled(2)
         self.stats.sampled_id_bytes += values.nbytes
         self.stats.calls += 1
+        if self.target.sample_checks is not None:
+            for row in requests:
+                dp = row.owner // self.tp
+                checked = max(row.candidates, teacher_rows if row.owner == capture_owner else 0)
+                self.target.check_samples(2, dp, 0, values[dp, :checked, 0], capture_owner=capture_owner)
         if capture_owner >= 0:
             record = self.resident_captures[capture_owner]
             tape = {rank: {name: self.ranks[rank][name] for name in self.tape_specs}

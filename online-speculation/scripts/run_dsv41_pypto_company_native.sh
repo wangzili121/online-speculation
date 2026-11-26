@@ -172,7 +172,7 @@ printf -v remote '%q ' bash -c "$check_npus"
 container=(docker run --network host --shm-size 4g --init
   --device /dev/davinci_manager --device /dev/devmm_svm --device /dev/hisi_hdc
   -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro -v "$bundle:$bundle:ro" -v "$model:$model:ro")
+  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro -v "$model:$model:ro")
 for dev in {0..7}; do container+=(--device "/dev/davinci$dev"); done
 tag="orthrus-dsv41-${run##*/}"
 cleanup() {
@@ -184,6 +184,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 printf -v remote '%q ' "${container[@]}" --detach --name "$tag-node8" -e "HCCL_IF_IP=$peer_ip" \
+  -v "$bundle:$bundle:ro" \
   --entrypoint /bin/bash "$image" -lc \
   'source /opt/pypto/bin/pypto-activate.sh; exec python -m simpler.remote_l3_worker --host "$1" --port "$2"' \
   daemon "$peer_ip" "$port"
@@ -204,7 +205,8 @@ while True:
             raise
         time.sleep(.25)
 PY
-"${container[@]}" --rm --name "$tag-node7" -e "HCCL_IF_IP=$node7_ip" -v "$run:/run-data" "$image" \
+# PyPTO assembles chip callables on node7 and takes a write lock in the compiled graph cache.
+"${container[@]}" --rm --name "$tag-node7" -e "HCCL_IF_IP=$node7_ip" -v "$bundle:$bundle" -v "$run:/run-data" "$image" \
   /opt/dsv41-1122/run_dsv41_pypto_native_ar.py "${flags[@]}" --output /run-data/result.json --endpoint "$peer_ip:$port" \
   --peer-listen-host "$peer_ip" 2>&1 | tee "$run/node7.log" | awk '/^\{"stage"/ {print; fflush()}' ||
   { tail -n 26 "$run/node7.log" >&2; exit 1; }

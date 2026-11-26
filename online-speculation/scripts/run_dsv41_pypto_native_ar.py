@@ -9,7 +9,7 @@ from pathlib import Path
 from time import perf_counter
 from traceback import print_exc
 
-from blockspec.dsv41_native_forward import ForwardArtifacts, check_native_windows, open_native_forward
+from blockspec.dsv41_native_forward import ForwardArtifacts, NativeSampleError, check_native_windows, open_native_forward
 from blockspec.dsv41_online import read_workload
 from validate_dsv41_pypto_packed_generation import OnlineSchedule, benchmark, run_wave
 
@@ -26,8 +26,14 @@ def run_smoke(target, session, report, requests, *, options, draft, schedule):
         if owner_dp is not None:
             schedule.next_dp = owner_dp
             schedule.next_capture = schedule.rounds + 1
-        wave = run_wave(session, requests, speculative=name != "ar",
-                        online=schedule if owner_dp is not None else None, **options)
+        try:
+            wave = run_wave(session, requests, speculative=name != "ar",
+                            online=schedule if owner_dp is not None else None, **options)
+        except NativeSampleError as error:
+            report[name] = dict(sample_checks=target.sample_checks, sample_failure=error.evidence)
+            report["passed"] = False
+            print(json.dumps(dict(stage="sample_validation_failed", arm=name, **error.evidence)), flush=True)
+            return
         report[name] = dict(wave, sample_checks=target.sample_checks)
         updated_dps = {update["dp"] for update in wave["updates"] if update["applied"]}
         if wave["requests"] != report["ar"]["requests"] or (

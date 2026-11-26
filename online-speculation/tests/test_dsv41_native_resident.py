@@ -2,9 +2,13 @@ from ctypes import addressof, create_string_buffer, memmove
 import json
 from types import SimpleNamespace
 
+import pytest
 import torch
 
-from blockspec.dsv41_native_forward import DRAFT, DRAFT_CAPTURE, ROWS_AND_MASK, ForwardNode, NativeForwardTarget
+from blockspec.dsv41_native_forward import (
+    DRAFT, DRAFT_CAPTURE, READ_ROWS, ROWS_AND_MASK, ForwardNode, NativeForwardTarget, NativeSampleError,
+)
+from blockspec.dsv41_native_graph_pair import NativePeerMailbox
 from blockspec.dsv41_native_resident import NativeRankMemory
 
 
@@ -50,6 +54,29 @@ def test_rank_memory_reuses_one_staging_buffer_for_tp_and_offset_reads():
     assert worker.host_allocations == 1
 
 
+def test_native_mailbox_copies_large_frames_at_the_matching_source_and_destination_offsets():
+    payload = b"0123456789abcdefghijklmn"
+    mailbox = NativePeerMailbox.__new__(NativePeerMailbox)
+    mailbox.remote_staging = create_string_buffer(payload, len(payload))
+    mailbox.remote = create_string_buffer(len(payload))
+    mailbox.remote_chunk_size = 10
+    calls = []
+
+    def send(handle, address, nbytes, *, offset):
+        calls.append((offset, nbytes))
+        memmove(addressof(handle) + offset, address, nbytes)
+
+    def receive(handle, address, nbytes, *, offset):
+        memmove(address, addressof(handle) + offset, nbytes)
+
+    mailbox._copy_remote(send, len(payload))
+    assert calls == [(0, 10), (10, 10), (20, 4)]
+    assert mailbox.remote.raw == payload
+    mailbox.remote_staging.raw = bytes(len(payload))
+    mailbox._copy_remote(receive, len(payload))
+    assert mailbox.remote_staging.raw == payload
+
+
 def test_native_draft_keeps_global_counts_and_routes_images_to_their_owner():
     dispatched = []
     samples = torch.arange(4 * 16 * 8, dtype=torch.int32).reshape(4, 16, 8)
@@ -65,7 +92,9 @@ def test_native_draft_keeps_global_counts_and_routes_images_to_their_owner():
     target.staged[2].update({0: b"owner-zero", 1: None, 2: None, 3: b"owner-three"})
     target.sampled[2] = "old"
     target.run(2, (16, 0, 0, 16), capture_owner=12)
-    opcode, messages, replies, options = dispatched.pop()
+    opcode, packets, replies, options = dispatched.pop()
+    assert tuple(parts[1:] for parts in packets) == ((b"owner-zero",), (b"owner-three",))
+    messages = tuple(b"".join(parts) for parts in packets)
     assert opcode == DRAFT and options == {"phase": "draft"}
     assert replies == (1024, 1024)
     assert ROWS_AND_MASK.unpack_from(messages[0]) == (16, 0, 0, 16, 1 | 1 << 5)
@@ -98,21 +127,43 @@ def test_native_draft_keeps_global_counts_and_routes_images_to_their_owner():
         stages.clear()
 
 
-def test_native_checks_first_sample_on_each_dp_in_smoke():
+@pytest.mark.parametrize(("bad_logit", "reason"), (
+    (float("nan"), "non-finite logits"), (3.0, "sampled ID disagrees with greedy logits"),
+))
+def test_native_smoke_reports_bad_second_row_in_later_verify_dispatch(bad_logit, reason):
     target = NativeForwardTarget.__new__(NativeForwardTarget)
+    target.artifacts = SimpleNamespace(vocab_size=3)
     target.sample_checks = {}
-    target.read_sampled = lambda index: torch.arange(12, dtype=torch.int32).reshape(4, 3, 1)
-    seen = []
+    target.read_sampled = lambda index: torch.ones((4, 3, 1), dtype=torch.int32)
+    logits = torch.tensor([[0.0, 2.0, 0.0]] * 2)
 
-    def check(index, dp, row, token):
-        seen.append((index, dp))
-        return {"row": row, "token": token}
+    def read(index, dp, out, *, row, capture_owner):
+        assert (index, dp, row, capture_owner) == (1, 2, 1, -1)
+        out.copy_(logits)
 
-    target.check_sample = check
-    output = torch.empty((1, 1), dtype=torch.int32)
-    for phase in (0, 1):
-        for dp in (0, 2, 0, 2):
-            target.read(phase, dp, "sampled_ids", output, row=1)
-    assert seen == [(0, 0), (0, 2), (1, 0), (1, 2)]
+    target.read_logits = read
+    output = torch.empty((2, 1), dtype=torch.int32)
+    target.read(1, 2, "sampled_ids", output, row=1)
+    logits[1, 2] = bad_logit
+    with pytest.raises(NativeSampleError) as failure:
+        target.read(1, 2, "sampled_ids", output, row=1)
+    assert failure.value.evidence == dict(phase="decode", dp=2, row=2, token=1, reason=reason)
     report = json.loads(json.dumps(target.sample_checks))
-    assert report["decode"]["2"] == {"row": 1, "token": 7}
+    assert report["decode"]["2"] == {"dispatches": 1, "rows": 2}
+
+
+def test_native_draft_diagnostics_read_the_captured_logits_on_the_owner_only():
+    node = ForwardNode(1)
+    calls = []
+    ordinary = [SimpleNamespace(shape=(4, 3), dtype=torch.float32, data_ptr=ptr) for ptr in node.ranks]
+    captured = SimpleNamespace(shape=(4, 3), dtype=torch.float32, data_ptr=100)
+
+    def copy_from(_dst, src, size, *, worker_id, src_offset):
+        calls.append((src, size, worker_id, src_offset))
+
+    node.bank = SimpleNamespace(tp=4, memory=SimpleNamespace(copy_from=copy_from))
+    node.draft = SimpleNamespace(draft=SimpleNamespace(ranks=[{"logits": tensor} for tensor in ordinary]),
+                                 capture={8: {"logits": captured}})
+    for dp in (2, 3):
+        node.read(READ_ROWS.pack(2, dp, 1, 8), bytearray(24))
+    assert calls == [(captured.data_ptr, 24, 0, 12), (ordinary[4].data_ptr, 24, 4, 12)]

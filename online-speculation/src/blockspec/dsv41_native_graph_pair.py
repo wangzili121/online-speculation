@@ -77,40 +77,60 @@ def native_peer_mailbox(pair, capacity):
 
 class NativePeerMailbox:
     def __init__(self, pair, local_buffer, local, remote):
+        from ctypes import create_string_buffer
+        from simpler.remote_l3_limits import MAX_FRAME_PAYLOAD_BYTES
         from simpler.task_interface import DataType
 
         self.pair = pair
         self.local = local
         self.local_tensor = local_buffer.tensor((len(local),), DataType.UINT8)
         self.remote = remote
+        self.remote_staging = create_string_buffer(len(local))
+        # Leave space for the command envelope within Simpler's frame limit.
+        self.remote_chunk_size = MAX_FRAME_PAYLOAD_BYTES - 64
+
+    def _copy_remote(self, transfer, nbytes):
+        from ctypes import addressof
+
+        address = addressof(self.remote_staging)
+        for offset in range(0, nbytes, self.remote_chunk_size):
+            size = min(nbytes - offset, self.remote_chunk_size)
+            transfer(self.remote, address + offset, size, offset=offset)
 
     def exchange(self, config, opcode, payloads, reply_sizes, *, phase=None):
-        from ctypes import create_string_buffer
         from simpler.task_interface import DataType, RemoteTensorRef, TaskArgs, TensorArgType
 
-        local_in, remote_in = payloads
+        packets = tuple(payload if isinstance(payload, tuple) else (payload,) for payload in payloads)
+        local_bytes, remote_bytes = sizes = tuple(sum(map(len, packet)) for packet in packets)
         local_size, remote_size = reply_sizes
         capacity = len(self.local)
-        if max(len(local_in), len(remote_in), local_size, remote_size) > capacity:
+        if max(local_bytes, remote_bytes, local_size, remote_size) > capacity:
             raise ValueError("Native graph message exceeds its prepared mailbox")
-        self.local[:len(local_in)] = local_in
-        if remote_in:
-            source = create_string_buffer(remote_in, len(remote_in))
-            self.pair.parent.remote_copy_to(self.remote, source, len(remote_in))
+
+        # Copy each header and image directly into its send buffer. Keep a
+        # contiguous remote buffer without allocating a joined packet.
+        with memoryview(self.remote_staging).cast("B") as remote:
+            for destination, packet in zip((self.local, remote), packets, strict=True):
+                start = 0
+                for part in packet:
+                    end = start + len(part)
+                    destination[start:end] = part
+                    start = end
+        if remote_bytes:
+            self._copy_remote(self.pair.parent.remote_copy_to, remote_bytes)
         arguments = (TaskArgs(), TaskArgs())
         arguments[0].add_tensor(self.local_tensor, TensorArgType.INOUT)
         arguments[1].add_tensor(
             RemoteTensorRef(self.remote, shape=(capacity,), dtype=DataType.UINT8), TensorArgType.INOUT,
         )
-        for args, payload_size, reply_size in zip(arguments, map(len, payloads), reply_sizes, strict=True):
+        for args, payload_size, reply_size in zip(arguments, sizes, reply_sizes, strict=True):
             args.add_scalar(opcode)
             args.add_scalar(payload_size)
             args.add_scalar(reply_size)
         self.pair.run(config, arguments, phase=phase)
-        remote_reply = create_string_buffer(remote_size)
         if remote_size:
-            self.pair.parent.remote_copy_from(self.remote, remote_reply, remote_size)
-        return bytes(self.local[:local_size]), remote_reply.raw
+            self._copy_remote(self.pair.parent.remote_copy_from, remote_size)
+        return bytes(self.local[:local_size]), self.remote_staging[:remote_size]
 
 
 @contextmanager
