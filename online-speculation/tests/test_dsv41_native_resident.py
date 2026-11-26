@@ -1,5 +1,7 @@
 from ctypes import addressof, create_string_buffer, memmove
 import json
+from pathlib import Path
+from runpy import run_path
 import sys
 from types import SimpleNamespace
 
@@ -14,6 +16,42 @@ from blockspec.dsv41_native_graph_pair import NativePeerMailbox
 from blockspec.dsv41_native_resident import (
     NativePrefillInputPacket, NativeRankMemory, NativeResidentForward, NativeResidualInputPacket,
 )
+
+
+def test_native_window_failure_preserves_contract_and_stage(tmp_path, monkeypatch):
+    scripts = Path(__file__).parents[1] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts))
+    main = run_path(str(scripts / "run_dsv41_pypto_native_ar.py"))["main"]
+    output, workload = tmp_path / "result.json", tmp_path / "input.jsonl"
+    workload.write_text('{"id":"a","prompt":"one"}\n')
+    manifest = SimpleNamespace(
+        capacities=(272, 16), context=512, draft=None, online={},
+        tokenizer=SimpleNamespace(encode=lambda _: SimpleNamespace(ids=[1])),
+        identity=b"test", native_windows=lambda: {"prefill": 4096},
+    )
+
+    def fail(_artifacts, *, on_stage, **_connection):
+        on_stage("reserving_native_windows")
+        running = json.loads(output.read_text())
+        assert not running["complete"] and not running["passed"]
+        assert running["stage"] == "reserving_native_windows"
+        raise OSError("injected device window import error")
+
+    monkeypatch.setitem(main.__globals__, "ForwardArtifacts", lambda *_a, **_kw: manifest)
+    monkeypatch.setitem(main.__globals__, "check_native_windows", fail)
+    monkeypatch.setattr(sys, "argv", [
+        "run", "--graphs", "unused", "--checkpoint", "unused", "--workload", str(workload),
+        "--output", str(output), "--windows-only", "--endpoint", "peer", "--peer-listen-host", "peer",
+    ])
+    with pytest.raises(SystemExit, match="1"):
+        main()
+
+    report = json.loads(output.read_text())
+    assert not report["passed"] and report["complete"]
+    assert report["planned_windows"] == {"prefill": 4096}
+    assert report["failure"] == dict(
+        phase="reserving_native_windows", error_type="OSError", message="injected device window import error",
+    )
 
 
 @pytest.mark.parametrize("reusable", (True, False))

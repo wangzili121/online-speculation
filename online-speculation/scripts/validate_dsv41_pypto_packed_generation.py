@@ -11,6 +11,7 @@ from pathlib import Path
 from statistics import median
 from threading import Lock
 from time import perf_counter
+from traceback import print_exc
 from types import SimpleNamespace
 
 
@@ -58,17 +59,31 @@ def append_emitted(outputs, emitted, expected, phase):
     return matched, divergence
 
 
-def run_wave(session, requests, *, chunk, tokens, width, speculative, online=None, expected=None):
+def failure_evidence(error, progress):
+    evidence = dict(progress, error_type=type(error).__name__, message=str(error))
+    sample = getattr(error, "evidence", None)
+    if isinstance(sample, dict):
+        evidence["sample_failure"] = sample
+    return evidence
+
+
+def run_wave(session, requests, *, chunk, tokens, width, speculative, online=None, expected=None, progress=None):
     """Run one wave, with one request per DP and a fixed output budget."""
     begin = perf_counter()
+    progress = {} if progress is None else progress
+    progress["phase"] = "admit"
     staged = {
         session.admit(request_id, dp, len(prompt)): prompt
         for dp, (request_id, prompt) in enumerate(requests)
     }
     outputs = {handle: [] for handle in staged}
+    partial = {handle.request_id: rows for handle, rows in outputs.items()}
+    updates = []
+    progress.update(requests=partial, updates=updates)
     matched = 0
     divergence = None
     for start in range(0, max(map(len, staged.values())), chunk):
+        progress.update(phase="prefill", prompt_offset=start)
         first_tokens = session.prefill_greedy_batch(
             (handle, prompt[start:start + chunk]) for handle, prompt in staged.items() if start < len(prompt)
         )
@@ -82,10 +97,10 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
     prefill = perf_counter()
     steps = proposed = accepted = draft_requests = 0
     pending = None
-    updates = []
     draft_before = asdict(session.draft.stats) if speculative else {}
     while divergence is None and (active := {handle: rows[-1] for handle, rows in outputs.items() if len(rows) < tokens}):
         steps += 1
+        progress.update(phase="speculate" if speculative else "decode", round=steps)
         if speculative:
             capture = None
             if online:
@@ -123,6 +138,7 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
                 divergence["emitted"] = list(emitted[failed])
             break
         if pending is not None:
+            progress.update(phase="online_update", last_feedback=dict(dp=pending.dp, request=pending.request_id))
             begin_update = perf_counter()
             update = session.update_draft(pending, rate=online.rate, finished=len(outputs[pending]) == tokens)
             if update is not None:
@@ -131,6 +147,7 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
                 online.updates += int(update.applied)
                 pending = None
     decode = perf_counter()
+    progress.update(phase="release", divergence=divergence)
     release_many = getattr(session, "release_many", None)
     if release_many is None:
         for handle in staged:
@@ -144,7 +161,7 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
     )) if speculative else 0.0
     update_seconds = sum(update["wall_seconds"] for update in updates)
     return {
-        "requests": {handle.request_id: rows for handle, rows in outputs.items()},
+        "requests": partial,
         "greedy_tokens_matched": matched,
         "divergence": divergence,
         "rounds": steps,
@@ -163,23 +180,43 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
     }
 
 
-def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, online=None, on_wave=None):
+def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, online=None,
+              on_wave=None, on_failure=None):
     from blockspec.dsv41_online_profile import profile_online
 
     begin = perf_counter()
     waves = [requests[start:start + concurrency] for start in range(0, len(requests), concurrency)]
 
-    def run(wave, mode, schedule=None, expected=None):
+    def run(wave, mode, progress, schedule=None, expected=None):
         profile = dict(stage_seconds=Counter(), counts=Counter())
         with profile_online(SimpleNamespace(current=profile, lock=Lock())):
             result = run_wave(session, wave, chunk=chunk, tokens=tokens, width=width,
-                              speculative=mode, online=schedule, expected=expected)
+                              speculative=mode, online=schedule, expected=expected, progress=progress)
         return dict(result, profile=profile)
 
-    divergence = failed_wave = None
-    for _ in range(warmup):
-        ar = run(waves[0], False)
-        orthrus = run(waves[0], True, expected=ar["requests"])
+    def run_pair(index, wave, schedule=None, *, warmup_index=None):
+        progress = dict(arm="ar")
+        ar = None
+        try:
+            ar = run(wave, False, progress)
+            progress = dict(arm="orthrus")
+            return ar, run(wave, True, progress, schedule, expected=ar["requests"]), None
+        except Exception as error:
+            if on_failure is None:
+                raise
+            print_exc()
+            failure = failure_evidence(error, progress)
+            record = dict(index=index, ar=ar, orthrus=None, failure=failure, warmup_index=warmup_index)
+            on_failure(index, len(waves), record)
+            return ar, None, record
+
+    divergence = failed_wave = runtime_failure = None
+    for replay in range(warmup):
+        ar, orthrus, runtime_failure = run_pair(0, waves[0], warmup_index=replay + 1)
+        if runtime_failure:
+            failed_wave = runtime_failure
+            divergence = runtime_failure["failure"].get("divergence")
+            break
         if orthrus["divergence"]:
             divergence = dict(orthrus["divergence"], warmup=True)
             failed_wave = dict(index=0, ar=ar, orthrus=orthrus)
@@ -189,9 +226,12 @@ def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, o
     warmed = perf_counter()
     arms = {name: [] for name in ("ar", "orthrus")}
     matched = 0
-    for index, wave in enumerate(waves if divergence is None else (), 1):
-        ar = run(wave, False)
-        orthrus = run(wave, True, online, expected=ar["requests"])
+    for index, wave in enumerate(waves if divergence is None and runtime_failure is None else (), 1):
+        ar, orthrus, runtime_failure = run_pair(index, wave, online)
+        if runtime_failure:
+            failed_wave = runtime_failure
+            divergence = runtime_failure["failure"].get("divergence")
+            break
         matched += orthrus["greedy_tokens_matched"]
         divergence = orthrus["divergence"]
         if on_wave is not None:
@@ -201,6 +241,7 @@ def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, o
             break
         arms["ar"].append(ar)
         arms["orthrus"].append(orthrus)
+    completed_waves = len(arms["ar"])
     for name, samples in arms.items():
         emitted = sum(len(rows) for wave in samples for rows in wave["requests"].values())
         seconds = sum(wave["total_seconds"] for wave in samples)
@@ -224,9 +265,10 @@ def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, o
             candidate_acceptance=accepted / proposed if proposed else None,
             mean_accepted_per_draft=accepted / draft_requests if draft_requests else None,
         )
-    return dict(passed=divergence is None and (online is None or online.updates > 0),
+    return dict(passed=divergence is None and runtime_failure is None and (online is None or online.updates > 0),
                 online_schedule=asdict(online) if online else None,
                 greedy_tokens_matched=matched, divergence=divergence, failed_wave=failed_wave,
+                completed_waves=completed_waves, requested_waves=len(waves),
                 concurrency=concurrency, output_tokens_per_request=tokens, verify_width=width,
                 warmup_seconds=warmed - begin, arms=arms)
 

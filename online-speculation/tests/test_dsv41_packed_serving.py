@@ -236,6 +236,31 @@ def test_packed_benchmark_matches_tokens_with_ragged_prefill_and_final_round():
         assert failed["failed_wave"]["orthrus"]["requests"]["a"] == [4, 5, 502, 7]
         assert all(arm["tokens_per_second"] is None for arm in failed["arms"].values())
 
+    class FailingUpdateSession(Session):
+        def update_draft(self, handle, **options):
+            if handle.request_id == "d":
+                raise RuntimeError("injected learner failure")
+            return super().update_draft(handle, **options)
+
+    failures = []
+    schedule = runner.OnlineSchedule(every=1, teacher_rows=4, learning_rate=1e-5, warmup_updates=0)
+    aborted = runner.benchmark(
+        FailingUpdateSession(), [("a", [3]), ("b", [5]), ("c", [5]), ("d", [2])],
+        chunk=2, tokens=6, width=8, concurrency=2, warmup=0, online=schedule,
+        on_failure=lambda *args: failures.append(args),
+    )
+    assert not aborted["passed"] and aborted["divergence"] is None
+    assert (aborted["completed_waves"], aborted["requested_waves"]) == (1, 2)
+    assert aborted["greedy_tokens_matched"] == 12
+    assert all(len(arm["waves"]) == 1 for arm in aborted["arms"].values())
+    assert aborted["arms"]["orthrus"]["updates_applied"] == 1
+    [(index, total, failure)] = failures
+    assert (index, total, failure) == (2, 2, aborted["failed_wave"])
+    assert failure["ar"]["requests"]["d"] == [3, 4, 5, 6, 7, 8]
+    assert failure["failure"]["phase"] == "online_update"
+    assert failure["failure"]["requests"]["d"] == [3, 4, 5]
+    assert failure["failure"]["last_feedback"] == {"request": "d", "dp": 1}
+
 
 @pytest.mark.parametrize("state_capacity", [3, 32])
 def test_native_verifier_reuses_host_rows_and_keeps_device_reads_small(monkeypatch, state_capacity):

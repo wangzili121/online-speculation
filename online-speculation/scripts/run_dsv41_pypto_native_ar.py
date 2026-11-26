@@ -13,7 +13,13 @@ from blockspec.dsv41_native_forward import (
     ForwardArtifacts, NativeSampleError, assemble_native_graphs, check_native_windows, open_native_forward,
 )
 from blockspec.dsv41_online import read_workload
-from validate_dsv41_pypto_packed_generation import OnlineSchedule, benchmark, run_wave
+from validate_dsv41_pypto_packed_generation import OnlineSchedule, benchmark, failure_evidence, run_wave
+
+
+def write_report(output, report):
+    temporary = output.with_name(output.name + ".tmp")
+    temporary.write_text(json.dumps(report, indent=2) + "\n")
+    temporary.replace(output)
 
 
 def prepare_callables(artifacts, output):
@@ -38,7 +44,7 @@ def prepare_callables(artifacts, output):
         raise
     finally:
         report["seconds"] = perf_counter() - start
-        output.write_text(json.dumps(report, indent=2) + "\n")
+        write_report(output, report)
 
 
 def run_smoke(target, session, report, requests, *, options, draft, schedule):
@@ -53,14 +59,23 @@ def run_smoke(target, session, report, requests, *, options, draft, schedule):
         if owner_dp is not None:
             schedule.next_dp = owner_dp
             schedule.next_capture = schedule.rounds + 1
+        progress = dict(arm=name)
         try:
             wave = run_wave(session, requests, speculative=name != "ar",
                             online=schedule if owner_dp is not None else None,
-                            expected=report["ar"]["requests"] if name != "ar" else None, **options)
-        except NativeSampleError as error:
-            report[name] = dict(sample_checks=target.sample_checks, sample_failure=error.evidence)
+                            expected=report["ar"]["requests"] if name != "ar" else None,
+                            progress=progress, **options)
+        except Exception as error:
+            failure = failure_evidence(error, progress)
+            report[name] = dict(sample_checks=target.sample_checks, failure=failure)
             report["passed"] = False
-            print(json.dumps(dict(stage="sample_validation_failed", arm=name, **error.evidence)), flush=True)
+            if isinstance(error, NativeSampleError):
+                report[name]["sample_failure"] = error.evidence
+                print(json.dumps(dict(stage="sample_validation_failed", arm=name, **error.evidence)), flush=True)
+            else:
+                print_exc()
+                print(json.dumps(dict(stage="wave_failed", arm=name, error_type=failure["error_type"],
+                                      phase=failure.get("phase"))), flush=True)
             return
         report[name] = dict(wave, sample_checks=target.sample_checks)
         updated_dps = {update["dp"] for update in wave["updates"] if update["applied"]}
@@ -89,7 +104,13 @@ def run_study(session, report, requests, heldout, *, schedule, timing, output):
                     print(json.dumps(dict(stage="study_progress", mode=name, wave=index, waves=total,
                                           updates=schedule.updates, divergence=divergence)), flush=True)
 
-            result = benchmark(session, workload, online=online, on_wave=save_wave, **timing)
+            def save_failure(index, total, record):
+                waves.write(json.dumps(dict(mode=name, wave=index, waves=total, **record)) + "\n")
+                failure = record["failure"]
+                print(json.dumps(dict(stage="wave_failed", mode=name, wave=index, arm=failure["arm"],
+                                      phase=failure.get("phase"), error_type=failure["error_type"])), flush=True)
+
+            result = benchmark(session, workload, online=online, on_wave=save_wave, on_failure=save_failure, **timing)
             if name == "online_study":
                 report.update(result)
             else:
@@ -97,6 +118,44 @@ def run_study(session, report, requests, heldout, *, schedule, timing, output):
             report["passed"] = result["passed"]
             if not report["passed"]:
                 break
+
+
+def run_native(args, artifacts, requests, heldout, report):
+    start = perf_counter()
+
+    def startup_stage(stage):
+        report["stage"] = stage
+        write_report(args.output, dict(report, passed=False))
+        print(json.dumps(dict(stage=stage, elapsed_seconds=perf_counter() - start)), flush=True)
+
+    connection = dict(endpoint=args.endpoint, peer_listen_host=args.peer_listen_host,
+                      devices=(tuple(range(8)), tuple(range(8))), timeout=args.timeout, on_stage=startup_stage)
+    if args.windows_only:
+        report["reserved_windows"] = check_native_windows(artifacts, **connection)
+        planned = report["planned_windows"]
+        report["passed"] = bool(planned) and report["reserved_windows"] == planned
+        report["seconds"] = perf_counter() - start
+        return
+    with open_native_forward(artifacts, **connection) as target:
+        report["reserved_windows"] = target.reserved_windows
+        report["stage"] = "binding_session"
+        session = target.session()
+        report["startup_seconds"] = perf_counter() - start
+        print(json.dumps(dict(stage="resident_ready", seconds=report["startup_seconds"])), flush=True)
+        report["stage"] = "native_study" if args.study else "native_smoke"
+        options = dict(chunk=artifacts.capacities[0], tokens=args.tokens, width=args.width)
+        schedule = (OnlineSchedule(args.update_every, args.teacher_rows, args.learning_rate, args.warmup_updates)
+                    if artifacts.online else None)
+        if args.study:
+            timing = dict(**options, concurrency=args.concurrency, warmup=args.warmup_waves)
+            if heldout:
+                report["heldout_workload_sha256"] = sha256(args.heldout_workload.read_bytes()).hexdigest()
+            run_study(session, report, requests, heldout, schedule=schedule, timing=timing, output=args.output)
+        else:
+            run_smoke(target, session, report, requests, options=options, draft=artifacts.draft is not None,
+                      schedule=schedule)
+        if report["passed"]:
+            report["stage"] = "teardown"
 
 
 def main():
@@ -183,41 +242,20 @@ def main():
     )
     print(json.dumps(dict(stage="artifacts_ready", **{name: value for name, value in report.items()
                                                    if name not in ("planned_windows", "passed")})), flush=True)
+    report.update(stage="artifacts_ready", complete=args.contract_only)
     if not args.contract_only:
-        start = perf_counter()
-
-        def startup_stage(stage):
-            print(json.dumps(dict(stage=stage, elapsed_seconds=perf_counter() - start)), flush=True)
-
-        connection = dict(endpoint=args.endpoint, peer_listen_host=args.peer_listen_host,
-                          devices=(tuple(range(8)), tuple(range(8))), timeout=args.timeout, on_stage=startup_stage)
-        if args.windows_only:
-            try:
-                report["reserved_windows"] = check_native_windows(artifacts, **connection)
-            except Exception as error:
-                print_exc()
-                report.update(passed=False, error=str(error))
-            else:
-                report["passed"] = bool(windows) and report["reserved_windows"] == windows
-            report["seconds"] = perf_counter() - start
-        else:
-            with open_native_forward(artifacts, **connection) as target:
-                report["reserved_windows"] = target.reserved_windows
-                session = target.session()
-                report["startup_seconds"] = perf_counter() - start
-                print(json.dumps(dict(stage="resident_ready", seconds=report["startup_seconds"])), flush=True)
-                options = dict(chunk=artifacts.capacities[0], tokens=args.tokens, width=args.width)
-                schedule = (OnlineSchedule(args.update_every, args.teacher_rows, args.learning_rate, args.warmup_updates)
-                            if artifacts.online else None)
-                if args.study:
-                    timing = dict(**options, concurrency=args.concurrency, warmup=args.warmup_waves)
-                    if heldout:
-                        report["heldout_workload_sha256"] = sha256(args.heldout_workload.read_bytes()).hexdigest()
-                    run_study(session, report, requests, heldout, schedule=schedule, timing=timing, output=args.output)
-                else:
-                    run_smoke(target, session, report, requests, options=options, draft=artifacts.draft is not None,
-                              schedule=schedule)
-    args.output.write_text(json.dumps(report, indent=2) + "\n")
+        write_report(args.output, dict(report, passed=False))
+        started = perf_counter()
+        try:
+            run_native(args, artifacts, requests, heldout, report)
+        except Exception as error:
+            print_exc()
+            report.update(passed=False, error=str(error),
+                          failure=failure_evidence(error, dict(phase=report["stage"])))
+        if report["passed"]:
+            report["stage"] = "complete"
+        report.update(complete=True, seconds=perf_counter() - started)
+    write_report(args.output, report)
     print(json.dumps(dict(stage="complete", passed=report["passed"], path=str(args.output))), flush=True)
     if not report["passed"]:
         raise SystemExit(1)
