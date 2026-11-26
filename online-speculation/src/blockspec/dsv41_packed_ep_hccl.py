@@ -1,4 +1,72 @@
-"""Pack 1122 W8A8 expert dispatch buffers for a host-issued EP AllToAll."""
+"""Split the 1122 W8A8 MoE around host-issued EP collectives."""
+
+
+def make_ep_forward_front(tokens, input_rows, *, prefill):
+    """Produce the rank-owned router inputs and shared-expert result before EP."""
+    import pypto.language as pl
+    from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
+    from models.deepseek_v4_1_flash_a3.expert_shared import expert_shared_nz
+    from models.deepseek_v4_1_flash_a3.moe import TOKENS, prepare_decode_routes, prepare_prefill_routes
+
+    hidden, inter = FLASH.hidden_size, FLASH.moe_intermediate_size
+    experts, topk = FLASH.n_routed_experts, FLASH.num_experts_per_tok
+    if not prefill and tokens != TOKENS:
+        raise ValueError("Decode EP capacity must match the imported native MoE slab")
+
+    @pl.jit
+    def front(
+        x: pl.Tensor[[input_rows, hidden], pl.BF16],
+        norm: pl.Tensor[[hidden], pl.BF16],
+        gate: pl.Tensor[[experts, hidden], pl.FP32],
+        bias: pl.Tensor[[experts], pl.FP32],
+        shared_gate_up: pl.Tensor[[hidden, 2 * inter], pl.INT8, pl.NZ],
+        shared_gate_scale: pl.Tensor[[1, inter], pl.FP32],
+        shared_up_scale: pl.Tensor[[1, inter], pl.FP32],
+        shared_down: pl.Tensor[[inter, hidden], pl.INT8, pl.NZ],
+        shared_down_scale: pl.Tensor[[1, hidden], pl.FP32],
+        normed: pl.Out[pl.Tensor[[tokens, hidden], pl.BF16]],
+        payload: pl.Out[pl.Tensor[[tokens, hidden], pl.INT8]],
+        scales: pl.Out[pl.Tensor[[1, tokens], pl.FP32]],
+        indices: pl.Out[pl.Tensor[[tokens, topk], pl.INT32]],
+        weights: pl.Out[pl.Tensor[[tokens, topk], pl.FP32]],
+        shared: pl.Out[pl.Tensor[[tokens, hidden], pl.BF16]],
+        active: pl.Scalar[pl.INT32],
+        lane: pl.Scalar[pl.INT32],
+    ):
+        local = pl.cast((active + TP_SIZE - 1 - lane) // TP_SIZE, pl.INDEX)
+        if local > 0:
+            if prefill:
+                prepare_prefill_routes(x, norm, gate, bias, normed, payload, scales, indices, weights,
+                                       active, lane, tokens)
+            else:
+                prepare_decode_routes(x, norm, gate, bias, normed, payload, scales, indices, weights,
+                                       active, lane, local)
+            expert_shared_nz(payload, scales, shared_gate_up, shared_gate_scale, shared_up_scale,
+                             shared_down, shared_down_scale, shared, local, prefill)
+
+    return front
+
+
+def make_ep_forward_tp_rows(tokens, hidden, tp, output_rows):
+    """Place compact results in their TP token rows before the local TP sum."""
+    import pypto.language as pl
+
+    @pl.jit
+    def scatter(
+        compact: pl.Tensor[[tokens, hidden], pl.BF16],
+        owned: pl.Out[pl.Tensor[[output_rows, hidden], pl.BF16]],
+        active: pl.Scalar[pl.INT32],
+        lane: pl.Scalar[pl.INT32],
+    ):
+        for row in pl.spmd(output_rows, name_hint="hccl_ep_tp_owner_rows"):
+            if row < active and row % tp == lane:
+                value = pl.tile.load(compact, [row // tp, 0], [1, hidden])
+                pl.store(value, [row, 0], owned)
+            else:
+                zero = pl.tile.full([1, hidden], dtype=pl.BF16, value=0.)
+                pl.store(zero, [row, 0], owned)
+
+    return scatter
 
 
 def make_ep_forward_packets(tokens, hidden, world, local_experts, topk):

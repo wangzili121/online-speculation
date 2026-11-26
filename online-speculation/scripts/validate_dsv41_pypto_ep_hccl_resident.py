@@ -51,8 +51,6 @@ def main():
     if len(devices) not in (1, 2) or len(set(devices)) != len(devices):
         parser.error("Select one logical device for emulation or two for HCCL")
     use_hccl = len(devices) == 2 and not options.compile_only
-    if use_hccl and options.transport_source is None:
-        parser.error("Pass --transport-source for the two-device HCCL round trip")
     if options.iterations < 1:
         parser.error("Use at least one hot iteration")
 
@@ -135,10 +133,13 @@ def run(options, devices, use_hccl, context):
 
     channels = {}
     if use_hccl:
-        spec = importlib.util.spec_from_file_location("orthrus_validation.paired_transport",
-                                                     options.transport_source)
-        native = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(native)
+        if options.transport_source is None:
+            from models.deepseek_v4_1_flash_a3 import moe_transport as native
+        else:
+            spec = importlib.util.spec_from_file_location("orthrus_validation.paired_transport",
+                                                         options.transport_source)
+            native = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(native)
         channels = native.HCCLBytes.create_group(native.CANNMemory(), devices)
         for channel in channels.values():
             context.callback(channel.close)

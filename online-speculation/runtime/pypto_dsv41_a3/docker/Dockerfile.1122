@@ -40,12 +40,16 @@ RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca set -e; \
     git -C pypto-lib fetch --depth 1 https://github.com/Adelaide999/pypto-lib.git 949a18db40fca66f677fb041e98b32f824e7afb1; \
     git -C pypto-lib checkout --detach FETCH_HEAD; \
     git -C pypto-lib apply "$PWD/lib-1122-verification.patch"; \
+    git -C pypto-lib fetch --depth 1 https://github.com/Adelaide999/pypto-lib.git e32726b7edb31ee17e398a0431c0272ebd545974; \
+    git -C pypto-lib show FETCH_HEAD:models/deepseek_v4_1_flash_a3/moe_transport.py \
+        > pypto-lib/models/deepseek_v4_1_flash_a3/moe_transport.py; \
     cp "$PYPTO_SRC/docker/scripts/pypto-activate.sh" /opt/pypto/bin/pypto-activate.sh; \
     source /opt/pypto/bin/pypto-activate.sh; \
     bash ./cache-pto-isa.sh
 
 COPY online-speculation/src/blockspec /opt/dsv41-1122/orthrus/blockspec
 COPY online-speculation/scripts/validate_dsv41_pypto_packed_history.py \
+     online-speculation/scripts/validate_dsv41_pypto_ep_hccl_boundary.py \
      online-speculation/scripts/validate_dsv41_pypto_ep_hccl_packets.py \
      online-speculation/scripts/validate_dsv41_pypto_ep_hccl_resident.py \
      online-speculation/scripts/validate_dsv41_pypto_packed_generation.py \

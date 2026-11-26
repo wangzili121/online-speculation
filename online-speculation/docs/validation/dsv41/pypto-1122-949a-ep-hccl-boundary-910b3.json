@@ -1,0 +1,158 @@
+{
+  "source": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "platform": "Ascend910B3",
+  "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+  "layer": 39,
+  "scope": "The local FFN boundary executes on one NPU with checkpoint weights. EP16 stage signatures are compiled for TP4/DP4. A CPU test checks the two-node collective protocol and execution by inactive DP owners.",
+  "device_validation": {
+    "host": "111",
+    "cann": "9.0.0",
+    "command": "python /opt/dsv41-1122/validate_dsv41_pypto_ep_hccl_boundary.py --checkpoint /model --phase {phase} --tokens {tokens}",
+    "cases": [
+      {
+        "passed": true,
+        "compiled": true,
+        "phase": "decode",
+        "tokens": 16,
+        "input_rows": 64,
+        "cases": [
+          {
+            "active": 1,
+            "lane": 0,
+            "owner_rows": 1,
+            "route_ids_exact": true,
+            "quant_max_abs": 0,
+            "shared_max_abs": 0.0,
+            "shared_outlier_ratio": 0.0,
+            "tp_restore_exact": true
+          },
+          {
+            "active": 1,
+            "lane": 3,
+            "owner_rows": 0,
+            "tp_restore_exact": true
+          },
+          {
+            "active": 17,
+            "lane": 2,
+            "owner_rows": 4,
+            "route_ids_exact": true,
+            "quant_max_abs": 0,
+            "shared_max_abs": 0.0,
+            "shared_outlier_ratio": 0.0,
+            "tp_restore_exact": true
+          },
+          {
+            "active": 63,
+            "lane": 3,
+            "owner_rows": 15,
+            "route_ids_exact": true,
+            "quant_max_abs": 0,
+            "shared_max_abs": 0.0,
+            "shared_outlier_ratio": 0.0,
+            "tp_restore_exact": true
+          }
+        ],
+        "physical_device": 0
+      },
+      {
+        "passed": true,
+        "compiled": true,
+        "phase": "prefill",
+        "tokens": 64,
+        "input_rows": 256,
+        "cases": [
+          {
+            "active": 1,
+            "lane": 0,
+            "owner_rows": 1,
+            "route_ids_exact": true,
+            "quant_max_abs": 0,
+            "shared_max_abs": 0.0,
+            "shared_outlier_ratio": 0.0,
+            "tp_restore_exact": true
+          },
+          {
+            "active": 1,
+            "lane": 3,
+            "owner_rows": 0,
+            "tp_restore_exact": true
+          },
+          {
+            "active": 17,
+            "lane": 2,
+            "owner_rows": 4,
+            "route_ids_exact": true,
+            "quant_max_abs": 0,
+            "shared_max_abs": 0.0,
+            "shared_outlier_ratio": 0.0,
+            "tp_restore_exact": true
+          },
+          {
+            "active": 255,
+            "lane": 3,
+            "owner_rows": 63,
+            "route_ids_exact": true,
+            "quant_max_abs": 0,
+            "shared_max_abs": 0.0,
+            "shared_outlier_ratio": 0.0,
+            "tp_restore_exact": true
+          }
+        ],
+        "physical_device": 4
+      }
+    ]
+  },
+  "compiled_stages": {
+    "host": "61",
+    "command": "python /opt/dsv41-1122/validate_dsv41_pypto_ep_hccl_boundary.py --compile-only --phase {phase} --tokens {tokens}",
+    "cases": [
+      {
+        "passed": true,
+        "compiled": true,
+        "phase": "decode",
+        "tokens": 16,
+        "input_rows": 64,
+        "resident_stages": [
+          "pack",
+          "unpack",
+          "combine",
+          "scatter",
+          "prefill_front",
+          "prefill_expert",
+          "decode_front",
+          "decode_expert"
+        ]
+      },
+      {
+        "passed": true,
+        "compiled": true,
+        "phase": "prefill",
+        "tokens": 64,
+        "input_rows": 256,
+        "resident_stages": [
+          "pack",
+          "unpack",
+          "combine",
+          "scatter",
+          "prefill_front",
+          "prefill_expert",
+          "decode_front",
+          "decode_expert"
+        ]
+      }
+    ]
+  },
+  "cpu_tests": {
+    "passed": 211,
+    "subtests_passed": 5,
+    "native_packed_contract_passed": 12
+  },
+  "native_resident_decode_compile": {
+    "host": "61",
+    "cann": "9.2.0",
+    "command": "python -m models.deepseek_v4_1_flash_a3.decode_fwd --compile-only --prepare-windows --decode-capacity 16 --context-capacity 512 --output /results/ep-boundary-native-decode-prepared",
+    "passed": true,
+    "wall_seconds": 231.49
+  }
+}

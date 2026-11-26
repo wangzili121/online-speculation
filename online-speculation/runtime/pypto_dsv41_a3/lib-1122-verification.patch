@@ -321,6 +321,72 @@ index ef6a2b2..2a07fef 100644
              if args.profile_last_decode:
                  reset_caches(runtime, ranks, host_cache)
                  profiled = {}
+diff --git a/models/deepseek_v4_1_flash_a3/moe.py b/models/deepseek_v4_1_flash_a3/moe.py
+index 0e45d53..cde3b0f 100644
+--- a/models/deepseek_v4_1_flash_a3/moe.py
++++ b/models/deepseek_v4_1_flash_a3/moe.py
+@@ -613,6 +613,34 @@ def _decode_ffn_owner_norm(
+             rms_norm_tiled(compact, norm_weight, output, block, TOKENS, output_fp32=False)
+
+
++@pl.jit.inline
++def prepare_decode_routes(
++    source: pl.Tensor,
++    norm_weight: pl.Tensor,
++    gate_weight: pl.Tensor,
++    correction_bias: pl.Tensor,
++    normed: pl.Tensor,
++    payload: pl.Tensor,
++    scales: pl.Tensor,
++    indices: pl.Tensor,
++    weights: pl.Tensor,
++    num_tokens: pl.Scalar[pl.INT32],
++    tp_rank: pl.Scalar[pl.INT32],
++    local_tokens: pl.Scalar[pl.INDEX],
++):
++    """Normalize, quantize and route the Decode rows owned by this TP lane."""
++    if TOKENS == 16 and local_tokens == 1:
++        gate_input = pl.create_tensor([TOKENS, D], dtype=pl.FP32)
++        decode_ffn_norm_gate_input(source, norm_weight, normed, gate_input, tp_rank)
++        row_scales = pl.reshape(scales, [TOKENS, 1])
++        _quantize_projection_activation_into(normed, payload, row_scales, 1, TOKENS, D, True, False)
++        gate_from_fp32(gate_input, gate_weight, correction_bias, 1, indices, weights, TOKENS, decode=True)
++    else:
++        _decode_ffn_owner_norm(source, norm_weight, normed, num_tokens, tp_rank, local_tokens)
++        npu_gate(normed, gate_weight, correction_bias, local_tokens, payload, scales, indices, weights)
++    return payload
++
++
+ @pl.jit.inline
+ def _scatter_local_tokens(
+     compact: pl.Tensor[[T_DYN, D], pl.BF16],
+@@ -713,22 +741,10 @@ def prefill_moe_sublayer(
+         shared_output = pl.create_tensor([TOKENS, D], dtype=pl.BF16)
+         if local_num_tokens > 0:
+             if not prefill:
+-                if TOKENS == 16 and local_num_tokens == 1:
+-                    gate_input = pl.create_tensor([TOKENS, D], dtype=pl.FP32)
+-                    decode_ffn_norm_gate_input(ffn_input, ffn_norm_weight, local_ffn_normed, gate_input, tp_rank)
+-                    row_scales = pl.reshape(x_norm_scale, [TOKENS, 1])
+-                    _quantize_projection_activation_into(
+-                        local_ffn_normed, x_norm_mx, row_scales, 1, TOKENS, D, True, False,
+-                    )
+-                    gate_from_fp32(gate_input, gate_weight, correction_bias, 1, indices, weights, TOKENS, decode=True)
+-                else:
+-                    _decode_ffn_owner_norm(
+-                        ffn_input, ffn_norm_weight, local_ffn_normed, num_tokens, tp_rank, local_num_tokens,
+-                    )
+-                    npu_gate(
+-                        local_ffn_normed, gate_weight, correction_bias, local_num_tokens,
+-                        x_norm_mx, x_norm_scale, indices, weights,
+-                    )
++                prepare_decode_routes(
++                    ffn_input, ffn_norm_weight, gate_weight, correction_bias, local_ffn_normed,
++                    x_norm_mx, x_norm_scale, indices, weights, num_tokens, tp_rank, local_num_tokens,
++                )
+
+             expert_shared_nz(
+                 x_norm_mx, x_norm_scale,
 diff --git a/models/deepseek_v4_1_flash_a3/o_proj.py b/models/deepseek_v4_1_flash_a3/o_proj.py
 index 502fa5b..365e535 100644
 --- a/models/deepseek_v4_1_flash_a3/o_proj.py

@@ -207,14 +207,18 @@ bash "${ORTHRUS_ROOT}/online-speculation/scripts/dsv41_pypto_env.sh" global-wind
 
 111 的两张 910B3 用真实 checkpoint 第 39 层的 8 个专家验证了 126 条有效路由。派发和回传都由 HCCL 直接读写 PyPTO 驻留缓冲。Prefill 和 Decode 复用 1122 原生 W8A8 专家计算，两者与 Torch 参考逐元素一致。将专家计算和 BF16 回传打包合到一次设备提交后，回传包与分开执行时逐字节一致。8 次热态调用的中位数在两组 rank 上下降 40%–51%，计入宿主提交，通信另行计时。EP16 的每 rank 64 行容量通过了两种实现的编译。
 
-单卡使用 `--devices 0 --checkpoint /model` 复验真实权重。双卡切换为 `--devices 0,1`，使用 1122 镜像、host 网络和当前节点的 HCCL 网卡配置，并挂载旧版 `e32726b` 的 `moe_transport.py`。不传 `--checkpoint` 时使用构造的专家输出，只检查传输。 [HCCL 传输实现](https://github.com/Adelaide999/pypto-lib/blob/e32726b7edb31ee17e398a0431c0272ebd545974/models/deepseek_v4_1_flash_a3/moe_transport.py)
+单卡使用 `--devices 0 --checkpoint /model` 复验真实权重。双卡切换为 `--devices 0,1`，使用 1122 镜像、host 网络和当前节点的 HCCL 网卡配置。新镜像内置 `e32726b` 的 HCCL 传输模块，使用旧镜像时可用 `--transport-source` 指定该文件。不传 `--checkpoint` 时使用构造的专家输出，只检查传输。 [HCCL 传输实现](https://github.com/Adelaide999/pypto-lib/blob/e32726b7edb31ee17e398a0431c0272ebd545974/models/deepseek_v4_1_flash_a3/moe_transport.py)
 
 ```bash
 python /opt/dsv41-1122/validate_dsv41_pypto_ep_hccl_resident.py \
-  --devices 0,1 --checkpoint /model --transport-source /inputs/moe_transport.py
+  --devices 0,1 --checkpoint /model
 ```
 
-等长包用来验证接口和数值。64 行容量下每个 EP rank 每层要提交约 90 MiB 的派发与回传数据，其中包括填充。双机整图需要在层间接入这两个 HCCL 通信点，并验证真实权重与跨机通信同时运行。 [实卡记录](validation/dsv41/pypto-1122-949a-ep-hccl-910b3.json)
+分段执行器 `ResidentHcclMoE` 接收 Attention 之后的 BF16 FFN 输入，复用原生 RMSNorm、路由器和共享专家。随后在设备上打包、执行两次 HCCL AllToAll，并将紧凑专家结果写回原来所属的 TP 行，交给层内 TP 归并和 mHC post。空闲 DP 上的 rank 仍会接收并执行其他 rank 派来的专家。派发、专家计算和恢复分别计时，整个过程重复使用设备缓冲。
+
+第 39 层真实权重的单卡验证覆盖 Decode 每 rank 16 行容量及 Prefill 64 行容量，包含仅一行、空 lane 和尾块。路由 ID、量化值、共享专家输出和 TP 行归位与参考一致。两种容量都编译了分段执行器的 8 个设备入口，跨机调度测试核对了发送和接收张量的形状，并验证空闲节点的调用顺序。 [分段验证记录](validation/dsv41/pypto-1122-949a-ep-hccl-boundary-910b3.json)
+
+等长包用来验证接口和数值。64 行容量下每个 EP rank 每层要提交约 90 MiB 的派发与回传数据，其中包括填充。1122 的整模调度仍需在每层 Attention 与 FFN 尾部之间调用分段执行器，并在双机上验证。 [实卡记录](validation/dsv41/pypto-1122-949a-ep-hccl-910b3.json)
 
 ## 内网权重预检
 
