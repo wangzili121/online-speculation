@@ -86,30 +86,36 @@ class NativeRankMemory:
         del self.allocations[key]
 
 
-class NativeDraftInputPacket:
-    """Encode the two repeated residual rows and the remaining packed controls."""
+class NativeResidualInputPacket:
+    """Send one copy of each residual row shared by the mHC streams."""
 
-    def __init__(self, inputs, block):
+    def __init__(self, inputs):
         image = inputs.images[2]
         self.residual = inputs.fields[2]["x_hc"]
         if self.residual.data_ptr() != image.data_ptr():
-            raise ValueError("Native Draft packet expects x_hc at the start of the packed image")
-        self.block = block
+            raise ValueError("Native input packet expects x_hc at the start of the packed image")
         self.tail = memoryview(image.numpy())[self.residual.nbytes:]
-        self.embedding_bytes = 2 * self.residual[0, 0].nbytes
-        self.nbytes = self.embedding_bytes + len(self.tail)
+        self.row_bytes = self.residual[0, 0].nbytes
 
-    def pack(self):
-        return b"".join((self.residual[:2, 0].contiguous().numpy().tobytes(), self.tail))
+    def size(self, rows):
+        if not 0 < rows <= self.residual.shape[0]:
+            raise ValueError("Invalid live row count for the native input image")
+        return rows * self.row_bytes + len(self.tail)
 
-    def stage(self, packet):
+    def pack(self, rows):
+        self.size(rows)
+        return b"".join((self.residual[:rows, 0].contiguous().numpy().tobytes(), self.tail))
+
+    def stage(self, packet, rows, *, repeat_to=None):
         import torch
 
-        embeddings = torch.frombuffer(packet[:self.embedding_bytes], dtype=self.residual.dtype).view(2, -1)
-        self.residual[0].copy_(embeddings[0])
-        self.residual[1:self.block].copy_(embeddings[1])
-        self.residual[self.block:].zero_()
-        self.tail[:] = packet[self.embedding_bytes:]
+        size = rows * self.row_bytes
+        embeddings = torch.frombuffer(packet[:size], dtype=self.residual.dtype).view(rows, -1)
+        self.residual[:rows].copy_(embeddings[:, None, :])
+        if repeat_to is not None:
+            self.residual[rows:repeat_to].copy_(embeddings[-1])
+        self.residual[repeat_to if repeat_to is not None else rows:].zero_()
+        self.tail[:] = packet[size:]
 
 
 def graph_argument(shards, workers, parameter, world):
@@ -163,6 +169,7 @@ class NativeResidentForward:
         }
         constants = {*weights.tensor_layouts, *initial_cache, *cache_views, "freqs_cos", "freqs_sin"}
         parameters, self.inputs = forward_inputs(programs, weights, templates, initial_cache)
+        self.decode_packet = NativeResidualInputPacket(self.inputs["decode"])
         for phase, params in parameters.items():
             supported = set(templates[phase]) | constants | set(outputs) | set(self.count_names) | {"execute_layers"}
             unknown = set(params) - supported
@@ -237,14 +244,15 @@ class NativeResidentForward:
         inputs.stage((idle, {name: values[name] for name in idle}), logit_name)
         self._upload(phase, dp)
 
-    def stage_image(self, phase, dp, payload):
+    def stage_image(self, phase, dp, payload, *, rows):
         """Receive one owner image and keep logits disabled on the three TP peers."""
         inputs = self.inputs[phase]
         logit_name = "logit_rows" if phase == "prefill" else "logit_row_indices"
         owner_image = inputs.images[2]
-        if len(payload) != owner_image.nbytes:
-            raise ValueError(f"Invalid {phase} packed input size on DP {dp}")
-        memoryview(owner_image.numpy())[:] = payload
+        if phase == "decode":
+            self.decode_packet.stage(payload, rows)
+        else:
+            memoryview(owner_image.numpy())[:] = payload
         inputs.images[1].copy_(owner_image)
         inputs.fields[1][logit_name].copy_(self.idle[phase][logit_name])
         self._upload(phase, dp)

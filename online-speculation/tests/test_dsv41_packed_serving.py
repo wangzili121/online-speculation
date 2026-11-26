@@ -204,6 +204,38 @@ def test_packed_benchmark_matches_tokens_with_ragged_prefill_and_final_round():
     assert updated["arms"]["orthrus"]["tokens_per_second_excluding_update"] > updated["arms"]["orthrus"]["tokens_per_second"]
     assert not session.prefill
 
+    class DivergingSession(Session):
+        def speculate_batch(self, queries, **options):
+            result = super().speculate_batch(queries, **options)
+            first = next(iter(result.verified.emitted))
+            rows = list(result.verified.emitted[first])
+            rows[1] = 502
+            result.verified.emitted[first] = tuple(rows)
+            return result
+
+        def release(self, handle):
+            if self.feedback is not None and self.feedback[0] == handle:
+                self.feedback = None
+            super().release(handle)
+
+    for warmup in (0, 1):
+        session = DivergingSession()
+        context = []
+        schedule = runner.OnlineSchedule(every=1, teacher_rows=1, learning_rate=1e-5, warmup_updates=0)
+        failed = runner.benchmark(session, [("a", [3]), ("b", [5]), ("c", [5]), ("d", [2])],
+                                  chunk=2, tokens=6, width=8, concurrency=2, warmup=warmup, online=schedule,
+                                  on_wave=lambda *args: context.append(args))
+        assert not failed["passed"] and failed["divergence"] == {
+            "request_id": "a", "dp": 0, "phase": "verify/accept", "position": 2, "target": [6],
+            "orthrus": [502], "round": 1, "draft_candidates": [5, 6], "emitted": [5, 502, 7],
+            **({"warmup": True} if warmup else {}),
+        }
+        assert len(session.limits) == len(context) == 1
+        assert not session.prefill and session.feedback is None
+        assert session.updates == schedule.updates == 0
+        assert failed["failed_wave"]["orthrus"]["requests"]["a"] == [4, 5, 502, 7]
+        assert all(arm["tokens_per_second"] is None for arm in failed["arms"].values())
+
 
 @pytest.mark.parametrize("state_capacity", [3, 32])
 def test_native_verifier_reuses_host_rows_and_keeps_device_reads_small(monkeypatch, state_capacity):

@@ -134,11 +134,13 @@ Prefill、Decode/Verify 和 Draft 在同一次整图派发中把采样 ID 回写
 
 Draft 初始残差在各 mHC 流中重复，块内后续位置共享 mask token 的嵌入。派发时只发 anchor 和 mask 两行嵌入，其余字段按原样发送。归属节点按编译布局还原完整张量。K16 每个活跃 DP 的输入从 1,717,760 字节降到 448,000 字节。
 
+Decode/Verify 每个活跃 token 的输入残差只传一个 mHC 流。归属节点广播到各流并清零填充行，仍用完整输入执行原生整图。每 DP 的 K8 Verify 输入为 570,880 字节，单 token AR 输入为 427,520 字节。
+
 node7 的执行容器可以写编译产物目录，供 PyPTO 装配整图二进制时创建缓存和锁。node8 和两台的模型权重均使用只读挂载。
 
 验证器仅推进已提交的前缀，C2A 环形状态和压缩页继续驻留。用 W8A8 检查点第 2 层的 BF16 压缩权重和合成激活，在单张 910B3 上执行 `validate_dsv41_pypto_verify_state.py`，覆盖 K8/K16、环形状态回绕和压缩物理页切换。逐 token 基准与“先计算全块、拒绝尾部再续跑”在已提交的环槽、FP4 行及续跑结果上逐字节一致。
 
-GSM8K 默认使用 64 道在线题和 16 道留出题，四并发，每题最多生成 64 token，K8，last‑1，TV loss，学习率 `1e-5`。训练每隔 16 个验证轮次至多采一个反馈块，每块最多 7 个位置。`result.json` 记录 AR 与在线更新的实测吞吐、扣除更新时间的估算、候选接受率、首次及后续更新耗时，以及训练前后冻结 head 在同一留出集上的结果。每个完成批次写入 `study-waves.jsonl`，完整运行日志写入同目录的 `node7.log` 和 `node8.log`。
+GSM8K 默认使用 64 道在线题和 16 道留出题，四并发，每题最多生成 64 token，K8，last‑1，TV loss，学习率 `1e-5`。训练每隔 16 个验证轮次至多采一个反馈块，每块最多 7 个位置。`result.json` 记录 AR 与在线更新的实测吞吐、扣除更新时间的估算、候选接受率、首次及后续更新耗时，以及训练前后冻结 head 在同一留出集上的结果。预热和正式计时批次都逐轮与同批 AR 对照。发现首个分叉时立即结束本批次，记录请求、轮次、候选和输出，只用通过对照的完整批次统计吞吐。每个批次的记录写入 `study-waves.jsonl`，完整运行日志写入同目录的 `node7.log` 和 `node8.log`。
 
 ### 1122 分阶段双机推理
 
@@ -146,7 +148,7 @@ GSM8K 默认使用 64 道在线题和 16 道留出题，四并发，每题最多
 
 公司 node7 和 node8 使用同一个 `1122` 镜像、同版 W8A8 权重和同一份集群密钥。node7 默认读取 `/root/.orthrus-cluster.key`，node8 默认读取 `/home/wangzili/.orthrus-cluster.key`。镜像基于现有的 `orthrus-dsv41-pypto:72a62d1-offline`。在可以访问依赖的 ARM64 主机上执行一次 `bash online-speculation/scripts/dsv41_pypto_env.sh build-1122`，再将生成的 `orthrus-dsv41-pypto:1122-949a18d` 镜像复制到另一节点。已经配置的 `PYPTO_BUILD_NETWORK`、`PYPTO_BUILD_PROXY`、`PYPTO_BUILD_CA` 和 `PYPTO_BUILD_PYPI` 可继续使用。
 
-两台已经有 `1122-949a18d` 时，更新 checkout 后可在各自机器执行 `bash online-speculation/scripts/dsv41_pypto_env.sh refresh-1122`。它复用现有镜像的编译器和运行时，在离线环境更新模型补丁和公司脚本。接着运行 `prepare`，它会回载图产物并重编译不兼容的产物组。旧目录移入 `.superseded.*`。两端新的作业会核对初始化或预训练 head 的实际权重字节摘要。
+两台已经有 `1122-949a18d` 时，更新 checkout 后可在各自机器执行 `bash online-speculation/scripts/dsv41_pypto_env.sh refresh-1122`。它从保留的 1122 基础镜像离线更新模型补丁和公司脚本，连续刷新复用同一基础镜像，避免叠加 Docker 层。接着运行 `prepare`，它会回载图产物并重编译不兼容的产物组。旧目录移入 `.superseded.*`。两端新的作业会核对初始化或预训练 head 的实际权重字节摘要。
 
 1122 的基模、起草、反向和 Adam 图共享一个驻留 Worker。公司镜像将 Simpler 的主机和 AICPU callable 注册表统一扩至 256 项。如果已有镜像仍使用 64 项，`refresh-1122` 会用镜像里的源码和工具链离线重建 Simpler。已有的编译图产物可以继续使用。
 

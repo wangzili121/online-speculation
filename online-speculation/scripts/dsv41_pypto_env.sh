@@ -146,10 +146,24 @@ case "$action" in
     docker image inspect "$image" >/dev/null 2>&1 || {
       echo "Base image is missing: $image" >&2; exit 2;
     }
-    image_id="$(docker image inspect --format '{{.Id}}' "$image")"
+    refresh_source="$image"
+    if [[ "$action" == refresh-1122 ]]; then
+      # Earlier refreshes keep a base-* tag. Reuse a pinned 1122 ancestor
+      # instead of layering another refresh on top of the last recipe.
+      source_layers="$(docker image inspect --format '{{join .RootFS.Layers " "}}' "$image")"
+      pinned_layers='{{if eq .Config.WorkingDir "/opt/dsv41-1122"}}{{join .RootFS.Layers " "}}{{end}}'
+      while IFS= read -r candidate; do
+        candidate_layers="$(docker image inspect --format "$pinned_layers" "$candidate")"
+        if [[ -n "$candidate_layers" && "$source_layers" == "$candidate_layers "* ]]; then
+          refresh_source="$candidate"
+          source_layers="$candidate_layers"
+        fi
+      done < <(docker image ls --filter "reference=${image%:*}:base-*" --format '{{.Repository}}:{{.Tag}}')
+    fi
+    image_id="$(docker image inspect --format '{{.Id}}' "$refresh_source")"
     image_hex="${image_id#sha256:}"
     base_image="${image%:*}:base-${image_hex:0:12}"
-    docker tag "$image" "$base_image"
+    docker tag "$refresh_source" "$base_image"
     refresh_context="$(mktemp -d /tmp/orthrus-dsv41-refresh.XXXXXX)"
     trap 'rm -rf -- "$refresh_context"' EXIT
     # Build from tracked files only. PyPTO compilation may leave root-owned

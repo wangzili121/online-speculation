@@ -17,7 +17,8 @@ from .dsv41_native_online_artifacts import load_native_online_bundle
 from .dsv41_native_online_runtime import ARENA, TRAIN_GRAPH, NativeOnlineArena, NativeOnlineRuntime, decode_command
 from .dsv41_native_rank_dispatch import NativeRankGraph, RankLocalStack
 from .dsv41_native_resident import (
-    NativeDraftInputPacket, NativeRankMemory, NativeResidentForward, bind_native_draft, forward_inputs, forward_templates,
+    NativeRankMemory, NativeResidentForward, NativeResidualInputPacket, bind_native_draft, forward_inputs,
+    forward_templates,
 )
 from .dsv41_packed_proposer import (
     DraftRoundStats, PackedFinalState, PackedStudentRows, draft_geometry, draft_graph_manifest,
@@ -156,7 +157,7 @@ class ForwardNode:
                 self.draft = bind_native_draft(
                     self.bank, d.graph, d.program, a, d.head, d.block, d.last_layers, d.head_artifact,
                 )
-                self.draft_packet = NativeDraftInputPacket(self.draft.draft.inputs, d.block)
+                self.draft_packet = NativeResidualInputPacket(self.draft.draft.inputs)
             if a.online:
                 banks = {
                     "draft": dict(zip(self.ranks, self.draft.draft.ranks, strict=True)),
@@ -190,7 +191,6 @@ class ForwardNode:
         *counts, mask = ROWS_AND_MASK.unpack_from(payload)
         is_draft = phase == "draft"
         images = self.draft.draft.inputs if is_draft else bank.inputs[phase]
-        image_bytes = self.draft_packet.nbytes if is_draft else images.images[2].nbytes
         local_mask = sum(1 << dp for dp in self.dps)
         active_mask, idle_mask = mask & DP_MASK, mask >> 4
         if (active_mask | idle_mask) & ~local_mask or active_mask & idle_mask:
@@ -201,16 +201,22 @@ class ForwardNode:
         if is_draft:
             capture_owner, = DRAFT_CAPTURE.unpack_from(payload, start)
             start += DRAFT_CAPTURE.size
-        if len(payload) != start + len(active) * image_bytes:
+        if is_draft:
+            sizes = [self.draft_packet.size(2)] * len(active)
+        elif phase == "decode":
+            sizes = [bank.decode_packet.size(counts[dp]) for dp in active]
+        else:
+            sizes = [images.images[2].nbytes] * len(active)
+        if len(payload) != start + sum(sizes):
             raise ValueError(f"{phase} request does not match the negotiated packed image size")
         capture = self.draft.capture_args.get(capture_owner) if is_draft else None
-        for dp in active:
+        for dp, image_bytes in zip(active, sizes, strict=True):
             image = payload[start:start + image_bytes]
             if is_draft:
                 allocation = capture[1] if capture is not None and dp * bank.tp == capture_owner else None
                 self.stage_draft(dp, image, allocation=allocation)
             else:
-                bank.stage_image(phase, dp, image)
+                bank.stage_image(phase, dp, image, rows=counts[dp])
             start += image_bytes
         for dp in self.dps:
             if idle_mask & (1 << dp):
@@ -256,7 +262,7 @@ class ForwardNode:
     def stage_draft(self, dp, image, *, allocation=None):
         bank = self.bank
         inputs = self.draft.draft.inputs
-        self.draft_packet.stage(image)
+        self.draft_packet.stage(image, 2, repeat_to=self.artifacts.draft.block)
         inputs.images[1].copy_(inputs.images[2])
         inputs.fields[1]["logit_row_indices"].fill_(-1)
         workers = bank._workers(dp)
@@ -324,6 +330,7 @@ class NativeForwardTarget:
         self.config = config
         self.artifacts = artifacts
         self.images = images
+        self.decode_packet = NativeResidualInputPacket(images["decode"])
         self.templates = tuple({name: templates[phase][name] for name in images[phase].fields[0]} for phase in PHASES)
         self.ropes = ropes
         self.sample_shape = artifacts.sample_shape
@@ -344,7 +351,8 @@ class NativeForwardTarget:
         io = self.images[phase]
         for name, field in io.fields[2].items():
             field.copy_(values[name])
-        self.staged[index][dp] = io.images[2].numpy().tobytes()
+        self.staged[index][dp] = (self.decode_packet.pack(int(values["query_start_loc"][-1])) if index else
+                                  io.images[2].numpy().tobytes())
 
     def run(self, index, counts, *, capture_owner=-1):
         import torch
@@ -451,7 +459,7 @@ class NativeDraftProposer:
             page_tables=tuple(target.images["decode"].fields[0][name][0] for name in
                               ("c1a_index_block_table", "c2a_index_block_table")),
         )
-        self.packet = NativeDraftInputPacket(self.stager.inputs, d.block)
+        self.packet = NativeResidualInputPacket(self.stager.inputs)
 
     def propose_batch(self, requests, *, uploads, capture=None):
         if not requests:
@@ -471,7 +479,7 @@ class NativeDraftProposer:
         for row in requests:
             stage_draft_request(self.stager, row, student_rows=teacher_rows if row.owner == capture_owner else 0,
                                 owner_only=True)
-            pending[row.owner // self.tp] = self.packet.pack()
+            pending[row.owner // self.tp] = self.packet.pack(2)
         for dp in self.previous_dps - active:
             pending[dp] = None
         self.previous_dps = active

@@ -9,7 +9,7 @@ from blockspec.dsv41_native_forward import (
     DRAFT, DRAFT_CAPTURE, READ_ROWS, ROWS_AND_MASK, ForwardNode, NativeForwardTarget, NativeSampleError,
 )
 from blockspec.dsv41_native_graph_pair import NativePeerMailbox
-from blockspec.dsv41_native_resident import NativeDraftInputPacket, NativeRankMemory
+from blockspec.dsv41_native_resident import NativeRankMemory, NativeResidualInputPacket
 
 
 class Buffer:
@@ -77,14 +77,14 @@ def test_native_mailbox_copies_large_frames_at_the_matching_source_and_destinati
     assert mailbox.remote_staging.raw == payload
 
 
-@pytest.mark.parametrize("block", (8, 16, 32))
-def test_native_draft_packet_reconstructs_the_full_input_image(block):
+@pytest.mark.parametrize(("rows", "repeat_to"), ((2, 8), (2, 16), (2, 32), (1, None), (8, None), (16, None)))
+def test_native_residual_packet_reconstructs_the_full_input_image(rows, repeat_to):
     def allocate():
-        residual_bytes = max(16, block) * 4 * 32 * 4
+        residual_bytes = max(16, repeat_to or rows) * 4 * 32 * 4
         image = torch.empty(residual_bytes + 64, dtype=torch.uint8)
         residual = image[:residual_bytes].view(torch.float32).reshape(-1, 4, 32)
-        return image, residual, NativeDraftInputPacket(
-            SimpleNamespace(images=[None, None, image], fields=[None, None, {"x_hc": residual}]), block,
+        return image, residual, NativeResidualInputPacket(
+            SimpleNamespace(images=[None, None, image], fields=[None, None, {"x_hc": residual}]),
         )
 
     source, streams, outgoing = allocate()
@@ -92,13 +92,15 @@ def test_native_draft_packet_reconstructs_the_full_input_image(block):
     stream_bytes = streams.nbytes
     source[stream_bytes:] = torch.arange(64, dtype=torch.uint8)
     for value in (5.0, -1.0):
-        streams[0].copy_(torch.arange(32, dtype=torch.float32))
-        streams[1:block].fill_(value)
-        streams[block:].zero_()
+        embeddings = torch.arange(rows * 32, dtype=torch.float32).view(rows, 32) + value
+        streams[:rows].copy_(embeddings[:, None, :])
+        if repeat_to is not None:
+            streams[rows:repeat_to].copy_(embeddings[-1])
+        streams[repeat_to or rows:].zero_()
         target.fill_(255)
-        packet = bytearray(outgoing.pack())
-        assert len(packet) == incoming.nbytes == 2 * 32 * 4 + 64
-        incoming.stage(packet)
+        packet = bytearray(outgoing.pack(rows))
+        assert len(packet) == incoming.size(rows) == rows * 32 * 4 + 64
+        incoming.stage(packet, rows, repeat_to=repeat_to)
         assert torch.equal(source, target)
 
 
@@ -110,12 +112,12 @@ def test_native_draft_keeps_global_counts_and_routes_images_to_their_owner():
         dispatched.append((op, inputs, outputs, kw))
         return samples[:2].numpy().tobytes(), samples[2:].numpy().tobytes()
 
-    endpoint = SimpleNamespace(exchange=exchange)
-    images = dict.fromkeys(("prefill", "decode"), SimpleNamespace(fields=({},)))
-    artifacts = SimpleNamespace(sample_shape=(16, 8))
-    target = NativeForwardTarget(endpoint, None, artifacts, images, {}, None)
-    target.staged[2].update({0: b"owner-zero", 1: None, 2: None, 3: b"owner-three"})
-    target.sampled[2] = "old"
+    target = NativeForwardTarget.__new__(NativeForwardTarget)
+    target.mailbox = SimpleNamespace(exchange=exchange)
+    target.config = None
+    target.sample_shape = (16, 8)
+    target.staged = ({}, {}, {0: b"owner-zero", 1: None, 2: None, 3: b"owner-three"})
+    target.sampled = [None, None, "old"]
     target.run(2, (16, 0, 0, 16), capture_owner=12)
     opcode, packets, replies, options = dispatched.pop()
     assert tuple(parts[1:] for parts in packets) == ((b"owner-zero",), (b"owner-three",))
@@ -137,7 +139,7 @@ def test_native_draft_keeps_global_counts_and_routes_images_to_their_owner():
         node = ForwardNode(node_id, {"draft": {}})
         draft_inputs = SimpleNamespace(images=[None, None, SimpleNamespace(nbytes=len(msg[size:]))])
         node.bank = SimpleNamespace(tp=4, upload_idle=lambda io, dp: stages.append(("idle", dp, io)))
-        node.draft_packet = SimpleNamespace(nbytes=len(msg[size:]))
+        node.draft_packet = SimpleNamespace(size=lambda _rows: len(msg[size:]))
         count_buffer = bytearray(16 * 4)
         node.draft = SimpleNamespace(
             draft=SimpleNamespace(inputs=draft_inputs), capture_args={}, arguments={"ids": None},

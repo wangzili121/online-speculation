@@ -55,7 +55,8 @@ def run_smoke(target, session, report, requests, *, options, draft, schedule):
             schedule.next_capture = schedule.rounds + 1
         try:
             wave = run_wave(session, requests, speculative=name != "ar",
-                            online=schedule if owner_dp is not None else None, **options)
+                            online=schedule if owner_dp is not None else None,
+                            expected=report["ar"]["requests"] if name != "ar" else None, **options)
         except NativeSampleError as error:
             report[name] = dict(sample_checks=target.sample_checks, sample_failure=error.evidence)
             report["passed"] = False
@@ -63,7 +64,9 @@ def run_smoke(target, session, report, requests, *, options, draft, schedule):
             return
         report[name] = dict(wave, sample_checks=target.sample_checks)
         updated_dps = {update["dp"] for update in wave["updates"] if update["applied"]}
-        if wave["requests"] != report["ar"]["requests"] or (
+        if wave["divergence"]:
+            print(json.dumps(dict(stage="token_divergence", arm=name, **wave["divergence"])), flush=True)
+        if wave["divergence"] or (
             owner_dp is not None and owner_dp not in updated_dps
         ):
             report["passed"] = False

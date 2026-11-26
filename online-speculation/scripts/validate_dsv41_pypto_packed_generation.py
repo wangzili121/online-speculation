@@ -39,7 +39,26 @@ class OnlineSchedule:
         return self.learning_rate * min(1., (self.updates + 1) / max(self.warmup_updates, 1))
 
 
-def run_wave(session, requests, *, chunk, tokens, width, speculative, online=None):
+def append_emitted(outputs, emitted, expected, phase):
+    matched = 0
+    divergence = None
+    for handle, rows in emitted.items():
+        output = outputs[handle]
+        start = len(output)
+        output.extend(rows)
+        if expected is None or divergence is not None:
+            continue
+        target = expected[handle.request_id][start:len(output)]
+        offset = next((i for i, (a, b) in enumerate(zip(target, rows)) if a != b), min(len(target), len(rows)))
+        matched += offset
+        if offset < len(rows):
+            divergence = dict(request_id=handle.request_id, dp=handle.dp, phase=phase,
+                              position=start + offset, target=target[offset:offset + 1],
+                              orthrus=list(rows[offset:offset + 1]))
+    return matched, divergence
+
+
+def run_wave(session, requests, *, chunk, tokens, width, speculative, online=None, expected=None):
     """Run one wave, with one request per DP and a fixed output budget."""
     begin = perf_counter()
     staged = {
@@ -47,20 +66,25 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
         for dp, (request_id, prompt) in enumerate(requests)
     }
     outputs = {handle: [] for handle in staged}
+    matched = 0
+    divergence = None
     for start in range(0, max(map(len, staged.values())), chunk):
         first_tokens = session.prefill_greedy_batch(
             (handle, prompt[start:start + chunk]) for handle, prompt in staged.items() if start < len(prompt)
         )
-        for handle, token in first_tokens.items():
-            outputs[handle].append(token)
-    if any(len(rows) != 1 for rows in outputs.values()):
+        checked, divergence = append_emitted(outputs, {handle: (token,) for handle, token in first_tokens.items()},
+                                             expected, "prefill")
+        matched += checked
+        if divergence:
+            break
+    if divergence is None and any(len(rows) != 1 for rows in outputs.values()):
         raise RuntimeError("Packed Prefill must produce exactly one token per request")
     prefill = perf_counter()
     steps = proposed = accepted = draft_requests = 0
     pending = None
     updates = []
     draft_before = asdict(session.draft.stats) if speculative else {}
-    while active := {handle: rows[-1] for handle, rows in outputs.items() if len(rows) < tokens}:
+    while divergence is None and (active := {handle: rows[-1] for handle, rows in outputs.items() if len(rows) < tokens}):
         steps += 1
         if speculative:
             capture = None
@@ -89,8 +113,15 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
         if emitted.keys() != active.keys() or any(not 1 <= len(rows) <= tokens - len(outputs[handle])
                                                   for handle, rows in emitted.items()):
             raise RuntimeError("Packed Decode must advance each live request within its output budget")
-        for handle, rows in emitted.items():
-            outputs[handle].extend(rows)
+        checked, divergence = append_emitted(outputs, emitted, expected, "verify/accept" if speculative else "decode")
+        matched += checked
+        if divergence:
+            divergence["round"] = steps
+            if speculative:
+                failed = next(handle for handle in emitted if handle.dp == divergence["dp"])
+                divergence["draft_candidates"] = list(result.proposals[failed])
+                divergence["emitted"] = list(emitted[failed])
+            break
         if pending is not None:
             begin_update = perf_counter()
             update = session.update_draft(pending, rate=online.rate, finished=len(outputs[pending]) == tokens)
@@ -110,6 +141,8 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
     update_seconds = sum(update["wall_seconds"] for update in updates)
     return {
         "requests": {handle.request_id: rows for handle, rows in outputs.items()},
+        "greedy_tokens_matched": matched,
+        "divergence": divergence,
         "rounds": steps,
         "proposed_candidates": proposed,
         "accepted_candidates": accepted,
@@ -132,37 +165,38 @@ def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, o
     begin = perf_counter()
     waves = [requests[start:start + concurrency] for start in range(0, len(requests), concurrency)]
 
-    def run(wave, mode, schedule=None):
+    def run(wave, mode, schedule=None, expected=None):
         profile = dict(stage_seconds=Counter(), counts=Counter())
         with profile_online(SimpleNamespace(current=profile, lock=Lock())):
             result = run_wave(session, wave, chunk=chunk, tokens=tokens, width=width,
-                              speculative=mode, online=schedule)
+                              speculative=mode, online=schedule, expected=expected)
         return dict(result, profile=profile)
 
+    divergence = failed_wave = None
     for _ in range(warmup):
-        run(waves[0], False)
-        run(waves[0], True)
+        ar = run(waves[0], False)
+        orthrus = run(waves[0], True, expected=ar["requests"])
+        if orthrus["divergence"]:
+            divergence = dict(orthrus["divergence"], warmup=True)
+            failed_wave = dict(index=0, ar=ar, orthrus=orthrus)
+            if on_wave is not None:
+                on_wave(0, len(waves), ar, orthrus, divergence)
+            break
     warmed = perf_counter()
     arms = {name: [] for name in ("ar", "orthrus")}
     matched = 0
-    divergence = None
-    for index, wave in enumerate(waves, 1):
-        ar, orthrus = run(wave, False), run(wave, True, online)
-        arms["ar"].append(ar)
-        arms["orthrus"].append(orthrus)
-        for request_id, _ in wave:
-            target, observed = (arm["requests"][request_id] for arm in (ar, orthrus))
-            offset = next((i for i, (left, right) in enumerate(zip(target, observed)) if left != right),
-                          min(len(target), len(observed)))
-            matched += offset
-            if offset != tokens:
-                divergence = dict(request_id=request_id, position=offset,
-                                  target=target[offset:offset + 1], orthrus=observed[offset:offset + 1])
-                break
+    for index, wave in enumerate(waves if divergence is None else (), 1):
+        ar = run(wave, False)
+        orthrus = run(wave, True, online, expected=ar["requests"])
+        matched += orthrus["greedy_tokens_matched"]
+        divergence = orthrus["divergence"]
         if on_wave is not None:
             on_wave(index, len(waves), ar, orthrus, divergence)
         if divergence:
+            failed_wave = dict(index=index, ar=ar, orthrus=orthrus)
             break
+        arms["ar"].append(ar)
+        arms["orthrus"].append(orthrus)
     for name, samples in arms.items():
         emitted = sum(len(rows) for wave in samples for rows in wave["requests"].values())
         seconds = sum(wave["total_seconds"] for wave in samples)
@@ -174,10 +208,10 @@ def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, o
         draft_requests = sum(wave["draft_requests"] for wave in samples)
         decode_tokens = emitted - sum(len(wave["requests"]) for wave in samples)
         arms[name] = dict(
-            waves=samples, emitted_tokens=emitted, tokens_per_second=emitted / seconds,
-            decode_tokens_per_second=decode_tokens / decode_seconds,
-            update_seconds=updated, tokens_per_second_excluding_update=emitted / (seconds - updated),
-            decode_tokens_per_second_excluding_update=decode_tokens / (decode_seconds - updated),
+            waves=samples, emitted_tokens=emitted, tokens_per_second=emitted / seconds if samples else None,
+            decode_tokens_per_second=decode_tokens / decode_seconds if samples else None,
+            update_seconds=updated, tokens_per_second_excluding_update=emitted / (seconds - updated) if samples else None,
+            decode_tokens_per_second_excluding_update=decode_tokens / (decode_seconds - updated) if samples else None,
             updates_applied=sum(update["applied"] for update in updates),
             first_update_seconds=updates[0]["wall_seconds"] if updates else None,
             later_updates_median_seconds=median(update["wall_seconds"] for update in updates[1:])
@@ -188,7 +222,7 @@ def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, o
         )
     return dict(passed=divergence is None and (online is None or online.updates > 0),
                 online_schedule=asdict(online) if online else None,
-                greedy_tokens_matched=matched, divergence=divergence,
+                greedy_tokens_matched=matched, divergence=divergence, failed_wave=failed_wave,
                 concurrency=concurrency, output_tokens_per_request=tokens, verify_width=width,
                 warmup_seconds=warmed - begin, arms=arms)
 
