@@ -127,8 +127,34 @@ fi
 "${base[@]}" -v "$bundle:$bundle:ro" -v "$run:/run-data" "$image" \
   /opt/dsv41-1122/run_dsv41_pypto_native_ar.py "${flags[@]}" --contract-only \
   --output /run-data/contract.json >"$run/contract.log"
-printf -v remote '%q ' test -r "$bundle/online/online_manifest.json"
-"${ssh_peer[@]}" "$remote"
+identity="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["identity"])' "$run/contract.json")"
+printf -v remote '%q ' "${base[@]}" -v "$bundle:$bundle:ro" --entrypoint /bin/bash "$image" -lc '
+    set -e
+    source /opt/pypto/bin/pypto-activate.sh
+    exec python -c "
+from pathlib import Path
+import sys
+from blockspec.dsv41_native_forward import ForwardArtifacts
+
+root, model, loss, expected = sys.argv[1:]
+bundle = Path(root)
+artifacts = ForwardArtifacts(bundle / \"graphs\", model, 1,
+                             draft_directory=bundle / \"draft\", head=bundle / \"head\",
+                             online_directory=bundle / \"online\", loss=loss)
+actual = artifacts.identity.hex()
+if actual != expected:
+    raise SystemExit(f\"Native artifacts differ: node7={expected}, node8={actual}\")
+print(actual)
+    " "$@"
+' verify "$bundle" "$model" "$loss" "$identity"
+if ! "${ssh_peer[@]}" "$remote" >"$run/node8-contract.log" 2>&1; then
+    tail -n 16 "$run/node8-contract.log" >&2
+    exit 2
+fi
+
+if [[ "$mode" == native-windows ]]; then
+  flags+=(--windows-only)
+fi
 
 check_npus='
     set -e

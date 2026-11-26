@@ -84,11 +84,11 @@ class ForwardArtifacts:
                 program=DistributedCompiledProgram.from_dir(path), graph=NativeRankGraph(path, 16),
             )
         self.sample_shape = (MAX_LOGIT_ROWS, SAMPLED_IDS_PAD)
-        forward = [(phase, self.programs[phase], self.graphs[phase]) for phase in PHASES]
+        forward = {phase: (self.programs[phase], self.graphs[phase]) for phase in PHASES}
         if self.draft is not None:
-            forward.append(("draft", self.draft.program, self.draft.graph))
+            forward["draft"] = self.draft.program, self.draft.graph
         self.sample_parameters = {}
-        for phase, program, graph in forward:
+        for phase, (program, graph) in forward.items():
             sampled = next((p for p in program._get_metadata()[0]
                             if p.name.removesuffix("__ssa_v0") == "sampled_ids"), None)
             if (sampled is None or sampled.name not in graph.rank_stacks
@@ -112,6 +112,11 @@ class ForwardArtifacts:
             for name in ("distributed_meta.json", "orchestration/host_orch.py"):
                 digest.update((path / name).read_bytes())
         self.identity = digest.digest()
+        self.execution_graphs = forward | self.online
+
+    def native_windows(self):
+        return {name: graph.window["window_size"] for name, (_, graph) in self.execution_graphs.items()
+                if graph.window is not None}
 
 
 class ForwardNode:
@@ -456,33 +461,12 @@ class NativeDraftProposer:
 
 
 @contextmanager
-def open_native_forward(artifacts, *, endpoint, peer_listen_host, devices, timeout, on_stage=None):
+def _connect_native_forward(artifacts, phases, capacity, *, endpoint, peer_listen_host, devices, timeout,
+                            on_stage):
     from pypto.runtime import RunConfig
     from pypto.runtime.runner import _apply_ring_overrides
     from simpler.task_interface import CallConfig
 
-    slots = artifacts.slots
-    if on_stage is not None:
-        on_stage("assembling_native_graphs")
-    phases = {name: NativeChipGraph.from_program(artifacts.graphs[name], program)
-              for name, program in artifacts.programs.items()}
-    if artifacts.draft is not None:
-        draft = artifacts.draft
-        phases["draft"] = NativeChipGraph.from_program(draft.graph, draft.program)
-    phases.update({name: NativeChipGraph.from_program(graph, program)
-                   for name, (program, graph) in artifacts.online.items()})
-    templates, initial_cache, ropes = forward_templates(
-        artifacts.weights, artifacts.engram, artifacts.capacities, artifacts.context, slots,
-    )
-    _, images = forward_inputs(artifacts.programs, artifacts.weights, templates, initial_cache)
-    from models.deepseek_v4_1_flash_a3.config import FLASH
-
-    phase_image_sizes = [io.images[2].nbytes for io in images.values()]
-    if artifacts.draft is not None:
-        _, bucket, _ = draft_geometry(artifacts.context)
-        phase_image_sizes.append(make_draft_input_images(artifacts.draft.block, bucket).images[2].nbytes)
-    capacity = max(2 * max(phase_image_sizes) + ROWS_AND_MASK.size + DRAFT_CAPTURE.size,
-                   artifacts.sample_shape[0] * FLASH.vocab_size * 4, 4096)
     def bind_local(callables):
         global _local_node
         _local_node = ForwardNode(0, callables)
@@ -494,7 +478,8 @@ def open_native_forward(artifacts, *, endpoint, peer_listen_host, devices, timeo
         ring_dep_pool=131072,
     ))
     launch = json.dumps(dict(
-        graphs=str(artifacts.root.resolve()), checkpoint=str(artifacts.weights.checkpoint.root.resolve()), slots=slots,
+        graphs=str(artifacts.root.resolve()), checkpoint=str(artifacts.weights.checkpoint.root.resolve()),
+        slots=artifacts.slots,
         draft_graph=str(artifacts.draft.root.resolve()) if artifacts.draft else None,
         head=str(artifacts.draft.head.resolve()) if artifacts.draft else None,
         online=str(artifacts.online_directory.resolve()) if artifacts.online_directory else None, loss=artifacts.loss,
@@ -506,15 +491,52 @@ def open_native_forward(artifacts, *, endpoint, peer_listen_host, devices, timeo
         phases, endpoint=endpoint, peer_listen_host=peer_listen_host, devices=devices, platform="a2a3",
         comm_profile="a3-fabric-v1", timeout=timeout, local_endpoint=bind_local,
         remote_endpoint=f"{__name__}:remote_forward",
-    ) as pair, native_peer_mailbox(pair, capacity) as mailbox:
+    ) as pair, native_peer_mailbox(pair, max(capacity, len(launch))) as mailbox:
         identities = mailbox.exchange(config, PREFLIGHT, (launch, launch), (32, 32))
         if identities != (artifacts.identity, artifacts.identity):
             raise ValueError("The native hosts resolved different weights or compiled graph metadata")
         if on_stage is not None:
             on_stage("reserving_native_windows")
-        pair.reserve_windows(config)
+        reserved = pair.reserve_windows(config)
+        yield mailbox, config, reserved
+        pair.release_windows(config)
+
+
+def check_native_windows(artifacts, *, endpoint, peer_listen_host, devices, timeout, on_stage=None):
+    """Reserve the actual model windows without assembling chip callables or loading device weights."""
+    phases = {name: NativeChipGraph(graph, {}, ()) for name, (_, graph) in artifacts.execution_graphs.items()}
+    with _connect_native_forward(
+        artifacts, phases, 4096, endpoint=endpoint, peer_listen_host=peer_listen_host, devices=devices,
+        timeout=timeout, on_stage=on_stage,
+    ) as (_, _, reserved):
+        return reserved
+
+
+@contextmanager
+def open_native_forward(artifacts, *, endpoint, peer_listen_host, devices, timeout, on_stage=None):
+    from models.deepseek_v4_1_flash_a3.config import FLASH
+
+    if on_stage is not None:
+        on_stage("assembling_native_graphs")
+    phases = {name: NativeChipGraph.from_program(graph, program)
+              for name, (program, graph) in artifacts.execution_graphs.items()}
+    templates, initial_cache, ropes = forward_templates(
+        artifacts.weights, artifacts.engram, artifacts.capacities, artifacts.context, artifacts.slots,
+    )
+    _, images = forward_inputs(artifacts.programs, artifacts.weights, templates, initial_cache)
+    phase_image_sizes = [io.images[2].nbytes for io in images.values()]
+    if artifacts.draft is not None:
+        _, bucket, _ = draft_geometry(artifacts.context)
+        phase_image_sizes.append(make_draft_input_images(artifacts.draft.block, bucket).images[2].nbytes)
+    capacity = max(2 * max(phase_image_sizes) + ROWS_AND_MASK.size + DRAFT_CAPTURE.size,
+                   artifacts.sample_shape[0] * FLASH.vocab_size * 4, 4096)
+    with _connect_native_forward(
+        artifacts, phases, capacity, endpoint=endpoint, peer_listen_host=peer_listen_host, devices=devices,
+        timeout=timeout, on_stage=on_stage,
+    ) as (mailbox, config, reserved):
         if on_stage is not None:
             on_stage("loading_resident_weights")
         mailbox.exchange(config, LOAD, (b"", b""), (0, 0))
-        yield NativeForwardTarget(mailbox, config, artifacts, images, templates, ropes)
-        pair.release_windows(config)
+        target = NativeForwardTarget(mailbox, config, artifacts, images, templates, ropes)
+        target.reserved_windows = reserved
+        yield target

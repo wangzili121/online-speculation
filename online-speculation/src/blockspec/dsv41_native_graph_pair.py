@@ -187,12 +187,26 @@ class NativeGraphPair:
             self._used_phases.add(phase)
 
     def reserve_windows(self, config):
+        reserved = {}
+
         def reserve(orch, _args, _cfg):
             for phase, item in self.phases.items():
-                item.graph.allocate_domain(orch, f"dsv41/{phase}", self.members)
+                graph = item.graph
+                if graph.window is None:
+                    continue
+                size = graph.window["window_size"]
+                try:
+                    graph.allocate_domain(orch, f"dsv41/{phase}", self.members)
+                except Exception as error:
+                    raise RuntimeError(
+                        f"Fabric window {phase!r} failed for {len(self.members)} ranks "
+                        f"({size} bytes per rank, {len(reserved)} earlier windows reserved): {error}"
+                    ) from error
+                reserved[phase] = size
 
         self.parent.run(reserve, config=config)
-        self._used_phases.update(phase for phase, item in self.phases.items() if item.graph.window is not None)
+        self._used_phases.update(reserved)
+        return reserved
 
     def release_windows(self, config):
         def release(orch, _args, _cfg):

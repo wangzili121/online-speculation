@@ -7,8 +7,9 @@ import json
 from math import isfinite
 from pathlib import Path
 from time import perf_counter
+from traceback import print_exc
 
-from blockspec.dsv41_native_forward import ForwardArtifacts, open_native_forward
+from blockspec.dsv41_native_forward import ForwardArtifacts, check_native_windows, open_native_forward
 from blockspec.dsv41_online import read_workload
 from validate_dsv41_pypto_packed_generation import OnlineSchedule, benchmark, run_wave
 
@@ -85,7 +86,10 @@ def main():
     parser.add_argument("--width", type=int, choices=(8, 16), default=8)
     parser.add_argument("--timeout", type=float, default=1200)
     parser.add_argument("--tokens", type=int, default=8)
-    parser.add_argument("--contract-only", action="store_true")
+    checks = parser.add_mutually_exclusive_group()
+    checks.add_argument("--contract-only", action="store_true")
+    checks.add_argument("--windows-only", action="store_true",
+                        help="Reserve the model's communication windows without loading device weights")
     args = parser.parse_args()
     if not args.contract_only and not (args.endpoint and args.peer_listen_host):
         parser.error("Native execution requires the daemon endpoint and peer listen address")
@@ -120,41 +124,56 @@ def main():
     heldout = workload(args.heldout_workload) if args.heldout_workload else []
     if {tuple(prompt) for _, prompt in requests}.intersection(tuple(prompt) for _, prompt in heldout):
         parser.error("Training and held-out workloads contain an identical prompt")
+    mode = ("native-contract" if args.contract_only else "native-windows" if args.windows_only else
+            "native-study" if args.study else "native-smoke")
+    windows = artifacts.native_windows()
     report = dict(
-        mode="native-contract" if args.contract_only else "native-study" if args.study else "native-smoke",
+        mode=mode,
         identity=artifacts.identity.hex(), capacities=artifacts.capacities, context=artifacts.context,
         requests=len(requests), output_tokens_per_request=args.tokens,
         last_layers=artifacts.draft.last_layers if artifacts.online else 0,
         workload_sha256=sha256(args.workload.read_bytes()).hexdigest(),
         loss=args.loss if artifacts.online else None,
+        planned_windows=windows,
+        planned_window_bytes_per_rank=sum(windows.values()),
         passed=True,
     )
-    print(json.dumps(dict(stage="artifacts_ready", **report)), flush=True)
+    print(json.dumps(dict(stage="artifacts_ready", **{name: value for name, value in report.items()
+                                                   if name not in ("planned_windows", "passed")})), flush=True)
     if not args.contract_only:
         start = perf_counter()
 
         def startup_stage(stage):
             print(json.dumps(dict(stage=stage, elapsed_seconds=perf_counter() - start)), flush=True)
 
-        with open_native_forward(
-            artifacts, endpoint=args.endpoint,
-            peer_listen_host=args.peer_listen_host, devices=(tuple(range(8)), tuple(range(8))), timeout=args.timeout,
-            on_stage=startup_stage,
-        ) as target:
-            session = target.session()
-            report["startup_seconds"] = perf_counter() - start
-            print(json.dumps(dict(stage="resident_ready", seconds=report["startup_seconds"])), flush=True)
-            options = dict(chunk=artifacts.capacities[0], tokens=args.tokens, width=args.width)
-            schedule = (OnlineSchedule(args.update_every, args.teacher_rows, args.learning_rate, args.warmup_updates)
-                        if artifacts.online else None)
-            if args.study:
-                timing = dict(**options, concurrency=args.concurrency, warmup=args.warmup_waves)
-                if heldout:
-                    report["heldout_workload_sha256"] = sha256(args.heldout_workload.read_bytes()).hexdigest()
-                run_study(session, report, requests, heldout, schedule=schedule, timing=timing, output=args.output)
+        connection = dict(endpoint=args.endpoint, peer_listen_host=args.peer_listen_host,
+                          devices=(tuple(range(8)), tuple(range(8))), timeout=args.timeout, on_stage=startup_stage)
+        if args.windows_only:
+            try:
+                report["reserved_windows"] = check_native_windows(artifacts, **connection)
+            except Exception as error:
+                print_exc()
+                report.update(passed=False, error=str(error))
             else:
-                run_smoke(target, session, report, requests, options=options, draft=artifacts.draft is not None,
-                          schedule=schedule)
+                report["passed"] = bool(windows) and report["reserved_windows"] == windows
+            report["seconds"] = perf_counter() - start
+        else:
+            with open_native_forward(artifacts, **connection) as target:
+                report["reserved_windows"] = target.reserved_windows
+                session = target.session()
+                report["startup_seconds"] = perf_counter() - start
+                print(json.dumps(dict(stage="resident_ready", seconds=report["startup_seconds"])), flush=True)
+                options = dict(chunk=artifacts.capacities[0], tokens=args.tokens, width=args.width)
+                schedule = (OnlineSchedule(args.update_every, args.teacher_rows, args.learning_rate, args.warmup_updates)
+                            if artifacts.online else None)
+                if args.study:
+                    timing = dict(**options, concurrency=args.concurrency, warmup=args.warmup_waves)
+                    if heldout:
+                        report["heldout_workload_sha256"] = sha256(args.heldout_workload.read_bytes()).hexdigest()
+                    run_study(session, report, requests, heldout, schedule=schedule, timing=timing, output=args.output)
+                else:
+                    run_smoke(target, session, report, requests, options=options, draft=artifacts.draft is not None,
+                              schedule=schedule)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(dict(stage="complete", passed=report["passed"], path=str(args.output))), flush=True)
     if not report["passed"]:

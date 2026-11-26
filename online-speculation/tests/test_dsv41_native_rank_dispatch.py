@@ -2,8 +2,10 @@ from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 
+import pytest
 import torch
 
+from blockspec.dsv41_native_graph_pair import NativeGraphPair
 from blockspec.dsv41_native_rank_dispatch import NativeRankGraph, RankLocalStack
 
 
@@ -81,6 +83,26 @@ def test_sampled_output_views_replace_only_the_dp_owners():
         "owner2", (9, "ND"), (10, "ND"), (11, "ND"),
         "owner3", (13, "ND"), (14, "ND"), (15, "ND"),
     ]
+
+
+def test_window_probe_reports_first_failed_model_graph():
+    allocated = []
+
+    def allocate(_orch, name, ranks):
+        allocated.append((name, len(ranks)))
+        if name.endswith("draft"):
+            raise OSError("Fabric import rejected")
+
+    phases = {
+        name: SimpleNamespace(graph=SimpleNamespace(window={"window_size": size} if size else None,
+                                                     allocate_domain=allocate))
+        for name, size in (("loss", 0), ("prefill", 4096), ("draft", 8192), ("verify", 16384))
+    }
+    worker = SimpleNamespace(run=lambda method, *, config: method(None, None, config))
+    pair = NativeGraphPair(worker, phases, (), (), tuple(range(16)), {})
+    with pytest.raises(RuntimeError, match=r"Fabric window 'draft'.*16 ranks.*8192 bytes per rank.*1 earlier"):
+        pair.reserve_windows(None)
+    assert allocated == [("dsv41/prefill", 16), ("dsv41/draft", 16)]
 
 
 def test_daemon_scratch_uses_worker_owned_buffers(tmp_path, monkeypatch):

@@ -62,6 +62,11 @@ case "$action" in
     docker image inspect "$check_image" >/dev/null 2>&1 || {
       echo "1122 image missing. Set PYPTO_IMAGE to the pinned 1122 image on this server." >&2; exit 2;
     }
+    smi="$(command -v npu-smi || printf %s /usr/local/bin/npu-smi)"
+    processes="$("$smi" info)"
+    [[ "$processes" == *"No running processes found in NPU $NPU_DEVICE "* ]] || {
+      echo "NPU $NPU_DEVICE must be idle for the Fabric probe." >&2; exit 2;
+    }
     exec docker run --rm --network none --entrypoint /bin/bash \
       --device "/dev/davinci$NPU_DEVICE" --device /dev/davinci_manager \
       --device /dev/devmm_svm --device /dev/hisi_hdc \

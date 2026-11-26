@@ -115,11 +115,14 @@ Draft 和 Verify 只回读实际参与本轮的词表行。Draft 结果直接交
 RUN=online-speculation/scripts/run_dsv41_pypto_company_pair.sh
 bash "$RUN" native-fabric
 bash "$RUN" native-prepare 1
+bash "$RUN" native-windows 1
 bash "$RUN" native-smoke 1
 bash "$RUN" native-study 1
 ```
 
 `native-fabric` 使用每台一张空闲卡检查设备窗口导出和跨机访问。默认物理卡分别为 node7 的 1 号和 node8 的 0 号，可通过 `NODE7_FABRIC_NPU` 和 `NODE8_FABRIC_NPU` 调整。`native-prepare` 用 CPU 编译并分发整图和初始化 head。`native-smoke` 需要两台各 8 张空闲卡，一次装载后从 node7 和 node8 的请求分别触发一次更新，检查每个 DP 的首行 logits 及与 AR 的逐 token 一致性。公司双机的原生 Fabric 和整模仍待实测。
+
+`native-windows` 可单独用两台各 8 张空闲卡预留整图的实际通信窗口。它涵盖 Prefill、Decode、Draft、后缀反向和 Adam 中需要通信的图，跳过设备 callable 装配和权重上传。报告写入 `native-windows.*/result.json`。窗口预留失败时，日志注明对应图、参与 rank 数和每卡窗口大小。这个检查和常规短验、GSM8K 都在启动设备进程前核对两端的权重清单、head 清单和编译图标识，在上传权重前预留同一组窗口。
 
 按默认产物的张量形状、通信窗口和 ring heap 核算，峰值 rank 的已知 HBM 分配约为 last‑1 51.8 GiB、last‑4 53.5 GiB。实卡峰值还会包含运行时的其他分配。原生在线路径复用驻留教师缓冲。Adam 把整个后缀的梯度范数和有限性检查结果一次回读，校验全部通过后才更新并发布权重。
 
