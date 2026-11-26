@@ -167,9 +167,10 @@ if [[ "${PYPTO_CHECK_ONLY:-0}" == 1 ]]; then
     for script in run_dsv41_pypto_staged_target.py compile_dsv41_pypto_{packed_draft,staged_adam}.py; do
         cmp "/checkout/scripts/$script" "$script"
     done
-    for patch in lib-1122-verification.patch moe-transport-1122-ipc.patch; do
+    for patch in lib-1122-verification.patch moe-transport-1122-ipc.patch runtime-1122-callable-slots.patch; do
         cmp "/checkout/runtime/pypto_dsv41_a3/$patch" "$patch"
     done
+    /opt/pypto/venv/bin/python -c "import _task_interface as t; assert t.MAX_REGISTERED_CALLABLE_IDS == 256"
     for module in /checkout/src/blockspec/{dsv41_{staged_*,packed_*,online_profile},pypto_dsv41_{packed_*,online_programs,optimizer_programs}}.py; do
         cmp "$module" "orthrus/blockspec/${module##*/}"
     done

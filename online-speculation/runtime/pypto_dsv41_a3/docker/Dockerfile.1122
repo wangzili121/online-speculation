@@ -9,6 +9,7 @@ ENV PYPTO_SRC=/opt/dsv41-1122/pypto \
     PYPTO_MOTD_SHOWN=1
 WORKDIR /opt/dsv41-1122
 COPY online-speculation/runtime/pypto_dsv41_a3/runtime-release.patch ./
+COPY online-speculation/runtime/pypto_dsv41_a3/runtime-1122-callable-slots.patch ./
 COPY online-speculation/runtime/pypto_dsv41_a3/pypto-1122-stacked-nz.patch ./
 COPY online-speculation/runtime/pypto_dsv41_a3/docker/build-network.sh ./
 COPY online-speculation/runtime/pypto_dsv41_a3/docker/cache-pto-isa.sh ./
@@ -32,6 +33,7 @@ RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca --mount=t
     git -C pypto submodule update --init --recursive --depth 1; \
     test "$(git -C pypto/runtime rev-parse HEAD)" = a5349f42c71666bb8cacfb3759f34eeda1572beb; \
     git -C pypto/runtime apply "$PWD/runtime-release.patch"; \
+    git -C pypto/runtime apply "$PWD/runtime-1122-callable-slots.patch"; \
     uv pip install --python /opt/pypto/venv/bin/python \
         -c "$PYPTO_SRC/build-constraints.txt" cmake ninja nanobind scikit-build-core; \
     bash "$PYPTO_SRC/docker/scripts/pypto-install-ptoas.sh"; \

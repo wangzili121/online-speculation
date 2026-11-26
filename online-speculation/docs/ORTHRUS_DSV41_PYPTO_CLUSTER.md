@@ -113,6 +113,8 @@ Draft 和 Verify 只回读实际参与本轮的词表行。Draft 结果直接交
 
 两台已经有 `1122-949a18d` 时，更新 checkout 后可在各自机器执行 `bash online-speculation/scripts/dsv41_pypto_env.sh refresh-1122`。它复用现有镜像的编译器和运行时，在离线环境更新模型补丁和公司脚本。接着运行 `prepare`，它会回载图产物并重编译不兼容的产物组。旧目录移入 `.superseded.*`。两端新的作业会核对初始化或预训练 head 的实际权重字节摘要。
 
+1122 的基模、起草、反向和 Adam 图共享一个驻留 Worker。公司镜像将 Simpler 的主机和 AICPU callable 注册表统一扩至 256 项。如果已有镜像仍使用 64 项，`refresh-1122` 会用镜像里的源码和工具链离线重建 Simpler。已有的编译图产物可以继续使用。
+
 111 的 ARM64 测试镜像使用同一组固定版本，离线刷新和启动检查用时约 7 秒。旧测试产物的目标图源码指纹不一致时，`prepare` 重编了 Prefill 和 Decode，并回载了此前的 6 个 Draft 图、13 个 last-1 反向图和 24 个 Adam 图。再次执行复用了全部图。初始化 head 的 40 个权重分片均参与校验。
 同一主机也从 `72a62d1-offline` 完整构建了 `1122-949a18d`，在新镜像上执行了离线刷新，并复验了实际 W8A8 checkpoint、已准备的图产物和 GSM8K 输入。
 

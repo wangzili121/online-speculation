@@ -1,0 +1,13 @@
+The DSV4.1 staged inference and online update graphs share a single worker.
+Keep one registry for its resident weights and KV cache, with room for both
+sets of callables. The Python binding and AICPU executor use the same limit.
+
+diff --git a/src/common/task_interface/callable_protocol.h b/src/common/task_interface/callable_protocol.h
+--- a/src/common/task_interface/callable_protocol.h
++++ b/src/common/task_interface/callable_protocol.h
+@@ -28,4 +28,4 @@
+ // via Worker.register / DeviceRunner::register_callable. The AICPU
+ // executor reserves a fixed-size `orch_so_table_[MAX_REGISTERED_CALLABLE_IDS]`
+ // keyed by callable_id, so this bound is part of the host↔AICPU protocol.
+-constexpr int32_t MAX_REGISTERED_CALLABLE_IDS = 64;
++constexpr int32_t MAX_REGISTERED_CALLABLE_IDS = 256;
