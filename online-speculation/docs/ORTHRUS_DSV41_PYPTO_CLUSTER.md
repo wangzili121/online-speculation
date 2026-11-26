@@ -163,6 +163,8 @@ python /opt/dsv41-1122/prepare_dsv41_pypto_staged_gsm8k.py \
 
 111 的四张 910B3 使用公开 W8A8 checkpoint 的第 39 层初始化 TP4 参数。构造梯度的三次发布与 Torch Adam 对照，权重抽样最大绝对误差为 `1.86e-9`。一次非有限梯度跳过发布，版本依序为 `1, 2, 2, 3`。该测试用宿主模拟 DP 求和。另用同机双卡实测 FP32 HCCL AllReduce 直接读写 IPC 缓冲视图，六轮逐元素一致。 [实卡报告与复跑命令](validation/dsv41/pypto-1122-949a-staged-adam-910b3.json)
 
+进一步在 111 的同一容器内开两个进程，各管一张卡，用真实 root-info 建 DP2 通信域。两个进程轮流产生构造梯度，经 NPU 上的 FP32 HCCL 归并后更新和发布真实第 39 层权重。两端每次发布的权重抽样逐字节一致，与 Torch Adam 最大绝对差为 `1.49e-8`。首轮约 2.57 秒，热态有效更新约 0.57–0.61 秒。该计时覆盖梯度归并、Adam 和发布，整模反向耗时需由双机在线试验测量。复跑时容器内保持逻辑设备 0、1 都可见，两端分别将 `NODE` 设为 0、1，使用同一鉴权文件 `KEY`。 [双进程记录](validation/dsv41/pypto-1122-949a-staged-adam-910b3.json)
+
 ### 早期 Serving 后端的 GSM8K 在线更新报告
 
 在两台公司节点使用同一份 checkout，分别执行 `run_dsv41_pypto_company_online.sh node7 report 1` 和 `run_dsv41_pypto_company_online.sh node8 report 1`。脚本使用现有 GSM8K 目录，从 `tuning.jsonl` 取 8 题在线更新，从 `quality_test.jsonl` 取 4 道留出题。默认每个 DP 分区放 1 个请求，最多 4 个并发，每题最多生成 32 个 token。两端可用相同的 `DSV41_REPORT_TRAIN`、`DSV41_REPORT_EVAL`、`DSV41_REPORT_TOKENS` 调整规模。
