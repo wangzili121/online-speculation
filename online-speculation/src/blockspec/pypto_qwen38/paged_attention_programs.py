@@ -12,7 +12,7 @@ def capacity_for(total):
     return next(size for size in (128, 256, 512, 1024) if total <= size)
 
 
-def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity):
+def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity, skip_full_history_zero):
     import pypto.language as pl
 
     K, HQ, HK, D = shape.block_size, shape.q_heads, shape.kv_heads, shape.head_dim
@@ -28,7 +28,13 @@ def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity):
                layer: pl.Scalar[pl.INT32], head: pl.Scalar[pl.INT32],
                past: pl.Scalar[pl.INT32], width: pl.Scalar[pl.INT32], start: pl.Scalar[pl.INT32]):
         local = pl.create_l1([SPAN, D], pl.BF16)
-        local = pl.gather_row(local, zero, [0, 0], [0, 0], [SPAN, D])
+        if skip_full_history_zero:
+            # A complete history span writes all L1 rows from cache pages below.
+            # Partial spans still need a zero fill before copying history and the draft block.
+            if start + SPAN > past:
+                local = pl.gather_row(local, zero, [0, 0], [0, 0], [SPAN, D])
+        else:
+            local = pl.gather_row(local, zero, [0, 0], [0, 0], [SPAN, D])
         # 每次只搬同一物理页的有效连续行；末页尾部和 inactive MASK 行不读。
         for page in pl.range(SPAN // PAGE):
             begin = start + page * PAGE
@@ -135,7 +141,8 @@ def _make_fixed_attention(shape, *, physical_pages, pool_layers, capacity):
     return paged, entry
 
 
-def make_paged_attention(shape=AttentionShape(), *, physical_pages=256, pool_layers=1, capacity=None):
+def make_paged_attention(shape=AttentionShape(), *, physical_pages=256, pool_layers=1, capacity=None,
+                         skip_full_history_zero=False):
     """按有效历史与块长选择固定形状 kernel；控制流在编排层，不进入混合核。"""
     if shape.context not in CONTEXTS or shape.page_size not in {16, 128} or shape.query_tile not in {16, 32}:
         raise ValueError("paged attention requires context=512 or 1024, page_size=16 or 128 and query_tile=16 or 32")
@@ -143,17 +150,20 @@ def make_paged_attention(shape=AttentionShape(), *, physical_pages=256, pool_lay
         raise ValueError("1024 context requires query_tile=16 to bound vector storage")
     if any(type(n) is not int or n < 1 for n in (physical_pages, pool_layers)):
         raise ValueError("positive physical page and cache-layer counts required")
+    def fixed(size):
+        return _make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers,
+                                     capacity=size, skip_full_history_zero=skip_full_history_zero)
+
     if capacity is not None:
         if type(capacity) is not int or capacity not in {128, 256, 512, 1024} or capacity > shape.context:
             raise ValueError("capacity must be 128, 256, 512 or 1024 within the context")
-        return _make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=capacity)
+        return fixed(capacity)
     import pypto.language as pl
     TABLE_COLUMNS = shape.context // shape.page_size
-    short, _ = _make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=128)
-    medium, _ = _make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=256)
-    long, _ = _make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=512)
-    extended, _ = (_make_fixed_attention(shape, physical_pages=physical_pages, pool_layers=pool_layers, capacity=1024)
-                   if shape.context == 1024 else (long, None))
+    short, _ = fixed(128)
+    medium, _ = fixed(256)
+    long, _ = fixed(512)
+    extended, _ = fixed(1024) if shape.context == 1024 else (long, None)
 
     @pl.jit.inline
     def paged(query: pl.Tensor, key: pl.Tensor, value: pl.Tensor, gate: pl.Tensor,

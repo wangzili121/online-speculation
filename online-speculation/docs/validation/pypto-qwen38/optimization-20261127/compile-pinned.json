@@ -1,0 +1,30 @@
+{
+  "passed": true,
+  "scope": "attention_compile_only",
+  "npu_execution": false,
+  "full_model": false,
+  "shape": {
+    "block_size": 32,
+    "q_heads": 12,
+    "kv_heads": 2,
+    "head_dim": 256,
+    "context": 512,
+    "page_size": 128,
+    "query_tile": 16
+  },
+  "runtime_log_level": "WARNING",
+  "cases": [],
+  "runtime": {
+    "pypto": "98752784548b777b2377a9084411c3716eb341d6",
+    "simpler": "c1f89ea431f5306f78c0e4ab9573c829756d7f1e",
+    "pto_isa": "418de18dde8fa33773dc5c384fdfe5506463b628",
+    "ptoas": "0.65",
+    "ptoas_executable_version": "0.65"
+  },
+  "platform": "a2a3",
+  "compiled": true,
+  "artifact_directories": {
+    "paged": "/data/disk1/wangzili/orthrus-qwen38-pypto-opt-20261127/attention-kernel/build_output/_jit_entry_20261127_022418_v4u4yebx",
+    "paged_full_history": "/data/disk1/wangzili/orthrus-qwen38-pypto-opt-20261127/attention-kernel/build_output/_jit_entry_20261127_022420_bbuqou62"
+  }
+}

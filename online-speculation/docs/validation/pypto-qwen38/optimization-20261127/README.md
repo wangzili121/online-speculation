@@ -1,0 +1,27 @@
+# Orthrus Qwen3.8 TP2 性能验证
+
+OneServing TP2 固定到 [b99e118](https://github.com/ndleslx/OneServing/commit/b99e1188fad98b8e071e7b0bb90320381324ea4b)，即已合入的 [PR #3](https://github.com/ndleslx/OneServing/pull/3)。截至 2026-11-27，远端 main 仍指向此提交，PR #3 分支和合并提交的文件内容相同。[PR #2](https://github.com/ndleslx/OneServing/pull/2) 的草稿提供另一条 TP1/DP1 NZ 路径。本轮复用已经验收的 TP2 环境，Orthrus 代码基线为 c69d543。
+
+## 起草结果解析和回滚
+
+每轮把两个 rank 的候选字段一次读为 Python 数值，保留无效行、有限值、token 所属词表分片和零填充检查。平分时仍选择 ID 较小的候选。验证结果需要回滚时才准备控制缓冲区，并按相同的快照位置恢复状态。
+
+在 C61 的原有 Torch 2.10.0 CPU 环境，针对 OneServing 的 packed greedy 解析完成 148 个结果和错误边界对照，5 组 CPU 稳态计时如下。相关 TP2、EOS、反馈及训练更新的 113 项 CPU 回归也通过。计时不包含设备搬运和模型计算。
+
+| Draft 形状 | 原解析 | 批量解析 |
+| --- | ---: | ---: |
+| 32 行，7 个候选 | 1.468 ms | 0.127 ms |
+| 64 行，14 个候选 | 2.875 ms | 0.184 ms |
+| 64 行，62 个候选 | 3.062 ms | 0.225 ms |
+
+复测入口为 `scripts/benchmark_qwen38_packed_draft_decisions.py`，使用同时可导入本仓和固定 OneServing 的环境。原始计时见 [CPU 记录](packed-draft-decisions.json)。
+
+## 分页双向 Attention
+
+尝试在 L1 区间完全被历史 KV 覆盖时省掉零填充。单卡 910B3 上以 TP2 本地头数 12/2、128 token 页、512 上下文、16 query tile 验证。18 组样例覆盖空历史、页边界、K8 和 K32，均与现有 PyPTO 路径逐位一致，并检查了有意用 NaN 填充的无效区域及只读输入。
+
+整次 resident dispatch 的延迟降幅中位数约 0.07%。504 历史加 8 个块位置的设备任务窗口由 40.94 μs 降至 37.51 μs，各取两条采样，窗口数值仅用于定位。候选留在独立验证入口，serving 仍使用原有 Attention。以 `scripts/validate_qwen38_pypto_attention.py --backend paged --compare-full-history --page-size 128 --context 512 --q-heads 12 --kv-heads 2 --query-tile 16 --output <new.json>` 复测。见 [真实设备记录](device.json) 与 [设备 profiling 摘要](profile.json)。
+
+## 在线更新
+
+上一轮权重发布直写候选有 CPU 结构测试，但在固定 PyPTO 编译器上未通过。last-1 直写使用了不支持的条件表达式，候选修改后的 last-4 packing 将 INT32 与 INDEX 混用，导致原分支和直写分支均不能编译。此候选未进入代码分支。还需要验证跨 rank 读取渲染参数，以及第二次及后续发布是否会复用当前 serving bank。

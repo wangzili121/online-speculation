@@ -73,6 +73,8 @@ def main():
     parser.add_argument("--profile", action="store_true", help="collect a separate final-case chip swimlane, outside timing")
     parser.add_argument("--profile-repeats", type=int, default=5)
     parser.add_argument("--tune-paged", action="store_true", help="compare paged query tiles 16/32 in the same worker")
+    parser.add_argument("--compare-full-history", action="store_true",
+                        help="compare the paged reference against skipping zero fill for complete history spans")
     args = parser.parse_args()
     if args.device < 0 or args.repeats < 3 or args.output.exists() or args.profile_repeats < 1:
         parser.error("require an assigned device, 3+ repeats and a new output")
@@ -80,6 +82,8 @@ def main():
         parser.error("assemble-only uses onboard compilation and excludes compile-only/simulate")
     if args.tune_paged and (args.backend != "all" or args.query_tile != 16):
         parser.error("tune-paged requires backend=all and query-tile=16")
+    if args.compare_full_history and args.backend != "paged":
+        parser.error("compare-full-history requires backend=paged")
     if args.context != 512 and (args.backend != "paged" or args.query_tile != 16 or args.tune_paged):
         parser.error("1024 context requires standalone paged backend with query tile 16")
     if args.q_heads % args.kv_heads:
@@ -129,6 +133,8 @@ def main():
                     ["staged", "fused"] if args.backend == "both" else [args.backend])
         if args.tune_paged:
             backends.append("paged32")
+        if args.compare_full_history:
+            backends.append("paged_full_history")
         programs = {}
         configurations = {}
         for backend in backends:
@@ -137,7 +143,8 @@ def main():
             candidate_shape = AttentionShape(query_tile=tile, context=shape.context, page_size=shape.page_size,
                                              q_heads=shape.q_heads, kv_heads=shape.kv_heads)
             configurations[backend] = dict(query_tile=tile)
-            factory = (make_paged_attention(candidate_shape, physical_pages=kp.shape[2], pool_layers=2) if backend.startswith("paged") else
+            factory = (make_paged_attention(candidate_shape, physical_pages=kp.shape[2], pool_layers=2,
+                                            skip_full_history_zero=backend == "paged_full_history") if backend.startswith("paged") else
                        make_attention(shape, backend=backend, physical_pages=kp.shape[2], pool_layers=2))
             programs[backend] = factory[1].compile(*tensors, 0, 32, 0, config=config)
         report["compiled"] = True
@@ -165,6 +172,8 @@ def main():
                  (95, 32), (96, 32), (97, 32), (223, 32), (224, 32), (225, 32), (480, 32))
         if shape.context == 1024:
             cases += ((481, 32), (511, 8), (512, 32), (895, 32), (992, 32), (1022, 2))
+        if args.compare_full_history:
+            cases += ((128, 8), (255, 8), (256, 8), (384, 8), (504, 8))
         for case_index, (past, width) in enumerate(cases):
             cache_layer = case_index % 2
             pages = (past + shape.page_size - 1) // shape.page_size
@@ -198,10 +207,13 @@ def main():
                     start = time.perf_counter()
                     worker.run(programs[backend], *handles, past, width, cache_layer, config=config)
                     samples[backend].append(time.perf_counter() - start)
+            compared_outputs = {}
             for backend in order:
                 compiled = programs[backend]
                 worker.run(compiled, *handles, past, width, cache_layer, config=config)
                 worker.copy_from(output.data_ptr(), handles[-1].data_ptr, output.numel() * output.element_size())
+                if args.compare_full_history:
+                    compared_outputs[backend] = output.clone()
                 for host, original, handle in zip(before, tensors[:-1], handles[:-1], strict=True):
                     worker.copy_from(host.data_ptr(), handle.data_ptr, host.numel() * host.element_size())
                     if not torch.equal(host.view(torch.uint8), original.view(torch.uint8)):
@@ -237,6 +249,8 @@ def main():
                                                            **summarize(json.loads(data))))
                     row["profile_requested"] = True
                 print(json.dumps(row), flush=True)
+            if args.compare_full_history and not torch.equal(compared_outputs["paged"], compared_outputs["paged_full_history"]):
+                raise AssertionError(f"complete-history path changed output at past={past}, width={width}")
         report["passed"] = True
     except BaseException as error:
         report["error"] = repr(error)

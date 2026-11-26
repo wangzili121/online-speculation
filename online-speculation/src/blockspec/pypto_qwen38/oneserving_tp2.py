@@ -131,6 +131,38 @@ def check_chunk(sequence, offset, selected):
     return selected, len(selected), len(selected), False
 
 
+def merge_draft_decisions(host, valid_rows, rows):
+    """Decode the two ranks' packed greedy decisions in one CPU conversion."""
+    if host.dtype != torch.float32 or tuple(host.shape) != (2, rows, 16):
+        raise ValueError("Packed decision dtype/shape mismatch")
+    if not bool(torch.isfinite(host).all()):
+        raise ValueError("Packed decision contains nonfinite data")
+    if not bool((host[:, :, 3:] == 0).all()):
+        raise ValueError("Packed decision padding was not written zero")
+    valid = set(valid_rows)
+    if len(valid) != len(valid_rows) or any(type(row) is not int or not 0 <= row < rows for row in valid):
+        raise ValueError("Invalid packed decision row ownership")
+
+    left, right = host[:, :, :3].tolist()
+    merged = {}
+    for row, (first, second) in enumerate(zip(left, right, strict=True)):
+        for rank, (token, score, status) in enumerate((first, second)):
+            if not token.is_integer() or status not in (0.0, 1.0, 2.0):
+                raise ValueError("Packed token/status must be exact integers")
+            if row not in valid:
+                if (token, score, status) != (-1.0, 0.0, 0.0):
+                    raise RuntimeError("Inactive/stochastic decision row was not masked")
+            else:
+                if status != 1.0:
+                    raise ValueError("Packed greedy producer reported invalid logits")
+                if not rank * TP_VOCAB <= token < (rank + 1) * TP_VOCAB:
+                    raise RuntimeError("Packed candidate outside actual TP vocabulary shard")
+        if row in valid:
+            # Every token in rank 0 has a smaller global ID than every token in rank 1.
+            merged[row] = int(first[0] if first[1] >= second[1] else second[0])
+    return merged
+
+
 def check_sampled_chunk(sequence, offset, size, target, proposal, generator, *, stop_tokens=()):
     """Verify the reached portion of one target chunk with full-vocabulary sampling."""
     emitted = []
@@ -474,7 +506,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
             for rank, shard in enumerate(decisions.shards):
                 value = host[rank]
                 self._worker_call("copy_from", value.data_ptr(), shard.data_ptr, value.nbytes, worker_id=rank)
-            selected = self._merge_packed_decisions(host, valid_indices, count)
+            selected = merge_draft_decisions(host, valid_indices, count)
             sampled = [[selected[index * BLOCK + row] for row in range(budget)]
                        for index, (_, budget) in enumerate(requests)]
         elif self.lazy_sampling:
@@ -612,8 +644,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
                                      snapshot_mode=int(can_reject))
             self.spec_stats["verify_ns"] += time.monotonic_ns() - start
             self.spec_stats["verify_calls"] += 1
-            self.control_ids.fill_(-1)
-            self.control_values.fill_(-1)
+            needs_restore = False
             committed = []
             unfinished = []
             for j, (i, slot, chunk) in enumerate(zip(pending, batch_slots, chunks, strict=True)):
@@ -656,11 +687,15 @@ class OrthrusTP2Runner(TensorParallelRunner):
                         unfinished.append(i)
                 record = self.requests[slot.request.request_id]
                 if count < len(chunk):
+                    if not needs_restore:
+                        self.control_ids.fill_(-1)
+                        self.control_values.fill_(-1)
+                        needs_restore = True
                     self.control_ids[:, j] = record["slot"]
                     self.control_values[:, j] = count
                 committed.append((record["pages"], slot.position + count))
                 offsets[i] += count
-            if bool((self.control_ids >= 0).any()):
+            if needs_restore:
                 start = time.monotonic_ns()
                 self._worker_call("run", self.restore, self.control_ids, self.control_values,
                                   self.resident[4], self.resident[5], self.resident[0], self.resident[1],
