@@ -1,5 +1,8 @@
 from ctypes import addressof, create_string_buffer, memmove
+import json
 from types import SimpleNamespace
+
+import torch
 
 from blockspec.dsv41_native_forward import DRAFT, DRAFT_CAPTURE, ROWS_AND_MASK, NativeForwardTarget
 from blockspec.dsv41_native_resident import NativeRankMemory
@@ -66,3 +69,23 @@ def test_native_draft_keeps_global_counts_and_routes_images_to_their_owner():
     size = ROWS_AND_MASK.size + DRAFT_CAPTURE.size
     assert tuple(msg[size:] for msg in messages) == (b"owner-zero", b"owner-three")
     assert target.staged[2] == {} and target.sampled[2] is None
+
+
+def test_native_checks_first_sample_on_each_dp_in_smoke():
+    target = NativeForwardTarget.__new__(NativeForwardTarget)
+    target.sample_checks = {}
+    target.read_sampled = lambda index: torch.arange(12, dtype=torch.int32).reshape(4, 3, 1)
+    seen = []
+
+    def check(index, dp, row, token):
+        seen.append((index, dp))
+        return {"row": row, "token": token}
+
+    target.check_sample = check
+    output = torch.empty((1, 1), dtype=torch.int32)
+    for phase in (0, 1):
+        for dp in (0, 2, 0, 2):
+            target.read(phase, dp, "sampled_ids", output, row=1)
+    assert seen == [(0, 0), (0, 2), (1, 0), (1, 2)]
+    report = json.loads(json.dumps(target.sample_checks))
+    assert report["decode"]["2"] == {"row": 1, "token": 7}

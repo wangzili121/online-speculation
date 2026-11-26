@@ -22,6 +22,40 @@ def test_host_teacher_finite_reduction_rejects_nonfinite_logits(bad):
         _require_finite_host(teacher)
 
 
+def test_native_teacher_slot_reuses_buffers_and_replaces_only_committed_rows():
+    from blockspec.dsv41_packed_loss import PackedTeacherCopy
+
+    sources = [torch.arange(8, dtype=torch.float32).reshape(4, 2)] * 2
+    teacher = [torch.full((4, 2), -1.) for _ in sources]
+    allocations = []
+
+    def allocate(shape, dtype, *, worker_id):
+        allocations.append(worker_id)
+        return torch.zeros(shape, dtype=dtype)
+
+    def snapshot(graph, source, target, flags, owner, first, cursor, count, *, config):
+        replica = owner // 8
+        target[replica][cursor:cursor + count] = source[replica][first:first + count]
+        flags[replica][cursor:cursor + count] = 1
+
+    loss = SimpleNamespace(rows=4, vocabulary=2, owners=(0, 8), config=None,
+                           teacher=SimpleNamespace(shards=teacher), _stack=lambda shards, _shape: shards,
+                           runtime=SimpleNamespace(alloc_tensor=allocate, run=snapshot))
+    copy = PackedTeacherCopy(loss, "copy", sources, single_capture=True)
+    for position, first, count in ((24, 2, 2), (64, 1, 1)):
+        student = SimpleNamespace(owner=8, rows=3, position=position)
+        capture = copy.capture(student)
+        with pytest.raises(RuntimeError, match="already belongs"):
+            copy.capture(student)
+        capture.append_from(position, first, count)
+        committed = capture.logits(finished=True)
+        assert committed.buffer is teacher[1]
+        assert committed.rows == count
+        assert torch.equal(committed.buffer[:count], sources[1][first:first + count])
+        capture.close()
+    assert allocations == [0, 8]
+
+
 @pytest.mark.parametrize("bad_in_verify", (False, True))
 def test_staged_teacher_probe_compares_the_exact_packed_row(tmp_path, bad_in_verify):
     from blockspec.dsv41_staged_target import StagedPackedTarget
@@ -551,6 +585,58 @@ def test_staged_suffix_reverse_both_hosts_follow_same_layer_schedule():
     assert owner_consumed == [(39, 39), (38, 38), (37, 37)]
     for result in (peer, owner):
         assert result["owner"] == 12 and result["teacher_rows"] == 3 and result["loss"] == .125
+
+
+def test_batched_adam_checks_every_layer_before_apply_and_publish():
+    from blockspec.dsv41_packed_adam import PackedAdam
+
+    adam = PackedAdam.__new__(PackedAdam)
+    adam.layers, adam.version, adam.epoch = (38, 39), 0, 0
+    adam.failed, adam.config = False, None
+    adam.parameters = tuple(SimpleNamespace(name=name, program_key=name) for name in ("shared", "parallel"))
+    adam.params = {(layer, p.name): SimpleNamespace(weights=(layer, p.name), state=None)
+                   for layer in adam.layers for p in adam.parameters}
+    adam.programs = {p.name: ("stage", "apply", "publish") for p in adam.parameters}
+    device = torch.full((4, 4, 2, 16), float("nan"))
+    adam.host = torch.empty_like(device)
+    adam.diagnostic_bank = SimpleNamespace(shards=[SimpleNamespace(data_ptr=lane.data_ptr()) for lane in device],
+                                           worker_ids=(0, 1, 2, 3))
+    operations = []
+
+    def read_many(transfers):
+        operations.append("diagnostics")
+        assert len(transfers) == 4
+        for dst, src, size, _rank in transfers:
+            memmove(dst, src, size)
+
+    adam.runtime = SimpleNamespace(copy_from_many=read_many,
+                                   run=lambda name, *args, **kw: operations.append(name))
+
+    def stage(gradient, parameter, *, pending):
+        slot = len(pending)
+        lanes = 1 if parameter.name == "shared" else 4
+        device[:lanes, slot, 0, :8] = slot + 1
+        device[:lanes, slot, 1, :8] = 1
+        if not gradient.valid and slot == 3:
+            device[3, slot, 1, 0] = 0
+        pending.append(lanes)
+
+    adam._stage = stage
+
+    def step(valid):
+        def differentiate(consume):
+            for layer in (39, 38):
+                consume(SimpleNamespace(layer=layer, valid=valid))
+            return SimpleNamespace(rows=7, value=.25)
+        return adam.update(differentiate, rate=1e-5)
+
+    assert not step(False).applied
+    assert adam.version == 0
+    assert operations == ["diagnostics"]
+    result = step(True)
+    assert result.applied and result.version == 1
+    assert result.gradient_norm == (8 * (1 + 2 * 4 + 3 + 4 * 4)) ** .5
+    assert operations == ["diagnostics", "diagnostics", *["apply"] * 4, *["publish"] * 4]
 
 
 def test_staged_adam_uses_the_same_version_when_one_host_rejects_an_update():

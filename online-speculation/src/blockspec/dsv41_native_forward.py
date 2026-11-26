@@ -314,8 +314,10 @@ class NativeForwardTarget:
     def read(self, index, dp, name, out, *, row=0):
         if name == "sampled_ids":
             out.copy_(self.read_sampled(index)[dp][row:row + out.shape[0]])
-            if self.sample_checks is not None and index not in self.sample_checks:
-                self.check_sample(index, dp, row, int(out[0, 0]))
+            if self.sample_checks is not None:
+                phase_checks = self.sample_checks.setdefault(PHASES[index], {})
+                if dp not in phase_checks:
+                    phase_checks[dp] = self.check_sample(index, dp, row, int(out[0, 0]))
             return
         owner = dp // 2
         request = READ_ROWS.pack(index, dp, OUTPUTS.index(name), row)
@@ -348,7 +350,7 @@ class NativeForwardTarget:
         maximum = logits.max()
         if not 0 <= token < FLASH.vocab_size or logits[0, token] != maximum:
             raise ValueError(f"{PHASES[index]} greedy output disagrees with logits on DP {dp}, row {row}")
-        self.sample_checks[index] = dict(dp=dp, row=row, token=token, maximum=float(maximum))
+        return dict(dp=dp, row=row, token=token, maximum=float(maximum))
 
     def clear(self, dp, slot, pages, _workers):
         request = RELEASE.pack(dp, slot) + array("i", pages).tobytes()

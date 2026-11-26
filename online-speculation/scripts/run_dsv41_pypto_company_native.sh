@@ -28,7 +28,7 @@ image_check='
     for script in run_dsv41_pypto_native_ar.py compile_dsv41_pypto_native_online.py validate_dsv41_pypto_packed_generation.py; do
         cmp "/checkout/scripts/$script" "$script"
     done
-    for source in /checkout/src/blockspec/dsv41_native_*.py; do
+    for source in /checkout/src/blockspec/{dsv41_native_*,dsv41_packed_*,pypto_dsv41_packed_*}.py; do
         cmp "$source" "orthrus/blockspec/${source##*/}"
     done
     /opt/pypto/venv/bin/python -c "from _task_interface import MAX_REGISTERED_CALLABLE_IDS as limit; assert limit >= 256"

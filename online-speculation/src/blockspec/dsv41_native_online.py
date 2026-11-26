@@ -33,7 +33,7 @@ def bind_native_learner(draft, runtime, programs, last_layers):
     model, ranks = FLASH, draft.ranks
     loss = PackedLoss(draft, graphs["loss"])
     sources = tuple(banks["target"][rank]["logits"] for rank in loss.owners)
-    draft.teacher_copy = PackedTeacherCopy(loss, graphs["teacher-copy"], sources)
+    draft.teacher_copy = PackedTeacherCopy(loss, graphs["teacher-copy"], sources, single_capture=True)
     lm_head = PackedLMHeadVJP(draft, loss, graphs["lm-head"])
     final = PackedFinalVJP(draft, lm_head, graphs["final-norm"], output_rows=draft.block)
     ffn_post = PackedFFNPostVJP(draft, final, graphs["ffn-output"], model.num_hidden_layers)

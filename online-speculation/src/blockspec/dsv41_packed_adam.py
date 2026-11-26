@@ -284,11 +284,17 @@ class PackedAdam:
         self.version = 0
         self.epoch = 0
         self.failed = False
-        self.host = torch.empty((self.tp, 2, 8), dtype=torch.float32)
-        self.diagnostics = {
-            shared: tuple(self._allocate((1, 8), ranks) for _ in range(2))
-            for shared, ranks in ((True, self.ranks[:1]), (False, self.ranks[:self.tp]))
-        }
+        if callable(getattr(self.runtime, "copy_from_many", None)):
+            slots = len(self.layers) * len(self.parameters)
+            # Keep each [1, 8] output on a separate 64-byte device cache line.
+            self.diagnostic_bank = self._allocate((slots, 2, 16), self.ranks[:self.tp])
+            self.host = torch.empty((self.tp, slots, 2, 16), dtype=torch.float32)
+        else:
+            self.host = torch.empty((self.tp, 2, 8), dtype=torch.float32)
+            self.diagnostics = {
+                shared: tuple(self._allocate((1, 8), ranks) for _ in range(2))
+                for shared, ranks in ((True, self.ranks[:1]), (False, self.ranks[:self.tp]))
+            }
 
     def _stack(self, shards, ranks):
         return self.stacked(shards, (len(shards), *shards[0].shape), ranks)
@@ -317,31 +323,53 @@ class PackedAdam:
             bound = self.params[key] = _ParameterState(weights, state)
         return bound
 
-    def _stage(self, gradient, parameter):
+    def _diagnostic_views(self, slot, lanes):
+        bank = self.diagnostic_bank
+        for column in range(2):
+            offset = (slot * 2 + column) * 64
+            shards = [self.tensor(value.data_ptr + offset, (1, 8), value.dtype, buffer=value.buffer,
+                                  byte_offset=value.byte_offset + offset) for value in bank.shards[:lanes]]
+            yield self._stack(shards, bank.worker_ids[:lanes])
+
+    def _stage(self, gradient, parameter, *, pending=None):
         size, shared, _ = parameter.program_key
         bound = self._bind(gradient.layer, parameter)
         stage, _, _ = self.programs[parameter.program_key]
-        sums, flags = self.diagnostics[shared]
+        if pending is None:
+            sums, flags = self.diagnostics[shared]
+        else:
+            lanes = 1 if shared else self.tp
+            sums, flags = self._diagnostic_views(len(pending), lanes)
         source = gradient.parameter_gradients[parameter.name]
         devices = self.owners if shared else self.ranks
         flat = self._stack([self._flat(shard, size) for shard in source.shards], devices)
         self.epoch += 1
         self.runtime.run(stage, flat, bound.state, sums, flags, gradient.owner, self.epoch, config=self.config)
-        transfers = [
-            (out.data_ptr(), tensor.data_ptr, out.nbytes, rank)
-            for index, rank in enumerate(sums.worker_ids)
-            for out, tensor in zip(self.host[index], (sums.shards[index], flags.shards[index]), strict=True)
-        ]
-        read_many = getattr(self.runtime, "copy_from_many", None)
-        if read_many is None:
-            for dst, src, size, rank in transfers:
-                self.runtime.copy_from(dst, src, size, worker_id=rank)
-        else:
-            read_many(transfers)
+        if pending is not None:
+            pending.append(lanes)
+            return
+        for lane, rank in enumerate(sums.worker_ids):
+            for out, tensor in zip(self.host[lane], (sums.shards[lane], flags.shards[lane]), strict=True):
+                self.runtime.copy_from(out.data_ptr(), tensor.data_ptr, out.nbytes, worker_id=rank)
+        return self._sum_diagnostics(self.host[:len(sums.worker_ids)])
+
+    @staticmethod
+    def _sum_diagnostics(host):
         norm_sq, valid = 0., True
-        for norm, flags in self.host[:len(sums.worker_ids)]:
-            norm_sq += float(norm.sum(dtype=self.host.dtype))
+        for norm, flags in host:
+            norm_sq += float(norm.sum(dtype=host.dtype))
             valid &= bool(flags.all())
+        return norm_sq, valid
+
+    def _read_diagnostics(self, pending, read_many):
+        bank = self.diagnostic_bank
+        read_many([(out.data_ptr(), tensor.data_ptr, out.nbytes, rank)
+                   for out, tensor, rank in zip(self.host, bank.shards, bank.worker_ids, strict=True)])
+        norm_sq, valid = 0., True
+        for slot, lanes in enumerate(pending):
+            partial, flags = self._sum_diagnostics(self.host[:lanes, slot, :, :8])
+            norm_sq += partial
+            valid &= flags
         return norm_sq, valid
 
     def update(self, differentiate, *, rate, max_norm=1., prepare=None, agree=None):
@@ -352,6 +380,8 @@ class PackedAdam:
             raise ValueError("Packed Adam requires a positive finite learning rate and clip norm")
         seen = []
         norm_sq, finite, stage_seconds = 0., True, 0.
+        read_many = getattr(self.runtime, "copy_from_many", None)
+        pending = [] if callable(read_many) else None
 
         def consume(gradient):
             nonlocal norm_sq, finite, stage_seconds
@@ -360,9 +390,12 @@ class PackedAdam:
             start = perf_counter()
             for parameter in self.parameters:
                 source = prepare(gradient, parameter) if prepare is not None else gradient
-                partial, valid = self._stage(source, parameter)
-                norm_sq += partial
-                finite &= valid
+                if pending is None:
+                    partial, valid = self._stage(source, parameter)
+                    norm_sq += partial
+                    finite &= valid
+                else:
+                    self._stage(source, parameter, pending=pending)
             stage_seconds += perf_counter() - start
             seen.append(gradient.layer)
 
@@ -373,6 +406,10 @@ class PackedAdam:
             return None
         if set(seen) != set(self.layers):
             raise ValueError("Packed Adam requires a complete suffix gradient")
+        if pending is not None:
+            start = perf_counter()
+            norm_sq, finite = self._read_diagnostics(pending, read_many)
+            stage_seconds += perf_counter() - start
         finite = finite and isfinite(norm_sq) and isfinite(loss.value)
         norm = sqrt(norm_sq) if finite else None
         clip = min(1., max_norm / (norm + 1e-6)) if finite else 0.

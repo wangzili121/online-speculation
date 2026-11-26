@@ -13,6 +13,29 @@ from blockspec.dsv41_online import read_workload
 from validate_dsv41_pypto_packed_generation import OnlineSchedule, benchmark, run_wave
 
 
+def run_smoke(target, session, report, requests, *, options, draft, schedule):
+    arms = [("ar", None)]
+    if draft:
+        arms.append(("orthrus_online" if schedule else "orthrus_frozen", 0 if schedule else None))
+    if schedule and len(requests) > 2:
+        arms.append(("orthrus_online_peer", 2))
+    for name, owner_dp in arms:
+        print(json.dumps(dict(stage="smoke_arm", mode=name, update_dp=owner_dp)), flush=True)
+        target.sample_checks = {}
+        if owner_dp is not None:
+            schedule.next_dp = owner_dp
+            schedule.next_capture = schedule.rounds + 1
+        wave = run_wave(session, requests, speculative=name != "ar",
+                        online=schedule if owner_dp is not None else None, **options)
+        report[name] = dict(wave, sample_checks=target.sample_checks)
+        updated_dps = {update["dp"] for update in wave["updates"] if update["applied"]}
+        if wave["requests"] != report["ar"]["requests"] or (
+            owner_dp is not None and owner_dp not in updated_dps
+        ):
+            report["passed"] = False
+            return
+
+
 def run_study(session, report, requests, heldout, *, schedule, timing, output):
     holdout_arms = [("heldout_initial", heldout, None)] if heldout else []
     arms = [*holdout_arms, ("online_study", requests, schedule)]
@@ -130,17 +153,8 @@ def main():
                     report["heldout_workload_sha256"] = sha256(args.heldout_workload.read_bytes()).hexdigest()
                 run_study(session, report, requests, heldout, schedule=schedule, timing=timing, output=args.output)
             else:
-                target.sample_checks = {}
-                report["ar"] = run_wave(session, requests, speculative=False, **options)
-                report["ar"]["sample_checks"] = target.sample_checks
-                if artifacts.draft is not None:
-                    target.sample_checks = {}
-                    name = "orthrus_online" if schedule else "orthrus_frozen"
-                    report[name] = run_wave(session, requests, speculative=True, online=schedule, **options)
-                    report[name]["sample_checks"] = target.sample_checks
-                    report["passed"] = report["ar"]["requests"] == report[name]["requests"] and (
-                        schedule is None or schedule.updates > 0
-                    )
+                run_smoke(target, session, report, requests, options=options, draft=artifacts.draft is not None,
+                          schedule=schedule)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(dict(stage="complete", passed=report["passed"], path=str(args.output))), flush=True)
     if not report["passed"]:

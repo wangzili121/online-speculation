@@ -119,7 +119,9 @@ bash "$RUN" native-smoke 1
 bash "$RUN" native-study 1
 ```
 
-`native-fabric` 使用每台一张空闲卡检查设备窗口导出和跨机访问。默认物理卡分别为 node7 的 1 号和 node8 的 0 号，可通过 `NODE7_FABRIC_NPU` 和 `NODE8_FABRIC_NPU` 调整。`native-prepare` 用 CPU 编译并分发整图和初始化 head。`native-smoke` 需要两台各 8 张空闲卡，检查 AR 和在线更新的逐 token 一致性以及至少一次更新。公司双机的原生 Fabric 和整模仍待实测。
+`native-fabric` 使用每台一张空闲卡检查设备窗口导出和跨机访问。默认物理卡分别为 node7 的 1 号和 node8 的 0 号，可通过 `NODE7_FABRIC_NPU` 和 `NODE8_FABRIC_NPU` 调整。`native-prepare` 用 CPU 编译并分发整图和初始化 head。`native-smoke` 需要两台各 8 张空闲卡，一次装载后从 node7 和 node8 的请求分别触发一次更新，检查每个 DP 的首行 logits 及与 AR 的逐 token 一致性。公司双机的原生 Fabric 和整模仍待实测。
+
+按默认产物的张量形状、通信窗口和 ring heap 核算，峰值 rank 的已知 HBM 分配约为 last‑1 51.8 GiB、last‑4 53.5 GiB。实卡峰值还会包含运行时的其他分配。原生在线路径复用驻留教师缓冲。Adam 把整个后缀的梯度范数和有限性检查结果一次回读，校验全部通过后才更新并发布权重。
 
 GSM8K 默认使用 64 道在线题和 16 道留出题，四并发，每题最多生成 64 token，K8，last‑1，TV loss，学习率 `1e-5`。训练每隔 16 个验证轮次至多采一个反馈块，每块最多 7 个位置。`result.json` 记录 AR 与在线更新的实测吞吐、扣除更新时间的估算、候选接受率、首次及后续更新耗时，以及训练前后冻结 head 在同一留出集上的结果。每个完成批次写入 `study-waves.jsonl`，完整运行日志写入同目录的 `node7.log` 和 `node8.log`。
 

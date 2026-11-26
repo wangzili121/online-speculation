@@ -161,15 +161,16 @@ class ResidentPackedTeacherRows:
         return ResidentTeacherLogits(self.rows, self.buffer, self.flags)
 
     def close(self):
-        for value in (self.buffer, self.flags):
-            self.collector.loss.runtime.free_tensor(value, worker_id=self.student.owner)
+        self.collector.release(self)
 
 
 class PackedTeacherCopy:
-    def __init__(self, loss, graph, sources):
+    def __init__(self, loss, graph, sources, *, single_capture=False):
         import torch
 
         self.loss, self.graph = loss, graph
+        self.single_capture = single_capture
+        self.active = None
         self.source = loss._stack(sources, (loss.rows, loss.vocabulary))
         self.flags_shape = (loss.rows, TEACHER_COPY_SHARDS * 8)
         self.padding = tuple(loss.runtime.alloc_tensor(self.flags_shape, torch.float32, worker_id=owner)
@@ -179,6 +180,12 @@ class PackedTeacherCopy:
         import torch
 
         loss = self.loss
+        if self.single_capture:
+            if self.active is not None:
+                raise RuntimeError("The resident teacher slot already belongs to a draft capture")
+            replica = loss.owners.index(student.owner)
+            self.active = ResidentPackedTeacherRows(student, self, loss.teacher.shards[replica], self.padding[replica])
+            return self.active
         flags = loss.runtime.alloc_tensor(self.flags_shape, torch.float32, worker_id=student.owner)
         try:
             buffer = loss.runtime.alloc_tensor((loss.rows, loss.vocabulary), torch.float32, worker_id=student.owner)
@@ -186,6 +193,15 @@ class PackedTeacherCopy:
             loss.runtime.free_tensor(flags, worker_id=student.owner)
             raise
         return ResidentPackedTeacherRows(student, self, buffer, flags)
+
+    def release(self, rows):
+        if self.single_capture:
+            if self.active is not rows:
+                raise ValueError("The draft capture no longer owns its teacher slot")
+            self.active = None
+        else:
+            for value in (rows.buffer, rows.flags):
+                self.loss.runtime.free_tensor(value, worker_id=rows.student.owner)
 
     def snapshot(self, rows, first, count):
         loss = self.loss

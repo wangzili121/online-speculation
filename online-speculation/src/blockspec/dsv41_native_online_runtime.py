@@ -247,7 +247,8 @@ class NativeOnlineRuntime:
 
     def free_tensor(self, tensor, *, worker_id):
         buffer = tensor.buffer
-        if buffer.rank != worker_id or not isinstance(buffer.key, int) or tensor.byte_offset:
+        if (buffer.rank != worker_id or not isinstance(buffer.key, int) or tensor.byte_offset
+                or self.buffers.get(buffer.base) is not buffer):
             raise ValueError("Only the owner may release a whole learner allocation")
         queue = self.allocations[self._node(worker_id)]
         for index, (rank, key, *_rest) in enumerate(queue):
@@ -256,7 +257,8 @@ class NativeOnlineRuntime:
                 break
         else:
             self.releases[self._node(worker_id)].append((worker_id, buffer.key))
-        self.buffers[buffer.base] = None
+        del self.buffers[buffer.base]
+        del self.logicals[bisect_right(self.logicals, buffer.base) - 1]
 
     def _address(self, ptr, rank, offset, size):
         index = bisect_right(self.logicals, ptr) - 1
