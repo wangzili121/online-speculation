@@ -136,7 +136,9 @@ bash "$RUN" "$NODE" study 1
 
 在 111 上用 TP4 加载真实 W8A8 权重，把一条请求的三行验证和另一条请求的单行解码分别执行，再合成一个验证批。第 0 层 Attention 激活、输出头 logits 和贪心 ID 均逐元素一致。双机吞吐待使用相同 GSM8K 配置对照。 [四卡结果与复跑命令](validation/dsv41/pypto-1122-949a-packed-verify-910b3.json)
 
-教师 logits 的设备快照已在 910B3 验证，7 个教师位置的 TV loss 和 BF16 梯度与现用路径逐元素一致。设备快照省下约 7.24 MB 主机往返，但采集加 loss 的热态中位数为 54.58 ms，现用路径为 39.32 ms。生产比较继续用现用路径，设备快照可用 `--resident-teacher` 单独复验。 [单卡记录](validation/dsv41/pypto-1122-949a-staged-teacher-910b3.json)
+教师 logits 的设备快照已在 910B3 验证，7 个教师位置的 TV loss 和 BF16 梯度与主机采集逐元素一致。最初对照中，设备快照省下约 7.24 MB 主机往返，采集加 loss 的热态中位数为 54.58 ms，主机采集为 39.32 ms。设备快照可用 `--resident-teacher` 单独复验。 [单卡记录](validation/dsv41/pypto-1122-949a-staged-teacher-910b3.json)
+
+默认的分块采集现用一次 CPU `aminmax` 归约检查教师 logits。111 上以相同输入交替比较，两次和七次 Verify 的采集加 TV loss 中位数分别从 39.24 ms 降到 34.86 ms、从 60.69 ms 降到 56.26 ms，loss 和 BF16 梯度逐元素一致。在线报告的 `stage_seconds` 另记录教师数据回读、有限值检查、LM head、Attention 和 QKV 等反向阶段耗时。这些计时包含调用和等待，部分阶段是嵌套的。 [单卡计时和复跑命令](validation/dsv41/pypto-1122-949a-teacher-check-910b3.json)
 
 在 1122 镜像中创建三个新输出目录。两台使用同一份源码和相同的编译配置，产物可在相同环境之间复制。
 

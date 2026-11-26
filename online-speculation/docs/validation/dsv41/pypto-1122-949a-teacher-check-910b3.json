@@ -1,0 +1,26 @@
+{
+  "host": "111",
+  "physical_device": 6,
+  "hardware": "Ascend 910B3",
+  "lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "scope": "Synthetic full-vocabulary Verify and student tensors, real device transfers and resident TV backward. The two host checks and device snapshot used identical inputs within each iteration. Eight warm samples per mode.",
+  "command": "python /opt/dsv41-1122/validate_dsv41_pypto_staged_teacher.py",
+  "vocabulary": 129280,
+  "teacher_rows": 7,
+  "loss_and_bf16_gradient_exact": true,
+  "cpu_tests_reject": ["NaN", "+inf", "-inf"],
+  "medians_ms": {
+    "two_verify_calls": {
+      "teacher_finite_check": {"elementwise": 2.7323, "aminmax": 0.7208},
+      "capture_and_loss": {"elementwise": 39.2421, "aminmax": 34.8575, "device_snapshot": 53.0163}
+    },
+    "seven_verify_calls_add_one_row_waves_flag": {
+      "teacher_finite_check": {"elementwise": 2.5982, "aminmax": 0.6438},
+      "capture_and_loss": {"elementwise": 60.6933, "aminmax": 56.2606, "device_snapshot": 239.8539}
+    }
+  },
+  "contiguous_host_buffer_experiment_ms": {
+    "two_verify_calls": {"chunks": 36.8999, "direct_into_one_buffer": 36.4901},
+    "seven_verify_calls": {"chunks": 44.7511, "direct_into_one_buffer": 52.3646}
+  }
+}
