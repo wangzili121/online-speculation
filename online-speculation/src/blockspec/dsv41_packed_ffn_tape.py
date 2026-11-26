@@ -95,21 +95,21 @@ def make_packed_ffn_post_vjp(block, last_layers, rows, hidden, copies, dp, tp):
         grad_value: pl.Out[pl.Tensor[[block, hidden], pl.FP32]],
         grad_residual: pl.Out[pl.Tensor[[block * copies, hidden], pl.FP32]],
         grad_mixes: pl.Out[pl.Tensor[[block, 32], pl.FP32]],
-        slot: pl.Scalar[pl.INT32],
+        slot: pl.Scalar[pl.INT32], active: pl.Scalar[pl.INT32],
     ):
         incoming = pl.reshape(grad_hidden, [rows * copies, hidden])
         with pl.spmd(block, name_hint="orthrus_packed_ffn_post_data_vjp"):
             row = pl.tile.get_block_idx()
             mix_row = slot * block + row
             dvalue = pl.full([1, hidden], dtype=pl.FP32, value=0.)
-            if row < rows:
+            if row < active:
                 for target in pl.range(copies):
                     dy = pl.slice(incoming, [1, hidden], [row * copies + target, 0])
                     dvalue = pl.add(dvalue, pl.mul(dy, pl.read(mixes, [mix_row, copies + target])))
             grad_value[row:row + 1, :] = dvalue
             for source in pl.range(copies):
                 dresidual = pl.full([1, hidden], dtype=pl.FP32, value=0.)
-                if row < rows:
+                if row < active:
                     for target in pl.range(copies):
                         dy = pl.slice(incoming, [1, hidden], [row * copies + target, 0])
                         column = 2 * copies + source * copies + target
@@ -119,7 +119,7 @@ def make_packed_ffn_post_vjp(block, last_layers, rows, hidden, copies, dp, tp):
         with pl.spmd(block, name_hint="orthrus_packed_ffn_post_mix_vjp"):
             row = pl.tile.get_block_idx()
             gradients = pl.tile.full([1, 32], dtype=pl.FP32, value=0.)
-            if row < rows:
+            if row < active:
                 value_row = slot * (2 * block + local) + block + row
                 value = pl.cast(pl.slice(vectors, [1, hidden], [value_row, 0]), pl.FP32)
                 ones = pl.full([8, 8], dtype=pl.FP32, value=1.)
@@ -151,11 +151,11 @@ def make_packed_ffn_post_vjp(block, last_layers, rows, hidden, copies, dp, tp):
         grad_value: pl.Out[pl.Tensor[[dp, block, hidden], pl.FP32]],
         grad_residual: pl.Out[pl.Tensor[[dp, block * copies, hidden], pl.FP32]],
         grad_mixes: pl.Out[pl.Tensor[[dp, block, 32], pl.FP32]],
-        owner: pl.Scalar[pl.INT32], slot: pl.Scalar[pl.INT32],
+        owner: pl.Scalar[pl.INT32], slot: pl.Scalar[pl.INT32], active: pl.Scalar[pl.INT32],
     ):
         replica = owner // tp
         reverse(residual[replica], mixes[replica], vectors[replica], grad_hidden[replica], grad_pre[replica],
-                grad_value[replica], grad_residual[replica], grad_mixes[replica], slot, device=owner)
+                grad_value[replica], grad_residual[replica], grad_mixes[replica], slot, active, device=owner)
 
     return dispatch
 
@@ -200,20 +200,25 @@ class PackedFFNPostVJP:
     def _stack(self, shards):
         return self.stacked(shards, (len(shards), *shards[0].shape), self.owners)
 
-    def __call__(self, student, gradient):
+    def __call__(self, student, gradient, *, layer=None):
         owner = student.owner
         replica = self.owners.index(owner)
-        if (student.ffn_tape is None or gradient.owner != owner
-                or gradient.streams is not self.grad_streams.shards[replica]
-                or gradient.premix is not self.grad_pre.shards[replica]):
-            raise ValueError("The last FFN post reverse requires the retained tape and final boundary gradients")
+        layer = self.last_layer if layer is None else layer
+        if (student.ffn_tape is None or gradient.owner != owner or not self.first_layer <= layer <= self.last_layer
+                or not 1 <= gradient.rows <= self.grad_streams.shape[1]):
+            raise ValueError("FFN post reverse requires the retained tape and live output gradients")
         args = []
         for name, bound in self.tape_inputs.items():
             shards = list(bound)
             shards[replica] = student.ffn_tape[owner][name]
             args.append(self._stack(shards))
         start = perf_counter()
-        self.runtime.run(self.graph, *args, self.grad_streams, self.grad_pre, *self.outputs,
-                         owner, self.last_layer - self.first_layer, config=self.config)
-        return PackedFFNPostGradient(owner, self.last_layer, gradient.rows, *(output.shards[replica] for output in self.outputs),
+        seeds = []
+        for fallback, value in ((self.grad_streams, gradient.streams), (self.grad_pre, gradient.premix)):
+            shards = list(fallback.shards)
+            shards[replica] = value
+            seeds.append(self._stack(shards))
+        self.runtime.run(self.graph, *args, *seeds, *self.outputs,
+                         owner, layer - self.first_layer, gradient.rows, config=self.config)
+        return PackedFFNPostGradient(owner, layer, gradient.rows, *(output.shards[replica] for output in self.outputs),
                                      perf_counter() - start)

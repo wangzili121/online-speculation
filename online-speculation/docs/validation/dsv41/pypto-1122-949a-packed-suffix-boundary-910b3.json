@@ -1,0 +1,111 @@
+{
+  "model_base": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "hardware": "Host 111, four Ascend 910B3, TP4",
+  "weights": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8, layer 39 attn_norm.weight",
+  "scope": "Terminal padding and consecutive Attention-input and FFN-post VJPs; synthetic inter-layer activations/cotangents",
+  "command": "python validate_dsv41_pypto_packed_suffix_boundary.py --checkpoint /model --block {16,32} --devices 0,1,2,3",
+  "timer": "Resident dispatch elapsed time per stage; excludes reference and gradient readback",
+  "results": [
+    {
+      "passed": true,
+      "block": 16,
+      "world": 4,
+      "cases": [
+        {
+          "owner": 0,
+          "repeated_byte_exact": 8,
+          "live_rows": 16,
+          "terminal_padding_exact": true,
+          "max_relative_l2": 1.2182948176285793e-07,
+          "warm_median_ms": {
+            "attention_input": 18.952564103528857,
+            "previous_ffn_post": 18.632272025570273
+          }
+        }
+      ]
+    },
+    {
+      "passed": true,
+      "block": 32,
+      "world": 4,
+      "cases": [
+        {
+          "owner": 0,
+          "repeated_byte_exact": 8,
+          "live_rows": 32,
+          "terminal_padding_exact": true,
+          "max_relative_l2": 1.9767935767419466e-07,
+          "warm_median_ms": {
+            "attention_input": 17.14509096927941,
+            "previous_ffn_post": 16.5747688151896
+          }
+        }
+      ]
+    }
+  ],
+  "compact_copy_comparison": {
+    "results": [
+      {
+        "passed": true,
+        "block": 16,
+        "world": 4,
+        "cases": [
+          {
+            "owner": 0,
+            "repeated_byte_exact": 8,
+            "live_rows": 16,
+            "terminal_padding_exact": true,
+            "max_relative_l2": 1.2182948176285793e-07,
+            "warm_median_ms": {
+              "attention_input": 18.28954298980534,
+              "previous_ffn_post": 17.699850955978036
+            }
+          }
+        ]
+      },
+      {
+        "passed": true,
+        "block": 32,
+        "world": 4,
+        "cases": [
+          {
+            "owner": 0,
+            "repeated_byte_exact": 8,
+            "live_rows": 32,
+            "terminal_padding_exact": true,
+            "max_relative_l2": 1.9767935767419466e-07,
+            "warm_median_ms": {
+              "attention_input": 39.1285780351609,
+              "previous_ffn_post": 38.55751804076135
+            }
+          }
+        ]
+      }
+    ],
+    "note": "Separate launch, common FFN stage varied across runs; no speedup claim."
+  },
+  "compile_only": [
+    {
+      "passed": true,
+      "compiled": true,
+      "block": 16,
+      "world": 16
+    },
+    {
+      "passed": true,
+      "compiled": true,
+      "block": 32,
+      "world": 16
+    }
+  ],
+  "tests": {
+    "dsv41_cpu": 209,
+    "subtests": 5,
+    "native_packed_contract": 10,
+    "tested_suffix_lengths": [
+      1,
+      2,
+      4
+    ]
+  }
+}

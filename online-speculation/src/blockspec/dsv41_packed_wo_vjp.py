@@ -269,7 +269,7 @@ class PackedWoInputVJP:
                                   byte_offset=bank.byte_offset + offset)
 
     def __call__(self, student, seed):
-        if seed.owner != student.owner or seed.rows > student.rows:
+        if seed.owner != student.owner or not 1 <= seed.rows <= self.block:
             raise ValueError("Wo backward requires the student capture that produced the Attention seed")
         layer = seed.layer
         weights = [self._stack([self._view(bank[name], shape, layer * prod(shape)) for bank in self.banks])

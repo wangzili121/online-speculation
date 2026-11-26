@@ -334,7 +334,7 @@ class PackedQKVVJP:
 
     def __call__(self, student, seed):
         owner, layer = seed.owner, seed.layer
-        if seed.owner != student.owner or seed.rows > student.rows or layer < self.first_layer:
+        if seed.owner != student.owner or not 1 <= seed.rows <= self.block or layer < self.first_layer:
             raise ValueError("Draft projection backward requires the original captured layer")
         slot = layer - self.first_layer
         replica = owner // self.tp

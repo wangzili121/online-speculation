@@ -4,16 +4,18 @@ from dataclasses import dataclass
 from time import perf_counter
 
 
-def make_packed_final_vjp(rows, hidden, copies, dp, tp, epsilon):
+def make_packed_head_norm_vjp(rows, hidden, copies, epsilon, *, add_residual=False):
+    """Differentiate a rounded mHC collapse followed by frozen RMSNorm."""
     import pypto.language as pl
     from models.deepseek_v4_1_flash_a3.hc import hc_head
 
-    @pl.jit(auto_scope=False)
-    def rank_vjp(
+    @pl.jit.inline(auto_scope=False)
+    def reverse(
         streams: pl.Tensor[[rows, copies, hidden], pl.FP32],
-        premix: pl.Tensor[[rows, copies], pl.FP32],
+        premix: pl.Tensor,
         gamma: pl.Tensor[[hidden], pl.BF16],
         grad_normed: pl.Tensor[[rows, hidden], pl.FP32],
+        residual: pl.Tensor,
         grad_streams: pl.Out[pl.Tensor[[rows, copies, hidden], pl.FP32]],
         grad_premix: pl.Out[pl.Tensor[[rows, 16], pl.FP32]],
     ):
@@ -44,13 +46,47 @@ def make_packed_final_vjp(rows, hidden, copies, dp, tp, epsilon):
             ones = pl.full([8, 8], dtype=pl.FP32, value=1.)
             for stream in pl.range(copies):
                 index = row * copies + stream
-                residual = pl.slice(flat, [1, hidden], [index, 0])
-                gradients[index:index + 1, :] = pl.mul(incoming, pl.read(premix, [row, stream]))
-                product = pl.reshape(pl.mul(incoming, residual), [8, hidden // 8])
+                activation = pl.slice(flat, [1, hidden], [index, 0])
+                dstream = pl.mul(incoming, pl.read(premix, [row, stream]))
+                if add_residual:
+                    dstream = pl.add(dstream, pl.slice(residual, [1, hidden], [index, 0]))
+                gradients[index:index + 1, :] = dstream
+                product = pl.reshape(pl.mul(incoming, activation), [8, hidden // 8])
                 dot_strips = pl.row_expand_mul(ones, pl.row_sum(product))
                 dot = pl.row_sum(pl.transpose(dot_strips, 0, 1))
                 pl.tile.write(coefficients, [0, stream], pl.read(dot, [0, 0]))
             pl.store(coefficients, [row, 0], grad_premix)
+        return grad_streams, grad_premix
+
+    return reverse
+
+
+def make_packed_final_vjp(rows, hidden, copies, dp, tp, epsilon, *, output_rows=None):
+    import pypto.language as pl
+
+    output_rows = rows if output_rows is None else output_rows
+    reverse = make_packed_head_norm_vjp(rows, hidden, copies, epsilon)
+
+    @pl.jit(auto_scope=False)
+    def rank_vjp(
+        streams: pl.Tensor[[rows, copies, hidden], pl.FP32],
+        premix: pl.Tensor[[rows, copies], pl.FP32],
+        gamma: pl.Tensor[[hidden], pl.BF16],
+        grad_normed: pl.Tensor[[rows, hidden], pl.FP32],
+        grad_streams: pl.Out[pl.Tensor[[output_rows, copies, hidden], pl.FP32]],
+        grad_premix: pl.Out[pl.Tensor[[output_rows, 16], pl.FP32]],
+    ):
+        dx = pl.slice(grad_streams, [rows, copies, hidden], [0, 0, 0])
+        dc = pl.slice(grad_premix, [rows, 16], [0, 0])
+        reverse(streams, premix, gamma, grad_normed, grad_normed, dx, dc)
+        if output_rows > rows:
+            flat = pl.reshape(grad_streams, [output_rows * copies, hidden])
+            for extra in pl.spmd(output_rows - rows, name_hint="orthrus_pad_terminal_vjp"):
+                token = rows + extra
+                grad_premix[token:token + 1, :] = pl.full([1, 16], dtype=pl.FP32, value=0.)
+                for stream in pl.range(copies):
+                    row = token * copies + stream
+                    flat[row:row + 1, :] = pl.full([1, hidden], dtype=pl.FP32, value=0.)
         return grad_streams, grad_premix
 
     @pl.jit.host
@@ -59,8 +95,8 @@ def make_packed_final_vjp(rows, hidden, copies, dp, tp, epsilon):
         premix: pl.Tensor[[dp, rows, copies], pl.FP32],
         gamma: pl.Tensor[[dp, hidden], pl.BF16],
         grad_normed: pl.Tensor[[dp, rows, hidden], pl.FP32],
-        grad_streams: pl.Out[pl.Tensor[[dp, rows, copies, hidden], pl.FP32]],
-        grad_premix: pl.Out[pl.Tensor[[dp, rows, 16], pl.FP32]],
+        grad_streams: pl.Out[pl.Tensor[[dp, output_rows, copies, hidden], pl.FP32]],
+        grad_premix: pl.Out[pl.Tensor[[dp, output_rows, 16], pl.FP32]],
         owner: pl.Scalar[pl.INT32],
     ):
         replica = owner // tp
@@ -82,7 +118,7 @@ class PackedFinalGradient:
 
 
 class PackedFinalVJP:
-    def __init__(self, proposer, lm_head, graph):
+    def __init__(self, proposer, lm_head, graph, *, output_rows=None):
         import torch
         from pypto.runtime import DeviceTensor, StackedDeviceTensor
 
@@ -100,8 +136,9 @@ class PackedFinalVJP:
             return self._stack([self.runtime.alloc_tensor(shape, torch.float32, worker_id=rank)
                                 for rank in self.owners])
 
-        self.grad_streams = allocate(self.streams[0].shape)
-        self.grad_premix = allocate((self.rows, 16))
+        output_rows = self.rows if output_rows is None else output_rows
+        self.grad_streams = allocate((output_rows, *self.streams[0].shape[1:]))
+        self.grad_premix = allocate((output_rows, 16))
 
     def _leading_rows(self, value):
         return self.tensor(value.data_ptr, (self.rows, *value.shape[1:]), value.dtype,

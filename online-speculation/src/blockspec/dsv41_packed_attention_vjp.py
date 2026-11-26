@@ -408,7 +408,7 @@ class PackedAttentionVJP:
 
         layer = seed.layer
         slot = layer - self.first_layer
-        if (slot < 0 or seed.owner != student.owner or not 1 <= seed.rows <= student.rows
+        if (slot < 0 or seed.owner != student.owner or not 1 <= seed.rows <= self.block
                 or student.ffn_tape is None or student.pages is None):
             raise ValueError("Attention backward requires the live student capture and its original history pages")
         start = perf_counter()
