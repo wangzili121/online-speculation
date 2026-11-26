@@ -121,6 +121,7 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, 
         inference_seconds = decode_seconds - update_seconds
         report["online"] = dict(updates=updates, version=optimizer.adam.version,
                                 rounds_after_publication=updated_rounds, update_seconds=update_seconds,
+                                gradient_scratch_bytes_per_rank=2 * optimizer.packet_capacity * 4 if updates else 0,
                                 decode_tok_per_s_excluding_updates=tok / inference_seconds if steps else 0.0)
     return report
 
@@ -134,6 +135,12 @@ def first_difference(expected, actual):
             if reference != observed:
                 return dict(request=request, position=position, expected=reference, observed=observed)
     return None
+
+
+def compare_generation(reference, actual):
+    difference = first_difference(reference["generated"], actual["generated"])
+    return dict(passed=difference is None and actual["speculation"]["draft_rounds"] > 0,
+                compared_tokens=sum(map(len, reference["generated"].values())), first_difference=difference)
 
 
 def main():
@@ -166,6 +173,7 @@ def main():
     parser.add_argument("--max-updates", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--max-gradient-norm", type=float, default=1.)
+    parser.add_argument("--eval-workload", type=Path, help="Compare the initial and frozen heads on separate requests")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if bool(args.draft_head) != bool(args.draft_graph):
@@ -176,6 +184,8 @@ def main():
         parser.error("--check-backward requires --capture-last-layers")
     if args.adam_graph and (not args.capture_last_layers or args.check_backward):
         parser.error("--adam-graph requires --capture-last-layers and runs the backward during generation")
+    if args.eval_workload and not args.adam_graph:
+        parser.error("--eval-workload requires an online optimizer")
     if args.adam_graph and (min(args.update_every, args.max_updates) < 1
                             or not all(isfinite(v) and v > 0 for v in (args.learning_rate, args.max_gradient_norm))):
         parser.error("Online updates require positive frequencies, limits, learning rate and clip norm")
@@ -197,21 +207,31 @@ def main():
     from tokenizers import Tokenizer
 
     torch.set_num_threads(4)
-    workload = args.workload.read_bytes()
-    cases = json.loads(workload)
-    if not cases or len({case["id"] for case in cases}) != len(cases):
-        parser.error("Provide at least one request with a unique ID")
-    for case in cases:
-        if (not case["input_ids"] or not 0 <= case["dp"] < DP_SIZE
-                or not 1 <= case["new_tokens"] <= args.context - len(case["input_ids"])
-                or any(type(token) is not int or not 0 <= token < FLASH.vocab_size for token in case["input_ids"])):
-            parser.error(f"Invalid workload request {case['id']!r}")
-    if args.draft_head and not any(
-        case["new_tokens"] >= 3 and len(case["input_ids"]) + args.draft_block <= args.context for case in cases
-    ):
-        parser.error("The workload must leave room for a draft block and at least one candidate")
-    if any(sum(case["dp"] == dp for case in cases) > min(args.slots_per_dp, 16) for dp in range(DP_SIZE)):
-        parser.error("The workload must fit the configured resident request slots and vocabulary output rows")
+
+    def load_workload(path):
+        payload = path.read_bytes()
+        rows = json.loads(payload)
+        if not rows or len({case["id"] for case in rows}) != len(rows):
+            parser.error(f"{path}: provide at least one request with a unique ID")
+        for case in rows:
+            if (not case["input_ids"] or not 0 <= case["dp"] < DP_SIZE
+                    or not 1 <= case["new_tokens"] <= args.context - len(case["input_ids"])
+                    or any(type(token) is not int or not 0 <= token < FLASH.vocab_size for token in case["input_ids"])):
+                parser.error(f"Invalid workload request {case['id']!r}")
+        if args.draft_head and not any(
+            case["new_tokens"] >= 3 and len(case["input_ids"]) + args.draft_block <= args.context for case in rows
+        ):
+            parser.error(f"{path}: leave room for a draft block and at least one candidate")
+        if any(sum(case["dp"] == dp for case in rows) > min(args.slots_per_dp, 16) for dp in range(DP_SIZE)):
+            parser.error(f"{path}: workload must fit the resident request slots and vocabulary output rows")
+        return rows, sha256(payload).hexdigest()
+
+    cases, workload = load_workload(args.workload)
+    evaluation, eval_workload = None, None
+    if args.eval_workload:
+        evaluation, eval_workload = load_workload(args.eval_workload)
+        if {tuple(case["input_ids"]) for case in cases} & {tuple(case["input_ids"]) for case in evaluation}:
+            parser.error("Online and evaluation workloads must use separate prompts")
 
     capacities = args.prefill_capacity, args.decode_capacity
     tokens = args.prefill_moe_tokens, 16 if args.decode_capacity == 16 else 64
@@ -230,7 +250,7 @@ def main():
         context=args.context, slots=args.slots_per_dp, local_ranks=len(devices),
     )
     key = args.key_file.read_bytes().strip()
-    signature = dict(workload=sha256(workload).hexdigest(), checkpoint=checkpoint.identity,
+    signature = dict(workload=workload, evaluation=eval_workload, checkpoint=checkpoint.identity,
                      capacities=list(capacities), context=args.context, slots=args.slots_per_dp, tokens=list(tokens))
     draft_programs = ()
     reverse_programs = {}
@@ -258,12 +278,20 @@ def main():
             online=online,
         )
 
-    def measured(session, width=0, teacher_rows=0, reverse=None, optimizer=None):
+    def measured(session, width=0, teacher_rows=0, reverse=None, optimizer=None, *, requests=cases):
+        before = dict(vars(session.draft.stats)) if width else None
         metrics = dict(stage_seconds=Counter(), counts=Counter())
+        start = perf_counter()
         with profile_online(SimpleNamespace(current=metrics, lock=Lock())):
-            return generate(session, cases, capacities[0], DP_SIZE,
-                            width=width, teacher_rows=teacher_rows, reverse=reverse,
-                            optimizer=optimizer, online=online) | metrics
+            arm = generate(session, requests, capacities[0], DP_SIZE,
+                           width=width, teacher_rows=teacher_rows, reverse=reverse,
+                           optimizer=optimizer, online=online) | metrics
+        elapsed = perf_counter() - start
+        arm["wall_seconds"] = elapsed
+        arm["wall_tok_per_s"] = sum(map(len, arm["generated"].values())) / elapsed
+        if width:
+            arm["draft_profile"] = {key: value - before[key] for key, value in vars(session.draft.stats).items()}
+        return arm
 
     with ControlLink.connect(plan.node, (args.rank0_ip, args.port), key, args.timeout) as link, ExitStack() as workers:
         if link.exchange("staged-target/start", signature) != signature:
@@ -290,6 +318,9 @@ def main():
                 reverse = StagedDraftReverse(session.draft, config, reverse_programs) if reverse_programs else None
                 optimizer = StagedPackedAdam(session.draft, reverse, FLASH, adam_programs) if adam_programs else None
                 draft_init = perf_counter() - start
+                if evaluation:
+                    arms["eval_ar"] = measured(session, requests=evaluation)
+                    arms["eval_initial"] = measured(session, args.verify_width, requests=evaluation)
                 print(json.dumps(dict(stage="generate", mode="online" if optimizer else "orthrus",
                                       requests=len(cases))), flush=True)
                 arms["orthrus"] = measured(session, args.verify_width,
@@ -297,9 +328,11 @@ def main():
                                            reverse if args.check_backward else None, optimizer)
                 arms["orthrus"].update(
                     initialization_seconds=draft_init, resident_head_bytes=session.draft.resident_head_bytes,
-                    draft_profile=vars(session.draft.stats), width=args.verify_width,
-                    block=args.draft_block, head_role=session.draft.head_role,
+                    width=args.verify_width, block=args.draft_block, head_role=session.draft.head_role,
                 )
+                if evaluation:
+                    arms["eval_frozen"] = measured(session, args.verify_width, requests=evaluation)
+                    arms["eval_frozen"]["head_version"] = optimizer.adam.version
         except Exception as exc:
             if not isinstance(exc, PeerDispatchError):
                 with suppress(OSError):
@@ -322,9 +355,7 @@ def main():
         )
     parity = None
     if "orthrus" in arms:
-        difference = first_difference(generated["ar"], generated["orthrus"])
-        parity = dict(passed=difference is None and arms["orthrus"]["speculation"]["draft_rounds"] > 0,
-                      compared_tokens=sum(map(len, generated["ar"].values())), first_difference=difference)
+        parity = compare_generation(arms["ar"], arms["orthrus"])
     report = dict(passed=(golden is None or golden == result["generated"]) and (parity is None or parity["passed"])
                   and replay_passed,
                   node=args.node,
@@ -346,10 +377,15 @@ def main():
         result = arms["orthrus"]["online"]
         report["online_passed"] = bool(result["version"] and result["rounds_after_publication"])
         report["passed"] &= report["online_passed"]
+    if evaluation:
+        report["frozen_eval_parity"] = {
+            name: compare_generation(arms["eval_ar"], arms[name]) for name in ("eval_initial", "eval_frozen")
+        }
+        report["passed"] &= all(item["passed"] for item in report["frozen_eval_parity"].values())
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)
     if not report["passed"]:
-        raise SystemExit("Staged greedy acceptance failed. See the parity and generated IDs in the report.")
+        raise SystemExit("Staged acceptance failed. See the parity and online update results in the report.")
 
 
 if __name__ == "__main__":

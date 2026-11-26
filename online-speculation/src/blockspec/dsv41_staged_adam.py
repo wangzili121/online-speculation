@@ -87,31 +87,35 @@ class StagedPackedAdam:
         self.adam = PackedAdam(draft, model, {key: entries[1:] for key, entries in programs.items()})
         self.pack = {key: entries[0] for key, entries in programs.items()}
         self.runtime = draft.runtime
-        self.buffers = {}
+        self.packet_capacity = max(key[0] for key in programs)
+        self.packets = None
 
-    def _buffers(self, key):
-        size, shared, _ = key
+    def _buffers(self, size, shared):
         adam = self.adam
-        if key not in self.buffers:
+        if self.packets is None:
             import torch
 
             def allocate():
-                shards = [self.runtime.alloc_tensor((size,), torch.float32, worker_id=rank, exportable=True)
+                shards = [self.runtime.alloc_tensor((self.packet_capacity,), torch.float32,
+                                                    worker_id=rank, exportable=True)
                           for rank in adam.ranks]
                 for rank, shard in enumerate(shards):
                     self.transport.mappings.register(rank, shard)
-                return adam._stack(shards, adam.ranks)
+                return shards
 
-            send, received = allocate(), allocate()
-            placeholder = adam._stack(received.shards[::adam.tp], adam.owners) if shared else received
-            self.buffers[key] = send, received, placeholder
-        return self.buffers[key]
+            self.packets = allocate(), allocate()
+        # Each parameter is consumed before taking the next view. HCCL resolves
+        # the view at offset zero through the backing allocation's IPC mapping.
+        send, received = (adam._stack([adam._flat(shard, size) for shard in shards], adam.ranks)
+                          for shards in self.packets)
+        placeholder = adam._stack(received.shards[::adam.tp], adam.owners) if shared else received
+        return send, received, placeholder
 
     def _exchange(self, stage, layer, gradient, parameter):
         adam = self.adam
         key = parameter.program_key
         size, shared, _ = key
-        send, received, placeholder = self._buffers(key)
+        send, received, placeholder = self._buffers(size, shared)
         source, owner = placeholder, -1
         if gradient is not None:
             shards = gradient.parameter_gradients[parameter.name].shards
@@ -139,14 +143,14 @@ class StagedPackedAdam:
                 return SimpleNamespace(value=receipt["loss"], rows=receipt["teacher_rows"])
             return None
 
-        def agree(step, finite, clip):
-            decision = dict(step=step, finite=finite, clip=clip, rate=rate)
+        def agree(step, finite, norm, clip):
+            decision = dict(step=step, finite=finite, norm=norm, clip=clip, rate=rate)
             peer = self.link.exchange(f"{stage}/decision", decision)
             if peer["step"] != step or peer["rate"] != rate:
                 raise ValueError("Hosts disagree on the next Adam step")
             if not finite or not peer["finite"]:
                 return False
-            if peer["clip"] != clip:
+            if peer["norm"] != norm or peer["clip"] != clip:
                 raise ValueError("Hosts disagree on the Adam gradient norm")
             return True
 

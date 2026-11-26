@@ -145,6 +145,10 @@ python /opt/dsv41-1122/compile_dsv41_pypto_staged_adam.py --artifact-dir /result
 
 在上一条双机生成命令里使用编译了 `--last-layers N` 的 draft 目录，并追加 `--capture-last-layers N --adam-graph /results/adam --teacher-rows 7 --update-every 16 --max-updates 32 --learning-rate 1e-5`。首次检查可用两台各一个请求、每题生成 24 token、`--update-every 2 --max-updates 2`，让两端轮流提供教师反馈，并在发布后继续跑 draft。脚本在一次权重加载内用相同请求跑 AR 和在线 Orthrus，逐 token 比对。报告记录每轮损失、梯度范数、反向、梯度通信和暂存、Adam、发布，以及含更新和扣除更新时间的 Decode 吞吐。扣时结果是同一次在线运行的估算。真实双机整模在线结果待验证。
 
+追加 `--eval-workload /results/heldout.json` 时，用同一份独立请求测 AR、初始 head 和更新后冻结 head。`arms` 中每组的 `wall_tok_per_s` 包含请求准入、Prefill、Decode 和释放。在线组的 `decode_tok_per_s_excluding_updates` 单列扣去更新阻塞时间的估算。
+
+梯度通信复用每 rank 一对 40 MiB 的驻留发送和接收缓冲，按参数大小建立视图，导出仍指向同一对分配。报告的 `gradient_scratch_bytes_per_rank` 只计这对缓冲。Adam 的 FP32 参数和动量账本另占显存，随更新层数增长。
+
 ### GSM8K 在线更新报告
 
 在两台公司节点使用同一份 checkout，分别执行 `run_dsv41_pypto_company_online.sh node7 report 1` 和 `run_dsv41_pypto_company_online.sh node8 report 1`。脚本使用现有 GSM8K 目录，从 `tuning.jsonl` 取 8 题在线更新，从 `quality_test.jsonl` 取 4 道留出题。默认每个 DP 分区放 1 个请求，最多 4 个并发，每题最多生成 32 个 token。两端可用相同的 `DSV41_REPORT_TRAIN`、`DSV41_REPORT_EVAL`、`DSV41_REPORT_TOKENS` 调整规模。

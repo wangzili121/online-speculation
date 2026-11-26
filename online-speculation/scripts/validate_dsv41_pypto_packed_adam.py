@@ -164,9 +164,9 @@ def exercise(runtime, config, model, programs, tp, world, initial, *, staged=Fal
         if not invalid:
             expected_norm = sqrt(norm_sq)
             assert abs(result.gradient_norm - expected_norm) <= expected_norm * 1e-5, (result, expected_norm)
-            for weight, optimizer in references.values():
+            for weight, reference_optimizer in references.values():
                 weight.grad.mul_(result.clip)
-                optimizer.step()
+                reference_optimizer.step()
         for layer in range(layers):
             for p in parameters:
                 check(layer, p, before=invalid)
@@ -176,9 +176,12 @@ def exercise(runtime, config, model, programs, tp, world, initial, *, staged=Fal
                 runtime.free_tensor(tensor, worker_id=rank)
         gradients.clear()
     assert [result["version"] for result in results] == [1, 2, 2, 3]
-    return dict(passed=True, executed=True, tp=tp, world=world, layers=layers,
-                execution_weight_max_abs=max_abs, updates=results,
-                gradient_transport="host_fixture" if staged else "local_p2p")
+    report = dict(passed=True, executed=True, tp=tp, world=world, layers=layers,
+                  execution_weight_max_abs=max_abs, updates=results,
+                  gradient_transport="host_fixture" if staged else "local_p2p")
+    if staged:
+        report["gradient_scratch_bytes_per_rank"] = sum(packet[0].nbytes for packet in optimizer.packets)
+    return report
 
 
 def main():

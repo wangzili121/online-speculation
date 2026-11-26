@@ -532,6 +532,37 @@ def test_staged_adam_uses_the_same_version_when_one_host_rejects_an_update():
         assert first.result() == second.result() == expected
 
 
+def test_staged_adam_reuses_exported_bases_for_short_collective_views():
+    from blockspec.dsv41_staged_adam import StagedPackedAdam
+
+    registered = {}
+
+    def allocate(shape, dtype, *, worker_id, exportable):
+        assert exportable
+        return SimpleNamespace(rank=worker_id, shape=shape, data_ptr=1000 + len(registered) * 128 + worker_id)
+
+    def export(rank, tensor):
+        registered[rank, tensor.data_ptr] = tensor.shape
+
+    optimizer = StagedPackedAdam.__new__(StagedPackedAdam)
+    optimizer.packet_capacity = 128
+    optimizer.packets = None
+    optimizer.runtime = SimpleNamespace(alloc_tensor=allocate)
+    optimizer.transport = SimpleNamespace(mappings=SimpleNamespace(register=export))
+    optimizer.adam = SimpleNamespace(
+        ranks=(0, 1), owners=(0,), tp=2,
+        _flat=lambda tensor, size: SimpleNamespace(**(vars(tensor) | {"shape": (size,)})),
+        _stack=lambda shards, ranks: SimpleNamespace(shards=shards, worker_ids=ranks),
+    )
+    for size, shared in ((16, True), (128, False), (64, False)):
+        send, receive, placeholder = optimizer._buffers(size, shared)
+        assert len(registered) == 4
+        assert len(placeholder.shards) == (1 if shared else 2)
+        for allocation in (send, receive):
+            for rank, shard in zip(allocation.worker_ids, allocation.shards, strict=True):
+                assert shard.shape == (size,) and registered[rank, shard.data_ptr] == (128,)
+
+
 def test_staged_generation_updates_at_committed_rows_and_reuses_new_head():
     from collections import namedtuple
 
@@ -586,10 +617,11 @@ def test_staged_generation_updates_at_committed_rows_and_reuses_new_head():
 
     cases = [dict(id=str(dp), dp=dp, input_ids=[1, 2], new_tokens=10) for dp in (0, 2)]
     result = runner.generate(session, cases, 16, 4, width=8, teacher_rows=3,
-                             optimizer=SimpleNamespace(adam=adam, update=update),
+                             optimizer=SimpleNamespace(adam=adam, update=update, packet_capacity=128),
                              online=dict(every=2, max_updates=2, rate=1e-5, max_norm=1.))
     assert session.captures == [0, 2]
     assert [row["round"] for row in result["online"]["updates"]] == [3, 7]
     assert result["online"]["rounds_after_publication"] == 5
     assert result["online"]["version"] == 2
+    assert result["online"]["gradient_scratch_bytes_per_rank"] == 1024
     assert result["generated"] == {str(dp): list(range(3, 13)) for dp in (0, 2)}

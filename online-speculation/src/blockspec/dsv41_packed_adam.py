@@ -369,7 +369,7 @@ class PackedAdam:
         clip = min(1., max_norm / (norm + 1e-6)) if finite else 0.
         step = self.version + 1
         if agree is not None:
-            finite = agree(step, finite, clip)
+            finite = agree(step, finite, norm, clip)
         if not finite:
             return PackedUpdate(self.version, False, loss.rows, loss.value, None, 0.,
                                 reverse_seconds, stage_seconds, 0., 0.)
