@@ -325,5 +325,336 @@
         }
       ]
     ]
+  },
+  "resident_checkpoint_experts": {
+    "host": "111",
+    "soc": "Ascend910B3",
+    "cann": "9.0.0",
+    "physical_cards": [
+      4
+    ],
+    "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+    "reference": "1122 golden_expert_routed, per-output-channel symmetric INT8 checkpoint",
+    "scope": "Two logical ranks (16 and 5 active tokens) on one NPU. Host rank transpose emulates the two collectives. Pack, unpack, native experts, return packing and combine executed on NPU.",
+    "command": "python /opt/dsv41-1122/validate_dsv41_pypto_ep_hccl_resident.py --devices 0 --checkpoint /model",
+    "result": {
+      "passed": true,
+      "world": 2,
+      "tokens": 16,
+      "exact_output": true,
+      "devices": [
+        0
+      ],
+      "transport": "host_rank_transpose",
+      "checkpoint_layer": 39,
+      "checkpoint_experts": [
+        0,
+        3,
+        7,
+        16,
+        25,
+        29,
+        38,
+        47
+      ],
+      "phases": {
+        "prefill": {
+          "exact_transport_and_combine": true,
+          "expert_differences": [
+            {
+              "rank": 0,
+              "valid_routes": 70,
+              "max_abs": 0.0,
+              "outlier_ratio": 0.0
+            },
+            {
+              "rank": 1,
+              "valid_routes": 56,
+              "max_abs": 0.0,
+              "outlier_ratio": 0.0
+            }
+          ],
+          "return_seconds": null
+        },
+        "decode": {
+          "exact_transport_and_combine": true,
+          "expert_differences": [
+            {
+              "rank": 0,
+              "valid_routes": 70,
+              "max_abs": 0.0,
+              "outlier_ratio": 0.0
+            },
+            {
+              "rank": 1,
+              "valid_routes": 56,
+              "max_abs": 0.0,
+              "outlier_ratio": 0.0
+            }
+          ],
+          "return_seconds": null
+        }
+      },
+      "dispatch_seconds": null,
+      "transfers": []
+    }
+  },
+  "resident_checkpoint_hccl": {
+    "host": "111",
+    "soc": "Ascend910B3",
+    "cann": "9.0.0",
+    "physical_cards": [
+      0,
+      6
+    ],
+    "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+    "native_expert_source_sha256": "b66f3491808726006325d7aa0b28fe97b37b89f8a527689d3ac901cc47eaded2",
+    "command": "python /opt/dsv41-1122/validate_dsv41_pypto_ep_hccl_resident.py --devices 0,1 --checkpoint /model --transport-source /inputs/moe_transport.py",
+    "scope": "Two local NPUs on one host, real checkpoint expert weights, seeded routing inputs, and both HCCL AllToAll operations on device. Host and device elapsed time for sequential per-rank expert and return packing only, median of eight warmed iterations. HCCL timings are reported separately and include dispatch overhead.",
+    "result": {
+      "passed": true,
+      "world": 2,
+      "tokens": 16,
+      "devices": [
+        0,
+        1
+      ],
+      "transport": "hccl_device",
+      "checkpoint_layer": 39,
+      "checkpoint_experts": [
+        0,
+        3,
+        7,
+        16,
+        25,
+        29,
+        38,
+        47
+      ],
+      "phases": {
+        "prefill": {
+          "exact_transport_and_combine": true,
+          "expert_differences": [
+            {
+              "rank": 0,
+              "valid_routes": 70,
+              "max_abs": 0.0,
+              "outlier_ratio": 0.0,
+              "relative_l2": 0.0
+            },
+            {
+              "rank": 1,
+              "valid_routes": 56,
+              "max_abs": 0.0,
+              "outlier_ratio": 0.0,
+              "relative_l2": 0.0
+            }
+          ],
+          "fused_return_byte_exact": true,
+          "kernel_timings": [
+            {
+              "rank": 0,
+              "separate_median_ms": 53.80440258886665,
+              "fused_median_ms": 30.929813045077026
+            },
+            {
+              "rank": 1,
+              "separate_median_ms": 48.907864606007934,
+              "fused_median_ms": 24.194621946662664
+            }
+          ],
+          "return_seconds": 0.002694325055927038
+        },
+        "decode": {
+          "exact_transport_and_combine": true,
+          "expert_differences": [
+            {
+              "rank": 0,
+              "valid_routes": 70,
+              "max_abs": 0.0,
+              "outlier_ratio": 0.0,
+              "relative_l2": 0.0
+            },
+            {
+              "rank": 1,
+              "valid_routes": 56,
+              "max_abs": 0.0,
+              "outlier_ratio": 0.0,
+              "relative_l2": 0.0
+            }
+          ],
+          "fused_return_byte_exact": true,
+          "kernel_timings": [
+            {
+              "rank": 0,
+              "separate_median_ms": 57.84637003671378,
+              "fused_median_ms": 34.46054004598409
+            },
+            {
+              "rank": 1,
+              "separate_median_ms": 44.47525646537542,
+              "fused_median_ms": 22.43060397449881
+            }
+          ],
+          "return_seconds": 0.001955352956429124
+        }
+      },
+      "iterations": 8,
+      "dispatch_seconds": 0.03480503987520933,
+      "transfers": [
+        [
+          {
+            "stage": "counts",
+            "bytes_per_peer": 128,
+            "world": 2,
+            "shape": [
+              2,
+              32
+            ],
+            "dtype": "torch.int32",
+            "collective": "all_to_all",
+            "transport_type": "UINT8",
+            "host_staging": false
+          },
+          {
+            "stage": "hidden",
+            "bytes_per_peer": 491520,
+            "world": 2,
+            "shape": [
+              192,
+              5120
+            ],
+            "dtype": "torch.int8",
+            "collective": "all_to_all",
+            "transport_type": "UINT8",
+            "host_staging": false
+          },
+          {
+            "stage": "auxiliary",
+            "bytes_per_peer": 3072,
+            "world": 2,
+            "shape": [
+              192,
+              8
+            ],
+            "dtype": "torch.float32",
+            "collective": "all_to_all",
+            "transport_type": "UINT8",
+            "host_staging": false
+          },
+          {
+            "stage": "expert_return",
+            "bytes_per_peer": 983040,
+            "world": 2,
+            "shape": [
+              192,
+              5120
+            ],
+            "dtype": "torch.bfloat16",
+            "collective": "all_to_all",
+            "transport_type": "UINT8",
+            "host_staging": false
+          },
+          {
+            "stage": "expert_return",
+            "bytes_per_peer": 983040,
+            "world": 2,
+            "shape": [
+              192,
+              5120
+            ],
+            "dtype": "torch.bfloat16",
+            "collective": "all_to_all",
+            "transport_type": "UINT8",
+            "host_staging": false
+          }
+        ],
+        [
+          {
+            "stage": "counts",
+            "bytes_per_peer": 128,
+            "world": 2,
+            "shape": [
+              2,
+              32
+            ],
+            "dtype": "torch.int32",
+            "collective": "all_to_all",
+            "transport_type": "UINT8",
+            "host_staging": false
+          },
+          {
+            "stage": "hidden",
+            "bytes_per_peer": 491520,
+            "world": 2,
+            "shape": [
+              192,
+              5120
+            ],
+            "dtype": "torch.int8",
+            "collective": "all_to_all",
+            "transport_type": "UINT8",
+            "host_staging": false
+          },
+          {
+            "stage": "auxiliary",
+            "bytes_per_peer": 3072,
+            "world": 2,
+            "shape": [
+              192,
+              8
+            ],
+            "dtype": "torch.float32",
+            "collective": "all_to_all",
+            "transport_type": "UINT8",
+            "host_staging": false
+          },
+          {
+            "stage": "expert_return",
+            "bytes_per_peer": 983040,
+            "world": 2,
+            "shape": [
+              192,
+              5120
+            ],
+            "dtype": "torch.bfloat16",
+            "collective": "all_to_all",
+            "transport_type": "UINT8",
+            "host_staging": false
+          },
+          {
+            "stage": "expert_return",
+            "bytes_per_peer": 983040,
+            "world": 2,
+            "shape": [
+              192,
+              5120
+            ],
+            "dtype": "torch.bfloat16",
+            "collective": "all_to_all",
+            "transport_type": "UINT8",
+            "host_staging": false
+          }
+        ]
+      ]
+    }
+  },
+  "checkpoint_expert_ep16_compile": {
+    "host": "61",
+    "command": "python /opt/dsv41-1122/validate_dsv41_pypto_ep_hccl_resident.py --compile-only",
+    "result": {
+      "passed": true,
+      "compiled": true,
+      "world": 16,
+      "tokens": 64,
+      "expert_phases": [
+        "prefill",
+        "decode"
+      ],
+      "fused_return_phases": [
+        "prefill",
+        "decode"
+      ]
+    }
   }
 }

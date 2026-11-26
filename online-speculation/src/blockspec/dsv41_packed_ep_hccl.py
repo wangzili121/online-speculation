@@ -183,3 +183,78 @@ def make_ep_forward_packets(tokens, hidden, world, local_experts, topk):
                 pl.store(result, [token, 0], output)
 
     return pack, unpack, pack_return, combine
+
+
+def make_ep_forward_experts(tokens, world, local_experts, *, prefill, fuse_return=False):
+    """Apply native W8A8 experts to the compact rows received by one EP rank."""
+    import pypto.language as pl
+    from models.deepseek_v4_1_flash_a3.config import FLASH
+    from models.deepseek_v4_1_flash_a3.expert_routed import expert_routed_compute
+
+    hidden, inter = FLASH.hidden_size, FLASH.moe_intermediate_size
+    packets = world * tokens * FLASH.num_experts_per_tok
+    rows = packets + local_experts * 16
+    output_rows = packets if fuse_return else rows
+
+    if fuse_return:
+        @pl.jit.inline(auto_scope=False)
+        def initialize(output: pl.Tensor):
+            with pl.spmd(packets, name_hint="hccl_ep_clear_fused_return") as cleared:
+                packet = pl.tile.get_block_idx()
+                zero = pl.tile.full([1, hidden], dtype=pl.BF16, value=0.)
+                pl.store(zero, [packet, 0], output)
+            return cleared
+    else:
+        @pl.jit.inline(auto_scope=False)
+        def initialize(output: pl.Tensor):
+            return pl.system.task_dummy(deps=[])
+
+    @pl.jit
+    def experts(
+        expert_counts: pl.Tensor[[local_experts, 2], pl.INT32],
+        x: pl.Tensor[[rows, hidden], pl.INT8],
+        x_scale: pl.Tensor[[1, rows], pl.FP32],
+        route_weight: pl.Tensor[[1, rows], pl.FP32],
+        route_address: pl.Tensor[[1, rows], pl.INT32],
+        w1: pl.Tensor[[local_experts, inter, hidden], pl.INT8],
+        s1: pl.Tensor[[local_experts, inter], pl.FP32],
+        w3: pl.Tensor[[local_experts, inter, hidden], pl.INT8],
+        s3: pl.Tensor[[local_experts, inter], pl.FP32],
+        w2: pl.Tensor[[local_experts, hidden, inter], pl.INT8],
+        s2: pl.Tensor[[local_experts, hidden], pl.FP32],
+        output: pl.Out[pl.Tensor[[output_rows, hidden], pl.BF16]],
+    ):
+        scales = pl.reshape(x_scale, [rows, 1])
+        cleared = initialize(output)
+        for expert in pl.parallel(local_experts):
+            count = pl.read(expert_counts, [expert, 0])
+            if count > 0:
+                padded = (count + 15) // 16 * 16
+                offset = pl.cast(pl.read(expert_counts, [expert, 1]), pl.INDEX)
+                source = pl.slice(x, [padded, hidden], [offset, 0])
+                source_scale = pl.slice(scales, [padded, 1], [offset, 0])
+                weights = pl.slice(route_weight, [1, padded], [0, offset])
+                gate_scale = pl.slice(s1, [1, inter], [expert, 0])
+                up_scale = pl.slice(s3, [1, inter], [expert, 0])
+                down_scale = pl.slice(s2, [1, hidden], [expert, 0])
+                if fuse_return:
+                    compact = pl.create_tensor([padded, hidden], dtype=pl.BF16)
+                    expert_routed_compute(
+                        source, source_scale, weights,
+                        w1[expert], gate_scale, w3[expert], up_scale, w2[expert], down_scale,
+                        compact, count, True, prefill,
+                    )
+                    with pl.spmd(count, name_hint="hccl_ep_store_fused_return", deps=[cleared]):
+                        row = pl.tile.get_block_idx()
+                        slot = pl.read(route_address, [0, offset + row])
+                        value = pl.tile.load(compact, [row, 0], [1, hidden])
+                        pl.store(value, [slot, 0], output)
+                else:
+                    destination = pl.slice(output, [padded, hidden], [offset, 0])
+                    expert_routed_compute(
+                        source, source_scale, weights,
+                        w1[expert], gate_scale, w3[expert], up_scale, w2[expert], down_scale,
+                        destination, count, True, prefill,
+                    )
+
+    return experts

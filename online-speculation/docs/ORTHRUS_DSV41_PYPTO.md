@@ -205,14 +205,16 @@ bash "${ORTHRUS_ROOT}/online-speculation/scripts/dsv41_pypto_env.sh" global-wind
 
 1122 的 MoE HCCL 适配把派发和回传拆到显式通信边界。派发按目标 rank 和本地专家排好 INT8 激活，携带 FP32 量化 scale、路由权重和原始路由位置。收件按来源 rank 汇入 16 行对齐的专家输入。回传的 BF16 行按原 token 和 TopK 顺序做 FP32 累加，保持原 MoE 的求和顺序。单卡分别执行 EP16 的 16 行与 64 行布局，两次 AllToAll 的 rank 重排由 CPU 模拟，四个设备步骤逐字节匹配参考。
 
-在 61 的两张卡上还验证了 HCCL 可以直接交换 1122 的 PyPTO 驻留缓冲，派发、回传及恢复结果逐字节匹配。这个用例使用构造的专家输出。复验时使用 1122 镜像、host 网络和当前节点的 HCCL 网卡配置，将旧版 `e32726b` 的 `moe_transport.py` 文件挂载到容器。 [HCCL 传输实现](https://github.com/Adelaide999/pypto-lib/blob/e32726b7edb31ee17e398a0431c0272ebd545974/models/deepseek_v4_1_flash_a3/moe_transport.py)
+111 的两张 910B3 用真实 checkpoint 第 39 层的 8 个专家验证了 126 条有效路由。派发和回传都由 HCCL 直接读写 PyPTO 驻留缓冲。Prefill 和 Decode 复用 1122 原生 W8A8 专家计算，两者与 Torch 参考逐元素一致。将专家计算和 BF16 回传打包合到一次设备提交后，回传包与分开执行时逐字节一致。8 次热态调用的中位数在两组 rank 上下降 40%–51%，计入宿主提交，通信另行计时。EP16 的每 rank 64 行容量通过了两种实现的编译。
+
+单卡使用 `--devices 0 --checkpoint /model` 复验真实权重。双卡切换为 `--devices 0,1`，使用 1122 镜像、host 网络和当前节点的 HCCL 网卡配置，并挂载旧版 `e32726b` 的 `moe_transport.py`。不传 `--checkpoint` 时使用构造的专家输出，只检查传输。 [HCCL 传输实现](https://github.com/Adelaide999/pypto-lib/blob/e32726b7edb31ee17e398a0431c0272ebd545974/models/deepseek_v4_1_flash_a3/moe_transport.py)
 
 ```bash
 python /opt/dsv41-1122/validate_dsv41_pypto_ep_hccl_resident.py \
-  --devices 0,1 --transport-source /inputs/moe_transport.py
+  --devices 0,1 --checkpoint /model --transport-source /inputs/moe_transport.py
 ```
 
-等长包用来验证接口和数值。64 行容量下每个 EP rank 每层要提交约 90 MiB 的派发与回传数据，其中包括填充。跨机路径仍需接入原生专家计算和整图调度，再按实际路由量降低通信。 [实卡记录](validation/dsv41/pypto-1122-949a-ep-hccl-910b3.json)
+等长包用来验证接口和数值。64 行容量下每个 EP rank 每层要提交约 90 MiB 的派发与回传数据，其中包括填充。双机整图需要在层间接入这两个 HCCL 通信点，并验证真实权重与跨机通信同时运行。 [实卡记录](validation/dsv41/pypto-1122-949a-ep-hccl-910b3.json)
 
 ## 内网权重预检
 
