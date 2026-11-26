@@ -73,6 +73,7 @@ class ResidentPackedPrefill:
 
         self.runtime, self.attention, self.head = runtime, attention, head
         self.capacity = capacity
+        self.audit = None
         widths = prefill_slabs(capacity, tokens, TP_SIZE)
         devices = buffers["embedding"].worker_ids
         hidden, copies = FLASH.hidden_size, FLASH.hc_mult
@@ -110,6 +111,7 @@ class ResidentPackedPrefill:
         values["x_hc"] = rows_from(values["hidden_bank"], 0, capacity)
         values["pre_mix"] = rows_from(values["mix_bank"], 0, capacity)
         values["logit_row_indices"] = values["logit_rows"]
+        self.buffers = values
         self.attention_args = resident_program_args(attention, values)
         self.head_args = resident_program_args(head, values)
         self.logits, self.sampled_ids = values["logits"], values["sampled_ids"]
@@ -141,13 +143,21 @@ class ResidentPackedPrefill:
             with timed_stage("prefill_attention"):
                 self.runtime.run(self.attention, *self.attention_args, layer, 1)
             counts = encoder if layer < 20 else decoder
+            if self.audit is not None:
+                self.audit(stage, layer, counts, attention=self.buffers["attn_hidden"],
+                           ffn_input=self.buffers["ffn_input"])
             for begin, width, ffn, restore, restore_args in self.slabs:
                 moe = self.moe[width]
-                moe.bind_batch(tuple(min(width, max(0, count - begin)) for count in counts))
+                slab_counts = tuple(min(width, max(0, count - begin)) for count in counts)
+                moe.bind_batch(slab_counts)
                 moe.run(f"{stage}/layer-{layer}/{begin}", prefill=True, ffn_input=ffn,
                         shared_weights=shared, routed_weights=routed)
+                if self.audit is not None:
+                    self.audit(stage, layer, slab_counts, **{f"experts_{begin}": moe.owned})
                 with timed_stage("prefill_ffn_tp_mhc_post"):
                     self.runtime.run(restore, *restore_args, 1)
+            if self.audit is not None:
+                self.audit(stage, layer, counts, hidden=self.buffers["x_hc"], pre_mix=self.buffers["pre_mix"])
         with timed_stage("prefill_final_head"):
             self.runtime.run(self.head, *self.head_args, 1)
         return self.logits, self.sampled_ids

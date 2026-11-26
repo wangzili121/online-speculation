@@ -242,6 +242,10 @@ def decode_attention_scratch(rows, table_pages):
         "topk_indices": ((rows, FLASH.index_topk), torch.int32),
         "pool_block_ids": ((rows, pool_width), torch.int32),
         "pool_block_counts": ((rows,), torch.int32),
+        # Full/Reindex writes the compressed tail once per wave. Reuse
+        # refreshes the SWA prefix and reads that tail from the same allocation.
+        "selected_kv": ((rows, BLOCK_SIZE + FLASH.index_topk, FLASH.head_dim), torch.bfloat16),
+        "selected_indices": ((rows, BLOCK_SIZE + FLASH.index_topk), torch.int32),
         "attention_hidden": ((rows, hc, hidden), torch.float32),
         "attention_pre_mix": ((rows, hc), torch.float32),
         "ffn_input": ((rows, hidden), torch.bfloat16),
@@ -290,6 +294,7 @@ class ResidentPackedDecode:
         from models.deepseek_v4_1_flash_a3.config import FLASH
 
         self.attention, self.ffn, self.head = attention, ffn, head
+        self.audit = None
         self.runtime = ffn.moe.runtime
         self.buffers = dict(buffers, count=ffn.moe.meta)
         self.attention_arguments = resident_program_args(attention, self.buffers)
@@ -329,12 +334,20 @@ class ResidentPackedDecode:
         """Advance one packed wave using caller-owned ABI inputs and caches."""
         self.ffn.moe.bind_batch(active)
         values = self.buffers
+        if self.audit is not None:
+            self.audit(stage, None, active, input_hidden=values["x_hc"], input_pre_mix=values["pre_mix"])
         for layer, (shared, routed, mixes) in enumerate(self.layer_weights):
             with timed_stage("decode_attention"):
                 self.runtime.run(self.attention, *self.attention_arguments, layer, 1)
+            if self.audit is not None:
+                self.audit(stage, layer, active, attention=values["attention_hidden"],
+                           attention_mix=values["attention_pre_mix"], ffn_input=values["ffn_input"])
             self.ffn.run_layer(f"{stage}/layer-{layer}", attention=values["attention_hidden"],
                                ffn_input=values["ffn_input"], shared_weights=shared, routed_weights=routed,
                                mixes=mixes, output=values["x_hc"], pre_mix=values["pre_mix"])
+            if self.audit is not None:
+                self.audit(stage, layer, active, experts=self.ffn.moe.owned, hidden=values["x_hc"],
+                           pre_mix=values["pre_mix"])
         with timed_stage("decode_final_head"):
             self.runtime.run(self.head, *self.head_arguments, 1)
         return values["logits"], values["sampled_ids"]

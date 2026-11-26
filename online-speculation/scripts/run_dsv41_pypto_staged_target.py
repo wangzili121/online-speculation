@@ -284,6 +284,8 @@ def main():
     parser.add_argument("--teacher-rows", type=int, choices=range(1, 16), default=7)
     parser.add_argument("--check-backward", action="store_true", help="Run the captured suffix backward before release")
     parser.add_argument("--resident-teacher", action="store_true", help="Experimental device-side teacher snapshot")
+    parser.add_argument("--forward-probe", action="store_true",
+                        help="Audit Prefill and the first AR Decode and stop at the first non-finite activation")
     parser.add_argument("--teacher-probe", action="store_true",
                         help="Trace AR and Verify logits through the first online update")
     parser.add_argument("--adam-graph", type=Path, help="Enable online Adam using the eight-rank optimizer bundle")
@@ -307,6 +309,8 @@ def main():
         parser.error("--resident-teacher requires a captured backward run")
     if args.eval_workload and not args.adam_graph:
         parser.error("--eval-workload requires an online optimizer")
+    if args.forward_probe and (args.teacher_probe or args.eval_workload or args.warmup_workload or args.check_backward):
+        parser.error("--forward-probe runs only the diagnostic AR workload")
     if args.teacher_probe and (not args.adam_graph or args.eval_workload or args.warmup_workload or args.resident_teacher):
         parser.error("--teacher-probe requires a short online workload with host teacher feedback")
     if args.adam_graph and (min(args.update_every, args.max_updates) < 1
@@ -333,7 +337,10 @@ def main():
     def load_workload(path):
         payload = path.read_bytes()
         rows = json.loads(payload)
-        if args.teacher_probe:
+        if args.forward_probe:
+            for case in rows:
+                case["new_tokens"] = min(case["new_tokens"], 2)
+        elif args.teacher_probe:
             # Leave a full Verify wave while collecting the teacher positions,
             # plus one more draft after the first publication.
             budget = args.teacher_rows + args.verify_width + 2
@@ -346,7 +353,7 @@ def main():
                     or not 1 <= case["new_tokens"] <= args.context - len(case["input_ids"])
                     or any(type(token) is not int or not 0 <= token < FLASH.vocab_size for token in case["input_ids"])):
                 parser.error(f"Invalid workload request {case['id']!r}")
-        if args.draft_head and not any(
+        if args.draft_head and not args.forward_probe and not any(
             case["new_tokens"] >= 3 and len(case["input_ids"]) + args.draft_block <= args.context for case in rows
         ):
             parser.error(f"{path}: leave room for a draft block and at least one candidate")
@@ -384,7 +391,7 @@ def main():
     )
     key = args.key_file.read_bytes().strip()
     signature = dict(workload=workload, evaluation=eval_workload, warmup=warmup_workload, checkpoint=checkpoint.identity,
-                     teacher_probe=args.teacher_probe,
+                     forward_probe=args.forward_probe, teacher_probe=args.teacher_probe,
                      capacities=list(capacities), context=args.context, slots=args.slots_per_dp, tokens=list(tokens))
     draft_programs = ()
     reverse_programs = {}
@@ -418,7 +425,7 @@ def main():
     def measured(session, mode, width=0, teacher_rows=0, reverse=None, optimizer=None, *,
                  requests=cases, reference=None):
         print(json.dumps(dict(stage="generate", mode=mode, requests=len(requests))), flush=True)
-        if args.teacher_probe:
+        if args.forward_probe or args.teacher_probe:
             session.staged.logit_trace_arm = mode
         before = dict(vars(session.draft.stats)) if width else None
         metrics = dict(stage_seconds=Counter(), counts=Counter())
@@ -460,7 +467,9 @@ def main():
                                 *(program for entry in adam_programs.values() for program in entry)),
             ))
             initialization_seconds = perf_counter() - start
-            if args.teacher_probe:
+            if args.forward_probe:
+                target.enable_forward_probe(args.output.with_name("forward-failure.json"))
+            if args.forward_probe or args.teacher_probe:
                 target.logit_trace = args.output.with_name("teacher-trace.jsonl")
                 target.logit_trace.write_text("")
                 target.logit_trace.with_name("teacher-failure.jsonl").unlink(missing_ok=True)
@@ -485,7 +494,7 @@ def main():
                     )["wall_seconds"]
             result = measured(session, "ar")
             arms = {"ar": result}
-            if draft_programs:
+            if draft_programs and not args.forward_probe:
                 if evaluation:
                     arms["eval_ar"] = measured(session, "eval_ar", requests=evaluation)
                     arms["eval_initial"] = measured(session, "eval_initial", args.verify_width, requests=evaluation,
@@ -518,7 +527,7 @@ def main():
 
     golden = json.loads(args.golden.read_text()) if args.golden else None
     replay_passed = True
-    if args.capture_last_layers and not args.adam_graph:
+    if args.capture_last_layers and not args.adam_graph and not args.forward_probe:
         owners = [item for item in (receipt, peer["capture"]) if item and "teacher_rows" in item]
         replay_passed = (
             len(owners) == 1 and receipt is not None and peer["capture"] is not None
@@ -535,17 +544,17 @@ def main():
                   golden_compared=golden is not None, warmup_seconds=warmup_seconds, configuration=signature, **result)
     if parity is not None:
         report.update(arms=arms, parity=parity)
-    if args.capture_last_layers and not args.adam_graph:
+    if args.capture_last_layers and not args.adam_graph and not args.forward_probe:
         report["teacher_replay"] = dict(passed=replay_passed, layers=args.capture_last_layers,
                                         local=receipt, peer=peer["capture"])
-    if args.check_backward:
+    if args.check_backward and not args.forward_probe:
         outcome = arms["orthrus"]["backward"]
         report["backward_passed"] = bool(
             outcome is not None and outcome["teacher_rows"] == owners[0]["expected_rows"]
             and len(outcome["layers"]) == args.capture_last_layers and isfinite(outcome["loss"])
         ) if replay_passed else False
         report["passed"] &= report["backward_passed"]
-    if args.adam_graph:
+    if args.adam_graph and not args.forward_probe:
         result = arms["orthrus"]["online"]
         report["online_passed"] = bool(result["version"] and result["rounds_after_publication"])
         report["passed"] &= report["online_passed"]

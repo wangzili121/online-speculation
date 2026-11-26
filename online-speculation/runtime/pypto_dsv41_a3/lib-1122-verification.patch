@@ -13,7 +13,7 @@ index 9326c02..f491c4b 100644
  DSPARK_SPEC_TOKENS = 5
  DSPARK_DRAFT_LAYERS = 3
 diff --git a/models/deepseek_v4_1_flash_a3/decode_fwd.py b/models/deepseek_v4_1_flash_a3/decode_fwd.py
-index e37b371..e20fe74 100644
+index e37b371..4b1f1f5 100644
 --- a/models/deepseek_v4_1_flash_a3/decode_fwd.py
 +++ b/models/deepseek_v4_1_flash_a3/decode_fwd.py
 @@ -40,7 +40,7 @@ C.set_moe_tokens(16 if DECODE_CAPACITY == 16 else 64)
@@ -449,7 +449,7 @@ index e37b371..e20fe74 100644
 
 
  @pl.jit.host
-@@ -950,11 +1116,261 @@ def l3_decode_fwd(
+@@ -950,11 +1116,270 @@ def l3_decode_fwd(
          head_logits_done = pld.window(head_logits_done_buffer, [TP_SIZE, 1], dtype=pl.INT32)
          if execute_layers != 0:
              l2_decode_fwd(
@@ -460,7 +460,11 @@ index e37b371..e20fe74 100644
 
 
 +def make_decode_attention_stage(local_ranks):
-+    """Compile one resident Decode attention stage for a host-local TP partition."""
++    """Compile a layer entry with wave-local C2A/C1A selection scratch.
++
++    The full/reindex layers materialize all selected rows. Reuse layers only
++    overwrite the sliding window rows and consume the same compressed tail.
++    """
 +    if local_ranks < TP_SIZE or local_ranks % TP_SIZE:
 +        raise ValueError("Decode attention requires complete local TP groups")
 +
@@ -523,6 +527,8 @@ index e37b371..e20fe74 100644
 +        topk_indices: pl.InOut[pl.Tensor[[T_DYN, INDEX_TOPK], pl.INT32]],
 +        pool_block_ids: pl.InOut[pl.Tensor[[T_DYN, INDEX_POOL_BLOCKS_DYN], pl.INT32]],
 +        pool_block_counts: pl.InOut[pl.Tensor[[T_DYN], pl.INT32]],
++        selected_kv: pl.InOut[pl.Tensor[[LOCAL_T_DYN, BLOCK_SIZE + INDEX_TOPK, HEAD_DIM], pl.BF16]],
++        selected_indices: pl.InOut[pl.Tensor[[LOCAL_T_DYN, BLOCK_SIZE + INDEX_TOPK], pl.INT32]],
 +        attention_hidden: pl.InOut[pl.Tensor[[LOCAL_T_DYN, HC_MULT, D], pl.FP32]],
 +        attention_pre_mix: pl.InOut[pl.Tensor[[LOCAL_T_DYN, HC_MULT], pl.FP32]],
 +        ffn_input: pl.InOut[pl.Tensor[[LOCAL_T_DYN, D], pl.BF16]],
@@ -561,8 +567,6 @@ index e37b371..e20fe74 100644
 +                engram_lookup[engram_slot], engram_wkv[engram_slot], engram_weight[engram_slot],
 +                engram_rotation, x_hc, x_hc,
 +            )
-+        selected_kv = pl.create_tensor([tokens, BLOCK_SIZE + INDEX_TOPK, HEAD_DIM], dtype=pl.BF16)
-+        selected_indices = pl.create_tensor([tokens, BLOCK_SIZE + INDEX_TOPK], dtype=pl.INT32)
 +        if layer < 20:
 +            decode_encoder_attention(
 +                x_hc, pre_mix, hc_attn_fn, hc_attn_scale, hc_attn_base, attn_norm_weight, wq_a, q_norm_weight,
@@ -654,6 +658,8 @@ index e37b371..e20fe74 100644
 +        topk_indices: pl.InOut[pl.Tensor[[local_ranks, T_DYN, INDEX_TOPK], pl.INT32]],
 +        pool_block_ids: pl.InOut[pl.Tensor[[local_ranks, T_DYN, INDEX_POOL_BLOCKS_DYN], pl.INT32]],
 +        pool_block_counts: pl.InOut[pl.Tensor[[local_ranks, T_DYN], pl.INT32]],
++        selected_kv: pl.InOut[pl.Tensor[[local_ranks, LOCAL_T_DYN, BLOCK_SIZE + INDEX_TOPK, HEAD_DIM], pl.BF16]],
++        selected_indices: pl.InOut[pl.Tensor[[local_ranks, LOCAL_T_DYN, BLOCK_SIZE + INDEX_TOPK], pl.INT32]],
 +        attention_hidden: pl.Out[pl.Tensor[[local_ranks, LOCAL_T_DYN, HC_MULT, D], pl.FP32]],
 +        attention_pre_mix: pl.Out[pl.Tensor[[local_ranks, LOCAL_T_DYN, HC_MULT], pl.FP32]],
 +        ffn_input: pl.Out[pl.Tensor[[local_ranks, LOCAL_T_DYN, D], pl.BF16]],
@@ -661,6 +667,8 @@ index e37b371..e20fe74 100644
 +        execute_layers: pl.Scalar[pl.INT32],
 +    ):
 +        x_hc.bind_dynamic(1, LOCAL_T_DYN)
++        selected_kv.bind_dynamic(1, LOCAL_T_DYN)
++        selected_indices.bind_dynamic(1, LOCAL_T_DYN)
 +        pre_mix.bind_dynamic(1, LOCAL_T_DYN)
 +        window_cache_pool.bind_dynamic(1, FWD_ORI_BLOCKS_DYN)
 +        window_cache_scale_pool.bind_dynamic(1, FWD_ORI_BLOCKS_DYN)
@@ -701,6 +709,7 @@ index e37b371..e20fe74 100644
 +                    c1a_compressed_slots[rank], index_wk[rank], index_norm_weight[rank], index_wq_b[rank],
 +                    index_wq_b_scale[rank], index_weights_proj[rank], count[rank], rope_rows[rank],
 +                    compressed_lens[rank], topk_indices[rank], pool_block_ids[rank], pool_block_counts[rank],
++                    selected_kv[rank], selected_indices[rank],
 +                    attention_hidden[rank], attention_pre_mix[rank], ffn_input[rank], output, arrived, rank,
 +                    layer_index,
 +                    device=rank,

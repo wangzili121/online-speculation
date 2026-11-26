@@ -60,6 +60,31 @@ def test_staged_teacher_probe_compares_the_exact_packed_row(tmp_path, bad_in_ver
     assert evidence["same_as_verify"] == bad_in_verify
 
 
+def test_staged_forward_probe_localizes_live_rows(tmp_path):
+    from blockspec.dsv41_staged_target import StagedPackedTarget
+
+    target = StagedPackedTarget.__new__(StagedPackedTarget)
+    target.prefill = SimpleNamespace()
+    target.decode = SimpleNamespace()
+    target.global_ranks, target.tp = (8, 12), 4
+    target.runtime = SimpleNamespace(copy_from=lambda dst, src, count, *, worker_id, src_offset: memmove(dst, src + src_offset, count))
+    failure = tmp_path / "forward-failure.json"
+    target.enable_forward_probe(failure)
+    live = torch.tensor([[1.0, 2.0], [3.0, 4.0], [float("nan"), 5.0]])
+    idle = torch.full_like(live, float("nan"))
+    # Exercise a borrowed view, as used for Decode's packed pre_mix.
+    bank = SimpleNamespace(shards=[SimpleNamespace(shape=v.shape, dtype=v.dtype, data_ptr=v.data_ptr(), byte_offset=32)
+                                  for v in (live, idle)])
+    target.prefill.audit("prefill-0", 4, (0, 0, 2, 0), hidden=bank)
+    assert not failure.exists()
+
+    live[1, 1] = float("inf")
+    with pytest.raises(FloatingPointError):
+        target.decode.audit("decode-1", 7, (0, 0, 2, 0), attention=bank)
+    assert json.loads(failure.read_text()) == dict(stage="decode-1", layer=7, tensor="attention",
+                                                  global_rank=8, live_rows=2, packed_row=1, nonfinite=1)
+
+
 def test_packed_benchmark_matches_tokens_with_ragged_prefill_and_final_round():
     from blockspec.dsv41_packed_proposer import DraftRoundStats
 

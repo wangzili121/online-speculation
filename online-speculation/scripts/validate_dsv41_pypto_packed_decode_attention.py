@@ -78,7 +78,7 @@ def exercise(args, devices, artifacts):
 
     import torch
     from blockspec.dsv41_packed_decode import decode_attention_scratch
-    from models.deepseek_v4_1_flash_a3.config import FLASH
+    from models.deepseek_v4_1_flash_a3.config import BLOCK_SIZE, FLASH
     from models.deepseek_v4_1_flash_a3.engram import HostEngram
     from models.deepseek_v4_1_flash_a3.host import prepare_resident_inputs
     from models.deepseek_v4_1_flash_a3.lm_head import MAX_LOGIT_ROWS, SAMPLED_IDS_PAD
@@ -112,7 +112,7 @@ def exercise(args, devices, artifacts):
                    sampled_ids=((MAX_LOGIT_ROWS, SAMPLED_IDS_PAD), torch.int32))
     # The first host processes rank 0..7. Simulate one TP group on the
     # second host to exercise a different global checkpoint shard on each chip.
-    layers = (0,) if mixed else (0, 1, 2, 3, 20, 24, 25)
+    layers = (0,) if mixed else (0, 1, 2, 3, 20, 21, 24, 25)
     checkpoint_offset = 0 if mixed else 8
     if mixed:
         engram.lookup((42,), 1, 0, request_id="warmup")
@@ -130,8 +130,12 @@ def exercise(args, devices, artifacts):
             inputs = dict(decode, **caches, count=torch.tensor([len(token_ids), rank], dtype=torch.int32))
             rank_handles.update({name: runtime.alloc_tensor(value.shape, value.dtype, worker_id=rank, init=value)
                                  for name, value in inputs.items()})
-            rank_handles.update({name: runtime.alloc_tensor(shape, dtype, worker_id=rank)
-                                 for name, (shape, dtype) in scratch.items()})
+            poison = {"selected_kv": float("nan"), "selected_indices": -2}
+            rank_handles.update({
+                name: runtime.alloc_tensor(shape, dtype, worker_id=rank,
+                                           init=torch.full(shape, poison[name], dtype=dtype) if name in poison else None)
+                for name, (shape, dtype) in scratch.items()
+            })
 
         def bound(program):
             for param in program._get_metadata()[0]:
@@ -201,10 +205,22 @@ def exercise(args, devices, artifacts):
             return dict(checkpoint_ranks=list(ranks), attention_layers=[0], physical_slots=2,
                         verification_rows=[8, 1], separate_verify_batches=2, packed_verify_batches=1,
                         exact_values=matched, compared_token_ids=together[2].tolist())
+        compressed = None
+        reused = []
         for layer in layers:
             runtime.run(attention, *attention_args, layer, 1)
             output = read("attention_hidden")[:len(token_ids)]
-            assert torch.isfinite(output).all() and output.abs().max().item() > 0
+            assert torch.isfinite(output).all() and output.abs().max().item() > 0, f"Decode layer {layer}"
+            if layer < 2:
+                continue
+            tail = tuple(read(name)[:len(token_ids), BLOCK_SIZE:] for name in ("selected_kv", "selected_indices"))
+            if layer in (2, 20, 24):
+                kv, indices = tail
+                assert torch.isfinite(kv).all() and indices.min().item() >= -1 and (indices >= 0).any(), layer
+                compressed = tuple(value.clone() for value in tail)
+            else:
+                assert all(torch.equal(a, b) for a, b in zip(tail, compressed, strict=True)), layer
+                reused.append(layer)
         observed = read("window_cache_pool").view(model.num_hidden_layers, view_rows, *caches["window_cache_pool"].shape[1:])
         changed = (observed != 0).reshape(model.num_hidden_layers, -1).any(dim=1).nonzero().flatten().tolist()
         assert changed == list(layers), f"unexpected window cache writes: {changed}"
@@ -214,7 +230,7 @@ def exercise(args, devices, artifacts):
         token = read("sampled_ids")[0, 0].item()
         assert token == logits.argmax().item()
     return dict(checkpoint_ranks=[8, 9, 10, 11], attention_layers=list(layers), mutated_window_layers=changed,
-                finite_active_outputs=True, head_argmax_verified=True)
+                compressed_selection_reused_at=reused, finite_active_outputs=True, head_argmax_verified=True)
 
 
 if __name__ == "__main__":

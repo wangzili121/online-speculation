@@ -156,6 +156,31 @@ class StagedPackedTarget:
                                       rope_tables=self.rope_tables, host_io={"idle_inputs": self.templates})
         self.geometry = (slots, context, capacities)
 
+    def enable_forward_probe(self, report):
+        """Check only live forward rows, at each native/serving boundary."""
+        self.prefill.audit = self.decode.audit = self._check_activation
+        self.forward_report = report
+
+    def _check_activation(self, stage, layer, active, **tensors):
+        import torch
+
+        for name, bank in tensors.items():
+            for worker, (rank, handle) in enumerate(zip(self.global_ranks, bank.shards, strict=True)):
+                rows = active[rank // self.tp]
+                if not rows:
+                    continue
+                values = torch.empty((rows, *handle.shape[1:]), dtype=handle.dtype)
+                offset = handle.byte_offset
+                self.runtime.copy_from(values.data_ptr(), handle.data_ptr - offset, values.nbytes,
+                                       src_offset=offset, worker_id=worker)
+                invalid = ~values.isfinite()
+                if invalid.any():
+                    row = int(invalid.reshape(rows, -1).any(dim=1).nonzero()[0])
+                    evidence = dict(stage=stage, layer=layer, tensor=name, global_rank=rank,
+                                    live_rows=rows, packed_row=row, nonfinite=int(invalid[row].sum()))
+                    self.forward_report.write_text(json.dumps(evidence, indent=2) + "\n")
+                    raise FloatingPointError(f"Non-finite staged forward activation: {evidence}")
+
     def session(self):
         """Reuse native admission, paging and request ownership."""
         from models.deepseek_v4_1_flash_a3.packed import PackedSession
@@ -236,6 +261,11 @@ class StagedPackedTarget:
                     self.logit_trace_sampled[phase, dp, row] = record
                     if self.logit_trace_arm == "ar":
                         self.logit_trace_ar[location] = record
+                    if bad.numel() and getattr(self, "forward_report", None) is not None:
+                        self.forward_report.write_text(json.dumps(record, indent=2) + "\n")
+                        raise FloatingPointError(
+                            f"Non-finite staged logits on DP {dp} slot {slot} at position {position}"
+                        )
                 elif bad.numel():
                     failure_path = self.logit_trace.with_name("teacher-failure.jsonl")
                     verification = self.logit_trace_sampled[phase, dp, row]
