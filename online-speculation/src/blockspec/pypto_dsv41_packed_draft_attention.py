@@ -56,14 +56,14 @@ def make_packed_draft_projection(block_size):
     width = heads * dim
     mix = FLASH.hc_mult
     groups, output_rank = FLASH.o_groups // TP_SIZE, FLASH.o_lora_rank
-    qkv_entry = make_packed_draft_qkv(asdict(FLASH), tp=TP_SIZE, capacity=capacity)
-    project = pl.jit.inline(auto_scope=False)(qkv_entry._func)
+    project = make_packed_draft_qkv(asdict(FLASH), tp=TP_SIZE, capacity=capacity, expose_joint=True)
 
     @pl.jit.inline(auto_scope=False)
     def prepare(
         x_hc: pl.Tensor, pre_mix: pl.Tensor, norm: pl.Tensor,
         wq_a_kv: pl.Tensor, q_gamma: pl.Tensor, wq_b: pl.Tensor, kv_gamma: pl.Tensor,
         cosine: pl.Tensor, sine: pl.Tensor,
+        joint: pl.Out[pl.Tensor[[capacity, latent + dim], pl.BF16]],
     ):
         x = pl.create_tensor([capacity, hidden], dtype=pl.BF16)
         hc_head_norm(x_hc, pre_mix, norm, x, one_token=False)
@@ -71,7 +71,7 @@ def make_packed_draft_projection(block_size):
         query = pl.create_tensor([capacity, width], dtype=pl.BF16)
         temporary = pl.create_tensor([capacity, dim], dtype=pl.BF16)
         low_rank, query, temporary = project(
-            x, wq_a_kv, q_gamma, wq_b, kv_gamma, cosine, sine, low_rank, query, temporary, block_size,
+            x, wq_a_kv, q_gamma, wq_b, kv_gamma, cosine, sine, low_rank, query, temporary, joint, block_size,
         )
         return x, low_rank, pl.slice(query, [block_size, width], [0, 0]), temporary
 
@@ -83,8 +83,17 @@ def _draft_projection(block_size, *, head_major=False, context_only=False):
 
     from .pypto_dsv41_draft import make_packed_draft_output
 
-    prepare, shapes = make_packed_draft_projection(block_size)
-    _, _, hidden, heads, dim, _, _, _ = shapes
+    project, shapes = make_packed_draft_projection(block_size)
+    capacity, _, hidden, heads, dim, _, _, _ = shapes
+
+    @pl.jit.inline(auto_scope=False)
+    def prepare(
+        x_hc: pl.Tensor, pre_mix: pl.Tensor, norm: pl.Tensor,
+        wq_a_kv: pl.Tensor, q_gamma: pl.Tensor, wq_b: pl.Tensor, kv_gamma: pl.Tensor,
+        cosine: pl.Tensor, sine: pl.Tensor,
+    ):
+        joint = pl.create_tensor([capacity, pl.tensor.dim(wq_a_kv, 1)], dtype=pl.BF16)
+        return project(x_hc, pre_mix, norm, wq_a_kv, q_gamma, wq_b, kv_gamma, cosine, sine, joint)
     if context_only:
         @pl.jit.inline(auto_scope=False)
         def use_output(output: pl.Tensor[[block_size * heads, dim], pl.FP32]):

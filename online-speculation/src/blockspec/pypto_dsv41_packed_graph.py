@@ -2,7 +2,8 @@
 
 from .dsv41_packed_attention_tape import (
     make_packed_attention_core_capture, make_packed_attention_post_capture,
-    packed_attention_tape_shapes, packed_core_tape_shapes, packed_wo_tape_shapes,
+    make_packed_qkv_capture, packed_attention_tape_shapes, packed_core_tape_shapes, packed_qkv_tape_shapes,
+    packed_wo_tape_shapes,
 )
 from .dsv41_packed_ffn_tape import make_packed_ffn_capture, packed_ffn_tape_shapes
 from .pypto_dsv41_draft import make_packed_draft_output_tape
@@ -56,6 +57,9 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
     core_lse = core_shapes["attention_tape_lse"][0]
     core_selection = core_shapes["attention_tape_selection"][0]
     core_lengths = core_shapes["attention_tape_lengths"][0]
+    qkv_shapes = packed_qkv_tape_shapes(block, last_layers, m)
+    qkv_low = qkv_shapes["attention_tape_q_normed"][0]
+    qkv_raw = qkv_shapes["attention_tape_qkv_raw"][0]
     first_saved_layer = layers - last_layers
     save_ffn = make_packed_ffn_capture(block, last_layers, tp, hidden, mix, fanout)
     page = native.BLOCK_SIZE
@@ -74,6 +78,7 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
     reuse = inline(make_packed_compressed_chain(pages, pages, block))
     post = make_packed_attention_post_capture(block, last_layers, m, tp)
     save_core = make_packed_attention_core_capture(block, last_layers, m, tp)
+    save_qkv = make_packed_qkv_capture(block, last_layers, m)
 
     project_wo = make_packed_draft_output_tape(block, last_layers)
 
@@ -164,6 +169,8 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
         attention_tape_lse: pl.Out[pl.Tensor[core_lse, pl.FP32]],
         attention_tape_selection: pl.Out[pl.Tensor[core_selection, pl.INT32]],
         attention_tape_lengths: pl.Out[pl.Tensor[core_lengths, pl.INT32]],
+        attention_tape_q_normed: pl.Out[pl.Tensor[qkv_low, pl.BF16]],
+        attention_tape_qkv_raw: pl.Out[pl.Tensor[qkv_raw, pl.BF16]],
         ffn_capture_owner: pl.Scalar[pl.INT32],
         recv_meta: pld.DistributedTensor[[ep, experts], pl.INT32],
         recv_x: pld.DistributedTensor[[recv_rows, hidden], pl.INT8],
@@ -212,11 +219,12 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
                     delta = pl.create_tensor([block, hidden], dtype=pl.BF16)
                     context = pl.create_tensor([block * heads, dim], dtype=pl.FP32)
                     lse = pl.create_tensor([block * heads, 1], dtype=pl.FP32)
+                    raw = pl.create_tensor([block, latent + dim], dtype=pl.BF16)
                     profile = 0
                     if layer >= 2:
                         profile = 1
                     normed, low_rank, query, temporary = prepare(
-                        x_hc, pre_mix, norm, q_a_kv, q_gamma, q_b, kv_gamma, draft_cos[profile], draft_sin[profile],
+                        x_hc, pre_mix, norm, q_a_kv, q_gamma, q_b, kv_gamma, draft_cos[profile], draft_sin[profile], raw,
                     )
                     slot = pl.cast(layer, pl.INT32) - first_saved_layer
                     capture_slot = -1
@@ -267,6 +275,8 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
                                   attention_tape_normed, attention_tape_query, attention_tape_temporary,
                                   attention_tape_context, attention_tape_lse, attention_tape_selection,
                                   attention_tape_lengths, layer < 2, capture_slot)
+                        save_qkv(low_rank, raw, attention_tape_q_normed, attention_tape_qkv_raw,
+                                 rank == ffn_capture_owner, capture_slot)
                     h_attention, pre_attention, ffn_input = post(
                         live_x, live_mix, delta, fn, scale, base, output_window, output_arrived, rank, layer + 1,
                         h_attention, pre_attention, ffn_input, attention_tape_residual, attention_tape_mixes,
@@ -405,6 +415,8 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
         attention_tape_lse: pl.Out[pl.Tensor[[ep, *core_lse], pl.FP32]],
         attention_tape_selection: pl.Out[pl.Tensor[[ep, *core_selection], pl.INT32]],
         attention_tape_lengths: pl.Out[pl.Tensor[[ep, *core_lengths], pl.INT32]],
+        attention_tape_q_normed: pl.Out[pl.Tensor[[ep, *qkv_low], pl.BF16]],
+        attention_tape_qkv_raw: pl.Out[pl.Tensor[[ep, *qkv_raw], pl.BF16]],
         ffn_capture_owner: pl.Scalar[pl.INT32],
     ):
         meta_buf = pld.alloc_window_buffer([ep, experts], dtype=pl.INT32)
@@ -458,7 +470,8 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
                 attention_tape_mixes[rank], attention_tape_delta[rank], attention_tape_wo_input[rank],
                 attention_tape_wo_latent[rank], attention_tape_normed[rank], attention_tape_query[rank],
                 attention_tape_temporary[rank], attention_tape_context[rank], attention_tape_lse[rank],
-                attention_tape_selection[rank], attention_tape_lengths[rank], ffn_capture_owner,
+                attention_tape_selection[rank], attention_tape_lengths[rank], attention_tape_q_normed[rank],
+                attention_tape_qkv_raw[rank], ffn_capture_owner,
                 recv_meta, recv_x, recv_weights, arrived, data_arrived, routed_output, combine_arrived,
                 output_window, output_arrived, ffn_window, ffn_arrived,
                 head_hidden, head_hidden_done, head_logits, head_logits_done, rank, device=rank,

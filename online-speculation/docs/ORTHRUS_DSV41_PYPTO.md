@@ -141,6 +141,10 @@ Wo 的输入反向从该 TP 梯度继续计算，依次通过 Wo-B、分组 Wo-A
 
 111 的四张 910B3 上，用真实第 39 层权重构造 Q、KV 和 sink，测了 K16、K32 的 SWA、C2A、C1A。每个用例在保存前向状态后改写第一个未提交位置，再对 7 行反馈求梯度。每组 8 次结果逐字节一致，最大相对 L2 为 `3.84e-6`，热态耗时为 31.3–46.7 ms，含宿主绑定和设备历史解包。40 层 K16/K32 last-4 起草图及 EP16 反向入口已编译。这些测试覆盖 Attention 子图和 Serving 的反向绑定，整模在线更新需继续接通投影参数梯度和权重发布后验收。[实卡与编译记录](validation/dsv41/pypto-1122-949a-packed-attention-replay-910b3.json)
 
+Q/KV 投影反向使用前向保存的 BF16 Q 低秩向量和 Q-A/KV 拼接投影结果。每个 TP rank 局部反转 RoPE、计算本地 Q-B 梯度，将低秩 Q 和临时 KV 的 FP32 梯度发给请求 owner。owner 按固定顺序求和，再计算共有的 Q-A、KV 和两组 RMSNorm 参数梯度，并把梯度传回 Attention 的归一化输入。即使只监督 1 行或 7 行，临时双向 KV 的其余行仍参与反传。
+
+111 的八张 910B3 用真实第 39 层权重验证 DP2/TP4，覆盖 K16/K32、1/7/整块教师行和 owner 0→4→0。各组重复 4 次逐字节一致，输入和参数梯度对照 FP64 的最大相对 L2 为 `3.42e-6`。驻留热态调用为 23.9–46.8 ms，包含宿主绑定与 TP 汇总。EP16 形状已通过编译。整模 last-N 更新还需要跨层梯度传递和权重发布。[实卡与编译记录](validation/dsv41/pypto-1122-949a-packed-qkv-vjp-910b3.json)
+
 在 1122 镜像内编译 K32 图，`--context` 与目标 Prefill/Decode 使用的历史容量一致。生成时将以下参数加到原生 `models.deepseek_v4_1_flash_a3.generate` 的模型、请求和设备参数中。
 
 ```bash

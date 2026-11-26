@@ -93,7 +93,7 @@ def pack_draft_input_projection(operands):
     return torch.cat((operands["wq_a"], operands["wkv"]), dim=1)
 
 
-def make_packed_draft_qkv(config, *, tp=4, capacity=16):
+def make_packed_draft_qkv(config, *, tp=4, capacity=16, expose_joint=False):
     """Project a BF16 draft head using the 1122 A3 GEMM, RMSNorm and RoPE."""
     import pypto.language as pl
     from models.deepseek_v4_1_flash_a3.gemm import gemm_bf16_to_bf16 as gemm
@@ -139,7 +139,7 @@ def make_packed_draft_qkv(config, *, tp=4, capacity=16):
             pl.store(pl.set_validshape(narrowed, rows, columns), [row, 0], output)
         return output
 
-    @pl.jit
+    @pl.jit.inline(auto_scope=False)
     def project(
         x: pl.Tensor[[capacity, hidden], pl.BF16],
         wq_a_kv: pl.Tensor[[hidden, joint_width], pl.BF16],
@@ -151,9 +151,9 @@ def make_packed_draft_qkv(config, *, tp=4, capacity=16):
         low_rank: pl.Out[pl.Tensor[[capacity, latent], pl.BF16]],
         query: pl.Out[pl.Tensor[[capacity, q_width], pl.BF16]],
         temporary: pl.Out[pl.Tensor[[capacity, dim], pl.BF16]],
+        qa_kv: pl.Out[pl.Tensor[[capacity, joint_width], pl.BF16]],
         active: pl.Scalar[pl.INT32],
     ):
-        qa_kv = pl.create_tensor([capacity, joint_width], dtype=pl.BF16)
         q_raw = pl.create_tensor([capacity, q_width], dtype=pl.BF16)
         kv_normalized = pl.create_tensor([capacity, dim], dtype=pl.BF16)
         start = pl.system.task_dummy(deps=[])
@@ -175,7 +175,28 @@ def make_packed_draft_qkv(config, *, tp=4, capacity=16):
                 pl.store(pl.set_validshape(zero, rows, dim), [row, 0], temporary)
         return low_rank, query, temporary
 
-    return project
+    if expose_joint:
+        return project
+
+    @pl.jit
+    def dispatch(
+        x: pl.Tensor[[capacity, hidden], pl.BF16],
+        wq_a_kv: pl.Tensor[[hidden, joint_width], pl.BF16],
+        q_gamma: pl.Tensor[[latent], pl.BF16],
+        wq_b: pl.Tensor[[latent, q_width], pl.BF16],
+        kv_gamma: pl.Tensor[[dim], pl.BF16],
+        cosine: pl.Tensor[[capacity, 32], pl.FP32],
+        sine: pl.Tensor[[capacity, 32], pl.FP32],
+        low_rank: pl.Out[pl.Tensor[[capacity, latent], pl.BF16]],
+        query: pl.Out[pl.Tensor[[capacity, q_width], pl.BF16]],
+        temporary: pl.Out[pl.Tensor[[capacity, dim], pl.BF16]],
+        active: pl.Scalar[pl.INT32],
+    ):
+        joint = pl.create_tensor([capacity, joint_width], dtype=pl.BF16)
+        return project(x, wq_a_kv, q_gamma, wq_b, kv_gamma, cosine, sine,
+                       low_rank, query, temporary, joint, active)
+
+    return dispatch
 
 
 def prepare_output(weights, config, *, tp_rank, tp=4):

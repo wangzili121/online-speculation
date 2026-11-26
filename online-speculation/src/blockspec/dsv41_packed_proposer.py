@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 from time import perf_counter
 
-from .dsv41_packed_attention_tape import packed_attention_tape_shapes, packed_core_tape_shapes, packed_wo_tape_shapes
+from .dsv41_packed_attention_tape import (
+    packed_attention_tape_shapes, packed_core_tape_shapes, packed_qkv_tape_shapes, packed_wo_tape_shapes,
+)
 from .dsv41_packed_ffn_tape import packed_ffn_tape_shapes
 from .pypto_dsv41_draft import (
     pack_draft_input_projection,
@@ -203,6 +205,7 @@ class PackedDraftProposer:
             **packed_attention_tape_shapes(block, last_layers, FLASH.hidden_size, FLASH.hc_mult),
             **packed_wo_tape_shapes(block, last_layers, FLASH, tp),
             **packed_core_tape_shapes(block, last_layers, FLASH, tp),
+            **packed_qkv_tape_shapes(block, last_layers, FLASH),
         }
         capacity = max(16, block)
         geometry = (FLASH.hc_mult, FLASH.hidden_size)

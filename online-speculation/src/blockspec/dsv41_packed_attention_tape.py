@@ -31,6 +31,37 @@ def packed_core_tape_shapes(block, last_layers, model, tp):
     }
 
 
+def packed_qkv_tape_shapes(block, last_layers, model):
+    rows = max(1, last_layers * block)
+    return {
+        "attention_tape_q_normed": ((rows, model.q_lora_rank), "bfloat16"),
+        "attention_tape_qkv_raw": ((rows, model.q_lora_rank + model.head_dim), "bfloat16"),
+    }
+
+
+def make_packed_qkv_capture(block, last_layers, model):
+    import pypto.language as pl
+
+    latent, joint = model.q_lora_rank, model.q_lora_rank + model.head_dim
+    shapes = packed_qkv_tape_shapes(block, last_layers, model)
+
+    @pl.jit.inline(auto_scope=False)
+    def save(
+        low: pl.Tensor[[block, latent], pl.BF16], raw: pl.Tensor[[block, joint], pl.BF16],
+        saved_low: pl.Out[pl.Tensor[shapes["attention_tape_q_normed"][0], pl.BF16]],
+        saved_raw: pl.Out[pl.Tensor[shapes["attention_tape_qkv_raw"][0], pl.BF16]],
+        owner: pl.Scalar[pl.BOOL], slot: pl.Scalar[pl.INT32],
+    ):
+        if slot >= 0:
+            for row in pl.spmd(block, name_hint="orthrus_save_projection_operands"):
+                dest = slot * block + row
+                saved_low[dest:dest + 1, :] = low[row:row + 1, :]
+                if owner:
+                    saved_raw[dest:dest + 1, :] = raw[row:row + 1, :]
+
+    return save
+
+
 def make_packed_attention_core_capture(block, last_layers, model, tp):
     """Retain exact forward operands in the token-major layout used by the VJP."""
     import pypto.language as pl
