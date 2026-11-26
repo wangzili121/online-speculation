@@ -66,7 +66,7 @@ if [[ "$mode" == native-prepare ]]; then
     ' compile "$last" "$loss" "$model" >"$tmp/build.log" 2>&1 || { tail -n 25 "$tmp/build.log" >&2; exit 1; }
     mv "$tmp" "$bundle"
   fi
-  # Both hosts load the same native binaries and initialized head.
+  # Distribute the compiler artifacts before node7 adds its binary assembly cache.
   printf -v remote '%q ' bash -c '
     set -euo pipefail
     bundle="$1"
@@ -83,6 +83,13 @@ if [[ "$mode" == native-prepare ]]; then
   if ! "${ssh_peer[@]}" "$has_bundle"; then
     tar -C "$bundle" -cf - graphs draft online head | "${ssh_peer[@]}" "$remote"
   fi
+  echo "CPU assembly log: $bundle/callable-assembly.log"
+  "${base[@]}" -v "$bundle:$bundle" "$image" \
+    /opt/dsv41-1122/run_dsv41_pypto_native_ar.py --assemble-only \
+    --graphs "$bundle/graphs" --draft-graph "$bundle/draft" --head "$bundle/head" \
+    --online-artifacts "$bundle/online" --checkpoint "$model" --loss "$loss" \
+    --output "$bundle/callable-assembly.json" >"$bundle/callable-assembly.log" 2>&1 ||
+    { tail -n 25 "$bundle/callable-assembly.log" >&2; exit 1; }
   echo "Native last-$last artifacts: $bundle"
   exit
 fi

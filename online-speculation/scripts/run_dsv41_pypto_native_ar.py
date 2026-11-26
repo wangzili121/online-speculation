@@ -9,9 +9,36 @@ from pathlib import Path
 from time import perf_counter
 from traceback import print_exc
 
-from blockspec.dsv41_native_forward import ForwardArtifacts, NativeSampleError, check_native_windows, open_native_forward
+from blockspec.dsv41_native_forward import (
+    ForwardArtifacts, NativeSampleError, assemble_native_graphs, check_native_windows, open_native_forward,
+)
 from blockspec.dsv41_online import read_workload
 from validate_dsv41_pypto_packed_generation import OnlineSchedule, benchmark, run_wave
+
+
+def prepare_callables(artifacts, output):
+    from _task_interface import MAX_REGISTERED_CALLABLE_IDS
+    from simpler.worker import Worker
+
+    start = perf_counter()
+    report = dict(passed=False, identity=artifacts.identity.hex(), callables={},
+                  runtime_capacity=MAX_REGISTERED_CALLABLE_IDS)
+    try:
+        with Worker(level=3, platform="a2a3", runtime="tensormap_and_ringbuffer", num_sub_workers=0,
+                    device_ids=tuple(range(8)), comm_profile="a3-fabric-v1") as worker:
+            # Register the real binaries without calling init(), which starts the device processes.
+            for phase, chip in assemble_native_graphs(artifacts):
+                chip.bind(worker.register)
+                report["callables"][phase] = len(chip.chips)
+                print(json.dumps(dict(stage="assembled", phase=phase, elapsed_seconds=perf_counter() - start)),
+                      flush=True)
+        report["passed"] = True
+    except Exception as error:
+        report["error"] = str(error)
+        raise
+    finally:
+        report["seconds"] = perf_counter() - start
+        output.write_text(json.dumps(report, indent=2) + "\n")
 
 
 def run_smoke(target, session, report, requests, *, options, draft, schedule):
@@ -73,7 +100,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--graphs", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--workload", type=Path, required=True)
+    parser.add_argument("--workload", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--endpoint")
     parser.add_argument("--peer-listen-host")
@@ -94,10 +121,14 @@ def main():
     parser.add_argument("--tokens", type=int, default=8)
     checks = parser.add_mutually_exclusive_group()
     checks.add_argument("--contract-only", action="store_true")
+    checks.add_argument("--assemble-only", action="store_true",
+                        help="Assemble and register the native chip callables on the host without occupying NPUs")
     checks.add_argument("--windows-only", action="store_true",
                         help="Reserve the model's communication windows without loading device weights")
     args = parser.parse_args()
-    if not args.contract_only and not (args.endpoint and args.peer_listen_host):
+    if not args.assemble_only and args.workload is None:
+        parser.error("Native verification and benchmarks require a workload")
+    if not (args.assemble_only or args.contract_only) and not (args.endpoint and args.peer_listen_host):
         parser.error("Native execution requires the daemon endpoint and peer listen address")
     if args.tokens < 2:
         parser.error("Generate at least two tokens to exercise Decode")
@@ -116,6 +147,9 @@ def main():
         args.graphs, args.checkpoint, 1, draft_directory=args.draft_graph, head=args.head,
         online_directory=args.online_artifacts, loss=args.loss,
     )
+    if args.assemble_only:
+        prepare_callables(artifacts, args.output)
+        return
     if artifacts.draft is not None and args.width > min(artifacts.draft.block, artifacts.capacities[1]):
         parser.error("Verification width exceeds the compiled draft or Decode capacity")
     def workload(path):

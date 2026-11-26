@@ -17,7 +17,7 @@ from .dsv41_native_online_artifacts import load_native_online_bundle
 from .dsv41_native_online_runtime import ARENA, TRAIN_GRAPH, NativeOnlineArena, NativeOnlineRuntime, decode_command
 from .dsv41_native_rank_dispatch import NativeRankGraph, RankLocalStack
 from .dsv41_native_resident import (
-    NativeRankMemory, NativeResidentForward, bind_native_draft, forward_inputs, forward_templates,
+    NativeDraftInputPacket, NativeRankMemory, NativeResidentForward, bind_native_draft, forward_inputs, forward_templates,
 )
 from .dsv41_packed_proposer import (
     DraftRoundStats, PackedFinalState, PackedStudentRows, draft_geometry, draft_graph_manifest,
@@ -156,6 +156,7 @@ class ForwardNode:
                 self.draft = bind_native_draft(
                     self.bank, d.graph, d.program, a, d.head, d.block, d.last_layers, d.head_artifact,
                 )
+                self.draft_packet = NativeDraftInputPacket(self.draft.draft.inputs, d.block)
             if a.online:
                 banks = {
                     "draft": dict(zip(self.ranks, self.draft.draft.ranks, strict=True)),
@@ -189,7 +190,7 @@ class ForwardNode:
         *counts, mask = ROWS_AND_MASK.unpack_from(payload)
         is_draft = phase == "draft"
         images = self.draft.draft.inputs if is_draft else bank.inputs[phase]
-        image_bytes = images.images[2].nbytes
+        image_bytes = self.draft_packet.nbytes if is_draft else images.images[2].nbytes
         local_mask = sum(1 << dp for dp in self.dps)
         active_mask, idle_mask = mask & DP_MASK, mask >> 4
         if (active_mask | idle_mask) & ~local_mask or active_mask & idle_mask:
@@ -255,7 +256,7 @@ class ForwardNode:
     def stage_draft(self, dp, image, *, allocation=None):
         bank = self.bank
         inputs = self.draft.draft.inputs
-        memoryview(inputs.images[2].numpy())[:] = image
+        self.draft_packet.stage(image)
         inputs.images[1].copy_(inputs.images[2])
         inputs.fields[1]["logit_row_indices"].fill_(-1)
         workers = bank._workers(dp)
@@ -450,6 +451,7 @@ class NativeDraftProposer:
             page_tables=tuple(target.images["decode"].fields[0][name][0] for name in
                               ("c1a_index_block_table", "c2a_index_block_table")),
         )
+        self.packet = NativeDraftInputPacket(self.stager.inputs, d.block)
 
     def propose_batch(self, requests, *, uploads, capture=None):
         if not requests:
@@ -466,10 +468,10 @@ class NativeDraftProposer:
         prepared = perf_counter()
         active = {row.owner // self.tp for row in requests}
         pending = self.target.staged[2]
-        images = self.stager.inputs.images
         for row in requests:
-            stage_draft_request(self.stager, row, student_rows=teacher_rows if row.owner == capture_owner else 0)
-            pending[row.owner // self.tp] = images[2].numpy().tobytes()
+            stage_draft_request(self.stager, row, student_rows=teacher_rows if row.owner == capture_owner else 0,
+                                owner_only=True)
+            pending[row.owner // self.tp] = self.packet.pack()
         for dp in self.previous_dps - active:
             pending[dp] = None
         self.previous_dps = active
@@ -552,14 +554,21 @@ def check_native_windows(artifacts, *, endpoint, peer_listen_host, devices, time
         return reserved
 
 
+def assemble_native_graphs(artifacts):
+    for phase, (program, graph) in artifacts.execution_graphs.items():
+        try:
+            yield phase, NativeChipGraph.from_program(graph, program)
+        except Exception as error:
+            raise RuntimeError(f"Cannot assemble native graph {phase!r}: {error}") from error
+
+
 @contextmanager
 def open_native_forward(artifacts, *, endpoint, peer_listen_host, devices, timeout, on_stage=None):
     from models.deepseek_v4_1_flash_a3.config import FLASH
 
     if on_stage is not None:
         on_stage("assembling_native_graphs")
-    phases = {name: NativeChipGraph.from_program(graph, program)
-              for name, (program, graph) in artifacts.execution_graphs.items()}
+    phases = dict(assemble_native_graphs(artifacts))
     templates, initial_cache, ropes = forward_templates(
         artifacts.weights, artifacts.engram, artifacts.capacities, artifacts.context, artifacts.slots,
     )

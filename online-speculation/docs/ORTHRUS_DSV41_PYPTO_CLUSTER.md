@@ -120,7 +120,9 @@ bash "$RUN" native-smoke 1
 bash "$RUN" native-study 1
 ```
 
-`native-fabric` 使用每台一张空闲卡检查设备窗口导出和跨机访问。默认物理卡分别为 node7 的 1 号和 node8 的 0 号，可通过 `NODE7_FABRIC_NPU` 和 `NODE8_FABRIC_NPU` 调整。`native-prepare` 用 CPU 编译并分发整图和初始化 head。`native-smoke` 需要两台各 8 张空闲卡，一次装载后从 node7 和 node8 的请求分别触发一次更新，检查 Prefill、Draft 和 Decode/Verify 中所有采样行的有限性及 greedy ID，再逐 token 对照两组输出。数值检查失败时，`result.json` 记录具体阶段、DP 和出错行。公司双机的原生 Fabric 和整模仍待实测。
+`native-fabric` 使用每台一张空闲卡检查设备窗口导出和跨机访问。默认物理卡分别为 node7 的 1 号和 node8 的 0 号，可通过 `NODE7_FABRIC_NPU` 和 `NODE8_FABRIC_NPU` 调整。`native-prepare` 用 CPU 编译并分发整图和初始化 head，再在 node7 装配并登记 Prefill、Decode、Draft、反向和 Adam 的二进制，无需空闲 NPU。产物目录中的 `callable-assembly.json` 记录每张图注册的 callable 数量和总耗时，详细日志保存在 `callable-assembly.log`。
+
+`native-smoke` 需要两台各 8 张空闲卡，一次装载后从 node7 和 node8 的请求分别触发一次更新，检查 Prefill、Draft 和 Decode/Verify 中所有采样行的有限性及 greedy ID，再逐 token 对照两组输出。数值检查失败时，`result.json` 记录具体阶段、DP 和出错行。公司双机的原生 Fabric 和整模仍待实测。
 
 `native-windows` 可单独用两台各 8 张空闲卡预留整图的实际通信窗口。它涵盖 Prefill、Decode、Draft、后缀反向和 Adam 中需要通信的图，跳过设备 callable 装配和权重上传。报告写入 `native-windows.*/result.json`。窗口预留失败时，日志注明对应图、参与 rank 数和每卡窗口大小。这个检查和常规短验、GSM8K 都在启动设备进程前核对两端的权重清单、head 清单和编译图标识，在上传权重前预留同一组窗口。
 
@@ -129,6 +131,8 @@ bash "$RUN" native-study 1
 Prefill、Decode/Verify 和 Draft 在同一次整图派发中把采样 ID 回写给调度端。词表 logits 留在 NPU，供教师快照和短验诊断使用。Draft 的 `graph_seconds` 包含随派发返回采样 ID 的时间。
 
 同一批请求结束时间不同时，协调端只在派发头中标记刚空闲的 DP。归属节点用自己的空输入模板重置其 TP4。对活跃组，协调端把输入直接写入复用的发送缓冲。超过 Simpler 16 MiB 单帧上限的输入分段写入同一端点缓冲，派发前完成拼接。
+
+Draft 初始残差在各 mHC 流中重复，块内后续位置共享 mask token 的嵌入。派发时只发 anchor 和 mask 两行嵌入，其余字段按原样发送。归属节点按编译布局还原完整张量。K16 每个活跃 DP 的输入从 1,717,760 字节降到 448,000 字节。
 
 node7 的执行容器可以写编译产物目录，供 PyPTO 装配整图二进制时创建缓存和锁。node8 和两台的模型权重均使用只读挂载。
 

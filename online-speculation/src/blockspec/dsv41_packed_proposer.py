@@ -231,7 +231,7 @@ def make_draft_input_images(block, bucket):
     return DecodeInputs(template)
 
 
-def stage_draft_request(stager, request, *, student_rows=0):
+def stage_draft_request(stager, request, *, student_rows=0, owner_only=False):
     import torch
 
     anchor_token, position = request.anchor, request.position
@@ -254,7 +254,7 @@ def stage_draft_request(stager, request, *, student_rows=0):
         packed_index_controls(page_table, position, 1, stager.block, bucket=stager.buckets[0]),
         packed_index_controls(c2a_table, position, 2, stager.block, bucket=stager.buckets[0]),
     )
-    for image in (active, selected):
+    for image in ((selected,) if owner_only else (active, selected)):
         image["x_hc"][0].copy_(embeddings[0])
         image["x_hc"][1:stager.block].copy_(embeddings[1])
         image["pre_mix"].copy_(stager.inputs.fields[0]["pre_mix"])

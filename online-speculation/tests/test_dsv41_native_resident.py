@@ -9,7 +9,7 @@ from blockspec.dsv41_native_forward import (
     DRAFT, DRAFT_CAPTURE, READ_ROWS, ROWS_AND_MASK, ForwardNode, NativeForwardTarget, NativeSampleError,
 )
 from blockspec.dsv41_native_graph_pair import NativePeerMailbox
-from blockspec.dsv41_native_resident import NativeRankMemory
+from blockspec.dsv41_native_resident import NativeDraftInputPacket, NativeRankMemory
 
 
 class Buffer:
@@ -77,6 +77,31 @@ def test_native_mailbox_copies_large_frames_at_the_matching_source_and_destinati
     assert mailbox.remote_staging.raw == payload
 
 
+@pytest.mark.parametrize("block", (8, 16, 32))
+def test_native_draft_packet_reconstructs_the_full_input_image(block):
+    def allocate():
+        residual_bytes = max(16, block) * 4 * 32 * 4
+        image = torch.empty(residual_bytes + 64, dtype=torch.uint8)
+        residual = image[:residual_bytes].view(torch.float32).reshape(-1, 4, 32)
+        return image, residual, NativeDraftInputPacket(
+            SimpleNamespace(images=[None, None, image], fields=[None, None, {"x_hc": residual}]), block,
+        )
+
+    source, streams, outgoing = allocate()
+    target, _, incoming = allocate()
+    stream_bytes = streams.nbytes
+    source[stream_bytes:] = torch.arange(64, dtype=torch.uint8)
+    for value in (5.0, -1.0):
+        streams[0].copy_(torch.arange(32, dtype=torch.float32))
+        streams[1:block].fill_(value)
+        streams[block:].zero_()
+        target.fill_(255)
+        packet = bytearray(outgoing.pack())
+        assert len(packet) == incoming.nbytes == 2 * 32 * 4 + 64
+        incoming.stage(packet)
+        assert torch.equal(source, target)
+
+
 def test_native_draft_keeps_global_counts_and_routes_images_to_their_owner():
     dispatched = []
     samples = torch.arange(4 * 16 * 8, dtype=torch.int32).reshape(4, 16, 8)
@@ -112,6 +137,7 @@ def test_native_draft_keeps_global_counts_and_routes_images_to_their_owner():
         node = ForwardNode(node_id, {"draft": {}})
         draft_inputs = SimpleNamespace(images=[None, None, SimpleNamespace(nbytes=len(msg[size:]))])
         node.bank = SimpleNamespace(tp=4, upload_idle=lambda io, dp: stages.append(("idle", dp, io)))
+        node.draft_packet = SimpleNamespace(nbytes=len(msg[size:]))
         count_buffer = bytearray(16 * 4)
         node.draft = SimpleNamespace(
             draft=SimpleNamespace(inputs=draft_inputs), capture_args={}, arguments={"ids": None},

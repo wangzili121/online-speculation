@@ -86,6 +86,32 @@ class NativeRankMemory:
         del self.allocations[key]
 
 
+class NativeDraftInputPacket:
+    """Encode the two repeated residual rows and the remaining packed controls."""
+
+    def __init__(self, inputs, block):
+        image = inputs.images[2]
+        self.residual = inputs.fields[2]["x_hc"]
+        if self.residual.data_ptr() != image.data_ptr():
+            raise ValueError("Native Draft packet expects x_hc at the start of the packed image")
+        self.block = block
+        self.tail = memoryview(image.numpy())[self.residual.nbytes:]
+        self.embedding_bytes = 2 * self.residual[0, 0].nbytes
+        self.nbytes = self.embedding_bytes + len(self.tail)
+
+    def pack(self):
+        return b"".join((self.residual[:2, 0].contiguous().numpy().tobytes(), self.tail))
+
+    def stage(self, packet):
+        import torch
+
+        embeddings = torch.frombuffer(packet[:self.embedding_bytes], dtype=self.residual.dtype).view(2, -1)
+        self.residual[0].copy_(embeddings[0])
+        self.residual[1:self.block].copy_(embeddings[1])
+        self.residual[self.block:].zero_()
+        self.tail[:] = packet[self.embedding_bytes:]
+
+
 def graph_argument(shards, workers, parameter, world):
     """Bind local shards to the same ND or folded NZ ABI as the original graph."""
     from models.deepseek_v4_1_flash_a3.device_views import resident_graph_argument
