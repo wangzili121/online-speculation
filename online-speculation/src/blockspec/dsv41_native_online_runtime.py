@@ -306,10 +306,9 @@ class NativeOnlineRuntime:
             raise ValueError("Native learner operand is not an allocation owned by the named rank")
         return (rank, buffer.key, tensor.byte_offset, *_describe(tensor))
 
-    def run(self, program, *arguments, config=None):
+    def _graph_values(self, program, arguments):
         from pypto.runtime import DeviceTensor, StackedDeviceTensor
 
-        name, _ = self.programs[program]
         parameters = program._get_metadata()[0]
         values = [{}, {}]
         for parameter, arg in zip(parameters, arguments, strict=True):
@@ -327,6 +326,30 @@ class NativeOnlineRuntime:
                 values[self._node(rank)][parameter.name] = {"tensor": self._reference(arg, rank)}
             else:
                 raise TypeError(f"Expected a resident operand for {parameter.name}")
-        payloads = tuple(self._message(node, "graph", {"graph": name, "values": values[node]}) for node in range(2))
+        return values
+
+    def _submit_graphs(self, phases, values):
+        payloads = tuple(self._message(node, "graph", {"graphs": [
+            (name, operands[node]) for name, operands in zip(phases, values, strict=True)
+        ]}) for node in range(2))
+        self._send(TRAIN_GRAPH, payloads, phase=phases[0] if len(phases) == 1 else phases)
+
+    def run(self, program, *arguments, config=None):
+        name, _ = self.programs[program]
         with timed_stage(f"native_learner/{name}"):
-            self._send(TRAIN_GRAPH, payloads, phase=name)
+            self._submit_graphs((name,), (self._graph_values(program, arguments),))
+
+    def run_adam_apply(self, jobs):
+        """Submit independent local Adam updates together, before publication."""
+        batch = {}
+        with timed_stage("native_learner/adam_apply_batch"):
+            for program, arguments in jobs:
+                name, graph = self.programs[program]
+                if not name.endswith("/apply") or graph.window is not None:
+                    raise ValueError("Batched Adam apply requires a rank-local optimizer graph")
+                if name in batch:
+                    self._submit_graphs(tuple(batch), tuple(batch.values()))
+                    batch.clear()
+                batch[name] = self._graph_values(program, arguments)
+            if batch:
+                self._submit_graphs(tuple(batch), tuple(batch.values()))

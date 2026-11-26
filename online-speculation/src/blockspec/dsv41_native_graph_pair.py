@@ -188,23 +188,26 @@ class NativeGraphPair:
 
     def run(self, config, arguments, *, phase=None, initialize=None):
         """Submit both hosts before waiting for either host's device graph."""
+        phases = phase if isinstance(phase, tuple) else (phase,) if phase is not None else ()
+        if len(phases) > 1 and any(self.phases[name].graph.window is not None for name in phases):
+            raise ValueError("A batch of native graphs cannot share collective windows")
+
         def submit(orch, _args, cfg):
-            if phase is not None:
-                graph = self.phases[phase].graph
-                domain = graph.allocate_domain(orch, f"dsv41/{phase}", self.members)
+            for name in phases:
+                graph = self.phases[name].graph
+                domain = graph.allocate_domain(orch, f"dsv41/{name}", self.members)
                 if initialize is not None:
                     initialize(orch, domain)
                 for args in arguments:
                     args.add_scalar(domain.domain_id if domain is not None else 0)
-                for digest in self.digests[phase]:
+                for digest in self.digests[name]:
                     for word in unpack("<4Q", digest):
                         arguments[1].add_scalar(word)
             for node, callback, args in zip(self.nodes, self.callbacks, arguments, strict=True):
                 orch.submit_next_level(callback, args, cfg, worker=node)
 
         self.parent.run(submit, config=config)
-        if phase is not None and self.phases[phase].graph.window is not None:
-            self._used_phases.add(phase)
+        self._used_phases.update(name for name in phases if self.phases[name].graph.window is not None)
 
     def reserve_windows(self, config):
         reserved = {}

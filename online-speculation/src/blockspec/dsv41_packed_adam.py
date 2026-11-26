@@ -424,9 +424,15 @@ class PackedAdam:
                 for layer in seen for item in self.parameters]
         try:
             start = perf_counter()
-            for (_, apply, _), bound in jobs:
-                self.runtime.run(apply, bound.weights, bound.state, rate, 1. - .9 ** step, 1. - .999 ** step,
-                                 clip, 0, config=self.config)
+            bias = 1. - .9 ** step, 1. - .999 ** step
+            apply_jobs = [(apply, (bound.weights, bound.state, rate, *bias, clip, 0))
+                          for (_, apply, _), bound in jobs]
+            batch_apply = getattr(self.runtime, "run_adam_apply", None)
+            if batch_apply is None:
+                for program, arguments in apply_jobs:
+                    self.runtime.run(program, *arguments, config=self.config)
+            else:
+                batch_apply(apply_jobs)
             optimizer_seconds = perf_counter() - start
             start = perf_counter()
             for (_, _, publish), bound in jobs:

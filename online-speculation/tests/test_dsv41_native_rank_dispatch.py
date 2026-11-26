@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from blockspec.dsv41_native_graph_pair import NativeGraphPair
+from blockspec.dsv41_native_online_runtime import NativeOnlineRuntime, TRAIN_GRAPH, decode_command
 from blockspec.dsv41_native_rank_dispatch import NativeRankGraph, RankLocalStack
 
 
@@ -103,6 +104,27 @@ def test_window_probe_reports_first_failed_model_graph():
     with pytest.raises(RuntimeError, match=r"Fabric window 'draft'.*16 ranks.*8192 bytes per rank.*1 earlier"):
         pair.reserve_windows(None)
     assert allocated == [("dsv41/prefill", 16), ("dsv41/draft", 16)]
+
+
+def test_adam_apply_batches_distinct_graphs_and_preserves_order():
+    calls = []
+
+    def exchange(_config, opcode, payloads, _reply_sizes, *, phase):
+        assert opcode == TRAIN_GRAPH
+        calls.append((phase, tuple(decode_command(payload)[0]["graphs"] for payload in payloads)))
+        return b"", b""
+
+    programs = {f"adam/{key}/apply": (key, SimpleNamespace(window=None)) for key in ("a", "b")}
+    runtime = NativeOnlineRuntime(SimpleNamespace(exchange=exchange), None, programs, ranks_per_host=8)
+    runtime._graph_values = lambda _program, args: [{"layer": args[0]}, {}]
+    runtime.run_adam_apply([("a", (37,)), ("b", (37,)), ("a", (38,))])
+
+    assert calls == [
+        (("adam/a/apply", "adam/b/apply"),
+         ([["adam/a/apply", {"layer": 37}], ["adam/b/apply", {"layer": 37}]],
+          [["adam/a/apply", {}], ["adam/b/apply", {}]])),
+        ("adam/a/apply", ([["adam/a/apply", {"layer": 38}]], [["adam/a/apply", {}]])),
+    ]
 
 
 def test_daemon_scratch_uses_worker_owned_buffers(tmp_path, monkeypatch):

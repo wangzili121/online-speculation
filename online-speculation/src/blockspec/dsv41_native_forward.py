@@ -283,17 +283,25 @@ class ForwardNode:
             )
 
     def online_graph(self, orch, args, config, command):
-        phase = command["graph"]
-        _, graph = self.artifacts.online[phase]
         self.arena.prepare(command["allocate"], command["release"])
-        if phase not in self.online_scratch:
-            self.online_scratch[phase] = graph.bind_remote_intermediates(self.bank.memory.worker, self.ranks)
-        operands = self.arena.bind(command["values"])
-        operands.update(self.online_scratch[phase][0])
-        callables = self.callables[phase] if self.callables is not None else remote_chips(self.chip_abi[phase], args, 4)
         self.keepalive.clear()
-        graph.submit(orch, config, domain_id=args.scalar(3), ranks=self.ranks, tensors=operands,
-                     callables=callables, keepalive=self.keepalive)
+        offset = 3
+        for phase, values in command["graphs"]:
+            _, graph = self.artifacts.online[phase]
+            if phase not in self.online_scratch:
+                self.online_scratch[phase] = graph.bind_remote_intermediates(self.bank.memory.worker, self.ranks)
+            operands = self.arena.bind(values)
+            operands.update(self.online_scratch[phase][0])
+            domain_id = args.scalar(offset)
+            offset += 1
+            if self.callables is None:
+                abi = self.chip_abi[phase]
+                callables = remote_chips(abi, args, offset)
+                offset += 4 * len(abi)
+            else:
+                callables = self.callables[phase]
+            graph.submit(orch, config, domain_id=domain_id, ranks=self.ranks, tensors=operands,
+                         callables=callables, keepalive=self.keepalive)
 
     def read(self, payload, output):
         import torch
