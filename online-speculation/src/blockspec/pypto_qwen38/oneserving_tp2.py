@@ -270,6 +270,7 @@ class OrthrusTP2Runner(TensorParallelRunner):
         for size in range(1, self.draft_batch_size + 1):
             self._host_slabs.update({f"orthrus_{size}_{name}": shared((2, *shape), dtype)
                                      for name, shape, dtype in draft_inputs(size, config.max_model_len)})
+            self._host_slabs[f"orthrus_{size}_decisions"] = shared((2, size * BLOCK, 16), torch.float32)
         self.spec_stats.update(rounds=0, verify_calls=0, restore_ns=0, draft_batches=0, draft_pair_batches=0)
         if stochastic:
             vocab_host = (2, self.draft_batch_size * BLOCK, TP_VOCAB)
@@ -386,7 +387,6 @@ class OrthrusTP2Runner(TensorParallelRunner):
                     self._allocate((rows, TP_VOCAB), torch.bfloat16),
                     self._allocate((rows, 16), torch.float32),
                 )
-            self.host_decisions = torch.empty((2, self.draft_batch_size * BLOCK, 16), dtype=torch.float32)
             text = TextWeights(self.settings.model_root)
             decay_shape = TP_BANK_SPECS[DECAY_BANK][1]
             decay = torch.stack([text.layer(layer, "linear_attn.A_log") for layer in text.linear_layers])
@@ -470,10 +470,15 @@ class OrthrusTP2Runner(TensorParallelRunner):
                 self._worker_call("copy_from", host.data_ptr(), logits.shards[rank].data_ptr, host.nbytes,
                                   worker_id=rank)
                 reference_logits.append(host[valid_indices].clone())
+        decision_output = None if proposals is not None else self._host_slabs[f"orthrus_{size}_decisions"]
+        last_group = 64 - self.group_layers
         for begin in range(0, 64, self.group_layers):
+            # Only the last group writes decisions. Return this small packet in the same
+            # dispatch and keep intermediates and sampling logits on the device.
+            output = decision_output if begin == last_group and decision_output is not None else decisions
             self._worker_call("run", program, ids, rows, *self.draft_banks, *self.suffix,
                               *self.resident[:4], cos, sin, table, mask, hidden, logits,
-                              valid, decisions, self.feedback_hidden, feedback_row, *metadata, begin, config=self.runconfig)
+                              valid, output, self.feedback_hidden, feedback_row, *metadata, begin, config=self.runconfig)
         if audit:
             actual_logits = []
             for rank in range(2):
@@ -501,12 +506,8 @@ class OrthrusTP2Runner(TensorParallelRunner):
             self.online.capture_hidden(self.feedback_hidden)
             self.online.capture_logits(logits, feedback_index * BLOCK)
         count = size * BLOCK
-        if proposals is None:
-            host = self.host_decisions[:, :count]
-            for rank, shard in enumerate(decisions.shards):
-                value = host[rank]
-                self._worker_call("copy_from", value.data_ptr(), shard.data_ptr, value.nbytes, worker_id=rank)
-            selected = merge_draft_decisions(host, valid_indices, count)
+        if decision_output is not None:
+            selected = merge_draft_decisions(decision_output, valid_indices, count)
             sampled = [[selected[index * BLOCK + row] for row in range(budget)]
                        for index, (_, budget) in enumerate(requests)]
         elif self.lazy_sampling:

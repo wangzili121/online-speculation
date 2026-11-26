@@ -34,6 +34,8 @@ def test_two_requests_keep_separate_valid_boundaries_in_attention_and_feedback(w
     runner.head = {"source_head_contract": {"mask_token_id": 999}}
     runner._host_slabs = {f"orthrus_2_{name}": torch.empty((2, *shape), dtype=dtype)
                           for name, shape, dtype in draft_inputs(2)}
+    decisions = torch.empty((2, 64, 16), dtype=torch.float32).share_memory_()
+    runner._host_slabs["orthrus_2_decisions"] = decisions
     runner.cos = torch.full((512, 64), .5, dtype=torch.bfloat16)
     runner.sin = torch.full((512, 64), .25, dtype=torch.bfloat16)
     runner.tables = torch.arange(16, dtype=torch.int32).reshape(2, 2, 4)
@@ -42,7 +44,7 @@ def test_two_requests_keep_separate_valid_boundaries_in_attention_and_feedback(w
     runner.orthrus_pair = object()
     runner.draft_buffers = {2: (object(), object(), object())}
     runner.draft_banks, runner.suffix, runner.resident = (), (), (object(),) * 4
-    runner.group_layers, runner.runconfig, runner.feedback_hidden = 64, object(), object()
+    runner.group_layers, runner.runconfig, runner.feedback_hidden = 32, object(), object()
     captured, calls = [], []
     runner.online = NS(capture_history=lambda *args: captured.append(args), capture_request=lambda slot: None)
     class BeforeDevice(Exception):
@@ -50,13 +52,16 @@ def test_two_requests_keep_separate_valid_boundaries_in_attention_and_feedback(w
     def stop(method, *args, **kwargs):
         assert method == "run"
         calls.append(args)
-        raise BeforeDevice
+        if len(calls) == 2:
+            raise BeforeDevice
     runner._worker_call = stop
     a = NS(request=NS(request_id="a"), position=11, token_ids=[123])
     b = NS(request=NS(request_id="b"), position=506, token_ids=[456])
     with pytest.raises(BeforeDevice):
         runner.propose_many([(a, 7), (b, 5)], feedback_index=0)
     assert calls[0][-7:-1] == (0, 11, width, 1, 506, 6)
+    assert calls[0][-10] is runner.draft_buffers[2][2]
+    assert calls[1][-10] is decisions
     assert captured[0][:4] == (0, 11, width, 7)
     rows = runner._host_slabs["orthrus_2_rows"]
     assert (rows[:, :width] == 0).all() and (rows[:, width:32] == -1).all()

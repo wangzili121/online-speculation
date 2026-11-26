@@ -16,5 +16,5 @@ def test_real_qwen38_plan_has_no_padding_or_dropped_tokens():
 
 
 def test_unsupported_row_buffer_is_rejected_before_runtime_import():
-    with pytest.raises(ValueError, match="pinned K32"):
+    with pytest.raises(ValueError, match="16 or 32 physical rows"):
         make_long_linear(64, 248320, 5120)

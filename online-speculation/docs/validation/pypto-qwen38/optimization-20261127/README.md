@@ -18,6 +18,14 @@ OneServing TP2 固定到 [b99e118](https://github.com/ndleslx/OneServing/commit/
 
 在同两张 A2 上实跑真实 27B、8 条 GSM8K 请求，每条生成 32 token，固定起草和 last-1 在线更新均与 AR 逐 token 一致。前后各有 102 个验证轮次，接受 133 个候选，在线组完成 6 次更新和 1 次发布。非耗时更新字段逐项相同。在线组 draft 累计耗时由 3.320 秒降至 3.129 秒，吞吐由 22.23 升至 22.92 tok/s。同期 AR 由 23.18 变为 23.54 tok/s。样本用于验证链路和计时方向。见 [双卡记录](serving-host-merge.json)。
 
+## 共享缓冲区返回候选
+
+最后一组 draft 直接返回两个 rank 的小型 greedy 决策包，去掉两次独立的设备回读。每种 batch 形状使用自身的共享缓冲区，在启动 worker 前分配。K32 的全词表 logits 仍供采样和训练反馈使用。
+
+在真实 rank 词表尺寸上做了两种行数的独立对照。每种覆盖四组有效行，直接写回与旧式回读逐位一致。32 行中位耗时由 3.45 降至 1.85 ms，64 行由 3.74 降至 2.27 ms。复测入口为 `scripts/validate_qwen38_pypto_shared_draft_output.py <new.json>`，见 [双卡算子记录](shared-output.json)。
+
+在同一对 A2、同一请求和 head 上，加入共享回读后，固定起草为 24.20 tok/s，在线更新为 23.10 tok/s，AR 为 23.51 tok/s。与改动前同配置相比，在线组的 draft 累计耗时由 3.320 秒降至 3.033 秒，在线吞吐提升 3.91%。greedy token、接受数和六次更新及一次发布的非耗时字段均相同。此对照覆盖 8 条短请求，同期 AR 计时也有 1.43% 波动。见 [真实 27B 记录](serving-shared-output.json)。
+
 ## 分页双向 Attention
 
 尝试在 L1 区间完全被历史 KV 覆盖时省掉零填充。单卡 910B3 上以 TP2 本地头数 12/2、128 token 页、512 上下文、16 query tile 验证。18 组样例覆盖空历史、页边界、K8 和 K32，均与现有 PyPTO 路径逐位一致，并检查了有意用 NaN 填充的无效区域及只读输入。
