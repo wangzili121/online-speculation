@@ -123,6 +123,8 @@ bash "$RUN" native-study 1
 
 按默认产物的张量形状、通信窗口和 ring heap 核算，峰值 rank 的已知 HBM 分配约为 last‑1 51.8 GiB、last‑4 53.5 GiB。实卡峰值还会包含运行时的其他分配。原生在线路径复用驻留教师缓冲。Adam 把整个后缀的梯度范数和有限性检查结果一次回读，校验全部通过后才更新并发布权重。
 
+Prefill、Decode/Verify 和 Draft 在同一次整图派发中把采样 ID 回写给调度端。词表 logits 留在 NPU，供教师快照和短验诊断使用。Draft 的 `graph_seconds` 包含随派发返回采样 ID 的时间。
+
 GSM8K 默认使用 64 道在线题和 16 道留出题，四并发，每题最多生成 64 token，K8，last‑1，TV loss，学习率 `1e-5`。训练每隔 16 个验证轮次至多采一个反馈块，每块最多 7 个位置。`result.json` 记录 AR 与在线更新的实测吞吐、扣除更新时间的估算、候选接受率、首次及后续更新耗时，以及训练前后冻结 head 在同一留出集上的结果。每个完成批次写入 `study-waves.jsonl`，完整运行日志写入同目录的 `node7.log` 和 `node8.log`。
 
 ### 1122 分阶段双机推理

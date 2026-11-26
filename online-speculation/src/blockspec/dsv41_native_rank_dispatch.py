@@ -17,6 +17,7 @@ class RankLocalStack:
     stack: object
     ranks: tuple[int, ...]
     world_size: int
+    replacements: dict | None = None
 
     @property
     def shape(self):
@@ -31,7 +32,8 @@ class RankLocalStack:
             local_start = self.ranks.index(global_rank) * width
             return self.stack[(slice(local_start, local_start + width, rank.step), *slices)]
         index = self.ranks.index(rank)
-        return self.stack[(index, *slices)] if slices else self.stack[index]
+        shard = self.stack[(index, *slices)] if slices else self.stack[index]
+        return shard if self.replacements is None else self.replacements.get(rank, shard)
 
 
 def _is_name(node, value):

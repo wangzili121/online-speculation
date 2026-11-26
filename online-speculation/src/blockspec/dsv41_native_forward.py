@@ -5,18 +5,17 @@ from contextlib import contextmanager
 from hashlib import sha256
 import json
 from math import prod
-from multiprocessing import RawArray
 from pathlib import Path
 from struct import Struct
 from time import perf_counter
 from types import SimpleNamespace
 
 from .dsv41_native_graph_pair import (
-    NativeChipGraph, native_peer_mailbox, open_native_graph_pair, remote_chips, remote_mailbox_view,
+    NativeChipGraph, host_mailbox_view, native_peer_mailbox, open_native_graph_pair, remote_chips,
 )
 from .dsv41_native_online_artifacts import load_native_online_bundle
 from .dsv41_native_online_runtime import ARENA, TRAIN_GRAPH, NativeOnlineArena, NativeOnlineRuntime, decode_command
-from .dsv41_native_rank_dispatch import NativeRankGraph
+from .dsv41_native_rank_dispatch import NativeRankGraph, RankLocalStack
 from .dsv41_native_resident import (
     NativeRankMemory, NativeResidentForward, bind_native_draft, forward_inputs, forward_templates,
 )
@@ -39,7 +38,6 @@ RELEASE = Struct("<2i")
 
 _local_node = None
 _remote_node = None
-_local_mailbox = None
 
 
 class ForwardArtifacts:
@@ -48,6 +46,7 @@ class ForwardArtifacts:
         from models.deepseek_v4_1_flash_a3 import config
         from models.deepseek_v4_1_flash_a3.driver import load_manifest
         from models.deepseek_v4_1_flash_a3.engram import HostEngram
+        from models.deepseek_v4_1_flash_a3.lm_head import MAX_LOGIT_ROWS, SAMPLED_IDS_PAD
         from models.deepseek_v4_1_flash_a3.weights import Checkpoint, ResidentWeights
         from pypto.ir import DistributedCompiledProgram
         from tokenizers import Tokenizer
@@ -84,6 +83,20 @@ class ForwardArtifacts:
                 root=path, head=head, block=block, last_layers=last_layers, head_artifact=head_artifact,
                 program=DistributedCompiledProgram.from_dir(path), graph=NativeRankGraph(path, 16),
             )
+        self.sample_shape = (MAX_LOGIT_ROWS, SAMPLED_IDS_PAD)
+        forward = [(phase, self.programs[phase], self.graphs[phase]) for phase in PHASES]
+        if self.draft is not None:
+            forward.append(("draft", self.draft.program, self.draft.graph))
+        self.sample_parameters = {}
+        for phase, program, graph in forward:
+            sampled = next((p for p in program._get_metadata()[0]
+                            if p.name.removesuffix("__ssa_v0") == "sampled_ids"), None)
+            if (sampled is None or sampled.name not in graph.rank_stacks
+                    or tuple(sampled.shape or ()) != (graph.world_size, *self.sample_shape)
+                    or str(sampled.dtype) != "int32" or sampled.layout != "ND"
+                    or sampled.direction.name != "Out"):
+                raise ValueError(f"{phase} sampled IDs do not match the native mailbox ABI")
+            self.sample_parameters[phase] = sampled.name
         digest = sha256(json.dumps(checkpoint.identity, sort_keys=True).encode())
         paths = [self.root / phase for phase in PHASES]
         if self.draft is not None:
@@ -146,7 +159,7 @@ class ForwardNode:
             else:
                 self.online_graph(orch, args, config, command)
         elif opcode in PHASE_OPS:
-            self.forward(orch, args, config, payload, FORWARD_PHASES[PHASE_OPS.index(opcode)])
+            self.forward(orch, args, config, payload, reply, FORWARD_PHASES[PHASE_OPS.index(opcode)])
         elif opcode == READ:
             if reply:
                 self.read(payload, io[:reply])
@@ -159,7 +172,7 @@ class ForwardNode:
         else:
             raise ValueError(f"Unknown native target command {opcode}")
 
-    def forward(self, orch, args, config, payload, phase):
+    def forward(self, orch, args, config, payload, reply, phase):
         bank = self.bank
         *counts, mask = ROWS_AND_MASK.unpack_from(payload)
         is_draft = phase == "draft"
@@ -198,10 +211,27 @@ class ForwardNode:
             tensors = {**tensors, self.draft.capture_parameter: capture_owner}
         else:
             tensors = bank.arguments[phase]
+        sampled = self.artifacts.sample_parameters[phase]
+        tensors = {**tensors, sampled: self.bind_samples(tensors[sampled], args.tensor(0), reply)}
         graph.submit(
             orch, config, domain_id=args.scalar(3), ranks=self.ranks, tensors=tensors,
             callables=callables, keepalive=self.keepalive,
         )
+
+    def bind_samples(self, stack, mailbox, reply):
+        from simpler.task_interface import DataType, Tensor
+
+        shape = stack.shape[1:]
+        size = prod(shape) * 4
+        owners = self.ranks[::self.bank.tp]
+        if reply != len(owners) * size:
+            raise ValueError("Sampled IDs reply does not match the compiled graph")
+        # The owner inputs have all been staged. Chip completion copies the
+        # sampler output into the same Host mailbox before the L4 fence returns.
+        views = {rank: Tensor(mailbox.buffer, shapes=shape, dtype=DataType.INT32,
+                              byte_offset=mailbox.byte_offset + index * size)
+                 for index, rank in enumerate(owners)}
+        return RankLocalStack(stack, self.ranks, self.bank.world, views)
 
     def stage_draft(self, dp, image, *, allocation=None):
         bank = self.bank
@@ -232,20 +262,9 @@ class ForwardNode:
 
     def read(self, payload, output):
         import torch
-        from models.deepseek_v4_1_flash_a3.lm_head import SAMPLED_IDS_PAD
 
         phase, dp, field, row = READ_ROWS.unpack(payload)
         phase, name = FORWARD_PHASES[phase], OUTPUTS[field]
-        if dp == -1 and name == "sampled_ids":
-            values = torch.frombuffer(output, dtype=torch.int32).reshape(len(self.dps), -1, SAMPLED_IDS_PAD)
-            for owner, value in zip(self.dps, values, strict=True):
-                if phase == "draft":
-                    worker = self.ranks.index(owner * self.bank.tp)
-                    tensor = self.draft.draft.ranks[worker][name]
-                    self.bank.memory.copy_from(value.data_ptr(), tensor.data_ptr, value.nbytes, worker_id=worker)
-                else:
-                    self.bank.read(phase, owner, name, value)
-            return
         handle = self.bank.buffers[phase][self.ranks.index(dp * self.bank.tp)][name]
         row_bytes = prod(handle.shape[1:]) * torch.empty((), dtype=handle.dtype).element_size()
         rows, remainder = divmod(len(output), row_bytes)
@@ -256,7 +275,7 @@ class ForwardNode:
 
 
 def local_forward(orch, args, config):
-    with memoryview(_local_mailbox).cast("B") as io:
+    with host_mailbox_view(args) as io:
         _local_node.dispatch(orch, args, config, io)
 
 
@@ -264,7 +283,7 @@ def remote_forward(orch, args, config):
     global _remote_node
     if _remote_node is None:
         _remote_node = ForwardNode(1)
-    with remote_mailbox_view(args) as io:
+    with host_mailbox_view(args) as io:
         _remote_node.dispatch(orch, args, config, io)
 
 
@@ -280,6 +299,7 @@ class NativeForwardTarget:
         self.images = images
         self.templates = tuple({name: templates[phase][name] for name in images[phase].fields[0]} for phase in PHASES)
         self.ropes = ropes
+        self.sample_shape = artifacts.sample_shape
         self.staged = ({}, {}, {})
         self.sampled = [None, None, None]
         self.sample_checks = None
@@ -297,6 +317,8 @@ class NativeForwardTarget:
         self.staged[index][dp] = io.images[2].numpy().tobytes()
 
     def run(self, index, counts, *, capture_owner=-1):
+        import torch
+
         phase = FORWARD_PHASES[index]
         pending = self.staged[index]
         def pack_node(dps):
@@ -306,10 +328,12 @@ class NativeForwardTarget:
                 header += DRAFT_CAPTURE.pack(capture_owner)
             return b"".join((header, *(pending[dp] for dp in active)))
 
-        self.mailbox.exchange(self.config, PHASE_OPS[index], (pack_node(range(2)), pack_node(range(2, 4))),
-                              (0, 0), phase=phase)
+        size = 2 * prod(self.sample_shape) * 4
+        sampled = self.mailbox.exchange(self.config, PHASE_OPS[index], (pack_node(range(2)), pack_node(range(2, 4))),
+                                        (size, size), phase=phase)
         pending.clear()
-        self.sampled[index] = None
+        values = torch.frombuffer(bytearray(b"".join(sampled)), dtype=torch.int32)
+        self.sampled[index] = values.reshape(4, *self.sample_shape)
 
     def read(self, index, dp, name, out, *, row=0):
         if name == "sampled_ids":
@@ -327,16 +351,6 @@ class NativeForwardTarget:
         memoryview(out.numpy()).cast("B")[:] = result
 
     def read_sampled(self, index):
-        import torch
-        from models.deepseek_v4_1_flash_a3.lm_head import MAX_LOGIT_ROWS, SAMPLED_IDS_PAD
-
-        if self.sampled[index] is None:
-            request = READ_ROWS.pack(index, -1, OUTPUTS.index("sampled_ids"), 0)
-            size = 2 * MAX_LOGIT_ROWS * SAMPLED_IDS_PAD * 4
-            outputs = self.mailbox.exchange(self.config, READ, (request, request), (size, size))
-            self.sampled[index] = torch.frombuffer(
-                bytearray(b"".join(outputs)), dtype=torch.int32,
-            ).reshape(4, MAX_LOGIT_ROWS, SAMPLED_IDS_PAD)
         return self.sampled[index]
 
     def check_sample(self, index, dp, row, token):
@@ -424,9 +438,7 @@ class NativeDraftProposer:
         now = perf_counter()
         self.target.run(2, tuple(self.block if dp in active else 0 for dp in range(4)), capture_owner=capture_owner)
         self.stats.graph_seconds += perf_counter() - now
-        now = perf_counter()
         values = self.target.read_sampled(2)
-        self.stats.readback_seconds += perf_counter() - now
         self.stats.sampled_id_bytes += values.nbytes
         self.stats.calls += 1
         if capture_owner >= 0:
@@ -464,17 +476,13 @@ def open_native_forward(artifacts, *, endpoint, peer_listen_host, devices, timeo
     )
     _, images = forward_inputs(artifacts.programs, artifacts.weights, templates, initial_cache)
     from models.deepseek_v4_1_flash_a3.config import FLASH
-    from models.deepseek_v4_1_flash_a3.lm_head import MAX_LOGIT_ROWS
 
     phase_image_sizes = [io.images[2].nbytes for io in images.values()]
     if artifacts.draft is not None:
         _, bucket, _ = draft_geometry(artifacts.context)
         phase_image_sizes.append(make_draft_input_images(artifacts.draft.block, bucket).images[2].nbytes)
     capacity = max(2 * max(phase_image_sizes) + ROWS_AND_MASK.size + DRAFT_CAPTURE.size,
-                   MAX_LOGIT_ROWS * FLASH.vocab_size * 4, 4096)
-    global _local_mailbox
-    _local_mailbox = RawArray("B", capacity)
-
+                   artifacts.sample_shape[0] * FLASH.vocab_size * 4, 4096)
     def bind_local(callables):
         global _local_node
         _local_node = ForwardNode(0, callables)
@@ -498,7 +506,7 @@ def open_native_forward(artifacts, *, endpoint, peer_listen_host, devices, timeo
         phases, endpoint=endpoint, peer_listen_host=peer_listen_host, devices=devices, platform="a2a3",
         comm_profile="a3-fabric-v1", timeout=timeout, local_endpoint=bind_local,
         remote_endpoint=f"{__name__}:remote_forward",
-    ) as pair, native_peer_mailbox(pair, _local_mailbox) as mailbox:
+    ) as pair, native_peer_mailbox(pair, capacity) as mailbox:
         identities = mailbox.exchange(config, PREFLIGHT, (launch, launch), (32, 32))
         if identities != (artifacts.identity, artifacts.identity):
             raise ValueError("The native hosts resolved different weights or compiled graph metadata")

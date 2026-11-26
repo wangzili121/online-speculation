@@ -74,6 +74,15 @@ def test_native_graph_uses_global_rank_and_local_device(tmp_path: Path):
                          for rank in range(16)]
 
 
+def test_sampled_output_views_replace_only_the_dp_owners():
+    ranks = tuple(range(8, 16))
+    local = RankLocalStack(FakeStack(ranks), ranks, 16, {8: "owner2", 12: "owner3"})
+    assert [local[rank] for rank in ranks] == [
+        "owner2", (9, "ND"), (10, "ND"), (11, "ND"),
+        "owner3", (13, "ND"), (14, "ND"), (15, "ND"),
+    ]
+
+
 def test_daemon_scratch_uses_worker_owned_buffers(tmp_path, monkeypatch):
     host = tmp_path / "orchestration"
     host.mkdir()

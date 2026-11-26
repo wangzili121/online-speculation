@@ -52,23 +52,30 @@ def test_rank_memory_reuses_one_staging_buffer_for_tp_and_offset_reads():
 
 def test_native_draft_keeps_global_counts_and_routes_images_to_their_owner():
     dispatched = []
-    endpoint = SimpleNamespace(
-        exchange=lambda cfg, op, inputs, outputs, **kw: dispatched.append((op, inputs, outputs, kw)),
-    )
+    samples = torch.arange(4 * 16 * 8, dtype=torch.int32).reshape(4, 16, 8)
+
+    def exchange(cfg, op, inputs, outputs, **kw):
+        dispatched.append((op, inputs, outputs, kw))
+        return samples[:2].numpy().tobytes(), samples[2:].numpy().tobytes()
+
+    endpoint = SimpleNamespace(exchange=exchange)
     images = dict.fromkeys(("prefill", "decode"), SimpleNamespace(fields=({},)))
-    target = NativeForwardTarget(endpoint, None, None, images, {}, None)
+    artifacts = SimpleNamespace(sample_shape=(16, 8))
+    target = NativeForwardTarget(endpoint, None, artifacts, images, {}, None)
     target.staged[2].update({0: b"owner-zero", 3: b"owner-three"})
     target.sampled[2] = "old"
     target.run(2, (16, 0, 0, 16), capture_owner=12)
     opcode, messages, replies, options = dispatched.pop()
     assert opcode == DRAFT and options == {"phase": "draft"}
-    assert replies == (0, 0)
+    assert replies == (1024, 1024)
     assert ROWS_AND_MASK.unpack_from(messages[0]) == (16, 0, 0, 16, 1)
     assert ROWS_AND_MASK.unpack_from(messages[1]) == (16, 0, 0, 16, 8)
     assert tuple(DRAFT_CAPTURE.unpack_from(msg, ROWS_AND_MASK.size) for msg in messages) == ((12,), (12,))
     size = ROWS_AND_MASK.size + DRAFT_CAPTURE.size
     assert tuple(msg[size:] for msg in messages) == (b"owner-zero", b"owner-three")
-    assert target.staged[2] == {} and target.sampled[2] is None
+    assert target.staged[2] == {}
+    assert torch.equal(target.read_sampled(2), samples)
+    assert dispatched == []
 
 
 def test_native_checks_first_sample_on_each_dp_in_smoke():

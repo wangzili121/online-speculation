@@ -47,8 +47,8 @@ def remote_chips(abi, args, offset):
 
 
 @contextmanager
-def remote_mailbox_view(args):
-    """Materialize the daemon's named Host mapping from the wire tensor descriptor."""
+def host_mailbox_view(args):
+    """Materialize the local or daemon Host mailbox carried by the task."""
     from ctypes import c_ubyte
     from simpler.buffer import ImportContext, ImportRegistry
     from simpler.comm_endpoints import HOST_CPU
@@ -65,22 +65,23 @@ def remote_mailbox_view(args):
 
 
 @contextmanager
-def native_peer_mailbox(pair, local_buffer):
+def native_peer_mailbox(pair, capacity):
     """Share control and input/output bytes, keeping weights on their original host."""
-    local = memoryview(local_buffer).cast("B")
-    try:
-        remote = pair.parent.remote_malloc(worker=pair.nodes[1], nbytes=len(local))
-        # The parent closes any outstanding remote allocations after a failed dispatch.
-        yield NativePeerMailbox(pair, local, remote)
-        pair.parent.remote_free(remote)
-    finally:
-        local.release()
+    local = pair.parent.create_buffer(capacity)
+    remote = pair.parent.remote_malloc(worker=pair.nodes[1], nbytes=capacity)
+    # Keep the shared local buffer until the parent has joined its children.
+    with local.host_view() as view:
+        yield NativePeerMailbox(pair, local, view, remote)
+    pair.parent.remote_free(remote)
 
 
 class NativePeerMailbox:
-    def __init__(self, pair, local, remote):
+    def __init__(self, pair, local_buffer, local, remote):
+        from simpler.task_interface import DataType
+
         self.pair = pair
         self.local = local
+        self.local_tensor = local_buffer.tensor((len(local),), DataType.UINT8)
         self.remote = remote
 
     def exchange(self, config, opcode, payloads, reply_sizes, *, phase=None):
@@ -97,6 +98,7 @@ class NativePeerMailbox:
             source = create_string_buffer(remote_in, len(remote_in))
             self.pair.parent.remote_copy_to(self.remote, source, len(remote_in))
         arguments = (TaskArgs(), TaskArgs())
+        arguments[0].add_tensor(self.local_tensor, TensorArgType.INOUT)
         arguments[1].add_tensor(
             RemoteTensorRef(self.remote, shape=(capacity,), dtype=DataType.UINT8), TensorArgType.INOUT,
         )
