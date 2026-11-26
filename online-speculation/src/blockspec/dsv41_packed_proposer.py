@@ -231,18 +231,26 @@ def make_draft_input_images(block, bucket):
     return DecodeInputs(template)
 
 
-def stage_draft_request(stager, request, *, student_rows=0, owner_only=False):
+def draft_engram_prefix_rows(block):
+    from models.deepseek_v4_1_flash_a3.config import FLASH
+
+    # From this last row on, even the longest n-gram contains only mask tokens.
+    return min(block, 1 + FLASH.engram_max_ngram_size)
+
+
+def stage_draft_request(stager, request, *, student_rows=0, owner_only=False, engram_prefix_rows=None):
     import torch
 
     anchor_token, position = request.anchor, request.position
     active, selected = stager.inputs.fields[1:]
     indices = (anchor_token, stager.mask_token_id)
     embeddings = stager.weights.lookup_rows(torch.tensor(indices, dtype=torch.int64)).float()
-    provisional = torch.full((stager.block,), stager.mask_token_id, dtype=torch.int64)
+    prefix_rows = stager.block if engram_prefix_rows is None else engram_prefix_rows
+    provisional = torch.full((prefix_rows,), stager.mask_token_id, dtype=torch.int64)
     provisional[0] = anchor_token
     history = stager.engram.history.get(request.history_key)
     try:
-        engram_rows = stager.engram.lookup(provisional, stager.block, position, request_id=request.history_key)
+        engram_rows = stager.engram.lookup(provisional, prefix_rows, position, request_id=request.history_key)
     finally:
         if history is None:
             stager.engram.history.pop(request.history_key, None)
@@ -258,7 +266,8 @@ def stage_draft_request(stager, request, *, student_rows=0, owner_only=False):
         image["x_hc"][0].copy_(embeddings[0])
         image["x_hc"][1:stager.block].copy_(embeddings[1])
         image["pre_mix"].copy_(stager.inputs.fields[0]["pre_mix"])
-        image["engram_rows"].copy_(engram_rows)
+        # The native packet restores the omitted rows on the receiving node.
+        image["engram_rows"][:, :prefix_rows].copy_(engram_rows)
         for name, table in zip(("draft_cos", "draft_sin"), stager.rope_tables, strict=True):
             image[name][:, :stager.block].copy_(table[:, position:position + stager.block])
         for name, value in zip(("window_rows", "window_starts", "window_spans", "window_bias"), window, strict=True):

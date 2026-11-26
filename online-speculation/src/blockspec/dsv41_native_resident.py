@@ -87,24 +87,42 @@ class NativeRankMemory:
 
 
 class NativeResidualInputPacket:
-    """Send one copy of each residual row shared by the mHC streams."""
+    """Pack shared residual rows and, for Draft, omit repeated Engram rows."""
 
-    def __init__(self, inputs):
+    def __init__(self, inputs, *, engram_prefix_rows=None):
         image = inputs.images[2]
-        self.residual = inputs.fields[2]["x_hc"]
+        fields = inputs.fields[2]
+        self.residual = fields["x_hc"]
         if self.residual.data_ptr() != image.data_ptr():
             raise ValueError("Native input packet expects x_hc at the start of the packed image")
-        self.tail = memoryview(image.numpy())[self.residual.nbytes:]
+        tail = memoryview(image.numpy())[self.residual.nbytes:]
         self.row_bytes = self.residual[0, 0].nbytes
+        self.engram_rows = engram_prefix_rows
+        self.engram = None
+        self.spans = (tail,)
+        if engram_prefix_rows is not None:
+            field = fields["engram_rows"]
+            offset = field.data_ptr() - image.data_ptr() - self.residual.nbytes
+            end = offset + field.nbytes
+            if (not field.is_contiguous() or not 0 <= offset < end <= len(tail)
+                    or not 0 < engram_prefix_rows <= field.shape[1]):
+                raise ValueError("Native Draft Engram rows do not match the packed input image")
+            self.engram = field
+            stride = field[0].nbytes
+            live = engram_prefix_rows * field[0, 0].nbytes
+            prefix = tuple(tail[start:start + live] for start in range(offset, end, stride))
+            self.spans = (tail[:offset], *prefix, tail[end:])
+        self.tail_bytes = sum(map(len, self.spans))
 
     def size(self, rows):
         if not 0 < rows <= self.residual.shape[0]:
             raise ValueError("Invalid live row count for the native input image")
-        return rows * self.row_bytes + len(self.tail)
+        return rows * self.row_bytes + self.tail_bytes
 
     def pack(self, rows):
         self.size(rows)
-        return b"".join((self.residual[:rows, 0].contiguous().numpy().tobytes(), self.tail))
+        embeddings = self.residual[:rows, 0].contiguous().numpy().tobytes()
+        return b"".join((embeddings, *self.spans))
 
     def stage(self, packet, rows, *, repeat_to=None):
         import torch
@@ -115,7 +133,12 @@ class NativeResidualInputPacket:
         if repeat_to is not None:
             self.residual[rows:repeat_to].copy_(embeddings[-1])
         self.residual[repeat_to if repeat_to is not None else rows:].zero_()
-        self.tail[:] = packet[size:]
+        for span in self.spans:
+            end = size + len(span)
+            span[:] = packet[size:end]
+            size = end
+        if self.engram is not None:
+            self.engram[:, self.engram_rows:].copy_(self.engram[:, self.engram_rows - 1:self.engram_rows])
 
 
 class NativePrefillInputPacket:

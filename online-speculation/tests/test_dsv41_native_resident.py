@@ -155,6 +155,39 @@ def test_native_residual_packet_reconstructs_the_full_input_image(rows, repeat_t
         assert torch.equal(source, target)
 
 
+@pytest.mark.parametrize("block", (8, 16, 32))
+def test_native_draft_packet_reconstructs_repeated_engram_rows(block):
+    prefix_rows = 5
+    residual_bytes = max(block, 16) * 4 * 8 * 4
+    engram_bytes = 2 * block * 16 * 2
+
+    def allocate():
+        image = torch.arange(residual_bytes + 32 + engram_bytes).remainder(251).to(torch.uint8)
+        embeddings = image[:residual_bytes].view(torch.float32).reshape(-1, 4, 8)
+        engram = image[residual_bytes + 16:-16].view(torch.bfloat16).reshape(2, block, 16)
+        return image, embeddings, engram
+
+    def packet(image, embeddings, engram):
+        inputs = SimpleNamespace(images=[None, None, image],
+                                 fields=[None, None, {"x_hc": embeddings, "engram_rows": engram}])
+        return NativeResidualInputPacket(inputs, engram_prefix_rows=prefix_rows)
+
+    image, embeddings, engram = allocate()
+    embeddings.zero_()
+    embeddings[0].fill_(3)
+    embeddings[1:block].fill_(-4)
+    engram[:, :prefix_rows].copy_(torch.arange(2 * prefix_rows * 16).reshape(2, prefix_rows, 16))
+    engram[:, prefix_rows:].copy_(engram[:, prefix_rows - 1:prefix_rows])
+    decoded, *fields = allocate()
+    incoming = packet(decoded, *fields)
+    decoded.fill_(0xff)
+    encoded = bytearray(packet(image, embeddings, engram).pack(2))
+
+    assert len(encoded) == incoming.size(2) == 2 * 8 * 4 + 32 + 2 * prefix_rows * 16 * 2
+    incoming.stage(encoded, 2, repeat_to=block)
+    assert torch.equal(image, decoded)
+
+
 def test_native_prefill_packet_restore_padding_without_touching_control_bytes():
     def allocate():
         image = torch.arange(352).remainder(251).to(torch.uint8)

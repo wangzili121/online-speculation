@@ -21,7 +21,7 @@ from .dsv41_native_resident import (
     forward_templates, native_target_packets,
 )
 from .dsv41_packed_proposer import (
-    DraftRoundStats, PackedFinalState, PackedStudentRows, draft_geometry, draft_graph_manifest,
+    DraftRoundStats, PackedFinalState, PackedStudentRows, draft_engram_prefix_rows, draft_geometry, draft_graph_manifest,
     make_draft_input_images, read_packed_head,
     stage_draft_request,
 )
@@ -88,6 +88,7 @@ class ForwardArtifacts:
             head_artifact = read_packed_head(checkpoint, head, block)
             self.draft = SimpleNamespace(
                 root=path, head=head, block=block, last_layers=last_layers, head_artifact=head_artifact,
+                engram_prefix_rows=draft_engram_prefix_rows(block),
                 program=DistributedCompiledProgram.from_dir(path), graph=NativeRankGraph(path, 16),
             )
         self.sample_shape = (MAX_LOGIT_ROWS, SAMPLED_IDS_PAD)
@@ -157,7 +158,8 @@ class ForwardNode:
                 self.draft = bind_native_draft(
                     self.bank, d.graph, d.program, a, d.head, d.block, d.last_layers, d.head_artifact,
                 )
-                self.draft_packet = NativeResidualInputPacket(self.draft.draft.inputs)
+                self.draft_packet = NativeResidualInputPacket(self.draft.draft.inputs,
+                                                               engram_prefix_rows=d.engram_prefix_rows)
             if a.online:
                 banks = {
                     "draft": dict(zip(self.ranks, self.draft.draft.ranks, strict=True)),
@@ -483,7 +485,7 @@ class NativeDraftProposer:
             page_tables=tuple(target.images["decode"].fields[0][name][0] for name in
                               ("c1a_index_block_table", "c2a_index_block_table")),
         )
-        self.packet = NativeResidualInputPacket(self.stager.inputs)
+        self.packet = NativeResidualInputPacket(self.stager.inputs, engram_prefix_rows=d.engram_prefix_rows)
 
     def propose_batch(self, requests, *, uploads, capture=None):
         if not requests:
@@ -502,7 +504,7 @@ class NativeDraftProposer:
         pending = self.target.staged[2]
         for row in requests:
             stage_draft_request(self.stager, row, student_rows=teacher_rows if row.owner == capture_owner else 0,
-                                owner_only=True)
+                                owner_only=True, engram_prefix_rows=self.packet.engram_rows)
             pending[row.owner // self.tp] = self.packet.pack(2)
         for dp in self.previous_dps - active:
             pending[dp] = None
@@ -607,8 +609,11 @@ def open_native_forward(artifacts, *, endpoint, peer_listen_host, devices, timeo
     _, images = forward_inputs(artifacts.programs, artifacts.weights, templates, initial_cache)
     phase_image_sizes = [io.images[2].nbytes for io in images.values()]
     if artifacts.draft is not None:
+        draft = artifacts.draft
         _, bucket, _ = draft_geometry(artifacts.context)
-        phase_image_sizes.append(make_draft_input_images(artifacts.draft.block, bucket).images[2].nbytes)
+        draft_packet = NativeResidualInputPacket(make_draft_input_images(draft.block, bucket),
+                                                 engram_prefix_rows=draft.engram_prefix_rows)
+        phase_image_sizes.append(draft_packet.size(2))
     capacity = max(2 * max(phase_image_sizes) + ROWS_AND_MASK.size + DRAFT_CAPTURE.size,
                    artifacts.sample_shape[0] * FLASH.vocab_size * 4, 4096)
     with _connect_native_forward(
