@@ -83,11 +83,21 @@ def run(rank, device, address, wait):
     _bind(hccl, "HcclCommDestroy", [ptr])
     _bind(hccl, "HcclAllReduce", [ptr, ptr, u64, integer, integer, ptr, ptr])
     _bind(hccl, "HcclAlltoAll", [ptr, u64, integer, ptr, u64, integer, ptr, ptr])
+    acl = memory.library
+
+    def check_hccl(status, operation):
+        if status:
+            recent_error = acl.aclGetRecentErrMsg
+            recent_error.argtypes = []
+            recent_error.restype = ctypes.c_char_p
+            detail = (recent_error() or b"").decode(errors="replace").strip()[:800]
+            message = f"{operation} returned CANN/HCCL status {status}"
+            raise RuntimeError(f"{message}: {detail}" if detail else message)
 
     root_info = ctypes.create_string_buffer(ROOT_INFO_BYTES)
 
     def get_root_info():
-        _check(hccl.HcclGetRootInfo(root_info), "HcclGetRootInfo")
+        check_hccl(hccl.HcclGetRootInfo(root_info), "HcclGetRootInfo")
         return root_info.raw
 
     root_info.raw = rendezvous(rank, address, get_root_info, wait)
@@ -96,16 +106,8 @@ def run(rank, device, address, wait):
 
     with ExitStack() as resources:
         comm, stream, source, target = ptr(), ptr(), ptr(), ptr()
-        acl = memory.library
-        status = hccl.HcclCommInitRootInfo(2, root_info, rank, ctypes.byref(comm))
-        if status:
-            recent_error = acl.aclGetRecentErrMsg
-            recent_error.argtypes = []
-            recent_error.restype = ctypes.c_char_p
-            detail = (recent_error() or b"").decode(errors="replace").strip()
-            summary = f"HcclCommInitRootInfo returned CANN/HCCL status {status}"
-            summary += f" (session={session})"
-            raise RuntimeError(f"{summary}: {detail[:800]}" if detail else summary)
+        check_hccl(hccl.HcclCommInitRootInfo(2, root_info, rank, ctypes.byref(comm)),
+                   f"HcclCommInitRootInfo (session={session})")
         resources.callback(_check_cleanup, hccl.HcclCommDestroy, comm)
         _check(acl.aclrtCreateStream(ctypes.byref(stream)), "aclrtCreateStream")
         resources.callback(_check_cleanup, acl.aclrtDestroyStream, stream)
@@ -115,13 +117,13 @@ def run(rank, device, address, wait):
             _check(acl.aclrtMalloc(ctypes.byref(buffer), size, 0), "aclrtMalloc")
             resources.callback(_check_cleanup, acl.aclrtFree, buffer)
         memory.copy(source, ctypes.addressof(inputs), size, 1)
-        _check(hccl.HcclAllReduce(source, target, 2, HCCL_FP32, HCCL_SUM, comm, stream), "HcclAllReduce")
+        check_hccl(hccl.HcclAllReduce(source, target, 2, HCCL_FP32, HCCL_SUM, comm, stream), "HcclAllReduce")
         _check(acl.aclrtSynchronizeStream(stream), "AllReduce synchronize")
         memory.copy(ctypes.addressof(outputs), target, size, 2)
         reduced = list(outputs)
         peer_bytes = size // 2
-        _check(hccl.HcclAlltoAll(source, peer_bytes, HCCL_UINT8, target, peer_bytes, HCCL_UINT8, comm, stream),
-               "HcclAlltoAll")
+        check_hccl(hccl.HcclAlltoAll(source, peer_bytes, HCCL_UINT8, target, peer_bytes, HCCL_UINT8, comm, stream),
+                   "HcclAlltoAll")
         _check(acl.aclrtSynchronizeStream(stream), "AlltoAll synchronize")
         memory.copy(ctypes.addressof(outputs), target, size, 2)
         exchanged = list(outputs)

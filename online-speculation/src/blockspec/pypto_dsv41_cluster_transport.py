@@ -51,13 +51,25 @@ class ClusterCollectives:
         if first_error is None and self.mappings is not None:
             self.mappings.close()
 
+    def _recent_error(self):
+        recent = self.memory.library.aclGetRecentErrMsg
+        recent.argtypes = []
+        recent.restype = C.c_char_p
+        return (recent() or b"").decode(errors="replace").strip()[:800]
+
+    def _check_communicator(self, status, operation):
+        if status:
+            detail = self._recent_error()
+            message = f"{operation} returned CANN/HCCL status {status}"
+            raise RuntimeError(f"{message}: {detail}" if detail else message)
+
     def _cross_group(self, group, tag):
         local = self.plan.local_ranks
         encoded = None
         if group[0] in local:
             self.memory.select(group[0] - local.start)
             info = C.create_string_buffer(ROOT_INFO_BYTES)
-            self.check(self.library.HcclGetRootInfo(info), "HcclGetRootInfo")
+            self._check_communicator(self.library.HcclGetRootInfo(info), "HcclGetRootInfo")
             encoded = info.raw.hex()
         peer = self.link.exchange(tag, encoded)
         if (encoded is None) == (peer is None):
@@ -72,8 +84,8 @@ class ClusterCollectives:
                 return None
             self.memory.select(rank)
             info, comm = C.create_string_buffer(raw, ROOT_INFO_BYTES), C.c_void_p()
-            self.check(self.library.HcclCommInitRootInfo(len(group), info, group.index(global_rank), C.byref(comm)),
-                       "HcclCommInitRootInfo")
+            status = self.library.HcclCommInitRootInfo(len(group), info, group.index(global_rank), C.byref(comm))
+            self._check_communicator(status, "HcclCommInitRootInfo")
             channel = self.channel_type(self.memory, rank, group, comm.value, self.library)
             self.owned.append(channel)
             acl = self.memory.library
@@ -131,12 +143,18 @@ class ClusterCollectives:
             [name, list(source.shape), str(source.dtype), list(destination.shape), str(destination.dtype)]
             for source, destination, name in batch
         ]} for rank, batch in zip(ranks, transfers, strict=True)]
-        self._check_schedule(stage, collective, group, signatures)
+        warm = group in self.channels
+        if not warm:
+            self._check_schedule(stage, collective, group, signatures)
         channels = self._channels(group)
         for rank, batch in enumerate(transfers):
             for source, destination, _ in batch:
                 channels[rank]._validate_device_transfer(source, destination, collective)
-        if group != "tp":
+        if warm:
+            # Both peers validate their device handles before the schedule exchange.
+            # That same round now confirms readiness as well as the collective ABI.
+            self._check_schedule(stage, collective, group, signatures)
+        elif group != "tp":
             with timed_stage(f"{group}_ready_control"):
                 self.link.exchange(f"ready/{stage}", None)
 
@@ -150,11 +168,13 @@ class ClusterCollectives:
 
         def submit(rank):
             channel = channels[rank]
-            if self.mappings is None:
-                channel.exchange_device_batch(transfers[rank], collective)
-            else:
-                channel.exchange_device_batch(transfers[rank], collective,
-                                              address_of=partial(self.mappings.address, rank))
+            options = {} if self.mappings is None else {"address_of": partial(self.mappings.address, rank)}
+            try:
+                channel.exchange_device_batch(transfers[rank], collective, **options)
+            except RuntimeError as error:
+                detail = self._recent_error()
+                message = f"{stage} rank {ranks[rank]}: {error}"
+                raise RuntimeError(f"{message}: {detail}" if detail else message) from error
 
         with timed_stage(f"{group}_{collective}_device"):
             self.runtime.map_ranks(submit)

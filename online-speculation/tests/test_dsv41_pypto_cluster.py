@@ -100,16 +100,20 @@ class ClusterTest(unittest.TestCase):
                 exchange_device_batch=lambda batch, kind: events.append((batch, kind)),
             )
             with ClusterCollectives(runtime, plan, link, native=native) as transport:
-                transport._channels = lambda _: {0: channel}
+                transport._channels = lambda axis: transport.channels.setdefault(axis, {0: channel})
                 destination = SimpleNamespace(shape=source.shape, dtype="int32")
                 transfers = [((source, destination, "counts"),)]
                 transport.exchange_resident("layer/0", transfers)
                 self.assertEqual(events, [(source, destination, "all_to_all"), (transfers[0], "all_to_all")])
                 self.assertEqual(link.step, 2)
+                transport.exchange_resident("layer/1", transfers)
+                self.assertEqual(link.step, 3)
+                self.assertEqual(len(events), 4)
                 destination.shape = (8 if node else 16, 32)
                 with self.assertRaisesRegex(ValueError, "HCCL tensor ABI differs"):
-                    transport.exchange_resident("layer/1", transfers)
-                self.assertEqual(len(events), 2)
+                    transport.exchange_resident("layer/2", transfers)
+                self.assertEqual(len(events), 5)
+                self.assertEqual(events[-1], (source, destination, "all_to_all"))
 
         with patch("blockspec.pypto_dsv41_cluster_transport.C.CDLL"):
             self.pair(task)

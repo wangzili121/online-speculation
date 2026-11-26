@@ -2,8 +2,11 @@
 """Compare resident packed Adam and publication with Torch across DP owners."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 import json
 from dataclasses import asdict
+from hashlib import sha256
 from math import prod, sqrt
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,11 +39,13 @@ def checkpoint_bank(path, model, layer, lane, tp):
     }
 
 
-def exercise(runtime, config, model, programs, tp, world, initial, *, staged=False):
+def exercise(runtime, config, model, programs, tp, world, initial, *, staged=False, transport=None):
     from pypto.runtime import StackedDeviceTensor
 
     layers = model.num_hidden_layers
     parameters = packed_parameters(model, tp)
+    local_offset = transport.plan.local_ranks.start if transport is not None else 0
+    global_world = sum(transport.plan.counts) if transport is not None else world
 
     def upload(value, rank):
         return runtime.alloc_tensor(value.shape, value.dtype, init=value, worker_id=rank)
@@ -74,15 +79,19 @@ def exercise(runtime, config, model, programs, tp, world, initial, *, staged=Fal
 
         def reverse(stage, *, owner, feedback, finished, consume):
             for layer in reversed(range(layers)):
-                consume(layer, SimpleNamespace(owner=owner, parameter_gradients={
-                    p.name: gradients[layer, p.name] for p in parameters
-                }))
+                projection = None
+                if local_offset <= owner < local_offset + world:
+                    projection = SimpleNamespace(owner=owner - local_offset, parameter_gradients={
+                        p.name: gradients[layer, p.name] for p in parameters
+                    })
+                consume(layer, projection)
                 for p in parameters:
                     check(layer, p, before=True)
             return dict(owner=owner, teacher_rows=7, loss=.012)
 
-        proposer.target = SimpleNamespace(link=SimpleNamespace(exchange=lambda _stage, value: value))
-        proposer.ffn = SimpleNamespace(moe=SimpleNamespace(transport=HostPermutation()))
+        link = transport.link if transport is not None else SimpleNamespace(exchange=lambda _stage, value: value)
+        proposer.target = SimpleNamespace(link=link)
+        proposer.ffn = SimpleNamespace(moe=SimpleNamespace(transport=transport or HostPermutation()))
         optimizer = StagedPackedAdam(proposer, SimpleNamespace(run=reverse), model, programs)
     else:
         adam = PackedAdam(proposer, model, programs)
@@ -122,26 +131,30 @@ def exercise(runtime, config, model, programs, tp, world, initial, *, staged=Fal
                 published[layer, name, lane] = canonical
 
     results = []
-    for index, (owner, invalid) in enumerate(((0, False), (world - tp, False), (0, True), (0, False))):
+    for index, (owner, invalid) in enumerate(((0, False), (global_world - tp, False), (0, True), (0, False))):
         norm_sq = 0.
         for layer in range(layers):
             for p_index, p in enumerate(parameters):
                 size = prod(p.shape)
                 values = []
                 ranks = tuple(range(0, world, tp)) if p.replicated else tuple(range(world))
+                lanes = 1 if p.replicated else tp
+                count = min(samples, size) if samples else size
+                active_values = []
+                for lane in range(lanes):
+                    magnitude = (lane + layer + p_index + 1) * (.003 if index % 2 else -.002)
+                    value = torch.full(p.shape, magnitude)
+                    flat = value.flatten()
+                    flat[:count:2].mul_(-2.)
+                    norm_sq += float(value.double().square().sum())
+                    references[layer, p.name, lane][0].grad = flat[:count].clone()
+                    if invalid and p.name == "draft_sink":
+                        flat[0] = torch.nan
+                    active_values.append(value)
                 for rank in ranks:
                     lane = 0 if p.replicated else rank % tp
-                    active = owner <= rank < owner + tp
-                    magnitude = (lane + layer + p_index + 1) * (.003 if index % 2 else -.002)
-                    value = torch.full(p.shape, magnitude if active else 2.)
-                    flat = value.view(-1)
-                    count = min(samples, size) if samples else size
-                    if active:
-                        flat[:count:2].mul_(-2.)
-                        norm_sq += float(value.double().square().sum())
-                        references[layer, p.name, lane][0].grad = flat[:count].clone()
-                        if invalid and p.name == "draft_sink":
-                            flat[0] = torch.nan
+                    active = owner <= local_offset + rank < owner + tp
+                    value = active_values[lane] if active else torch.full(p.shape, 2.)
                     values.append(upload(value, rank))
                 gradients[layer, p.name] = StackedDeviceTensor(values, (len(ranks), *p.shape), ranks)
 
@@ -170,7 +183,16 @@ def exercise(runtime, config, model, programs, tp, world, initial, *, staged=Fal
         for layer in range(layers):
             for p in parameters:
                 check(layer, p, before=invalid)
-        results.append({**vars(result), "owner": owner, "invalid_gradient": invalid})
+        receipt = {**vars(result), "owner": owner, "invalid_gradient": invalid}
+        if transport is not None:
+            digest = sha256()
+            for tensor in published.values():
+                digest.update(bytes(tensor.view(torch.uint8).tolist()))
+            signature = digest.hexdigest()
+            if link.exchange(f"fixture/{index}/sampled-weights", signature) != signature:
+                raise AssertionError("Published weight samples differ between the two controllers")
+            receipt["peer_samples_byte_exact"] = True
+        results.append(receipt)
         for stacked in gradients.values():
             for rank, tensor in zip(stacked.worker_ids, stacked.shards, strict=True):
                 runtime.free_tensor(tensor, worker_id=rank)
@@ -178,7 +200,8 @@ def exercise(runtime, config, model, programs, tp, world, initial, *, staged=Fal
     assert [result["version"] for result in results] == [1, 2, 2, 3]
     report = dict(passed=True, executed=True, tp=tp, world=world, layers=layers,
                   execution_weight_max_abs=max_abs, updates=results,
-                  gradient_transport="host_fixture" if staged else "local_p2p")
+                  gradient_transport="paired_rootinfo_hccl_all_reduce" if transport is not None else
+                  "host_fixture" if staged else "local_p2p")
     if staged:
         report["gradient_scratch_bytes_per_rank"] = sum(packet[0].nbytes for packet in optimizer.packets)
     return report
@@ -194,11 +217,19 @@ def main():
                         help="Check one real TP4 shard on one NPU")
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--staged", action="store_true", help="Exercise staged gradient packing with a host DP fixture")
+    parser.add_argument("--peer-node", type=int, choices=(0, 1), help="Use a second one-device controller and real HCCL")
+    parser.add_argument("--rank0-ip")
+    parser.add_argument("--port", type=int, default=29654)
+    parser.add_argument("--key-file", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     devices = [int(part) for part in args.devices.split(",")]
     tp, world = args.fixture_tp, len(devices)
     isolated_shard = args.checkpoint_lane is not None
+    if args.peer_node is not None and (
+        not args.staged or args.compile_only or world != 1 or not args.rank0_ip or args.key_file is None
+    ):
+        parser.error("--peer-node requires staged execution on one device, a rank-0 address, and a key file")
     if isolated_shard and (not args.checkpoint or world != 1 or tp != 1 or args.compile_only):
         parser.error("A single checkpoint lane requires one device, TP1, and real execution")
     if (len(set(devices)) != world or world % tp
@@ -254,9 +285,31 @@ def main():
                 else:
                     values[p.name] = torch.randn(shape, dtype=dtype, generator=rng).mul_(.06)
             initial.append(values)
-        with DistributedWorker(entries, config, persistent=True, reset_persistent_windows=False) as runtime:
+        with ExitStack() as stack:
+            runtime = stack.enter_context(DistributedWorker(entries, config, persistent=True,
+                                                            reset_persistent_windows=False))
+            transport = None
+            if args.peer_node is not None:
+                from blockspec.dsv41_packed_ep_ipc import ResidentHcclMappings
+                from blockspec.pypto_dsv41_cluster import ControlLink, RankPlan
+                from blockspec.pypto_dsv41_cluster_transport import ClusterCollectives
+
+                link = stack.enter_context(ControlLink.connect(
+                    args.peer_node, (args.rank0_ip, args.port), args.key_file.read_bytes().strip(), 300,
+                ))
+                pool = stack.enter_context(ThreadPoolExecutor(max_workers=1))
+                dispatcher = SimpleNamespace(devices=(0,), map_ranks=lambda task: [pool.submit(task, 0).result()])
+                plan = RankPlan((1, 1), tp, args.peer_node)
+                transport = stack.enter_context(ClusterCollectives(dispatcher, plan, link))
+                if devices != [0]:
+                    # Same-host emulation can leave both devices visible. This
+                    # controller still owns only one, addressed as local rank zero.
+                    select = transport.memory.select
+                    transport.memory.select = lambda _: select(devices[0])
+                transport.mappings = ResidentHcclMappings(runtime, transport.memory)
             print("Optimizer device worker ready", flush=True)
-            result.update(exercise(runtime, config, model, programs, tp, world, initial, staged=args.staged))
+            result.update(exercise(runtime, config, model, programs, tp, world, initial,
+                                   staged=args.staged, transport=transport))
         result["checkpoint_layer"] = args.layer if args.checkpoint else None
         result["checkpoint_lane"] = args.checkpoint_lane
     text = json.dumps(result)

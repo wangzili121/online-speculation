@@ -120,7 +120,7 @@ python /opt/dsv41-1122/compile_dsv41_pypto_packed_draft.py \
   --local-ranks 8 --block 16 --decode-capacity 16 --context 512 --slots-per-dp 2 --artifact-dir /results/draft
 ```
 
-两台都用已验证的 HCCL 网卡和 8 张可见设备。将 `NODE_RANK` 在 node7 设为 0、在 node8 设为 1，`RANK0_IP` 设为 node7 的 HCCL 地址。两端使用同一份请求 JSON 和相同的 draft head。请求形如 `[{"id":"r0","dp":0,"input_ids":[42,43,44],"new_tokens":4},{"id":"r1","dp":2,"input_ids":[45,46,47],"new_tokens":4}]`。两个 DP 归属不同节点。
+两台都用已验证的 HCCL 网卡和 8 张可见设备。将 `NODE_RANK` 在 node7 设为 0、在 node8 设为 1，`RANK0_IP` 设为 node7 的 HCCL 地址。CANN 9.0 的 `HCCL_CONNECT_TIMEOUT` 合法范围为 120–7200 秒。两端使用同一份请求 JSON 和相同的 draft head。请求形如 `[{"id":"r0","dp":0,"input_ids":[42,43,44],"new_tokens":4},{"id":"r1","dp":2,"input_ids":[45,46,47],"new_tokens":4}]`。两个 DP 归属不同节点。
 
 ```bash
 python /opt/dsv41-1122/run_dsv41_pypto_staged_target.py \
@@ -159,9 +159,11 @@ python /opt/dsv41-1122/prepare_dsv41_pypto_staged_gsm8k.py \
 
 梯度通信复用每 rank 一对 40 MiB 的驻留发送和接收缓冲，按参数大小建立视图，导出仍指向同一对分配。报告的 `gradient_scratch_bytes_per_rank` 只计这对缓冲。Adam 的 FP32 参数和动量账本另占显存，随更新层数增长。
 
+通信域建立后，EP 派发、回传和 DP 梯度归并都先在本机验证设备缓冲，再用同一次跨机握手核对张量布局和就绪状态。宿主回归覆盖冷启动的两次握手、热路径的一次握手，以及布局不匹配时拒绝提交设备通信。
+
 111 的四张 910B3 使用公开 W8A8 checkpoint 的第 39 层初始化 TP4 参数。构造梯度的三次发布与 Torch Adam 对照，权重抽样最大绝对误差为 `1.86e-9`。一次非有限梯度跳过发布，版本依序为 `1, 2, 2, 3`。该测试用宿主模拟 DP 求和。另用同机双卡实测 FP32 HCCL AllReduce 直接读写 IPC 缓冲视图，六轮逐元素一致。 [实卡报告与复跑命令](validation/dsv41/pypto-1122-949a-staged-adam-910b3.json)
 
-### GSM8K 在线更新报告
+### 早期 Serving 后端的 GSM8K 在线更新报告
 
 在两台公司节点使用同一份 checkout，分别执行 `run_dsv41_pypto_company_online.sh node7 report 1` 和 `run_dsv41_pypto_company_online.sh node8 report 1`。脚本使用现有 GSM8K 目录，从 `tuning.jsonl` 取 8 题在线更新，从 `quality_test.jsonl` 取 4 道留出题。默认每个 DP 分区放 1 个请求，最多 4 个并发，每题最多生成 32 个 token。两端可用相同的 `DSV41_REPORT_TRAIN`、`DSV41_REPORT_EVAL`、`DSV41_REPORT_TOKENS` 调整规模。
 
