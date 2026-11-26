@@ -410,13 +410,17 @@ def main():
         before = dict(vars(session.draft.stats)) if width else None
         metrics = dict(stage_seconds=Counter(), counts=Counter())
         start = perf_counter()
-        with profile_online(SimpleNamespace(current=metrics, lock=Lock())):
-            arm = generate(session, requests, capacities[0], DP_SIZE,
-                           width=width, teacher_rows=teacher_rows, reverse=reverse,
-                           optimizer=optimizer, online=online, slots_per_dp=min(args.slots_per_dp, 16),
-                           expected=None if reference is None else reference["generated"], mode=mode,
-                           pack_decode=args.pack_decode) | metrics
-        elapsed = perf_counter() - start
+        try:
+            with profile_online(SimpleNamespace(current=metrics, lock=Lock())):
+                arm = generate(session, requests, capacities[0], DP_SIZE,
+                               width=width, teacher_rows=teacher_rows, reverse=reverse,
+                               optimizer=optimizer, online=online, slots_per_dp=min(args.slots_per_dp, 16),
+                               expected=None if reference is None else reference["generated"], mode=mode,
+                               pack_decode=args.pack_decode) | metrics
+        finally:
+            elapsed = perf_counter() - start
+            # Retain timings for completed and interrupted arms in the full run log.
+            print(json.dumps(dict(stage="arm_profile", mode=mode, wall_seconds=elapsed, **metrics)), flush=True)
         output_tokens = sum(map(len, arm["generated"].values()))
         arm["wall_seconds"] = elapsed
         arm["wall_tok_per_s"] = output_tokens / elapsed

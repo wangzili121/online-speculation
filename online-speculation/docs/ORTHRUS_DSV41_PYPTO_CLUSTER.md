@@ -125,7 +125,9 @@ PYPTO_PACK_DECODE=1 bash "$RUN" smoke 1
 PYPTO_PACK_DECODE=1 bash "$RUN" study 1
 ```
 
-`prepare` 在两端依次用 CPU 准备初始化 head、编译产物和实验请求。`smoke` 和 `study` 启动前在两端检查镜像、权重分片、密钥、输入文件和设备路径。仅检查时在命令前加 `PYPTO_CHECK_ONLY=1`。短验用 DP0、DP2 上的请求验证 AR 逐 token 对照、draft、verify、接受、在线更新与发布。两端的 `passed` 和 `online_passed` 均为 `true` 后，再执行 `study`。两种运行都保存 `run.log` 与 `result.json` 到脚本打印的目录。需要分别启动时，两台可各自调用 `run_dsv41_pypto_company_staged.sh`，依次传入节点名、模式和更新层数。
+`prepare` 在两端依次用 CPU 准备初始化 head、编译产物和实验请求。`smoke` 和 `study` 启动前在两端检查镜像内的运行入口、模型补丁和在线更新模块与 checkout 是否一致，并检查权重分片、密钥、输入文件和设备路径。镜像代码落后时，在提示的节点执行 `refresh-1122` 和 `prepare`。仅检查时在命令前加 `PYPTO_CHECK_ONLY=1`。短验用 DP0、DP2 上的请求验证 AR 逐 token 对照、draft、verify、接受、在线更新与发布。两端的 `passed` 和 `online_passed` 均为 `true` 后，再执行 `study`。两种运行都保存 `run.log` 与 `result.json` 到脚本打印的目录。需要分别启动时，两台可各自调用 `run_dsv41_pypto_company_staged.sh`，依次传入节点名、模式和更新层数。
+
+终端显示阶段切换、首个及每十个批次或更新的进度、验收结果和错误摘要。完整编译和运行日志分别保存在 `prepare-*.log` 与 `run.log`。每次在线更新的耗时、发布版本和分阶段计时保留在运行日志和结果报告中。
 
 在 111 的 ARM64 CANN 环境，按上述尺寸编译了 Prefill、Decode、6 个 Draft 入口、13 个后缀反向入口和 24 个优化器入口，并将编译目录移动后回载。使用指定 W8A8 权重导出了初始化 head 的全部 40 层，验证了 K16 启动时读取的 head 格式和真实 tokenizer 生成的 GSM8K 请求。两台公司机器仍需实跑两种模式。
 

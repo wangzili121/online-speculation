@@ -28,12 +28,29 @@ docker image inspect "$image" >/dev/null 2>&1 || {
 mkdir -p "$root"
 base=(--rm --shm-size "${SHM_SIZE:-16g}" -v "$model:/model:ro" -v "$root:/results")
 
+show_progress() {
+  awk '
+    /^Rebuild / ||
+    /^\{"stage": "(load_resident_target|load_resident_draft|generate|arm_complete)"/ ||
+    /^\{"passed": / ||
+    /^([[:alnum:]_.]*(Error|Exception|Divergence)|Error response from daemon): / {
+      print; fflush(); next
+    }
+    /^\{"stage": "batch_complete"/  { if (++batches == 1 || batches % 10 == 0) {print; fflush()} }
+    /^\{"stage": "online_update"/   { if (++updates == 1 || updates % 10 == 0) {print; fflush()} }
+  '
+}
+
 if [[ "$mode" == prepare ]]; then
+  log="$(mktemp "$root/prepare-$1.XXXXXX.log")"
+  echo "Prepare log: $log"
   if [[ ! -e "$head" ]]; then
+    echo 'Exporting the initialized draft head.'
     mkdir -p "$(dirname "$head")"
     docker run "${base[@]}" --network none -e OMP_NUM_THREADS=4 -v "$(dirname "$head"):/head-output" "$image" \
       /opt/dsv41-1122/export_dsv41_orthrus_head.py \
-      --model /model --from-target --mask-token-id 129279 --output "/head-output/$(basename "$head")"
+      --model /model --from-target --mask-token-id 129279 --output "/head-output/$(basename "$head")" \
+      2>&1 | tee -a "$log" | show_progress
   fi
   [[ -r "$dataset/tuning.jsonl" ]] || { echo "Missing prepared GSM8K splits at $dataset." >&2; exit 2; }
   docker run "${base[@]}" --network none -v "$dataset:/gsm8k:ro" --entrypoint /bin/bash "$image" -lc '
@@ -94,7 +111,8 @@ warm = json.loads((p / "warmup.json").read_text())
 (p / "smoke.json").write_text(json.dumps([dict(warm[i], new_tokens=24) for i in (0, 2)]) + "\n")
 (p / "smoke-packed.json").write_text(json.dumps([dict(row, dp=2 * (i % 2), new_tokens=24)
                                                for i, row in enumerate(warm)]) + "\n")'\''
-  ' prepare "$last"
+  ' prepare "$last" 2>&1 | tee -a "$log" | show_progress
+  echo "$1 preparation complete."
   exit
 fi
 
@@ -143,6 +161,22 @@ if [[ "${PYPTO_CHECK_ONLY:-0}" == 1 ]]; then
   for device in /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc; do
     [[ -c "$device" ]] || { echo "Missing $device." >&2; exit 2; }
   done
+  project="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+  if ! docker run --rm --network none --entrypoint /bin/bash -v "$project:/checkout:ro" "$image" -ec '
+    cd /opt/dsv41-1122
+    for script in run_dsv41_pypto_staged_target.py compile_dsv41_pypto_{packed_draft,staged_adam}.py; do
+        cmp "/checkout/scripts/$script" "$script"
+    done
+    for patch in lib-1122-verification.patch moe-transport-1122-ipc.patch; do
+        cmp "/checkout/runtime/pypto_dsv41_a3/$patch" "$patch"
+    done
+    for module in /checkout/src/blockspec/{dsv41_{staged_*,packed_*,online_profile},pypto_dsv41_{packed_*,online_programs,optimizer_programs}}.py; do
+        cmp "$module" "orthrus/blockspec/${module##*/}"
+    done
+  '; then
+    echo "Image $image could not be verified against this checkout. Run dsv41_pypto_env.sh refresh-1122 on $1." >&2
+    exit 2
+  fi
   python3 - "$model" <<'PY'
 import json
 import sys
@@ -162,6 +196,7 @@ fi
 if [[ -n "${PYPTO_RUN_NAME:-}" ]]; then base+=(--name "$PYPTO_RUN_NAME"); fi
 run="$(mktemp -d "$root/$mode-$1.XXXXXX")"
 echo "Report: $run/result.json"
+echo "Full log: $run/run.log"
 docker run "${base[@]}" --network host "${cards[@]}" \
   --device /dev/davinci_manager --device /dev/devmm_svm --device /dev/hisi_hdc \
   -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro -v "$head:/head:ro" -v "$key:/cluster.key:ro" \
@@ -173,4 +208,4 @@ docker run "${base[@]}" --network host "${cards[@]}" \
   --prefill-capacity 272 --prefill-moe-tokens 64 --decode-capacity 16 "${geometry[@]}" \
   --draft-head /head --draft-graph "/results/draft-last$last" --adam-graph /results/adam \
   --draft-block 16 --capture-last-layers "$last" --output /run-results/result.json "${workload[@]}" \
-  2>&1 | tee "$run/run.log"
+  2>&1 | tee "$run/run.log" | show_progress
