@@ -3,6 +3,7 @@
 import importlib
 import hashlib
 from dataclasses import dataclass
+from inspect import signature
 from pathlib import Path
 from threading import Lock, get_native_id
 from time import monotonic_ns, perf_counter
@@ -243,7 +244,9 @@ class ResidentDraftAttention:
         visible = torch.arange(WINDOW + 1)
         mask = torch.zeros((WINDOW + 1, WINDOW), dtype=torch.float32)
         mask.masked_fill_(positions[None, :] >= visible[:, None], -torch.inf)
-        resident.pin(mask, self.rank_ids.values(), readonly=True, name="orthrus/swa-history-bias")
+        # Draft is loaded lazily after the target checkpoint counters are sealed.
+        accounting = {"auxiliary": True} if "auxiliary" in signature(resident.pin).parameters else {}
+        resident.pin(mask, self.rank_ids.values(), readonly=True, name="orthrus/swa-history-bias", **accounting)
         self.swa_history_bias = tuple(mask[i:i + 1] for i in range(WINDOW + 1))
         self.reuse_swa_controls = True
         self.clear_index_scratch = False
