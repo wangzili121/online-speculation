@@ -1,0 +1,24 @@
+{
+  "host": "111",
+  "physical_devices": [1, 2, 3, 4],
+  "hardware": "Ascend 910B3",
+  "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+  "lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "scope": "Real checkpoint layer 0 Attention and final LM head; two independent request slots and identical token positions compared across the two dispatch layouts.",
+  "compile_and_run": "python validate_dsv41_pypto_packed_decode_attention.py --devices 0,1,2,3 --decode-capacity 16 --context 512 --slots-per-dp 2 --output /results/tp4-verify --checkpoint /model",
+  "verification_rows": [3, 1],
+  "separate_verify_batches": 2,
+  "packed_verify_batches": 1,
+  "attention_hidden_exact": true,
+  "logits_exact": true,
+  "greedy_token_ids": [55514, 50439, 70977, 12897],
+  "host_scheduler_test": {
+    "requests": 4,
+    "new_tokens_per_request": 6,
+    "accepted_draft_tokens": 0,
+    "separate_decode_steps": 10,
+    "packed_decode_steps": 5,
+    "greedy_token_parity": true
+  },
+  "dual_host_throughput_measured": false
+}

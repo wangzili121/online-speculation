@@ -645,3 +645,44 @@ def test_staged_generation_updates_at_committed_rows_and_reuses_new_head(batch_t
     with pytest.raises(runner.GreedyDivergence) as failure:
         runner.generate(Session(), cases, 16, 4, width=8, slots_per_dp=1, expected=expected)
     assert failure.value.witness == dict(request="0/0", position=1, phase="verify/accept", expected=99, observed=4)
+
+
+def test_staged_verify_packs_greedy_rows_for_other_live_requests():
+    from collections import namedtuple
+
+    path = Path(__file__).parents[1] / "scripts" / "run_dsv41_pypto_staged_target.py"
+    spec = spec_from_file_location("staged_target", path)
+    runner = module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    handle_type = namedtuple("Handle", "request_id dp")
+
+    class Session:
+        verify_capacity = 16
+
+        def admit(self, request, dp, size):
+            return handle_type(request, dp)
+
+        def prefill_greedy_batch(self, queries):
+            return {handle: tokens[-1] + 1 for handle, tokens in queries}
+
+        def speculate_batch(self, queries, *, width, output_limits, student_capture):
+            assert student_capture is None
+            for dp in (0, 2):
+                limits = [value for handle, value in output_limits.items() if handle.dp == dp]
+                assert sum(limits) <= self.verify_capacity and sum(limit > 1 for limit in limits) <= 1
+            proposals = {handle: (999,) if limit > 1 else () for handle, limit in output_limits.items()}
+            emitted = {handle: (anchor + 1,) for handle, anchor in queries}
+            return SimpleNamespace(proposals=proposals, verified=SimpleNamespace(emitted=emitted))
+
+        def release(self, handle):
+            pass
+
+    cases = [dict(id=f"{dp}/{slot}", dp=dp, input_ids=[dp, slot], new_tokens=6)
+             for slot in (0, 1) for dp in (0, 2)]
+    baseline = runner.generate(Session(), cases, 16, 4, width=8, slots_per_dp=2)
+    packed = runner.generate(Session(), cases, 16, 4, width=8, slots_per_dp=2, pack_decode=True,
+                             expected=baseline["generated"])
+    assert packed["generated"] == baseline["generated"]
+    assert packed["decode_steps"] == 5 and baseline["decode_steps"] == 10
+    assert packed["speculation"]["packed_decode_requests"] == 10
+    assert packed["speculation"]["accepted"] == 0

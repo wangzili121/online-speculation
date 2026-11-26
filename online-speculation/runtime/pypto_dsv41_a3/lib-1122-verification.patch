@@ -1132,7 +1132,7 @@ index 502fa5b..365e535 100644
  @pl.jit.inline(auto_scope=False)
  def decode_o_proj_nz_from_attention(
 diff --git a/models/deepseek_v4_1_flash_a3/packed.py b/models/deepseek_v4_1_flash_a3/packed.py
-index 98f9f0c..91ad860 100644
+index 98f9f0c..7fea548 100644
 --- a/models/deepseek_v4_1_flash_a3/packed.py
 +++ b/models/deepseek_v4_1_flash_a3/packed.py
 @@ -11,6 +11,7 @@
@@ -1207,7 +1207,7 @@ index 98f9f0c..91ad860 100644
          except BaseException:
              self.failed = True
              raise
-@@ -108,11 +148,319 @@ class PackedSession:
+@@ -108,11 +148,334 @@ class PackedSession:
 
      def advance_batch(self, phase, queries):
          """Run (handle, token IDs) pairs in caller order. Return sampled rows keyed by handle."""
@@ -1455,31 +1455,40 @@ index 98f9f0c..91ad860 100644
 +                                      for handle, rows in feedback.items() if handle in requested})
 +
 +    def speculate_batch(self, anchors, *, width=8, teacher_limits=None, output_limits=None, student_capture=None):
-+        """Draft one request per DP and verify the resulting candidates in one wave."""
++        """Draft one request per DP and use spare Verify rows for single-token queries."""
 +        from blockspec.dsv41_online_profile import timed_stage
 +        from blockspec.dsv41_packed_proposer import DraftRequest
 +
 +        self._ready()
 +        if self.draft is None:
 +            raise ValueError("Speculative dispatch requires a bound Orthrus head")
-+        if not 2 <= width <= min(self.capacities[1], 16, self.draft.block):
++        if not 2 <= width <= min(self.verify_capacity, self.draft.block):
 +            raise ValueError("Speculative width exceeds the compiled draft or Verify capacity")
-+        by_owner, scheduled = {}, []
++        queries, draft_owners, scheduled = {}, set(), []
++        verify_rows = [0] * C.DP_SIZE
 +        for handle, anchor in anchors:
 +            record = self._lookup(handle)
 +            if not 0 <= anchor < C.FLASH.vocab_size or not record.prompt_length <= record.committed < self.context:
 +                raise ValueError("Speculation requires a valid anchor after Prefill")
++            if handle in queries:
++                raise ValueError("Invalid or repeated query")
 +            owner = handle.dp * C.TP_SIZE
-+            if owner in by_owner:
-+                raise ValueError("The draft wave supports one live request per DP")
-+            by_owner[owner] = handle, anchor
 +            limit = width if output_limits is None else output_limits[handle]
 +            if type(limit) is not int or not 1 <= limit <= width:
 +                raise ValueError("Speculative output limit must be within the verification width")
++            queries[handle] = anchor
 +            if limit > 1 and record.committed + self.draft.block <= self.context:
++                if owner in draft_owners:
++                    raise ValueError("The draft wave supports one draft request per DP")
++                draft_owners.add(owner)
 +                scheduled.append(DraftRequest(anchor, record.committed, owner, limit - 1, handle, tuple(record.pages)))
-+        if not by_owner:
++                verify_rows[handle.dp] += limit
++            else:
++                verify_rows[handle.dp] += 1
++        if not queries:
 +            raise ValueError("Empty dispatch")
++        if max(verify_rows) > self.verify_capacity:
++            raise ValueError("Batch exceeds the artifact token capacity on a DP owner")
 +        if student_capture is not None:
 +            handle, rows = student_capture
 +            self._lookup(handle)
@@ -1501,10 +1510,11 @@ index 98f9f0c..91ad860 100644
 +
 +                        copy = getattr(self.draft, "teacher_copy", None)
 +                        self.feedback[handle] = copy.capture(student) if copy is not None else PackedTeacherRows(student)
-+            proposals = {handle: tuple(tokens.get(owner, ())) for owner, (handle, _) in by_owner.items()}
++            proposals = dict.fromkeys(queries, ())
++            proposals.update((request.history_key, tuple(tokens.get(request.owner, ()))) for request in scheduled)
 +            with timed_stage("verify_accept"):
 +                verified = self.verify_batch(
-+                    ((handle, (anchor, *proposals[handle])) for handle, anchor in by_owner.values()),
++                    ((handle, (anchor, *proposals[handle])) for handle, anchor in queries.items()),
 +                    teacher_limits=teacher_limits,
 +                )
 +        except BaseException:
@@ -1512,22 +1522,27 @@ index 98f9f0c..91ad860 100644
 +            raise
 +        return SpeculativeWave(verified, proposals, student)
 +
++    @property
++    def verify_capacity(self):
++        from .lm_head import MAX_LOGIT_ROWS
++
++        return min(self.capacities[1], MAX_LOGIT_ROWS)
++
 +    def _advance(self, phase, queries, *, verify=False, greedy=False, teacher_limits=None, teacher_logits=None,
 +                 resident_teacher=None):
          self._ready()
          if phase not in ("prefill", "decode"):
              raise ValueError("Expected prefill or decode")
 +        if verify:
-+            from .lm_head import MAX_LOGIT_ROWS
 +            from blockspec.pypto_dsv41_greedy import verified_prefix
 +
          index = int(phase == "decode")
          capacity = self.capacities[index]
-+        row_limit = min(capacity, MAX_LOGIT_ROWS) if verify else capacity
++        row_limit = self.verify_capacity if verify else capacity
          groups = [[] for _ in range(C.DP_SIZE)]
          seen = set()
          queries = list(queries)
-@@ -124,27 +472,72 @@ class PackedSession:
+@@ -124,27 +487,72 @@ class PackedSession:
              if handle in seen or not tokens or any(type(t) is not int or not 0 <= t < C.FLASH.vocab_size for t in tokens):
                  raise ValueError("Invalid or repeated query")
              end = record.committed + len(tokens)
@@ -1606,7 +1621,7 @@ index 98f9f0c..91ad860 100644
          g = self.graphs
          # Prefill and Decode share the same packed positions, page maps and cache allocations.
          template = g.host_io["idle_inputs"][0]
-@@ -161,20 +554,27 @@ class PackedSession:
+@@ -161,20 +569,27 @@ class PackedSession:
              end = start + len(tokens)
              needed = (end + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              record.pages.extend(self.free_pages[dp].pop() for _ in range(needed - len(record.pages)))
@@ -1638,7 +1653,7 @@ index 98f9f0c..91ad860 100644
          pos = torch.tensor(positions, dtype=torch.int32)
          req = torch.tensor(owners, dtype=torch.int32)
          slots, window, _ = window_metadata(pos, req, table)
-@@ -210,7 +610,11 @@ class PackedSession:
+@@ -210,7 +625,11 @@ class PackedSession:
                            identity_rows=order, replay_rows=order)
          return values, sampled, count
 
@@ -1651,7 +1666,7 @@ index 98f9f0c..91ad860 100644
          g = self.graphs
          selections = []
          with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
-@@ -221,7 +625,7 @@ class PackedSession:
+@@ -221,7 +640,7 @@ class PackedSession:
                  if not group and dp not in self._active_dps[index]:
                      continue
                  if group:
@@ -1660,7 +1675,7 @@ index 98f9f0c..91ad860 100644
                  else:
                      if index not in self._idle_values:
                          self._idle_values[index] = self._inputs(dp, [], index, capacity)
-@@ -243,6 +647,19 @@ class PackedSession:
+@@ -243,6 +662,19 @@ class PackedSession:
          self._active_dps[index] = {dp for dp, group in enumerate(groups) if group}
          args = [g.arguments[index][name] for name in g.names[index]]
          g.runtime.run(g.programs[index], *args, config=g.config)
@@ -1680,7 +1695,7 @@ index 98f9f0c..91ad860 100644
          result = {}
          for handle, rank, row in selections:
              logits = g.host_io["logits"][0]
-@@ -252,6 +669,55 @@ class PackedSession:
+@@ -252,6 +684,55 @@ class PackedSession:
              result[handle] = logits.clone()
          return result
 
@@ -1736,7 +1751,7 @@ index 98f9f0c..91ad860 100644
      def _upload_prefill_group(self, owner, values, workers):
          g = self.graphs
          inputs = {}
-@@ -282,9 +748,77 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
+@@ -282,9 +763,77 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
                                                 (args.decode_runtime_dir, "decode", args.decode_capacity))]
      if any(m["history_capacity"] != args.context_capacity for m in manifests):
          raise ValueError("History capacity differs from the compiled graph pair")
@@ -2600,10 +2615,10 @@ index d920055..c3262a3 100644
          copy("engram_rotation", checkpoint.rotation_blocks())
          total_layers = M.num_hidden_layers
 diff --git a/tests/contract/test_ds41_packed.py b/tests/contract/test_ds41_packed.py
-index 961d34e..50953ed 100644
+index 961d34e..519ad19 100644
 --- a/tests/contract/test_ds41_packed.py
 +++ b/tests/contract/test_ds41_packed.py
-@@ -64,3 +64,498 @@ def test_packed_page_boundary_and_recycled_handle():
+@@ -64,3 +64,553 @@ def test_packed_page_boundary_and_recycled_handle():
      with pytest.raises(ValueError, match="Expired"):
          session.advance_batch("decode", [(a, [1])])
      assert new is not a and live.pages == live_pages
@@ -2752,6 +2767,61 @@ index 961d34e..50953ed 100644
 +    assert wave.verified.emitted == {a: (11, 54), b: (42,), c: (72,)}
 +    assert wave.verified.teacher_logits == {b: "teacher"}
 +    assert wave.student == ("device-logits", 5)
++
++
++def test_verify_serves_a_second_request_in_the_drafts_dp_after_rejection():
++    from models.deepseek_v4_1_flash_a3 import config as c
++    from models.deepseek_v4_1_flash_a3.host import prepare_prefill_inputs
++    from models.deepseek_v4_1_flash_a3.packed import PackedSession
++    from models.deepseek_v4_1_flash_a3.utils import prepare_decode_inputs
++
++    history, staged_rows = {}, []
++    template = prepare_prefill_inputs(torch.empty(0, c.FLASH.hidden_size), 16, max_seq_len=256, request_slots=2)
++
++    def lookup(ids, capacity, position, *, request_id):
++        history[request_id] = history[request_id][:position] + list(ids)
++        return torch.zeros(2, capacity, template["engram_lookup"].shape[-1], dtype=torch.bfloat16)
++
++    def propose(requests, *, uploads):
++        request, = requests
++        assert (request.history_key, request.candidates) == (drafted, 2)
++        return {0: [11, 22]}
++
++    def stage(phase, owner, data, pool):
++        assert (phase, owner) == (1, 0)
++        staged_rows.append((data["query_start_loc"].tolist(), data["state_block_table"].flatten().tolist()))
++        assert set(data["c1a_index_block_table"][:, 0].tolist()) == {0, 1}
++
++    def read(phase, owner, name, output):
++        assert (phase, owner, name) == (1, 0, "sampled_ids")
++        output[:, 0] = torch.tensor([11, 33, 99, 77])
++
++    templates = template, prepare_decode_inputs(template)
++    staged = SimpleNamespace(templates=templates, owns=lambda dp: dp == 0, stage=stage, read=read,
++                             decode=SimpleNamespace(step=lambda stage, counts: counts_seen.append(counts)),
++                             link=SimpleNamespace(exchange=lambda *_: {}))
++    graphs = SimpleNamespace(staged_target=staged, host_io={"idle_inputs": templates},
++                             weights=SimpleNamespace(lookup_rows=lambda ids: torch.zeros(len(ids), c.FLASH.hidden_size)),
++                             engram=SimpleNamespace(lookup=lookup, history=history),
++                             rope_tables=(template["freqs_cos"], template["freqs_sin"]))
++    counts_seen = []
++    session = PackedSession(graphs, 2, 256, (16, 16),
++                            draft=SimpleNamespace(block=16, propose_batch=propose))
++    drafted, plain = [session.admit(key, 0, 2) for key in ("drafted", "plain")]
++    for handle in (drafted, plain):
++        session._lookup(handle).committed = 2
++        history[handle] = [1, 2]
++
++    with pytest.raises(ValueError, match="token capacity"):
++        session.speculate_batch([(drafted, 5), (plain, 6)], width=16, output_limits={drafted: 16, plain: 1})
++    assert not counts_seen and not session.failed
++    wave = session.speculate_batch([(drafted, 5), (plain, 6)], width=3, output_limits={drafted: 3, plain: 1})
++    assert counts_seen == [[4, 0, 0, 0]]
++    assert staged_rows == [([0, 3, 4], [0, 1])]
++    assert wave.proposals == {drafted: (11, 22), plain: ()}
++    assert wave.verified.emitted == {drafted: (11, 33), plain: (77,)}
++    assert [session._lookup(handle).committed for handle in (drafted, plain)] == [4, 3]
++    assert history == {drafted: [1, 2, 5, 11], plain: [1, 2, 6]}
 +
 +
 +@pytest.mark.parametrize("continue_with_ar", [False, True])

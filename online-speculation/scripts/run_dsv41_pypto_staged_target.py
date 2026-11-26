@@ -43,7 +43,7 @@ def workload_batches(cases, slots_per_dp):
 
 
 def _generate_batch(session, cases, prefill_rows, dp_size, *, width, teacher_rows, reverse, optimizer, online, progress,
-                    expected):
+                    expected, pack_decode):
     """Pack prompt chunks by DP owner and continue from device-greedy IDs."""
     handles = [session.admit(case["id"], case["dp"], len(case["input_ids"])) for case in cases]
     output = {handle: [] for handle in handles}
@@ -76,7 +76,7 @@ def _generate_batch(session, cases, prefill_rows, dp_size, *, width, teacher_row
     prefill_seconds = perf_counter() - start
     start = perf_counter()
     steps = 0
-    speculation = Counter(draft_rounds=0, draft_requests=0, proposed=0, accepted=0)
+    speculation = Counter(draft_rounds=0, draft_requests=0, proposed=0, accepted=0, packed_decode_requests=0)
     replay = None
     captured_at = 0
     while pending := [(handle, case["new_tokens"] - len(output[handle])) for case, handle in requests
@@ -87,6 +87,13 @@ def _generate_batch(session, cases, prefill_rows, dp_size, *, width, teacher_row
             for handle, remaining in pending:
                 owners.setdefault(handle.dp, (handle, min(width, remaining)))
             limits = dict(owners.values())
+            if pack_decode:
+                reserved = {dp: limit for dp, (_, limit) in owners.items()}
+                for handle, _ in pending:
+                    if handle not in limits and reserved[handle.dp] < session.verify_capacity:
+                        limits[handle] = 1
+                        reserved[handle.dp] += 1
+                        speculation["packed_decode_requests"] += 1
             capture = None
             capture_due = progress is None or (len(progress.updates) < online["max_updates"]
                                                and progress.completed_waves >= progress.next_capture_wave)
@@ -163,11 +170,12 @@ def _generate_batch(session, cases, prefill_rows, dp_size, *, width, teacher_row
 
 
 def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, reverse=None,
-             optimizer=None, online=None, slots_per_dp=16, expected=None, mode=None):
+             optimizer=None, online=None, slots_per_dp=16, expected=None, mode=None, pack_decode=False):
     """Reuse the resident session across bounded batches and keep a continuous update schedule."""
     progress = OnlineProgress() if optimizer is not None else None
     report = dict(generated={}, prefill_seconds=0., decode_seconds=0., decode_steps=0,
-                  decode_tokens=0, speculation=Counter(draft_rounds=0, draft_requests=0, proposed=0, accepted=0),
+                  decode_tokens=0, speculation=Counter(draft_rounds=0, draft_requests=0, proposed=0, accepted=0,
+                                                       packed_decode_requests=0),
                   capture=None, backward=None, request_batches=0, max_live_requests=0)
     for batch in workload_batches(cases, slots_per_dp):
         try:
@@ -175,6 +183,7 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, 
                 session, batch, prefill_rows, dp_size, width=width, optimizer=optimizer, online=online, progress=progress,
                 teacher_rows=teacher_rows if report["capture"] is None else 0,
                 reverse=reverse if report["capture"] is None else None, expected=expected,
+                pack_decode=pack_decode,
             )
         except GreedyDivergence as error:
             if mode is not None:
@@ -191,8 +200,9 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, 
         if mode is not None:
             print(json.dumps(dict(stage="batch_complete", mode=mode, batch=report["request_batches"],
                                   requests_finished=len(report["generated"]), requests_total=len(cases),
-                                  prefill_seconds=batch_report["prefill_seconds"],
-                                  decode_seconds=batch_report["decode_seconds"])), flush=True)
+                                  **{key: batch_report[key] for key in ("prefill_seconds", "decode_seconds",
+                                                                         "decode_steps", "decode_tokens")},
+                                  speculation=batch_report["speculation"])), flush=True)
     tokens, elapsed = report["decode_tokens"], report["decode_seconds"]
     report["decode_tok_per_s"] = tokens / elapsed if tokens else 0.
     counts = report["speculation"]
@@ -248,6 +258,8 @@ def main():
     parser.add_argument("--draft-graph", type=Path, help="Compiled eight-rank draft bundle")
     parser.add_argument("--draft-block", type=int, choices=(16, 32), default=16)
     parser.add_argument("--verify-width", type=int, choices=range(2, 17), default=8)
+    parser.add_argument("--pack-decode", action="store_true",
+                        help="Use spare Verify rows for other live requests in the same DP")
     parser.add_argument("--capture-last-layers", type=int, choices=range(27), default=0,
                         metavar="N", help="Retain N suffix layers and verify one teacher replay")
     parser.add_argument("--teacher-rows", type=int, choices=range(1, 16), default=7)
@@ -368,6 +380,7 @@ def main():
                         + find_weight_index(args.draft_head).read_bytes()).hexdigest(),
             graphs=sha256((args.draft_graph / "orthrus_draft_manifest.json").read_bytes()).hexdigest(),
             width=args.verify_width,
+            pack_decode=args.pack_decode,
             teacher_rows=args.teacher_rows if args.capture_last_layers else 0,
             check_backward=args.check_backward,
             resident_teacher=args.resident_teacher,
@@ -384,7 +397,8 @@ def main():
             arm = generate(session, requests, capacities[0], DP_SIZE,
                            width=width, teacher_rows=teacher_rows, reverse=reverse,
                            optimizer=optimizer, online=online, slots_per_dp=min(args.slots_per_dp, 16),
-                           expected=None if reference is None else reference["generated"], mode=mode) | metrics
+                           expected=None if reference is None else reference["generated"], mode=mode,
+                           pack_decode=args.pack_decode) | metrics
         elapsed = perf_counter() - start
         arm["wall_seconds"] = elapsed
         arm["wall_tok_per_s"] = sum(map(len, arm["generated"].values())) / elapsed

@@ -13,7 +13,7 @@ def main():
     parser.add_argument("--context", type=int, default=512)
     parser.add_argument("--slots-per-dp", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--checkpoint", type=Path, help="Run a real-weight TP4 layer-state smoke after compilation")
+    parser.add_argument("--checkpoint", type=Path, help="Run TP4 layer-state or two-request mixed-batch parity")
     parser.add_argument("--reuse", action="store_true", help="Run on-device using the artifacts in --output")
     args = parser.parse_args()
 
@@ -66,14 +66,15 @@ def main():
     report = dict(passed=True, compiled=True, local_ranks=ranks, rows=args.decode_capacity,
                   context=args.context, slots_per_dp=args.slots_per_dp, artifacts=artifacts)
     if args.checkpoint:
-        if ranks != 4 or args.slots_per_dp != 1:
-            parser.error("The real-weight layer-state fixture needs one TP4 group and one request slot")
+        if ranks != 4 or args.slots_per_dp not in (1, 2):
+            parser.error("The real-weight fixture needs one TP4 group and one or two request slots")
         report["device_checks"] = exercise(args, devices, artifacts)
     print(json.dumps(report), flush=True)
 
 
 def exercise(args, devices, artifacts):
     from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
 
     import torch
     from blockspec.dsv41_packed_decode import decode_attention_scratch
@@ -81,6 +82,7 @@ def exercise(args, devices, artifacts):
     from models.deepseek_v4_1_flash_a3.engram import HostEngram
     from models.deepseek_v4_1_flash_a3.host import prepare_resident_inputs
     from models.deepseek_v4_1_flash_a3.lm_head import MAX_LOGIT_ROWS, SAMPLED_IDS_PAD
+    from models.deepseek_v4_1_flash_a3.packed import PackedSession
     from models.deepseek_v4_1_flash_a3.utils import decode_cache_views, DECODE_CACHE_NAMES, prepare_decode_inputs
     from models.deepseek_v4_1_flash_a3.weights import Checkpoint, ResidentWeights
     from pypto.backend import BackendType
@@ -97,8 +99,10 @@ def exercise(args, devices, artifacts):
     weights = ResidentWeights(checkpoint)
     engram = HostEngram(checkpoint, Tokenizer.from_file(str(checkpoint.root / "tokenizer.json")))
     rows, model = args.decode_capacity, FLASH
-    token_ids = [42, 43, 44]
-    prefill = prepare_resident_inputs(weights, token_ids, rows, max_seq_len=args.context, engram=engram)
+    mixed = args.slots_per_dp == 2
+    token_ids = [] if mixed else [42, 43, 44]
+    prefill = prepare_resident_inputs(weights, token_ids, rows, max_seq_len=args.context, engram=engram,
+                                      request_slots=args.slots_per_dp)
     decode = prepare_decode_inputs(prefill)
     caches = decode_cache_views({source: prefill[source] for source in DECODE_CACHE_NAMES.values()})
     view_rows = caches["window_cache_pool"].shape[0] // model.num_hidden_layers
@@ -107,14 +111,18 @@ def exercise(args, devices, artifacts):
                    sampled_ids=((MAX_LOGIT_ROWS, SAMPLED_IDS_PAD), torch.int32))
     # The first host processes rank 0..7. Simulate one TP group on the
     # second host to exercise a different global checkpoint shard on each chip.
-    layers = (0, 1, 2, 3, 20, 24, 25)
+    layers = (0,) if mixed else (0, 1, 2, 3, 20, 24, 25)
+    checkpoint_offset = 0 if mixed else 8
+    if mixed:
+        engram.lookup((42,), 1, 0, request_id="warmup")
     ranks = tuple(range(len(devices)))
     with DistributedWorker([attention, head], config, persistent=True, reset_persistent_windows=False) as runtime:
         handles = [{name: runtime.alloc_tensor(shape, dtype, worker_id=rank)
                     for name, (shape, dtype) in weights.tensor_layouts.items()} for rank in ranks]
         with ThreadPoolExecutor(max_workers=len(devices)) as pool_threads:
             list(pool_threads.map(
-                lambda rank: weights.upload(runtime, rank + 8, handles[rank], layers=layers, worker_id=rank),
+                lambda rank: weights.upload(runtime, rank + checkpoint_offset, handles[rank],
+                                            layers=layers, worker_id=rank),
                 ranks,
             ))
         for rank, rank_handles in enumerate(handles):
@@ -140,6 +148,39 @@ def exercise(args, devices, artifacts):
         attention_args, head_args = tuple(bound(attention)), tuple(bound(head))
         runtime.run(attention, *attention_args, 0, 0)
         runtime.run(head, *head_args, 0)
+        if mixed:
+            staged = SimpleNamespace(host_io={"idle_inputs": (prefill, decode)}, weights=weights, engram=engram,
+                                     rope_tables=(prefill["freqs_cos"], prefill["freqs_sin"]))
+
+            def dispatch(groups):
+                session = PackedSession(staged, 2, args.context, (rows, rows))
+                records = [session._lookup(session.admit(name, 0, 1)) for name in ("drafted", "plain")]
+                for record in records:
+                    record.pages.append(session.free_pages[0].pop())
+                outputs = []
+                for group in groups:
+                    queries = [(records[index], ids) for index, ids in group]
+                    values, _, live = session._inputs(0, queries, 1, rows, sample_all=True)
+                    for rank in ranks:
+                        inputs = dict(caches, **values, count=torch.tensor([live, rank], dtype=torch.int32))
+                        for name, value in inputs.items():
+                            runtime.copy_to(handles[rank][name].data_ptr, value.data_ptr(), value.nbytes, worker_id=rank)
+                    runtime.run(attention, *attention_args, 0, 1)
+                    activation = read("attention_hidden")[:live]
+                    runtime.run(head, *head_args, 1)
+                    outputs.append((activation, read("logits")[:live], read("sampled_ids")[:live, 0]))
+                return tuple(torch.cat(values) for values in zip(*outputs, strict=True))
+
+            draft_rows, plain_row = (0, (42, 43, 44)), (1, (73,))
+            separate = dispatch(((draft_rows,), (plain_row,)))
+            together = dispatch(((draft_rows, plain_row),))
+            matched = {name: torch.equal(a, b) for name, a, b in zip(
+                ("attention_hidden", "logits", "sampled_ids"), separate, together, strict=True,
+            )}
+            assert all(matched.values()), matched
+            return dict(checkpoint_ranks=list(ranks), attention_layers=[0], physical_slots=2,
+                        verification_rows=[3, 1], separate_verify_batches=2, packed_verify_batches=1,
+                        exact_values=matched, compared_token_ids=together[2].tolist())
         for layer in layers:
             runtime.run(attention, *attention_args, layer, 1)
             output = read("attention_hidden")[:len(token_ids)]

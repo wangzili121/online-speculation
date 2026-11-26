@@ -63,17 +63,24 @@ if [[ "$mode" == prepare ]]; then
     python -c '\''import json; from pathlib import Path
 p = Path("/results/gsm8k")
 warm = json.loads((p / "warmup.json").read_text())
-(p / "smoke.json").write_text(json.dumps([dict(warm[i], new_tokens=24) for i in (0, 2)]) + "\n")'\''
+(p / "smoke.json").write_text(json.dumps([dict(warm[i], new_tokens=24) for i in (0, 2)]) + "\n")
+(p / "smoke-packed.json").write_text(json.dumps([dict(row, dp=2 * (i % 2), new_tokens=24)
+                                               for i, row in enumerate(warm)]) + "\n")'\''
   ' prepare "$last"
   exit
 fi
 
 case "$mode" in
-  smoke) workload=(--workload /results/gsm8k/smoke.json --teacher-rows 7 --update-every 2 --max-updates 2 --verify-width 8) ;;
+  smoke)
+    smoke=/results/gsm8k/smoke.json
+    if [[ "${PYPTO_PACK_DECODE:-0}" == 1 ]]; then smoke=/results/gsm8k/smoke-packed.json; fi
+    workload=(--workload "$smoke" --teacher-rows 7 --update-every 2 --max-updates 2 --verify-width 8)
+    ;;
   study) workload=(--workload /results/gsm8k/online.json --warmup-workload /results/gsm8k/warmup.json
           --eval-workload /results/gsm8k/heldout.json --teacher-rows 7 --update-every 16 --max-updates 128 --verify-width 8) ;;
   *) echo 'Choose prepare, smoke or study.' >&2; exit 2 ;;
 esac
+if [[ "${PYPTO_PACK_DECODE:-0}" == 1 ]]; then workload+=(--pack-decode); fi
 [[ -r "$key" && -s "$key" ]] || { echo "Missing cluster key at $key." >&2; exit 2; }
 [[ -r "$head/manifest.json" ]] || { echo "Missing draft head at $head. Run prepare first." >&2; exit 2; }
 for entry in prefill decode "draft-last$last" adam gsm8k; do
