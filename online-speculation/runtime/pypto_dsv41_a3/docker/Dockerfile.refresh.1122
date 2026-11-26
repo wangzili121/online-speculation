@@ -1,0 +1,32 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+WORKDIR /opt/dsv41-1122
+
+COPY online-speculation/runtime/pypto_dsv41_a3/lib-1122-verification.patch \
+     online-speculation/runtime/pypto_dsv41_a3/moe-transport-1122-ipc.patch \
+     online-speculation/runtime/pypto_dsv41_a3/pypto-1122-stacked-nz.patch \
+     online-speculation/runtime/pypto_dsv41_a3/runtime-release.patch /tmp/pinned-patches/
+RUN set -e; \
+    test "$(git -C pypto-lib rev-parse HEAD)" = 949a18db40fca66f677fb041e98b32f824e7afb1; \
+    test "$(git -C pypto rev-parse HEAD)" = 2e31e0c2a604c3c859c1268a937f97b0ee2d747f; \
+    test "$(git -C pypto/runtime rev-parse HEAD)" = a5349f42c71666bb8cacfb3759f34eeda1572beb; \
+    for patch in moe-transport-1122-ipc.patch pypto-1122-stacked-nz.patch runtime-release.patch; do \
+        cmp "$patch" "/tmp/pinned-patches/$patch"; \
+    done; \
+    git -C pypto-lib apply --reverse --check "$PWD/lib-1122-verification.patch"; \
+    git -C pypto-lib apply --reverse "$PWD/lib-1122-verification.patch"; \
+    git -C pypto-lib apply /tmp/pinned-patches/lib-1122-verification.patch; \
+    cp /tmp/pinned-patches/lib-1122-verification.patch .; \
+    rm -r /tmp/pinned-patches
+
+COPY online-speculation/src/blockspec /opt/dsv41-1122/orthrus/blockspec
+COPY online-speculation/scripts/run_dsv41_pypto_staged_target.py \
+     online-speculation/scripts/prepare_dsv41_gsm8k.py \
+     online-speculation/scripts/prepare_dsv41_pypto_staged_gsm8k.py \
+     online-speculation/scripts/export_dsv41_orthrus_head.py \
+     online-speculation/scripts/validate_dsv41_pypto_packed_prefill.py \
+     online-speculation/scripts/validate_dsv41_pypto_packed_decode_attention.py \
+     online-speculation/scripts/validate_dsv41_pypto_staged_teacher.py \
+     online-speculation/scripts/compile_dsv41_pypto_packed_draft.py \
+     online-speculation/scripts/compile_dsv41_pypto_staged_adam.py /opt/dsv41-1122/

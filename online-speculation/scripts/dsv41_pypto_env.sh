@@ -5,7 +5,9 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 action="${1:-help}"
 if [[ $# -gt 0 ]]; then shift; fi
 default_image=orthrus-dsv41-pypto:72a62d1
-if [[ "$action" == build-1122 ]]; then default_image=orthrus-dsv41-pypto:1122-949a18d; fi
+if [[ "$action" == build-1122 || "$action" == refresh-1122 ]]; then
+  default_image=orthrus-dsv41-pypto:1122-949a18d
+fi
 if [[ "$action" == cluster-check || "$action" == cluster-accept ||
       ( "$action" == fabric-check && "${1:-}" == node* ) ]]; then
   node="${1:-}"
@@ -134,7 +136,7 @@ case "$action" in
     exec docker build "${build_options[@]}" \
       -t "$image" -f "$recipe" "$root/.."
     ;;
-  refresh-image)
+  refresh-image|refresh-1122)
     docker image inspect "$image" >/dev/null 2>&1 || {
       echo "Base image is missing: $image" >&2; exit 2;
     }
@@ -150,14 +152,23 @@ case "$action" in
     git -C "$root/.." archive --format=tar HEAD online-speculation | \
       tar -C "$refresh_context" -xf -
     recipe="$refresh_context/online-speculation/runtime/pypto_dsv41_a3/docker/Dockerfile.refresh"
+    if [[ "$action" == refresh-1122 ]]; then recipe+=.1122; fi
     # This refresh is deliberately offline: it only layers the current
     # repository's model patch and Python sources over the pinned image.
-    DOCKER_BUILDKIT=0 docker build \
-      --build-arg "BASE_IMAGE=$base_image" \
-      -t "$image" -f "$recipe" "$refresh_context"
-    docker run --rm --network none --entrypoint /bin/bash "$image" -lc \
-      'git -C /opt/orthrus/pypto-lib apply --reverse --check \
-        /opt/orthrus/online-speculation/runtime/pypto_dsv41_a3/lib-online-expert-capture.patch'
+    DOCKER_BUILDKIT=0 docker build --network none \
+      --build-arg "BASE_IMAGE=$base_image" --iidfile "$refresh_context/image-id" \
+      -f "$recipe" "$refresh_context"
+    refreshed="$(cat "$refresh_context/image-id")"
+    if [[ "$action" == refresh-1122 ]]; then
+      docker run --rm --network none "$refreshed" -c \
+        'from models.deepseek_v4_1_flash_a3.packed import PackedSession; import blockspec.dsv41_staged_target'
+      docker run --rm --network none "$refreshed" /opt/dsv41-1122/run_dsv41_pypto_staged_target.py --help >/dev/null
+    else
+      docker run --rm --network none --entrypoint /bin/bash "$refreshed" -lc \
+        'git -C /opt/orthrus/pypto-lib apply --reverse --check \
+          /opt/orthrus/online-speculation/runtime/pypto_dsv41_a3/lib-online-expert-capture.patch'
+    fi
+    docker tag "$refreshed" "$image"
     echo "Refreshed $image from pinned base $base_image"
     rm -rf -- "$refresh_context"
     trap - EXIT
@@ -543,7 +554,7 @@ case "$action" in
     exec docker run "${options[@]}" "$image" "$action" "$@"
     ;;
   *)
-    echo "Usage: $0 {build|build-1122|refresh-image|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|multicard-check|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|global-window-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
+    echo "Usage: $0 {build|build-1122|refresh-image|refresh-1122|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|multicard-check|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|global-window-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
     echo "Company checks: $0 {fabric-check|cluster-check|cluster-accept} {node7|node8}"
     echo "Offline online-update compilation check: $0 online-abi-check"
     ;;

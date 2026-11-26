@@ -639,6 +639,10 @@ def test_staged_generation_updates_at_committed_rows_and_reuses_new_head(batch_t
     assert result["online"]["gradient_scratch_bytes_per_rank"] == 1024
     assert result["request_batches"] == len(batch_tokens)
     assert result["max_live_requests"] == 2
+    if len(batch_tokens) == 1:
+        assert result["steady_decode"] is None
+    else:
+        assert result["steady_decode"]["tokens"] == 26
     assert not session.active
     assert result["generated"] == expected
     expected["0/0"][1] = 99

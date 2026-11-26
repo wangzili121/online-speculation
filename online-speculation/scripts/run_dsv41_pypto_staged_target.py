@@ -177,6 +177,7 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, 
                   decode_tokens=0, speculation=Counter(draft_rounds=0, draft_requests=0, proposed=0, accepted=0,
                                                        packed_decode_requests=0),
                   capture=None, backward=None, request_batches=0, max_live_requests=0)
+    first_batch = None
     for batch in workload_batches(cases, slots_per_dp):
         try:
             batch_report = _generate_batch(
@@ -195,6 +196,8 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, 
         report["speculation"].update(batch_report["speculation"])
         for key in ("prefill_seconds", "decode_seconds", "decode_steps", "decode_tokens"):
             report[key] += batch_report[key]
+        if first_batch is None:
+            first_batch = {key: batch_report[key] for key in ("decode_seconds", "decode_tokens")}
         if batch_report["capture"] is not None:
             report.update(capture=batch_report["capture"], backward=batch_report["backward"])
         if mode is not None:
@@ -205,6 +208,12 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, 
                                   speculation=batch_report["speculation"])), flush=True)
     tokens, elapsed = report["decode_tokens"], report["decode_seconds"]
     report["decode_tok_per_s"] = tokens / elapsed if tokens else 0.
+    report["steady_decode"] = None
+    if report["request_batches"] > 1:
+        steady_seconds = elapsed - first_batch["decode_seconds"]
+        steady_tokens = tokens - first_batch["decode_tokens"]
+        report["steady_decode"] = dict(tokens=steady_tokens, seconds=steady_seconds,
+                                       tok_per_s=steady_tokens / steady_seconds if steady_seconds else None)
     counts = report["speculation"]
     report["acceptance"] = dict(candidate_fraction=counts["accepted"] / counts["proposed"] if counts["proposed"] else 0.,
                                 mean_accepted_per_request=counts["accepted"] / counts["draft_requests"]
@@ -235,6 +244,16 @@ def compare_generation(reference, actual):
     difference = first_difference(reference["generated"], actual["generated"])
     return dict(passed=difference is None and actual["speculation"]["draft_rounds"] > 0,
                 compared_tokens=sum(map(len, reference["generated"].values())), first_difference=difference)
+
+
+def head_identity(head, files):
+    from blockspec.vllm_ascend.head_contract import find_weight_index, sha256_file
+
+    paths = (head / "manifest.json", find_weight_index(head), *(head / name for name in sorted(set(files.values()))))
+    digest = sha256()
+    for path in paths:
+        digest.update(bytes.fromhex(sha256_file(path)))
+    return digest.hexdigest()
 
 
 def main():
@@ -297,7 +316,6 @@ def main():
     from blockspec.dsv41_staged_target import load_staged_target_programs, open_staged_target
     from blockspec.dsv41_staged_reverse import StagedDraftReverse, load_staged_reverse_programs
     from blockspec.pypto_dsv41_cluster import ControlLink, PeerDispatchError, RankPlan
-    from blockspec.vllm_ascend.head_contract import find_weight_index
     from models.deepseek_v4_1_flash_a3.config import DP_SIZE, FLASH, TP_SIZE
     from models.deepseek_v4_1_flash_a3.engram import HostEngram
     from models.deepseek_v4_1_flash_a3.weights import Checkpoint, ResidentWeights
@@ -376,8 +394,7 @@ def main():
             online = dict(every=args.update_every, max_updates=args.max_updates, rate=args.learning_rate,
                           max_norm=args.max_gradient_norm)
         signature["draft"] = dict(
-            head=sha256((args.draft_head / "manifest.json").read_bytes()
-                        + find_weight_index(args.draft_head).read_bytes()).hexdigest(),
+            head=head_identity(args.draft_head, artifact[2]),
             graphs=sha256((args.draft_graph / "orthrus_draft_manifest.json").read_bytes()).hexdigest(),
             width=args.verify_width,
             pack_decode=args.pack_decode,
@@ -400,8 +417,12 @@ def main():
                            expected=None if reference is None else reference["generated"], mode=mode,
                            pack_decode=args.pack_decode) | metrics
         elapsed = perf_counter() - start
+        output_tokens = sum(map(len, arm["generated"].values()))
         arm["wall_seconds"] = elapsed
-        arm["wall_tok_per_s"] = sum(map(len, arm["generated"].values())) / elapsed
+        arm["wall_tok_per_s"] = output_tokens / elapsed
+        if optimizer is not None:
+            inference_seconds = elapsed - arm["online"]["update_seconds"]
+            arm["online"]["wall_tok_per_s_excluding_updates"] = output_tokens / inference_seconds
         if width:
             arm["draft_profile"] = {key: value - before[key] for key, value in vars(session.draft.stats).items()}
         print(json.dumps(dict(stage="arm_complete", mode=mode, seconds=elapsed,

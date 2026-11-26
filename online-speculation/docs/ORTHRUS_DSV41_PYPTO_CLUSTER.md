@@ -111,6 +111,8 @@ Draft 和 Verify 只回读实际参与本轮的词表行。Draft 结果直接交
 
 公司 node7 和 node8 使用同一个 `1122` 镜像、同版 W8A8 权重和同一份集群密钥。node7 默认读取 `/root/.orthrus-cluster.key`，node8 默认读取 `/home/wangzili/.orthrus-cluster.key`。镜像基于现有的 `orthrus-dsv41-pypto:72a62d1-offline`。在可以访问依赖的 ARM64 主机上执行一次 `bash online-speculation/scripts/dsv41_pypto_env.sh build-1122`，再将生成的 `orthrus-dsv41-pypto:1122-949a18d` 镜像复制到另一节点。已经配置的 `PYPTO_BUILD_NETWORK`、`PYPTO_BUILD_PROXY`、`PYPTO_BUILD_CA` 和 `PYPTO_BUILD_PYPI` 可继续使用。
 
+两台已经有 `1122-949a18d` 时，更新 checkout 后可在各自机器执行 `bash online-speculation/scripts/dsv41_pypto_env.sh refresh-1122`。它复用现有镜像的编译器和运行时，在离线环境更新模型补丁和公司脚本。两端新的作业会核对初始化或预训练 head 的实际权重字节摘要。
+
 两台从仓库根目录执行同样的命令，node8 将 `NODE` 设为 `node8`。已有 GSM8K 分区默认读 `/workspace/data/orthrus-dsv41-gsm8k`，也可以用 `DSV41_GSM8K_ROOT` 指定。
 
 ```bash
@@ -170,6 +172,8 @@ python /opt/dsv41-1122/compile_dsv41_pypto_staged_adam.py --artifact-dir /result
 在上一条双机生成命令里使用编译了 `--last-layers N` 的 draft 目录，并追加 `--capture-last-layers N --adam-graph /results/adam --teacher-rows 7 --update-every 16 --max-updates 32 --learning-rate 1e-5`。首次检查可用两台各一个请求、每题生成 24 token、`--update-every 2 --max-updates 2`，让两端轮流提供教师反馈，并在发布后继续跑 draft。脚本在一次权重加载内用相同请求跑 AR 和在线 Orthrus，逐 token 比对。报告记录每轮损失、梯度范数、反向、梯度通信和暂存、Adam、发布，以及含更新和扣除更新时间的 Decode 吞吐。扣时结果是同一次在线运行的估算。真实双机整模在线结果待验证。
 
 追加 `--eval-workload /results/heldout.json` 时，用同一份独立请求测 AR、初始 head 和更新后冻结 head。`arms` 中每组的 `wall_tok_per_s` 包含请求准入、Prefill、Decode 和释放。在线组的 `decode_tok_per_s_excluding_updates` 单列扣去更新阻塞时间的估算。
+
+运行 `bash online-speculation/scripts/dsv41_pypto_env.sh gsm8k-summary /workspace/orthrus-dsv41-1122/study-node7.RUN/result.json` 可在宿主汇总任一节点的 1122 报告。汇总按相同请求和逐 token 输出对照 AR，分别给出整段和除首个请求批外的 Decode 吞吐，并列出各 DP 首次更新时间、后续更新中位数、发布及反向分阶段耗时。传入两个节点的报告时各自呈现，整模 token 和更新次数按同一次实验解读。
 
 1122 可直接复用已下载的 GSM8K 分区，用同一份 checkpoint 的 tokenizer 生成实验输入。已有数据时可跳过第一条。两台使用相同的三个 JSON。
 
