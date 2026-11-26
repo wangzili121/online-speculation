@@ -116,17 +116,16 @@ Draft 和 Verify 只回读实际参与本轮的词表行。Draft 结果直接交
 111 的 ARM64 测试镜像使用同一组固定版本，离线刷新和启动检查用时约 7 秒。旧测试产物的目标图源码指纹不一致时，`prepare` 重编了 Prefill 和 Decode，并回载了此前的 6 个 Draft 图、13 个 last-1 反向图和 24 个 Adam 图。再次执行复用了全部图。初始化 head 的 40 个权重分片均参与校验。
 同一主机也从 `72a62d1-offline` 完整构建了 `1122-949a18d`，在新镜像上执行了离线刷新，并复验了实际 W8A8 checkpoint、已准备的图产物和 GSM8K 输入。
 
-两台从仓库根目录执行同样的命令，node8 将 `NODE` 设为 `node8`。已有 GSM8K 分区默认读 `/workspace/data/orthrus-dsv41-gsm8k`，也可以用 `DSV41_GSM8K_ROOT` 指定。
+两台 checkout 更新到同一提交后，可从 node7 仓库根目录一次启动双机。默认从 node7 用免交互 SSH 登录 `root@7.150.0.37`，并在 node8 使用同一绝对 checkout 路径。可用 `NODE8_SSH` 和 `NODE8_CHECKOUT` 指定远端账号和目录。远端账号需要能运行 Docker、读取权重和密钥。已有 GSM8K 分区默认读 `/workspace/data/orthrus-dsv41-gsm8k`。
 
 ```bash
-NODE=node7
-RUN=online-speculation/scripts/run_dsv41_pypto_company_staged.sh
-bash "$RUN" "$NODE" prepare 1
-bash "$RUN" "$NODE" smoke 1
-bash "$RUN" "$NODE" study 1
+RUN=online-speculation/scripts/run_dsv41_pypto_company_pair.sh
+bash "$RUN" prepare 1
+PYPTO_PACK_DECODE=1 bash "$RUN" smoke 1
+PYPTO_PACK_DECODE=1 bash "$RUN" study 1
 ```
 
-`prepare` 只用 CPU，生成初始化 head、编译产物和实验请求。各节点独立存储时分别执行，共享目录时执行一次。两台同时启动 `smoke`，用 DP0、DP2 上的两个请求验证 AR 逐 token 对照、draft、verify、接受、在线更新与发布，成功时 `passed` 和 `online_passed` 均为 `true`。两台通过后一起启动 `study`，同一进程复用已加载的基模，比较 AR、含更新的 Orthrus，以及留出题上的初始和冻结 head。两种运行都保存 `run.log` 与 `result.json` 到脚本打印的目录。默认 last-1，也可在两台为同一个更大的后缀层数重新执行 `prepare`。
+`prepare` 在两端依次用 CPU 准备初始化 head、编译产物和实验请求。`smoke` 和 `study` 启动前在两端检查镜像、权重分片、密钥、输入文件和设备路径。仅检查时在命令前加 `PYPTO_CHECK_ONLY=1`。短验用 DP0、DP2 上的请求验证 AR 逐 token 对照、draft、verify、接受、在线更新与发布。两端的 `passed` 和 `online_passed` 均为 `true` 后，再执行 `study`。两种运行都保存 `run.log` 与 `result.json` 到脚本打印的目录。需要分别启动时，两台可各自调用 `run_dsv41_pypto_company_staged.sh`，依次传入节点名、模式和更新层数。
 
 在 111 的 ARM64 CANN 环境，按上述尺寸编译了 Prefill、Decode、6 个 Draft 入口、13 个后缀反向入口和 24 个优化器入口，并将编译目录移动后回载。使用指定 W8A8 权重导出了初始化 head 的全部 40 层，验证了 K16 启动时读取的 head 格式和真实 tokenizer 生成的 GSM8K 请求。两台公司机器仍需实跑两种模式。
 

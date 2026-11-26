@@ -114,6 +114,12 @@ if [[ "${PYPTO_PACK_DECODE:-0}" == 1 ]]; then workload+=(--pack-decode); fi
 for entry in prefill decode "draft-last$last" adam gsm8k; do
   [[ -d "$root/$entry" ]] || { echo "Missing $root/$entry. Run prepare first." >&2; exit 2; }
 done
+for arg in "${workload[@]}"; do
+  if [[ "$arg" == /results/gsm8k/* && ! -r "$root/${arg#/results/}" ]]; then
+    echo "Missing $root/${arg#/results/}. Run prepare first." >&2
+    exit 2
+  fi
+done
 if [[ "$rank" == 0 ]]; then
   local_ip="$rank0_ip"
   nic="$(ip -o -4 addr show | awk -v ip="$local_ip" '{split($4, address, "/"); if (address[1] == ip) {print $2; exit}}')"
@@ -133,6 +139,27 @@ for card in "${physical[@]}"; do
   [[ "$card" =~ ^[0-9]+$ && -c "/dev/davinci$card" ]] || { echo "Unavailable NPU device $card." >&2; exit 2; }
   cards+=(--device "/dev/davinci$card")
 done
+if [[ "${PYPTO_CHECK_ONLY:-0}" == 1 ]]; then
+  for device in /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc; do
+    [[ -c "$device" ]] || { echo "Missing $device." >&2; exit 2; }
+  done
+  python3 - "$model" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+model = Path(sys.argv[1])
+index = model / "quant_model_weights.safetensors.index.json"
+shards = set(json.loads(index.read_text())["weight_map"].values())
+for name in sorted(shards):
+    shard = model / name
+    if not shard.is_file() or not shard.stat().st_size:
+        sys.exit(f"Missing or empty checkpoint shard: {shard}")
+PY
+  printf '%s preflight passed for %s on %s\n' "$1" "$mode" "$local_ip"
+  exit
+fi
+if [[ -n "${PYPTO_RUN_NAME:-}" ]]; then base+=(--name "$PYPTO_RUN_NAME"); fi
 run="$(mktemp -d "$root/$mode-$1.XXXXXX")"
 echo "Report: $run/result.json"
 docker run "${base[@]}" --network host "${cards[@]}" \
