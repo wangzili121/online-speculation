@@ -280,8 +280,8 @@ def make_linear(a_shape, b_shape, *, transpose_a=False, transpose_b=True, gradie
         raise ValueError("aligned M/N/K required")
     if batches < 1 or b_repeats < 1 or batches % b_repeats:
         raise ValueError("whole GQA groups required")
-    if type(task_group) is not int or not 1 <= task_group <= 16 or not gradient_weight and task_group != 16:
-        raise ValueError("gradient task group must be an integer in 1..16")
+    if type(task_group) is not int or not 1 <= task_group <= 32 or not gradient_weight and task_group != 16:
+        raise ValueError("gradient task group must be an integer in 1..32")
     # 真实词表的 dLogits 行步长很大；先重排，避免长行二维读取错误。
     if (not gradient_weight and not transpose_a and not transpose_b and batches==1
             and K>=65536 and K%512==0):

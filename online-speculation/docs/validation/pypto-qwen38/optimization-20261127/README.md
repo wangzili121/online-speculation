@@ -31,3 +31,9 @@ OneServing TP2 固定到 [b99e118](https://github.com/ndleslx/OneServing/commit/
 ## GDN 递推尾部清零
 
 将跳过递推的无效行统一清零，再覆盖有效前缀，替代每行分别写零。用真实 TP2 局部 GDN 维度和非零独立历史验证，16 物理行的 5 组和 32 物理行的 8 组输出均与原有效行递推逐位一致，历史状态不变。调用时间降幅中位数约 0.41% 和 0.37%，单组约 −1.14% 至 +1.67%。保留在独立验证入口，serving 仍采用原有效行递推。以 `scripts/validate_qwen38_pypto_gdn_rows.py --compare-tail-clear --block-rows 16 --output <new.json>` 复测。见 [16 行](gdn-rows16.json) 和 [32 行](gdn-rows32.json)。
+
+## 在线反向中的投影权重梯度
+
+用真实 27B 尺寸逐项测试每个并行任务处理的输出 tile 数。4 和 8 相比原 16 都更慢。增加到 32 时，Q 投影权重梯度从 1.880 ms 降至 1.720 ms，O 投影从 1.357 ms 降至 1.292 ms，K/V 变化约 1%。这些独立算子的样本均与 Torch 逐位一致。把 Q/O 的分组应用到真实尺寸 last-1 的合并训练图后，逻辑宽度 8 和 32 的整次调用分别为 33.66 → 33.52 ms 和 33.66 → 33.38 ms。两种宽度下六个参数梯度、logits 和 loss 与原图逐位一致。训练图默认仍使用 16。
+
+复测入口为 `scripts/benchmark_qwen38_pypto_weight_grad_tasks.py <new.json> --groups 16 24 32` 和 `scripts/benchmark_qwen38_pypto_suffix_tasks.py <new.json>`。见 [小分组记录](training-dw.json)、[大分组记录](training-dw-wide.json) 和 [合并图记录](training-suffix-tasks.json)。
