@@ -200,6 +200,78 @@ class PackedStudentRows:
     pages: tuple[int, ...] | None = None
 
 
+def make_draft_input_images(block, bucket):
+    """Allocate the shared host image layout used by the native and staged proposers."""
+    import torch
+    from models.deepseek_v4_1_flash_a3.config import BLOCK_SIZE, FLASH
+    from models.deepseek_v4_1_flash_a3.engram import ENGRAM_K
+    from models.deepseek_v4_1_flash_a3.lm_head import MAX_LOGIT_ROWS
+    from models.deepseek_v4_1_flash_a3.replay import DecodeInputs
+
+    capacity = max(16, block)
+    geometry = (FLASH.hc_mult, FLASH.hidden_size)
+    template = {
+        "x_hc": torch.zeros((capacity, *geometry), dtype=torch.float32),
+        "pre_mix": torch.zeros((capacity, FLASH.hc_mult), dtype=torch.float32),
+        "engram_rows": torch.zeros((2, block, ENGRAM_K), dtype=torch.bfloat16),
+        "draft_cos": torch.ones((2, capacity, FLASH.qk_rope_head_dim // 2), dtype=torch.float32),
+        "draft_sin": torch.zeros((2, capacity, FLASH.qk_rope_head_dim // 2), dtype=torch.float32),
+        "window_rows": torch.full((8, 16), -1, dtype=torch.int32),
+        "window_starts": torch.full((8,), -2, dtype=torch.int32),
+        "window_spans": torch.tensor(((0, 0, BLOCK_SIZE), (0, 0, 0)), dtype=torch.int32),
+        "window_bias": torch.full((1, BLOCK_SIZE), -1e30, dtype=torch.float32),
+        "c1a_table": torch.full((1, bucket // BLOCK_SIZE), -1, dtype=torch.int32),
+        "c2a_table": torch.full((1, bucket // BLOCK_SIZE), -1, dtype=torch.int32),
+        "request_ids": torch.zeros((capacity,), dtype=torch.int32),
+        "c1a_visible": torch.zeros((capacity,), dtype=torch.int32),
+        "c2a_visible": torch.zeros((capacity,), dtype=torch.int32),
+        "logit_row_indices": torch.full((MAX_LOGIT_ROWS,), -1, dtype=torch.int32),
+    }
+    template["pre_mix"][:, 0] = 1
+    return DecodeInputs(template)
+
+
+def stage_draft_request(stager, request, *, student_rows=0):
+    import torch
+
+    anchor_token, position = request.anchor, request.position
+    active, selected = stager.inputs.fields[1:]
+    indices = (anchor_token, stager.mask_token_id)
+    embeddings = stager.weights.lookup_rows(torch.tensor(indices, dtype=torch.int64)).float()
+    provisional = torch.full((stager.block,), stager.mask_token_id, dtype=torch.int64)
+    provisional[0] = anchor_token
+    history = stager.engram.history.get(request.history_key)
+    try:
+        engram_rows = stager.engram.lookup(provisional, stager.block, position, request_id=request.history_key)
+    finally:
+        if history is None:
+            stager.engram.history.pop(request.history_key, None)
+        else:
+            stager.engram.history[request.history_key] = history
+    page_table, c2a_table = stager.page_tables if request.pages is None else (request.pages, request.pages)
+    window = packed_swa_controls(page_table, position, stager.pages)
+    index = (
+        packed_index_controls(page_table, position, 1, stager.block, bucket=stager.buckets[0]),
+        packed_index_controls(c2a_table, position, 2, stager.block, bucket=stager.buckets[0]),
+    )
+    for image in (active, selected):
+        image["x_hc"][0].copy_(embeddings[0])
+        image["x_hc"][1:stager.block].copy_(embeddings[1])
+        image["pre_mix"].copy_(stager.inputs.fields[0]["pre_mix"])
+        image["engram_rows"].copy_(engram_rows)
+        for name, table in zip(("draft_cos", "draft_sin"), stager.rope_tables, strict=True):
+            image[name][:, :stager.block].copy_(table[:, position:position + stager.block])
+        for name, value in zip(("window_rows", "window_starts", "window_spans", "window_bias"), window, strict=True):
+            image[name].copy_(value)
+        for ratio, (_, table, _, visible) in zip(("c1a", "c2a"), index, strict=True):
+            image[f"{ratio}_table"].copy_(table)
+            image[f"{ratio}_visible"].copy_(visible)
+    selected["logit_row_indices"].fill_(-1)
+    rows = max(request.candidates, student_rows)
+    chosen = selected["logit_row_indices"][:rows]
+    chosen.copy_(torch.arange(rows, dtype=torch.int32))
+
+
 class PackedDraftProposer:
     """Dispatch one request per TP group while all ranks serve frozen experts."""
 
@@ -234,9 +306,7 @@ class PackedDraftProposer:
                      last_layers=0, request_slots=1):
         import torch
         from models.deepseek_v4_1_flash_a3.config import BLOCK_SIZE, FLASH
-        from models.deepseek_v4_1_flash_a3.engram import ENGRAM_K
         from models.deepseek_v4_1_flash_a3.lm_head import MAX_LOGIT_ROWS, SAMPLED_IDS_PAD
-        from models.deepseek_v4_1_flash_a3.replay import DecodeInputs
         from pypto.runtime import DeviceTensor
 
         self.runtime = runtime
@@ -259,27 +329,7 @@ class PackedDraftProposer:
             **packed_core_tape_shapes(block, last_layers, FLASH, tp),
             **packed_qkv_tape_shapes(block, last_layers, FLASH),
         }
-        capacity = max(16, block)
-        geometry = (FLASH.hc_mult, FLASH.hidden_size)
-        template = {
-            "x_hc": torch.zeros((capacity, *geometry), dtype=torch.float32),
-            "pre_mix": torch.zeros((capacity, FLASH.hc_mult), dtype=torch.float32),
-            "engram_rows": torch.zeros((2, block, ENGRAM_K), dtype=torch.bfloat16),
-            "draft_cos": torch.ones((2, capacity, FLASH.qk_rope_head_dim // 2), dtype=torch.float32),
-            "draft_sin": torch.zeros((2, capacity, FLASH.qk_rope_head_dim // 2), dtype=torch.float32),
-            "window_rows": torch.full((8, 16), -1, dtype=torch.int32),
-            "window_starts": torch.full((8,), -2, dtype=torch.int32),
-            "window_spans": torch.tensor(((0, 0, BLOCK_SIZE), (0, 0, 0)), dtype=torch.int32),
-            "window_bias": torch.full((1, BLOCK_SIZE), -1e30, dtype=torch.float32),
-            "c1a_table": torch.full((1, self.buckets[0] // BLOCK_SIZE), -1, dtype=torch.int32),
-            "c2a_table": torch.full((1, self.buckets[0] // BLOCK_SIZE), -1, dtype=torch.int32),
-            "request_ids": torch.zeros((capacity,), dtype=torch.int32),
-            "c1a_visible": torch.zeros((capacity,), dtype=torch.int32),
-            "c2a_visible": torch.zeros((capacity,), dtype=torch.int32),
-            "logit_row_indices": torch.full((MAX_LOGIT_ROWS,), -1, dtype=torch.int32),
-        }
-        template["pre_mix"][:, 0] = 1
-        self.inputs = DecodeInputs(template)
+        self.inputs = make_draft_input_images(block, self.buckets[0])
         if head_artifact is None:
             head_artifact = read_packed_head(weights.checkpoint, draft_head, block)
         device_head, manifest, self.resident_head_bytes = _resident_head(runtime, draft_head, self.world, tp, head_artifact)
@@ -323,44 +373,7 @@ class PackedDraftProposer:
         return resident_graph_argument(shards, tuple(range(self.world)), parameter)
 
     def _stage(self, request, *, student_rows=0):
-        import torch
-
-        anchor_token, position = request.anchor, request.position
-        active, selected = self.inputs.fields[1:]
-        indices = (anchor_token, self.mask_token_id)
-        embeddings = self.weights.lookup_rows(torch.tensor(indices, dtype=torch.int64)).float()
-        provisional = torch.full((self.block,), self.mask_token_id, dtype=torch.int64)
-        provisional[0] = anchor_token
-        history = self.engram.history.get(request.history_key)
-        try:
-            engram_rows = self.engram.lookup(provisional, self.block, position, request_id=request.history_key)
-        finally:
-            if history is None:
-                self.engram.history.pop(request.history_key, None)
-            else:
-                self.engram.history[request.history_key] = history
-        page_table, c2a_table = self.page_tables if request.pages is None else (request.pages, request.pages)
-        window = packed_swa_controls(page_table, position, self.pages)
-        index = (
-            packed_index_controls(page_table, position, 1, self.block, bucket=self.buckets[0]),
-            packed_index_controls(c2a_table, position, 2, self.block, bucket=self.buckets[0]),
-        )
-        for image in (active, selected):
-            image["x_hc"][0].copy_(embeddings[0])
-            image["x_hc"][1:self.block].copy_(embeddings[1])
-            image["pre_mix"].copy_(self.inputs.fields[0]["pre_mix"])
-            image["engram_rows"].copy_(engram_rows)
-            for name, table in zip(("draft_cos", "draft_sin"), self.rope_tables, strict=True):
-                image[name][:, :self.block].copy_(table[:, position:position + self.block])
-            for name, value in zip(("window_rows", "window_starts", "window_spans", "window_bias"), window, strict=True):
-                image[name].copy_(value)
-            for ratio, (_, table, _, visible) in zip(("c1a", "c2a"), index, strict=True):
-                image[f"{ratio}_table"].copy_(table)
-                image[f"{ratio}_visible"].copy_(visible)
-        selected["logit_row_indices"].fill_(-1)
-        rows = max(request.candidates, student_rows)
-        chosen = selected["logit_row_indices"][:rows]
-        chosen.copy_(torch.arange(rows, dtype=torch.int32))
+        stage_draft_request(self, request, student_rows=student_rows)
 
     def propose(self, anchor_token, *, position, owner, candidates, uploads):
         request = DraftRequest(anchor_token, position, owner, candidates, history_key=owner)

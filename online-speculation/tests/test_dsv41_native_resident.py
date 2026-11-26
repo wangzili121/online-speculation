@@ -1,5 +1,7 @@
 from ctypes import addressof, create_string_buffer, memmove
+from types import SimpleNamespace
 
+from blockspec.dsv41_native_forward import DRAFT, ROWS_AND_MASK, NativeForwardTarget
 from blockspec.dsv41_native_resident import NativeRankMemory
 
 
@@ -43,3 +45,22 @@ def test_rank_memory_reuses_one_staging_buffer_for_tp_and_offset_reads():
         assert output.raw == expected
         assert buffer.storage.raw[:rank + 2] == bytes(rank + 2)
     assert worker.host_allocations == 1
+
+
+def test_native_draft_keeps_global_counts_and_routes_images_to_their_owner():
+    dispatched = []
+    endpoint = SimpleNamespace(
+        exchange=lambda cfg, op, inputs, outputs, **kw: dispatched.append((op, inputs, outputs, kw)),
+    )
+    images = dict.fromkeys(("prefill", "decode"), SimpleNamespace(fields=({},)))
+    target = NativeForwardTarget(endpoint, None, None, images, {}, None)
+    target.staged[2].update({0: b"owner-zero", 3: b"owner-three"})
+    target.sampled[2] = "old"
+    target.run(2, (16, 0, 0, 16))
+    opcode, messages, replies, options = dispatched.pop()
+    assert opcode == DRAFT and options == {"phase": "draft"}
+    assert replies == (0, 0)
+    assert ROWS_AND_MASK.unpack_from(messages[0]) == (16, 0, 0, 16, 1)
+    assert ROWS_AND_MASK.unpack_from(messages[1]) == (16, 0, 0, 16, 8)
+    assert tuple(msg[ROWS_AND_MASK.size:] for msg in messages) == (b"owner-zero", b"owner-three")
+    assert target.staged[2] == {} and target.sampled[2] is None

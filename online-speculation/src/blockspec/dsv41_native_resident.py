@@ -262,3 +262,36 @@ class NativeResidentForward:
                         image.data_ptr(), image.nbytes,
                         ((worker, prefill[worker][name].data_ptr, offset) for worker in workers),
                     )
+
+
+def bind_native_draft(target, graph, program, artifacts, head, block, last_layers, head_artifact):
+    """Bind a full draft graph to the node's existing Target resident pages."""
+    import torch
+    from simpler.task_interface import DataType
+
+    from .dsv41_packed_proposer import PackedDraftProposer
+
+    class LocalDraft(PackedDraftProposer):
+        def _rank_argument(self, name, parameter, *, replacement=None):
+            replacement = replacement or {}
+            shards = [replacement.get(worker, bank[name]) for worker, bank in enumerate(self.ranks)]
+            return graph_argument(shards, target.workers, parameter, target.world)
+
+    # The rank owner will supply global counts; they remain Host parameters.
+    worker = target.memory.worker
+    count_buffer = worker.create_buffer(target.world * 4)
+    counts = count_buffer.tensor((target.world,), DataType.INT32)
+    draft = LocalDraft(
+        target.memory, program, None, target.buffers["prefill"], target.inputs["decode"],
+        artifacts.weights, artifacts.engram, target.rope_tables, counts, draft_head=head, block=block,
+        context=artifacts.context, tp=target.tp, head_artifact=head_artifact, last_layers=last_layers,
+    )
+    parameters = program._get_metadata()[0]
+    arguments = {p.name: value for p, value in zip(parameters, draft.arguments, strict=True)}
+    unranked = {p.name for p in parameters
+                if p.name.removesuffix("__ssa_v0") in ("ffn_capture_owner", "moe_num_tokens")}
+    if set(arguments) - unranked != graph.rank_stacks:
+        raise ValueError("Draft forward graph rank layout differs from the resident parameter layout")
+    scratch, buffers = graph.bind_remote_intermediates(worker, target.ranks)
+    arguments.update(scratch)
+    return SimpleNamespace(draft=draft, arguments=arguments, count_buffer=count_buffer, scratch_buffers=buffers)
