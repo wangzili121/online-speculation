@@ -69,7 +69,7 @@ warm = json.loads((p / "warmup.json").read_text())
 fi
 
 case "$mode" in
-  smoke) workload=(--workload /results/gsm8k/smoke.json --teacher-rows 3 --update-every 2 --max-updates 2 --verify-width 4) ;;
+  smoke) workload=(--workload /results/gsm8k/smoke.json --teacher-rows 7 --update-every 2 --max-updates 2 --verify-width 8) ;;
   study) workload=(--workload /results/gsm8k/online.json --warmup-workload /results/gsm8k/warmup.json
           --eval-workload /results/gsm8k/heldout.json --teacher-rows 7 --update-every 16 --max-updates 128 --verify-width 8) ;;
   *) echo 'Choose prepare, smoke or study.' >&2; exit 2 ;;
