@@ -1,9 +1,35 @@
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 import torch
 
-from blockspec.pypto_dsv41_runtime import MutableDraftHeadBank, ResidentHeadState
+from blockspec import pypto_dsv41_runtime as runtime
+from blockspec.pypto_dsv41_runtime import MutableDraftHeadBank, ResidentDraftAttention, ResidentHeadState
+
+
+def test_lazy_swa_bias_pin_does_not_change_preloaded_static_weight_accounting(monkeypatch, tmp_path):
+    class PreloadedResident:
+        devices = (0,)
+        static_uploads = 40
+        weight = staticmethod(lambda value, rank: value)
+
+        def pin(self, value, ranks, *, readonly, name, auxiliary=False):
+            self.static_uploads += readonly and not auxiliary
+            self.pinned = name, tuple(ranks)
+
+    monkeypatch.setattr(runtime, "read_draft_artifact", lambda *_: (
+        {"num_attention_heads": 32}, {"layers": []}, {},
+    ))
+    resident = PreloadedResident()
+    attention = ResidentDraftAttention(
+        tmp_path, tmp_path, resident, {"tp": 4, "ep": 16}, tmp_path,
+        local_ranks=(0,), native_module=lambda name: SimpleNamespace(MAX_CONTEXT=512),
+    )
+    assert resident.static_uploads == 40
+    assert resident.pinned == ("orthrus/swa-history-bias", (0,))
+    assert attention.swa_history_bias[0].isneginf().all()
+    assert attention.swa_history_bias[-1].eq(0).all()
 
 
 class Resident:
