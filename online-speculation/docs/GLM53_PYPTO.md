@@ -8,6 +8,7 @@ The initial configuration is TP8/EP8, one active request, and five guesses per s
 
 - PyPTO Serving `39f36c0`, PyPTO Lib `79be1fd`, PyPTO `ff2e0a4`, simpler `31f9e72`, PTO-ISA `f83d4b7`, PTOAS `0.72`. [GLM Serving ABI](https://github.com/hw-native-sys/pypto-serving/pull/314)
 - Apply `runtime/pypto_serving_glm53/draft_lib.patch` to the fixed Lib revision and `runtime/pypto_serving_glm53/serving.patch` to the fixed Serving revision. Set `PYPTO_LIB_ROOT` to the Lib checkout and make Serving, Lib and this project's `src` visible on `PYTHONPATH`.
+- Set `TMPDIR` to a writable directory on the data volume for the host orchestration compiler. A shared `/tmp` can exhaust its inode quota even when it has free bytes.
 - Compile the full set of TP8 programs without initializing device workers.
 
 ```bash
@@ -37,7 +38,9 @@ python scripts/validate_glm53_pypto_backbone.py \
   --devices 0 1 --output backbone-tp2.json
 ```
 
-The TP8 target verifier passed forced acceptance lengths 0, 1, 2 and 5 across a cache-page boundary. The complete draft and online-update run still requires a TP8 rerun with the corrected head views. Cached acceptance programs include the draft view source hash. After changing those views, recompile into a fresh artifact directory. `--draft-first` exercises actual drafting before the forced verifier cases, and the result file retains completed stages when a later stage fails.
+The TP8 target verifier passed forced acceptance lengths 0, 1, 2 and 5 across a cache-page boundary. With the corrected head views, the initialized draft also completed proposal, verification, cache commit and continued greedy decoding with target-matching outputs. The run then failed the agreement check between replayed draft/teacher predictions and their original predictions. Resident updates and the complete HTTP flow remain pending. The acceptance check now compares device draft IDs against full logits on the same prefix and records draft and teacher replay agreement separately, retaining the passed decoding checks in its result file.
+
+Cached acceptance programs include the draft view source hash. After changing those views, recompile into a fresh artifact directory. `--draft-first` exercises actual drafting before the forced verifier cases.
 
 The standalone regression exercises the reduction without loading the model. It uses synthetic logits, changes the active query count over consecutive calls, and covers ties, padding and nonfinite inputs.
 

@@ -9,6 +9,50 @@ from blockspec.pypto_glm53_serving import collect_clean_logits
 from blockspec.pypto_glm53_verify import GreedyVerification, accept_greedy, bind_verify_snapshots
 
 
+def test_replay_failure_retains_the_passed_verifier_and_identifies_the_failed_side(monkeypatch):
+    from scripts.validate_glm53_pypto_verify import run_cases
+
+    lengths = [0, 0, 0]
+
+    def logits(ids):
+        return torch.nn.functional.one_hot(torch.tensor(ids), num_classes=128).float()
+
+    def reset(slots):
+        for slot in slots:
+            lengths[slot] = 0
+
+    def forward(sequences, slots, **kwargs):
+        predictions = []
+        for tokens, slot in zip(sequences, slots, strict=True):
+            lengths[slot] += len(tokens)
+            predictions.append(10 if len(tokens) > 1 else tokens[0] + 1)
+        return logits(predictions)
+
+    def verify(blocks, slots):
+        assert blocks == [[10, 20, 21, 22, 23, 24]]
+        lengths[slots[0]] += 1
+        return (GreedyVerification((11,), 1),)
+
+    def direct(*args):
+        assert lengths[1] == 6
+        return logits([20, 21, 22, 23, 24])
+
+    monkeypatch.setattr("blockspec.pypto_glm53_serving.propose_greedy", lambda *args: [20, 21, 22, 23, 24])
+    monkeypatch.setattr("blockspec.pypto_glm53_serving.draft_logits", direct)
+    monkeypatch.setattr("blockspec.pypto_glm53_serving.collect_clean_logits",
+                        lambda *args: (logits([21, 22, 23, 24, 25]), logits([11, 12, 13, 14, 15])))
+    runner = SimpleNamespace(_api=SimpleNamespace(CAPACITY=256, BLOCK_SIZE=8), _seq_lens=lengths,
+                             reset_requests=reset, forward_chunks=forward, verify_orthrus_greedy=verify)
+    evidence = []
+    with pytest.raises(AssertionError, match="online replay predictions differ"):
+        run_cases(runner, 128, 0, report=evidence)
+    assert len(evidence) == 1
+    assert evidence[0]["target_tokens_match"] is True
+    assert evidence[0]["direct_draft_matches"] is True
+    assert evidence[0]["draft_replay_matches"] is False
+    assert evidence[0]["teacher_replay_matches"] is True
+
+
 def test_greedy_prefix_and_correction_are_aligned_to_the_previous_row():
     block = [10, 11, 12, 13, 14, 15]
     golden = [11, 12, 13, 14, 15, 16]

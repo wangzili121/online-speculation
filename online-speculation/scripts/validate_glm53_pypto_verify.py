@@ -58,11 +58,12 @@ def prepare_programs(api, devices, directory, enable_draft):
     return programs
 
 
-def run_cases(runner, vocab_size, mask_id=None):
+def run_cases(runner, vocab_size, mask_id=None, *, report=None):
     """Compare greedy decoding after zero, partial and full draft acceptance."""
     capacity = runner._api.CAPACITY
     page_size = runner._api.BLOCK_SIZE
-    report = []
+    if report is None:
+        report = []
     for matched in (0, 1, 2, 5) if mask_id is None else (None,):
         print(f"GLM_VERIFY_CASE phase={'verifier' if mask_id is None else 'draft'} accepted={matched}", flush=True)
         runner.reset_requests([0, 1])
@@ -80,11 +81,16 @@ def run_cases(runner, vocab_size, mask_id=None):
             logits = runner.forward_chunks([[baseline[-1]]], [0], phase="decode")
             baseline.append(int(logits[0].argmax()))
         if matched is None:
-            from blockspec.pypto_glm53_serving import propose_greedy
+            from blockspec.pypto_glm53_serving import draft_logits, propose_greedy
 
             print("GLM_DRAFT_PROPOSE_START", flush=True)
             guesses = propose_greedy(runner, 1, len(prompt), baseline[0], mask_id)
             print("GLM_DRAFT_PROPOSE_DONE", flush=True)
+            # Compare both output paths against the same committed prefix,
+            # before verification changes the request's history.
+            direct_ids = draft_logits(runner, 1, len(prompt), baseline[0], mask_id).argmax(1).tolist()
+            if direct_ids != guesses:
+                raise AssertionError(f"device draft IDs differ from full logits: {guesses=} {direct_ids=}")
             block = [baseline[0], *guesses]
             matched = next((i for i, token in enumerate(guesses) if token != baseline[i + 1]), len(guesses))
             if int(runner._seq_lens[1]) != len(prompt):
@@ -105,14 +111,19 @@ def run_cases(runner, vocab_size, mask_id=None):
             if next_token != expected:
                 raise AssertionError(f"greedy output diverged after commit for {matched=}")
         evidence = {"accepted_draft_tokens": matched, "target_tokens_match": True}
+        report.append(evidence)
         if mask_id is not None:
             from blockspec.pypto_glm53_serving import collect_clean_logits
 
             student, teacher = collect_clean_logits(runner, prompt + baseline, len(prompt), 2, mask_id)
-            if student.argmax(1).tolist() != guesses or teacher.argmax(1).tolist() != baseline[1:6]:
-                raise AssertionError("online replay did not reproduce the draft and clean target predictions")
-            evidence["teacher_replay_matches"] = True
-        report.append(evidence)
+            student_ids, teacher_ids = student.argmax(1).tolist(), teacher.argmax(1).tolist()
+            evidence.update(draft_ids=guesses, replay_draft_ids=student_ids,
+                            target_ids=baseline[1:6], replay_target_ids=teacher_ids,
+                            direct_draft_matches=True, draft_replay_matches=student_ids == guesses,
+                            teacher_replay_matches=teacher_ids == baseline[1:6])
+            print("GLM_REPLAY_COMPARISON " + json.dumps(evidence), flush=True)
+            if not evidence["draft_replay_matches"] or not evidence["teacher_replay_matches"]:
+                raise AssertionError("online replay predictions differ: " + json.dumps(evidence))
     return report
 
 
@@ -288,7 +299,8 @@ def main():
         for name, mask_id in stages:
             result["active_stage"] = name
             print(f"GLM_ACCEPTANCE_STAGE {name}", flush=True)
-            result[name] = run_cases(runner, vocab_size, mask_id)
+            result[name] = []
+            run_cases(runner, vocab_size, mask_id, report=result[name])
             result["executed"] = True
             args.output.with_suffix(".tmp").write_text(json.dumps(result, indent=2) + "\n")
             args.output.with_suffix(".tmp").replace(args.output)
@@ -303,6 +315,7 @@ def main():
         result.pop("active_stage", None)
         result.update(passed=True, executed=True)
     except BaseException as error:
+        result["executed"] = result["executed"] or bool(getattr(runner, "calls", 0))
         result["error"] = repr(error)
         raise
     finally:
