@@ -1,5 +1,7 @@
 """Bind the split native FFN to the node's existing PyPTO graph worker."""
 
+from math import gcd
+
 from .dsv41_packed_ep_hccl import (
     make_ep_forward_experts,
     make_ep_forward_front,
@@ -8,6 +10,14 @@ from .dsv41_packed_ep_hccl import (
 )
 from .dsv41_online_profile import timed_stage
 from .dsv41_packed_ep_ipc import ResidentHcclMappings
+
+
+def _ep_token_slots(tokens, rows, tp, topk):
+    # A rank owns one row out of every TP_SIZE rows. Keep the packet index
+    # tile aligned to 32 bytes while reserving the worst-case destination.
+    owned = (rows + tp - 1) // tp
+    alignment = 8 // gcd(topk, 8)
+    return min(tokens, (owned + alignment - 1) // alignment * alignment)
 
 
 def make_hccl_ep_graphs(tokens, rows, local_ranks, *, prefill):
@@ -20,16 +30,17 @@ def make_hccl_ep_graphs(tokens, rows, local_ranks, *, prefill):
     hidden, inter, topk = FLASH.hidden_size, FLASH.moe_intermediate_size, FLASH.num_experts_per_tok
     experts = FLASH.n_routed_experts
     local_experts = experts // world
-    packets = world * tokens * topk
+    packet_tokens = _ep_token_slots(tokens, rows, tp, topk)
+    packets = world * packet_tokens * topk
     counts_width = (local_experts + 15) // 16 * 16
     expert_rows = packets + local_experts * 16
     prepare_local = make_ep_forward_front(tokens, rows, prefill=prefill, inline=True)
     pack_local, unpack_local, _, combine_local = make_ep_forward_packets(
-        tokens, hidden, world, local_experts, topk, inline=True,
+        packet_tokens, hidden, world, local_experts, topk, inline=True,
     )
-    expert_local = make_ep_forward_experts(tokens, world, local_experts, prefill=prefill,
+    expert_local = make_ep_forward_experts(packet_tokens, world, local_experts, prefill=prefill,
                                           fuse_return=True, inline=True)
-    scatter_local = make_ep_forward_tp_rows(tokens, hidden, tp, rows, inline=True)
+    scatter_local = make_ep_forward_tp_rows(packet_tokens, hidden, tp, rows, inline=True)
 
     @pl.jit(auto_scope=False)
     def prepare_rank(
@@ -46,7 +57,12 @@ def make_hccl_ep_graphs(tokens, rows, local_ranks, *, prefill):
         scales = pl.create_tensor([1, tokens], dtype=pl.FP32)
         prepare_local(ffn, norm, gate, bias, shared_w13, scale1, scale3, shared_w2, scale2,
                       normed, payload, scales, ids, weights, shared, active, lane)
-        return pack_local(payload, scales, ids, weights, send_counts, send_payload, send_aux, live)
+        payload_rows = pl.slice(payload, [packet_tokens, hidden], [0, 0])
+        local_scales = pl.slice(scales, [1, packet_tokens], [0, 0])
+        local_ids = pl.slice(ids, [packet_tokens, topk], [0, 0])
+        local_weights = pl.slice(weights, [packet_tokens, topk], [0, 0])
+        return pack_local(payload_rows, local_scales, local_ids, local_weights,
+                          send_counts, send_payload, send_aux, live)
 
     @pl.jit(auto_scope=False)
     def compute_rank(
@@ -70,8 +86,10 @@ def make_hccl_ep_graphs(tokens, rows, local_ranks, *, prefill):
         active = pl.read(meta, [0])
         lane = pl.read(meta, [1])
         live = pl.cast((active + tp - 1 - lane) // tp, pl.INT32)
-        compact = pl.create_tensor([tokens, hidden], dtype=pl.BF16)
-        combine_local(received, ids, shared, compact, live)
+        compact = pl.create_tensor([packet_tokens, hidden], dtype=pl.BF16)
+        local_ids = pl.slice(ids, [packet_tokens, topk], [0, 0])
+        local_shared = pl.slice(shared, [packet_tokens, hidden], [0, 0])
+        combine_local(received, local_ids, local_shared, compact, live)
         return scatter_local(compact, output, active, lane)
 
     @pl.jit.host
@@ -147,7 +165,9 @@ class GraphResidentHcclMoE:
         world = sum(plan.counts)
         hidden, topk = FLASH.hidden_size, FLASH.num_experts_per_tok
         local_experts = FLASH.n_routed_experts // world
-        packets = world * tokens * topk
+        if rows > tokens * plan.tp:
+            raise ValueError("MoE lane capacity must cover every owned row")
+        packets = world * _ep_token_slots(tokens, rows, plan.tp, topk) * topk
         count_width = (local_experts + 15) // 16 * 16
         if transport.mappings is None:
             transport.mappings = ResidentHcclMappings(runtime, transport.memory)

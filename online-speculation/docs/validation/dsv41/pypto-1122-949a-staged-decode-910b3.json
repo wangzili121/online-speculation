@@ -1,0 +1,66 @@
+{
+  "lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+  "toolchain": {
+    "pypto": "2e31e0c2a604c3c859c1268a937f97b0ee2d747f",
+    "simpler": "a5349f42c71666bb8cacfb3759f34eeda1572beb"
+  },
+  "compile": {
+    "native_decode": {
+      "command": "python -m models.deepseek_v4_1_flash_a3.decode_fwd --compile-only --prepare-windows --decode-capacity 16 --context-capacity 512 --output /results/native",
+      "world": 16,
+      "cann": "9.2.0",
+      "seconds": 218.88,
+      "passed": true
+    },
+    "staged_attention_and_head": {
+      "command": "python validate_dsv41_pypto_packed_decode_attention.py --devices 0,1,2,3,4,5,6,7 --decode-capacity 16 --context 512 --output /results/staged",
+      "local_ranks": [4, 8],
+      "cann": "9.0.0",
+      "passed": true
+    },
+    "staged_ffn_tail": {
+      "command": "python validate_dsv41_pypto_packed_decode_ffn.py --devices 0,1,2,3,4,5,6,7 --rows 16 --compile-only",
+      "local_ranks": 8,
+      "cann": "9.2.0",
+      "passed": true
+    },
+    "compact_ep": {
+      "command": "python validate_dsv41_pypto_ep_ipc.py --devices 0,1,2,3,4,5,6,7 --moe --rows 16 --compile-only",
+      "local_ranks": 8,
+      "cann": "9.2.0",
+      "phases": ["prefill", "decode"],
+      "passed": true
+    }
+  },
+  "tp4_ffn_tail": {
+    "host": "111",
+    "cann": "9.0.0",
+    "physical_devices": [0, 4, 6, 7],
+    "command": "python validate_dsv41_pypto_packed_decode_ffn.py --devices 0,1,2,3 --rows 16 --checkpoint /model",
+    "scope": "Real layer 39 mHC parameters, synthetic attention and expert outputs. Inactive and non-owner rows are interleaved with nonzero poison values. Alternate the output signs and reuse the same attention-to-FFN communication windows.",
+    "reference": "Torch golden_mhc_mixes and golden_hc_post, atol=2.5e-5 and rtol=5e-3",
+    "active_rows_by_dispatch": [1, 7, 16, 0, 1, 7],
+    "max_hidden_abs": 7.152557373046875e-07,
+    "max_pre_mix_abs": 2.0116567611694336e-07,
+    "passed": true
+  },
+  "ep16_packet_capacity": {
+    "host": "111",
+    "cann": "9.0.0",
+    "physical_device": 4,
+    "command": "python validate_dsv41_pypto_ep_ipc.py --devices 0 --moe --rows 16 --checkpoint /model",
+    "scope": "Real layer 39 shared and routed experts, eight active expert IDs assigned to one lane, mapped D2D loopback. This measures payload size and validates the routing computation.",
+    "cases": ["prefill/1", "prefill/16", "decode/1", "decode/16"],
+    "all_outputs_byte_exact_against_torch": true,
+    "dispatch_hidden_bytes_before": 7864320,
+    "dispatch_hidden_bytes_after": 1966080,
+    "return_hidden_bytes_before": 15728640,
+    "return_hidden_bytes_after": 3932160,
+    "cross_host_latency_measured": false
+  },
+  "cpu_tests": {
+    "passed": 212,
+    "subtests_passed": 5
+  }
+}

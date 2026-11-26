@@ -58,6 +58,7 @@ def main():
     parser.add_argument("--columns", type=int, default=256)
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--moe", action="store_true", help="Compile or exercise the EP16 MoE graph stages")
+    parser.add_argument("--rows", type=int, default=64, choices=(16, 64, 80))
     parser.add_argument("--checkpoint", type=Path)
     args = parser.parse_args()
     if not 16 <= args.columns <= 1024 or args.columns % 16:
@@ -87,16 +88,16 @@ def main():
         from models.deepseek_v4_1_flash_a3 import config as native_config
         from blockspec.dsv41_packed_ep_graph import make_hccl_ep_graphs
 
-        tokens = 64 if args.compile_only else 16
+        tokens = 64 if args.rows == 80 or (args.compile_only and args.rows == 64) else 16
         native_config.set_moe_tokens(tokens)
         programs = {}
         for phase in ("prefill", "decode"):
-            entries = make_hccl_ep_graphs(tokens, 64, world, prefill=phase == "prefill")
+            entries = make_hccl_ep_graphs(tokens, args.rows, world, prefill=phase == "prefill")
             programs[phase] = tuple(entry.compile(config=config) for entry in entries)
-        report = dict(passed=True, local_ranks=world, ep=16, tokens=tokens,
+        report = dict(passed=True, local_ranks=world, ep=16, tokens=tokens, rows=args.rows,
                       compiled={phase: ["prepare", "experts", "restore"] for phase in programs})
         if not args.compile_only:
-            report["real_weights"] = exercise_moe(config, programs, args.checkpoint, moe_transport, tokens)
+            report["real_weights"] = exercise_moe(config, programs, args.checkpoint, moe_transport, tokens, args.rows)
         print(json.dumps(report), flush=True)
         return
     produce, consume = compile_programs(config, world, columns)
@@ -160,7 +161,7 @@ def main():
                           warm_transfer_median_ms=1000 * median(durations[1:]))), flush=True)
 
 
-def exercise_moe(config, programs, model_path, native, tokens):
+def exercise_moe(config, programs, model_path, native, tokens, rows):
     """Run one owning lane with real weights and route its packets to itself."""
     import torch
     from blockspec.dsv41_packed_ep_graph import GraphResidentHcclMoE
@@ -178,7 +179,7 @@ def exercise_moe(config, programs, model_path, native, tokens):
     checkpoint = Checkpoint(model_path)
     weights = ResidentWeights(checkpoint)
     d, inter, ep = FLASH.hidden_size, FLASH.moe_intermediate_size, 16
-    rows, owner, selected = 64, 0, tuple(range(8))
+    owner, selected = 0, tuple(range(8))
     stem = "layers.39"
     norm = checkpoint.tensor(stem + ".ffn_norm.weight").bfloat16()
     gate = checkpoint.tensor(stem + ".ffn.gate.weight").float()
@@ -245,7 +246,7 @@ def exercise_moe(config, programs, model_path, native, tokens):
         shared = [upload(value) for value in (norm, gate, bias, packed_w13, s1, s3, packed_w2, s2)]
         routed = [upload(value) for value in bank]
         for phase in programs:
-            for active in (1, 17):
+            for active in (1, min(rows, 17)):
                 runner.bind_batch((active, 0, 0, 0))
                 output = runner.run(f"{phase}/{active}", prefill=phase == "prefill", ffn_input=input_tensor,
                                     shared_weights=shared, routed_weights=routed)
@@ -271,7 +272,9 @@ def exercise_moe(config, programs, model_path, native, tokens):
                 torch.testing.assert_close(observed, target, atol=0.003, rtol=0.03)
                 results.append(dict(phase=phase, active=active, owner_rows=live,
                                     output_max_abs=(observed.float() - target.float()).abs().max().item()))
-    return dict(layer=39, experts=list(selected), scope="single-owner EP16 device loopback", cases=results)
+    return dict(layer=39, experts=list(selected), scope="single-owner EP16 device loopback", cases=results,
+                dispatch_payload_bytes=runner.dispatch_send[1].shards[0].nbytes,
+                return_payload_bytes=runner.return_send.shards[0].nbytes)
 
 
 if __name__ == "__main__":
