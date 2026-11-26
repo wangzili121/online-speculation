@@ -563,7 +563,8 @@ def test_staged_adam_reuses_exported_bases_for_short_collective_views():
                 assert shard.shape == (size,) and registered[rank, shard.data_ptr] == (128,)
 
 
-def test_staged_generation_updates_at_committed_rows_and_reuses_new_head():
+@pytest.mark.parametrize("batch_tokens", ((10,), (4, 10, 5)))
+def test_staged_generation_updates_at_committed_rows_and_reuses_new_head(batch_tokens):
     from collections import namedtuple
 
     path = Path(__file__).parents[1] / "scripts" / "run_dsv41_pypto_staged_target.py"
@@ -579,9 +580,13 @@ def test_staged_generation_updates_at_committed_rows_and_reuses_new_head():
         def __init__(self):
             self.feedback = {}
             self.captures = []
+            self.active = set()
 
         def admit(self, request_id, dp, size):
-            return handle_type(request_id, dp)
+            handle = handle_type(request_id, dp)
+            assert all(other.dp != dp for other in self.active)
+            self.active.add(handle)
+            return handle
 
         def prefill_greedy_batch(self, queries):
             return {handle: tokens[-1] + 1 for handle, tokens in queries}
@@ -606,22 +611,37 @@ def test_staged_generation_updates_at_committed_rows_and_reuses_new_head():
 
         def release(self, handle):
             assert handle not in self.feedback
+            self.active.remove(handle)
 
     session = Session()
     adam = SimpleNamespace(version=0)
 
+    stages = []
+
     def update(stage, *, owner, feedback, finished, rate, max_norm):
         assert not finished and feedback.seen == feedback.limit == 3
+        stages.append(stage)
         adam.version += 1
         return dict(teacher_rows=feedback.limit, version=adam.version, update_seconds=0.)
 
-    cases = [dict(id=str(dp), dp=dp, input_ids=[1, 2], new_tokens=10) for dp in (0, 2)]
+    cases = [dict(id=f"{batch}/{dp}", dp=dp, input_ids=[1, 2], new_tokens=tokens)
+             for batch, tokens in enumerate(batch_tokens) for dp in (0, 2)]
+    expected = {case["id"]: list(range(3, 3 + case["new_tokens"])) for case in cases}
     result = runner.generate(session, cases, 16, 4, width=8, teacher_rows=3,
                              optimizer=SimpleNamespace(adam=adam, update=update, packet_capacity=128),
-                             online=dict(every=2, max_updates=2, rate=1e-5, max_norm=1.))
+                             online=dict(every=2, max_updates=2, rate=1e-5, max_norm=1.), slots_per_dp=1,
+                             expected=expected)
     assert session.captures == [0, 2]
+    assert stages == ["online-update/1", "online-update/2"]
     assert [row["round"] for row in result["online"]["updates"]] == [3, 7]
-    assert result["online"]["rounds_after_publication"] == 5
+    assert result["online"]["rounds_after_publication"] == (5 if len(batch_tokens) == 1 else 11)
     assert result["online"]["version"] == 2
     assert result["online"]["gradient_scratch_bytes_per_rank"] == 1024
-    assert result["generated"] == {str(dp): list(range(3, 13)) for dp in (0, 2)}
+    assert result["request_batches"] == len(batch_tokens)
+    assert result["max_live_requests"] == 2
+    assert not session.active
+    assert result["generated"] == expected
+    expected["0/0"][1] = 99
+    with pytest.raises(runner.GreedyDivergence) as failure:
+        runner.generate(Session(), cases, 16, 4, width=8, slots_per_dp=1, expected=expected)
+    assert failure.value.witness == dict(request="0/0", position=1, phase="verify/accept", expected=99, observed=4)

@@ -4,6 +4,7 @@
 import argparse
 from collections import Counter
 from contextlib import ExitStack, suppress
+from dataclasses import dataclass, field
 from hashlib import sha256
 import json
 from math import isfinite
@@ -13,13 +14,51 @@ from time import perf_counter
 from types import SimpleNamespace
 
 
-def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, reverse=None,
-             optimizer=None, online=None):
+@dataclass
+class OnlineProgress:
+    completed_waves: int = 0
+    next_capture_wave: int = 0
+    updated_rounds: int = 0
+    updates: list = field(default_factory=list)
+
+
+class GreedyDivergence(ValueError):
+    def __init__(self, request, position, phase, expected, observed):
+        self.witness = dict(request=request, position=position, phase=phase, expected=expected, observed=observed)
+        super().__init__(f"{request}: {phase} greedy token {position} expected {expected}, got {observed}")
+
+
+def workload_batches(cases, slots_per_dp):
+    """Pack consecutive requests into fixed waves within the per-DP slot budget."""
+    batch, occupancy = [], Counter()
+    for case in cases:
+        dp = case["dp"]
+        if occupancy[dp] == slots_per_dp:
+            yield batch
+            batch, occupancy = [], Counter()
+        batch.append(case)
+        occupancy[dp] += 1
+    if batch:
+        yield batch
+
+
+def _generate_batch(session, cases, prefill_rows, dp_size, *, width, teacher_rows, reverse, optimizer, online, progress,
+                    expected):
     """Pack prompt chunks by DP owner and continue from device-greedy IDs."""
     handles = [session.admit(case["id"], case["dp"], len(case["input_ids"])) for case in cases]
     output = {handle: [] for handle in handles}
     offsets = [0] * len(cases)
     requests = list(zip(cases, handles, strict=True))
+
+    def append(handle, tokens, phase):
+        if expected is not None:
+            reference = expected[handle.request_id]
+            for position, token in enumerate(tokens, len(output[handle])):
+                wanted = reference[position] if position < len(reference) else None
+                if wanted != token:
+                    raise GreedyDivergence(handle.request_id, position, phase, wanted, token)
+        output[handle].extend(tokens)
+
     start = perf_counter()
     while any(offset < len(case["input_ids"]) for offset, case in zip(offsets, cases, strict=True)):
         remaining = [prefill_rows] * dp_size
@@ -32,15 +71,14 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, 
                 offsets[index] += take
                 remaining[handle.dp] -= take
         for handle, token in session.prefill_greedy_batch(batch).items():
-            output[handle].append(token)
+            append(handle, (token,), "prefill")
 
     prefill_seconds = perf_counter() - start
     start = perf_counter()
     steps = 0
-    speculation = Counter(draft_rounds=0, proposed=0, accepted=0)
+    speculation = Counter(draft_rounds=0, draft_requests=0, proposed=0, accepted=0)
     replay = None
-    captured_at, next_capture, updated_rounds = 0, 0, 0
-    updates = []
+    captured_at = 0
     while pending := [(handle, case["new_tokens"] - len(output[handle])) for case, handle in requests
                       if len(output[handle]) < case["new_tokens"]]:
         if width:
@@ -50,12 +88,13 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, 
                 owners.setdefault(handle.dp, (handle, min(width, remaining)))
             limits = dict(owners.values())
             capture = None
-            capture_due = optimizer is None or (len(updates) < online["max_updates"] and steps >= next_capture)
+            capture_due = progress is None or (len(progress.updates) < online["max_updates"]
+                                               and progress.completed_waves >= progress.next_capture_wave)
             if teacher_rows and capture_due and replay is None:
                 order = requests
                 if optimizer is not None:
                     # Alternate the preferred owner host when both have eligible queries.
-                    preferred_dp = (len(updates) % 2) * (dp_size // 2)
+                    preferred_dp = (len(progress.updates) % 2) * (dp_size // 2)
                     order = sorted(requests, key=lambda item: (item[1].dp - preferred_dp) % dp_size)
                 for case, handle in order:
                     position = len(case["input_ids"]) + len(output[handle]) - 1
@@ -67,33 +106,39 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, 
                 [(handle, output[handle][-1]) for handle in limits],
                 width=width, output_limits=limits, student_capture=capture,
             )
-            speculation["draft_rounds"] += any(wave.proposals.values())
+            draft_requests = sum(bool(proposal) for proposal in wave.proposals.values())
+            speculation["draft_rounds"] += bool(draft_requests)
+            speculation["draft_requests"] += draft_requests
             if optimizer is not None and optimizer.adam.version:
-                updated_rounds += any(wave.proposals.values())
+                progress.updated_rounds += bool(draft_requests)
             speculation["proposed"] += sum(map(len, wave.proposals.values()))
             for handle, emitted in wave.verified.emitted.items():
-                output[handle].extend(emitted)
+                append(handle, emitted, "verify/accept")
                 speculation["accepted"] += len(emitted) - 1
             if optimizer is not None and replay is not None:
                 handle, expected_rows = replay
                 if len(output[handle]) - captured_at >= expected_rows:
                     outcome = optimizer.update(
-                        f"online-update/{len(updates) + 1}", owner=handle.dp * session.draft.tp,
+                        f"online-update/{len(progress.updates) + 1}", owner=handle.dp * session.draft.tp,
                         feedback=session.feedback.get(handle), finished=False,
                         rate=online["rate"], max_norm=online["max_norm"],
                     )
                     if outcome is None or outcome["teacher_rows"] != expected_rows:
                         raise ValueError("Committed output and the online teacher block have different lengths")
-                    updates.append(dict(request=handle.request_id, dp=handle.dp, round=steps + 1, **outcome))
-                    print(json.dumps(dict(stage="online_update", **updates[-1])), flush=True)
+                    receipt = dict(request=handle.request_id, dp=handle.dp,
+                                   round=progress.completed_waves + 1, **outcome)
+                    progress.updates.append(receipt)
+                    print(json.dumps(dict(stage="online_update", **receipt)), flush=True)
                     session.release_student(handle)
                     replay = None
-                    next_capture = steps + online["every"]
+                    progress.next_capture_wave = progress.completed_waves + online["every"]
         else:
             batch = [(handle, [output[handle][-1]]) for handle, _ in pending]
             for handle, token in session.decode_greedy_batch(batch).items():
                 output[handle].append(token)
         steps += 1
+        if progress is not None:
+            progress.completed_waves += 1
     decode_seconds = perf_counter() - start
     capture_receipt = None
     if replay is not None:
@@ -113,16 +158,55 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, 
         session.release(handle)
     result = {handle.request_id: output[handle] for handle in handles}
     tok = sum(map(len, result.values())) - len(cases)
-    report = dict(generated=result, prefill_seconds=prefill_seconds, decode_seconds=decode_seconds,
-                  decode_steps=steps, decode_tokens=tok, decode_tok_per_s=tok / decode_seconds if steps else 0.0,
-                  speculation=speculation, capture=capture_receipt, backward=backward)
-    if optimizer is not None:
+    return dict(generated=result, prefill_seconds=prefill_seconds, decode_seconds=decode_seconds,
+                decode_steps=steps, decode_tokens=tok, speculation=speculation, capture=capture_receipt, backward=backward)
+
+
+def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, reverse=None,
+             optimizer=None, online=None, slots_per_dp=16, expected=None, mode=None):
+    """Reuse the resident session across bounded batches and keep a continuous update schedule."""
+    progress = OnlineProgress() if optimizer is not None else None
+    report = dict(generated={}, prefill_seconds=0., decode_seconds=0., decode_steps=0,
+                  decode_tokens=0, speculation=Counter(draft_rounds=0, draft_requests=0, proposed=0, accepted=0),
+                  capture=None, backward=None, request_batches=0, max_live_requests=0)
+    for batch in workload_batches(cases, slots_per_dp):
+        try:
+            batch_report = _generate_batch(
+                session, batch, prefill_rows, dp_size, width=width, optimizer=optimizer, online=online, progress=progress,
+                teacher_rows=teacher_rows if report["capture"] is None else 0,
+                reverse=reverse if report["capture"] is None else None, expected=expected,
+            )
+        except GreedyDivergence as error:
+            if mode is not None:
+                error.witness["mode"] = mode
+            raise
+        report["request_batches"] += 1
+        report["max_live_requests"] = max(report["max_live_requests"], len(batch))
+        report["generated"].update(batch_report["generated"])
+        report["speculation"].update(batch_report["speculation"])
+        for key in ("prefill_seconds", "decode_seconds", "decode_steps", "decode_tokens"):
+            report[key] += batch_report[key]
+        if batch_report["capture"] is not None:
+            report.update(capture=batch_report["capture"], backward=batch_report["backward"])
+        if mode is not None:
+            print(json.dumps(dict(stage="batch_complete", mode=mode, batch=report["request_batches"],
+                                  requests_finished=len(report["generated"]), requests_total=len(cases),
+                                  prefill_seconds=batch_report["prefill_seconds"],
+                                  decode_seconds=batch_report["decode_seconds"])), flush=True)
+    tokens, elapsed = report["decode_tokens"], report["decode_seconds"]
+    report["decode_tok_per_s"] = tokens / elapsed if tokens else 0.
+    counts = report["speculation"]
+    report["acceptance"] = dict(candidate_fraction=counts["accepted"] / counts["proposed"] if counts["proposed"] else 0.,
+                                mean_accepted_per_request=counts["accepted"] / counts["draft_requests"]
+                                if counts["draft_requests"] else 0.)
+    if progress is not None:
+        updates = progress.updates
         update_seconds = sum(item["update_seconds"] for item in updates)
-        inference_seconds = decode_seconds - update_seconds
+        inference_seconds = elapsed - update_seconds
         report["online"] = dict(updates=updates, version=optimizer.adam.version,
-                                rounds_after_publication=updated_rounds, update_seconds=update_seconds,
+                                rounds_after_publication=progress.updated_rounds, update_seconds=update_seconds,
                                 gradient_scratch_bytes_per_rank=2 * optimizer.packet_capacity * 4 if updates else 0,
-                                decode_tok_per_s_excluding_updates=tok / inference_seconds if steps else 0.0)
+                                decode_tok_per_s_excluding_updates=tokens / inference_seconds if tokens else 0.0)
     return report
 
 
@@ -173,6 +257,7 @@ def main():
     parser.add_argument("--max-updates", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--max-gradient-norm", type=float, default=1.)
+    parser.add_argument("--warmup-workload", type=Path, help="Warm AR and draft kernels before measured requests")
     parser.add_argument("--eval-workload", type=Path, help="Compare the initial and frozen heads on separate requests")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -222,16 +307,21 @@ def main():
             case["new_tokens"] >= 3 and len(case["input_ids"]) + args.draft_block <= args.context for case in rows
         ):
             parser.error(f"{path}: leave room for a draft block and at least one candidate")
-        if any(sum(case["dp"] == dp for case in rows) > min(args.slots_per_dp, 16) for dp in range(DP_SIZE)):
-            parser.error(f"{path}: workload must fit the resident request slots and vocabulary output rows")
         return rows, sha256(payload).hexdigest()
 
     cases, workload = load_workload(args.workload)
     evaluation, eval_workload = None, None
+    warmup, warmup_workload = None, None
     if args.eval_workload:
         evaluation, eval_workload = load_workload(args.eval_workload)
-        if {tuple(case["input_ids"]) for case in cases} & {tuple(case["input_ids"]) for case in evaluation}:
-            parser.error("Online and evaluation workloads must use separate prompts")
+    if args.warmup_workload:
+        warmup, warmup_workload = load_workload(args.warmup_workload)
+    seen_prompts = set()
+    for partition in (cases, evaluation or (), warmup or ()):
+        prompts = {tuple(case["input_ids"]) for case in partition}
+        if prompts & seen_prompts:
+            parser.error("Warmup, online and evaluation workloads must use separate prompts")
+        seen_prompts |= prompts
 
     capacities = args.prefill_capacity, args.decode_capacity
     tokens = args.prefill_moe_tokens, 16 if args.decode_capacity == 16 else 64
@@ -250,7 +340,7 @@ def main():
         context=args.context, slots=args.slots_per_dp, local_ranks=len(devices),
     )
     key = args.key_file.read_bytes().strip()
-    signature = dict(workload=workload, evaluation=eval_workload, checkpoint=checkpoint.identity,
+    signature = dict(workload=workload, evaluation=eval_workload, warmup=warmup_workload, checkpoint=checkpoint.identity,
                      capacities=list(capacities), context=args.context, slots=args.slots_per_dp, tokens=list(tokens))
     draft_programs = ()
     reverse_programs = {}
@@ -278,14 +368,16 @@ def main():
             online=online,
         )
 
-    def measured(session, width=0, teacher_rows=0, reverse=None, optimizer=None, *, requests=cases):
+    def measured(session, mode, width=0, teacher_rows=0, reverse=None, optimizer=None, *,
+                 requests=cases, reference=None):
         before = dict(vars(session.draft.stats)) if width else None
         metrics = dict(stage_seconds=Counter(), counts=Counter())
         start = perf_counter()
         with profile_online(SimpleNamespace(current=metrics, lock=Lock())):
             arm = generate(session, requests, capacities[0], DP_SIZE,
                            width=width, teacher_rows=teacher_rows, reverse=reverse,
-                           optimizer=optimizer, online=online) | metrics
+                           optimizer=optimizer, online=online, slots_per_dp=min(args.slots_per_dp, 16),
+                           expected=None if reference is None else reference["generated"], mode=mode) | metrics
         elapsed = perf_counter() - start
         arm["wall_seconds"] = elapsed
         arm["wall_tok_per_s"] = sum(map(len, arm["generated"].values())) / elapsed
@@ -297,6 +389,7 @@ def main():
         if link.exchange("staged-target/start", signature) != signature:
             raise ValueError("Both hosts must use the same checkpoint, workload and artifact geometry")
         start = perf_counter()
+        warmup_seconds = {}
         try:
             target = workers.enter_context(open_staged_target(
                 config, plan, link, weights, engram, programs, capacities=capacities,
@@ -306,9 +399,10 @@ def main():
             ))
             initialization_seconds = perf_counter() - start
             session = target.session()
-            print(json.dumps(dict(stage="generate", mode="ar", requests=len(cases))), flush=True)
-            result = measured(session)
-            arms = {"ar": result}
+            warm_ar = None
+            if warmup:
+                warm_ar = measured(session, "warmup_ar", requests=warmup)
+                warmup_seconds["ar"] = warm_ar["wall_seconds"]
             if draft_programs:
                 start = perf_counter()
                 session.draft = StagedPackedDraftProposer(
@@ -318,30 +412,44 @@ def main():
                 reverse = StagedDraftReverse(session.draft, config, reverse_programs) if reverse_programs else None
                 optimizer = StagedPackedAdam(session.draft, reverse, FLASH, adam_programs) if adam_programs else None
                 draft_init = perf_counter() - start
+                if warmup:
+                    warmup_seconds["orthrus"] = measured(
+                        session, "warmup_orthrus", args.verify_width, requests=warmup, reference=warm_ar,
+                    )["wall_seconds"]
+            print(json.dumps(dict(stage="generate", mode="ar", requests=len(cases))), flush=True)
+            result = measured(session, "ar")
+            arms = {"ar": result}
+            if draft_programs:
                 if evaluation:
-                    arms["eval_ar"] = measured(session, requests=evaluation)
-                    arms["eval_initial"] = measured(session, args.verify_width, requests=evaluation)
+                    arms["eval_ar"] = measured(session, "eval_ar", requests=evaluation)
+                    arms["eval_initial"] = measured(session, "eval_initial", args.verify_width, requests=evaluation,
+                                                   reference=arms["eval_ar"])
                 print(json.dumps(dict(stage="generate", mode="online" if optimizer else "orthrus",
                                       requests=len(cases))), flush=True)
-                arms["orthrus"] = measured(session, args.verify_width,
+                arms["orthrus"] = measured(session, "online" if optimizer else "orthrus", args.verify_width,
                                            args.teacher_rows if args.capture_last_layers else 0,
-                                           reverse if args.check_backward else None, optimizer)
+                                           reverse if args.check_backward else None, optimizer, reference=result)
                 arms["orthrus"].update(
                     initialization_seconds=draft_init, resident_head_bytes=session.draft.resident_head_bytes,
                     width=args.verify_width, block=args.draft_block, head_role=session.draft.head_role,
                 )
                 if evaluation:
-                    arms["eval_frozen"] = measured(session, args.verify_width, requests=evaluation)
+                    arms["eval_frozen"] = measured(session, "eval_frozen", args.verify_width, requests=evaluation,
+                                                  reference=arms["eval_ar"])
                     arms["eval_frozen"]["head_version"] = optimizer.adam.version
         except Exception as exc:
+            if isinstance(exc, GreedyDivergence):
+                args.output.write_text(json.dumps(dict(passed=False, node=args.node, divergence=exc.witness),
+                                                  indent=2) + "\n")
             if not isinstance(exc, PeerDispatchError):
                 with suppress(OSError):
                     link.abort("staged-target", exc)
             raise
         generated = {mode: arm["generated"] for mode, arm in arms.items()}
+        generated_identity = sha256(json.dumps(generated, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         receipt = arms.get("orthrus", {}).get("capture")
-        peer = link.exchange("staged-target/finish", dict(generated=generated, capture=receipt))
-        if peer["generated"] != generated:
+        peer = link.exchange("staged-target/finish", dict(generated=generated_identity, capture=receipt))
+        if peer["generated"] != generated_identity:
             raise AssertionError("Hosts observed different generated IDs")
 
     golden = json.loads(args.golden.read_text()) if args.golden else None
@@ -360,7 +468,7 @@ def main():
                   and replay_passed,
                   node=args.node,
                   global_ranks=list(plan.local_ranks), initialization_seconds=initialization_seconds,
-                  golden_compared=golden is not None, **result)
+                  golden_compared=golden is not None, warmup_seconds=warmup_seconds, configuration=signature, **result)
     if parity is not None:
         report.update(arms=arms, parity=parity)
     if args.capture_last_layers and not args.adam_graph:
@@ -383,7 +491,12 @@ def main():
         }
         report["passed"] &= all(item["passed"] for item in report["frozen_eval_parity"].values())
     args.output.write_text(json.dumps(report, indent=2) + "\n")
-    print(json.dumps(report), flush=True)
+    print(json.dumps(dict(passed=report["passed"], node=args.node, results=str(args.output), parity=parity,
+                          frozen_eval_parity=report.get("frozen_eval_parity"), online_passed=report.get("online_passed"),
+                          arms={name: {key: arm[key] for key in ("wall_tok_per_s", "decode_tok_per_s",
+                                                               "request_batches", "max_live_requests", "speculation",
+                                                               "acceptance")}
+                                for name, arm in arms.items()})), flush=True)
     if not report["passed"]:
         raise SystemExit("Staged acceptance failed. See the parity and online update results in the report.")
 

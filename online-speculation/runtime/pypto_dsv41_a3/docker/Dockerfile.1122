@@ -51,6 +51,8 @@ RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca set -e; \
 
 COPY online-speculation/src/blockspec /opt/dsv41-1122/orthrus/blockspec
 COPY online-speculation/scripts/run_dsv41_pypto_staged_target.py \
+     online-speculation/scripts/prepare_dsv41_gsm8k.py \
+     online-speculation/scripts/prepare_dsv41_pypto_staged_gsm8k.py \
      online-speculation/scripts/validate_dsv41_pypto_packed_history.py \
      online-speculation/scripts/validate_dsv41_pypto_ep_ipc.py \
      online-speculation/scripts/validate_dsv41_pypto_ep_hccl_boundary.py \

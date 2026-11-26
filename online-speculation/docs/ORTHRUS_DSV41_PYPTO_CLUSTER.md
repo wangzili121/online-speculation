@@ -147,6 +147,16 @@ python /opt/dsv41-1122/compile_dsv41_pypto_staged_adam.py --artifact-dir /result
 
 追加 `--eval-workload /results/heldout.json` 时，用同一份独立请求测 AR、初始 head 和更新后冻结 head。`arms` 中每组的 `wall_tok_per_s` 包含请求准入、Prefill、Decode 和释放。在线组的 `decode_tok_per_s_excluding_updates` 单列扣去更新阻塞时间的估算。
 
+1122 可直接复用已下载的 GSM8K 分区，用同一份 checkpoint 的 tokenizer 生成实验输入。已有数据时可跳过第一条。两台使用相同的三个 JSON。
+
+```bash
+python /opt/dsv41-1122/prepare_dsv41_gsm8k.py --output /results/gsm8k-data
+python /opt/dsv41-1122/prepare_dsv41_pypto_staged_gsm8k.py \
+  --dataset /results/gsm8k-data --checkpoint "$TARGET_WEIGHTS" --output /results/gsm8k
+```
+
+运行 1122 生成命令时，把 `--workload` 指向 `/results/gsm8k/online.json`，再追加 `--warmup-workload /results/gsm8k/warmup.json --eval-workload /results/gsm8k/heldout.json`。默认使用 128 道在线题、32 道留出题和 4 道预热题，并以固定生成长度做吞吐对照。用 `--update-every 16 --max-updates 128` 可测更长的在线曲线。每个 DP 每批的准入上限为 `--slots-per-dp`，每个 draft wave 从该 DP 中选一个请求起草。批间释放请求状态，保留 Adam 和已发布的 head。预热和装载单独计时，报告同时给出每批进度、候选接受比例和每次请求起草平均接受数。预热先比对 AR 与固定 head 的输出，正式运行中如果出现首个 token 分叉，会立即写出阶段、请求和 token 位置。
+
 梯度通信复用每 rank 一对 40 MiB 的驻留发送和接收缓冲，按参数大小建立视图，导出仍指向同一对分配。报告的 `gradient_scratch_bytes_per_rank` 只计这对缓冲。Adam 的 FP32 参数和动量账本另占显存，随更新层数增长。
 
 111 的四张 910B3 使用公开 W8A8 checkpoint 的第 39 层初始化 TP4 参数。构造梯度的三次发布与 Torch Adam 对照，权重抽样最大绝对误差为 `1.86e-9`。一次非有限梯度跳过发布，版本依序为 `1, 2, 2, 3`。该测试用宿主模拟 DP 求和。另用同机双卡实测 FP32 HCCL AllReduce 直接读写 IPC 缓冲视图，六轮逐元素一致。 [实卡报告与复跑命令](validation/dsv41/pypto-1122-949a-staged-adam-910b3.json)
