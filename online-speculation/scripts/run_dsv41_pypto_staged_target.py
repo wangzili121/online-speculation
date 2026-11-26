@@ -12,7 +12,7 @@ from time import perf_counter
 from types import SimpleNamespace
 
 
-def generate(session, cases, prefill_rows, dp_size, *, width=0):
+def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0):
     """Pack prompt chunks by DP owner and continue from device-greedy IDs."""
     handles = [session.admit(case["id"], case["dp"], len(case["input_ids"])) for case in cases]
     output = {handle: [] for handle in handles}
@@ -36,6 +36,7 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0):
     start = perf_counter()
     steps = 0
     speculation = Counter(draft_rounds=0, proposed=0, accepted=0)
+    replay = None
     while pending := [(handle, case["new_tokens"] - len(output[handle])) for case, handle in requests
                       if len(output[handle]) < case["new_tokens"]]:
         if width:
@@ -44,9 +45,16 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0):
             for handle, remaining in pending:
                 owners.setdefault(handle.dp, (handle, min(width, remaining)))
             limits = dict(owners.values())
+            capture = None
+            if teacher_rows and replay is None:
+                for case, handle in requests:
+                    position = len(case["input_ids"]) + len(output[handle]) - 1
+                    if limits.get(handle, 0) > 1 and position + session.draft.block <= session.context:
+                        capture = replay = (handle, min(teacher_rows, case["new_tokens"] - len(output[handle])))
+                        break
             wave = session.speculate_batch(
                 [(handle, output[handle][-1]) for handle in limits],
-                width=width, output_limits=limits,
+                width=width, output_limits=limits, student_capture=capture,
             )
             speculation["draft_rounds"] += any(wave.proposals.values())
             speculation["proposed"] += sum(map(len, wave.proposals.values()))
@@ -59,13 +67,23 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0):
                 output[handle].append(token)
         steps += 1
     decode_seconds = perf_counter() - start
+    capture_receipt = None
+    if replay is not None:
+        handle, expected_rows = replay
+        feedback = session.feedback.get(handle)
+        capture_receipt = dict(request=handle.request_id, dp=handle.dp, expected_rows=expected_rows)
+        if feedback is not None:
+            capture_receipt.update(
+                position=feedback.student.position, teacher_rows=expected_rows - feedback.remaining,
+                attention_and_ffn_tapes=sorted(next(iter(feedback.student.ffn_tape.values()))),
+            )
     for handle in handles:
         session.release(handle)
     result = {handle.request_id: output[handle] for handle in handles}
     tok = sum(map(len, result.values())) - len(cases)
     return dict(generated=result, prefill_seconds=prefill_seconds, decode_seconds=decode_seconds,
                 decode_steps=steps, decode_tokens=tok, decode_tok_per_s=tok / decode_seconds if steps else 0.0,
-                speculation=speculation)
+                speculation=speculation, capture=capture_receipt)
 
 
 def first_difference(expected, actual):
@@ -100,10 +118,15 @@ def main():
     parser.add_argument("--draft-graph", type=Path, help="Compiled eight-rank draft bundle")
     parser.add_argument("--draft-block", type=int, choices=(16, 32), default=16)
     parser.add_argument("--verify-width", type=int, choices=range(2, 17), default=8)
+    parser.add_argument("--capture-last-layers", type=int, choices=range(27), default=0,
+                        metavar="N", help="Retain N suffix layers and verify one teacher replay")
+    parser.add_argument("--teacher-rows", type=int, choices=range(1, 16), default=7)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if bool(args.draft_head) != bool(args.draft_graph):
         parser.error("Provide both --draft-head and --draft-graph to compare Orthrus")
+    if args.capture_last_layers and not args.draft_head:
+        parser.error("Suffix replay requires a draft head and a matching compiled suffix")
 
     import torch
     from blockspec.dsv41_online_profile import profile_online
@@ -160,19 +183,20 @@ def main():
         artifact = read_packed_head(checkpoint, args.draft_head, args.draft_block)
         draft_programs = load_staged_draft_graphs(
             args.draft_graph, context=args.context, block=args.draft_block,
-            local_ranks=len(devices), request_slots=args.slots_per_dp,
+            local_ranks=len(devices), request_slots=args.slots_per_dp, last_layers=args.capture_last_layers,
         )
         signature["draft"] = dict(
             head=sha256((args.draft_head / "manifest.json").read_bytes()
                         + find_weight_index(args.draft_head).read_bytes()).hexdigest(),
             graphs=sha256((args.draft_graph / "orthrus_draft_manifest.json").read_bytes()).hexdigest(),
             width=args.verify_width,
+            teacher_rows=args.teacher_rows if args.capture_last_layers else 0,
         )
 
-    def measured(session, width=0):
+    def measured(session, width=0, teacher_rows=0):
         metrics = dict(stage_seconds=Counter(), counts=Counter())
         with profile_online(SimpleNamespace(current=metrics, lock=Lock())):
-            return generate(session, cases, capacities[0], DP_SIZE, width=width) | metrics
+            return generate(session, cases, capacities[0], DP_SIZE, width=width, teacher_rows=teacher_rows) | metrics
 
     with ControlLink.connect(plan.node, (args.rank0_ip, args.port), key, args.timeout) as link, ExitStack() as workers:
         if link.exchange("staged-target/start", signature) != signature:
@@ -191,9 +215,11 @@ def main():
                 start = perf_counter()
                 session.draft = StagedPackedDraftProposer(
                     target, draft_programs, draft_head=args.draft_head, head_artifact=artifact, block=args.draft_block,
+                    last_layers=args.capture_last_layers,
                 )
                 draft_init = perf_counter() - start
-                arms["orthrus"] = measured(session, args.verify_width)
+                arms["orthrus"] = measured(session, args.verify_width,
+                                           args.teacher_rows if args.capture_last_layers else 0)
                 arms["orthrus"].update(
                     initialization_seconds=draft_init, resident_head_bytes=session.draft.resident_head_bytes,
                     draft_profile=vars(session.draft.stats), width=args.verify_width,
@@ -205,21 +231,35 @@ def main():
                     link.abort("staged-target", exc)
             raise
         generated = {mode: arm["generated"] for mode, arm in arms.items()}
-        if link.exchange("staged-target/finish", generated) != generated:
+        receipt = arms.get("orthrus", {}).get("capture")
+        peer = link.exchange("staged-target/finish", dict(generated=generated, capture=receipt))
+        if peer["generated"] != generated:
             raise AssertionError("Hosts observed different generated IDs")
 
     golden = json.loads(args.golden.read_text()) if args.golden else None
+    replay_passed = True
+    if args.capture_last_layers:
+        owners = [item for item in (receipt, peer["capture"]) if item and "teacher_rows" in item]
+        replay_passed = (
+            len(owners) == 1 and receipt is not None and peer["capture"] is not None
+            and receipt["request"] == peer["capture"]["request"] and receipt["dp"] == peer["capture"]["dp"]
+            and owners[0]["teacher_rows"] == owners[0]["expected_rows"]
+        )
     parity = None
     if "orthrus" in arms:
         difference = first_difference(generated["ar"], generated["orthrus"])
         parity = dict(passed=difference is None and arms["orthrus"]["speculation"]["draft_rounds"] > 0,
                       compared_tokens=sum(map(len, generated["ar"].values())), first_difference=difference)
-    report = dict(passed=(golden is None or golden == result["generated"]) and (parity is None or parity["passed"]),
+    report = dict(passed=(golden is None or golden == result["generated"]) and (parity is None or parity["passed"])
+                  and replay_passed,
                   node=args.node,
                   global_ranks=list(plan.local_ranks), initialization_seconds=initialization_seconds,
                   golden_compared=golden is not None, **result)
     if parity is not None:
         report.update(arms=arms, parity=parity)
+    if args.capture_last_layers:
+        report["teacher_replay"] = dict(passed=replay_passed, layers=args.capture_last_layers,
+                                        local=receipt, peer=peer["capture"])
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)
     if not report["passed"]:

@@ -133,6 +133,8 @@ python /opt/dsv41-1122/run_dsv41_pypto_staged_target.py \
 
 报告分别记录 AR 与 Orthrus 的生成 ID、起草和 Verify/Accept 阶段耗时、候选接受数、逐 token 对照，以及端到端 Decode 计时。当前这条入口覆盖固定 head 推理，已通过编译、产物回载和宿主回归。真实双机整模和 last-N 在线学习仍需验收。 [编译和宿主验证记录](validation/dsv41/pypto-1122-949a-staged-draft.json)
 
+要检查在线更新所需的前向状态，用同一条 draft 编译命令追加 `--last-layers 4`，写到新的产物目录。启动命令使用该目录，并追加 `--capture-last-layers 4 --teacher-rows 7`。两个节点对同一条请求和 anchor 发起捕获。持有该请求的 DP 保留末层隐藏状态、词表分数和指定后缀各层的 Attention、FFN 激活及实际 MoE 路由。候选拒绝后，教师行沿修正后的前缀继续收集。报告的 `teacher_replay.passed` 检查只有一个节点收到完整教师行。该模式验证前向留存和教师回放，权重更新及发布由后续双机反向链路提供。 [编译与回放验证记录](validation/dsv41/pypto-1122-949a-staged-capture.json)
+
 ### GSM8K 在线更新报告
 
 在两台公司节点使用同一份 checkout，分别执行 `run_dsv41_pypto_company_online.sh node7 report 1` 和 `run_dsv41_pypto_company_online.sh node8 report 1`。脚本使用现有 GSM8K 目录，从 `tuning.jsonl` 取 8 题在线更新，从 `quality_test.jsonl` 取 4 道留出题。默认每个 DP 分区放 1 个请求，最多 4 个并发，每题最多生成 32 个 token。两端可用相同的 `DSV41_REPORT_TRAIN`、`DSV41_REPORT_EVAL`、`DSV41_REPORT_TOKENS` 调整规模。

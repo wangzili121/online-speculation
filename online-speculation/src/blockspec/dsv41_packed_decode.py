@@ -4,8 +4,11 @@ from .dsv41_online_profile import timed_stage
 from .dsv41_packed_ep_graph import GraphResidentHcclMoE
 
 
-def make_decode_ffn_tail(rows, local_ranks):
+def make_decode_ffn_tail(rows, local_ranks, *, last_layers=0):
     """Apply native FFN hyper-connections after external EP dispatch and combine."""
+    if last_layers:
+        return make_draft_ffn_capture_tail(rows, local_ranks, last_layers)
+
     import pypto.language as pl
     import pypto.language.distributed as pld
     from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
@@ -70,6 +73,95 @@ def make_decode_ffn_tail(rows, local_ranks):
     return restore
 
 
+def make_draft_ffn_capture_tail(rows, local_ranks, last_layers):
+    """Preserve the FFN post-mix boundary and expert inputs on the selected TP group."""
+    import pypto.language as pl
+    import pypto.language.distributed as pld
+    from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
+    from models.deepseek_v4_1_flash_a3.hc import hc_ffn_decode_mixes
+    from models.deepseek_v4_1_flash_a3.moe import prefill_ffn_restore
+    from models.deepseek_v4_1_flash_a3.o_proj import retire_prefill_signals
+
+    hidden, copies, mix = FLASH.hidden_size, FLASH.hc_mult, FLASH.mix_hc
+    tp = TP_SIZE
+    if local_ranks < tp or local_ranks % tp:
+        raise ValueError("Decode FFN restore requires complete local TP groups")
+
+    from .dsv41_packed_ffn_tape import make_packed_ffn_capture, packed_ffn_tape_shapes
+
+    shapes = packed_ffn_tape_shapes(rows, last_layers, tp, hidden, copies)
+    tape_residual, tape_mixes, tape_vectors, tape_ids, tape_weights = (item[0] for item in shapes.values())
+    topk = FLASH.num_experts_per_tok
+    save = make_packed_ffn_capture(rows, last_layers, tp, hidden, copies, topk)
+
+    @pl.jit(auto_scope=False)
+    def restore_record(
+        attention: pl.Tensor, owned: pl.Tensor, function: pl.Tensor, scale: pl.Tensor,
+        base: pl.Tensor, meta: pl.Tensor, output: pl.Tensor, pre_mix: pl.Tensor,
+        incoming: pl.Tensor, collapsed: pl.Tensor, normed: pl.Tensor,
+        ids: pl.Tensor, weights: pl.Tensor, saved_residual: pl.Tensor, saved_mixes: pl.Tensor,
+        saved_vectors: pl.Tensor, saved_ids: pl.Tensor, saved_weights: pl.Tensor,
+        window: pld.DistributedTensor[[rows, hidden], pl.BF16],
+        arrived: pld.DistributedTensor[[tp, 1], pl.INT32],
+        rank: pl.Scalar[pl.INT32], owner: pl.Scalar[pl.INT32], slot: pl.Scalar[pl.INT32],
+    ):
+        active = pl.read(meta, [0])
+        if active != 0:
+            group, lane = rank // tp * tp, rank % tp
+            post = pl.create_tensor([rows, copies], dtype=pl.FP32)
+            residual = pl.create_tensor([rows, copies, copies], dtype=pl.FP32)
+            mixed = pl.create_tensor([rows, hidden], dtype=pl.BF16)
+            hc_ffn_decode_mixes(attention, function, scale, base, pre_mix, post, residual, one_token=False)
+            prefill_ffn_restore(
+                attention, owned, post, residual, window, arrived, mixed, output,
+                group, lane, active, 1, prefill=False,
+            )
+            if group == owner and slot >= 0:
+                save(attention, incoming, post, residual, collapsed, mixed, normed, ids, weights,
+                     saved_residual, saved_mixes, saved_vectors, saved_ids, saved_weights, slot)
+            retire_prefill_signals(output, arrived, group, lane)
+        return output
+
+    @pl.jit.host
+    def restore_and_capture(
+        attention: pl.Tensor[[local_ranks, rows, copies, hidden], pl.FP32],
+        owned: pl.Tensor[[local_ranks, rows, hidden], pl.BF16],
+        function: pl.Tensor[[local_ranks, mix, copies * hidden], pl.FP32],
+        scale: pl.Tensor[[local_ranks, 3], pl.FP32],
+        base: pl.Tensor[[local_ranks, mix], pl.FP32],
+        meta: pl.Tensor[[local_ranks, 2], pl.INT32],
+        output: pl.Out[pl.Tensor[[local_ranks, rows, copies, hidden], pl.FP32]],
+        pre_mix: pl.Out[pl.Tensor[[local_ranks, rows, copies], pl.FP32]],
+        incoming: pl.Tensor[[local_ranks, rows, copies], pl.FP32],
+        collapsed: pl.Tensor[[local_ranks, rows, hidden], pl.BF16],
+        normed: pl.Tensor[[local_ranks, 16, hidden], pl.BF16],
+        ids: pl.Tensor[[local_ranks, 16, topk], pl.INT32],
+        weights: pl.Tensor[[local_ranks, 16, topk], pl.FP32],
+        saved_residual: pl.InOut[pl.Tensor[[local_ranks, *tape_residual], pl.FP32]],
+        saved_mixes: pl.InOut[pl.Tensor[[local_ranks, *tape_mixes], pl.FP32]],
+        saved_vectors: pl.InOut[pl.Tensor[[local_ranks, *tape_vectors], pl.BF16]],
+        saved_ids: pl.InOut[pl.Tensor[[local_ranks, *tape_ids], pl.INT32]],
+        saved_weights: pl.InOut[pl.Tensor[[local_ranks, *tape_weights], pl.FP32]],
+        owner: pl.Scalar[pl.INT32],
+        slot: pl.Scalar[pl.INT32],
+        execute: pl.Scalar[pl.INT32],
+    ):
+        windows = pld.alloc_window_buffer([rows, hidden], dtype=pl.BF16)
+        signals = pld.alloc_window_buffer([tp, 1], dtype=pl.INT32)
+        for rank in pl.range(pld.world_size()):
+            window = pld.window(windows, [rows, hidden], dtype=pl.BF16)
+            arrived = pld.window(signals, [tp, 1], dtype=pl.INT32)
+            if execute != 0:
+                restore_record(
+                    attention[rank], owned[rank], function[rank], scale[rank], base[rank],
+                    meta[rank], output[rank], pre_mix[rank], incoming[rank], collapsed[rank],
+                    normed[rank], ids[rank], weights[rank], saved_residual[rank], saved_mixes[rank],
+                    saved_vectors[rank], saved_ids[rank], saved_weights[rank], window, arrived,
+                    rank, owner, slot, device=rank,
+                )
+
+    return restore_and_capture
+
 class ResidentDecodeFFN:
     """Run the FFN of a Decode layer using the attention and next-layer HBM buffers."""
 
@@ -77,18 +169,18 @@ class ResidentDecodeFFN:
         self.moe = moe
         self.restore = restore
 
-    def reserve_windows(self, attention, mixes, output, pre_mix):
-        self._restore(attention, self.moe.owned, mixes, output, pre_mix, execute=0)
+    def reserve_windows(self, attention, mixes, output, pre_mix, *, capture=()):
+        self._restore(attention, self.moe.owned, mixes, output, pre_mix, capture, execute=0)
 
     def run_layer(self, stage, *, attention, ffn_input, shared_weights, routed_weights,
-                  mixes, output, pre_mix):
+                  mixes, output, pre_mix, capture=()):
         owned = self.moe.run(stage, prefill=False, ffn_input=ffn_input,
                              shared_weights=shared_weights, routed_weights=routed_weights)
         with timed_stage("decode_ffn_tp_mhc_post"):
-            self._restore(attention, owned, mixes, output, pre_mix, execute=1)
+            self._restore(attention, owned, mixes, output, pre_mix, capture, execute=1)
 
-    def _restore(self, attention, owned, mixes, output, pre_mix, *, execute):
-        self.moe.runtime.run(self.restore, attention, owned, *mixes, self.moe.meta, output, pre_mix, execute)
+    def _restore(self, attention, owned, mixes, output, pre_mix, capture, *, execute):
+        self.moe.runtime.run(self.restore, attention, owned, *mixes, self.moe.meta, output, pre_mix, *capture, execute)
 
 
 def make_decode_final_head(local_ranks):

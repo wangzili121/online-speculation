@@ -83,11 +83,12 @@ def load_packed_draft_graph(directory, config, *, context, block=32, last_layers
 _STAGED_ENTRIES = ("attention", "ffn-restore", "head", "ep-prepare", "ep-compute", "ep-restore")
 
 
-def load_staged_draft_graphs(directory, *, context, block, local_ranks, request_slots):
+def load_staged_draft_graphs(directory, *, context, block, local_ranks, request_slots, last_layers=0):
     from pypto.ir import DistributedCompiledProgram
 
     manifest = json.loads((directory / "orthrus_draft_manifest.json").read_text())
-    expected = draft_graph_manifest(context, block, local_ranks=local_ranks, request_slots=request_slots)
+    expected = draft_graph_manifest(context, block, local_ranks=local_ranks, request_slots=request_slots,
+                                    last_layers=last_layers)
     if manifest != expected:
         raise ValueError("Staged draft bundle does not match the head width, source or resident page geometry")
     return tuple(DistributedCompiledProgram.from_dir(directory / entry) for entry in _STAGED_ENTRIES)
@@ -463,7 +464,7 @@ class PackedDraftProposer:
 class StagedPackedDraftProposer(PackedDraftProposer):
     """Execute local draft Attention and send routed expert rows over EP16."""
 
-    def __init__(self, target, programs, *, draft_head, head_artifact, block):
+    def __init__(self, target, programs, *, draft_head, head_artifact, block, last_layers=0):
         import torch
         from models.deepseek_v4_1_flash_a3.config import DP_SIZE, FLASH
 
@@ -477,7 +478,7 @@ class StagedPackedDraftProposer(PackedDraftProposer):
         self._bind_inputs(
             target.runtime, target.handles[0], target.inputs[1], geometry.weights, geometry.engram,
             geometry.rope_tables, draft_head=draft_head, block=block, context=context, tp=target.tp,
-            head_artifact=head_artifact, request_slots=slots,
+            head_artifact=head_artifact, request_slots=slots, last_layers=last_layers,
         )
         self.attention, restore, self.head, *ep = programs
         transport = target.decode.ffn.moe.transport
@@ -503,17 +504,24 @@ class StagedPackedDraftProposer(PackedDraftProposer):
         self.ffn_rows = self._stack("ffn_input")
         self.x_hc = self._stack("x_hc")
         self.pre_mix = self._stack("pre_mix")
+        self.ffn_tape_names = tuple(name for name in self.tape_specs if name.startswith("ffn_tape_"))
+        if last_layers:
+            self.ffn_capture_inputs = (self._stack("pre_attention"), self.ffn_rows, moe.normed, moe.ids, moe.weights)
+            self.ffn_idle_tapes = tuple(self._stack(name) for name in self.ffn_tape_names)
         self.runtime.run(self.attention, *self.attention_args, 0, -1, 0)
-        self.ffn.reserve_windows(self.attention_rows, self.layer_weights[0][2], self.x_hc, self.pre_mix)
+        self.ffn.reserve_windows(self.attention_rows, self.layer_weights[0][2], self.x_hc, self.pre_mix,
+                                 capture=self._ffn_capture_args(-1, -1))
         self.runtime.run(self.head, *self.head_args, 0)
 
-    def _stack(self, name):
+    def _stack(self, name, replacement=None):
         from pypto.runtime import StackedDeviceTensor
 
-        shards = tuple(values[name] for values in self.ranks)
+        replacements = replacement or {}
+        shards = tuple(replacements.get(rank, values[name]) for rank, values in enumerate(self.ranks))
         return StackedDeviceTensor(shards, (self.world, *shards[0].shape), tuple(range(self.world)))
 
-    def _bind_stage(self, program, scalars, **supplied):
+    def _bind_stage(self, program, scalars, *, replacements=None, **supplied):
+        replacements = replacements or {}
         arguments, runtime_scalars = [], []
         for parameter in program._get_metadata()[0]:
             name = parameter.name.removesuffix("__ssa_v0")
@@ -522,16 +530,31 @@ class StagedPackedDraftProposer(PackedDraftProposer):
             elif name in supplied:
                 arguments.append(supplied[name])
             else:
-                arguments.append(self._rank_argument(name, parameter))
+                arguments.append(self._rank_argument(name, parameter, replacement=replacements.get(name)))
         if tuple(runtime_scalars) != scalars:
             raise ValueError(f"Unexpected staged draft scalar arguments: {runtime_scalars}")
         return tuple(arguments)
 
+    def _ffn_capture_args(self, owner, slot, tapes=()):
+        if not self.last_layers:
+            return ()
+        return (*self.ffn_capture_inputs, *(tapes or self.ffn_idle_tapes), owner, slot)
+
+    def _capture(self, owner, request, rows):
+        allocation, views = self.inputs.reserve(self.runtime, owner)
+        result = self.ranks[owner]["logits"]
+        logits = self.runtime.alloc_tensor(result.shape, result.dtype, worker_id=owner)
+        state = PackedFinalState(allocation, views["x_hc"], views["pre_mix"])
+        tapes = {rank: self._alloc_tape(rank) for rank in range(owner, owner + self.tp)}
+        student = PackedStudentRows(owner, request.position, rows, logits, state, tapes, request.pages)
+        replacements = {name: {rank: values[name] for rank, values in tapes.items()} for name in self.tape_specs}
+        replacements.update({name: {owner: value} for name, value in views.items()})
+        replacements["logits"] = {owner: logits}
+        return student, replacements
+
     def propose_batch(self, requests, *, uploads, capture=None):
         from .dsv41_online_profile import timed_stage
 
-        if capture is not None:
-            raise ValueError("Staged draft capture is not bound to an online learner")
         if not requests:
             return {}
         local = {request.owner - self.target.rank_offset: request for request in requests
@@ -540,18 +563,45 @@ class StagedPackedDraftProposer(PackedDraftProposer):
         for request in requests:
             counts[request.owner // self.tp] = self.block
 
-        def upload(owner, active):
+        capture_owner, capture_rows, student = -1, 0, None
+        attention_args, head_args = self.attention_args, self.head_args
+        streams, premix = self.x_hc, self.pre_mix
+        ffn_tapes = ()
+        if capture is not None:
+            key, capture_rows = capture
+            request = next((item for item in requests if item.history_key == key), None)
+            if (not self.last_layers or request is None or key in self.student or type(capture_rows) is not int
+                    or not 1 <= capture_rows <= min(self.block - 1, self.sampled.shape[0])):
+                raise ValueError("Staged capture requires a compiled suffix and a live request with free capture space")
+            if request.owner in self.target.global_ranks:
+                capture_owner = request.owner - self.target.rank_offset
+                student, replacements = self._capture(capture_owner, request, capture_rows)
+                attention_args = self._bind_stage(
+                    self.attention, ("layer_index", "ffn_capture_owner", "execute_layers"),
+                    replacements=replacements, count_meta=self.ffn.moe.meta,
+                )
+                head_args = self._bind_stage(self.head, ("execute_layers",), replacements=replacements)
+                streams = self._stack("x_hc", replacements["x_hc"])
+                premix = self._stack("pre_mix", replacements["pre_mix"])
+                ffn_tapes = tuple(self._stack(name, replacements[name]) for name in self.ffn_tape_names)
+
+        def upload(owner, active, allocation=None):
             start = perf_counter()
-            list(uploads.map(lambda rank: self.inputs.upload(self.runtime, rank, active),
-                             range(owner, owner + self.tp)))
+            def copy(rank):
+                if rank == owner and allocation is not None:
+                    self.inputs.upload(self.runtime, rank, active, allocation=allocation)
+                else:
+                    self.inputs.upload(self.runtime, rank, active)
+            list(uploads.map(copy, range(owner, owner + self.tp)))
             self.stats.upload_seconds += perf_counter() - start
             self.stats.input_bytes += self.tp * self.inputs.images[0].nbytes
 
         for owner, request in local.items():
             start = perf_counter()
-            self._stage(request)
+            captured = student if owner == capture_owner else None
+            self._stage(request, student_rows=capture_rows if captured is not None else 0)
             self.stats.prepare_seconds += perf_counter() - start
-            upload(owner, owner)
+            upload(owner, owner, captured.final_state.allocation if captured is not None else None)
         for owner in sorted(self.previous_owners - local.keys()):
             upload(owner, -self.tp)
         self.previous_owners = set(local)
@@ -559,14 +609,16 @@ class StagedPackedDraftProposer(PackedDraftProposer):
         stage = f"staged-draft/{self.stats.calls}"
         start = perf_counter()
         self.ffn.moe.bind_batch(counts)
+        first_saved = len(self.layer_weights) - self.last_layers
         for layer, (shared, routed, mixes) in enumerate(self.layer_weights):
             with timed_stage("draft_attention"):
-                self.runtime.run(self.attention, *self.attention_args, layer, -1, 1)
+                self.runtime.run(self.attention, *attention_args, layer, capture_owner, 1)
             self.ffn.run_layer(f"{stage}/layer-{layer}", attention=self.attention_rows, ffn_input=self.ffn_rows,
                                shared_weights=shared, routed_weights=routed, mixes=mixes,
-                               output=self.x_hc, pre_mix=self.pre_mix)
+                               output=streams, pre_mix=premix,
+                               capture=self._ffn_capture_args(capture_owner, layer - first_saved, ffn_tapes))
         with timed_stage("draft_final_head"):
-            self.runtime.run(self.head, *self.head_args, 1)
+            self.runtime.run(self.head, *head_args, 1)
         self.stats.graph_seconds += perf_counter() - start
 
         start = perf_counter()
@@ -583,5 +635,7 @@ class StagedPackedDraftProposer(PackedDraftProposer):
                     if request.owner not in self.target.global_ranks}
         if {owner: len(tokens) for owner, tokens in peer.items()} != expected:
             raise ValueError("Draft owners returned a different set of candidate rows")
+        if student is not None:
+            self.student[key] = student
         self.stats.calls += 1
         return {int(owner): ids for owner, ids in (result | peer).items()}

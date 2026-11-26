@@ -1,0 +1,52 @@
+{
+  "lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+  "compiler_environment": {"server": "111", "cann": "9.0.0"},
+  "compile": {
+    "local_ranks": 8,
+    "global_ep": 16,
+    "context": 512,
+    "request_slots_per_dp": 2,
+    "bundles": [
+      {"block": 16, "last_layers": 4, "seconds": 46.03508741199039},
+      {"block": 32, "last_layers": 1, "seconds": 47.83654327807017}
+    ]
+  },
+  "host_validation": {
+    "orthrus_tests": 213,
+    "orthrus_subtests": 5,
+    "native_packed_contract_tests": 16,
+    "k16_last4_abi_dry_run": {
+      "local_global_ranks": [8, 9, 10, 11, 12, 13, 14, 15],
+      "capture_global_owner": 12,
+      "capture_slots": [0, 1, 2, 3],
+      "teacher_row_limit": 5,
+      "graph_binds_checked": 204,
+      "ep_collective_calls_scheduled": 80,
+      "retained_allocations_released": 78
+    },
+    "teacher_replay": "On node 1, local capture retains one teacher row before the rejection and receives the next row from the corrected continuation. Remote capture selects the same request on both nodes but never reads the peer's logits."
+  },
+  "device_ffn_capture_validation": {
+    "scope": "Real layer 39 mHC weights with synthetic attention, owner-lane FFN output and router rows. Compare the same staged FFN graph with capture off and on.",
+    "physical_devices": [1, 3, 4, 5],
+    "card": "Ascend 910B3",
+    "repeats_per_mode": 6,
+    "outputs_byte_exact": true,
+    "tape_byte_exact": true,
+    "cases": [
+      {
+        "command": "python validate_dsv41_pypto_staged_ffn_capture.py --checkpoint /model --block 16 --last-layers 4",
+        "ffn_output_relative_l2": 2.806986287851032e-7,
+        "warm_host_and_device_median_ms": {"uncaptured": 31.976966187357903, "capture": 31.822314951568842}
+      },
+      {
+        "command": "python validate_dsv41_pypto_staged_ffn_capture.py --checkpoint /model --block 32 --last-layers 1",
+        "ffn_output_relative_l2": 2.632593236739922e-7,
+        "warm_host_and_device_median_ms": {"uncaptured": 21.95919817313552, "capture": 22.14421797543764}
+      }
+    ]
+  },
+  "dual_host_teacher_replay_executed": false,
+  "dual_host_backward_and_publication_executed": false
+}

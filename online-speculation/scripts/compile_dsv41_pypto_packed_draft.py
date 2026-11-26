@@ -58,7 +58,7 @@ def main():
         ep = make_hccl_ep_graphs(args.decode_capacity, args.block, args.local_ranks, prefill=False)
         entries = {
             "attention": graph,
-            "ffn-restore": make_decode_ffn_tail(args.block, args.local_ranks),
+            "ffn-restore": make_decode_ffn_tail(args.block, args.local_ranks, last_layers=args.last_layers),
             "head": make_decode_final_head(args.local_ranks),
             **dict(zip(("ep-prepare", "ep-compute", "ep-restore"), ep, strict=True)),
         }

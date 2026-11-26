@@ -363,6 +363,7 @@ def test_staged_draft_uses_local_worker_ids_and_exchanges_only_candidates():
 
     draft = StagedPackedDraftProposer.__new__(StagedPackedDraftProposer)
     draft.tp, draft.block, draft.dp_size = 4, 16, 4
+    draft.last_layers = 0
     draft.previous_owners, draft.stats = set(), DraftRoundStats()
     draft.sampled = torch.empty(16, 8, dtype=torch.int32)
     draft.ranks = [{"sampled_ids": SimpleNamespace(data_ptr=rank)} for rank in range(8)]
@@ -371,7 +372,7 @@ def test_staged_draft_uses_local_worker_ids_and_exchanges_only_candidates():
     draft.attention_rows = draft.ffn_rows = draft.x_hc = draft.pre_mix = object()
     draft.layer_weights = [(None, None, None)] * 2
     observed = []
-    draft._stage = lambda request: observed.append(("stage", request.owner))
+    draft._stage = lambda request, *, student_rows: observed.append(("stage", request.owner))
     draft.inputs = SimpleNamespace(
         images=torch.zeros(3, 128, dtype=torch.uint8),
         upload=lambda _, rank, owner: observed.append(("upload", rank, owner)),

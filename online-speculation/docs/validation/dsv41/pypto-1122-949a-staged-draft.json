@@ -37,6 +37,19 @@
       "engram_restored": true
     }
   },
+  "device_attention_validation": {
+    "command": "python validate_dsv41_pypto_staged_draft_attention.py --checkpoint /model",
+    "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+    "scope": "Layer 0 K16 draft SWA at an empty history with checkpoint-initialized BF16 draft projections and real mHC weights.",
+    "physical_devices": [1, 3, 4, 6],
+    "card": "Ascend 910B3",
+    "npu_execution": true,
+    "repeats": 5,
+    "cross_rank_and_repeats_byte_exact": true,
+    "attention_hidden_relative_l2": 0.001046585850417614,
+    "ffn_input_relative_l2": 0.0016682690475136042,
+    "warm_host_and_device_median_ms": 26.944046490825713
+  },
   "dual_host_checkpoint_execution": false,
   "staged_online_update": false,
   "throughput_measured": false

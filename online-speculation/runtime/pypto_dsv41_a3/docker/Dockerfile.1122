@@ -66,7 +66,9 @@ COPY online-speculation/scripts/run_dsv41_pypto_staged_target.py \
      online-speculation/scripts/validate_dsv41_pypto_packed_qkv.py \
      online-speculation/scripts/validate_dsv41_pypto_packed_indexer.py \
      online-speculation/scripts/validate_dsv41_pypto_packed_draft_tp.py \
-     online-speculation/scripts/validate_dsv41_pypto_packed_layer.py /opt/dsv41-1122/
+     online-speculation/scripts/validate_dsv41_pypto_packed_layer.py \
+     online-speculation/scripts/validate_dsv41_pypto_staged_draft_attention.py \
+     online-speculation/scripts/validate_dsv41_pypto_staged_ffn_capture.py /opt/dsv41-1122/
 
 ENV PYTHONPATH=/opt/dsv41-1122/pypto/python:/opt/dsv41-1122/pypto-lib:/opt/dsv41-1122/orthrus
 ENTRYPOINT ["/bin/bash", "-lc", "source /opt/pypto/bin/pypto-activate.sh && exec python \"$@\"", "dsv41-1122"]
