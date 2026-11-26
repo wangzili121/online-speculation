@@ -1,13 +1,15 @@
 """TP2 draft 的只读 GDN 递推；供推理与独立检查共用。"""
 
 
-def make_recurrence(batch_size, *, valid_rows=False, history_slots=32, block_rows=32):
+def make_recurrence(batch_size, *, valid_rows=False, history_slots=32, block_rows=32, clear_block=False):
     from .tp2_row_layout import row_geometry
     row_geometry(batch_size, block_rows)
     if type(batch_size) is not int or batch_size not in (1, 2):
         raise ValueError("one or two independent draft blocks required")
     if type(valid_rows) is not bool:
         raise ValueError("valid_rows must be a boolean")
+    if type(clear_block) is not bool or clear_block and not valid_rows:
+        raise ValueError("clear_block requires the valid-rows recurrence")
     if type(history_slots) is not int or not batch_size <= history_slots <= 32:
         raise ValueError("history capacity must contain the requested slots")
     import pypto.language as pl
@@ -32,6 +34,12 @@ def make_recurrence(batch_size, *, valid_rows=False, history_slots=32, block_row
                 count = width + seq * (width_second - width)
                 if not gdn_valid_rows:
                     count = block_rows
+                if clear_block:
+                    # A task owns one contiguous block of output rows and 64 columns.
+                    # Initialize it once, then overwrite only the valid prefix.
+                    if count < block_rows:
+                        out[first:first + block_rows, head * 128 + col:head * 128 + col + 64] = pl.full(
+                            [block_rows, 64], pl.BF16, value=0.)
                 for token in pl.range(count):
                     query = pl.slice(q, [1, 128], [first + token, head * 128])
                     key = pl.slice(k, [1, 128], [first + token, head * 128])
@@ -47,7 +55,7 @@ def make_recurrence(batch_size, *, valid_rows=False, history_slots=32, block_row
                     y = pl.reshape(pl.row_sum(pl.col_expand_mul(state, query)), [1, 64])
                     out[first + token:first + token + 1, head * 128 + col:head * 128 + col + 64] = pl.cast(
                         y, pl.BF16, mode="rint")
-                if gdn_valid_rows:
+                if gdn_valid_rows and not clear_block:
                     # 无效行仍初始化，后续向量/矩阵核不会读取未定义的工作区。
                     for token in pl.range(count, block_rows):
                         out[first + token:first + token + 1, head * 128 + col:head * 128 + col + 64] = pl.full(
@@ -57,9 +65,10 @@ def make_recurrence(batch_size, *, valid_rows=False, history_slots=32, block_row
     return recurrent
 
 
-def make_entry(batch_size, *, valid_rows=False, history_slots=32, block_rows=32):
+def make_entry(batch_size, *, valid_rows=False, history_slots=32, block_rows=32, clear_block=False):
     import pypto.language as pl
-    recurrent = make_recurrence(batch_size, valid_rows=valid_rows, history_slots=history_slots, block_rows=block_rows)
+    recurrent = make_recurrence(batch_size, valid_rows=valid_rows, history_slots=history_slots,
+                                block_rows=block_rows, clear_block=clear_block)
 
     @pl.jit
     def kernel(q: pl.Tensor, k: pl.Tensor, v: pl.Tensor, decay: pl.Tensor, beta: pl.Tensor,

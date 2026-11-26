@@ -25,3 +25,7 @@ OneServing TP2 固定到 [b99e118](https://github.com/ndleslx/OneServing/commit/
 ## 在线更新
 
 上一轮权重发布直写候选有 CPU 结构测试，但在固定 PyPTO 编译器上未通过。last-1 直写使用了不支持的条件表达式，候选修改后的 last-4 packing 将 INT32 与 INDEX 混用，导致原分支和直写分支均不能编译。此候选未进入代码分支。还需要验证跨 rank 读取渲染参数，以及第二次及后续发布是否会复用当前 serving bank。
+
+## GDN 递推尾部清零
+
+将跳过递推的无效行统一清零，再覆盖有效前缀，替代每行分别写零。用真实 TP2 局部 GDN 维度和非零独立历史验证，16 物理行的 5 组和 32 物理行的 8 组输出均与原有效行递推逐位一致，历史状态不变。调用时间降幅中位数约 0.41% 和 0.37%，单组约 −1.14% 至 +1.67%。保留在独立验证入口，serving 仍采用原有效行递推。以 `scripts/validate_qwen38_pypto_gdn_rows.py --compare-tail-clear --block-rows 16 --output <new.json>` 复测。见 [16 行](gdn-rows16.json) 和 [32 行](gdn-rows32.json)。
