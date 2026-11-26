@@ -203,6 +203,8 @@ docker run "${base[@]}" --network host "${cards[@]}" \
   -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro -v "$head:/head:ro" -v "$key:/cluster.key:ro" \
   -v "$run:/run-results" -e ASCEND_PROCESS_LOG_PATH=/run-results -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
   -e "HCCL_IF_IP=$local_ip" -e "HCCL_SOCKET_IFNAME=${HCCL_SOCKET_IFNAME:-$nic}" \
+  -e "HCCL_HOST_SOCKET_PORT_RANGE=${HCCL_HOST_SOCKET_PORT_RANGE:-auto}" \
+  -e "HCCL_NPU_SOCKET_PORT_RANGE=${HCCL_NPU_SOCKET_PORT_RANGE:-auto}" \
   -e "HCCL_CONNECT_TIMEOUT=${HCCL_CONNECT_TIMEOUT:-1200}" "$image" \
   /opt/dsv41-1122/run_dsv41_pypto_staged_target.py --node "$rank" --rank0-ip "$rank0_ip" --port "$port" \
   --key-file /cluster.key --checkpoint /model --prefill-graph /results/prefill --decode-graph /results/decode \

@@ -25,7 +25,8 @@ commit="$(git -C "$checkout" rev-parse HEAD)"
 }
 
 shared_env=("PYPTO_PACK_DECODE=${PYPTO_PACK_DECODE:-0}")
-for key in PYPTO_IMAGE RANK0_IP ORTHRUS_CLUSTER_PORT HCCL_CONNECT_TIMEOUT; do
+for key in PYPTO_IMAGE RANK0_IP ORTHRUS_CLUSTER_PORT HCCL_CONNECT_TIMEOUT \
+    HCCL_HOST_SOCKET_PORT_RANGE HCCL_NPU_SOCKET_PORT_RANGE; do
   if [[ -n "${!key:-}" ]]; then shared_env+=("$key=${!key}"); fi
 done
 if [[ -n "${NODE8_NPU_DEVICES:-}" ]]; then shared_env+=("NPU_DEVICES=$NODE8_NPU_DEVICES"); fi
