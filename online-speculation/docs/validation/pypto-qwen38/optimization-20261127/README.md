@@ -16,6 +16,8 @@ OneServing TP2 固定到 [b99e118](https://github.com/ndleslx/OneServing/commit/
 
 复测入口为 `scripts/benchmark_qwen38_packed_draft_decisions.py`，使用同时可导入本仓和固定 OneServing 的环境。原始计时见 [CPU 记录](packed-draft-decisions.json)。
 
+在同两张 A2 上实跑真实 27B、8 条 GSM8K 请求，每条生成 32 token，固定起草和 last-1 在线更新均与 AR 逐 token 一致。前后各有 102 个验证轮次，接受 133 个候选，在线组完成 6 次更新和 1 次发布。非耗时更新字段逐项相同。在线组 draft 累计耗时由 3.320 秒降至 3.129 秒，吞吐由 22.23 升至 22.92 tok/s。同期 AR 由 23.18 变为 23.54 tok/s。样本用于验证链路和计时方向。见 [双卡记录](serving-host-merge.json)。
+
 ## 分页双向 Attention
 
 尝试在 L1 区间完全被历史 KV 覆盖时省掉零填充。单卡 910B3 上以 TP2 本地头数 12/2、128 token 页、512 上下文、16 query tile 验证。18 组样例覆盖空历史、页边界、K8 和 K32，均与现有 PyPTO 路径逐位一致，并检查了有意用 NaN 填充的无效区域及只读输入。
