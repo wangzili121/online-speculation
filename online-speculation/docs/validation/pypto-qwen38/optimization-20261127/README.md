@@ -26,6 +26,8 @@ OneServing TP2 固定到 [b99e118](https://github.com/ndleslx/OneServing/commit/
 
 在同一对 A2、同一请求和 head 上，加入共享回读后，固定起草为 24.20 tok/s，在线更新为 23.10 tok/s，AR 为 23.51 tok/s。与改动前同配置相比，在线组的 draft 累计耗时由 3.320 秒降至 3.033 秒，在线吞吐提升 3.91%。greedy token、接受数和六次更新及一次发布的非耗时字段均相同。此对照覆盖 8 条短请求，同期 AR 计时也有 1.43% 波动。见 [真实 27B 记录](serving-shared-output.json)。
 
+最终代码在固定 OneServing 环境中通过全部 1,173 项 Qwen3.8 PyPTO CPU 回归。
+
 ## 分页双向 Attention
 
 尝试在 L1 区间完全被历史 KV 覆盖时省掉零填充。单卡 910B3 上以 TP2 本地头数 12/2、128 token 页、512 上下文、16 query tile 验证。18 组样例覆盖空历史、页边界、K8 和 K32，均与现有 PyPTO 路径逐位一致，并检查了有意用 NaN 填充的无效区域及只读输入。
