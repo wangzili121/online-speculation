@@ -105,6 +105,7 @@ case "$action" in
     if [[ "$action" == build-1122 ]]; then
       recipe+=.1122
       build_options+=(--build-arg "BASE_IMAGE=${PYPTO_BASE_IMAGE:-orthrus-dsv41-pypto:72a62d1-offline}")
+      PYPTO_BUILD_PROXY="${PYPTO_BUILD_PROXY-${https_proxy:-${HTTPS_PROXY:-}}}"
     fi
     if [[ -n "${PYPTO_BUILD_NETWORK:-}" ]]; then
       build_options+=(--network "$PYPTO_BUILD_NETWORK")

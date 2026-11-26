@@ -124,6 +124,8 @@ PYPTO_BUILD_PROXY="${https_proxy:-${HTTPS_PROXY:-}}" \
 
 如果公司代理运行在 Docker 宿主机的回环地址，构建时还需设置 `PYPTO_BUILD_NETWORK=host`。如果 Git 通过镜像或 URL 重写访问 GitHub，需要先确认相同的访问方式可用于容器构建。
 
+`build-1122` 优先使用 `PYPTO_BUILD_PROXY`，未设置时读取 `https_proxy` 或 `HTTPS_PROXY`。从容器内访问 GitHub 的探针最多等待 20 秒。使用宿主机上的 `3128` 代理时，可在命令前设置 `PYPTO_BUILD_NETWORK=host PYPTO_BUILD_PROXY=http://127.0.0.1:3128`。
+
 如果代理连接成功但容器报 TLS 证书验证失败，将公司提供的 PEM CA 文件放在构建目录之外，并设置 `PYPTO_BUILD_CA=/path/to/company-ca.pem`。构建会临时将该 CA 与镜像已有的信任链合并，供 Git、curl 和 uv 下载依赖时使用。CA 文件不进入最终镜像。
 
 如果构建环境访问 PyPI 超时，可设置 `PYPTO_BUILD_PYPI` 为公司批准且构建容器可访问的 Python 包索引 URL（以 `/simple/` 结尾）。该索引也用于 PTOAS 安装器解析 Python 依赖。Torch CPU wheel 保留专用索引。

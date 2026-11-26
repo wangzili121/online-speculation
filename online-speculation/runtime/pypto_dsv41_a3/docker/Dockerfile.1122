@@ -20,8 +20,13 @@ RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca --mount=t
     if [[ -s /run/secrets/pypto_pypi ]]; then \
         UV_DEFAULT_INDEX="$(cat /run/secrets/pypto_pypi)"; export UV_DEFAULT_INDEX; \
     fi; \
+    pypto_url=https://github.com/hw-native-sys/pypto.git; \
+    if ! timeout 20s git ls-remote --exit-code "$pypto_url" HEAD >/dev/null; then \
+        echo "The 1122 build container cannot reach GitHub. Set PYPTO_BUILD_PROXY and PYPTO_BUILD_CA as needed; a host-local proxy also requires PYPTO_BUILD_NETWORK=host." >&2; \
+        exit 1; \
+    fi; \
     git init pypto; \
-    git -C pypto fetch --depth 1 https://github.com/hw-native-sys/pypto.git 2e31e0c2a604c3c859c1268a937f97b0ee2d747f; \
+    git -C pypto fetch --depth 1 "$pypto_url" 2e31e0c2a604c3c859c1268a937f97b0ee2d747f; \
     git -C pypto checkout --detach FETCH_HEAD; \
     git -C pypto apply "$PWD/pypto-1122-stacked-nz.patch"; \
     git -C pypto submodule update --init --recursive --depth 1; \
