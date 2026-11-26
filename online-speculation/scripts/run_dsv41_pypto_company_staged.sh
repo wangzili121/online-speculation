@@ -121,6 +121,7 @@ case "$mode" in
     smoke=/results/gsm8k/smoke.json
     if [[ "${PYPTO_PACK_DECODE:-0}" == 1 ]]; then smoke=/results/gsm8k/smoke-packed.json; fi
     workload=(--workload "$smoke" --teacher-rows 7 --update-every 2 --max-updates 2 --verify-width 8)
+    if [[ "${PYPTO_TEACHER_PROBE:-0}" == 1 ]]; then workload+=(--teacher-probe); fi
     ;;
   study) workload=(--workload /results/gsm8k/online.json --warmup-workload /results/gsm8k/warmup.json
           --eval-workload /results/gsm8k/heldout.json --teacher-rows 7 --update-every 16 --max-updates 128 --verify-width 8) ;;

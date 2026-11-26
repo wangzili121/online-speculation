@@ -133,6 +133,8 @@ PYPTO_PACK_DECODE=1 bash "$RUN" study 1
 
 1122 同时使用 PyPTO Worker 内的通信域和进程内 HCCL EP/DP 通信域。启动脚本默认设置 `HCCL_NPU_SOCKET_PORT_RANGE=auto` 和 `HCCL_HOST_SOCKET_PORT_RANGE=auto`，以避免竞争 NPU 的默认端口 16666。公司网络要求固定端口时，可从 node7 传入指定范围，脚本会传给两个节点。
 
+`smoke` 启动时可设置 `PYPTO_TEACHER_PROBE=1` 检查教师 logits。它沿用同一请求批，每题最多生成 10 个 token，并在 `teacher-trace.jsonl` 保存 AR、Verify 和训练读取的同位置记录。出现非有限教师值时，`teacher-failure.jsonl` 还会记录三个读数及 Verify 和训练读取是否逐位相同。
+
 在 111 的 ARM64 CANN 环境，按上述尺寸编译了 Prefill、Decode、6 个 Draft 入口、13 个后缀反向入口和 24 个优化器入口，并将编译目录移动后回载。使用指定 W8A8 权重导出了初始化 head 的全部 40 层，验证了 K16 启动时读取的 head 格式和真实 tokenizer 生成的 GSM8K 请求。两台公司机器仍需实跑两种模式。
 
 这组实验的学习率为 `1e-5`，固定 16 行起草图，每轮最多验证 8 行，每次更新最多用 7 个教师位置。每个 DP 最多驻留两个请求，四个 DP 合计最多八个请求。同一 DP 每个起草 wave 服务其中一个请求。`study` 使用 4 道预热题、128 道在线题、32 道留出题，在线更新至少间隔 16 个 wave，上限为 128 次。首轮实际更新计入实测吞吐，同时记录扣除更新时间的估算。

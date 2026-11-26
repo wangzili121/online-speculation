@@ -83,6 +83,7 @@ def exercise(args, devices, artifacts):
     from models.deepseek_v4_1_flash_a3.host import prepare_resident_inputs
     from models.deepseek_v4_1_flash_a3.lm_head import MAX_LOGIT_ROWS, SAMPLED_IDS_PAD
     from models.deepseek_v4_1_flash_a3.packed import PackedSession
+    from models.deepseek_v4_1_flash_a3.replay import DecodeInputs
     from models.deepseek_v4_1_flash_a3.utils import decode_cache_views, DECODE_CACHE_NAMES, prepare_decode_inputs
     from models.deepseek_v4_1_flash_a3.weights import Checkpoint, ResidentWeights
     from pypto.backend import BackendType
@@ -149,6 +150,18 @@ def exercise(args, devices, artifacts):
         runtime.run(attention, *attention_args, 0, 0)
         runtime.run(head, *head_args, 0)
         if mixed:
+            # Match serving: bind the packed input images, and let only the
+            # DP owner select rows for the vocabulary projection.
+            from blockspec.dsv41_staged_target import StagedPackedTarget
+
+            input_images = DecodeInputs(decode)
+            for rank, rank_handles in enumerate(handles):
+                rank_handles.update(input_images.bind(runtime, rank))
+            attention_args, head_args = tuple(bound(attention)), tuple(bound(head))
+            target = StagedPackedTarget.__new__(StagedPackedTarget)
+            target.runtime, target.handles = runtime, (handles, handles)
+            target.global_ranks, target.rank_offset, target.tp = ranks, 0, len(ranks)
+            target.logit_trace = None
             staged = SimpleNamespace(host_io={"idle_inputs": (prefill, decode)}, weights=weights, engram=engram,
                                      rope_tables=(prefill["freqs_cos"], prefill["freqs_sin"]))
 
@@ -161,17 +174,24 @@ def exercise(args, devices, artifacts):
                 for group in groups:
                     queries = [(records[index], ids) for index, ids in group]
                     values, _, live = session._inputs(0, queries, 1, rows, sample_all=True)
+                    input_images.stage((decode, values), "logit_row_indices")
                     for rank in ranks:
-                        inputs = dict(caches, **values, count=torch.tensor([live, rank], dtype=torch.int32))
-                        for name, value in inputs.items():
-                            runtime.copy_to(handles[rank][name].data_ptr, value.data_ptr(), value.nbytes, worker_id=rank)
+                        input_images.upload(runtime, rank, 0)
+                        count = torch.tensor([live, rank], dtype=torch.int32)
+                        runtime.copy_to(handles[rank]["count"].data_ptr, count.data_ptr(), count.nbytes, worker_id=rank)
                     runtime.run(attention, *attention_args, 0, 1)
                     activation = read("attention_hidden")[:live]
                     runtime.run(head, *head_args, 1)
-                    outputs.append((activation, read("logits")[:live], read("sampled_ids")[:live, 0]))
+                    logits = torch.empty((live, model.vocab_size), dtype=torch.float32)
+                    for row, logits_row in enumerate(logits.split(1)):
+                        target.read(1, 0, "logits", logits_row, row=row)
+                    sampled = read("sampled_ids")[:live, 0]
+                    assert torch.isfinite(logits).all(), "Active Verify logits contain a non-finite value"
+                    torch.testing.assert_close(sampled.long(), logits.argmax(dim=1), atol=0, rtol=0)
+                    outputs.append((activation, logits, sampled))
                 return tuple(torch.cat(values) for values in zip(*outputs, strict=True))
 
-            draft_rows, plain_row = (0, (42, 43, 44)), (1, (73,))
+            draft_rows, plain_row = (0, (42, 43, 44, 45, 46, 47, 48, 49)), (1, (73,))
             separate = dispatch(((draft_rows,), (plain_row,)))
             together = dispatch(((draft_rows, plain_row),))
             matched = {name: torch.equal(a, b) for name, a, b in zip(
@@ -179,7 +199,7 @@ def exercise(args, devices, artifacts):
             )}
             assert all(matched.values()), matched
             return dict(checkpoint_ranks=list(ranks), attention_layers=[0], physical_slots=2,
-                        verification_rows=[3, 1], separate_verify_batches=2, packed_verify_batches=1,
+                        verification_rows=[8, 1], separate_verify_batches=2, packed_verify_batches=1,
                         exact_values=matched, compared_token_ids=together[2].tolist())
         for layer in layers:
             runtime.run(attention, *attention_args, layer, 1)

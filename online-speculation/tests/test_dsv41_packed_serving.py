@@ -1,5 +1,6 @@
 from ctypes import memmove
 from importlib.util import module_from_spec, spec_from_file_location
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -19,6 +20,44 @@ def test_host_teacher_finite_reduction_rejects_nonfinite_logits(bad):
     teacher[1, 1] = bad
     with pytest.raises(ValueError, match="must be finite"):
         _require_finite_host(teacher)
+
+
+@pytest.mark.parametrize("bad_in_verify", (False, True))
+def test_staged_teacher_probe_compares_the_exact_packed_row(tmp_path, bad_in_verify):
+    from blockspec.dsv41_staged_target import StagedPackedTarget
+
+    logits = torch.tensor([[1., 2., 3.], [4., 5., 6.]])
+    sampled = torch.tensor([[2], [2]], dtype=torch.int32)
+    positions = torch.tensor([125, 126])
+    handles = {name: SimpleNamespace(shape=tensor.shape, nbytes=tensor.nbytes, data_ptr=tensor.data_ptr())
+               for name, tensor in (("logits", logits), ("sampled_ids", sampled))}
+    target = StagedPackedTarget.__new__(StagedPackedTarget)
+    target.runtime = SimpleNamespace(copy_from=lambda dst, src, size, *, src_offset, worker_id:
+                                     memmove(dst, src + src_offset, size))
+    target.handles = ([], [handles])
+    target._owner = lambda dp: 0
+    target.templates = ({}, {})
+    target.inputs = (None, SimpleNamespace(stage=lambda *_: None, upload=lambda *_: None))
+    target.tp = 1
+    target.logit_trace = tmp_path / "teacher-trace.jsonl"
+    target.logit_trace_rows, target.logit_trace_ar, target.logit_trace_sampled = {}, {}, {}
+    values = dict(position_ids=positions, token_to_req_indices=torch.tensor([0, 1]),
+                  state_block_table=torch.tensor([[0], [1]]), logit_row_indices=torch.tensor([0, 1, -1]))
+    target.stage(1, 0, values, SimpleNamespace(map=map))
+    target.logit_trace_arm = "ar"
+    target.read(1, 0, "sampled_ids", torch.empty_like(sampled))
+    target.logit_trace_arm = "online"
+    if bad_in_verify:
+        logits[1, 1] = float("nan")
+    target.read(1, 0, "sampled_ids", torch.empty_like(sampled))
+    logits[1, 1] = float("nan")
+    target.read(1, 0, "logits", torch.empty_like(logits[:1]), row=1)
+    evidence = json.loads((tmp_path / "teacher-failure.jsonl").read_text())
+    assert evidence["teacher"]["position"] == 126
+    assert evidence["teacher"]["slot"] == 1 and evidence["teacher"]["first_bad_columns"] == [1]
+    assert evidence["ar"]["host_argmax"] == 2 and evidence["ar"]["nonfinite"] == 0
+    assert evidence["verify"]["device_token"] == 2
+    assert evidence["same_as_verify"] == bad_in_verify
 
 
 def test_packed_benchmark_matches_tokens_with_ragged_prefill_and_final_round():

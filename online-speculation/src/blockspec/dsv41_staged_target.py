@@ -2,6 +2,8 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from hashlib import sha256
+import json
 from types import SimpleNamespace
 
 from .dsv41_packed_decode import ResidentPackedDecode
@@ -85,6 +87,11 @@ class StagedPackedTarget:
         self.rank_offset = self.global_ranks[0]
         self.tp = TP_SIZE
         self.workers = tuple(range(len(self.global_ranks)))
+        self.logit_trace = None
+        self.logit_trace_arm = None
+        self.logit_trace_rows = {}
+        self.logit_trace_ar = {}
+        self.logit_trace_sampled = {}
         prefill_rows, decode_rows = capacities
         prefill = prepare_resident_inputs(weights, [], prefill_rows, max_seq_len=context,
                                           request_slots=slots, engram=engram)
@@ -168,6 +175,16 @@ class StagedPackedTarget:
         owner = self._owner(dp)
         idle = self.templates[phase]
         logit_name = "logit_row_indices" if phase else "logit_rows"
+        if self.logit_trace is not None:
+            positions = values["position_ids"]
+            slot_index = values["token_to_req_indices"]
+            if not phase:
+                positions, slot_index = positions[0], slot_index[0]
+            state_slots = values["state_block_table"].flatten().tolist()
+            self.logit_trace_rows[phase, dp] = [
+                (int(positions[index]), state_slots[int(slot_index[index])])
+                for index in values[logit_name].tolist() if index >= 0
+            ]
         inputs = self.inputs[phase]
         inputs.stage((idle, {name: values[name] for name in idle}), logit_name)
         list(pool.map(lambda worker: inputs.upload(self.runtime, worker, owner),
@@ -180,6 +197,53 @@ class StagedPackedTarget:
         row_bytes = handle.nbytes // handle.shape[0]
         self.runtime.copy_from(result.data_ptr(), handle.data_ptr, result.nbytes,
                                src_offset=row * row_bytes, worker_id=owner)
+        if self.logit_trace is not None:
+            from torch import empty, float32
+
+            if name == "sampled_ids":
+                scores = self.handles[phase][owner]["logits"]
+                values = empty((len(result), scores.shape[1]), dtype=float32)
+                self.runtime.copy_from(values.data_ptr(), scores.data_ptr, values.nbytes,
+                                       src_offset=row * values[0].nbytes, worker_id=owner)
+                self._trace_logits(phase, dp, row, values, kind="sampled", tokens=result[:, 0].tolist())
+            else:
+                self._trace_logits(phase, dp, row, result, kind="teacher")
+
+    def _trace_logits(self, phase, dp, first, values, *, kind, tokens=()):
+        """Record small fingerprints of the exact logits read on the owning rank."""
+        import torch
+
+        selection = self.logit_trace_rows[phase, dp]
+        with self.logit_trace.open("a") as stream:
+            for offset, scores in enumerate(values):
+                row = first + offset
+                position, slot = selection[row]
+                bad = torch.nonzero(~torch.isfinite(scores)).flatten()
+                record = dict(arm=self.logit_trace_arm, phase="verify_or_decode" if phase else "prefill",
+                              source=kind, dp=dp, slot=slot, position=position, logit_row=row,
+                              sha256=sha256(scores.numpy().tobytes()).hexdigest(), nonfinite=bad.numel())
+                if tokens:
+                    record["device_token"] = tokens[offset]
+                if bad.numel():
+                    record.update(first_bad_columns=bad[:8].tolist(), last_bad_column=int(bad[-1]),
+                                  nan=int(scores.isnan().sum()), posinf=int(scores.isposinf().sum()),
+                                  neginf=int(scores.isneginf().sum()))
+                else:
+                    record["host_argmax"] = int(scores.argmax())
+                stream.write(json.dumps(record) + "\n")
+                location = (phase, dp, slot, position)
+                if kind == "sampled":
+                    self.logit_trace_sampled[phase, dp, row] = record
+                    if self.logit_trace_arm == "ar":
+                        self.logit_trace_ar[location] = record
+                elif bad.numel():
+                    failure_path = self.logit_trace.with_name("teacher-failure.jsonl")
+                    verification = self.logit_trace_sampled[phase, dp, row]
+                    failure = dict(teacher=record, verify=verification,
+                                   same_as_verify=record["sha256"] == verification["sha256"],
+                                   ar=self.logit_trace_ar.get(location))
+                    with failure_path.open("a") as failures:
+                        failures.write(json.dumps(failure) + "\n")
 
     def clear(self, dp, slot, pages, pool):
         """Restore only released cache pages and the slot's compressed state."""

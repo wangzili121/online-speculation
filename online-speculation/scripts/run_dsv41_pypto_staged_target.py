@@ -284,6 +284,8 @@ def main():
     parser.add_argument("--teacher-rows", type=int, choices=range(1, 16), default=7)
     parser.add_argument("--check-backward", action="store_true", help="Run the captured suffix backward before release")
     parser.add_argument("--resident-teacher", action="store_true", help="Experimental device-side teacher snapshot")
+    parser.add_argument("--teacher-probe", action="store_true",
+                        help="Trace AR and Verify logits on the same inputs, using at most ten new tokens")
     parser.add_argument("--adam-graph", type=Path, help="Enable online Adam using the eight-rank optimizer bundle")
     parser.add_argument("--update-every", type=int, default=16, help="Minimum waves between online updates")
     parser.add_argument("--max-updates", type=int, default=32)
@@ -305,6 +307,8 @@ def main():
         parser.error("--resident-teacher requires a captured backward run")
     if args.eval_workload and not args.adam_graph:
         parser.error("--eval-workload requires an online optimizer")
+    if args.teacher_probe and (not args.adam_graph or args.eval_workload or args.warmup_workload or args.resident_teacher):
+        parser.error("--teacher-probe requires a short online workload with host teacher feedback")
     if args.adam_graph and (min(args.update_every, args.max_updates) < 1
                             or not all(isfinite(v) and v > 0 for v in (args.learning_rate, args.max_gradient_norm))):
         parser.error("Online updates require positive frequencies, limits, learning rate and clip norm")
@@ -329,6 +333,9 @@ def main():
     def load_workload(path):
         payload = path.read_bytes()
         rows = json.loads(payload)
+        if args.teacher_probe:
+            for case in rows:
+                case["new_tokens"] = min(case["new_tokens"], 10)
         if not rows or len({case["id"] for case in rows}) != len(rows):
             parser.error(f"{path}: provide at least one request with a unique ID")
         for case in rows:
@@ -374,6 +381,7 @@ def main():
     )
     key = args.key_file.read_bytes().strip()
     signature = dict(workload=workload, evaluation=eval_workload, warmup=warmup_workload, checkpoint=checkpoint.identity,
+                     teacher_probe=args.teacher_probe,
                      capacities=list(capacities), context=args.context, slots=args.slots_per_dp, tokens=list(tokens))
     draft_programs = ()
     reverse_programs = {}
@@ -407,6 +415,8 @@ def main():
     def measured(session, mode, width=0, teacher_rows=0, reverse=None, optimizer=None, *,
                  requests=cases, reference=None):
         print(json.dumps(dict(stage="generate", mode=mode, requests=len(requests))), flush=True)
+        if args.teacher_probe:
+            session.staged.logit_trace_arm = mode
         before = dict(vars(session.draft.stats)) if width else None
         metrics = dict(stage_seconds=Counter(), counts=Counter())
         start = perf_counter()
@@ -447,6 +457,10 @@ def main():
                                 *(program for entry in adam_programs.values() for program in entry)),
             ))
             initialization_seconds = perf_counter() - start
+            if args.teacher_probe:
+                target.logit_trace = args.output.with_name("teacher-trace.jsonl")
+                target.logit_trace.write_text("")
+                target.logit_trace.with_name("teacher-failure.jsonl").unlink(missing_ok=True)
             session = target.session()
             warm_ar = None
             if warmup:
