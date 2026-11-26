@@ -35,7 +35,7 @@ ROWS_AND_MASK = Struct("<4iB")
 DP_MASK = 0b1111  # Low bits carry input images, high bits reset the DP to its resident idle image.
 DRAFT_CAPTURE = Struct("<i")
 READ_ROWS = Struct("<4i")
-RELEASE = Struct("<2i")
+RELEASE = Struct("<3i")
 
 _local_node = None
 _remote_node = None
@@ -178,13 +178,24 @@ class ForwardNode:
             if reply:
                 self.read(payload, io[:reply])
         elif opcode == CLEAR:
-            if size:
-                dp, slot = RELEASE.unpack_from(payload)
-                pages = array("i")
-                pages.frombytes(payload[RELEASE.size:])
-                self.bank.clear(dp, slot, pages)
+            self.clear(payload)
         else:
             raise ValueError(f"Unknown native target command {opcode}")
+
+    def clear(self, payload):
+        requests = []
+        offset = 0
+        while offset < len(payload):
+            dp, slot, count = RELEASE.unpack_from(payload, offset)
+            start = offset + RELEASE.size
+            pages = array("i")
+            offset = start + count * pages.itemsize
+            if dp not in self.dps or count < 0 or offset > len(payload):
+                raise ValueError("Invalid native cache release wave")
+            pages.frombytes(payload[start:offset])
+            requests.append((dp, slot, pages))
+        for dp, slot, pages in requests:
+            self.bank.clear(dp, slot, pages)
 
     def forward(self, orch, args, config, payload, reply, phase):
         bank = self.bank
@@ -414,9 +425,16 @@ class NativeForwardTarget:
         checks["rows"] += tokens.numel()
 
     def clear(self, dp, slot, pages, _workers):
-        request = RELEASE.pack(dp, slot) + array("i", pages).tobytes()
-        payloads = (request, b"") if dp < 2 else (b"", request)
-        self.mailbox.exchange(self.config, CLEAR, payloads, (0, 0))
+        self.clear_many(((dp, slot, pages),))
+
+    def clear_many(self, requests):
+        payloads = (bytearray(), bytearray())
+        for dp, slot, pages in requests:
+            packet = payloads[dp // 2]
+            packet.extend(RELEASE.pack(dp, slot, len(pages)))
+            packet.extend(array("i", pages).tobytes())
+        if any(payloads):
+            self.mailbox.exchange(self.config, CLEAR, payloads, (0, 0))
 
     def session(self):
         from models.deepseek_v4_1_flash_a3.packed import PackedSession

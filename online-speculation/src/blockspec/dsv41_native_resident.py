@@ -174,6 +174,16 @@ def native_target_packets(inputs):
             "decode": NativeResidualInputPacket(inputs["decode"])}
 
 
+def cache_page_ranges(pages):
+    ranges = []
+    for page in sorted(set(pages)):
+        if ranges and page == ranges[-1][1]:
+            ranges[-1] = ranges[-1][0], page + 1
+        else:
+            ranges.append((page, page + 1))
+    return ranges
+
+
 def graph_argument(shards, workers, parameter, world):
     """Bind local shards to the same ND or folded NZ ABI as the original graph."""
     from models.deepseek_v4_1_flash_a3.device_views import resident_graph_argument
@@ -343,16 +353,27 @@ class NativeResidentForward:
     def clear(self, dp, slot, pages):
         workers = self._workers(dp)
         prefill = self.buffers["prefill"]
+        reserved = cache_page_ranges(pages)
         for name, initial in self.initial_cache.items():
-            blocks = (slot,) if name == "state_cache" else pages
-            for source in initial:
-                for block in blocks:
-                    image = source[block]
-                    offset = image.data_ptr() - initial.data_ptr()
-                    self.memory.upload_to_ranks(
-                        image.data_ptr(), image.nbytes,
-                        ((worker, prefill[worker][name].data_ptr, offset) for worker in workers),
-                    )
+            page_count = initial.shape[1]
+            ranges = [(slot, slot + 1)] if name == "state_cache" else reserved
+            if not ranges:
+                continue
+            if not initial.is_contiguous() or ranges[0][0] < 0 or ranges[-1][1] > page_count:
+                raise ValueError(f"Invalid resident reset ranges for {name}: {ranges}")
+            if ranges == [(0, page_count)]:
+                spans = ((0, initial.nbytes),)
+            else:
+                page_bytes = initial.stride(1) * initial.element_size()
+                source_bytes = page_count * page_bytes
+                spans = ((source * source_bytes + start * page_bytes, (end - start) * page_bytes)
+                         for source in range(initial.shape[0]) for start, end in ranges)
+            base = initial.data_ptr()
+            for offset, size in spans:
+                self.memory.upload_to_ranks(
+                    base + offset, size,
+                    ((worker, prefill[worker][name].data_ptr, offset) for worker in workers),
+                )
 
 
 def bind_native_draft(target, graph, program, artifacts, head, block, last_layers, head_artifact):

@@ -25,6 +25,7 @@ printf -v remote '%q ' git -C "$peer_checkout" rev-parse HEAD
 # Reject an older image with the same tag before compiling or loading weights.
 image_check='
     cd /opt/dsv41-1122
+    cmp /checkout/runtime/pypto_dsv41_a3/lib-1122-verification.patch lib-1122-verification.patch
     for script in run_dsv41_pypto_native_ar.py compile_dsv41_pypto_native_online.py validate_dsv41_pypto_packed_generation.py; do
         cmp "/checkout/scripts/$script" "$script"
     done

@@ -6,10 +6,12 @@ import pytest
 import torch
 
 from blockspec.dsv41_native_forward import (
-    DRAFT, DRAFT_CAPTURE, READ_ROWS, ROWS_AND_MASK, ForwardNode, NativeForwardTarget, NativeSampleError,
+    CLEAR, DRAFT, DRAFT_CAPTURE, READ_ROWS, ROWS_AND_MASK, ForwardNode, NativeForwardTarget, NativeSampleError,
 )
 from blockspec.dsv41_native_graph_pair import NativePeerMailbox
-from blockspec.dsv41_native_resident import NativePrefillInputPacket, NativeRankMemory, NativeResidualInputPacket
+from blockspec.dsv41_native_resident import (
+    NativePrefillInputPacket, NativeRankMemory, NativeResidentForward, NativeResidualInputPacket,
+)
 
 
 class Buffer:
@@ -75,6 +77,55 @@ def test_native_mailbox_copies_large_frames_at_the_matching_source_and_destinati
     mailbox.remote_staging.raw = bytes(len(payload))
     mailbox._copy_remote(receive, len(payload))
     assert mailbox.remote_staging.raw == payload
+
+
+def test_native_release_coalesces_contiguous_pages_and_preserves_other_slots():
+    cache = torch.arange(24, dtype=torch.int32).reshape(3, 4, 2)
+    state = torch.arange(6, dtype=torch.int32).reshape(3, 1, 2)
+    destination = {name: tensor.new_full(tensor.shape, -1) for name, tensor in
+                   (("window_cache", cache), ("state_cache", state))}
+    uploads = []
+
+    def copy(src, size, destinations):
+        uploads.append(size)
+        for worker, ptr, offset in destinations:
+            assert worker == 0
+            memmove(ptr + offset, src, size)
+
+    bank = NativeResidentForward.__new__(NativeResidentForward)
+    bank.ranks, bank.tp = (0,), 1
+    bank.initial_cache = dict(window_cache=cache, state_cache=state)
+    bank.memory = SimpleNamespace(upload_to_ranks=copy)
+    bank.buffers = {"prefill": [{name: SimpleNamespace(data_ptr=value.data_ptr())
+                                for name, value in destination.items()}]}
+    bank.clear(0, 0, [1, 0, 3])
+    assert torch.equal(destination["window_cache"][:, [0, 1, 3]], cache[:, [0, 1, 3]])
+    assert torch.all(destination["window_cache"][:, 2] == -1)
+    assert torch.equal(destination["state_cache"], state)
+    assert uploads == [16, 8] * 3 + [24]
+    uploads.clear()
+    bank.clear(0, 0, [0, 1, 2, 3])
+    assert torch.equal(destination["window_cache"], cache)
+    assert uploads == [cache.nbytes, state.nbytes]
+
+
+def test_native_release_sends_one_command_with_each_hosts_owned_requests():
+    calls = []
+    nodes = [ForwardNode(0), ForwardNode(1)]
+    for node in nodes:
+        node.bank = SimpleNamespace(clear=lambda dp, slot, pages: calls.append((dp, slot, list(pages))))
+
+    def exchange(_config, opcode, payloads, sizes):
+        assert opcode == CLEAR and sizes == (0, 0)
+        calls.append("dispatch")
+        for node, raw in zip(nodes, payloads, strict=True):
+            node.clear(memoryview(raw))
+
+    target = NativeForwardTarget.__new__(NativeForwardTarget)
+    target.config = None
+    target.mailbox = SimpleNamespace(exchange=exchange)
+    target.clear_many(((0, 0, [0, 1]), (2, 0, [3]), (3, 0, []), (1, 0, [2])))
+    assert calls == ["dispatch", (0, 0, [0, 1]), (1, 0, [2]), (2, 0, [3]), (3, 0, [])]
 
 
 @pytest.mark.parametrize(("rows", "repeat_to"), ((2, 8), (2, 16), (2, 32), (1, None), (8, None), (16, None)))

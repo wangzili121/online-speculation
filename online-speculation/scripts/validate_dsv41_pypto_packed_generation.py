@@ -131,8 +131,12 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
                 online.updates += int(update.applied)
                 pending = None
     decode = perf_counter()
-    for handle in staged:
-        session.release(handle)
+    release_many = getattr(session, "release_many", None)
+    if release_many is None:
+        for handle in staged:
+            session.release(handle)
+    else:
+        release_many(staged)
     finish = perf_counter()
     draft_stats = {key: value - draft_before[key] for key, value in asdict(session.draft.stats).items()} if speculative else {}
     draft_seconds = sum(draft_stats[key] for key in (

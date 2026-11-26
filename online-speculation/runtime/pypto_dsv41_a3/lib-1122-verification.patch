@@ -1187,7 +1187,7 @@ index 502fa5b..365e535 100644
  @pl.jit.inline(auto_scope=False)
  def decode_o_proj_nz_from_attention(
 diff --git a/models/deepseek_v4_1_flash_a3/packed.py b/models/deepseek_v4_1_flash_a3/packed.py
-index 98f9f0c..c698930 100644
+index 98f9f0c..8297530 100644
 --- a/models/deepseek_v4_1_flash_a3/packed.py
 +++ b/models/deepseek_v4_1_flash_a3/packed.py
 @@ -11,6 +11,7 @@
@@ -1249,7 +1249,7 @@ index 98f9f0c..c698930 100644
          self.history = {}
          self._idle_values = {}
          self._active_dps = [set(), set()]
-@@ -98,7 +134,11 @@ class PackedSession:
+@@ -98,21 +134,372 @@ class PackedSession:
          try:
              owner = handle.dp * C.TP_SIZE
              with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
@@ -1259,10 +1259,37 @@ index 98f9f0c..c698930 100644
 +                elif self.staged.owns(handle.dp):
 +                    self.staged.clear(handle.dp, handle.slot, record.pages, workers)
 +            self.release_student(handle)
++        except BaseException:
++            self.failed = True
++            raise
++        self._finish_release(record)
++
++    def release_many(self, handles):
++        """Clear a wave's resident pages before returning any of its slots."""
++        clear = getattr(self.staged, "clear_many", None)
++        if clear is None:
++            for handle in handles:
++                self.release(handle)
++            return
++        self._ready()
++        records = [self._lookup(handle) for handle in handles]
++        if len({r.handle for r in records}) != len(records):
++            raise ValueError("Repeated request in release wave")
++        try:
++            clear((r.handle.dp, r.handle.slot, r.pages) for r in records if self.staged.owns(r.handle.dp))
++            for record in records:
++                self.release_student(record.handle)
++                self._finish_release(record)
          except BaseException:
              self.failed = True
              raise
-@@ -108,11 +148,334 @@ class PackedSession:
++
++    def _finish_release(self, record):
++        handle = record.handle
+         self.free_pages[handle.dp].extend(reversed(record.pages))
+-        g.engram.history.pop(handle, None)
++        self.graphs.engram.history.pop(handle, None)
+         del self.history[handle.request_id]
 
      def advance_batch(self, phase, queries):
          """Run (handle, token IDs) pairs in caller order. Return sampled rows keyed by handle."""
@@ -1597,7 +1624,7 @@ index 98f9f0c..c698930 100644
          groups = [[] for _ in range(C.DP_SIZE)]
          seen = set()
          queries = list(queries)
-@@ -124,27 +487,75 @@ class PackedSession:
+@@ -124,27 +511,75 @@ class PackedSession:
              if handle in seen or not tokens or any(type(t) is not int or not 0 <= t < C.FLASH.vocab_size for t in tokens):
                  raise ValueError("Invalid or repeated query")
              end = record.committed + len(tokens)
@@ -1679,7 +1706,7 @@ index 98f9f0c..c698930 100644
          g = self.graphs
          # Prefill and Decode share the same packed positions, page maps and cache allocations.
          template = g.host_io["idle_inputs"][0]
-@@ -161,20 +572,27 @@ class PackedSession:
+@@ -161,20 +596,27 @@ class PackedSession:
              end = start + len(tokens)
              needed = (end + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              record.pages.extend(self.free_pages[dp].pop() for _ in range(needed - len(record.pages)))
@@ -1711,7 +1738,7 @@ index 98f9f0c..c698930 100644
          pos = torch.tensor(positions, dtype=torch.int32)
          req = torch.tensor(owners, dtype=torch.int32)
          slots, window, _ = window_metadata(pos, req, table)
-@@ -210,7 +628,11 @@ class PackedSession:
+@@ -210,7 +652,11 @@ class PackedSession:
                            identity_rows=order, replay_rows=order)
          return values, sampled, count
 
@@ -1724,7 +1751,7 @@ index 98f9f0c..c698930 100644
          g = self.graphs
          selections = []
          with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
-@@ -221,7 +643,7 @@ class PackedSession:
+@@ -221,7 +667,7 @@ class PackedSession:
                  if not group and dp not in self._active_dps[index]:
                      continue
                  if group:
@@ -1733,7 +1760,7 @@ index 98f9f0c..c698930 100644
                  else:
                      if index not in self._idle_values:
                          self._idle_values[index] = self._inputs(dp, [], index, capacity)
-@@ -243,6 +665,19 @@ class PackedSession:
+@@ -243,6 +689,19 @@ class PackedSession:
          self._active_dps[index] = {dp for dp, group in enumerate(groups) if group}
          args = [g.arguments[index][name] for name in g.names[index]]
          g.runtime.run(g.programs[index], *args, config=g.config)
@@ -1753,7 +1780,7 @@ index 98f9f0c..c698930 100644
          result = {}
          for handle, rank, row in selections:
              logits = g.host_io["logits"][0]
-@@ -252,26 +687,62 @@ class PackedSession:
+@@ -252,26 +711,62 @@ class PackedSession:
              result[handle] = logits.clone()
          return result
 
@@ -1834,7 +1861,7 @@ index 98f9f0c..c698930 100644
 
 
  @contextmanager
-@@ -282,9 +753,81 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
+@@ -282,9 +777,81 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
                                                 (args.decode_runtime_dir, "decode", args.decode_capacity))]
      if any(m["history_capacity"] != args.context_capacity for m in manifests):
          raise ValueError("History capacity differs from the compiled graph pair")
