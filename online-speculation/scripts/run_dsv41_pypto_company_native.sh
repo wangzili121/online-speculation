@@ -31,6 +31,7 @@ image_check='
     for source in /checkout/src/blockspec/dsv41_native_*.py; do
         cmp "$source" "orthrus/blockspec/${source##*/}"
     done
+    /opt/pypto/venv/bin/python -c "from _task_interface import MAX_REGISTERED_CALLABLE_IDS as limit; assert limit >= 256"
 '
 check=(docker run --rm --network none --entrypoint /bin/bash)
 if ! "${check[@]}" -v "$checkout/online-speculation:/checkout:ro" "$image" -ec "$image_check"; then
