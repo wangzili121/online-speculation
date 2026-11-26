@@ -285,7 +285,7 @@ def main():
     parser.add_argument("--check-backward", action="store_true", help="Run the captured suffix backward before release")
     parser.add_argument("--resident-teacher", action="store_true", help="Experimental device-side teacher snapshot")
     parser.add_argument("--teacher-probe", action="store_true",
-                        help="Trace AR and Verify logits on the same inputs, using at most ten new tokens")
+                        help="Trace AR and Verify logits through the first online update")
     parser.add_argument("--adam-graph", type=Path, help="Enable online Adam using the eight-rank optimizer bundle")
     parser.add_argument("--update-every", type=int, default=16, help="Minimum waves between online updates")
     parser.add_argument("--max-updates", type=int, default=32)
@@ -334,8 +334,11 @@ def main():
         payload = path.read_bytes()
         rows = json.loads(payload)
         if args.teacher_probe:
+            # Leave a full Verify wave while collecting the teacher positions,
+            # plus one more draft after the first publication.
+            budget = args.teacher_rows + args.verify_width + 2
             for case in rows:
-                case["new_tokens"] = min(case["new_tokens"], 10)
+                case["new_tokens"] = min(case["new_tokens"], budget)
         if not rows or len({case["id"] for case in rows}) != len(rows):
             parser.error(f"{path}: provide at least one request with a unique ID")
         for case in rows:
