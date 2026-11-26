@@ -137,3 +137,58 @@ def test_staged_online_cross_host_feedback_publication_and_summary(last_layers, 
             measured = summarized["orthrus"]["online"]
             assert measured["publications"] == measured["head_version"] == 2
             assert measured["rounds_after_publication"] > 0
+
+
+def test_native_prefill_stages_one_image_per_rank_and_selects_logits_only_on_owner():
+    pytest.importorskip("pypto")
+    native = pytest.importorskip("models.deepseek_v4_1_flash_a3.packed")
+    from ctypes import memmove
+    import torch
+    from models.deepseek_v4_1_flash_a3.replay import DecodeInputs
+
+    idle = {"position_ids": torch.full((2, 16), -1, dtype=torch.int32),
+            "logit_rows": torch.full((16,), -1, dtype=torch.int32)}
+    active = {name: value.clone() for name, value in idle.items()}
+    active["position_ids"][:, :2] = torch.tensor([67, 68])
+    active["logit_rows"][0] = 1
+    inputs = DecodeInputs(idle)
+    replicas = [torch.empty_like(inputs.images[0]) for _ in range(4)]
+    inputs.devices = {rank: SimpleNamespace(data_ptr=replicas[rank - 4].data_ptr()) for rank in range(4, 8)}
+    uploads = []
+
+    def copy_to(dst, src, size, *, worker_id):
+        uploads.append((worker_id, size))
+        memmove(dst, src, size)
+
+    graphs = SimpleNamespace(prefill_inputs=inputs, host_io={"idle_inputs": (idle, {})},
+                             runtime=SimpleNamespace(copy_to=copy_to))
+    session = native.PackedSession(graphs, 1, 128, (16, 16))
+    session._upload_prefill_group(4, active, SimpleNamespace(map=map))
+
+    assert uploads == [(rank, inputs.images[0].nbytes) for rank in range(4, 8)]
+    assert torch.equal(replicas[0], inputs.images[2])
+    assert all(torch.equal(replica, inputs.images[1]) for replica in replicas[1:])
+    assert torch.equal(inputs.fields[1]["position_ids"], active["position_ids"])
+    assert torch.equal(inputs.fields[1]["logit_rows"], idle["logit_rows"])
+    assert torch.equal(inputs.fields[2]["logit_rows"], active["logit_rows"])
+
+
+def test_native_verify_sends_only_committed_teacher_rows_to_the_resident_capture():
+    pytest.importorskip("pypto")
+    native = pytest.importorskip("models.deepseek_v4_1_flash_a3.packed")
+
+    graphs = SimpleNamespace()
+    session = native.PackedSession(graphs, 2, 128, (16, 16))
+    other = session.admit("other", 0, 11)
+    trained = session.admit("trained", 0, 19)
+    other_record, trained_record = session._lookup(other), session._lookup(trained)
+    trained_record.committed = 19
+    device_copies = []
+    entry = SimpleNamespace(remaining=5, append_from=lambda *args: device_copies.append(args))
+    host_rows = {}
+    session._capture_teacher(
+        [[(other_record, (41,)), (trained_record, (55, 56, 57, 58))], [], [], []],
+        {other: (42,), trained: (56, 59)}, {}, host_rows, {trained: entry},
+    )
+    assert device_copies == [(19, 1, 2)]
+    assert not host_rows

@@ -188,6 +188,12 @@ python /opt/dsv41-1122/validate_dsv41_pypto_packed_generation.py \
 
 在 111 上以 `949a18d` 源码、公开 W8A8 checkpoint 的第 0 层和一张 910B3 复验 K8/K16/K32 的 SWA、带 Indexer 的压缩 Attention 和 Reuse。9 个 BF16 输出均通过 CANN 精度门槛，最大相对 L2 为 0.203%，目标缓存逐字节一致。原始报告另列仅适用于单独 Wo 检查的严格容差结果。同一工具链容器的 11 项 packed CPU 回归通过，覆盖多 DP 采样回读和短尾验收。[实卡结果](validation/dsv41/pypto-1122-949a-packed-draft-layer-910b3.json)
 
+### 1122 原生整图与 Orthrus 在线更新
+
+`949a18d` 的整图入口为 `l3_prefill_fwd` 和 `l3_decode_fwd`。`validate_dsv41_pypto_packed_generation.py` 使用同一个驻留会话比较纯 AR 和 Orthrus，Verify 调用同一份 Decode 整图。报告用 `native_l3_full_graph` 标记这条路径。Prefill 把同一 TP 组的输入整理成每卡一次上传，只有 DP owner 选择 logits 行。在线更新默认回读已提交的教师行，拒绝之后沿实际生成继续补齐。`--resident-teacher` 可对照设备留存方案。单卡七次单行回放中，两种方案的 loss 和梯度逐字节一致。设备留存省去 7.24 MB 的词表传输，但采集加 loss 的热态中位数从 71 ms 增到 340 ms，因此当前使用主机回读方案。
+
+原生 L3 入口要求同一运行时能访问 16 个逻辑设备。公司双机各管理 8 张卡时，整图还需要跨节点的设备通信与 L4 调度。可先在每台机器的一张空卡上运行 `dsv41_pypto_env.sh global-window-check node7` 或 `global-window-check node8` 检查 Fabric 窗口导出。窗口能导出后还需验证两节点实际读取对端设备窗口。HCCL AllToAll 通过只说明主机发起的集体通信可用。
+
 ### 双机设备窗口检查
 
 公司节点可以各用一张空闲卡独立检查，无需启动远端进程或加载模型。

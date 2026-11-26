@@ -773,10 +773,10 @@ index 407560a..5aaa2ea 100644
          parser.error("--profile-all-steps requires full checkpoint generation")
      if args.warmup_requests < 0 or args.measured_requests < 1:
 diff --git a/models/deepseek_v4_1_flash_a3/generation.py b/models/deepseek_v4_1_flash_a3/generation.py
-index ef6a2b2..2a07fef 100644
+index ef6a2b2..fe80032 100644
 --- a/models/deepseek_v4_1_flash_a3/generation.py
 +++ b/models/deepseek_v4_1_flash_a3/generation.py
-@@ -199,6 +199,24 @@ class ResidentGraphs:
+@@ -199,6 +199,26 @@ class ResidentGraphs:
      config: RunConfig
      host_io: dict
      decode_inputs: DecodeInputs
@@ -798,10 +798,22 @@ index ef6a2b2..2a07fef 100644
 +    draft_qkv_program: DistributedCompiledProgram | None = None
 +    draft_attn_input_program: DistributedCompiledProgram | None = None
 +    draft_adam_programs: dict | None = None
++    draft_teacher_program: DistributedCompiledProgram | None = None
++    prefill_inputs: DecodeInputs | None = None
 
      def reset(self):
          reset_caches(self.runtime, self.ranks, self.host_cache)
-@@ -232,6 +250,83 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+@@ -213,7 +233,8 @@ class ResidentGraphs:
+
+
+ @contextmanager
+-def open_resident_graphs(args, devices, weights, engram, memory, report, *, selected_layers=None, load_start=None, request_slots=1):
++def open_resident_graphs(args, devices, weights, engram, memory, report, *, selected_layers=None, load_start=None, request_slots=1,
++                         packed_session=False):
+     """Load weights and register the two forward programs for the lifetime of a worker."""
+     if load_start is None:
+         load_start = time.monotonic()
+@@ -232,6 +253,89 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
      for phase_names, supported in zip(names, prepare_windows, strict=True):
          if supported:
              phase_names.pop()
@@ -810,7 +822,7 @@ index ef6a2b2..2a07fef 100644
 +    draft_expert_dispatch, draft_expert_reverse, draft_ffn_input = None, None, None
 +    draft_ffn_mhc, draft_attn_post, draft_wo_input = None, None, None
 +    draft_attention, draft_qkv, draft_attn_input = None, None, None
-+    draft_adam = None
++    draft_adam = draft_teacher = None
 +    draft_block = getattr(args, "orthrus_draft_block", 32)
 +    draft_last_layers = getattr(args, "orthrus_online_last_layers", 0)
 +    if getattr(args, "orthrus_draft_head", None) is not None:
@@ -832,6 +844,12 @@ index ef6a2b2..2a07fef 100644
 +
 +        draft_loss = make_packed_loss_graph(MAX_LOGIT_ROWS, M.vocab_size, C.DP_SIZE, C.TP_SIZE, loss_kind)
 +        draft_loss = draft_loss.compile(config=config)
++        if packed_session and getattr(args, "orthrus_resident_teacher", False):
++            from blockspec.dsv41_packed_loss import make_packed_teacher_copy
++
++            draft_teacher = make_packed_teacher_copy(
++                MAX_LOGIT_ROWS, M.vocab_size, C.DP_SIZE, C.TP_SIZE,
++            ).compile(config=config)
 +        draft_lm_head_vjp = make_packed_lm_head_vjp(MAX_LOGIT_ROWS, M.vocab_size, M.hidden_size, C.DP_SIZE, C.TP_SIZE)
 +        draft_lm_head_vjp = draft_lm_head_vjp.compile(config=config)
 +        reverse_rows = draft_block if draft_last_layers else MAX_LOGIT_ROWS
@@ -885,21 +903,49 @@ index ef6a2b2..2a07fef 100644
      cache_names = set(DECODE_CACHE_NAMES.values())
      constants = set(weights.tensor_layouts) | cache_names | {"freqs_cos", "freqs_sin"}
      counts = {name: torch.zeros(16, dtype=torch.int32).share_memory_()
-@@ -266,7 +361,12 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
-                 template = prefill_template[name]
+@@ -261,13 +365,23 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+             # All blocks of a native cache start with the same payload or scale fill.
+             for name, initial in initial_cache.items():
+                 host_io["reset_" + name] = initial[0, 0].clone().share_memory_()
+-        for name in names[0]:
+-            if name in prefill_template and name not in constants:
+-                template = prefill_template[name]
++        staged_prefill = {name: prefill_template[name] for name in names[0]
++                          if name in prefill_template and name not in constants}
++        prefill_inputs = DecodeInputs(staged_prefill) if packed_session else None
++        if prefill_inputs is None:
++            for name, template in staged_prefill.items():
                  host_io["prefill_" + name] = torch.empty((2, *template.shape), dtype=template.dtype).share_memory_()
++        host_inputs = [*counts.values(), *host_io.values(), decode_inputs.images]
++        if prefill_inputs is not None:
++            host_inputs.append(prefill_inputs.images)
          worker = SwimlaneWorker if args.profile_all_steps is not None else DistributedWorker
 -        with worker(programs, config, persistent=True, reset_persistent_windows=False,
-+        online_graphs = (draft_graph, draft_loss, draft_lm_head_vjp, draft_final_vjp, draft_ffn_post_vjp,
+-                    inherited_host_tensors=[*counts.values(), *host_io.values(), decode_inputs.images]) as runtime:
++        online_graphs = (draft_graph, draft_loss, draft_teacher, draft_lm_head_vjp, draft_final_vjp, draft_ffn_post_vjp,
 +                         draft_expert_dispatch, draft_expert_reverse, draft_ffn_input, draft_ffn_mhc,
 +                         draft_attn_post, draft_wo_input, draft_attention, draft_qkv, draft_attn_input)
 +        registered = [*programs, *(graph for graph in online_graphs if graph is not None),
 +                      *(entry for entries in (draft_adam or {}).values() for entry in entries)]
 +        with worker(registered, config, persistent=True, reset_persistent_windows=False,
-                     inherited_host_tensors=[*counts.values(), *host_io.values(), decode_inputs.images]) as runtime:
++                    inherited_host_tensors=host_inputs) as runtime:
              host_io["idle_inputs"] = tuple(
                  {name: template[name] for name in phase_names if name in template and name not in constants}
-@@ -354,7 +454,11 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+                 for template, phase_names in zip((prefill_template, decode_template), names, strict=True)
+@@ -281,8 +395,11 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+             views = decode_cache_views(initial_cache)
+             for rank in range(16):
+                 memory.phase = "weight_load"
++                prefill_views = prefill_inputs.bind(runtime, rank) if prefill_inputs is not None else {}
+                 for name in names[0]:
+-                    if name in weights.tensor_layouts or name in outputs:
++                    if name in prefill_views:
++                        handle = prefill_views[name]
++                    elif name in weights.tensor_layouts or name in outputs:
+                         shape, dtype = weights.tensor_layouts[name] if name in weights.tensor_layouts else outputs[name]
+                         handle = runtime.alloc_tensor(shape, dtype, worker_id=rank)
+                     else:
+@@ -354,7 +471,11 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
 
              host_io["prefill_dirty_groups"] = ()
              yield ResidentGraphs(runtime, programs, arguments, names, ranks, weights, engram, host_cache,
@@ -908,11 +954,11 @@ index ef6a2b2..2a07fef 100644
 +                                 draft_block, draft_loss, draft_lm_head_vjp, draft_final_vjp, draft_last_layers,
 +                                 draft_ffn_post_vjp, draft_expert_dispatch, draft_expert_reverse, draft_ffn_input,
 +                                 draft_ffn_mhc, draft_attn_post, draft_wo_input, draft_attention, draft_qkv,
-+                                 draft_attn_input, draft_adam)
++                                 draft_attn_input, draft_adam, draft_teacher, prefill_inputs)
      finally:
          torch.set_num_threads(saved_threads)
 
-@@ -444,11 +548,45 @@ def generate(args, devices, *, manifests):
+@@ -444,11 +565,45 @@ def generate(args, devices, *, manifests):
                      )
                  except LogitValidationError as error:
                      report["teacher_forced_error"] = str(error)
@@ -960,7 +1006,7 @@ index ef6a2b2..2a07fef 100644
                  replay_report = {}
                  capture_dir = args.profile_all_steps if iteration == args.warmup_requests else None
                  if capture_dir is not None:
-@@ -462,20 +600,28 @@ def generate(args, devices, *, manifests):
+@@ -462,20 +617,28 @@ def generate(args, devices, *, manifests):
                          config, memory, replay_report, options=args, host_io=host_io, decode_inputs=decode_inputs, reference=reference, teacher_forced=args.teacher_forced,
                          audit=audit_caches if audit_request else None, save_logits=args.save_logits, label=label,
                          profile=capture_dir is not None, profile_dir=capture_dir,
@@ -1141,7 +1187,7 @@ index 502fa5b..365e535 100644
  @pl.jit.inline(auto_scope=False)
  def decode_o_proj_nz_from_attention(
 diff --git a/models/deepseek_v4_1_flash_a3/packed.py b/models/deepseek_v4_1_flash_a3/packed.py
-index 98f9f0c..25e8574 100644
+index 98f9f0c..c698930 100644
 --- a/models/deepseek_v4_1_flash_a3/packed.py
 +++ b/models/deepseek_v4_1_flash_a3/packed.py
 @@ -11,6 +11,7 @@
@@ -1707,7 +1753,7 @@ index 98f9f0c..25e8574 100644
          result = {}
          for handle, rank, row in selections:
              logits = g.host_io["logits"][0]
-@@ -252,6 +687,55 @@ class PackedSession:
+@@ -252,26 +687,62 @@ class PackedSession:
              result[handle] = logits.clone()
          return result
 
@@ -1762,16 +1808,43 @@ index 98f9f0c..25e8574 100644
 +
      def _upload_prefill_group(self, owner, values, workers):
          g = self.graphs
-         inputs = {}
-@@ -282,9 +766,77 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
+-        inputs = {}
+-        for name in g.host_io["idle_inputs"][0]:
+-            field = g.host_io["prefill_" + name][1]
+-            value = values[name]
+-            if tuple(field.shape) != tuple(value.shape) or field.dtype != value.dtype:
+-                raise ValueError(f"Packed tensor {name} differs from its bound graph")
+-            field.copy_(value)
+-            inputs[name] = field
+-        idle_rows = g.host_io["prefill_logit_rows"][0].fill_(-1)
+-
+-        def upload_rank(rank):
+-            for name, field in inputs.items():
+-                value = idle_rows if name == "logit_rows" and rank != owner else field
+-                dst = g.ranks[0][rank][name]
+-                g.runtime.copy_to(dst.data_ptr, value.data_ptr(), value.nbytes, worker_id=rank)
+-
+-        # All copies finish before the next DP group stages its inputs in the same buffers.
+-        list(workers.map(upload_rank, range(owner, owner + C.TP_SIZE)))
++        idle = g.host_io["idle_inputs"][0]
++        g.prefill_inputs.stage((idle, {name: values[name] for name in idle}), "logit_rows")
++        # Upload one image per rank. Only the owner selects vocabulary rows.
++        list(workers.map(lambda rank: g.prefill_inputs.upload(g.runtime, rank, owner),
++                         range(owner, owner + C.TP_SIZE)))
+
+
+ @contextmanager
+@@ -282,9 +753,81 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
                                                 (args.decode_runtime_dir, "decode", args.decode_capacity))]
      if any(m["history_capacity"] != args.context_capacity for m in manifests):
          raise ValueError("History capacity differs from the compiled graph pair")
 +    if getattr(args, "orthrus_draft_head", None) is not None and request_slots != 1:
 +        raise ValueError("The Orthrus draft graph requires one request slot per DP")
      C.set_moe_tokens(manifests[0]["moe_slab_rows"])
-     with open_resident_graphs(args, devices, weights, engram, memory, report, request_slots=request_slots) as graphs:
+-    with open_resident_graphs(args, devices, weights, engram, memory, report, request_slots=request_slots) as graphs:
 -        session = PackedSession(graphs, request_slots, args.context_capacity, (args.capacity, args.decode_capacity))
++    with open_resident_graphs(args, devices, weights, engram, memory, report, request_slots=request_slots,
++                              packed_session=True) as graphs:
 +        draft = None
 +        if graphs.draft_program is not None:
 +            from blockspec.dsv41_packed_proposer import PackedDraftProposer
@@ -1790,9 +1863,12 @@ index 98f9f0c..25e8574 100644
 +        if graphs.draft_loss_program is not None:
 +            from blockspec.dsv41_packed_final_vjp import PackedFinalVJP
 +            from blockspec.dsv41_packed_lm_head_vjp import PackedLMHeadVJP
-+            from blockspec.dsv41_packed_loss import PackedLoss
++            from blockspec.dsv41_packed_loss import PackedLoss, PackedTeacherCopy
 +
 +            loss = PackedLoss(draft, graphs.draft_loss_program)
++            if graphs.draft_teacher_program is not None:
++                sources = tuple(graphs.ranks[1][rank]["logits"] for rank in loss.owners)
++                draft.teacher_copy = PackedTeacherCopy(loss, graphs.draft_teacher_program, sources)
 +            lm_head_vjp = PackedLMHeadVJP(draft, loss, graphs.draft_lm_head_vjp_program)
 +            reverse_rows = draft.block if graphs.draft_last_layers else loss.rows
 +            final_vjp = PackedFinalVJP(draft, lm_head_vjp, graphs.draft_final_vjp_program, output_rows=reverse_rows)

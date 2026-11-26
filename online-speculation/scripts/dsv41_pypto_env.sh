@@ -58,7 +58,7 @@ case "$action" in
     esac
     : "${NPU_DEVICE:?Select an idle physical card with NPU_DEVICE or the node argument}"
     [[ "$NPU_DEVICE" =~ ^[0-9]+$ && $# -le 1 ]] || exit 2
-    check_image="${PYPTO_IMAGE:-orthrus-dsv41-pypto:1122-7abc0df}"
+    check_image="${PYPTO_IMAGE:-orthrus-dsv41-pypto:1122-949a18d}"
     docker image inspect "$check_image" >/dev/null 2>&1 || {
       echo "1122 image missing. Set PYPTO_IMAGE to the pinned 1122 image on this server." >&2; exit 2;
     }

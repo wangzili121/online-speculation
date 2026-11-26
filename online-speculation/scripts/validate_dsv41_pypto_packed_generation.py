@@ -2,11 +2,13 @@
 """Compare native AR and resident Orthrus on the same packed A3 workload."""
 
 import argparse
+from collections import Counter
 import json
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from math import isfinite
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 from types import SimpleNamespace
 
@@ -122,11 +124,17 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
 
 
 def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, online=None):
+    from blockspec.dsv41_online_profile import profile_online
+
     begin = perf_counter()
     waves = [requests[start:start + concurrency] for start in range(0, len(requests), concurrency)]
 
     def run(wave, mode, schedule=None):
-        return run_wave(session, wave, chunk=chunk, tokens=tokens, width=width, speculative=mode, online=schedule)
+        profile = dict(stage_seconds=Counter(), counts=Counter())
+        with profile_online(SimpleNamespace(current=profile, lock=Lock())):
+            result = run_wave(session, wave, chunk=chunk, tokens=tokens, width=width,
+                              speculative=mode, online=schedule)
+        return dict(result, profile=profile)
 
     for _ in range(warmup):
         run(waves[0], False)
@@ -186,6 +194,8 @@ def main():
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--warmup-updates", type=int, default=8)
     parser.add_argument("--heldout-workload", type=Path)
+    parser.add_argument("--resident-teacher", action="store_true",
+                        help="Profile device snapshots against the default committed-row host transfer")
     args = parser.parse_args()
     devices = [int(device) for device in args.devices.split(",")]
     if len(devices) != 16 or len(set(devices)) != 16:
@@ -196,6 +206,8 @@ def main():
                                     or not isfinite(args.learning_rate) or args.learning_rate <= 0
                                     or args.warmup_updates < 0):
         parser.error("Use positive update cadence and learning rate, and teacher rows within the draft width")
+    if args.resident_teacher and not args.online_last_layers:
+        parser.error("--resident-teacher requires an online suffix update")
     if args.heldout_workload and not args.online_last_layers:
         parser.error("A held-out workload compares the frozen head before and after online updates")
 
@@ -211,6 +223,8 @@ def main():
     checkpoint = Checkpoint(args.checkpoint)
     tokenizer = Tokenizer.from_file(str(checkpoint.root / "tokenizer.json"))
     prefill_dir, decode_dir = (args.graph_dir / phase for phase in ("prefill", "decode"))
+    if any(not (path / "distributed_meta.json").is_file() for path in (prefill_dir, decode_dir)):
+        parser.error("--graph-dir must contain the compiled 1122 native Prefill and Decode whole graphs")
     prefill, decode = (load_manifest(path, mode=phase) for phase, path in (
         ("prefill", prefill_dir), ("decode", decode_dir),
     ))
@@ -232,15 +246,17 @@ def main():
                               profile_all_steps=None, orthrus_draft_head=args.head,
                               orthrus_draft_runtime_dir=args.draft_graph, orthrus_draft_block=args.draft_block,
                               orthrus_online_last_layers=args.online_last_layers,
+                              orthrus_resident_teacher=args.resident_teacher,
                               orthrus_online_loss=args.online_loss if args.online_last_layers else None)
     schedule = (OnlineSchedule(args.update_every, args.teacher_rows, args.learning_rate, args.warmup_updates)
                 if args.online_last_layers else None)
     report = dict(
-        checkpoint_identity=checkpoint.identity,
+        checkpoint_identity=checkpoint.identity, target_execution="native_l3_full_graph",
         graph_capacities={phase: manifest["capacity"] for phase, manifest in (("prefill", prefill), ("decode", decode))},
         context_capacity=context, topology=prefill["topology"],
         workload_sha256=sha256(args.workload.read_bytes()).hexdigest(),
         online_last_layers=args.online_last_layers, online_loss=options.orthrus_online_loss,
+        teacher_capture="device_snapshot" if args.resident_teacher else "committed_host_rows",
     )
     memory = HbmSampler(devices)
     begin = perf_counter()
