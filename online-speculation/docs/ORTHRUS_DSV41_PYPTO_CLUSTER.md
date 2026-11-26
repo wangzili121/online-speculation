@@ -111,7 +111,7 @@ Draft 和 Verify 只回读实际参与本轮的词表行。Draft 结果直接交
 
 公司 node7 和 node8 使用同一个 `1122` 镜像、同版 W8A8 权重和同一份集群密钥。node7 默认读取 `/root/.orthrus-cluster.key`，node8 默认读取 `/home/wangzili/.orthrus-cluster.key`。镜像基于现有的 `orthrus-dsv41-pypto:72a62d1-offline`。在可以访问依赖的 ARM64 主机上执行一次 `bash online-speculation/scripts/dsv41_pypto_env.sh build-1122`，再将生成的 `orthrus-dsv41-pypto:1122-949a18d` 镜像复制到另一节点。已经配置的 `PYPTO_BUILD_NETWORK`、`PYPTO_BUILD_PROXY`、`PYPTO_BUILD_CA` 和 `PYPTO_BUILD_PYPI` 可继续使用。
 
-两台已经有 `1122-949a18d` 时，更新 checkout 后可在各自机器执行 `bash online-speculation/scripts/dsv41_pypto_env.sh refresh-1122`。它复用现有镜像的编译器和运行时，在离线环境更新模型补丁和公司脚本。两端新的作业会核对初始化或预训练 head 的实际权重字节摘要。
+两台已经有 `1122-949a18d` 时，更新 checkout 后可在各自机器执行 `bash online-speculation/scripts/dsv41_pypto_env.sh refresh-1122`。它复用现有镜像的编译器和运行时，在离线环境更新模型补丁和公司脚本。接着运行 `prepare`，它会回载图产物并重编译不兼容的产物组。旧目录移入 `.superseded.*`。两端新的作业会核对初始化或预训练 head 的实际权重字节摘要。
 
 两台从仓库根目录执行同样的命令，node8 将 `NODE` 设为 `node8`。已有 GSM8K 分区默认读 `/workspace/data/orthrus-dsv41-gsm8k`，也可以用 `DSV41_GSM8K_ROOT` 指定。
 

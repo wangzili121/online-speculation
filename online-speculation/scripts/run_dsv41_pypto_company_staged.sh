@@ -42,10 +42,34 @@ if [[ "$mode" == prepare ]]; then
     last="$1"
     tmp="$(mktemp -d /results/.prepare.XXXXXX)"
     trap '\''rm -rf -- "$tmp"'\'' EXIT
-    paths=()
-    for name in prefill decode "draft-last$last" adam; do
-      [[ -d "/results/$name" ]] || paths+=("$name")
-    done
+    python -c '\''
+from pathlib import Path
+import sys
+from blockspec.dsv41_packed_proposer import load_staged_draft_graphs
+from blockspec.dsv41_staged_adam import load_staged_adam_programs
+from blockspec.dsv41_staged_reverse import load_staged_reverse_programs
+from blockspec.dsv41_staged_target import load_staged_target_programs
+from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
+
+root, last = Path("/results"), int(sys.argv[1])
+draft = root / f"draft-last{last}"
+checks = (
+    (("prefill", "decode"), lambda: load_staged_target_programs(
+        root / "prefill", root / "decode", (272, 16), (64, 16), context=512, slots=2, local_ranks=8)),
+    ((draft.name,), lambda: (load_staged_draft_graphs(
+        draft, context=512, block=16, local_ranks=8, request_slots=2, last_layers=last),
+        load_staged_reverse_programs(draft, last))),
+    (("adam",), lambda: load_staged_adam_programs(root / "adam", FLASH, TP_SIZE)),
+)
+for names, check in checks:
+    try:
+        check()
+    except (OSError, ValueError) as error:
+        joined = ", ".join(names)
+        print(f"Rebuild {joined}: {error}", file=sys.stderr)
+        print(*names, sep="\n")
+'\'' "$last" > "$tmp/rebuild"
+    mapfile -t paths < "$tmp/rebuild"
     for name in "${paths[@]}"; do
       case "$name" in
         prefill) python /opt/dsv41-1122/validate_dsv41_pypto_packed_prefill.py --capacity 272 \
@@ -56,6 +80,10 @@ if [[ "$mode" == prepare ]]; then
                    --decode-capacity 16 --context 512 --slots-per-dp 2 --last-layers "$last" --artifact-dir "$tmp/$name" ;;
         adam) python /opt/dsv41-1122/compile_dsv41_pypto_staged_adam.py --artifact-dir "$tmp/$name" ;;
       esac
+      if [[ -d "/results/$name" ]]; then
+        previous="$(mktemp -d "/results/.superseded.$name.XXXXXX")"
+        mv "/results/$name" "$previous/"
+      fi
       mv "$tmp/$name" "/results/$name"
     done
     python /opt/dsv41-1122/prepare_dsv41_pypto_staged_gsm8k.py \
