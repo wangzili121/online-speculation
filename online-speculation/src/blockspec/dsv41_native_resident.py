@@ -5,6 +5,38 @@ from math import prod
 from types import SimpleNamespace
 
 
+def forward_templates(weights, engram, capacities, context, slots):
+    from models.deepseek_v4_1_flash_a3.host import prepare_resident_inputs
+    from models.deepseek_v4_1_flash_a3.utils import DECODE_CACHE_NAMES, prepare_decode_inputs
+
+    prefill = prepare_resident_inputs(weights, [], capacities[0], max_seq_len=context, engram=engram,
+                                      request_slots=slots)
+    initial_cache = {name: prefill[name] for name in DECODE_CACHE_NAMES.values()}
+    ropes = prefill["freqs_cos"], prefill["freqs_sin"]
+    decode = prepare_decode_inputs(prepare_resident_inputs(
+        weights, [], capacities[1], max_seq_len=context, cache_state=initial_cache,
+        rope_tables=ropes, engram=engram, request_slots=slots,
+    ))
+    return dict(prefill=prefill, decode=decode), initial_cache, ropes
+
+
+def forward_inputs(programs, weights, templates, initial_cache):
+    from models.deepseek_v4_1_flash_a3.replay import DecodeInputs
+    from models.deepseek_v4_1_flash_a3.utils import DECODE_CACHE_NAMES
+
+    constants = {*weights.tensor_layouts, *initial_cache, *DECODE_CACHE_NAMES, "freqs_cos", "freqs_sin"}
+    parameters = {
+        phase: {parameter.name.removesuffix("__ssa_v0"): parameter
+                for parameter in program._get_metadata()[0]}
+        for phase, program in programs.items()
+    }
+    return parameters, {
+        phase: DecodeInputs({name: value for name, value in templates[phase].items()
+                             if name in params and name not in constants})
+        for phase, params in parameters.items()
+    }
+
+
 class NativeRankMemory:
     """Bind PyPTO's tensor views to allocations owned by one Simpler L3."""
 
@@ -74,10 +106,8 @@ class NativeResidentForward:
                  selected_layers=None):
         import torch
         from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
-        from models.deepseek_v4_1_flash_a3.host import prepare_resident_inputs
         from models.deepseek_v4_1_flash_a3.lm_head import MAX_LOGIT_ROWS, SAMPLED_IDS_PAD
-        from models.deepseek_v4_1_flash_a3.replay import DecodeInputs
-        from models.deepseek_v4_1_flash_a3.utils import DECODE_CACHE_NAMES, decode_cache_views, prepare_decode_inputs
+        from models.deepseek_v4_1_flash_a3.utils import DECODE_CACHE_NAMES, decode_cache_views
         from pypto.runtime import DeviceTensor
         from simpler.task_interface import DataType
 
@@ -91,15 +121,8 @@ class NativeResidentForward:
             if any(dp * self.tp + lane not in self.ranks for lane in range(self.tp)):
                 raise ValueError("A TP group must fit on one host")
 
-        prefill = prepare_resident_inputs(weights, [], capacities[0], max_seq_len=context,
-                                          engram=engram, request_slots=slots)
-        initial_cache = {name: prefill[name] for name in DECODE_CACHE_NAMES.values()}
+        templates, initial_cache, self.rope_tables = forward_templates(weights, engram, capacities, context, slots)
         self.initial_cache = initial_cache
-        self.rope_tables = prefill["freqs_cos"], prefill["freqs_sin"]
-        decode = prepare_decode_inputs(prepare_resident_inputs(
-            weights, [], capacities[1], max_seq_len=context, cache_state=initial_cache,
-            rope_tables=self.rope_tables, engram=engram, request_slots=slots,
-        ))
         cache_views = decode_cache_views(initial_cache)
         outputs = {
             "x_hc_out": ((capacities[0], FLASH.hc_mult, FLASH.hidden_size), torch.float32),
@@ -109,12 +132,7 @@ class NativeResidentForward:
             "sampled_ids": ((MAX_LOGIT_ROWS, SAMPLED_IDS_PAD), torch.int32),
         }
         constants = {*weights.tensor_layouts, *initial_cache, *cache_views, "freqs_cos", "freqs_sin"}
-        templates = dict(prefill=prefill, decode=decode)
-        parameters = {
-            phase: {parameter.name.removesuffix("__ssa_v0"): parameter
-                    for parameter in programs[phase]._get_metadata()[0]}
-            for phase in self.phases
-        }
+        parameters, self.inputs = forward_inputs(programs, weights, templates, initial_cache)
         for phase, params in parameters.items():
             supported = set(templates[phase]) | constants | set(outputs) | set(self.count_names) | {"execute_layers"}
             unknown = set(params) - supported
@@ -123,11 +141,6 @@ class NativeResidentForward:
             unranked = {p.name for name, p in params.items() if name in self.count_names or name == "execute_layers"}
             if set(p.name for p in params.values()) - unranked != graphs[phase].rank_stacks:
                 raise ValueError(f"{phase} graph rank layout differs from the resident parameter layout")
-        self.inputs = {
-            phase: DecodeInputs({name: value for name, value in templates[phase].items()
-                                 if name in parameters[phase] and name not in constants})
-            for phase in self.phases
-        }
         self.idle = {
             phase: {name: templates[phase][name] for name in inputs.fields[0]}
             for phase, inputs in self.inputs.items()
@@ -192,8 +205,26 @@ class NativeResidentForward:
         inputs = self.inputs[phase]
         idle = self.idle[phase]
         inputs.stage((idle, {name: values[name] for name in idle}), logit_name)
-        owner_rank = dp * self.tp
-        workers = tuple(self.ranks.index(owner_rank + lane) for lane in range(self.tp))
+        self._upload(phase, dp)
+
+    def stage_image(self, phase, dp, payload):
+        """Receive one owner image and keep logits disabled on the three TP peers."""
+        inputs = self.inputs[phase]
+        logit_name = "logit_rows" if phase == "prefill" else "logit_row_indices"
+        owner_image = inputs.images[2]
+        if len(payload) != owner_image.nbytes:
+            raise ValueError(f"Invalid {phase} packed input size on DP {dp}")
+        memoryview(owner_image.numpy())[:] = payload
+        inputs.images[1].copy_(owner_image)
+        inputs.fields[1][logit_name].copy_(self.idle[phase][logit_name])
+        self._upload(phase, dp)
+
+    def _workers(self, dp):
+        return tuple(self.ranks.index(dp * self.tp + lane) for lane in range(self.tp))
+
+    def _upload(self, phase, dp):
+        inputs = self.inputs[phase]
+        workers = self._workers(dp)
         for image, destinations in zip(inputs.images[1:], (workers[1:], workers[:1]), strict=True):
             if destinations:
                 self.memory.upload_to_ranks(
@@ -217,3 +248,17 @@ class NativeResidentForward:
         tensor = self.buffers[phase][worker][name]
         self.memory.copy_from(out.data_ptr(), tensor.data_ptr, out.nbytes, worker_id=worker,
                               src_offset=first_row * prod(tensor.shape[1:]) * out.element_size())
+
+    def clear(self, dp, slot, pages):
+        workers = self._workers(dp)
+        prefill = self.buffers["prefill"]
+        for name, initial in self.initial_cache.items():
+            blocks = (slot,) if name == "state_cache" else pages
+            for source in initial:
+                for block in blocks:
+                    image = source[block]
+                    offset = image.data_ptr() - initial.data_ptr()
+                    self.memory.upload_to_ranks(
+                        image.data_ptr(), image.nbytes,
+                        ((worker, prefill[worker][name].data_ptr, offset) for worker in workers),
+                    )

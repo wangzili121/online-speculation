@@ -1796,7 +1796,7 @@ index 98f9f0c..c698930 100644
 +                view = rows[:len(selected)]
 +                target.read(index, dp, "sampled_ids", view)
 +                local[str(dp)] = view[:, 0].tolist()
-+        remote = target.link.exchange(f"{stage}/sampled", local)
++        remote = target.link.exchange(f"{stage}/sampled", local) if target.link is not None else {}
 +        if set(local) & set(remote) or set(map(int, (*local, *remote))) != set(expected):
 +            raise ValueError("Staged results do not cover the owning DP partitions")
 +        output = {}
