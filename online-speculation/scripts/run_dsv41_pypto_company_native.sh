@@ -17,7 +17,15 @@ loss="${PYPTO_NATIVE_LOSS:-tv}"
 ssh_peer=(ssh -o BatchMode=yes -o ConnectTimeout=8 -- "${NODE8_SSH:-root@$peer_ip}")
 [[ "$last" =~ ^([1-9]|1[0-9]|2[0-6])$ ]] || { echo 'last-N must be 1–26.' >&2; exit 2; }
 [[ "$loss" == tv || "$loss" == forward_kl ]] || { echo 'Use tv or forward_kl.' >&2; exit 2; }
-bundle="$workspace/last-$last-$loss"
+bundle_revision="$(
+  cd "$checkout/online-speculation"
+  git hash-object runtime/pypto_dsv41_a3/docker/Dockerfile.1122 \
+    runtime/pypto_dsv41_a3/{lib-1122-verification,pypto-1122-stacked-nz,runtime-release}.patch \
+    scripts/compile_dsv41_pypto_{packed_draft,native_online}.py \
+    src/blockspec/{pypto_dsv41_*,dsv41_packed_*,dsv41_native_online_artifacts,dsv41_staged_reverse,dsv41_staged_ep_vjp}.py |
+    git hash-object --stdin | cut -c1-12
+)"
+bundle="$workspace/last-$last-$loss-$bundle_revision"
 
 printf -v remote '%q ' git -C "$peer_checkout" rev-parse HEAD
 [[ "$(git -C "$checkout" rev-parse HEAD)" == "$("${ssh_peer[@]}" "$remote")" ]] ||
@@ -26,10 +34,10 @@ printf -v remote '%q ' git -C "$peer_checkout" rev-parse HEAD
 image_check='
     cd /opt/dsv41-1122
     cmp /checkout/runtime/pypto_dsv41_a3/lib-1122-verification.patch lib-1122-verification.patch
-    for script in run_dsv41_pypto_native_ar.py compile_dsv41_pypto_native_online.py validate_dsv41_pypto_packed_generation.py; do
+    for script in run_dsv41_pypto_native_ar.py compile_dsv41_pypto_native_online.py compile_dsv41_pypto_packed_draft.py validate_dsv41_pypto_packed_generation.py; do
         cmp "/checkout/scripts/$script" "$script"
     done
-    for source in /checkout/src/blockspec/{dsv41_native_*,dsv41_packed_*,pypto_dsv41_packed_*}.py; do
+    for source in /checkout/src/blockspec/{dsv41_native_*,dsv41_packed_*,pypto_dsv41_*,dsv41_staged_reverse,dsv41_staged_ep_vjp}.py; do
         cmp "$source" "orthrus/blockspec/${source##*/}"
     done
     /opt/pypto/venv/bin/python -c "from _task_interface import MAX_REGISTERED_CALLABLE_IDS as limit; assert limit >= 256"

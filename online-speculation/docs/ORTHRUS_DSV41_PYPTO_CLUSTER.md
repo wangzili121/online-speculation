@@ -122,6 +122,8 @@ bash "$RUN" native-study 1
 
 `native-fabric` 使用每台一张空闲卡检查设备窗口导出和跨机访问。默认物理卡分别为 node7 的 1 号和 node8 的 0 号，可通过 `NODE7_FABRIC_NPU` 和 `NODE8_FABRIC_NPU` 调整。`native-prepare` 用 CPU 编译并分发整图和初始化 head，再在 node7 装配并登记 Prefill、Decode、Draft、反向和 Adam 的二进制，无需空闲 NPU。产物目录中的 `callable-assembly.json` 记录每张图注册的 callable 数量和总耗时，详细日志保存在 `callable-assembly.log`。
 
+整图产物目录带编译源码指纹。更新镜像后重新执行 `native-prepare`，脚本会为新源码选择匹配的产物目录。未准备当前版本时，验收脚本会在启动设备前提示。
+
 `native-smoke` 需要两台各 8 张空闲卡，一次装载后从 node7 和 node8 的请求分别触发一次更新，检查 Prefill、Draft 和 Decode/Verify 中所有采样行的有限性及 greedy ID，再逐 token 对照两组输出。数值检查失败时，`result.json` 记录具体阶段、DP 和出错行。公司双机的原生 Fabric 和整模仍待实测。
 
 `native-windows` 可单独用两台各 8 张空闲卡预留整图的实际通信窗口。它涵盖 Prefill、Decode、Draft、后缀反向和 Adam 中需要通信的图，跳过设备 callable 装配和权重上传。报告写入 `native-windows.*/result.json`。窗口预留失败时，日志注明对应图、参与 rank 数和每卡窗口大小。这个检查和常规短验、GSM8K 都在启动设备进程前核对两端的权重清单、head 清单和编译图标识，在上传权重前预留同一组窗口。
@@ -137,6 +139,8 @@ Prefill、Decode/Verify 和 Draft 在同一次整图派发中把采样 ID 回写
 Prefill 只发送有效 token 的 embedding、Engram 和滑窗索引行，接收端按编译布局恢复填充。按默认 GSM8K 的 64 道在线题和 16 道留出题计算，四并发时 node8 每批输入的中位体积由 24.0 MB 降至 10.1 MB，20 批都可以用单帧传输。设备输入布局在整图调度回归中逐字节一致。
 
 Draft 派发只发送 anchor 和 mask 两行嵌入。Engram 也只查询并发送前五行，后续位置的最长 n-gram 已全部由 mask token 组成，归属节点用第五行恢复尾部。K16 每个活跃 DP 的输入从 448,000 字节降至 177,664 字节。用公开 W8A8 权重检查不同历史位置和教师采样长度，完整还原的 Draft 输入与旧路径逐字节一致。K16 宿主查询、构造和打包的中位时间由 2.70 ms 降至 2.51 ms。同机双卡以等量数据测试原生控制通道，小图派发中位时间从 23.50 ms 降至 21.40 ms。整模吞吐还需双机计时。
+
+原生 Draft 按 Top-K 选择组保存已解包的 BF16 历史。40 层里 8 次索引刷新分别写入 8 个暂存区，30 个 Reuse 层读取所属组的暂存区，避免后续写入覆盖仍在使用的历史。K16 在每卡已预留的运行时内存中使用 64 MiB 暂存。单张 910B3 的七层 Attention 对照覆盖索引和压缩 KV 源分别切换，K16/K32 的输出和 LSE 与逐层解包逐位一致，设备窗口中位时间分别从 0.552 ms 降至 0.501 ms、从 0.944 ms 降至 0.845 ms。整图吞吐仍需双机验证。
 
 Decode/Verify 每个活跃 token 的输入残差只传一个 mHC 流。归属节点广播到各流并清零填充行，仍用完整输入执行原生整图。每 DP 的 K8 Verify 输入为 570,880 字节，单 token AR 输入为 427,520 字节。
 

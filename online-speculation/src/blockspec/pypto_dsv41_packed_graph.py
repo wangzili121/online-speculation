@@ -7,10 +7,11 @@ from .dsv41_packed_attention_tape import (
 )
 from .dsv41_packed_ffn_tape import make_packed_ffn_capture, packed_ffn_tape_shapes
 from .pypto_dsv41_draft import make_packed_draft_output_tape
-from .pypto_dsv41_packed_draft_attention import (
-    make_packed_draft_projection, make_packed_indexed_attention,
+from .pypto_dsv41_packed_draft_attention import make_packed_draft_projection
+from .pypto_dsv41_packed_indexer import make_packed_draft_indexer
+from .pypto_dsv41_packed_swa import (
+    make_packed_gathered_attention, make_packed_selection_gather, make_packed_swa_chain,
 )
-from .pypto_dsv41_packed_swa import make_packed_compressed_chain, make_packed_swa_chain
 
 
 def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers=0, staged_ranks=None):
@@ -71,11 +72,14 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
 
     prepare, _ = make_packed_draft_projection(block)
     swa = inline(make_packed_swa_chain(pages, heads, block))
-    c1a = inline(make_packed_indexed_attention(pages, pages, c1a_bucket, 1, block))
+    c1a = inline(make_packed_draft_indexer(pages, c1a_bucket, 1, block))
     # Native C1A/C2A share the DSL's table-width variable. Pad only the
     # metadata and keep C2A's score and Top-K arenas half-width.
-    c2a = inline(make_packed_indexed_attention(pages, pages, c2a_bucket, 2, block, table_bucket=c1a_bucket))
-    reuse = inline(make_packed_compressed_chain(pages, pages, block))
+    c2a = inline(make_packed_draft_indexer(pages, c2a_bucket, 2, block, table_bucket=c1a_bucket))
+    gather_history = make_packed_selection_gather(pages, block)
+    attend_history = make_packed_gathered_attention(pages, block)
+    retain_history = staged_ranks is None
+    history_groups = 8 if retain_history else 1
     post = make_packed_attention_post_capture(block, last_layers, m, tp)
     save_core = make_packed_attention_core_capture(block, last_layers, m, tp)
     save_qkv = make_packed_qkv_capture(block, last_layers, m)
@@ -152,6 +156,7 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
         selected: pl.Tensor[[block, index_topk], pl.INT32],
         lengths: pl.Tensor[[block], pl.INT32],
         mask: pl.Tensor[[block, index_topk], pl.FP32],
+        history_banks: pl.InOut[pl.Tensor[[history_groups, block * index_topk, dim], pl.BF16]],
         count: pl.Scalar[pl.INT32],
         group: pl.Scalar[pl.INT32],
         layer: pl.Scalar[pl.INDEX],
@@ -195,20 +200,21 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
                 project_wo(context, wo_a, wo_b, draft_cos[0], draft_sin[0], delta,
                            attention_tape_wo_input, attention_tape_wo_latent, 1, capture_slot)
             else:
-                kv_source = pl.min(3, (layer - 2) // 6)
-                compressed = pl.slice(compressed_cache_pool, [pages, page, 1, dim // 2], [kv_source * pages, 0, 0, 0])
-                compressed_scales = pl.slice(compressed_cache_scale_pool, [pages, page, 1, dim // kv_scale], [kv_source * pages, 0, 0, 0])
+                history_group = (layer - 2) // 6
+                if layer >= 20:
+                    history_group = 3 + (layer - 20) // 4
+                kv_source = pl.min(3, history_group)
+                bank = history_banks[pl.min(history_group, history_groups - 1)]
+                refresh = not retain_history
                 if layer < 20 and (layer - 2) % 6 == 0:
                     key = pl.slice(index_cache_pool, [pages, page, 1, index_dim // 2], [kv_source * pages, 0, 0, 0])
                     key_scales = pl.slice(index_cache_scale_pool, [pages, page, 1, index_dim // key_scale], [kv_source * pages, 0, 0, 0])
                     c2a(
                         normed, low_rank,
                         draft_index_q[kv_source], draft_index_weight[kv_source], draft_cos[1], draft_sin[1],
-                        key, key_scales, c2a_table, request_ids, c2a_visible,
-                        window, window_scales, window_lookup, window_rows, window_starts, window_spans, window_bias,
-                        compressed, compressed_scales, compressed_lookup, query, temporary, sink, zero_kv,
-                        selected, lengths, mask, context, lse,
+                        key, key_scales, c2a_table, request_ids, c2a_visible, selected, lengths, mask,
                     )
+                    refresh = True
                 elif layer >= 20 and (layer - 20) % 4 == 0:
                     index_source = 3 + (layer - 20) // 4
                     key = pl.slice(index_cache_pool, [pages, page, 1, index_dim // 2], [kv_source * pages, 0, 0, 0])
@@ -216,17 +222,21 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
                     c1a(
                         normed, low_rank,
                         draft_index_q[index_source], draft_index_weight[index_source], draft_cos[1], draft_sin[1],
-                        key, key_scales, c1a_table, request_ids, c1a_visible,
-                        window, window_scales, window_lookup, window_rows, window_starts, window_spans, window_bias,
-                        compressed, compressed_scales, compressed_lookup, query, temporary, sink, zero_kv,
-                        selected, lengths, mask, context, lse,
+                        key, key_scales, c1a_table, request_ids, c1a_visible, selected, lengths, mask,
                     )
-                else:
-                    reuse(
-                        window, window_scales, window_lookup, window_rows, window_starts, window_spans, window_bias,
-                        compressed, compressed_scales, compressed_lookup, selected, lengths, mask,
-                        query, temporary, sink, zero_kv, context, lse,
-                    )
+                    refresh = True
+                # A Reuse layer has the same physical compressed KV source and
+                # the same Top-K. Its SWA window and temporary KV are layer-local.
+                if refresh:
+                    compressed = pl.slice(compressed_cache_pool, [pages, page, 1, dim // 2],
+                                          [kv_source * pages, 0, 0, 0])
+                    compressed_scales = pl.slice(compressed_cache_scale_pool, [pages, page, 1, dim // kv_scale],
+                                                 [kv_source * pages, 0, 0, 0])
+                    bank = gather_history(compressed, compressed_scales, compressed_lookup, selected, lengths, bank)
+                context, lse = attend_history(
+                    window, window_scales, window_lookup, window_rows, window_starts, window_spans, window_bias,
+                    bank, selected, lengths, mask, query, temporary, sink, zero_kv, context, lse,
+                )
                 project_wo(context, wo_a, wo_b, draft_cos[1], draft_sin[1], delta,
                            attention_tape_wo_input, attention_tape_wo_latent, 0, capture_slot)
             if last_layers > 0:
@@ -318,6 +328,7 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
             count = pl.read(count_meta, [0])
             group = rank // tp * tp
             if count != 0:
+                history_banks = pl.create_tensor([history_groups, block * index_topk, dim], dtype=pl.BF16)
                 draft_attention_layer(
                     x_hc, pre_mix, engram_rows, engram_wkv, engram_weight, engram_rotation, hc_attn_fn,
                     hc_attn_scale, hc_attn_base, attn_norm_weight, draft_q_a_kv, draft_q_gamma, draft_q_b,
@@ -331,7 +342,7 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
                     attention_tape_temporary, attention_tape_context, attention_tape_lse,
                     attention_tape_selection, attention_tape_lengths, attention_tape_q_normed,
                     attention_tape_qkv_raw, ffn_capture_owner, output_window, output_arrived, rank, x_hc,
-                    pre_mix, selected, lengths, mask, count, group, pl.cast(layer_index, pl.INDEX), 1,
+                    pre_mix, selected, lengths, mask, history_banks, count, group, pl.cast(layer_index, pl.INDEX), 1,
                     h_attention, pre_attention, ffn_input,
                 )
                 retire(h_attention, output_arrived, group, rank % tp)
@@ -541,6 +552,8 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
         selected = pl.create_tensor([block, index_topk], dtype=pl.INT32)
         lengths = pl.create_tensor([block], dtype=pl.INT32)
         mask = pl.create_tensor([block, index_topk], dtype=pl.FP32)
+        # A group's writer must not overwrite rows still read by another group's queued tasks.
+        history_banks = pl.create_tensor([history_groups, block * index_topk, dim], dtype=pl.BF16)
         for layer in pl.range(layers):
             with pl.scope():
                 h_attention = pl.create_tensor([block, mix, hidden], dtype=pl.FP32)
@@ -559,7 +572,7 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
                     attention_tape_temporary, attention_tape_context, attention_tape_lse,
                     attention_tape_selection, attention_tape_lengths, attention_tape_q_normed,
                     attention_tape_qkv_raw, ffn_capture_owner, output_window, output_arrived, rank, live_x,
-                    live_mix, selected, lengths, mask, count, group, layer, layer + 1, h_attention,
+                    live_mix, selected, lengths, mask, history_banks, count, group, layer, layer + 1, h_attention,
                     pre_attention, ffn_input,
                 )
                 if count == 0:
