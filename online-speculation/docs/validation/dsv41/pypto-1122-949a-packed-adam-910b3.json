@@ -1,0 +1,252 @@
+{
+  "model_base": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "hardware": "Ascend 910B3",
+  "scope": "Packed optimizer and resident execution banks in isolation",
+  "compiled_ep16": {
+    "passed": true,
+    "compiled": 18,
+    "tp": 4,
+    "world": 16
+  },
+  "compiled_command": "python validate_dsv41_pypto_packed_adam.py --devices 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 --fixture-tp 4 --compile-only",
+  "timer": "Host-observed. Staging includes first state initialization. First stage and publication also include HCCL domain creation on DP2",
+  "results": [
+    {
+      "host": "111",
+      "cann": "9.0.0",
+      "passed": true,
+      "compiled": 18,
+      "tp": 1,
+      "world": 1,
+      "executed": true,
+      "layers": 2,
+      "execution_weight_max_abs": 0.0,
+      "updates": [
+        {
+          "owner": 0,
+          "invalid_gradient": false,
+          "version": 1,
+          "applied": true,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "gradient_norm": 3.5987043665257645,
+          "clip": 0.27787770827302055,
+          "reverse_seconds": 0.03810717700980604,
+          "stage_seconds": 0.8842238190118223,
+          "optimizer_seconds": 0.2582147920038551,
+          "publication_seconds": 0.2888946561142802
+        },
+        {
+          "owner": 0,
+          "invalid_gradient": false,
+          "version": 2,
+          "applied": true,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "gradient_norm": 5.398056194413453,
+          "clip": 0.18525183487031557,
+          "reverse_seconds": 0.02908663172274828,
+          "stage_seconds": 0.29133054008707404,
+          "optimizer_seconds": 0.25704915984533727,
+          "publication_seconds": 0.2561146591324359
+        },
+        {
+          "owner": 0,
+          "invalid_gradient": true,
+          "version": 2,
+          "applied": false,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "gradient_norm": null,
+          "clip": 0.0,
+          "reverse_seconds": 0.027925938833504915,
+          "stage_seconds": 0.28028047108091414,
+          "optimizer_seconds": 0.0,
+          "publication_seconds": 0.0
+        },
+        {
+          "owner": 0,
+          "invalid_gradient": false,
+          "version": 3,
+          "applied": true,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "gradient_norm": 5.398056194413453,
+          "clip": 0.18525183487031557,
+          "reverse_seconds": 0.02902897191233933,
+          "stage_seconds": 0.28526990907266736,
+          "optimizer_seconds": 0.2531316541135311,
+          "publication_seconds": 0.2573648998513818
+        }
+      ],
+      "checkpoint_layer": null,
+      "input": "Synthetic two-layer packed weight banks and FP32 suffix gradients",
+      "verification": [
+        "Execution weights match Torch Adam and are unchanged until all layers are staged",
+        "Replicas are byte-identical at publication",
+        "A non-finite gradient does not publish or advance the version"
+      ],
+      "command": "python validate_dsv41_pypto_packed_adam.py --devices 0 --fixture-tp 1"
+    },
+    {
+      "host": "61",
+      "cann": "9.2.0",
+      "passed": true,
+      "compiled": 18,
+      "tp": 1,
+      "world": 2,
+      "executed": true,
+      "layers": 2,
+      "execution_weight_max_abs": 0.0,
+      "updates": [
+        {
+          "owner": 0,
+          "invalid_gradient": false,
+          "version": 1,
+          "applied": true,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "gradient_norm": 3.5987043665257645,
+          "clip": 0.27787770827302055,
+          "reverse_seconds": 0.06664886837825179,
+          "stage_seconds": 20.0965454345569,
+          "optimizer_seconds": 0.5163509203121066,
+          "publication_seconds": 18.781725974287838
+        },
+        {
+          "owner": 1,
+          "invalid_gradient": false,
+          "version": 2,
+          "applied": true,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "gradient_norm": 5.398056194413453,
+          "clip": 0.18525183487031557,
+          "reverse_seconds": 0.06284766644239426,
+          "stage_seconds": 0.32887467136606574,
+          "optimizer_seconds": 0.2772759930230677,
+          "publication_seconds": 0.3239926556125283
+        },
+        {
+          "owner": 0,
+          "invalid_gradient": true,
+          "version": 2,
+          "applied": false,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "gradient_norm": null,
+          "clip": 0.0,
+          "reverse_seconds": 0.0655720392242074,
+          "stage_seconds": 0.3204623949714005,
+          "optimizer_seconds": 0.0,
+          "publication_seconds": 0.0
+        },
+        {
+          "owner": 0,
+          "invalid_gradient": false,
+          "version": 3,
+          "applied": true,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "gradient_norm": 5.398056194413453,
+          "clip": 0.18525183487031557,
+          "reverse_seconds": 0.06318076187744737,
+          "stage_seconds": 0.31990518886595964,
+          "optimizer_seconds": 0.2813875898718834,
+          "publication_seconds": 0.526761329267174
+        }
+      ],
+      "checkpoint_layer": null,
+      "input": "Synthetic two-layer packed weight banks and FP32 suffix gradients",
+      "verification": [
+        "Execution weights match Torch Adam and are unchanged until all layers are staged",
+        "Replicas are byte-identical at publication",
+        "A non-finite gradient does not publish or advance the version"
+      ],
+      "command": "python validate_dsv41_pypto_packed_adam.py --devices 0,1 --fixture-tp 1"
+    },
+    {
+      "host": "61",
+      "cann": "9.2.0",
+      "passed": true,
+      "compiled": 18,
+      "tp": 1,
+      "world": 1,
+      "executed": true,
+      "layers": 1,
+      "execution_weight_max_abs": 1.4901161193847656e-08,
+      "updates": [
+        {
+          "owner": 0,
+          "invalid_gradient": false,
+          "version": 1,
+          "applied": true,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "gradient_norm": 60.641871068593545,
+          "clip": 0.01649025608689776,
+          "reverse_seconds": 0.01605686405673623,
+          "stage_seconds": 0.6955441338941455,
+          "optimizer_seconds": 0.20384313585236669,
+          "publication_seconds": 0.3689272780902684
+        },
+        {
+          "owner": 0,
+          "invalid_gradient": false,
+          "version": 2,
+          "applied": true,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "gradient_norm": 90.96277232456563,
+          "clip": 0.010993508261142006,
+          "reverse_seconds": 0.014920440502464771,
+          "stage_seconds": 0.3122496921569109,
+          "optimizer_seconds": 0.2926412778906524,
+          "publication_seconds": 0.25921211671084166
+        },
+        {
+          "owner": 0,
+          "invalid_gradient": true,
+          "version": 2,
+          "applied": false,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "gradient_norm": null,
+          "clip": 0.0,
+          "reverse_seconds": 0.015034700743854046,
+          "stage_seconds": 0.2417514082044363,
+          "optimizer_seconds": 0.0,
+          "publication_seconds": 0.0
+        },
+        {
+          "owner": 0,
+          "invalid_gradient": false,
+          "version": 3,
+          "applied": true,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "gradient_norm": 90.96277232456563,
+          "clip": 0.010993508261142006,
+          "reverse_seconds": 0.015139001421630383,
+          "stage_seconds": 0.2436759304255247,
+          "optimizer_seconds": 0.22137183509767056,
+          "publication_seconds": 0.24120404198765755
+        }
+      ],
+      "checkpoint_layer": 39,
+      "checkpoint_lane": 0,
+      "input": "Seven real Attention tensors initialized from layer 39 of Eco-Tech/DeepSeek-V4.1-Flash-w8a8, TP4 lane 0, with synthetic FP32 gradients",
+      "verification": [
+        "The full-width synthetic gradient norm matches the independent Torch reference",
+        "Up to 32 values in each execution tensor match Torch Adam",
+        "Execution samples are unchanged until publication and after a rejected update"
+      ],
+      "command": "python validate_dsv41_pypto_packed_adam.py --devices 0 --fixture-tp 1 --checkpoint /model --checkpoint-lane 0"
+    }
+  ],
+  "runtime_notes": [
+    "The successful 61 runs used Docker host networking with HCCL_IF_IP and HCCL_SOCKET_IFNAME set to the host's routable interface and HCCL_HOST_SOCKET_PORT_RANGE=auto.",
+    "The initial unset interface returned HCCL status 19 and completed no optimizer execution.",
+    "Eight-card and four-card attempts hit NPU resource contention; those runs generated no optimizer evidence."
+  ]
+}

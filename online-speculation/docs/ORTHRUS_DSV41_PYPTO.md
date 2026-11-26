@@ -174,7 +174,17 @@ python /opt/dsv41-1122/validate_dsv41_pypto_packed_generation.py \
 
 167 上用 `949a18d` 将 K16 的 40 层起草图编译并重载，历史容量为 512，耗时 60.16 秒，重载得到 62 个图参数。111 上用真实第 0 层投影权重，固定 1,091-token 历史、页表和输入前缀，每个形状计时 15 次。12 项输出全部通过 CANN BF16 检查，最大相对 L2 为 0.189%，目标缓存逐字节一致。单层驻留调用中位数约 18–19 ms。K16 在六个配对比较中快五组，幅度为 0.7%–1.9%，另一组慢 0.3%。这些数据包含宿主提交，整图收益还要在相同请求及验证窗口下实测。复验时给单卡入口追加 `--paired-widths --iterations 15`。[配对结果](validation/dsv41/pypto-1122-949a-draft-widths-910b3.json)
 
-该入口使用当前能枚举 16 个逻辑设备的 L3 运行时。整模 NPU 执行、双机 EP16 及 last-N 在线更新仍需分别验收。[整图验证记录](validation/dsv41/pypto-1122-packed-draft-graph.json)
+该入口使用当前能枚举 16 个逻辑设备的 L3 运行时。整模 NPU 执行与双机 EP16 仍需验收。[整图验证记录](validation/dsv41/pypto-1122-packed-draft-graph.json)
+
+### Packed 会话在线更新
+
+用 `compile_dsv41_pypto_packed_draft.py --last-layers N` 编译带前向留存的起草图，运行上面的 packed 命令时追加 `--online-last-layers N`。当前反向覆盖最后 1–26 层的 Attention。更新范围再深时需要 Engram 输入反向。可用 `--online-loss tv` 或 `--online-loss forward_kl` 选择全词表损失。测量用 `--update-every`、`--teacher-rows`、`--learning-rate` 和 `--warmup-updates` 固定更新配置。
+
+同一波仍可生成四个 DP 的请求。每次保留一条请求的 draft，沿验证器提交的前缀补齐教师行。每层反向产生的 FP32 梯度先暂存到该参数的 Adam 所在 rank，整段反向结束后统一检查有限性和全局范数。Adam 在设备上维护 FP32 主权重和矩估计，成功更新后才把执行权重发布到各副本。梯度包含 Q/KV 投影、对应 RMSNorm、sink 和两段输出投影。Indexer 的选择保持固定。更新和发布在两个推理 dispatch 之间完成。
+
+报告保留 AR 与在线组的逐 token 对照、候选接受数、带更新的实测吞吐，以及扣除同步更新耗时的估算吞吐。扣时口径仍包含前向留存和教师反馈收集。GSM8K 可以用 `prepare_dsv41_gsm8k.py` 生成请求，将 `tuning.jsonl` 传给 `--workload`、将 `quality_test.jsonl` 传给 `--heldout-workload`。留出请求用于比较初始及发布后的冻结 head。TP4/EP16 的 18 个优化器图已通过编译。真实 checkpoint 的 16 卡整模在线闭环和跨机吞吐仍待验证。
+
+单卡与单机双卡使用两层构造数据，逐组对照 Torch Adam。双卡中训练 owner 在两个 DP 之间切换，各副本的执行权重逐字节一致。无效梯度跳过后版本依次为 `1, 2, 2, 3`。首次暂存和发布包含通信域的创建，分别耗时 20.10 和 18.78 秒。此后双卡成功更新的梯度暂存、Adam、发布合计为 0.93–1.13 秒，计入宿主提交。另用真实 W8A8 checkpoint 初始化第 39 层 TP4 rank 0 的七组参数，在单卡上以构造梯度完成三次有效更新，抽样权重相对 Torch Adam 的最大绝对误差为 `1.49e-8`。这些结果覆盖独立优化器和驻留执行权重。[实卡与编译记录](validation/dsv41/pypto-1122-949a-packed-adam-910b3.json)
 
 在 111 上以 `949a18d` 源码、公开 W8A8 checkpoint 的第 0 层和一张 910B3 复验 K8/K16/K32 的 SWA、带 Indexer 的压缩 Attention 和 Reuse。9 个 BF16 输出均通过 CANN 精度门槛，最大相对 L2 为 0.203%，目标缓存逐字节一致。原始报告另列仅适用于单独 Wo 检查的严格容差结果。同一工具链容器的 11 项 packed CPU 回归通过，覆盖多 DP 采样回读和短尾验收。[实卡结果](validation/dsv41/pypto-1122-949a-packed-draft-layer-910b3.json)
 

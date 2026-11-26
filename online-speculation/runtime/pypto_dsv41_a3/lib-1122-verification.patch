@@ -97,10 +97,10 @@ index 407560a..7968afe 100644
          parser.error("--profile-all-steps requires full checkpoint generation")
      if args.warmup_requests < 0 or args.measured_requests < 1:
 diff --git a/models/deepseek_v4_1_flash_a3/generation.py b/models/deepseek_v4_1_flash_a3/generation.py
-index ef6a2b2..0c86d25 100644
+index ef6a2b2..2a07fef 100644
 --- a/models/deepseek_v4_1_flash_a3/generation.py
 +++ b/models/deepseek_v4_1_flash_a3/generation.py
-@@ -199,6 +199,23 @@ class ResidentGraphs:
+@@ -199,6 +199,24 @@ class ResidentGraphs:
      config: RunConfig
      host_io: dict
      decode_inputs: DecodeInputs
@@ -121,10 +121,11 @@ index ef6a2b2..0c86d25 100644
 +    draft_attention_program: DistributedCompiledProgram | None = None
 +    draft_qkv_program: DistributedCompiledProgram | None = None
 +    draft_attn_input_program: DistributedCompiledProgram | None = None
++    draft_adam_programs: dict | None = None
 
      def reset(self):
          reset_caches(self.runtime, self.ranks, self.host_cache)
-@@ -232,6 +249,80 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+@@ -232,6 +250,83 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
      for phase_names, supported in zip(names, prepare_windows, strict=True):
          if supported:
              phase_names.pop()
@@ -133,6 +134,7 @@ index ef6a2b2..0c86d25 100644
 +    draft_expert_dispatch, draft_expert_reverse, draft_ffn_input = None, None, None
 +    draft_ffn_mhc, draft_attn_post, draft_wo_input = None, None, None
 +    draft_attention, draft_qkv, draft_attn_input = None, None, None
++    draft_adam = None
 +    draft_block = getattr(args, "orthrus_draft_block", 32)
 +    draft_last_layers = getattr(args, "orthrus_online_last_layers", 0)
 +    if getattr(args, "orthrus_draft_head", None) is not None:
@@ -162,6 +164,7 @@ index ef6a2b2..0c86d25 100644
 +            output_rows=reverse_rows,
 +        ).compile(config=config)
 +        if draft_last_layers:
++            from blockspec.dsv41_packed_adam import compile_packed_adam
 +            from blockspec.dsv41_packed_attention_vjp import make_packed_attention_vjp
 +            from blockspec.dsv41_packed_attn_input_vjp import make_packed_attn_input_vjp
 +            from blockspec.dsv41_packed_attn_post_vjp import make_packed_attn_post_vjp
@@ -198,6 +201,7 @@ index ef6a2b2..0c86d25 100644
 +                draft_block, world=C.EP_SIZE, tp=C.TP_SIZE, physical_pages=pages,
 +            ).compile(config=config)
 +            draft_qkv = make_packed_qkv_vjp(draft_block, M, world=C.EP_SIZE, tp=C.TP_SIZE).compile(config=config)
++            draft_adam = compile_packed_adam(config, M, C.EP_SIZE, C.TP_SIZE)
 +            if draft_last_layers > 1:
 +                draft_attn_input = make_packed_attn_input_vjp(
 +                    draft_block, draft_last_layers, M, C.DP_SIZE, C.TP_SIZE,
@@ -205,7 +209,7 @@ index ef6a2b2..0c86d25 100644
      cache_names = set(DECODE_CACHE_NAMES.values())
      constants = set(weights.tensor_layouts) | cache_names | {"freqs_cos", "freqs_sin"}
      counts = {name: torch.zeros(16, dtype=torch.int32).share_memory_()
-@@ -266,7 +357,11 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+@@ -266,7 +361,12 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
                  template = prefill_template[name]
                  host_io["prefill_" + name] = torch.empty((2, *template.shape), dtype=template.dtype).share_memory_()
          worker = SwimlaneWorker if args.profile_all_steps is not None else DistributedWorker
@@ -213,12 +217,13 @@ index ef6a2b2..0c86d25 100644
 +        online_graphs = (draft_graph, draft_loss, draft_lm_head_vjp, draft_final_vjp, draft_ffn_post_vjp,
 +                         draft_expert_dispatch, draft_expert_reverse, draft_ffn_input, draft_ffn_mhc,
 +                         draft_attn_post, draft_wo_input, draft_attention, draft_qkv, draft_attn_input)
-+        registered = [*programs, *(graph for graph in online_graphs if graph is not None)]
++        registered = [*programs, *(graph for graph in online_graphs if graph is not None),
++                      *(entry for entries in (draft_adam or {}).values() for entry in entries)]
 +        with worker(registered, config, persistent=True, reset_persistent_windows=False,
                      inherited_host_tensors=[*counts.values(), *host_io.values(), decode_inputs.images]) as runtime:
              host_io["idle_inputs"] = tuple(
                  {name: template[name] for name in phase_names if name in template and name not in constants}
-@@ -354,7 +449,11 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
+@@ -354,7 +454,11 @@ def open_resident_graphs(args, devices, weights, engram, memory, report, *, sele
 
              host_io["prefill_dirty_groups"] = ()
              yield ResidentGraphs(runtime, programs, arguments, names, ranks, weights, engram, host_cache,
@@ -227,11 +232,11 @@ index ef6a2b2..0c86d25 100644
 +                                 draft_block, draft_loss, draft_lm_head_vjp, draft_final_vjp, draft_last_layers,
 +                                 draft_ffn_post_vjp, draft_expert_dispatch, draft_expert_reverse, draft_ffn_input,
 +                                 draft_ffn_mhc, draft_attn_post, draft_wo_input, draft_attention, draft_qkv,
-+                                 draft_attn_input)
++                                 draft_attn_input, draft_adam)
      finally:
          torch.set_num_threads(saved_threads)
 
-@@ -444,11 +543,45 @@ def generate(args, devices, *, manifests):
+@@ -444,11 +548,45 @@ def generate(args, devices, *, manifests):
                      )
                  except LogitValidationError as error:
                      report["teacher_forced_error"] = str(error)
@@ -279,7 +284,7 @@ index ef6a2b2..0c86d25 100644
                  replay_report = {}
                  capture_dir = args.profile_all_steps if iteration == args.warmup_requests else None
                  if capture_dir is not None:
-@@ -462,20 +595,28 @@ def generate(args, devices, *, manifests):
+@@ -462,20 +600,28 @@ def generate(args, devices, *, manifests):
                          config, memory, replay_report, options=args, host_io=host_io, decode_inputs=decode_inputs, reference=reference, teacher_forced=args.teacher_forced,
                          audit=audit_caches if audit_request else None, save_logits=args.save_logits, label=label,
                          profile=capture_dir is not None, profile_dir=capture_dir,
@@ -394,7 +399,7 @@ index 502fa5b..365e535 100644
  @pl.jit.inline(auto_scope=False)
  def decode_o_proj_nz_from_attention(
 diff --git a/models/deepseek_v4_1_flash_a3/packed.py b/models/deepseek_v4_1_flash_a3/packed.py
-index 98f9f0c..9799477 100644
+index 98f9f0c..016b982 100644
 --- a/models/deepseek_v4_1_flash_a3/packed.py
 +++ b/models/deepseek_v4_1_flash_a3/packed.py
 @@ -11,6 +11,7 @@
@@ -405,7 +410,7 @@ index 98f9f0c..9799477 100644
 
  import torch
 
-@@ -37,14 +38,46 @@ class _History:
+@@ -37,14 +38,47 @@ class _History:
      pages: list[int] = field(default_factory=list)
 
 
@@ -430,7 +435,7 @@ index 98f9f0c..9799477 100644
 +                 draft_lm_head_vjp=None, draft_final_vjp=None, draft_ffn_post_vjp=None,
 +                 draft_expert_dispatch=None, draft_expert_reverse=None, draft_ffn_input=None, draft_ffn_mhc=None,
 +                 draft_attn_post=None, draft_wo_input=None, draft_attention=None, draft_qkv=None,
-+                 draft_attn_input=None):
++                 draft_attn_input=None, draft_optimizer=None):
          self.graphs = graphs
          self.slots = slots
          self.context = context
@@ -449,11 +454,12 @@ index 98f9f0c..9799477 100644
 +        self.draft_attention = draft_attention
 +        self.draft_qkv = draft_qkv
 +        self.draft_attn_input = draft_attn_input
++        self.draft_optimizer = draft_optimizer
 +        self.feedback = {}
          self.history = {}
          self._idle_values = {}
          self._active_dps = [set(), set()]
-@@ -99,6 +132,7 @@ class PackedSession:
+@@ -99,6 +133,7 @@ class PackedSession:
              owner = handle.dp * C.TP_SIZE
              with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
                  list(workers.map(reset_rank, range(owner, owner + C.TP_SIZE)))
@@ -461,7 +467,7 @@ index 98f9f0c..9799477 100644
          except BaseException:
              self.failed = True
              raise
-@@ -108,11 +142,269 @@ class PackedSession:
+@@ -108,11 +143,301 @@ class PackedSession:
 
      def advance_batch(self, phase, queries):
          """Run (handle, token IDs) pairs in caller order. Return sampled rows keyed by handle."""
@@ -643,6 +649,36 @@ index 98f9f0c..9799477 100644
 +                boundary = self.draft_attn_input(student, projection)
 +        return loss
 +
++    def update_draft(self, handle, *, rate, max_norm=1., finished=False):
++        """Apply the buffered teacher rows and publish a version at a dispatch boundary."""
++        self._ready()
++        self._lookup(handle)
++        if self.draft_optimizer is None:
++            raise ValueError("Packed online updates require a compiled suffix")
++        if handle not in self.feedback:
++            raise ValueError("Packed online updates require a live student capture")
++
++        def differentiate(consume):
++            try:
++                return self.draft_suffix_gradients(handle, consume, finished=finished)
++            except BaseException:
++                self.failed = True
++                raise
++
++        try:
++            result = self.draft_optimizer.update(differentiate, rate=rate, max_norm=max_norm)
++        except BaseException:
++            if self.draft_optimizer.failed:
++                self.failed = True
++            raise
++        if result is not None:
++            try:
++                self.release_student(handle)
++            except BaseException:
++                self.failed = True
++                raise
++        return result
++
 +    def verify_batch(self, queries, *, teacher_limits=None):
 +        """Verify (handle, anchor followed by candidates) on the native Decode graph."""
 +        feedback = {}
@@ -692,6 +728,8 @@ index 98f9f0c..9799477 100644
 +        if student_capture is not None:
 +            handle, rows = student_capture
 +            self._lookup(handle)
++            if self.draft_optimizer is not None and self.feedback:
++                raise ValueError("Resolve the current student capture before starting another online update")
 +            if not any(request.history_key is handle for request in scheduled):
 +                raise ValueError("Student capture requires an active draft for the request")
 +
@@ -731,7 +769,7 @@ index 98f9f0c..9799477 100644
          groups = [[] for _ in range(C.DP_SIZE)]
          seen = set()
          queries = list(queries)
-@@ -124,27 +416,63 @@ class PackedSession:
+@@ -124,27 +449,63 @@ class PackedSession:
              if handle in seen or not tokens or any(type(t) is not int or not 0 <= t < C.FLASH.vocab_size for t in tokens):
                  raise ValueError("Invalid or repeated query")
              end = record.committed + len(tokens)
@@ -801,7 +839,7 @@ index 98f9f0c..9799477 100644
          g = self.graphs
          # Prefill and Decode share the same packed positions, page maps and cache allocations.
          template = g.host_io["idle_inputs"][0]
-@@ -161,7 +489,7 @@ class PackedSession:
+@@ -161,7 +522,7 @@ class PackedSession:
              end = start + len(tokens)
              needed = (end + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              record.pages.extend(self.free_pages[dp].pop() for _ in range(needed - len(record.pages)))
@@ -810,7 +848,7 @@ index 98f9f0c..9799477 100644
              table[row, :needed] = physical
              n_half = (end // 2 + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              half[row, :n_half] = physical[:n_half]
-@@ -171,7 +499,9 @@ class PackedSession:
+@@ -171,7 +532,9 @@ class PackedSession:
              positions.extend(range(start, end))
              owners.extend([row] * len(tokens))
              lengths.append(len(ids))
@@ -821,7 +859,7 @@ index 98f9f0c..9799477 100644
                  sampled.append((handle, len(ids) - 1))
          count = len(ids)
          values = dict(g.host_io["idle_inputs"][0 if not index else 1])
-@@ -210,7 +540,7 @@ class PackedSession:
+@@ -210,7 +573,7 @@ class PackedSession:
                            identity_rows=order, replay_rows=order)
          return values, sampled, count
 
@@ -830,7 +868,7 @@ index 98f9f0c..9799477 100644
          g = self.graphs
          selections = []
          with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
-@@ -221,7 +551,7 @@ class PackedSession:
+@@ -221,7 +584,7 @@ class PackedSession:
                  if not group and dp not in self._active_dps[index]:
                      continue
                  if group:
@@ -839,7 +877,7 @@ index 98f9f0c..9799477 100644
                  else:
                      if index not in self._idle_values:
                          self._idle_values[index] = self._inputs(dp, [], index, capacity)
-@@ -243,6 +573,19 @@ class PackedSession:
+@@ -243,6 +606,19 @@ class PackedSession:
          self._active_dps[index] = {dp for dp, group in enumerate(groups) if group}
          args = [g.arguments[index][name] for name in g.names[index]]
          g.runtime.run(g.programs[index], *args, config=g.config)
@@ -859,7 +897,7 @@ index 98f9f0c..9799477 100644
          result = {}
          for handle, rank, row in selections:
              logits = g.host_io["logits"][0]
-@@ -282,9 +625,71 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
+@@ -282,9 +658,77 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
                                                 (args.decode_runtime_dir, "decode", args.decode_capacity))]
      if any(m["history_capacity"] != args.context_capacity for m in manifests):
          raise ValueError("History capacity differs from the compiled graph pair")
@@ -923,12 +961,18 @@ index 98f9f0c..9799477 100644
 +                qkv = PackedQKVVJP(draft, graphs.draft_qkv_program, C.FLASH)
 +                if graphs.draft_attn_input_program is not None:
 +                    attn_input = PackedAttentionInputVJP(draft, attn_post, qkv, graphs.draft_attn_input_program, C.FLASH)
++        optimizer = None
++        if graphs.draft_adam_programs is not None:
++            from blockspec.dsv41_packed_adam import PackedAdam
++
++            optimizer = PackedAdam(draft, C.FLASH, graphs.draft_adam_programs)
 +        session = PackedSession(graphs, request_slots, args.context_capacity, (args.capacity, args.decode_capacity),
 +                                draft=draft, draft_loss=loss, draft_lm_head_vjp=lm_head_vjp, draft_final_vjp=final_vjp,
 +                                draft_ffn_post_vjp=ffn_post_vjp, draft_expert_dispatch=expert_dispatch,
 +                                draft_expert_reverse=expert_reverse, draft_ffn_input=ffn_input,
 +                                draft_ffn_mhc=ffn_mhc, draft_attn_post=attn_post, draft_wo_input=wo_input,
-+                                draft_attention=attention, draft_qkv=qkv, draft_attn_input=attn_input)
++                                draft_attention=attention, draft_qkv=qkv, draft_attn_input=attn_input,
++                                draft_optimizer=optimizer)
          try:
              yield session
          finally:
@@ -1059,10 +1103,10 @@ index f11f2da..4fbce18 100644
      if reference is not None:
          report["numerical_acceptance"] = reference["policy"]
 diff --git a/tests/contract/test_ds41_packed.py b/tests/contract/test_ds41_packed.py
-index 961d34e..2649d69 100644
+index 961d34e..b6ae860 100644
 --- a/tests/contract/test_ds41_packed.py
 +++ b/tests/contract/test_ds41_packed.py
-@@ -64,3 +64,300 @@ def test_packed_page_boundary_and_recycled_handle():
+@@ -64,3 +64,341 @@ def test_packed_page_boundary_and_recycled_handle():
      with pytest.raises(ValueError, match="Expired"):
          session.advance_batch("decode", [(a, [1])])
      assert new is not a and live.pages == live_pages
@@ -1363,3 +1407,44 @@ index 961d34e..2649d69 100644
 +        if index + 1 < last_layers:
 +            expected.append(("carry", layer, 32))
 +    assert order == expected
++
++
++def test_packed_update_retains_pending_capture_and_releases_consumed_capture():
++    from models.deepseek_v4_1_flash_a3.packed import PackedSession
++
++    released, calls = [], []
++    draft = SimpleNamespace(release_student=released.append)
++
++    def update(differentiate, *, rate, max_norm):
++        calls.append((rate, max_norm))
++        return differentiate(None)
++
++    optimizer = SimpleNamespace(update=update, failed=False)
++    session = PackedSession(None, 1, 256, (16, 32), draft=draft, draft_optimizer=optimizer)
++    handle = session.admit("a", 0, 1)
++    session.feedback[handle] = object()
++    session.draft_suffix_gradients = lambda *args, finished: finished or None
++    assert session.update_draft(handle, rate=1e-5) is None
++    assert handle in session.feedback and not released
++    assert session.update_draft(handle, rate=1e-5, finished=True)
++    assert handle not in session.feedback and released == [handle]
++    assert calls == [(1e-5, 1.), (1e-5, 1.)]
++    with pytest.raises(ValueError, match="live student capture"):
++        session.update_draft(handle, rate=1e-5)
++
++
++def test_packed_session_stops_after_partial_publication():
++    from models.deepseek_v4_1_flash_a3.packed import PackedSession
++
++    def update(*args, **kwargs):
++        optimizer.failed = True
++        raise RuntimeError("publication failed")
++
++    optimizer = SimpleNamespace(update=update, failed=False)
++    session = PackedSession(None, 1, 256, (16, 32), draft_optimizer=optimizer)
++    handle = session.admit("a", 0, 1)
++    session.feedback[handle] = object()
++    with pytest.raises(RuntimeError, match="publication failed"):
++        session.update_draft(handle, rate=1e-5)
++    with pytest.raises(RuntimeError, match="Close the packed session"):
++        session.prefill_greedy_batch([(handle, [1])])

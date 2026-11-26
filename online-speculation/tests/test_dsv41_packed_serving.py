@@ -20,9 +20,12 @@ def test_packed_benchmark_matches_tokens_with_ragged_prefill_and_final_round():
 
     class Session:
         def __init__(self):
-            self.draft = SimpleNamespace(stats=DraftRoundStats())
+            self.draft = SimpleNamespace(stats=DraftRoundStats(), block=16)
+            self.context = 256
             self.prefill = {}
             self.limits = []
+            self.feedback = None
+            self.updates = 0
 
         def admit(self, request_id, dp, size):
             assert request_id not in self.prefill
@@ -40,16 +43,35 @@ def test_packed_benchmark_matches_tokens_with_ragged_prefill_and_final_round():
         def decode_greedy_batch(self, queries):
             return {handle: values[0] + 1 for handle, values in queries}
 
-        def speculate_batch(self, queries, *, width, output_limits):
+        def speculate_batch(self, queries, *, width, output_limits, student_capture=None):
             self.limits.append(sorted(output_limits.values()))
             emitted = {}
             for handle, anchor in queries:
                 size = min(output_limits[handle], 2 if handle.dp else 3)
                 emitted[handle] = tuple(range(anchor + 1, anchor + size + 1))
             proposals = {handle: rows[:-1] for handle, rows in emitted.items()}
+            if student_capture is not None:
+                assert self.feedback is None
+                handle, limit = student_capture
+                self.feedback = (handle, limit, 0)
+            if self.feedback is not None:
+                handle, limit, seen = self.feedback
+                self.feedback = (handle, limit, seen + len(emitted[handle]))
             return SimpleNamespace(proposals=proposals, verified=SimpleNamespace(emitted=emitted))
 
+        def update_draft(self, handle, *, rate, finished):
+            assert self.feedback is not None and self.feedback[0] == handle
+            _, limit, seen = self.feedback
+            if seen < limit and not finished:
+                return None
+            self.feedback = None
+            self.updates += 1
+            from blockspec.dsv41_packed_adam import PackedUpdate
+
+            return PackedUpdate(self.updates, True, min(limit, seen), .01, .5, 1., 0., 0., 0., 0.)
+
         def release(self, handle):
+            assert self.feedback is None
             assert self.prefill.pop(handle.request_id) == 0
 
     from collections import namedtuple
@@ -63,6 +85,14 @@ def test_packed_benchmark_matches_tokens_with_ragged_prefill_and_final_round():
     orthrus = result["arms"]["orthrus"]["waves"][0]
     assert orthrus["accepted_candidates"] == orthrus["proposed_candidates"] == 5
     assert orthrus["rounds"] == 3
+    online = runner.OnlineSchedule(every=1, teacher_rows=4, learning_rate=1e-5, warmup_updates=2)
+    updated = runner.benchmark(session, [("a", [3]), ("b", [5]), ("c", [5]), ("d", [2])],
+                               chunk=2, tokens=6, width=8, concurrency=2, warmup=0, online=online)
+    assert updated["passed"] and updated["greedy_tokens_matched"] == 24
+    updates = [update for wave in updated["arms"]["orthrus"]["waves"] for update in wave["updates"]]
+    assert [(row["dp"], row["teacher_rows"], row["version"]) for row in updates] == [(0, 4, 1), (1, 4, 2)]
+    assert [row["learning_rate"] for row in updates] == [5e-6, 1e-5]
+    assert updated["arms"]["orthrus"]["tokens_per_second_excluding_update"] > updated["arms"]["orthrus"]["tokens_per_second"]
     assert not session.prefill
 
 
