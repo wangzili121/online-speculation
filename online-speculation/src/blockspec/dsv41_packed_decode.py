@@ -156,6 +156,41 @@ def decode_attention_scratch(rows, table_pages):
     }
 
 
+def resident_program_args(program, buffers):
+    names = (parameter.name.removesuffix("__ssa_v0") for parameter in program._get_metadata()[0])
+    return tuple(buffers[name] for name in names if name not in ("layer_index", "execute_layers"))
+
+
+def resident_ffn_weights(runtime, buffers, layer, layer_count):
+    """Borrow the native FFN checkpoint views for a layer on each local rank."""
+    from pypto.runtime import StackedDeviceTensor
+
+    def view(name):
+        bank = buffers[name]
+        local_shape = bank.shards[0].shape
+        leading = local_shape[0] // layer_count
+        # The NZ matrices each have a leading matrix axis. The standalone
+        # MoE graphs take a single matrix per rank.
+        matrix = name in ("shared_w13", "shared_w2")
+        shape = local_shape[1:] if matrix else (leading, *local_shape[1:])
+        shards = tuple(
+            runtime.view_tensor(shard, shape, byte_offset=layer * (shard.nbytes // layer_count),
+                                     worker_id=worker_id)
+            for shard, worker_id in zip(bank.shards, bank.worker_ids, strict=True)
+        )
+        return StackedDeviceTensor(shards, (len(shards), *shape), bank.worker_ids)
+
+    shared = tuple(view(name) for name in (
+        "ffn_norm_weight", "gate_weight", "correction_bias", "shared_w13", "shared_w1_scale",
+        "shared_w3_scale", "shared_w2", "shared_w2_scale",
+    ))
+    routed = tuple(view(f"routed_{name}") for name in (
+        "w1", "w1_scale", "w3", "w3_scale", "w2", "w2_scale",
+    ))
+    mixes = tuple(view(f"hc_ffn_{name}") for name in ("fn", "scale", "base"))
+    return shared, routed, mixes
+
+
 class ResidentPackedDecode:
     """Schedule the 40 native Decode attention layers around external EP16."""
 
@@ -165,10 +200,11 @@ class ResidentPackedDecode:
         self.attention, self.ffn, self.head = attention, ffn, head
         self.runtime = ffn.moe.runtime
         self.buffers = dict(buffers, count=ffn.moe.meta)
-        self.attention_arguments = self._bind(attention)
-        self.head_arguments = self._bind(head)
+        self.attention_arguments = resident_program_args(attention, self.buffers)
+        self.head_arguments = resident_program_args(head, self.buffers)
         self.layer_count = FLASH.num_hidden_layers
-        self.layer_weights = tuple(self._weights(layer) for layer in range(self.layer_count))
+        self.layer_weights = tuple(resident_ffn_weights(self.runtime, self.buffers, layer, self.layer_count)
+                                   for layer in range(self.layer_count))
 
     @classmethod
     def bind(cls, runtime, transport, *, attention, ep_programs, restore, head, buffers, tokens):
@@ -189,38 +225,6 @@ class ResidentPackedDecode:
         result = cls(attention, ResidentDecodeFFN(moe, restore), head, buffers)
         result.reserve_windows()
         return result
-
-    def _bind(self, program):
-        names = (parameter.name.removesuffix("__ssa_v0") for parameter in program._get_metadata()[0])
-        return tuple(self.buffers[name] for name in names if name not in ("layer_index", "execute_layers"))
-
-    def _weights(self, layer):
-        from pypto.runtime import StackedDeviceTensor
-
-        def view(name):
-            bank = self.buffers[name]
-            local_shape = bank.shards[0].shape
-            leading = local_shape[0] // self.layer_count
-            # The NZ matrices each have a leading matrix axis. The standalone
-            # MoE graphs take a single matrix per rank.
-            matrix = name in ("shared_w13", "shared_w2")
-            shape = local_shape[1:] if matrix else (leading, *local_shape[1:])
-            shards = tuple(
-                self.runtime.view_tensor(shard, shape, byte_offset=layer * (shard.nbytes // self.layer_count),
-                                         worker_id=worker_id)
-                for shard, worker_id in zip(bank.shards, bank.worker_ids, strict=True)
-            )
-            return StackedDeviceTensor(shards, (len(shards), *shape), bank.worker_ids)
-
-        shared = tuple(view(name) for name in (
-            "ffn_norm_weight", "gate_weight", "correction_bias", "shared_w13", "shared_w1_scale",
-            "shared_w3_scale", "shared_w2", "shared_w2_scale",
-        ))
-        routed = tuple(view(f"routed_{name}") for name in (
-            "w1", "w1_scale", "w3", "w3_scale", "w2", "w2_scale",
-        ))
-        mixes = tuple(view(f"hc_ffn_{name}") for name in ("fn", "scale", "base"))
-        return shared, routed, mixes
 
     def reserve_windows(self):
         self.runtime.run(self.attention, *self.attention_arguments, 0, 0)

@@ -1,0 +1,46 @@
+{
+  "lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+  "topology": {"hosts": 2, "ranks_per_host": 8, "dp": 4, "tp": 4, "ep": 16},
+  "compile": {
+    "native_prefill": {
+      "command": "python -m models.deepseek_v4_1_flash_a3.prefill_fwd --capacity 16 --context-capacity 512 --compile-only --prepare-windows --output /results/native-prefill",
+      "world": 16,
+      "cann": "9.2.0",
+      "seconds": 136.58,
+      "passed": true
+    },
+    "staged_prefill": {
+      "command": "python validate_dsv41_pypto_packed_prefill.py --capacity 272 --context 512 --slots-per-dp 2 --output /results/prefill",
+      "local_ranks": 8,
+      "cann": "9.0.0",
+      "ffn_slabs": [256, 16],
+      "artifacts": ["attention", "ep-prepare", "ep-compute", "ep-restore", "tp-mhc-post", "head"],
+      "passed": true
+    },
+    "staged_decode": {
+      "command": "python validate_dsv41_pypto_packed_decode_attention.py --decode-capacity 16 --context 512 --slots-per-dp 2 --output /results/decode",
+      "local_ranks": 8,
+      "cann": "9.0.0",
+      "passed": true
+    }
+  },
+  "host_validation": {
+    "native_contract_tests": 13,
+    "orthrus_tests": 212,
+    "subtests_passed": 5,
+    "artifacts_loaded_from_disk": 16,
+    "mismatched_context_rejected": true,
+    "staged_paging": "Local rank stages only its owned DP requests, combines peer greedy IDs, and restores only its released pages. Remote ownership and page accounting are tested with a mocked device and link."
+  },
+  "launch": {
+    "command": "python run_dsv41_pypto_staged_target.py --node NODE --rank0-ip RANK0_IP --key-file KEY_FILE --checkpoint /model --prefill-graph /results/prefill --decode-graph /results/decode --prefill-capacity 272 --prefill-moe-tokens 64 --decode-capacity 16 --context 512 --slots-per-dp 2 --workload /results/workload.json --golden /results/golden.json --output /results/node-NODE.json",
+    "workload_example": [
+      {"id": "first-node", "dp": 0, "input_ids": [42, 43, 44], "new_tokens": 4},
+      {"id": "second-node", "dp": 2, "input_ids": [45, 46, 47], "new_tokens": 4}
+    ],
+    "golden": "Optional JSON mapping request IDs to frozen native greedy token IDs for the same inputs and generation lengths.",
+    "real_ep16_target_executed": false,
+    "scope": "Compile and host-side validation. The real dual-node base model, speculative integration, and training remain outside this result."
+  }
+}

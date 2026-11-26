@@ -9,7 +9,7 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--devices", default="0,1,2,3,4,5,6,7")
-    parser.add_argument("--decode-capacity", type=int, default=16, choices=(16, 80))
+    parser.add_argument("--decode-capacity", type=int, required=True, choices=(16, 80))
     parser.add_argument("--context", type=int, default=512)
     parser.add_argument("--slots-per-dp", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
@@ -17,9 +17,12 @@ def main():
     parser.add_argument("--reuse", action="store_true", help="Run on-device using the artifacts in --output")
     args = parser.parse_args()
 
-    from blockspec.dsv41_packed_decode import make_decode_final_head
+    from blockspec.dsv41_packed_decode import make_decode_ffn_tail, make_decode_final_head
+    from blockspec.dsv41_packed_ep_graph import make_hccl_ep_graphs
     from models.deepseek_v4_1_flash_a3 import decode_fwd, driver
+    from pypto.backend import BackendType
     from pypto.ir import DistributedConfig
+    from pypto.runtime import ExecutionMode, RunConfig
 
     devices = list(map(int, args.devices.split(",")))
     ranks = len(devices)
@@ -44,6 +47,22 @@ def main():
             if not result.passed:
                 raise SystemExit(result.error or 1)
             artifacts[name] = str(result.work_dir)
+        stages = [
+            ("ffn-restore", make_decode_ffn_tail(args.decode_capacity, ranks)),
+            *((f"ep-{stage._func.__name__}", stage) for stage in
+              make_hccl_ep_graphs(decode_fwd.MOE_TOKENS, args.decode_capacity, ranks, prefill=False)),
+        ]
+        for name, stage in stages:
+            target = (args.output / name).resolve()
+            stage.compile(config=RunConfig(
+                backend_type=BackendType.Ascend910, execution_mode=ExecutionMode.ONBOARD,
+                distributed_config=DistributedConfig(device_ids=devices, num_sub_workers=0),
+                save_kernels=True, save_kernels_dir=str(target),
+            ))
+            artifacts[name] = str(target)
+        manifest = driver.manifest("decode", args.decode_capacity, args.context,
+                                   slab_rows=decode_fwd.MOE_TOKENS, request_slots=args.slots_per_dp)
+        (args.output / "a3_manifest.json").write_text(json.dumps(dict(manifest, local_ranks=ranks), indent=2) + "\n")
     report = dict(passed=True, compiled=True, local_ranks=ranks, rows=args.decode_capacity,
                   context=args.context, slots_per_dp=args.slots_per_dp, artifacts=artifacts)
     if args.checkpoint:
