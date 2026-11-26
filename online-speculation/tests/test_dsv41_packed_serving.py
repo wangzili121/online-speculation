@@ -10,6 +10,17 @@ import torch
 from blockspec.dsv41_packed_serving import PackedDecodeVerifier
 
 
+@pytest.mark.parametrize("bad", (float("nan"), float("inf"), -float("inf")))
+def test_host_teacher_finite_reduction_rejects_nonfinite_logits(bad):
+    from blockspec.dsv41_packed_loss import _require_finite_host
+
+    teacher = torch.tensor([[-99., 0., 2.], [16., -8., 3.]], dtype=torch.float32)
+    _require_finite_host(teacher)
+    teacher[1, 1] = bad
+    with pytest.raises(ValueError, match="must be finite"):
+        _require_finite_host(teacher)
+
+
 def test_packed_benchmark_matches_tokens_with_ragged_prefill_and_final_round():
     from blockspec.dsv41_packed_proposer import DraftRoundStats
 

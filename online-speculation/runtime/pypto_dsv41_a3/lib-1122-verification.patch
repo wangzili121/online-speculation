@@ -1132,7 +1132,7 @@ index 502fa5b..365e535 100644
  @pl.jit.inline(auto_scope=False)
  def decode_o_proj_nz_from_attention(
 diff --git a/models/deepseek_v4_1_flash_a3/packed.py b/models/deepseek_v4_1_flash_a3/packed.py
-index 98f9f0c..7fea548 100644
+index 98f9f0c..25e8574 100644
 --- a/models/deepseek_v4_1_flash_a3/packed.py
 +++ b/models/deepseek_v4_1_flash_a3/packed.py
 @@ -11,6 +11,7 @@
@@ -1542,7 +1542,7 @@ index 98f9f0c..7fea548 100644
          groups = [[] for _ in range(C.DP_SIZE)]
          seen = set()
          queries = list(queries)
-@@ -124,27 +487,72 @@ class PackedSession:
+@@ -124,27 +487,75 @@ class PackedSession:
              if handle in seen or not tokens or any(type(t) is not int or not 0 <= t < C.FLASH.vocab_size for t in tokens):
                  raise ValueError("Invalid or repeated query")
              end = record.committed + len(tokens)
@@ -1594,6 +1594,8 @@ index 98f9f0c..7fea548 100644
 -    def _inputs(self, dp, group, index, capacity):
 +    def _capture_teacher(self, groups, emitted, limits, feedback, resident):
 +        """Read only supervised rows along the accepted prefix and its correction."""
++        from blockspec.dsv41_online_profile import timed_stage
++
 +        g = self.graphs
 +        for dp, group in enumerate(groups):
 +            if self.staged is not None and not self.staged.owns(dp):
@@ -1608,12 +1610,13 @@ index 98f9f0c..7fea548 100644
 +                if handle in limits:
 +                    count = min(limits[handle], len(emitted[handle]))
 +                    values = torch.empty((count, C.FLASH.vocab_size), dtype=torch.float32)
-+                    if self.staged is not None:
-+                        self.staged.read(1, dp, "logits", values, row=first)
-+                    else:
-+                        src = g.ranks[1][owner]["logits"]
-+                        g.runtime.copy_from(values.data_ptr(), src.data_ptr, values.nbytes,
-+                                            src_offset=first * values[0].nbytes, worker_id=owner)
++                    with timed_stage("teacher_verify_read"):
++                        if self.staged is not None:
++                            self.staged.read(1, dp, "logits", values, row=first)
++                        else:
++                            src = g.ranks[1][owner]["logits"]
++                            g.runtime.copy_from(values.data_ptr(), src.data_ptr, values.nbytes,
++                                                src_offset=first * values[0].nbytes, worker_id=owner)
 +                    feedback[handle] = values
 +                first += len(tokens)
 +
@@ -1621,7 +1624,7 @@ index 98f9f0c..7fea548 100644
          g = self.graphs
          # Prefill and Decode share the same packed positions, page maps and cache allocations.
          template = g.host_io["idle_inputs"][0]
-@@ -161,20 +569,27 @@ class PackedSession:
+@@ -161,20 +572,27 @@ class PackedSession:
              end = start + len(tokens)
              needed = (end + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              record.pages.extend(self.free_pages[dp].pop() for _ in range(needed - len(record.pages)))
@@ -1653,7 +1656,7 @@ index 98f9f0c..7fea548 100644
          pos = torch.tensor(positions, dtype=torch.int32)
          req = torch.tensor(owners, dtype=torch.int32)
          slots, window, _ = window_metadata(pos, req, table)
-@@ -210,7 +625,11 @@ class PackedSession:
+@@ -210,7 +628,11 @@ class PackedSession:
                            identity_rows=order, replay_rows=order)
          return values, sampled, count
 
@@ -1666,7 +1669,7 @@ index 98f9f0c..7fea548 100644
          g = self.graphs
          selections = []
          with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
-@@ -221,7 +640,7 @@ class PackedSession:
+@@ -221,7 +643,7 @@ class PackedSession:
                  if not group and dp not in self._active_dps[index]:
                      continue
                  if group:
@@ -1675,7 +1678,7 @@ index 98f9f0c..7fea548 100644
                  else:
                      if index not in self._idle_values:
                          self._idle_values[index] = self._inputs(dp, [], index, capacity)
-@@ -243,6 +662,19 @@ class PackedSession:
+@@ -243,6 +665,19 @@ class PackedSession:
          self._active_dps[index] = {dp for dp, group in enumerate(groups) if group}
          args = [g.arguments[index][name] for name in g.names[index]]
          g.runtime.run(g.programs[index], *args, config=g.config)
@@ -1695,7 +1698,7 @@ index 98f9f0c..7fea548 100644
          result = {}
          for handle, rank, row in selections:
              logits = g.host_io["logits"][0]
-@@ -252,6 +684,55 @@ class PackedSession:
+@@ -252,6 +687,55 @@ class PackedSession:
              result[handle] = logits.clone()
          return result
 
@@ -1751,7 +1754,7 @@ index 98f9f0c..7fea548 100644
      def _upload_prefill_group(self, owner, values, workers):
          g = self.graphs
          inputs = {}
-@@ -282,9 +763,77 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
+@@ -282,9 +766,77 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
                                                 (args.decode_runtime_dir, "decode", args.decode_capacity))]
      if any(m["history_capacity"] != args.context_capacity for m in manifests):
          raise ValueError("History capacity differs from the compiled graph pair")

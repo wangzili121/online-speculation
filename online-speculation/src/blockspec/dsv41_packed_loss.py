@@ -1,6 +1,7 @@
 """Full-vocabulary loss on the packed draft request's resident L3 worker."""
 
 from dataclasses import dataclass, field
+from math import isfinite
 from time import perf_counter
 
 from .dsv41_online_profile import active_profile, timed_stage
@@ -200,6 +201,14 @@ class PackedTeacherCopy:
             profile.current["counts"]["teacher_device_bytes"] += count * loss.vocabulary * 4
 
 
+def _require_finite_host(teacher):
+    import torch
+
+    extrema = torch.aminmax(teacher)
+    if not isfinite(extrema.min) or not isfinite(extrema.max):
+        raise ValueError("Packed teacher logits must be finite")
+
+
 class PackedLoss:
     """Route a retained FP32 student and the authoritative teacher to one DP owner."""
 
@@ -255,8 +264,8 @@ class PackedLoss:
             teacher_stack = self._stack(source, shape)
         else:
             teacher = teacher.to(dtype=torch.float32).contiguous()
-            if not torch.isfinite(teacher).all():
-                raise ValueError("Packed teacher logits must be finite")
+            with timed_stage("teacher_check_host"):
+                _require_finite_host(teacher)
             self.runtime.copy_to(self.teacher.shards[replica].data_ptr, teacher.data_ptr(),
                                  teacher.nbytes, worker_id=owner)
             teacher_stack, upload = self.teacher, teacher.nbytes

@@ -2,6 +2,7 @@
 
 from time import perf_counter
 
+from .dsv41_online_profile import timed_stage
 from .dsv41_packed_attention_vjp import PackedAttentionVJP, make_packed_attention_vjp
 from .dsv41_packed_attn_input_vjp import PackedAttentionInputVJP, make_packed_attn_input_vjp
 from .dsv41_packed_attn_post_vjp import PackedAttentionPostVJP, make_packed_attn_post_vjp
@@ -108,26 +109,39 @@ class StagedDraftReverse:
         loss, student, boundary = None, None, None
         if local:
             student = feedback.student
-            loss = self.loss(student, teacher)
-            boundary = self.final(student, self.lm_head(loss))
+            with timed_stage("online_loss"):
+                loss = self.loss(student, teacher)
+            with timed_stage("online_lm_head_vjp"):
+                head_gradient = self.lm_head(loss)
+            with timed_stage("online_final_vjp"):
+                boundary = self.final(student, head_gradient)
 
         for index, layer in enumerate(self.layers):
             count = rows if index == 0 else draft.block
-            post = self.ffn_post(student, boundary, layer=layer) if local else None
+            post = None
+            if local:
+                with timed_stage("online_ffn_post_vjp"):
+                    post = self.ffn_post(student, boundary, layer=layer)
             result = self.experts.run_layer(
                 f"{stage}/layer-{layer}", owner=owner, layer=layer, rows=count,
                 weights=draft.layer_weights[layer][1], student=student, gradient=post,
             )
             projection = None
             if local:
-                normed = self.ffn_input(student, result, result.gradients)
-                mixed = self.ffn_mhc(student, post, normed)
-                seed = self.attn_post(student, mixed)
-                projected = self.wo(student, seed)
-                projection = self.qkv(student, self.attention(student, projected))
+                with timed_stage("online_ffn_input_vjp"):
+                    normed = self.ffn_input(student, result, result.gradients)
+                    mixed = self.ffn_mhc(student, post, normed)
+                with timed_stage("online_attention_output_vjp"):
+                    seed = self.attn_post(student, mixed)
+                    projected = self.wo(student, seed)
+                with timed_stage("online_attention_vjp"):
+                    attention_gradient = self.attention(student, projected)
+                with timed_stage("online_qkv_vjp"):
+                    projection = self.qkv(student, attention_gradient)
             consume(layer, projection)
             if local and layer != self.layers[-1]:
-                boundary = self.attn_input(student, projection)
+                with timed_stage("online_attention_input_vjp"):
+                    boundary = self.attn_input(student, projection)
 
         local_loss = loss.value if loss is not None else None
         peer_loss = link.exchange(f"{stage}/complete", local_loss)
