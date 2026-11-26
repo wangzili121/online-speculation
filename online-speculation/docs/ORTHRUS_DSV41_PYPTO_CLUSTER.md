@@ -113,6 +113,8 @@ Draft 和 Verify 只回读实际参与本轮的词表行。Draft 结果直接交
 
 两台已经有 `1122-949a18d` 时，更新 checkout 后可在各自机器执行 `bash online-speculation/scripts/dsv41_pypto_env.sh refresh-1122`。它复用现有镜像的编译器和运行时，在离线环境更新模型补丁和公司脚本。接着运行 `prepare`，它会回载图产物并重编译不兼容的产物组。旧目录移入 `.superseded.*`。两端新的作业会核对初始化或预训练 head 的实际权重字节摘要。
 
+111 的 ARM64 测试镜像使用同一组固定版本，离线刷新和启动检查用时约 7 秒。旧测试产物的目标图源码指纹不一致时，`prepare` 重编了 Prefill 和 Decode，并回载了此前的 6 个 Draft 图、13 个 last-1 反向图和 24 个 Adam 图。再次执行复用了全部图。初始化 head 的 40 个权重分片均参与校验。
+
 两台从仓库根目录执行同样的命令，node8 将 `NODE` 设为 `node8`。已有 GSM8K 分区默认读 `/workspace/data/orthrus-dsv41-gsm8k`，也可以用 `DSV41_GSM8K_ROOT` 指定。
 
 ```bash
