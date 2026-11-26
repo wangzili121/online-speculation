@@ -1,0 +1,329 @@
+{
+  "model_base": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "simpler": "a5349f42c71666bb8cacfb3759f34eeda1572beb",
+  "local_window_checks": [
+    {
+      "host": "111",
+      "soc": "Ascend910B3",
+      "cann": "9.0.0",
+      "physical_card": 0,
+      "logical_device": 0,
+      "local_ipc": {
+        "stage": "zero",
+        "status": 0,
+        "cleanup_status": 0,
+        "bytes": 2097152
+      },
+      "a3_fabric": {
+        "stage": "export",
+        "status": 207000,
+        "cleanup_status": 0,
+        "bytes": 2097152
+      },
+      "reset": 0,
+      "finalize": 0
+    },
+    {
+      "host": "61",
+      "soc": "Ascend910B3",
+      "cann": "9.2.0",
+      "physical_card": 2,
+      "logical_device": 0,
+      "local_ipc": {
+        "stage": "zero",
+        "status": 0,
+        "cleanup_status": 0,
+        "bytes": 2097152
+      },
+      "a3_fabric": {
+        "stage": "export",
+        "status": 207000,
+        "cleanup_status": 0,
+        "bytes": 2097152
+      },
+      "reset": 0,
+      "finalize": 0
+    }
+  ],
+  "packet_command": "python validate_dsv41_pypto_ep_hccl_packets.py --device 0 --world 16 --tokens {16,64}",
+  "packet_scope": "Four PyPTO stages on one 910B3 per run. Synthetic W8A8 routing inputs and BF16 weighted expert outputs. AllToAll rank transpose is emulated on CPU.",
+  "timer": "ChipWorker wall time excludes test H2D/D2H and CPU reference. Warm median excludes the first invocation of each stage.",
+  "packet_runs": [
+    {
+      "host": "61",
+      "cann": "9.2.0",
+      "warm_median_seconds": {
+        "pack_seconds": 0.01843372080475092,
+        "unpack_seconds": 0.040622123051434755
+      },
+      "passed": true,
+      "compiled": 4,
+      "executed": true,
+      "world": 16,
+      "tokens": 16,
+      "width": 5120,
+      "exact_source_packets": 16,
+      "exact_destination_slabs": 16,
+      "exact_return_packets": 16,
+      "exact_restored_ranks": 16,
+      "transfer": "CPU emulation of AllToAll rank ordering",
+      "pack_seconds": [
+        4.718626549933106,
+        0.01843372080475092,
+        0.018434309866279364,
+        0.018327369820326567,
+        0.018285458907485008,
+        0.01828591898083687,
+        0.01836677873507142,
+        0.018350299913436174,
+        0.018308029044419527,
+        0.018317028880119324,
+        0.019155547954142094,
+        0.03893862525001168,
+        0.04329474410042167,
+        0.043169722892344,
+        0.043063120916485786,
+        0.04292283020913601
+      ],
+      "unpack_seconds": [
+        4.557681722100824,
+        0.04152353294193745,
+        0.040757255628705025,
+        0.040825615637004375,
+        0.040622123051434755,
+        0.0406090640462935,
+        0.04051709268242121,
+        0.04065764416009188,
+        0.04067912418395281,
+        0.041575664188712835,
+        0.041386842261999846,
+        0.04044151119887829,
+        0.04035726096481085,
+        0.04026081971824169,
+        0.04024654999375343,
+        0.04038976086303592
+      ]
+    },
+    {
+      "host": "111",
+      "cann": "9.0.0",
+      "warm_median_seconds": {
+        "pack_seconds": 0.02927042101509869,
+        "unpack_seconds": 0.02901796088553965,
+        "return_pack_seconds": 0.028782980050891638,
+        "combine_seconds": 0.02907323115505278
+      },
+      "passed": true,
+      "compiled": 4,
+      "executed": true,
+      "world": 16,
+      "tokens": 64,
+      "width": 5120,
+      "exact_source_packets": 16,
+      "exact_destination_slabs": 16,
+      "exact_return_packets": 16,
+      "exact_restored_ranks": 16,
+      "transfer": "CPU emulation of AllToAll rank ordering",
+      "pack_seconds": [
+        4.06607042090036,
+        0.029725191881880164,
+        0.029553221073001623,
+        0.02930349111557007,
+        0.02942437189631164,
+        0.02927042101509869,
+        0.0291083010379225,
+        0.02979705180041492,
+        0.029210221022367477,
+        0.02923064213246107,
+        0.02922589099034667,
+        0.029222280951216817,
+        0.02994278189726174,
+        0.029868172015994787,
+        0.02906465088017285,
+        0.029195660958066583
+      ],
+      "unpack_seconds": [
+        3.6913227369077504,
+        0.02872377005405724,
+        0.02901796088553965,
+        0.028893930139020085,
+        0.029127870919182897,
+        0.029248520964756608,
+        0.0282656189519912,
+        0.028836850076913834,
+        0.0286883101798594,
+        0.029289280995726585,
+        0.02917879121378064,
+        0.02904561022296548,
+        0.0320430260617286,
+        0.02840874996036291,
+        0.028794789919629693,
+        0.029257931048050523
+      ],
+      "return_pack_seconds": [
+        3.502919198013842,
+        0.0287351009901613,
+        0.028629540000110865,
+        0.02870330004952848,
+        0.029019071022048593,
+        0.02852492011152208,
+        0.02854731003753841,
+        0.028709700098261237,
+        0.0293809010181576,
+        0.028824910055845976,
+        0.029137491015717387,
+        0.028708059806376696,
+        0.02953169192187488,
+        0.028989510843530297,
+        0.028782980050891638,
+        0.029794681817293167
+      ],
+      "combine_seconds": [
+        3.440833869157359,
+        0.028604970080778003,
+        0.02879508980549872,
+        0.0292097011115402,
+        0.02903765090741217,
+        0.029239861061796546,
+        0.02907323115505278,
+        0.029213750967755914,
+        0.029357901075854897,
+        0.029203990940004587,
+        0.02897080103866756,
+        0.028921450953930616,
+        0.02892822097055614,
+        0.02861056011170149,
+        0.029417622135952115,
+        0.029301400994881988
+      ]
+    }
+  ],
+  "resident_hccl": {
+    "host": "61",
+    "soc": "Ascend910B3",
+    "cann": "9.2.0",
+    "physical_cards": [
+      2,
+      3
+    ],
+    "transport_source": "e32726b7edb31ee17e398a0431c0272ebd545974",
+    "command": "python validate_dsv41_pypto_ep_hccl_resident.py --devices 0,1 --transport-source /inputs/moe_transport.py",
+    "scope": "Two local NPUs. HCCL reads and writes PyPTO DeviceTensor allocations directly. Expert weighted output is synthetic.",
+    "passed": true,
+    "world": 2,
+    "tokens": 16,
+    "exact_output": true,
+    "dispatch_seconds": 0.048887977842241526,
+    "return_seconds": 0.0022340756841003895,
+    "transfers": [
+      [
+        {
+          "stage": "counts",
+          "bytes_per_peer": 128,
+          "world": 2,
+          "shape": [
+            2,
+            32
+          ],
+          "dtype": "torch.int32",
+          "collective": "all_to_all",
+          "transport_type": "UINT8",
+          "host_staging": false
+        },
+        {
+          "stage": "hidden",
+          "bytes_per_peer": 491520,
+          "world": 2,
+          "shape": [
+            192,
+            5120
+          ],
+          "dtype": "torch.int8",
+          "collective": "all_to_all",
+          "transport_type": "UINT8",
+          "host_staging": false
+        },
+        {
+          "stage": "auxiliary",
+          "bytes_per_peer": 3072,
+          "world": 2,
+          "shape": [
+            192,
+            8
+          ],
+          "dtype": "torch.float32",
+          "collective": "all_to_all",
+          "transport_type": "UINT8",
+          "host_staging": false
+        },
+        {
+          "stage": "expert_return",
+          "bytes_per_peer": 983040,
+          "world": 2,
+          "shape": [
+            192,
+            5120
+          ],
+          "dtype": "torch.bfloat16",
+          "collective": "all_to_all",
+          "transport_type": "UINT8",
+          "host_staging": false
+        }
+      ],
+      [
+        {
+          "stage": "counts",
+          "bytes_per_peer": 128,
+          "world": 2,
+          "shape": [
+            2,
+            32
+          ],
+          "dtype": "torch.int32",
+          "collective": "all_to_all",
+          "transport_type": "UINT8",
+          "host_staging": false
+        },
+        {
+          "stage": "hidden",
+          "bytes_per_peer": 491520,
+          "world": 2,
+          "shape": [
+            192,
+            5120
+          ],
+          "dtype": "torch.int8",
+          "collective": "all_to_all",
+          "transport_type": "UINT8",
+          "host_staging": false
+        },
+        {
+          "stage": "auxiliary",
+          "bytes_per_peer": 3072,
+          "world": 2,
+          "shape": [
+            192,
+            8
+          ],
+          "dtype": "torch.float32",
+          "collective": "all_to_all",
+          "transport_type": "UINT8",
+          "host_staging": false
+        },
+        {
+          "stage": "expert_return",
+          "bytes_per_peer": 983040,
+          "world": 2,
+          "shape": [
+            192,
+            5120
+          ],
+          "dtype": "torch.bfloat16",
+          "collective": "all_to_all",
+          "transport_type": "UINT8",
+          "host_staging": false
+        }
+      ]
+    ]
+  }
+}

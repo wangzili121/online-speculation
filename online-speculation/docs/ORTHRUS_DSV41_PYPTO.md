@@ -45,7 +45,7 @@ A2/A3 模拟器通过了 129 个物理页、Top‑512、K8/K16/K32 共 12 个用
 
 167 已构建独立镜像 `orthrus-dsv41-pypto:1122-94d5dfc`，并在禁用网络的干净容器中通过 `--compile-only --swa --pages 129`。镜像入口用于 1122 算子验证。
 
-新版 `generation.py` 通过一个 L3 worker 管理 16 个本地设备。双机 Serving 要将全局 EP rank 的分派移到 L4，并接入 Simpler 的 A3 Fabric 跨机设备窗口。旧 Serving 的 HCCL 验收覆盖逐层通信。新版的 `global_tload_mixed_l3` 已在单机回环模拟中验证一个本地和一个服务端 L3 worker，两个 rank 的小张量结果误差均为零。真实跨机 Fabric 仍待验证。随后用同一 checkpoint 核对 AR、Draft/Verify/Accept 的逐 token 一致性。在线更新还需绑定新版的反向输入和 head 发布路径。当前 GSM8K 命令走独立旧版基线。 [Simpler 跨机验证用例](https://github.com/hw-native-sys/simpler/tree/a5349f42c71666bb8cacfb3759f34eeda1572beb/examples/workers/l4/global_tload_mixed_l3)
+新版 `generation.py` 通过一个 L3 worker 管理 16 个本地设备。将原整图搬到双机，需要在 L4 分派全局 EP rank，并确认每台设备都能导出 Simpler 使用的 A3 Fabric 窗口。上游 `global_tload_mixed_l3` 已在单机回环模拟中验证一个本地和一个服务端 L3 worker，两个 rank 的小张量结果误差均为零。硬件 Fabric 能力和替代 HCCL 路径见下文。当前公司 GSM8K 命令走独立旧版基线。 [Simpler 跨机验证用例](https://github.com/hw-native-sys/simpler/tree/a5349f42c71666bb8cacfb3759f34eeda1572beb/examples/workers/l4/global_tload_mixed_l3)
 
 ### 1122 最新基线与 Verify/Accept
 
@@ -188,7 +188,31 @@ python /opt/dsv41-1122/validate_dsv41_pypto_packed_generation.py \
 
 在 111 上以 `949a18d` 源码、公开 W8A8 checkpoint 的第 0 层和一张 910B3 复验 K8/K16/K32 的 SWA、带 Indexer 的压缩 Attention 和 Reuse。9 个 BF16 输出均通过 CANN 精度门槛，最大相对 L2 为 0.203%，目标缓存逐字节一致。原始报告另列仅适用于单独 Wo 检查的严格容差结果。同一工具链容器的 11 项 packed CPU 回归通过，覆盖多 DP 采样回读和短尾验收。[实卡结果](validation/dsv41/pypto-1122-949a-packed-draft-layer-910b3.json)
 
-在 61 的两张 910B3 上，用配套 Simpler `a5349f4` 和 CANN 9.2 跑上游 `global_tload_mixed_l3` 回环。两个 L3 的设备 worker 均已就绪，创建全局域时，rank 0 的 Fabric 窗口句柄导出返回 `207000 / ACL_ERROR_RT_FEATURE_NOT_SUPPORT`。测试在 peer TLOAD 之前退出。这给当前 910B3 环境确认了一个运行时兼容性问题。公司 node7/node8 的 Fabric 能力还需单独核对。旧版通过的跨机 HCCL collective 使用另一条通信路径。[上游探针](https://github.com/hw-native-sys/simpler/tree/a5349f42c71666bb8cacfb3759f34eeda1572beb/examples/workers/l4/global_tload_mixed_l3) · [CANN 错误码](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/910/API/runtimeapi/aclcppdevg_03_1345.html)
+### 双机设备窗口检查
+
+公司节点可以各用一张空闲卡独立检查，无需启动远端进程或加载模型。
+
+```bash
+# node7，在其 checkout 中执行
+bash "${ORTHRUS_ROOT}/online-speculation/scripts/dsv41_pypto_env.sh" global-window-check node7
+# node8，在其 checkout 中执行
+bash "${ORTHRUS_ROOT}/online-speculation/scripts/dsv41_pypto_env.sh" global-window-check node8
+```
+
+如实际空闲的物理卡不同，用 `NPU_DEVICE` 覆盖节点默认值。若 1122 镜像用了其他 tag，用 `PYPTO_IMAGE` 指定。脚本用 Simpler `a5349f4` 相同的分配属性和导出调用做本机检查。输出 `a3_fabric.status=0` 后还需验远端导入和实际 peer 读写。CANN 接口文档将跨 AI Server 的共享物理内存限定在支持的 Atlas A3 产品上。[CANN VMM 导出接口](https://www.hiascend.com/doc_center/source/zh/CANNCommunityEdition/910/API/runtimeapi/aclcppdevg_03_2006.html)
+
+111 和 61 的 Ascend 910B3 分别在 CANN 9.0、9.2 上通过本机 IPC 导出，跨机 Fabric 均在本机导出阶段返回 `207000`。该结果与 61 上 Simpler 的双卡回环一致。导出发生在网络交换之前。公司机器须用实际可见设备再检查。原 1121 路径使用 HCCL collective，已在公司双机验证。[上游 peer TLOAD 探针](https://github.com/hw-native-sys/simpler/tree/a5349f42c71666bb8cacfb3759f34eeda1572beb/examples/workers/l4/global_tload_mixed_l3) · [公司双机记录](validation/dsv41/pypto-cluster-company-ep16-acceptance.json)
+
+1122 的 MoE HCCL 适配把派发和回传拆到显式通信边界。派发按目标 rank 和本地专家排好 INT8 激活，携带 FP32 量化 scale、路由权重和原始路由位置。收件按来源 rank 汇入 16 行对齐的专家输入。回传的 BF16 行按原 token 和 TopK 顺序做 FP32 累加，保持原 MoE 的求和顺序。单卡分别执行 EP16 的 16 行与 64 行布局，两次 AllToAll 的 rank 重排由 CPU 模拟，四个设备步骤逐字节匹配参考。
+
+在 61 的两张卡上还验证了 HCCL 可以直接交换 1122 的 PyPTO 驻留缓冲，派发、回传及恢复结果逐字节匹配。这个用例使用构造的专家输出。复验时使用 1122 镜像、host 网络和当前节点的 HCCL 网卡配置，将旧版 `e32726b` 的 `moe_transport.py` 文件挂载到容器。 [HCCL 传输实现](https://github.com/Adelaide999/pypto-lib/blob/e32726b7edb31ee17e398a0431c0272ebd545974/models/deepseek_v4_1_flash_a3/moe_transport.py)
+
+```bash
+python /opt/dsv41-1122/validate_dsv41_pypto_ep_hccl_resident.py \
+  --devices 0,1 --transport-source /inputs/moe_transport.py
+```
+
+等长包用来验证接口和数值。64 行容量下每个 EP rank 每层要提交约 90 MiB 的派发与回传数据，其中包括填充。跨机路径仍需接入原生专家计算和整图调度，再按实际路由量降低通信。 [实卡记录](validation/dsv41/pypto-1122-949a-ep-hccl-910b3.json)
 
 ## 内网权重预检
 

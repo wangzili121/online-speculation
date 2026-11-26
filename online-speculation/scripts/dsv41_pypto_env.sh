@@ -46,6 +46,33 @@ if [[ "$action" == cluster-check || "$action" == cluster-accept ||
 fi
 image="${PYPTO_IMAGE:-$default_image}"
 case "$action" in
+  global-window-check)
+    case "${1:-}" in
+      node7) NPU_DEVICE="${NPU_DEVICE:-1}" ;;
+      node8) NPU_DEVICE="${NPU_DEVICE:-0}" ;;
+      "") ;;
+      *) echo "Usage: $0 global-window-check [node7|node8]" >&2; exit 2 ;;
+    esac
+    : "${NPU_DEVICE:?Select an idle physical card with NPU_DEVICE or the node argument}"
+    [[ "$NPU_DEVICE" =~ ^[0-9]+$ && $# -le 1 ]] || exit 2
+    check_image="${PYPTO_IMAGE:-orthrus-dsv41-pypto:1122-7abc0df}"
+    docker image inspect "$check_image" >/dev/null 2>&1 || {
+      echo "1122 image missing. Set PYPTO_IMAGE to the pinned 1122 image on this server." >&2; exit 2;
+    }
+    exec docker run --rm --network none --entrypoint /bin/bash \
+      --device "/dev/davinci$NPU_DEVICE" --device /dev/davinci_manager \
+      --device /dev/devmm_svm --device /dev/hisi_hdc \
+      -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro \
+      -v "$root/runtime/pypto_dsv41_a3/check_global_window.cpp:/tmp/check_global_window.cpp:ro" \
+      -e ASCEND_RT_VISIBLE_DEVICES=0 "$check_image" -lc '
+        set -e
+        source /opt/pypto/bin/pypto-activate.sh >/dev/null
+        toolkit="${ASCEND_HOME_PATH:?CANN is unavailable}"
+        g++ -std=c++17 -Wall -Wextra -Werror -I "$toolkit/include" /tmp/check_global_window.cpp \
+          -L "$toolkit/lib64" -lascendcl -o /tmp/check_global_window
+        exec timeout -k 2s 20s /tmp/check_global_window 0
+      '
+    ;;
   online-abi-check)
     image="${PYPTO_IMAGE:-$default_image-offline}"
     report_dir="$(mktemp -d "$PWD/orthrus-online-abi.XXXXXX")"
@@ -511,7 +538,7 @@ case "$action" in
     exec docker run "${options[@]}" "$image" "$action" "$@"
     ;;
   *)
-    echo "Usage: $0 {build|refresh-image|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|multicard-check|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
+    echo "Usage: $0 {build|refresh-image|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|multicard-check|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|global-window-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
     echo "Company checks: $0 {fabric-check|cluster-check|cluster-accept} {node7|node8}"
     echo "Offline online-update compilation check: $0 online-abi-check"
     ;;
