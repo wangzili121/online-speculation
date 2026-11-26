@@ -36,7 +36,7 @@ def checkpoint_bank(path, model, layer, lane, tp):
     }
 
 
-def exercise(runtime, config, model, programs, tp, world, initial):
+def exercise(runtime, config, model, programs, tp, world, initial, *, staged=False):
     from pypto.runtime import StackedDeviceTensor
 
     layers = model.num_hidden_layers
@@ -53,7 +53,39 @@ def exercise(runtime, config, model, programs, tp, world, initial):
 
     banks = [{p.name: upload(initial[rank % tp][p.name], rank) for p in parameters} for rank in range(world)]
     proposer = SimpleNamespace(runtime=runtime, config=config, last_layers=layers, ranks=banks, tp=tp, world=world)
-    adam = PackedAdam(proposer, model, programs)
+    if staged:
+        from blockspec.dsv41_staged_adam import StagedPackedAdam
+
+        class HostPermutation:
+            # Emulate the DP collective for this fixture so the actual device packing and optimizer
+            # can be exercised even on a one-card validation machine.
+            mappings = SimpleNamespace(register=lambda *_: None)
+
+            def exchange_resident(self, stage, transfers, *, collective, group):
+                assert collective == "all_reduce" and group == "dp"
+                for lane in range(tp):
+                    ranks = range(lane, world, tp)
+                    rows = [read_slice(transfers[rank][0][0], rank, 0, transfers[rank][0][0].shape[0])
+                            for rank in ranks]
+                    reduced = torch.stack(rows).sum(0)
+                    for rank in ranks:
+                        destination = transfers[rank][0][1]
+                        runtime.copy_to(destination.data_ptr, reduced.data_ptr(), reduced.nbytes, worker_id=rank)
+
+        def reverse(stage, *, owner, feedback, finished, consume):
+            for layer in reversed(range(layers)):
+                consume(layer, SimpleNamespace(owner=owner, parameter_gradients={
+                    p.name: gradients[layer, p.name] for p in parameters
+                }))
+                for p in parameters:
+                    check(layer, p, before=True)
+            return dict(owner=owner, teacher_rows=7, loss=.012)
+
+        proposer.target = SimpleNamespace(link=SimpleNamespace(exchange=lambda _stage, value: value))
+        proposer.ffn = SimpleNamespace(moe=SimpleNamespace(transport=HostPermutation()))
+        optimizer = StagedPackedAdam(proposer, SimpleNamespace(run=reverse), model, programs)
+    else:
+        adam = PackedAdam(proposer, model, programs)
     references, gradients, published = {}, {}, {}
     samples = None if max(prod(p.shape) for p in parameters) < 32768 else 32
     max_abs = 0.
@@ -122,7 +154,12 @@ def exercise(runtime, config, model, programs, tp, world, initial):
                     check(layer, p, before=True)
             return SimpleNamespace(value=.012, rows=7)
 
-        result = adam.update(differentiate, rate=.001)
+        if staged:
+            result = SimpleNamespace(**optimizer.update(
+                f"fixture/{index}", owner=owner, feedback=None, finished=False, rate=.001, max_norm=1.,
+            ))
+        else:
+            result = SimpleNamespace(**asdict(adam.update(differentiate, rate=.001)))
         assert result.applied != invalid
         if not invalid:
             expected_norm = sqrt(norm_sq)
@@ -133,14 +170,15 @@ def exercise(runtime, config, model, programs, tp, world, initial):
         for layer in range(layers):
             for p in parameters:
                 check(layer, p, before=invalid)
-        results.append(dict(owner=owner, invalid_gradient=invalid, **asdict(result)))
+        results.append({**vars(result), "owner": owner, "invalid_gradient": invalid})
         for stacked in gradients.values():
             for rank, tensor in zip(stacked.worker_ids, stacked.shards, strict=True):
                 runtime.free_tensor(tensor, worker_id=rank)
         gradients.clear()
     assert [result["version"] for result in results] == [1, 2, 2, 3]
     return dict(passed=True, executed=True, tp=tp, world=world, layers=layers,
-                execution_weight_max_abs=max_abs, updates=results)
+                execution_weight_max_abs=max_abs, updates=results,
+                gradient_transport="host_fixture" if staged else "local_p2p")
 
 
 def main():
@@ -152,6 +190,7 @@ def main():
     parser.add_argument("--checkpoint-lane", type=int, choices=range(4),
                         help="Check one real TP4 shard on one NPU")
     parser.add_argument("--compile-only", action="store_true")
+    parser.add_argument("--staged", action="store_true", help="Exercise staged gradient packing with a host DP fixture")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     devices = [int(part) for part in args.devices.split(",")]
@@ -184,9 +223,17 @@ def main():
                                 o_groups=tp * 2, o_lora_rank=32, num_hidden_layers=2)
     config = RunConfig(backend_type=BackendType.Ascend910, execution_mode=ExecutionMode.ONBOARD,
                        distributed_config=DistributedConfig(device_ids=devices, num_sub_workers=0))
-    programs = compile_packed_adam(config, model, world, tp)
+    if args.staged:
+        from blockspec.dsv41_staged_adam import make_staged_adam_graphs
+
+        compiled = iter(make_staged_adam_graphs(model, world, tp).values())
+        programs = {key: tuple(next(compiled).compile(config=config) for _ in range(4))
+                    for key in dict.fromkeys(p.program_key for p in packed_parameters(model, tp))}
+    else:
+        programs = compile_packed_adam(config, model, world, tp)
     entries = [entry for group in programs.values() for entry in group]
     result = dict(passed=True, compiled=len(entries), tp=tp, world=world)
+    print(f"Compiled {len(entries)} optimizer graphs", flush=True)
     if not args.compile_only:
         rng = torch.Generator().manual_seed(61237)
         initial = []
@@ -205,7 +252,8 @@ def main():
                     values[p.name] = torch.randn(shape, dtype=dtype, generator=rng).mul_(.06)
             initial.append(values)
         with DistributedWorker(entries, config, persistent=True, reset_persistent_windows=False) as runtime:
-            result.update(exercise(runtime, config, model, programs, tp, world, initial))
+            print("Optimizer device worker ready", flush=True)
+            result.update(exercise(runtime, config, model, programs, tp, world, initial, staged=args.staged))
         result["checkpoint_layer"] = args.layer if args.checkpoint else None
         result["checkpoint_lane"] = args.checkpoint_lane
     text = json.dumps(result)

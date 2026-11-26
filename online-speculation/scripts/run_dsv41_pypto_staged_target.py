@@ -6,13 +6,15 @@ from collections import Counter
 from contextlib import ExitStack, suppress
 from hashlib import sha256
 import json
+from math import isfinite
 from pathlib import Path
 from threading import Lock
 from time import perf_counter
 from types import SimpleNamespace
 
 
-def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, reverse=None):
+def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, reverse=None,
+             optimizer=None, online=None):
     """Pack prompt chunks by DP owner and continue from device-greedy IDs."""
     handles = [session.admit(case["id"], case["dp"], len(case["input_ids"])) for case in cases]
     output = {handle: [] for handle in handles}
@@ -37,6 +39,8 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, 
     steps = 0
     speculation = Counter(draft_rounds=0, proposed=0, accepted=0)
     replay = None
+    captured_at, next_capture, updated_rounds = 0, 0, 0
+    updates = []
     while pending := [(handle, case["new_tokens"] - len(output[handle])) for case, handle in requests
                       if len(output[handle]) < case["new_tokens"]]:
         if width:
@@ -46,21 +50,45 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, 
                 owners.setdefault(handle.dp, (handle, min(width, remaining)))
             limits = dict(owners.values())
             capture = None
-            if teacher_rows and replay is None:
-                for case, handle in requests:
+            capture_due = optimizer is None or (len(updates) < online["max_updates"] and steps >= next_capture)
+            if teacher_rows and capture_due and replay is None:
+                order = requests
+                if optimizer is not None:
+                    # Alternate the preferred owner host when both have eligible queries.
+                    preferred_dp = (len(updates) % 2) * (dp_size // 2)
+                    order = sorted(requests, key=lambda item: (item[1].dp - preferred_dp) % dp_size)
+                for case, handle in order:
                     position = len(case["input_ids"]) + len(output[handle]) - 1
                     if limits.get(handle, 0) > 1 and position + session.draft.block <= session.context:
-                        capture = replay = (handle, min(teacher_rows, case["new_tokens"] - len(output[handle])))
+                        captured_at = len(output[handle])
+                        capture = replay = (handle, min(teacher_rows, case["new_tokens"] - captured_at))
                         break
             wave = session.speculate_batch(
                 [(handle, output[handle][-1]) for handle in limits],
                 width=width, output_limits=limits, student_capture=capture,
             )
             speculation["draft_rounds"] += any(wave.proposals.values())
+            if optimizer is not None and optimizer.adam.version:
+                updated_rounds += any(wave.proposals.values())
             speculation["proposed"] += sum(map(len, wave.proposals.values()))
             for handle, emitted in wave.verified.emitted.items():
                 output[handle].extend(emitted)
                 speculation["accepted"] += len(emitted) - 1
+            if optimizer is not None and replay is not None:
+                handle, expected_rows = replay
+                if len(output[handle]) - captured_at >= expected_rows:
+                    outcome = optimizer.update(
+                        f"online-update/{len(updates) + 1}", owner=handle.dp * session.draft.tp,
+                        feedback=session.feedback.get(handle), finished=False,
+                        rate=online["rate"], max_norm=online["max_norm"],
+                    )
+                    if outcome is None or outcome["teacher_rows"] != expected_rows:
+                        raise ValueError("Committed output and the online teacher block have different lengths")
+                    updates.append(dict(request=handle.request_id, dp=handle.dp, round=steps + 1, **outcome))
+                    print(json.dumps(dict(stage="online_update", **updates[-1])), flush=True)
+                    session.release_student(handle)
+                    replay = None
+                    next_capture = steps + online["every"]
         else:
             batch = [(handle, [output[handle][-1]]) for handle, _ in pending]
             for handle, token in session.decode_greedy_batch(batch).items():
@@ -85,9 +113,16 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, 
         session.release(handle)
     result = {handle.request_id: output[handle] for handle in handles}
     tok = sum(map(len, result.values())) - len(cases)
-    return dict(generated=result, prefill_seconds=prefill_seconds, decode_seconds=decode_seconds,
-                decode_steps=steps, decode_tokens=tok, decode_tok_per_s=tok / decode_seconds if steps else 0.0,
-                speculation=speculation, capture=capture_receipt, backward=backward)
+    report = dict(generated=result, prefill_seconds=prefill_seconds, decode_seconds=decode_seconds,
+                  decode_steps=steps, decode_tokens=tok, decode_tok_per_s=tok / decode_seconds if steps else 0.0,
+                  speculation=speculation, capture=capture_receipt, backward=backward)
+    if optimizer is not None:
+        update_seconds = sum(item["update_seconds"] for item in updates)
+        inference_seconds = decode_seconds - update_seconds
+        report["online"] = dict(updates=updates, version=optimizer.adam.version,
+                                rounds_after_publication=updated_rounds, update_seconds=update_seconds,
+                                decode_tok_per_s_excluding_updates=tok / inference_seconds if steps else 0.0)
+    return report
 
 
 def first_difference(expected, actual):
@@ -126,6 +161,11 @@ def main():
                         metavar="N", help="Retain N suffix layers and verify one teacher replay")
     parser.add_argument("--teacher-rows", type=int, choices=range(1, 16), default=7)
     parser.add_argument("--check-backward", action="store_true", help="Run the captured suffix backward before release")
+    parser.add_argument("--adam-graph", type=Path, help="Enable online Adam using the eight-rank optimizer bundle")
+    parser.add_argument("--update-every", type=int, default=16, help="Minimum waves between online updates")
+    parser.add_argument("--max-updates", type=int, default=32)
+    parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument("--max-gradient-norm", type=float, default=1.)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if bool(args.draft_head) != bool(args.draft_graph):
@@ -134,10 +174,16 @@ def main():
         parser.error("Suffix replay requires a draft head and a matching compiled suffix")
     if args.check_backward and not args.capture_last_layers:
         parser.error("--check-backward requires --capture-last-layers")
+    if args.adam_graph and (not args.capture_last_layers or args.check_backward):
+        parser.error("--adam-graph requires --capture-last-layers and runs the backward during generation")
+    if args.adam_graph and (min(args.update_every, args.max_updates) < 1
+                            or not all(isfinite(v) and v > 0 for v in (args.learning_rate, args.max_gradient_norm))):
+        parser.error("Online updates require positive frequencies, limits, learning rate and clip norm")
 
     import torch
     from blockspec.dsv41_online_profile import profile_online
     from blockspec.dsv41_packed_proposer import StagedPackedDraftProposer, load_staged_draft_graphs, read_packed_head
+    from blockspec.dsv41_staged_adam import StagedPackedAdam, load_staged_adam_programs
     from blockspec.dsv41_staged_target import load_staged_target_programs, open_staged_target
     from blockspec.dsv41_staged_reverse import StagedDraftReverse, load_staged_reverse_programs
     from blockspec.pypto_dsv41_cluster import ControlLink, PeerDispatchError, RankPlan
@@ -188,14 +234,20 @@ def main():
                      capacities=list(capacities), context=args.context, slots=args.slots_per_dp, tokens=list(tokens))
     draft_programs = ()
     reverse_programs = {}
+    adam_programs = {}
+    online = None
     if args.draft_head:
         artifact = read_packed_head(checkpoint, args.draft_head, args.draft_block)
         draft_programs = load_staged_draft_graphs(
             args.draft_graph, context=args.context, block=args.draft_block,
             local_ranks=len(devices), request_slots=args.slots_per_dp, last_layers=args.capture_last_layers,
         )
-        if args.check_backward:
+        if args.check_backward or args.adam_graph:
             reverse_programs = load_staged_reverse_programs(args.draft_graph, args.capture_last_layers)
+        if args.adam_graph:
+            adam_programs = load_staged_adam_programs(args.adam_graph, FLASH, TP_SIZE)
+            online = dict(every=args.update_every, max_updates=args.max_updates, rate=args.learning_rate,
+                          max_norm=args.max_gradient_norm)
         signature["draft"] = dict(
             head=sha256((args.draft_head / "manifest.json").read_bytes()
                         + find_weight_index(args.draft_head).read_bytes()).hexdigest(),
@@ -203,13 +255,15 @@ def main():
             width=args.verify_width,
             teacher_rows=args.teacher_rows if args.capture_last_layers else 0,
             check_backward=args.check_backward,
+            online=online,
         )
 
-    def measured(session, width=0, teacher_rows=0, reverse=None):
+    def measured(session, width=0, teacher_rows=0, reverse=None, optimizer=None):
         metrics = dict(stage_seconds=Counter(), counts=Counter())
         with profile_online(SimpleNamespace(current=metrics, lock=Lock())):
             return generate(session, cases, capacities[0], DP_SIZE,
-                            width=width, teacher_rows=teacher_rows, reverse=reverse) | metrics
+                            width=width, teacher_rows=teacher_rows, reverse=reverse,
+                            optimizer=optimizer, online=online) | metrics
 
     with ControlLink.connect(plan.node, (args.rank0_ip, args.port), key, args.timeout) as link, ExitStack() as workers:
         if link.exchange("staged-target/start", signature) != signature:
@@ -219,10 +273,12 @@ def main():
             target = workers.enter_context(open_staged_target(
                 config, plan, link, weights, engram, programs, capacities=capacities,
                 context=args.context, slots=args.slots_per_dp, tokens=tokens,
-                draft_programs=(*draft_programs, *reverse_programs.values()),
+                draft_programs=(*draft_programs, *reverse_programs.values(),
+                                *(program for entry in adam_programs.values() for program in entry)),
             ))
             initialization_seconds = perf_counter() - start
             session = target.session()
+            print(json.dumps(dict(stage="generate", mode="ar", requests=len(cases))), flush=True)
             result = measured(session)
             arms = {"ar": result}
             if draft_programs:
@@ -232,9 +288,13 @@ def main():
                     last_layers=args.capture_last_layers,
                 )
                 reverse = StagedDraftReverse(session.draft, config, reverse_programs) if reverse_programs else None
+                optimizer = StagedPackedAdam(session.draft, reverse, FLASH, adam_programs) if adam_programs else None
                 draft_init = perf_counter() - start
+                print(json.dumps(dict(stage="generate", mode="online" if optimizer else "orthrus",
+                                      requests=len(cases))), flush=True)
                 arms["orthrus"] = measured(session, args.verify_width,
-                                           args.teacher_rows if args.capture_last_layers else 0, reverse)
+                                           args.teacher_rows if args.capture_last_layers else 0,
+                                           reverse if args.check_backward else None, optimizer)
                 arms["orthrus"].update(
                     initialization_seconds=draft_init, resident_head_bytes=session.draft.resident_head_bytes,
                     draft_profile=vars(session.draft.stats), width=args.verify_width,
@@ -253,7 +313,7 @@ def main():
 
     golden = json.loads(args.golden.read_text()) if args.golden else None
     replay_passed = True
-    if args.capture_last_layers:
+    if args.capture_last_layers and not args.adam_graph:
         owners = [item for item in (receipt, peer["capture"]) if item and "teacher_rows" in item]
         replay_passed = (
             len(owners) == 1 and receipt is not None and peer["capture"] is not None
@@ -272,18 +332,20 @@ def main():
                   golden_compared=golden is not None, **result)
     if parity is not None:
         report.update(arms=arms, parity=parity)
-    if args.capture_last_layers:
+    if args.capture_last_layers and not args.adam_graph:
         report["teacher_replay"] = dict(passed=replay_passed, layers=args.capture_last_layers,
                                         local=receipt, peer=peer["capture"])
     if args.check_backward:
-        from math import isfinite
-
         outcome = arms["orthrus"]["backward"]
         report["backward_passed"] = bool(
             outcome is not None and outcome["teacher_rows"] == owners[0]["expected_rows"]
             and len(outcome["layers"]) == args.capture_last_layers and isfinite(outcome["loss"])
         ) if replay_passed else False
         report["passed"] &= report["backward_passed"]
+    if args.adam_graph:
+        result = arms["orthrus"]["online"]
+        report["online_passed"] = bool(result["version"] and result["rounds_after_publication"])
+        report["passed"] &= report["online_passed"]
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)
     if not report["passed"]:

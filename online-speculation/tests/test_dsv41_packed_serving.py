@@ -476,3 +476,120 @@ def test_staged_suffix_reverse_both_hosts_follow_same_layer_schedule():
     assert owner_consumed == [(39, 39), (38, 38), (37, 37)]
     for result in (peer, owner):
         assert result["owner"] == 12 and result["teacher_rows"] == 3 and result["loss"] == .125
+
+
+def test_staged_adam_uses_the_same_version_when_one_host_rejects_an_update():
+    from concurrent.futures import ThreadPoolExecutor
+    import socket
+
+    from blockspec.dsv41_packed_adam import PackedAdam
+    from blockspec.dsv41_staged_adam import StagedPackedAdam
+    from blockspec.pypto_dsv41_cluster import ControlLink
+
+    def host(node, endpoint):
+        actions = []
+        with ControlLink(endpoint, node, b"adam-fixture-key") as link:
+            optimizer = StagedPackedAdam.__new__(StagedPackedAdam)
+            optimizer.link = link
+            adam = optimizer.adam = PackedAdam.__new__(PackedAdam)
+            adam.version = adam.epoch = 0
+            adam.failed = False
+            adam.config = None
+            adam.layers = (38, 39)
+            parameter = SimpleNamespace(name="w", program_key="shape")
+            adam.parameters = (parameter,)
+            adam.programs = {"shape": ("stage", "apply", "publish")}
+            adam.params = {(layer, "w"): SimpleNamespace(weights=layer, state=None) for layer in adam.layers}
+            adam.runtime = SimpleNamespace(run=lambda program, weights, *_args, **_kw:
+                                           actions.append((program, weights)))
+            adam._stage = lambda gradient, _: (4., gradient.valid)
+
+            def exchange(stage, layer, gradient, item):
+                assert (gradient == layer) if node == 1 else (gradient is None)
+                assert item is parameter
+                return SimpleNamespace(layer=layer, valid=(node == 1 or stage != "first"))
+
+            def reverse(_stage, *, owner, feedback, finished, consume):
+                assert owner == 12 and (feedback is not None) == (node == 1)
+                for layer in reversed(adam.layers):
+                    consume(layer, layer if node == 1 else None)
+                return dict(owner=owner, teacher_rows=7, loss=.25)
+
+            optimizer._exchange = exchange
+            optimizer.reverse = SimpleNamespace(run=reverse)
+            results = [optimizer.update(stage, owner=12, feedback=object() if node == 1 else None,
+                                        finished=False, rate=1e-5, max_norm=1.)
+                       for stage in ("first", "second")]
+        return actions, [(item["version"], item["applied"]) for item in results]
+
+    left, right = socket.socketpair()
+    left.settimeout(5)
+    right.settimeout(5)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(host, 0, left)
+        second = pool.submit(host, 1, right)
+        expected = ([("apply", 39), ("apply", 38), ("publish", 39), ("publish", 38)], [(0, False), (1, True)])
+        assert first.result() == second.result() == expected
+
+
+def test_staged_generation_updates_at_committed_rows_and_reuses_new_head():
+    from collections import namedtuple
+
+    path = Path(__file__).parents[1] / "scripts" / "run_dsv41_pypto_staged_target.py"
+    spec = spec_from_file_location("staged_target", path)
+    runner = module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    handle_type = namedtuple("Handle", "request_id dp")
+
+    class Session:
+        context = 128
+        draft = SimpleNamespace(tp=4, block=16)
+
+        def __init__(self):
+            self.feedback = {}
+            self.captures = []
+
+        def admit(self, request_id, dp, size):
+            return handle_type(request_id, dp)
+
+        def prefill_greedy_batch(self, queries):
+            return {handle: tokens[-1] + 1 for handle, tokens in queries}
+
+        def speculate_batch(self, queries, *, width, output_limits, student_capture=None):
+            if student_capture:
+                handle, rows = student_capture
+                assert not self.feedback
+                self.feedback[handle] = SimpleNamespace(limit=rows, seen=0)
+                self.captures.append(handle.dp)
+            proposals, emitted = {}, {}
+            for handle, anchor in queries:
+                # Force multiple waves of authoritative feedback before publishing.
+                proposals[handle] = (999,) if output_limits[handle] > 1 else ()
+                emitted[handle] = (anchor + 1,)
+                if handle in self.feedback:
+                    self.feedback[handle].seen += 1
+            return SimpleNamespace(proposals=proposals, verified=SimpleNamespace(emitted=emitted))
+
+        def release_student(self, handle):
+            self.feedback.pop(handle)
+
+        def release(self, handle):
+            assert handle not in self.feedback
+
+    session = Session()
+    adam = SimpleNamespace(version=0)
+
+    def update(stage, *, owner, feedback, finished, rate, max_norm):
+        assert not finished and feedback.seen == feedback.limit == 3
+        adam.version += 1
+        return dict(teacher_rows=feedback.limit, version=adam.version, update_seconds=0.)
+
+    cases = [dict(id=str(dp), dp=dp, input_ids=[1, 2], new_tokens=10) for dp in (0, 2)]
+    result = runner.generate(session, cases, 16, 4, width=8, teacher_rows=3,
+                             optimizer=SimpleNamespace(adam=adam, update=update),
+                             online=dict(every=2, max_updates=2, rate=1e-5, max_norm=1.))
+    assert session.captures == [0, 2]
+    assert [row["round"] for row in result["online"]["updates"]] == [3, 7]
+    assert result["online"]["rounds_after_publication"] == 5
+    assert result["online"]["version"] == 2
+    assert result["generated"] == {str(dp): list(range(3, 13)) for dp in (0, 2)}

@@ -335,7 +335,7 @@ class PackedAdam:
             valid &= bool(self.host[1].all())
         return norm_sq, valid
 
-    def update(self, differentiate, *, rate, max_norm=1.):
+    def update(self, differentiate, *, rate, max_norm=1., prepare=None, agree=None):
         """Run a synchronous reverse and publish after every layer and gradient have been checked."""
         if self.failed:
             raise RuntimeError("The draft optimizer is unusable after failed weight publication")
@@ -350,7 +350,8 @@ class PackedAdam:
                 raise ValueError("Packed Adam requires one gradient for each trainable layer")
             start = perf_counter()
             for parameter in self.parameters:
-                partial, valid = self._stage(gradient, parameter)
+                source = prepare(gradient, parameter) if prepare is not None else gradient
+                partial, valid = self._stage(source, parameter)
                 norm_sq += partial
                 finite &= valid
             stage_seconds += perf_counter() - start
@@ -363,13 +364,16 @@ class PackedAdam:
             return None
         if set(seen) != set(self.layers):
             raise ValueError("Packed Adam requires a complete suffix gradient")
-        if not finite or not isfinite(norm_sq) or not isfinite(loss.value):
+        finite = finite and isfinite(norm_sq) and isfinite(loss.value)
+        norm = sqrt(norm_sq) if finite else None
+        clip = min(1., max_norm / (norm + 1e-6)) if finite else 0.
+        step = self.version + 1
+        if agree is not None:
+            finite = agree(step, finite, clip)
+        if not finite:
             return PackedUpdate(self.version, False, loss.rows, loss.value, None, 0.,
                                 reverse_seconds, stage_seconds, 0., 0.)
 
-        norm = sqrt(norm_sq)
-        clip = min(1., max_norm / (norm + 1e-6))
-        step = self.version + 1
         jobs = [(self.programs[item.program_key], self.params[layer, item.name])
                 for layer in seen for item in self.parameters]
         try:

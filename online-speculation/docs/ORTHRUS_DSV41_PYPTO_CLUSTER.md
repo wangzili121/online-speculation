@@ -135,7 +135,15 @@ python /opt/dsv41-1122/run_dsv41_pypto_staged_target.py \
 
 要检查在线更新所需的前向状态，用同一条 draft 编译命令追加 `--last-layers 4`，写到新的产物目录。启动命令使用该目录，并追加 `--capture-last-layers 4 --teacher-rows 7`。两个节点对同一条请求和 anchor 发起捕获。持有该请求的 DP 保留末层隐藏状态、词表分数和指定后缀各层的 Attention、FFN 激活及实际 MoE 路由。候选拒绝后，教师行沿修正后的前缀继续收集。报告的 `teacher_replay.passed` 检查只有一个节点收到完整教师行。 [编译与回放验证记录](validation/dsv41/pypto-1122-949a-staged-capture.json)
 
-两台都追加 `--check-backward`，可在释放请求前执行一次 TV loss 的后缀反向。每层的专家输入和梯度通过驻留缓冲派发及返回，两个节点都计算自己持有的 W8A8 专家。请求节点按前向的 Top‑K 顺序累加输入梯度，再完成该层的 Attention 参数梯度及向上一层的反传。报告记录实际反传层、教师行、loss 和反向用时。这条验收入口只计算梯度，在线优化器及跨节点权重发布仍在接入。 [反向图与实卡数值验证](validation/dsv41/pypto-1122-949a-staged-reverse.json)
+两台都追加 `--check-backward`，可在释放请求前执行一次 TV loss 的后缀反向。每层的专家输入和梯度通过驻留缓冲派发及返回，两个节点都计算自己持有的 W8A8 专家。请求节点按前向的 Top‑K 顺序累加输入梯度，再完成该层的 Attention 参数梯度及向上一层的反传。报告记录实际反传层、教师行、loss 和反向用时。 [反向图与实卡数值验证](validation/dsv41/pypto-1122-949a-staged-reverse.json)
+
+要边生成边更新，在同一个 1122 环境编译一份优化器产物，并放到两台机器相同的路径。不同 last-N 共用这份产物。
+
+```bash
+python /opt/dsv41-1122/compile_dsv41_pypto_staged_adam.py --artifact-dir /results/adam
+```
+
+在上一条双机生成命令里使用编译了 `--last-layers N` 的 draft 目录，并追加 `--capture-last-layers N --adam-graph /results/adam --teacher-rows 7 --update-every 16 --max-updates 32 --learning-rate 1e-5`。首次检查可用两台各一个请求、每题生成 24 token、`--update-every 2 --max-updates 2`，让两端轮流提供教师反馈，并在发布后继续跑 draft。脚本在一次权重加载内用相同请求跑 AR 和在线 Orthrus，逐 token 比对。报告记录每轮损失、梯度范数、反向、梯度通信和暂存、Adam、发布，以及含更新和扣除更新时间的 Decode 吞吐。扣时结果是同一次在线运行的估算。真实双机整模在线结果待验证。
 
 ### GSM8K 在线更新报告
 
