@@ -252,6 +252,7 @@ def main():
                         metavar="N", help="Retain N suffix layers and verify one teacher replay")
     parser.add_argument("--teacher-rows", type=int, choices=range(1, 16), default=7)
     parser.add_argument("--check-backward", action="store_true", help="Run the captured suffix backward before release")
+    parser.add_argument("--resident-teacher", action="store_true", help="Experimental device-side teacher snapshot")
     parser.add_argument("--adam-graph", type=Path, help="Enable online Adam using the eight-rank optimizer bundle")
     parser.add_argument("--update-every", type=int, default=16, help="Minimum waves between online updates")
     parser.add_argument("--max-updates", type=int, default=32)
@@ -269,6 +270,8 @@ def main():
         parser.error("--check-backward requires --capture-last-layers")
     if args.adam_graph and (not args.capture_last_layers or args.check_backward):
         parser.error("--adam-graph requires --capture-last-layers and runs the backward during generation")
+    if args.resident_teacher and not (args.check_backward or args.adam_graph):
+        parser.error("--resident-teacher requires a captured backward run")
     if args.eval_workload and not args.adam_graph:
         parser.error("--eval-workload requires an online optimizer")
     if args.adam_graph and (min(args.update_every, args.max_updates) < 1
@@ -353,7 +356,9 @@ def main():
             local_ranks=len(devices), request_slots=args.slots_per_dp, last_layers=args.capture_last_layers,
         )
         if args.check_backward or args.adam_graph:
-            reverse_programs = load_staged_reverse_programs(args.draft_graph, args.capture_last_layers)
+            reverse_programs = load_staged_reverse_programs(
+                args.draft_graph, args.capture_last_layers, resident_teacher=args.resident_teacher,
+            )
         if args.adam_graph:
             adam_programs = load_staged_adam_programs(args.adam_graph, FLASH, TP_SIZE)
             online = dict(every=args.update_every, max_updates=args.max_updates, rate=args.learning_rate,
@@ -365,11 +370,13 @@ def main():
             width=args.verify_width,
             teacher_rows=args.teacher_rows if args.capture_last_layers else 0,
             check_backward=args.check_backward,
+            resident_teacher=args.resident_teacher,
             online=online,
         )
 
     def measured(session, mode, width=0, teacher_rows=0, reverse=None, optimizer=None, *,
                  requests=cases, reference=None):
+        print(json.dumps(dict(stage="generate", mode=mode, requests=len(requests))), flush=True)
         before = dict(vars(session.draft.stats)) if width else None
         metrics = dict(stage_seconds=Counter(), counts=Counter())
         start = perf_counter()
@@ -383,6 +390,8 @@ def main():
         arm["wall_tok_per_s"] = sum(map(len, arm["generated"].values())) / elapsed
         if width:
             arm["draft_profile"] = {key: value - before[key] for key, value in vars(session.draft.stats).items()}
+        print(json.dumps(dict(stage="arm_complete", mode=mode, seconds=elapsed,
+                              decode_tok_per_s=arm["decode_tok_per_s"], acceptance=arm["acceptance"])), flush=True)
         return arm
 
     with ControlLink.connect(plan.node, (args.rank0_ip, args.port), key, args.timeout) as link, ExitStack() as workers:
@@ -391,6 +400,7 @@ def main():
         start = perf_counter()
         warmup_seconds = {}
         try:
+            print(json.dumps(dict(stage="load_resident_target", ranks=list(plan.local_ranks))), flush=True)
             target = workers.enter_context(open_staged_target(
                 config, plan, link, weights, engram, programs, capacities=capacities,
                 context=args.context, slots=args.slots_per_dp, tokens=tokens,
@@ -405,6 +415,7 @@ def main():
                 warmup_seconds["ar"] = warm_ar["wall_seconds"]
             if draft_programs:
                 start = perf_counter()
+                print(json.dumps(dict(stage="load_resident_draft", last_layers=args.capture_last_layers)), flush=True)
                 session.draft = StagedPackedDraftProposer(
                     target, draft_programs, draft_head=args.draft_head, head_artifact=artifact, block=args.draft_block,
                     last_layers=args.capture_last_layers,
@@ -416,7 +427,6 @@ def main():
                     warmup_seconds["orthrus"] = measured(
                         session, "warmup_orthrus", args.verify_width, requests=warmup, reference=warm_ar,
                     )["wall_seconds"]
-            print(json.dumps(dict(stage="generate", mode="ar", requests=len(cases))), flush=True)
             result = measured(session, "ar")
             arms = {"ar": result}
             if draft_programs:
@@ -424,8 +434,6 @@ def main():
                     arms["eval_ar"] = measured(session, "eval_ar", requests=evaluation)
                     arms["eval_initial"] = measured(session, "eval_initial", args.verify_width, requests=evaluation,
                                                    reference=arms["eval_ar"])
-                print(json.dumps(dict(stage="generate", mode="online" if optimizer else "orthrus",
-                                      requests=len(cases))), flush=True)
                 arms["orthrus"] = measured(session, "online" if optimizer else "orthrus", args.verify_width,
                                            args.teacher_rows if args.capture_last_layers else 0,
                                            reverse if args.check_backward else None, optimizer, reference=result)

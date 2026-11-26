@@ -5,6 +5,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 action="${1:-help}"
 if [[ $# -gt 0 ]]; then shift; fi
 default_image=orthrus-dsv41-pypto:72a62d1
+if [[ "$action" == build-1122 ]]; then default_image=orthrus-dsv41-pypto:1122-949a18d; fi
 if [[ "$action" == cluster-check || "$action" == cluster-accept ||
       ( "$action" == fabric-check && "${1:-}" == node* ) ]]; then
   node="${1:-}"
@@ -93,12 +94,16 @@ case "$action" in
     [[ $# -gt 0 ]] || { echo "Usage: $0 gsm8k-summary RESULT..." >&2; exit 2; }
     exec python3 "$root/scripts/summarize_dsv41_gsm8k.py" "$@"
     ;;
-  build)
+  build|build-1122)
     [[ "$(uname -s)/$(uname -m)" == Linux/aarch64 ]] || {
       echo "Build this ARM64 image on a Linux aarch64 Docker host." >&2; exit 2;
     }
     recipe="$root/runtime/pypto_dsv41_a3/docker/Dockerfile"
     build_options=(--build-arg "BUILD_JOBS=${BUILD_JOBS:-4}")
+    if [[ "$action" == build-1122 ]]; then
+      recipe+=.1122
+      build_options+=(--build-arg "BASE_IMAGE=${PYPTO_BASE_IMAGE:-orthrus-dsv41-pypto:72a62d1-offline}")
+    fi
     if [[ -n "${PYPTO_BUILD_NETWORK:-}" ]]; then
       build_options+=(--network "$PYPTO_BUILD_NETWORK")
     fi
@@ -538,7 +543,7 @@ case "$action" in
     exec docker run "${options[@]}" "$image" "$action" "$@"
     ;;
   *)
-    echo "Usage: $0 {build|refresh-image|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|multicard-check|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|global-window-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
+    echo "Usage: $0 {build|build-1122|refresh-image|save FILE|load FILE|host-info|doctor|preflight|compile-probe|probe|device-map|shell|attention-check|online-kernel-check|hc-collapse-vjp-check|hc-pre-vjp-check|resident-publish-check|online-factory-check|online-ready|multicard-check|c1a-vjp-check|expert-capture-check|expert-vjp-check|expert-input-vjp-check|ep-vjp-check|handoff-check|fabric-check|global-window-check|cluster-check|cluster-accept|init-head|gsm8k-prepare|gsm8k-summary}"
     echo "Company checks: $0 {fabric-check|cluster-check|cluster-accept} {node7|node8}"
     echo "Offline online-update compilation check: $0 online-abi-check"
     ;;

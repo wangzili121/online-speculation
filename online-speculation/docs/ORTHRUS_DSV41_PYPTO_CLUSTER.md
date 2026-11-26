@@ -109,6 +109,26 @@ Draft 和 Verify 只回读实际参与本轮的词表行。Draft 结果直接交
 
 `1122` 的八卡节点分别执行本机的 TP4 Attention 和输出头。每层 FFN 的专家派发和回传使用跨机 EP16 HCCL。Draft 复用目标模型的只读历史页和冻结的 FFN，临时双向块及输出缓冲由 Draft 独立持有。Verify 根据接受长度推进提交位置。候选写过的页可以留在本请求的分配里，后续读取由提交位置和可见长度限制，在复用前写入新值。只有请求所在节点更新或截断 Engram 历史。
 
+公司 node7 和 node8 使用同一个 `1122` 镜像、同版 W8A8 权重和同一份集群密钥。node7 默认读取 `/root/.orthrus-cluster.key`，node8 默认读取 `/home/wangzili/.orthrus-cluster.key`。镜像基于现有的 `orthrus-dsv41-pypto:72a62d1-offline`。在可以访问依赖的 ARM64 主机上执行一次 `bash online-speculation/scripts/dsv41_pypto_env.sh build-1122`，再将生成的 `orthrus-dsv41-pypto:1122-949a18d` 镜像复制到另一节点。已经配置的 `PYPTO_BUILD_NETWORK`、`PYPTO_BUILD_PROXY`、`PYPTO_BUILD_CA` 和 `PYPTO_BUILD_PYPI` 可继续使用。
+
+两台从仓库根目录执行同样的命令，node8 将 `NODE` 设为 `node8`。已有 GSM8K 分区默认读 `/workspace/data/orthrus-dsv41-gsm8k`，也可以用 `DSV41_GSM8K_ROOT` 指定。
+
+```bash
+NODE=node7
+RUN=online-speculation/scripts/run_dsv41_pypto_company_staged.sh
+bash "$RUN" "$NODE" prepare 1
+bash "$RUN" "$NODE" smoke 1
+bash "$RUN" "$NODE" study 1
+```
+
+`prepare` 只用 CPU，生成初始化 head、编译产物和实验请求。各节点独立存储时分别执行，共享目录时执行一次。两台同时启动 `smoke`，用 DP0、DP2 上的两个请求验证 AR 逐 token 对照、draft、verify、接受、在线更新与发布，成功时 `passed` 和 `online_passed` 均为 `true`。两台通过后一起启动 `study`，同一进程复用已加载的基模，比较 AR、含更新的 Orthrus，以及留出题上的初始和冻结 head。两种运行都保存 `run.log` 与 `result.json` 到脚本打印的目录。默认 last-1，也可在两台为同一个更大的后缀层数重新执行 `prepare`。
+
+在 111 的 ARM64 CANN 环境，按上述尺寸编译了 Prefill、Decode、6 个 Draft 入口、13 个后缀反向入口和 24 个优化器入口，并将编译目录移动后回载。使用指定 W8A8 权重导出了初始化 head 的全部 40 层，验证了 K16 启动时读取的 head 格式和真实 tokenizer 生成的 GSM8K 请求。两台公司机器仍需实跑两种模式。
+
+这组实验的学习率为 `1e-5`，固定 16 行起草图，每轮最多验证 8 行，每次更新最多用 7 个教师位置。每个 DP 最多驻留两个请求，四个 DP 合计最多八个请求。同一 DP 每个起草 wave 服务其中一个请求。`study` 使用 4 道预热题、128 道在线题、32 道留出题，在线更新至少间隔 16 个 wave，上限为 128 次。首轮实际更新计入实测吞吐，同时记录扣除更新时间的估算。
+
+教师 logits 的设备快照已在 910B3 验证，7 个教师位置的 TV loss 和 BF16 梯度与现用路径逐元素一致。设备快照省下约 7.24 MB 主机往返，但采集加 loss 的热态中位数为 54.58 ms，现用路径为 39.32 ms。生产比较继续用现用路径，设备快照可用 `--resident-teacher` 单独复验。 [单卡记录](validation/dsv41/pypto-1122-949a-staged-teacher-910b3.json)
+
 在 1122 镜像中创建三个新输出目录。两台使用同一份源码和相同的编译配置，产物可在相同环境之间复制。
 
 ```bash

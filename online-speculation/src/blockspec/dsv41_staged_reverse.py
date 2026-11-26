@@ -10,7 +10,7 @@ from .dsv41_packed_ffn_mhc_vjp import PackedFFNMHCVJP, make_packed_ffn_mhc_vjp
 from .dsv41_packed_ffn_tape import PackedFFNPostVJP, make_packed_ffn_post_vjp
 from .dsv41_packed_final_vjp import PackedFinalVJP, make_packed_final_vjp
 from .dsv41_packed_lm_head_vjp import PackedLMHeadVJP, make_packed_lm_head_vjp
-from .dsv41_packed_loss import PackedLoss, make_packed_loss_graph
+from .dsv41_packed_loss import PackedLoss, PackedTeacherCopy, make_packed_loss_graph, make_packed_teacher_copy
 from .dsv41_packed_qkv_vjp import PackedQKVVJP, make_packed_qkv_vjp
 from .dsv41_packed_wo_vjp import PackedWoInputVJP, make_packed_wo_input_vjp
 from .dsv41_staged_ep_vjp import StagedExpertVJP, make_staged_expert_vjp
@@ -30,6 +30,7 @@ def make_staged_reverse_graphs(block, layers, *, physical_pages, local_ranks):
     hidden, copies, vocab = model.hidden_size, model.hc_mult, model.vocab_size
     graphs = {
         "loss": make_packed_loss_graph(rows, vocab, dp, tp, "tv"),
+        "teacher-copy": make_packed_teacher_copy(rows, vocab, dp, tp),
         "lm-head": make_packed_lm_head_vjp(rows, vocab, hidden, dp, tp),
         "final-norm": make_packed_final_vjp(rows, hidden, copies, dp, tp, model.rms_norm_eps, output_rows=block),
         "ffn-output": make_packed_ffn_post_vjp(block, layers, block, hidden, copies, dp, tp),
@@ -48,10 +49,12 @@ def make_staged_reverse_graphs(block, layers, *, physical_pages, local_ranks):
     return graphs
 
 
-def load_staged_reverse_programs(directory, layers):
+def load_staged_reverse_programs(directory, layers, *, resident_teacher=False):
     from pypto.ir import DistributedCompiledProgram
 
     names = (*_LOCAL_STAGES, *_EXPERT_STAGES)
+    if resident_teacher:
+        names += ("teacher-copy",)
     if layers > 1:
         names += ("attention-input",)
     return {name: DistributedCompiledProgram.from_dir(directory / "reverse" / name) for name in names}
@@ -67,6 +70,9 @@ class StagedDraftReverse:
         self.draft = draft
         self.layers = tuple(range(FLASH.num_hidden_layers - 1, FLASH.num_hidden_layers - draft.last_layers - 1, -1))
         self.loss = PackedLoss(draft, programs["loss"])
+        if "teacher-copy" in programs:
+            sources = [draft.target.handles[1][rank]["logits"] for rank in self.loss.owners]
+            draft.teacher_copy = PackedTeacherCopy(self.loss, programs["teacher-copy"], sources)
         self.lm_head = PackedLMHeadVJP(draft, self.loss, programs["lm-head"])
         self.final = PackedFinalVJP(draft, self.lm_head, programs["final-norm"], output_rows=draft.block)
         self.ffn_post = PackedFFNPostVJP(draft, self.final, programs["ffn-output"], FLASH.num_hidden_layers)

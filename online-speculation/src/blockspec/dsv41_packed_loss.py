@@ -3,7 +3,10 @@
 from dataclasses import dataclass, field
 from time import perf_counter
 
-from .pypto_dsv41_online_programs import make_kl, make_tv
+from .dsv41_online_profile import active_profile, timed_stage
+from .pypto_dsv41_online_programs import loss_vocabulary_tile, make_kl, make_tv
+
+TEACHER_COPY_SHARDS = 16
 
 
 def make_packed_loss_graph(rows, vocabulary, dp, tp, kind):
@@ -77,6 +80,126 @@ class PackedTeacherRows:
         return torch.cat(self.chunks, dim=0)
 
 
+def make_packed_teacher_copy(rows, vocabulary, dp, tp):
+    """Snapshot selected Verify rows and reduce their finite flags on device."""
+    import pypto.language as pl
+
+    tile = loss_vocabulary_tile(vocabulary)
+    shards = TEACHER_COPY_SHARDS
+    flags_width = shards * 8
+    tiles_per_shard = (vocabulary // tile + shards - 1) // shards
+
+    @pl.jit
+    def snapshot(
+        source: pl.Tensor[[rows, vocabulary], pl.FP32],
+        target: pl.InOut[pl.Tensor[[rows, vocabulary], pl.FP32]],
+        flags: pl.InOut[pl.Tensor[[rows, flags_width], pl.FP32]],
+        first: pl.Scalar[pl.INT32], cursor: pl.Scalar[pl.INT32], count: pl.Scalar[pl.INT32],
+    ):
+        with pl.spmd(rows * shards, name_hint="orthrus_committed_teacher_rows"):
+            block = pl.tile.get_block_idx()
+            row = block // shards
+            shard = block % shards
+            if row < count:
+                valid = pl.full([8, tile // 8], dtype=pl.FP32, value=1.)
+                for offset in pl.range(tiles_per_shard):
+                    col = (shard * tiles_per_shard + offset) * tile
+                    if col < vocabulary:
+                        value = pl.slice(source, [1, tile], [first + row, col])
+                        target[cursor + row:cursor + row + 1, col:col + tile] = value
+                        finite = pl.cmp(pl.abs(pl.reshape(value, [8, tile // 8])), 3.4028234663852886e38, cmp_type=3)
+                        valid = pl.minimum(valid, finite)
+                flags[cursor + row:cursor + row + 1, shard * 8:(shard + 1) * 8] = pl.reshape(pl.row_min(valid), [1, 8])
+
+    @pl.jit.host
+    def dispatch(
+        source: pl.Tensor[[dp, rows, vocabulary], pl.FP32],
+        target: pl.InOut[pl.Tensor[[dp, rows, vocabulary], pl.FP32]],
+        flags: pl.InOut[pl.Tensor[[dp, rows, flags_width], pl.FP32]],
+        owner: pl.Scalar[pl.INT32], first: pl.Scalar[pl.INT32], cursor: pl.Scalar[pl.INT32],
+        count: pl.Scalar[pl.INT32],
+    ):
+        replica = owner // tp
+        snapshot(source[replica], target[replica], flags[replica], first, cursor, count, device=owner)
+
+    return dispatch
+
+
+@dataclass(frozen=True)
+class ResidentTeacherLogits:
+    rows: int
+    buffer: object
+    flags: object
+
+    def __len__(self):
+        return self.rows
+
+
+class ResidentPackedTeacherRows:
+    """Retain the committed prefix across Verify calls on the request's worker."""
+
+    def __init__(self, student, collector, buffer, flags):
+        self.student, self.collector = student, collector
+        self.buffer, self.flags = buffer, flags
+        self.rows = 0
+
+    @property
+    def remaining(self):
+        return self.student.rows - self.rows
+
+    def append_from(self, position, first, count):
+        if (position != self.student.position + self.rows or not 1 <= count <= self.remaining
+                or not 0 <= first <= self.collector.loss.rows - count):
+            raise ValueError("Packed teacher rows must extend the captured draft's committed prefix")
+        self.collector.snapshot(self, first, count)
+        self.rows += count
+
+    def logits(self, *, finished=False):
+        if not self.rows or (self.remaining and not finished):
+            return None
+        return ResidentTeacherLogits(self.rows, self.buffer, self.flags)
+
+    def close(self):
+        for value in (self.buffer, self.flags):
+            self.collector.loss.runtime.free_tensor(value, worker_id=self.student.owner)
+
+
+class PackedTeacherCopy:
+    def __init__(self, loss, graph, sources):
+        import torch
+
+        self.loss, self.graph = loss, graph
+        self.source = loss._stack(sources, (loss.rows, loss.vocabulary))
+        self.flags_shape = (loss.rows, TEACHER_COPY_SHARDS * 8)
+        self.padding = tuple(loss.runtime.alloc_tensor(self.flags_shape, torch.float32, worker_id=owner)
+                             for owner in loss.owners)
+
+    def capture(self, student):
+        import torch
+
+        loss = self.loss
+        flags = loss.runtime.alloc_tensor(self.flags_shape, torch.float32, worker_id=student.owner)
+        try:
+            buffer = loss.runtime.alloc_tensor((loss.rows, loss.vocabulary), torch.float32, worker_id=student.owner)
+        except BaseException:
+            loss.runtime.free_tensor(flags, worker_id=student.owner)
+            raise
+        return ResidentPackedTeacherRows(student, self, buffer, flags)
+
+    def snapshot(self, rows, first, count):
+        loss = self.loss
+        owner = rows.student.owner
+        replica = loss.owners.index(owner)
+        target, flags = list(loss.teacher.shards), list(self.padding)
+        target[replica], flags[replica] = rows.buffer, rows.flags
+        with timed_stage("teacher_device_snapshot"):
+            loss.runtime.run(self.graph, self.source, loss._stack(target, rows.buffer.shape),
+                             loss._stack(flags, rows.flags.shape), owner, first, rows.rows, count, config=loss.config)
+        profile = active_profile()
+        if profile is not None and profile.current is not None:
+            profile.current["counts"]["teacher_device_bytes"] += count * loss.vocabulary * 4
+
+
 class PackedLoss:
     """Route a retained FP32 student and the authoritative teacher to one DP owner."""
 
@@ -99,6 +222,7 @@ class PackedLoss:
         self.gradient = allocate(shape, torch.bfloat16)
         self.losses = allocate((self.rows, 8), torch.float32)
         self.host_losses = torch.empty((self.rows, 8), dtype=torch.float32)
+        self.host_flags = torch.empty((self.rows, TEACHER_COPY_SHARDS * 8), dtype=torch.float32)
 
     def _stack(self, shards, shape):
         return self.stacked(shards, (len(self.owners), *shape), self.owners)
@@ -107,24 +231,38 @@ class PackedLoss:
         import torch
 
         shape = self.rows, self.vocabulary
-        if (teacher.ndim != 2 or teacher.shape[1] != self.vocabulary
-                or not 1 <= teacher.shape[0] <= capture.rows <= self.rows
-                or capture.logits.shape != shape or capture.logits.dtype != torch.float32
-                or teacher.device.type != "cpu" or not teacher.is_floating_point()):
+        resident = isinstance(teacher, ResidentTeacherLogits)
+        if not resident and (teacher.ndim != 2 or teacher.shape[1] != self.vocabulary
+                             or teacher.device.type != "cpu" or not teacher.is_floating_point()):
             raise ValueError("Packed loss requires aligned, full-vocabulary teacher and student rows")
-        teacher = teacher.to(dtype=torch.float32).contiguous()
-        if not torch.isfinite(teacher).all():
-            raise ValueError("Packed teacher logits must be finite")
+        count = teacher.rows if resident else teacher.shape[0]
+        if (not 1 <= count <= capture.rows <= self.rows
+                or capture.logits.shape != shape or capture.logits.dtype != torch.float32):
+            raise ValueError("Packed loss requires aligned, full-vocabulary teacher and student rows")
         owner = capture.owner
         replica = self.owners.index(owner)
         shards = list(self.student)
         shards[replica] = capture.logits
         start = perf_counter()
-        self.runtime.copy_to(self.teacher.shards[replica].data_ptr, teacher.data_ptr(),
-                             teacher.nbytes, worker_id=owner)
-        self.runtime.run(self.graph, self._stack(shards, shape), self.teacher, self.gradient,
-                         self.losses, owner, teacher.shape[0], config=self.config)
+        upload = 0
+        if resident:
+            flags = self.host_flags[:count]
+            self.runtime.copy_from(flags.data_ptr(), teacher.flags.data_ptr, flags.nbytes, worker_id=owner)
+            if not bool((flags == 1).all()):
+                raise ValueError("Packed teacher logits must be finite")
+            source = list(self.teacher.shards)
+            source[replica] = teacher.buffer
+            teacher_stack = self._stack(source, shape)
+        else:
+            teacher = teacher.to(dtype=torch.float32).contiguous()
+            if not torch.isfinite(teacher).all():
+                raise ValueError("Packed teacher logits must be finite")
+            self.runtime.copy_to(self.teacher.shards[replica].data_ptr, teacher.data_ptr(),
+                                 teacher.nbytes, worker_id=owner)
+            teacher_stack, upload = self.teacher, teacher.nbytes
+        self.runtime.run(self.graph, self._stack(shards, shape), teacher_stack, self.gradient,
+                         self.losses, owner, count, config=self.config)
         self.runtime.copy_from(self.host_losses.data_ptr(), self.losses.shards[replica].data_ptr,
                                self.host_losses.nbytes, worker_id=owner)
-        return PackedLossResult(owner, teacher.shape[0], float(self.host_losses[:, 0].sum()),
-                                self.gradient.shards[replica], teacher.nbytes, perf_counter() - start)
+        return PackedLossResult(owner, count, float(self.host_losses[:, 0].sum()),
+                                self.gradient.shards[replica], upload, perf_counter() - start)
