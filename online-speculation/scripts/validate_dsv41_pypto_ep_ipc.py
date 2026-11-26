@@ -12,22 +12,28 @@ from time import perf_counter
 from types import SimpleNamespace
 
 
-def compile_programs(config, world, columns):
+def compile_programs(config, world, columns, reduction=False):
     import pypto.language as pl
     import pypto.language.distributed as pld
 
+    dtype = pl.FP32 if reduction else pl.INT32
+
     @pl.jit
-    def write_rank(output: pl.Tensor[[world, columns], pl.INT32],
+    def write_rank(output: pl.Tensor[[world, columns], dtype],
                    rank: pl.Scalar[pl.INT32], version: pl.Scalar[pl.INT32]):
         for peer in pl.spmd(world):
             lanes = pl.tile.arange(0, [1, columns], dtype=pl.INT32)
             offset = pl.cast(version * 1000 + rank * 100 + peer * 10, pl.INT32)
-            output = pl.store(pl.tile.add(lanes, offset), [peer, 0], output)
+            values = pl.tile.add(lanes, offset)
+            if reduction:
+                output = pl.store(pl.tile.cast(values, pl.FP32), [peer, 0], output)
+            else:
+                output = pl.store(values, [peer, 0], output)
         return output
 
     @pl.jit
-    def read_rank(received: pl.Tensor[[world, columns], pl.INT32],
-                  output: pl.Tensor[[world, columns], pl.INT32]):
+    def read_rank(received: pl.Tensor[[world, columns], dtype],
+                  output: pl.Tensor[[world, columns], dtype]):
         for source in pl.spmd(world):
             row = pl.tile.load(received, [source, 0], [1, columns])
             output = pl.store(pl.tile.add(row, 7), [source, 0], output)
@@ -35,7 +41,7 @@ def compile_programs(config, world, columns):
 
     @pl.jit.host
     def produce(
-        output: pl.Out[pl.Tensor[[world, world, columns], pl.INT32]],
+        output: pl.Out[pl.Tensor[[world, world, columns], dtype]],
         version: pl.Scalar[pl.INT32],
     ):
         for rank in pl.range(pld.world_size()):
@@ -43,8 +49,8 @@ def compile_programs(config, world, columns):
 
     @pl.jit.host
     def consume(
-        received: pl.Tensor[[world, world, columns], pl.INT32],
-        output: pl.Out[pl.Tensor[[world, world, columns], pl.INT32]],
+        received: pl.Tensor[[world, world, columns], dtype],
+        output: pl.Out[pl.Tensor[[world, world, columns], dtype]],
     ):
         for rank in pl.range(pld.world_size()):
             read_rank(received[rank], output[rank], device=rank)
@@ -56,6 +62,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--devices", default="0,1")
     parser.add_argument("--columns", type=int, default=256)
+    parser.add_argument("--packet-arena", action="store_true", help="Exchange prefix views of larger IPC allocations")
+    parser.add_argument("--all-reduce", action="store_true", help="Verify a resident FP32 sum on two ranks")
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--moe", action="store_true", help="Compile or exercise the EP16 MoE graph stages")
     parser.add_argument("--rows", type=int, default=64, choices=(16, 64, 80))
@@ -79,6 +87,8 @@ def main():
     world, columns = len(devices), args.columns
     if devices != list(range(world)) or (not args.compile_only and world not in (1, 2)):
         parser.error("Use consecutive local device IDs and one or two devices for runtime validation")
+    if args.all_reduce and (world != 2 or args.moe):
+        parser.error("--all-reduce requires two devices and the packet fixture")
     if args.moe and not args.compile_only and (world != 1 or args.checkpoint is None):
         parser.error("The real-weight MoE fixture uses --devices 0 and --checkpoint")
     ranks = tuple(range(world))
@@ -100,21 +110,29 @@ def main():
             report["real_weights"] = exercise_moe(config, programs, args.checkpoint, moe_transport, tokens, args.rows)
         print(json.dumps(report), flush=True)
         return
-    produce, consume = compile_programs(config, world, columns)
+    produce, consume = compile_programs(config, world, columns, reduction=args.all_reduce)
     if args.compile_only:
         print(json.dumps(dict(passed=True, compiled=True, ranks=world)), flush=True)
         return
     dimensions = (world, columns)
+    collective = "all_reduce" if args.all_reduce else "all_to_all"
+    dtype = torch.float32 if args.all_reduce else torch.int32
     with ExitStack() as stack:
         runtime = stack.enter_context(DistributedWorker([produce, consume], config, persistent=True))
         pool = stack.enter_context(ThreadPoolExecutor(max_workers=world))
 
         def allocate(*, exportable):
-            shards = [runtime.alloc_tensor(dimensions, torch.int32, worker_id=rank, exportable=exportable)
-                      for rank in ranks]
-            return StackedDeviceTensor(shards, (world, *dimensions), ranks)
+            capacity = (world, 2 * columns) if exportable and args.packet_arena else dimensions
+            bases = [runtime.alloc_tensor(capacity, dtype, worker_id=rank, exportable=exportable)
+                     for rank in ranks]
+            shards = bases if capacity == dimensions else [
+                runtime.view_tensor(handle, dimensions, worker_id=rank) for rank, handle in enumerate(bases)
+            ]
+            return StackedDeviceTensor(shards, (world, *dimensions), ranks), bases
 
-        sent, received, observed = allocate(exportable=True), allocate(exportable=True), allocate(exportable=False)
+        sent, send_bases = allocate(exportable=True)
+        received, receive_bases = allocate(exportable=True)
+        observed, _ = allocate(exportable=False)
         # The fixture uses one on-host group. Production EP uses the same resident transfer entry with two hosts.
         plan = SimpleNamespace(local_ranks=range(world), node=0, groups=lambda _: (ranks,))
         dispatcher = SimpleNamespace(devices=devices, map_ranks=lambda task: list(pool.map(task, ranks)))
@@ -122,8 +140,8 @@ def main():
                                                           native=moe_transport))
         mappings = transport.mappings = ResidentHcclMappings(runtime, transport.memory)
         for rank in ranks:
-            mappings.register(rank, sent.shards[rank])
-            mappings.register(rank, received.shards[rank])
+            mappings.register(rank, send_bases[rank])
+            mappings.register(rank, receive_bases[rank])
         transfers = [((source, target, "packet"),)
                      for source, target in zip(sent.shards, received.shards, strict=True)]
 
@@ -138,7 +156,7 @@ def main():
             runtime.run(produce, sent, iteration)
             started = perf_counter()
             if world == 2:
-                transport.exchange_resident("ipc/round", transfers, group="tp")
+                transport.exchange_resident("ipc/round", transfers, collective=collective, group="tp")
             else:
                 size = sent.shards[0].nbytes
                 src = mappings.address(0, sent.shards[0])
@@ -148,16 +166,19 @@ def main():
             durations.append(perf_counter() - started)
             runtime.run(consume, received, observed)
             for rank, shard in enumerate(observed.shards):
-                result = torch.empty(dimensions, dtype=torch.int32)
+                result = torch.empty(dimensions, dtype=dtype)
                 runtime.copy_from(result.data_ptr(), shard.data_ptr, result.nbytes, worker_id=rank)
-                expected = (torch.arange(world, dtype=torch.int32)[:, None] * 100
-                            + torch.arange(columns, dtype=torch.int32)[None, :]
-                            + iteration * 1000 + rank * 10 + 7)
+                rows = torch.arange(world, dtype=dtype)[:, None]
+                cols = torch.arange(columns, dtype=dtype)[None, :]
+                if args.all_reduce:
+                    expected = world * (rows * 10 + cols + iteration * 1000) + 100 * sum(ranks) + 7
+                else:
+                    expected = rows * 100 + cols + iteration * 1000 + rank * 10 + 7
                 torch.testing.assert_close(result, expected, atol=0, rtol=0)
 
     print(json.dumps(dict(passed=True, physical_devices=len(devices), iterations=len(durations),
-                          transport="hccl_all_to_all" if world == 2 else "acl_d2d",
-                          host_staging=False, byte_exact=True, leases_retired=True,
+                          transport=f"hccl_{collective}" if world == 2 else "acl_d2d",
+                          host_staging=False, byte_exact=True, leases_retired=True, packet_arena=args.packet_arena,
                           warm_transfer_median_ms=1000 * median(durations[1:]))), flush=True)
 
 

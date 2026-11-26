@@ -1,0 +1,209 @@
+{
+  "model_base": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "revision": "bab53bb",
+  "scope": "Resident optimizer and publication fixtures on Ascend 910B3, CANN 9.0.0. Gradient tensors are constructed and the DP sum uses a host fixture. Timing includes the host fixture.",
+  "eight_rank_compile": {
+    "host": "61",
+    "cann": "9.2.0",
+    "compiled": 24,
+    "reloaded": 24,
+    "seconds": 30.94,
+    "local_ranks": 8,
+    "tp": 4,
+    "command": "python compile_dsv41_pypto_staged_adam.py --artifact-dir /results/adam"
+  },
+  "communication_buffer": {
+    "per_rank_previous_bytes": 224409728,
+    "per_rank_current_bytes": 83886080
+  },
+  "results": [
+    {
+      "physical_devices": [
+        5
+      ],
+      "passed": true,
+      "compiled": 24,
+      "tp": 1,
+      "world": 1,
+      "executed": true,
+      "layers": 1,
+      "execution_weight_max_abs": 1.4901161193847656e-08,
+      "updates": [
+        {
+          "owner": 0,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "version": 1,
+          "applied": true,
+          "gradient_norm": 60.641871068593545,
+          "clip": 0.01649025608689776,
+          "reverse_seconds": 0.01450613490305841,
+          "stage_seconds": 1.2658804189413786,
+          "optimizer_seconds": 0.12177450209856033,
+          "publication_seconds": 0.15844885492697358,
+          "update_seconds": 1.5607090208213776,
+          "invalid_gradient": false
+        },
+        {
+          "owner": 0,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "version": 2,
+          "applied": true,
+          "gradient_norm": 90.96277232456563,
+          "clip": 0.010993508261142006,
+          "reverse_seconds": 0.01369478297419846,
+          "stage_seconds": 0.7972158649936318,
+          "optimizer_seconds": 0.12286375393159688,
+          "publication_seconds": 0.12471672589890659,
+          "update_seconds": 1.0585589888505638,
+          "invalid_gradient": false
+        },
+        {
+          "owner": 0,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "version": 2,
+          "applied": false,
+          "gradient_norm": null,
+          "clip": 0.0,
+          "reverse_seconds": 0.013933694921433926,
+          "stage_seconds": 0.8068504009861499,
+          "optimizer_seconds": 0.0,
+          "publication_seconds": 0.0,
+          "update_seconds": 0.820816706167534,
+          "invalid_gradient": true
+        },
+        {
+          "owner": 0,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "version": 3,
+          "applied": true,
+          "gradient_norm": 90.96277232456563,
+          "clip": 0.010993508261142006,
+          "reverse_seconds": 0.014056114014238119,
+          "stage_seconds": 0.7926372969523072,
+          "optimizer_seconds": 0.12565183895640075,
+          "publication_seconds": 0.1298558348789811,
+          "update_seconds": 1.0622704750858247,
+          "invalid_gradient": false
+        }
+      ],
+      "gradient_transport": "host_fixture",
+      "gradient_scratch_bytes_per_rank": 83886080,
+      "checkpoint_layer": 39,
+      "checkpoint_lane": 0,
+      "command": "python validate_dsv41_pypto_packed_adam.py --staged --checkpoint /model --devices 0 --checkpoint-lane 0"
+    },
+    {
+      "physical_devices": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "passed": true,
+      "compiled": 24,
+      "tp": 4,
+      "world": 4,
+      "executed": true,
+      "layers": 1,
+      "execution_weight_max_abs": 1.862645149230957e-09,
+      "updates": [
+        {
+          "owner": 0,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "version": 1,
+          "applied": true,
+          "gradient_norm": 153.92456003235904,
+          "clip": 0.0064966889838313285,
+          "reverse_seconds": 0.06387228099629283,
+          "stage_seconds": 40.57564342697151,
+          "optimizer_seconds": 0.12635986902751029,
+          "publication_seconds": 36.852794870967045,
+          "update_seconds": 77.61898496793583,
+          "invalid_gradient": false
+        },
+        {
+          "owner": 0,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "version": 2,
+          "applied": true,
+          "gradient_norm": 230.8868779601057,
+          "clip": 0.004331125287430419,
+          "reverse_seconds": 0.062330268090590835,
+          "stage_seconds": 2.667207292979583,
+          "optimizer_seconds": 0.12965637515299022,
+          "publication_seconds": 0.13493697508238256,
+          "update_seconds": 2.994329771026969,
+          "invalid_gradient": false
+        },
+        {
+          "owner": 0,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "version": 2,
+          "applied": false,
+          "gradient_norm": null,
+          "clip": 0.0,
+          "reverse_seconds": 0.06302366894669831,
+          "stage_seconds": 2.6654064601752907,
+          "optimizer_seconds": 0.0,
+          "publication_seconds": 0.0,
+          "update_seconds": 2.728490889072418,
+          "invalid_gradient": true
+        },
+        {
+          "owner": 0,
+          "teacher_rows": 7,
+          "loss": 0.012,
+          "version": 3,
+          "applied": true,
+          "gradient_norm": 230.8868779601057,
+          "clip": 0.004331125287430419,
+          "reverse_seconds": 0.06044310494326055,
+          "stage_seconds": 2.730159352067858,
+          "optimizer_seconds": 0.12631996907293797,
+          "publication_seconds": 0.13497943500988185,
+          "update_seconds": 3.052009561099112,
+          "invalid_gradient": false
+        }
+      ],
+      "gradient_transport": "host_fixture",
+      "gradient_scratch_bytes_per_rank": 83886080,
+      "checkpoint_layer": 39,
+      "checkpoint_lane": null,
+      "command": "python validate_dsv41_pypto_packed_adam.py --staged --checkpoint /model --devices 0,1,2,3 --fixture-tp 4"
+    }
+  ],
+  "ipc_prefix_views": {
+    "passed": true,
+    "physical_devices": 1,
+    "iterations": 6,
+    "transport": "acl_d2d",
+    "host_staging": false,
+    "byte_exact": true,
+    "leases_retired": true,
+    "packet_arena": true,
+    "warm_transfer_median_ms": 0.11687120422720909
+  },
+  "local_fp32_all_reduce": {
+    "passed": true,
+    "physical_devices": 2,
+    "iterations": 6,
+    "transport": "hccl_all_reduce",
+    "host_staging": false,
+    "byte_exact": true,
+    "leases_retired": true,
+    "packet_arena": true,
+    "warm_transfer_median_ms": 0.8943318389356136,
+    "physical_ids": [
+      1,
+      4
+    ],
+    "command": "python validate_dsv41_pypto_ep_ipc.py --devices 0,1 --packet-arena --all-reduce"
+  }
+}
