@@ -1,0 +1,140 @@
+{
+  "source": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "toolchain": {
+    "pypto": "2e31e0c2a604c3c859c1268a937f97b0ee2d747f",
+    "simpler": "a5349f42c71666bb8cacfb3759f34eeda1572beb"
+  },
+  "runtime_test": {
+    "host": "111",
+    "soc": "Ascend910B3",
+    "cann": "9.0.0",
+    "payload_bytes_per_peer": 1024,
+    "scope": "A child graph writes tensors, controller-side D2D or HCCL exchanges the mapped views, and a child graph consumes the data before verified teardown.",
+    "command": "python /opt/dsv41-1122/validate_dsv41_pypto_ep_ipc.py --devices {devices}",
+    "single_device": {
+      "passed": true,
+      "physical_devices": 1,
+      "iterations": 6,
+      "transport": "acl_d2d",
+      "host_staging": false,
+      "byte_exact": true,
+      "leases_retired": true,
+      "warm_transfer_median_ms": 0.10652001947164536,
+      "physical_ids": [
+        0
+      ]
+    },
+    "local_hccl": {
+      "passed": true,
+      "physical_devices": 2,
+      "iterations": 6,
+      "transport": "hccl_all_to_all",
+      "host_staging": false,
+      "byte_exact": true,
+      "leases_retired": true,
+      "warm_transfer_median_ms": 1.8977029249072075,
+      "physical_ids": [
+        0,
+        4
+      ]
+    }
+  },
+  "moe_compile": {
+    "host": "61",
+    "cann": "9.2.0",
+    "command": "python /opt/dsv41-1122/validate_dsv41_pypto_ep_ipc.py --devices 0,1,2,3,4,5,6,7 --moe --compile-only",
+    "result": {
+      "passed": true,
+      "local_ranks": 8,
+      "ep": 16,
+      "compiled": {
+        "prefill": [
+          "prepare",
+          "experts",
+          "restore"
+        ],
+        "decode": [
+          "prepare",
+          "experts",
+          "restore"
+        ]
+      }
+    }
+  },
+  "cpu_tests": {
+    "passed": 212,
+    "subtests_passed": 5
+  },
+  "real_weight_graph_loopback": {
+    "host": "111",
+    "physical_id": 0,
+    "cann": "9.0.0",
+    "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+    "command": "python /opt/dsv41-1122/validate_dsv41_pypto_ep_ipc.py --devices 0 --moe --checkpoint /model",
+    "docker_shm": "2 GiB",
+    "scope": "One TP owner lane, router scores restricted to the eight loaded experts for the fixture, local asynchronous D2D at both collective boundaries, only output and diagnostics read by the host.",
+    "result": {
+      "passed": true,
+      "local_ranks": 1,
+      "ep": 16,
+      "tokens": 16,
+      "compiled": {
+        "prefill": [
+          "prepare",
+          "experts",
+          "restore"
+        ],
+        "decode": [
+          "prepare",
+          "experts",
+          "restore"
+        ]
+      },
+      "real_weights": {
+        "layer": 39,
+        "experts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "scope": "single-owner EP16 device loopback",
+        "cases": [
+          {
+            "phase": "prefill",
+            "active": 1,
+            "owner_rows": 1,
+            "output_max_abs": 0.0
+          },
+          {
+            "phase": "prefill",
+            "active": 17,
+            "owner_rows": 5,
+            "output_max_abs": 0.0
+          },
+          {
+            "phase": "decode",
+            "active": 1,
+            "owner_rows": 1,
+            "output_max_abs": 0.0
+          },
+          {
+            "phase": "decode",
+            "active": 17,
+            "owner_rows": 5,
+            "output_max_abs": 0.0
+          }
+        ]
+      }
+    }
+  },
+  "nz_binding_cpu_check": {
+    "single_matrix_per_rank": true,
+    "folded_rank_layer_matrix_bank": true,
+    "partial_shard_rejected": true
+  }
+}

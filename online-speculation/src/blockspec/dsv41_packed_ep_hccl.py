@@ -1,7 +1,7 @@
 """Split the 1122 W8A8 MoE around host-issued EP collectives."""
 
 
-def make_ep_forward_front(tokens, input_rows, *, prefill):
+def make_ep_forward_front(tokens, input_rows, *, prefill, inline=False):
     """Produce the rank-owned router inputs and shared-expert result before EP."""
     import pypto.language as pl
     from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
@@ -13,7 +13,9 @@ def make_ep_forward_front(tokens, input_rows, *, prefill):
     if not prefill and tokens != TOKENS:
         raise ValueError("Decode EP capacity must match the imported native MoE slab")
 
-    @pl.jit
+    kernel = pl.jit.inline(auto_scope=False) if inline else pl.jit
+
+    @kernel
     def front(
         x: pl.Tensor[[input_rows, hidden], pl.BF16],
         norm: pl.Tensor[[hidden], pl.BF16],
@@ -43,15 +45,18 @@ def make_ep_forward_front(tokens, input_rows, *, prefill):
                                        active, lane, local)
             expert_shared_nz(payload, scales, shared_gate_up, shared_gate_scale, shared_up_scale,
                              shared_down, shared_down_scale, shared, local, prefill)
+        return normed, payload, scales, indices, weights, shared
 
     return front
 
 
-def make_ep_forward_tp_rows(tokens, hidden, tp, output_rows):
+def make_ep_forward_tp_rows(tokens, hidden, tp, output_rows, *, inline=False):
     """Place compact results in their TP token rows before the local TP sum."""
     import pypto.language as pl
 
-    @pl.jit
+    kernel = pl.jit.inline(auto_scope=False) if inline else pl.jit
+
+    @kernel
     def scatter(
         compact: pl.Tensor[[tokens, hidden], pl.BF16],
         owned: pl.Out[pl.Tensor[[output_rows, hidden], pl.BF16]],
@@ -65,11 +70,12 @@ def make_ep_forward_tp_rows(tokens, hidden, tp, output_rows):
             else:
                 zero = pl.tile.full([1, hidden], dtype=pl.BF16, value=0.)
                 pl.store(zero, [row, 0], owned)
+        return owned
 
     return scatter
 
 
-def make_ep_forward_packets(tokens, hidden, world, local_experts, topk):
+def make_ep_forward_packets(tokens, hidden, world, local_experts, topk, *, inline=False):
     """Build rank-local pack and restore stages around the two EP AllToAll calls."""
     import pypto.language as pl
 
@@ -78,8 +84,9 @@ def make_ep_forward_packets(tokens, hidden, world, local_experts, topk):
     expert_rows = packets + local_experts * 16
     count_width = (local_experts + 15) // 16 * 16
     aux_width = 8
+    kernel = pl.jit.inline(auto_scope=False) if inline else pl.jit
 
-    @pl.jit
+    @kernel
     def pack(
         x: pl.Tensor[[tokens, hidden], pl.INT8],
         scale: pl.Tensor[[1, tokens], pl.FP32],
@@ -143,8 +150,9 @@ def make_ep_forward_packets(tokens, hidden, world, local_experts, topk):
                 zero = pl.tile.cast(zeros_fp16, target_type=pl.INT8, mode="rint")
                 pl.store(zero, [packet, 0], payload)
             pl.store(row_aux, [packet, 0], auxiliary)
+        return counts, payload, auxiliary
 
-    @pl.jit
+    @kernel
     def unpack(
         counts: pl.Tensor[[world, count_width], pl.INT32],
         payload: pl.Tensor[[packets, hidden], pl.INT8],
@@ -207,8 +215,9 @@ def make_ep_forward_packets(tokens, hidden, world, local_experts, topk):
                 pl.store(scales, [0, begin], expert_scale)
                 pl.store(weights, [0, begin], expert_weight)
                 pl.store(return_addresses, [0, begin], expert_route)
+        return expert_counts, expert_x, expert_scale, expert_weight, expert_route
 
-    @pl.jit
+    @kernel
     def pack_return(
         expert_output: pl.Tensor[[expert_rows, hidden], pl.BF16],
         expert_route: pl.Tensor[[1, expert_rows], pl.INT32],
@@ -228,8 +237,9 @@ def make_ep_forward_packets(tokens, hidden, world, local_experts, topk):
                 return_slot = pl.read(expert_route, [0, row])
                 values = pl.tile.load(expert_output, [row, 0], [1, hidden])
                 pl.store(values, [return_slot, 0], payload)
+        return payload
 
-    @pl.jit
+    @kernel
     def combine(
         payload: pl.Tensor[[packets, hidden], pl.BF16],
         ids: pl.Tensor[[tokens, topk], pl.INT32],
@@ -249,11 +259,12 @@ def make_ep_forward_packets(tokens, hidden, world, local_experts, topk):
                     acc = pl.tile.add(acc, contribution)
                 result = pl.tile.cast(acc, target_type=pl.BF16, mode="rint")
                 pl.store(result, [token, 0], output)
+        return output
 
     return pack, unpack, pack_return, combine
 
 
-def make_ep_forward_experts(tokens, world, local_experts, *, prefill, fuse_return=False):
+def make_ep_forward_experts(tokens, world, local_experts, *, prefill, fuse_return=False, inline=False):
     """Apply native W8A8 experts to the compact rows received by one EP rank."""
     import pypto.language as pl
     from models.deepseek_v4_1_flash_a3.config import FLASH
@@ -277,7 +288,9 @@ def make_ep_forward_experts(tokens, world, local_experts, *, prefill, fuse_retur
         def initialize(output: pl.Tensor):
             return pl.system.task_dummy(deps=[])
 
-    @pl.jit
+    kernel = pl.jit.inline(auto_scope=False) if inline else pl.jit
+
+    @kernel
     def experts(
         expert_counts: pl.Tensor[[local_experts, 2], pl.INT32],
         x: pl.Tensor[[rows, hidden], pl.INT8],
@@ -324,5 +337,6 @@ def make_ep_forward_experts(tokens, world, local_experts, *, prefill, fuse_retur
                         w1[expert], gate_scale, w3[expert], up_scale, w2[expert], down_scale,
                         destination, count, True, prefill,
                     )
+        return output
 
     return experts

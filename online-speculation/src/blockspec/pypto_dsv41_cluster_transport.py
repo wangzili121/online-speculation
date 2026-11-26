@@ -1,6 +1,7 @@
 """Global HCCL groups over node-local PyPTO allocations."""
 
 import ctypes as C
+from functools import partial
 
 from .dsv41_online_profile import active_profile, timed_stage
 
@@ -11,7 +12,7 @@ ROOT_INFO_BYTES = 4108
 class ClusterCollectives:
     """Match global groups while keeping tensor ownership on the local runtime."""
 
-    def __init__(self, runtime, plan, link, *, native=None):
+    def __init__(self, runtime, plan, link, *, native=None, mappings=None):
         if native is None:
             from models.deepseek_v4_1_flash_a3 import moe_transport as native
 
@@ -21,6 +22,7 @@ class ClusterCollectives:
         if local_ids != expected_ids or link.node != plan.node:
             raise ValueError("Runtime must use the plan's node-local logical device IDs starting at zero")
         self.runtime, self.plan, self.link = runtime, plan, link
+        self.mappings = mappings
         self.memory, self.channel_type, self.check = native.CANNMemory(), native.HCCLBytes, native._check
         self.channels, self.owned = {}, []
         self.library = C.CDLL("libhccl.so", mode=C.RTLD_GLOBAL)
@@ -46,6 +48,8 @@ class ClusterCollectives:
                 first_error = first_error or error
         if exc_type is None and first_error is not None:
             raise first_error
+        if first_error is None and self.mappings is not None:
+            self.mappings.close()
 
     def _cross_group(self, group, tag):
         local = self.plan.local_ranks
@@ -145,7 +149,12 @@ class ClusterCollectives:
             )
 
         def submit(rank):
-            channels[rank].exchange_device_batch(transfers[rank], collective)
+            channel = channels[rank]
+            if self.mappings is None:
+                channel.exchange_device_batch(transfers[rank], collective)
+            else:
+                channel.exchange_device_batch(transfers[rank], collective,
+                                              address_of=partial(self.mappings.address, rank))
 
         with timed_stage(f"{group}_{collective}_device"):
             self.runtime.map_ranks(submit)

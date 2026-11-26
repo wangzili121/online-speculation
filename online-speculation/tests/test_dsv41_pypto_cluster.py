@@ -114,6 +114,26 @@ class ClusterTest(unittest.TestCase):
         with patch("blockspec.pypto_dsv41_cluster_transport.C.CDLL"):
             self.pair(task)
 
+    def test_hccl_channels_retire_before_graph_buffer_mappings(self):
+        plan = RankPlan((1, 1), 1, 0)
+        runtime = SimpleNamespace(devices=(0,))
+        link = SimpleNamespace(node=0)
+        native = SimpleNamespace(CANNMemory=object, HCCLBytes=object, _check=None, _bind=lambda *_: None)
+        events = []
+        mappings = SimpleNamespace(close=lambda: events.append("unmap"))
+
+        def fail_to_close():
+            raise RuntimeError("channel still active")
+
+        with patch("blockspec.pypto_dsv41_cluster_transport.C.CDLL"):
+            transport = ClusterCollectives(runtime, plan, link, native=native, mappings=mappings)
+            with self.assertRaisesRegex(RuntimeError, "channel still active"), transport:
+                transport.owned.append(SimpleNamespace(close=fail_to_close))
+            self.assertEqual(events, [])
+            with ClusterCollectives(runtime, plan, link, native=native, mappings=mappings) as transport:
+                transport.owned.append(SimpleNamespace(close=lambda: events.append("close")))
+            self.assertEqual(events, ["close", "unmap"])
+
     def test_resident_moe_idle_node_still_runs_all_experts_and_collectives(self):
         runner = ResidentHcclMoE.__new__(ResidentHcclMoE)
         runner.plan = RankPlan((4, 4), 4, 1)

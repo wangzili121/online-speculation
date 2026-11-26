@@ -1,0 +1,37 @@
+--- a/models/deepseek_v4_1_flash_a3/moe_transport.py
++++ b/models/deepseek_v4_1_flash_a3/moe_transport.py
+@@ -34,6 +34,10 @@
+     return function
+
+ 
++def _device_address(tensor):
++    return tensor.data_ptr
++
++
+ class CANNMemory:
+     """Allocate/copy CANN memory and retain raw device-memory samples."""
+
+@@ -189,8 +193,10 @@
+             raise ValueError("Unsupported basic collective: " + collective)
+         _check(status, "HCCL/" + collective)
+
+-    def exchange_device_batch(self, transfers, collective="all_to_all"):
+-        """Enqueue caller-owned fields in order and drain the channel once."""
++    def exchange_device_batch(self, transfers, collective="all_to_all", *, address_of=None):
++        """Enqueue caller-owned fields, using imported addresses for graph-owned buffers."""
++        if address_of is None:
++            address_of = _device_address
+         with self._lock:
+             if self._closed:
+                 raise RuntimeError("HCCL transport is closed")
+@@ -208,8 +214,8 @@
+                 with self.memory.interval(self.rank, "communication", transfers[0][2]):
+                     for value, received, stage in transfers:
+                         self.memory.sample(self.rank, stage + "/device")
+-                        send_buffer = ctypes.c_void_p(value.data_ptr)
+-                        recv_buffer = ctypes.c_void_p(received.data_ptr)
++                        send_buffer = ctypes.c_void_p(address_of(value))
++                        recv_buffer = ctypes.c_void_p(address_of(received))
+                         output_count = received.nbytes // (2 if value.dtype == torch.bfloat16 else 4)
+                         self._enqueue_collective(
+                             send_buffer, recv_buffer, value.nbytes, output_count, value.dtype, collective,

@@ -218,6 +218,10 @@ python /opt/dsv41-1122/validate_dsv41_pypto_ep_hccl_resident.py \
 
 第 39 层真实权重的单卡验证覆盖 Decode 每 rank 16 行容量及 Prefill 64 行容量，包含仅一行、空 lane 和尾块。路由 ID、量化值、共享专家输出和 TP 行归位与参考一致。两种容量都编译了分段执行器的 8 个设备入口，跨机调度测试核对了发送和接收张量的形状，并验证空闲节点的调用顺序。 [分段验证记录](validation/dsv41/pypto-1122-949a-ep-hccl-boundary-910b3.json)
 
+面向整图 worker 的 `GraphResidentHcclMoE` 将准备、专家计算和 TP 行归位编译成节点内的三次图提交。通信缓冲由图 worker 分配，HCCL 所在进程在同一节点导入这些驻留缓冲，使用自己的设备地址发起跨机通信。退出时先关闭 HCCL 通道，再解除映射并归还图 worker 的缓冲租约。单卡设备拷贝和同机双卡 AllToAll 各通过 6 轮图写入、通信、图读回测试，数据逐字节一致。每节点 8 rank、全局 EP16 的 Prefill 和 Decode 六个图入口已编译。 [驻留交接验证](validation/dsv41/pypto-1122-949a-ep-ipc-910b3.json)
+
+第 39 层真实 W8A8 权重也通过了三段图的单 TP lane 回环。用例将路由限制到卡上已加载的 8 个专家，用设备拷贝执行两次回环。Prefill 和 Decode 各测了 1 行和 5 行有效 owner token，最终 BF16 输出对 Torch 参考最大绝对误差均为 0。采用 INT8 NZ 布局的共享专家使用原始设备权重切片，同一模型的分层矩阵权重和单层矩阵都可以按 rank 绑定。 [真实权重图回环](validation/dsv41/pypto-1122-949a-ep-ipc-910b3.json)
+
 等长包用来验证接口和数值。64 行容量下每个 EP rank 每层要提交约 90 MiB 的派发与回传数据，其中包括填充。1122 的整模调度仍需在每层 Attention 与 FFN 尾部之间调用分段执行器，并在双机上验证。 [实卡记录](validation/dsv41/pypto-1122-949a-ep-hccl-910b3.json)
 
 ## 内网权重预检

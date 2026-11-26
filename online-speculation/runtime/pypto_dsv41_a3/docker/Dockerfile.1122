@@ -33,7 +33,8 @@ RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca --mount=t
     PYPTO_RUNTIME_BUILD_TARGETS=build_package_a2a3 PYPTO_BUILD_JOBS=4 \
         bash "$PYPTO_SRC/docker/scripts/pypto-build"
 
-COPY online-speculation/runtime/pypto_dsv41_a3/lib-1122-verification.patch ./
+COPY online-speculation/runtime/pypto_dsv41_a3/lib-1122-verification.patch \
+     online-speculation/runtime/pypto_dsv41_a3/moe-transport-1122-ipc.patch ./
 RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca set -e; \
     source ./build-network.sh; \
     git init pypto-lib; \
@@ -43,12 +44,14 @@ RUN --mount=type=secret,id=pypto_proxy --mount=type=secret,id=pypto_ca set -e; \
     git -C pypto-lib fetch --depth 1 https://github.com/Adelaide999/pypto-lib.git e32726b7edb31ee17e398a0431c0272ebd545974; \
     git -C pypto-lib show FETCH_HEAD:models/deepseek_v4_1_flash_a3/moe_transport.py \
         > pypto-lib/models/deepseek_v4_1_flash_a3/moe_transport.py; \
+    git -C pypto-lib apply "$PWD/moe-transport-1122-ipc.patch"; \
     cp "$PYPTO_SRC/docker/scripts/pypto-activate.sh" /opt/pypto/bin/pypto-activate.sh; \
     source /opt/pypto/bin/pypto-activate.sh; \
     bash ./cache-pto-isa.sh
 
 COPY online-speculation/src/blockspec /opt/dsv41-1122/orthrus/blockspec
 COPY online-speculation/scripts/validate_dsv41_pypto_packed_history.py \
+     online-speculation/scripts/validate_dsv41_pypto_ep_ipc.py \
      online-speculation/scripts/validate_dsv41_pypto_ep_hccl_boundary.py \
      online-speculation/scripts/validate_dsv41_pypto_ep_hccl_packets.py \
      online-speculation/scripts/validate_dsv41_pypto_ep_hccl_resident.py \
