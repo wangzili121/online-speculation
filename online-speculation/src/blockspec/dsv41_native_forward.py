@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 from math import prod
 from pathlib import Path
+from shutil import copytree
 from struct import Struct
 from time import perf_counter
 from types import SimpleNamespace
@@ -45,6 +46,33 @@ class NativeSampleError(RuntimeError):
     def __init__(self, phase, dp, row, token, reason):
         self.evidence = dict(phase=phase, dp=dp, row=row, token=token, reason=reason)
         super().__init__(f"{phase} DP {dp} row {row}, token {token}: {reason}")
+
+
+def prepare_target_graphs(directory, previous):
+    """Stage a matching pair of native target graphs for a new Orthrus bundle."""
+    from models.deepseek_v4_1_flash_a3.driver import compile_generation_graphs, load_manifest
+    from pypto.ir import DistributedCompiledProgram
+
+    geometry = (("prefill", 272, 64), ("decode", 16, 16))
+    for source in sorted(previous.glob("last-*/graphs"), reverse=True):
+        try:
+            for phase, capacity, slab in geometry:
+                path = source / phase
+                manifest = load_manifest(path, mode=phase, capacity=capacity, request_slots=1)
+                if (manifest["history_capacity"], manifest["moe_slab_rows"]) != (512, slab):
+                    raise ValueError(f"{phase} uses different history or MoE slab geometry")
+                program = DistributedCompiledProgram.from_dir(path)
+                if program.platform != "a2a3" or NativeRankGraph(path, 16).window is None:
+                    raise ValueError(f"{phase} requires an onboard A2/A3 graph with a native communication window")
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            print(f"Skip target graphs {source}: {error}", flush=True)
+            continue
+        copytree(source, directory)
+        print(f"Reused Prefill and Decode graphs from {source}", flush=True)
+        return
+    print("Compiling native Prefill and Decode graphs.", flush=True)
+    compile_generation_graphs(directory / "prefill", directory / "decode", devices=",".join(map(str, range(16))),
+                              context=512, prefill_capacity=272, prefill_slab_rows=64)
 
 
 class ForwardArtifacts:

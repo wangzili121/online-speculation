@@ -55,17 +55,45 @@ fi
 mkdir -p "$workspace"
 
 base=(docker run --rm --network none -v "$model:$model:ro")
+check_peer_bundle() {
+  local identity command
+  identity="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["identity"])' "$1")" || return
+  printf -v command '%q ' "${base[@]}" -v "$bundle:$bundle:ro" --entrypoint /bin/bash "$image" -lc '
+    set -e
+    source /opt/pypto/bin/pypto-activate.sh
+    exec python -c "
+from pathlib import Path
+import sys
+from blockspec.dsv41_native_forward import ForwardArtifacts
+
+root, model, loss, expected = sys.argv[1:]
+bundle = Path(root)
+artifacts = ForwardArtifacts(bundle / \"graphs\", model, 1,
+                             draft_directory=bundle / \"draft\", head=bundle / \"head\",
+                             online_directory=bundle / \"online\", loss=loss)
+actual = artifacts.identity.hex()
+if actual != expected:
+    raise SystemExit(f\"Native artifacts differ: node7={expected}, node8={actual}\")
+print(actual)
+    " "$@"
+  ' verify "$bundle" "$model" "$loss" "$identity"
+  "${ssh_peer[@]}" "$command"
+}
+
 if [[ "$mode" == native-prepare ]]; then
   if [[ ! -d "$bundle" ]]; then
     tmp="$(mktemp -d "$workspace/.prepare.XXXXXX")"
     echo "Compile log: $tmp/build.log"
-    "${base[@]}" -v "$tmp:/bundle" --entrypoint /bin/bash "$image" -lc '
+    "${base[@]}" -v "$tmp:/bundle" -v "$workspace:/previous:ro" --entrypoint /bin/bash "$image" -lc '
       set -e
       source /opt/pypto/bin/pypto-activate.sh
       export PYTHONPATH="/opt/dsv41-1122/pypto-lib:/opt/dsv41-1122/orthrus:$PYTHONPATH"
-      python -c "from models.deepseek_v4_1_flash_a3.driver import compile_generation_graphs as compile; compile(
-          \"/bundle/graphs/prefill\", \"/bundle/graphs/decode\", devices=\",\".join(map(str, range(16))),
-          context=512, prefill_capacity=272, prefill_slab_rows=64)"
+      python -c "
+from pathlib import Path
+from blockspec.dsv41_native_forward import prepare_target_graphs
+
+prepare_target_graphs(Path(\"/bundle/graphs\"), Path(\"/previous\"))
+      "
       python /opt/dsv41-1122/compile_dsv41_pypto_packed_draft.py --block 16 --context 512 \
         --last-layers "$1" --decode-capacity 16 --artifact-dir /bundle/draft
       python /opt/dsv41-1122/compile_dsv41_pypto_native_online.py \
@@ -73,9 +101,16 @@ if [[ "$mode" == native-prepare ]]; then
       python /opt/dsv41-1122/export_dsv41_orthrus_head.py --model "$3" \
         --from-target --mask-token-id 128803 --output /bundle/head
     ' compile "$last" "$loss" "$model" >"$tmp/build.log" 2>&1 || { tail -n 25 "$tmp/build.log" >&2; exit 1; }
-    mv "$tmp" "$bundle"
+    mv -T "$tmp" "$bundle"
   fi
-  # Distribute the compiler artifacts before node7 adds its binary assembly cache.
+  echo "CPU assembly log: $bundle/callable-assembly.log"
+  "${base[@]}" -v "$bundle:$bundle" "$image" \
+    /opt/dsv41-1122/run_dsv41_pypto_native_ar.py --assemble-only \
+    --graphs "$bundle/graphs" --draft-graph "$bundle/draft" --head "$bundle/head" \
+    --online-artifacts "$bundle/online" --checkpoint "$model" --loss "$loss" \
+    --output "$bundle/callable-assembly.json" >"$bundle/callable-assembly.log" 2>&1 ||
+    { tail -n 25 "$bundle/callable-assembly.log" >&2; exit 1; }
+  # The daemon loads host orchestration and receives device callables from node7.
   printf -v remote '%q ' bash -c '
     set -euo pipefail
     bundle="$1"
@@ -86,19 +121,16 @@ if [[ "$mode" == native-prepare ]]; then
     mkdir -p "$(dirname "$bundle")"
     tmp="$(mktemp -d "$(dirname "$bundle")/.receive.XXXXXX")"
     tar -C "$tmp" -xf -
-    mv "$tmp" "$bundle"
+    mv -T "$tmp" "$bundle"
   ' stage "$bundle"
   printf -v has_bundle '%q ' test -d "$bundle"
   if ! "${ssh_peer[@]}" "$has_bundle"; then
-    tar -C "$bundle" -cf - graphs draft online head | "${ssh_peer[@]}" "$remote"
+    tar -C "$bundle" --exclude='*/cache' -cf - graphs draft online head | "${ssh_peer[@]}" "$remote"
   fi
-  echo "CPU assembly log: $bundle/callable-assembly.log"
-  "${base[@]}" -v "$bundle:$bundle" "$image" \
-    /opt/dsv41-1122/run_dsv41_pypto_native_ar.py --assemble-only \
-    --graphs "$bundle/graphs" --draft-graph "$bundle/draft" --head "$bundle/head" \
-    --online-artifacts "$bundle/online" --checkpoint "$model" --loss "$loss" \
-    --output "$bundle/callable-assembly.json" >"$bundle/callable-assembly.log" 2>&1 ||
-    { tail -n 25 "$bundle/callable-assembly.log" >&2; exit 1; }
+  if ! check_peer_bundle "$bundle/callable-assembly.json" >"$bundle/node8-contract.log" 2>&1; then
+    tail -n 16 "$bundle/node8-contract.log" >&2
+    exit 2
+  fi
   echo "Native last-$last artifacts: $bundle"
   exit
 fi
@@ -143,27 +175,7 @@ fi
 "${base[@]}" -v "$bundle:$bundle:ro" -v "$run:/run-data" "$image" \
   /opt/dsv41-1122/run_dsv41_pypto_native_ar.py "${flags[@]}" --contract-only \
   --output /run-data/contract.json >"$run/contract.log"
-identity="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["identity"])' "$run/contract.json")"
-printf -v remote '%q ' "${base[@]}" -v "$bundle:$bundle:ro" --entrypoint /bin/bash "$image" -lc '
-    set -e
-    source /opt/pypto/bin/pypto-activate.sh
-    exec python -c "
-from pathlib import Path
-import sys
-from blockspec.dsv41_native_forward import ForwardArtifacts
-
-root, model, loss, expected = sys.argv[1:]
-bundle = Path(root)
-artifacts = ForwardArtifacts(bundle / \"graphs\", model, 1,
-                             draft_directory=bundle / \"draft\", head=bundle / \"head\",
-                             online_directory=bundle / \"online\", loss=loss)
-actual = artifacts.identity.hex()
-if actual != expected:
-    raise SystemExit(f\"Native artifacts differ: node7={expected}, node8={actual}\")
-print(actual)
-    " "$@"
-' verify "$bundle" "$model" "$loss" "$identity"
-if ! "${ssh_peer[@]}" "$remote" >"$run/node8-contract.log" 2>&1; then
+if ! check_peer_bundle "$run/contract.json" >"$run/node8-contract.log" 2>&1; then
     tail -n 16 "$run/node8-contract.log" >&2
     exit 2
 fi

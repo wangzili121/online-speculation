@@ -124,6 +124,8 @@ bash "$RUN" native-study 1
 
 整图产物目录带编译源码指纹。更新镜像后重新执行 `native-prepare`，脚本会为新源码选择匹配的产物目录。未准备当前版本时，验收脚本会在启动设备前提示。
 
+新目录优先复用通过源码、形状和设备 ABI 检查的 Prefill 与 Decode 产物。当前目录的 Draft 和在线图编好后，node7 先装配全部入口，再将产物同步到 node8。编译缓存留在 node7。两端模型和产物标识的核对结果记录在 `node8-contract.log`。111 上复制并核验已有基模产物耗时 7.6 秒，复用的基模入口 CPU 装配累计约 2.5 秒。全套 57 个入口通过注册检查。
+
 `native-smoke` 需要两台各 8 张空闲卡，一次装载后从 node7 和 node8 的请求分别触发一次更新，检查 Prefill、Draft 和 Decode/Verify 中所有采样行的有限性及 greedy ID，再逐 token 对照两组输出。数值检查失败时，`result.json` 记录具体阶段、DP 和出错行。公司双机的原生 Fabric 和整模仍待实测。
 
 `native-windows` 可单独用两台各 8 张空闲卡预留整图的实际通信窗口。它涵盖 Prefill、Decode、Draft、后缀反向和 Adam 中需要通信的图，跳过设备 callable 装配和权重上传。报告写入 `native-windows.*/result.json`。窗口预留失败时，日志注明对应图、参与 rank 数和每卡窗口大小。这个检查和常规短验、GSM8K 都在启动设备进程前核对两端的权重清单、head 清单和编译图标识，在上传权重前预留同一组窗口。

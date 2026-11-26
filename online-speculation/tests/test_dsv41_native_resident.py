@@ -1,5 +1,6 @@
 from ctypes import addressof, create_string_buffer, memmove
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -7,11 +8,50 @@ import torch
 
 from blockspec.dsv41_native_forward import (
     CLEAR, DRAFT, DRAFT_CAPTURE, READ_ROWS, ROWS_AND_MASK, ForwardNode, NativeForwardTarget, NativeSampleError,
+    prepare_target_graphs,
 )
 from blockspec.dsv41_native_graph_pair import NativePeerMailbox
 from blockspec.dsv41_native_resident import (
     NativePrefillInputPacket, NativeRankMemory, NativeResidentForward, NativeResidualInputPacket,
 )
+
+
+@pytest.mark.parametrize("reusable", (True, False))
+def test_prepare_targets_checks_the_pair_before_reusing_it(tmp_path, monkeypatch, reusable):
+    previous = tmp_path / "previous"
+    destination = tmp_path / "new" / "graphs"
+    valid = previous / "last-1-tv" / "graphs"
+    incompatible = previous / "last-zz" / "graphs"
+    for root in (valid, incompatible):
+        for phase in ("prefill", "decode"):
+            path = root / phase
+            path.mkdir(parents=True)
+            (path / "description").write_text(root.parent.name)
+
+    def manifest(path, *, mode, capacity, request_slots):
+        assert (capacity, request_slots) == ((272 if mode == "prefill" else 16), 1)
+        return dict(history_capacity=512, moe_slab_rows=64 if mode == "prefill" else 16)
+
+    def load_program(path):
+        # The first candidate has a valid Prefill paired with a simulator Decode.
+        usable = path.name == "prefill" or (path.parent == valid and reusable)
+        return SimpleNamespace(platform="a2a3" if usable else "a2a3sim")
+
+    builds = []
+    driver = SimpleNamespace(load_manifest=manifest, compile_generation_graphs=lambda *paths, **_: builds.append(paths))
+    monkeypatch.setitem(sys.modules, "models.deepseek_v4_1_flash_a3.driver", driver)
+    monkeypatch.setitem(sys.modules, "pypto.ir", SimpleNamespace(
+        DistributedCompiledProgram=SimpleNamespace(from_dir=load_program),
+    ))
+    monkeypatch.setattr("blockspec.dsv41_native_forward.NativeRankGraph",
+                        lambda *_: SimpleNamespace(window={}))
+    prepare_target_graphs(destination, previous)
+    if reusable:
+        assert builds == []
+        assert (destination / "decode" / "description").read_text() == "last-1-tv"
+    else:
+        assert builds == [(destination / "prefill", destination / "decode")]
+        assert not destination.exists()
 
 
 class Buffer:
