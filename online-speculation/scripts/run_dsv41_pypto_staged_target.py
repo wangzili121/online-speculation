@@ -12,7 +12,7 @@ from time import perf_counter
 from types import SimpleNamespace
 
 
-def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0):
+def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0, reverse=None):
     """Pack prompt chunks by DP owner and continue from device-greedy IDs."""
     handles = [session.admit(case["id"], case["dp"], len(case["input_ids"])) for case in cases]
     output = {handle: [] for handle in handles}
@@ -77,13 +77,17 @@ def generate(session, cases, prefill_rows, dp_size, *, width=0, teacher_rows=0):
                 position=feedback.student.position, teacher_rows=expected_rows - feedback.remaining,
                 attention_and_ffn_tapes=sorted(next(iter(feedback.student.ffn_tape.values()))),
             )
+    backward = None
+    if reverse is not None and replay is not None:
+        backward = reverse.run("check-backward", owner=handle.dp * session.draft.tp, feedback=feedback, finished=True,
+                               consume=lambda *_: None)
     for handle in handles:
         session.release(handle)
     result = {handle.request_id: output[handle] for handle in handles}
     tok = sum(map(len, result.values())) - len(cases)
     return dict(generated=result, prefill_seconds=prefill_seconds, decode_seconds=decode_seconds,
                 decode_steps=steps, decode_tokens=tok, decode_tok_per_s=tok / decode_seconds if steps else 0.0,
-                speculation=speculation, capture=capture_receipt)
+                speculation=speculation, capture=capture_receipt, backward=backward)
 
 
 def first_difference(expected, actual):
@@ -121,17 +125,21 @@ def main():
     parser.add_argument("--capture-last-layers", type=int, choices=range(27), default=0,
                         metavar="N", help="Retain N suffix layers and verify one teacher replay")
     parser.add_argument("--teacher-rows", type=int, choices=range(1, 16), default=7)
+    parser.add_argument("--check-backward", action="store_true", help="Run the captured suffix backward before release")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if bool(args.draft_head) != bool(args.draft_graph):
         parser.error("Provide both --draft-head and --draft-graph to compare Orthrus")
     if args.capture_last_layers and not args.draft_head:
         parser.error("Suffix replay requires a draft head and a matching compiled suffix")
+    if args.check_backward and not args.capture_last_layers:
+        parser.error("--check-backward requires --capture-last-layers")
 
     import torch
     from blockspec.dsv41_online_profile import profile_online
     from blockspec.dsv41_packed_proposer import StagedPackedDraftProposer, load_staged_draft_graphs, read_packed_head
     from blockspec.dsv41_staged_target import load_staged_target_programs, open_staged_target
+    from blockspec.dsv41_staged_reverse import StagedDraftReverse, load_staged_reverse_programs
     from blockspec.pypto_dsv41_cluster import ControlLink, PeerDispatchError, RankPlan
     from blockspec.vllm_ascend.head_contract import find_weight_index
     from models.deepseek_v4_1_flash_a3.config import DP_SIZE, FLASH, TP_SIZE
@@ -179,24 +187,29 @@ def main():
     signature = dict(workload=sha256(workload).hexdigest(), checkpoint=checkpoint.identity,
                      capacities=list(capacities), context=args.context, slots=args.slots_per_dp, tokens=list(tokens))
     draft_programs = ()
+    reverse_programs = {}
     if args.draft_head:
         artifact = read_packed_head(checkpoint, args.draft_head, args.draft_block)
         draft_programs = load_staged_draft_graphs(
             args.draft_graph, context=args.context, block=args.draft_block,
             local_ranks=len(devices), request_slots=args.slots_per_dp, last_layers=args.capture_last_layers,
         )
+        if args.check_backward:
+            reverse_programs = load_staged_reverse_programs(args.draft_graph, args.capture_last_layers)
         signature["draft"] = dict(
             head=sha256((args.draft_head / "manifest.json").read_bytes()
                         + find_weight_index(args.draft_head).read_bytes()).hexdigest(),
             graphs=sha256((args.draft_graph / "orthrus_draft_manifest.json").read_bytes()).hexdigest(),
             width=args.verify_width,
             teacher_rows=args.teacher_rows if args.capture_last_layers else 0,
+            check_backward=args.check_backward,
         )
 
-    def measured(session, width=0, teacher_rows=0):
+    def measured(session, width=0, teacher_rows=0, reverse=None):
         metrics = dict(stage_seconds=Counter(), counts=Counter())
         with profile_online(SimpleNamespace(current=metrics, lock=Lock())):
-            return generate(session, cases, capacities[0], DP_SIZE, width=width, teacher_rows=teacher_rows) | metrics
+            return generate(session, cases, capacities[0], DP_SIZE,
+                            width=width, teacher_rows=teacher_rows, reverse=reverse) | metrics
 
     with ControlLink.connect(plan.node, (args.rank0_ip, args.port), key, args.timeout) as link, ExitStack() as workers:
         if link.exchange("staged-target/start", signature) != signature:
@@ -205,7 +218,8 @@ def main():
         try:
             target = workers.enter_context(open_staged_target(
                 config, plan, link, weights, engram, programs, capacities=capacities,
-                context=args.context, slots=args.slots_per_dp, tokens=tokens, draft_programs=draft_programs,
+                context=args.context, slots=args.slots_per_dp, tokens=tokens,
+                draft_programs=(*draft_programs, *reverse_programs.values()),
             ))
             initialization_seconds = perf_counter() - start
             session = target.session()
@@ -217,9 +231,10 @@ def main():
                     target, draft_programs, draft_head=args.draft_head, head_artifact=artifact, block=args.draft_block,
                     last_layers=args.capture_last_layers,
                 )
+                reverse = StagedDraftReverse(session.draft, config, reverse_programs) if reverse_programs else None
                 draft_init = perf_counter() - start
                 arms["orthrus"] = measured(session, args.verify_width,
-                                           args.teacher_rows if args.capture_last_layers else 0)
+                                           args.teacher_rows if args.capture_last_layers else 0, reverse)
                 arms["orthrus"].update(
                     initialization_seconds=draft_init, resident_head_bytes=session.draft.resident_head_bytes,
                     draft_profile=vars(session.draft.stats), width=args.verify_width,
@@ -260,6 +275,15 @@ def main():
     if args.capture_last_layers:
         report["teacher_replay"] = dict(passed=replay_passed, layers=args.capture_last_layers,
                                         local=receipt, peer=peer["capture"])
+    if args.check_backward:
+        from math import isfinite
+
+        outcome = arms["orthrus"]["backward"]
+        report["backward_passed"] = bool(
+            outcome is not None and outcome["teacher_rows"] == owners[0]["expected_rows"]
+            and len(outcome["layers"]) == args.capture_last_layers and isfinite(outcome["loss"])
+        ) if replay_passed else False
+        report["passed"] &= report["backward_passed"]
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)
     if not report["passed"]:

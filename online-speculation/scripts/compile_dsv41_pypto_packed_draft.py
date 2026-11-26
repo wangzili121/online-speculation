@@ -73,6 +73,17 @@ def main():
             else:
                 entry.compile(config=RunConfig(backend_type=BackendType.Ascend910,
                                                execution_mode=ExecutionMode.ONBOARD, **options))
+        if args.last_layers:
+            from blockspec.dsv41_staged_reverse import make_staged_reverse_graphs
+
+            reverse = make_staged_reverse_graphs(args.block, args.last_layers, physical_pages=pages,
+                                                local_ranks=args.local_ranks)
+            for name, entry in reverse.items():
+                entry.compile(config=RunConfig(
+                    backend_type=BackendType.Ascend910, execution_mode=ExecutionMode.ONBOARD,
+                    distributed_config=distributed, save_kernels=True,
+                    save_kernels_dir=str(directory / "reverse" / name),
+                ))
     manifest = draft_graph_manifest(args.context, args.block, last_layers=args.last_layers,
                                     local_ranks=args.local_ranks, request_slots=args.slots_per_dp)
     (directory / "orthrus_draft_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

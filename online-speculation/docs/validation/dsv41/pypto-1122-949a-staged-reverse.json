@@ -1,0 +1,55 @@
+{
+  "lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "checkpoint": "Eco-Tech/DeepSeek-V4.1-Flash-w8a8",
+  "compile": {
+    "topology": {"hosts": 2, "ranks_per_host": 8, "dp": 4, "tp": 4, "ep": 16},
+    "context": 512,
+    "slots_per_dp": 2,
+    "variants": [
+      {"block": 16, "last_layers": 4, "server": "111", "cann": "9.0.0", "seconds": 72.77018334600143},
+      {"block": 32, "last_layers": 1, "server": "61", "cann": "9.2.0", "seconds": 84.33987385872751}
+    ],
+    "command": "python compile_dsv41_pypto_packed_draft.py --decode-capacity 16 --block BLOCK --local-ranks 8 --slots-per-dp 2 --context 512 --last-layers N --artifact-dir /results/suffix"
+  },
+  "host_validation": {
+    "last4_backward_graph_abi_binds": 46,
+    "last4_scheduled_ep_operations": 8,
+    "layer_iteration_order": [39, 38, 37, 36],
+    "parameter_gradients_per_layer": 7,
+    "two_host_protocol": "With DP owner 12, only node 1 computes local VJPs. Both hosts agree on the teacher row count and enter the same EP order. First layer has three teacher rows, subsequent layers use the full 16-row block."
+  },
+  "npu_expert_reverse": {
+    "server": "111",
+    "physical_devices": [1, 3],
+    "card": "Ascend 910B3",
+    "checkpoint_layer": 39,
+    "checkpoint_experts": [0, 3, 247, 381],
+    "fixture_topk": 2,
+    "exchange": "host-permutation",
+    "scope": "Device TP seed scatter, per-destination pack, real frozen W8A8 expert backpropagation, and source-order combine. Both AllToAll permutations were performed by the host for this numerical check.",
+    "command": "python validate_dsv41_pypto_staged_ep_vjp.py --checkpoint /model --block BLOCK --fixture-tp TP --last-layers N --host-exchange",
+    "cases": [
+      {"block": 16, "tp": 1, "last_layers": 4, "owners": [0, 1, 0], "live_rows": [13, 1, 7], "max_relative_l2": 0.0025187439750880003, "warm_median_ms": [178.366, 183.396, 149.895]},
+      {"block": 32, "tp": 2, "last_layers": 1, "owners": [0, 0, 0], "live_rows": [29, 1, 7], "max_relative_l2": 0.003744480898603797, "warm_median_ms": [115.491, 118.558, 119.001]}
+    ],
+    "repeats_per_case": 4,
+    "repeats_bitwise_exact": true,
+    "seed_bitwise_exact": true,
+    "padding_gradients_zero": true
+  },
+  "npu_top6_reverse": {
+    "command": "python validate_dsv41_pypto_staged_ep_vjp.py --checkpoint /model --block 32 --fixture-tp 2 --last-layers 1 --host-exchange --fixture-topk 6",
+    "server": "111",
+    "physical_devices": [1, 3],
+    "checkpoint_experts": [0, 3, 65, 129, 247, 280, 342, 381],
+    "live_rows": [29, 1, 7],
+    "max_relative_l2": 0.00381572381593287,
+    "warm_median_ms": [197.641, 151.869, 166.828],
+    "repeats_per_case": 4,
+    "repeats_bitwise_exact": true,
+    "exchange": "host-permutation"
+  },
+  "hccl_status": "The 111 HcclCommInitAll probe on physical cards 3 and 4 returned status 4. The 61 probe stopped at device initialization with a resource-busy error. The previously validated 111 pair 0 and 4 did not become jointly available during the follow-up window.",
+  "real_dual_host_execution": false,
+  "optimizer_and_publication": false
+}

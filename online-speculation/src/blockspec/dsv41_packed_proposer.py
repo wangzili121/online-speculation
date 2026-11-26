@@ -56,6 +56,12 @@ def draft_graph_manifest(context, block, *, last_layers=0, local_ranks=None, req
     deployment = {}
     if local_ranks is not None:
         sources += ("dsv41_packed_decode.py", "dsv41_packed_ep_graph.py", "dsv41_packed_ep_hccl.py")
+        if last_layers:
+            sources += tuple(f"dsv41_{name}.py" for name in (
+                "staged_reverse", "staged_ep_vjp", "packed_expert_vjp", "packed_loss", "packed_lm_head_vjp",
+                "packed_final_vjp", "packed_ffn_input_vjp", "packed_ffn_mhc_vjp", "packed_attn_post_vjp",
+                "packed_wo_vjp", "packed_attention_vjp", "packed_qkv_vjp", "packed_attn_input_vjp",
+            ))
         deployment = dict(local_ranks=local_ranks, request_slots=request_slots, moe_tokens=16)
     return dict(
         schema=4, context=context, block=block, last_layers=last_layers,

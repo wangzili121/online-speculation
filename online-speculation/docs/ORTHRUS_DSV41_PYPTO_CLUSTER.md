@@ -133,7 +133,9 @@ python /opt/dsv41-1122/run_dsv41_pypto_staged_target.py \
 
 报告分别记录 AR 与 Orthrus 的生成 ID、起草和 Verify/Accept 阶段耗时、候选接受数、逐 token 对照，以及端到端 Decode 计时。当前这条入口覆盖固定 head 推理，已通过编译、产物回载和宿主回归。真实双机整模和 last-N 在线学习仍需验收。 [编译和宿主验证记录](validation/dsv41/pypto-1122-949a-staged-draft.json)
 
-要检查在线更新所需的前向状态，用同一条 draft 编译命令追加 `--last-layers 4`，写到新的产物目录。启动命令使用该目录，并追加 `--capture-last-layers 4 --teacher-rows 7`。两个节点对同一条请求和 anchor 发起捕获。持有该请求的 DP 保留末层隐藏状态、词表分数和指定后缀各层的 Attention、FFN 激活及实际 MoE 路由。候选拒绝后，教师行沿修正后的前缀继续收集。报告的 `teacher_replay.passed` 检查只有一个节点收到完整教师行。该模式验证前向留存和教师回放，权重更新及发布由后续双机反向链路提供。 [编译与回放验证记录](validation/dsv41/pypto-1122-949a-staged-capture.json)
+要检查在线更新所需的前向状态，用同一条 draft 编译命令追加 `--last-layers 4`，写到新的产物目录。启动命令使用该目录，并追加 `--capture-last-layers 4 --teacher-rows 7`。两个节点对同一条请求和 anchor 发起捕获。持有该请求的 DP 保留末层隐藏状态、词表分数和指定后缀各层的 Attention、FFN 激活及实际 MoE 路由。候选拒绝后，教师行沿修正后的前缀继续收集。报告的 `teacher_replay.passed` 检查只有一个节点收到完整教师行。 [编译与回放验证记录](validation/dsv41/pypto-1122-949a-staged-capture.json)
+
+两台都追加 `--check-backward`，可在释放请求前执行一次 TV loss 的后缀反向。每层的专家输入和梯度通过驻留缓冲派发及返回，两个节点都计算自己持有的 W8A8 专家。请求节点按前向的 Top‑K 顺序累加输入梯度，再完成该层的 Attention 参数梯度及向上一层的反传。报告记录实际反传层、教师行、loss 和反向用时。这条验收入口只计算梯度，在线优化器及跨节点权重发布仍在接入。 [反向图与实卡数值验证](validation/dsv41/pypto-1122-949a-staged-reverse.json)
 
 ### GSM8K 在线更新报告
 

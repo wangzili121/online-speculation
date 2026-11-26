@@ -410,3 +410,69 @@ def test_staged_draft_uses_local_worker_ids_and_exchanges_only_candidates():
     assert draft.propose_batch([], uploads=uploads) == {}
     assert draft.stats.calls == 2
     assert draft.stats.sampled_id_bytes == 32
+
+
+def test_staged_suffix_reverse_both_hosts_follow_same_layer_schedule():
+    from concurrent.futures import ThreadPoolExecutor
+    import socket
+
+    from blockspec.dsv41_staged_reverse import StagedDraftReverse
+    from blockspec.pypto_dsv41_cluster import ControlLink
+
+    left, right = socket.socketpair()
+    left.settimeout(5)
+    right.settimeout(5)
+    token = b"reverse-fixture-key"
+    student = object()
+
+    def both(node, endpoint):
+        local = node == 1
+        calls = []
+        with ControlLink(endpoint, node, token) as link:
+            reverse = StagedDraftReverse.__new__(StagedDraftReverse)
+            reverse.layers = (39, 38, 37)
+            reverse.draft = SimpleNamespace(
+                block=16, layer_weights=[(None, f"weights-{i}") for i in range(40)],
+                target=SimpleNamespace(global_ranks=range(node * 8, node * 8 + 8), link=link),
+            )
+            reverse.loss = lambda who, teacher: SimpleNamespace(value=.125, rows=len(teacher))
+            reverse.lm_head = lambda loss: loss.rows
+            reverse.final = lambda who, rows: rows
+            reverse.attn_input = lambda who, projection: 16
+
+            def post(who, boundary, *, layer):
+                assert who is student and boundary == (3 if layer == 39 else 16)
+                return SimpleNamespace(rows=boundary)
+
+            def experts(stage, *, owner, layer, rows, weights, student: object, gradient: object):
+                assert owner == 12 and weights == f"weights-{layer}"
+                assert (student is not None) == (gradient is not None) == local
+                peer = link.exchange(stage, [owner, layer, rows])
+                assert peer == [owner, layer, rows]
+                calls.append((layer, rows))
+                return SimpleNamespace(gradients=layer) if local else None
+
+            reverse.ffn_post = post
+            reverse.experts = SimpleNamespace(run_layer=experts)
+            reverse.ffn_input = lambda who, result, gradients: gradients
+            reverse.ffn_mhc = lambda who, post, normed: normed
+            reverse.attn_post = lambda who, mixed: mixed
+            reverse.wo = lambda who, seed: seed
+            reverse.attention = lambda who, projected: projected
+            reverse.qkv = lambda who, attention: attention
+            feedback = SimpleNamespace(student=student, logits=lambda **_: [1, 2, 3]) if local else None
+            consumed = []
+            result = reverse.run("suffix", owner=12, feedback=feedback, finished=False,
+                                 consume=lambda layer, grad: consumed.append((layer, grad)))
+            return result, calls, consumed
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(both, 0, left)
+        second = pool.submit(both, 1, right)
+        peer, peer_calls, peer_consumed = first.result()
+        owner, owner_calls, owner_consumed = second.result()
+    assert peer_calls == owner_calls == [(39, 3), (38, 16), (37, 16)]
+    assert peer_consumed == [(39, None), (38, None), (37, None)]
+    assert owner_consumed == [(39, 39), (38, 38), (37, 37)]
+    for result in (peer, owner):
+        assert result["owner"] == 12 and result["teacher_rows"] == 3 and result["loss"] == .125
