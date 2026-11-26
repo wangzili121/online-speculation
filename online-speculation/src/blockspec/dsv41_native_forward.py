@@ -32,6 +32,7 @@ FORWARD_PHASES = (*PHASES, "draft")
 PHASE_OPS = (PREFILL, DECODE, DRAFT)
 OUTPUTS = ("sampled_ids", "logits")
 ROWS_AND_MASK = Struct("<4iB")
+DP_MASK = 0b1111  # Low bits carry input images, high bits reset the DP to its resident idle image.
 DRAFT_CAPTURE = Struct("<i")
 READ_ROWS = Struct("<4i")
 RELEASE = Struct("<2i")
@@ -183,7 +184,11 @@ class ForwardNode:
         is_draft = phase == "draft"
         images = self.draft.draft.inputs if is_draft else bank.inputs[phase]
         image_bytes = images.images[2].nbytes
-        active = tuple(dp for dp in self.dps if mask & (1 << dp))
+        local_mask = sum(1 << dp for dp in self.dps)
+        active_mask, idle_mask = mask & DP_MASK, mask >> 4
+        if (active_mask | idle_mask) & ~local_mask or active_mask & idle_mask:
+            raise ValueError(f"{phase} packed input masks do not match the owning DPs")
+        active = tuple(dp for dp in self.dps if active_mask & (1 << dp))
         start = ROWS_AND_MASK.size
         capture_owner = -1
         if is_draft:
@@ -200,6 +205,9 @@ class ForwardNode:
             else:
                 bank.stage_image(phase, dp, image)
             start += image_bytes
+        for dp in self.dps:
+            if idle_mask & (1 << dp):
+                bank.upload_idle(images, dp)
         if phase == "decode":
             bank.stage_decode_counts(counts)
         if is_draft:
@@ -315,6 +323,9 @@ class NativeForwardTarget:
         return dp in range(4)
 
     def stage(self, index, dp, values, _workers):
+        if values is self.templates[index]:
+            self.staged[index][dp] = None
+            return
         phase = PHASES[index]
         io = self.images[phase]
         for name, field in io.fields[2].items():
@@ -327,8 +338,10 @@ class NativeForwardTarget:
         phase = FORWARD_PHASES[index]
         pending = self.staged[index]
         def pack_node(dps):
-            active = tuple(dp for dp in dps if dp in pending)
-            header = ROWS_AND_MASK.pack(*counts, sum(1 << dp for dp in active))
+            active = tuple(dp for dp in dps if pending.get(dp) is not None)
+            idle = tuple(dp for dp in dps if dp in pending and pending[dp] is None)
+            mask = sum(1 << dp for dp in active) | sum(1 << (dp + 4) for dp in idle)
+            header = ROWS_AND_MASK.pack(*counts, mask)
             if phase == "draft":
                 header += DRAFT_CAPTURE.pack(capture_owner)
             return b"".join((header, *(pending[dp] for dp in active)))
@@ -436,10 +449,10 @@ class NativeDraftProposer:
             stage_draft_request(self.stager, row, student_rows=teacher_rows if row.owner == capture_owner else 0)
             pending[row.owner // self.tp] = images[2].numpy().tobytes()
         for dp in self.previous_dps - active:
-            pending[dp] = images[0].numpy().tobytes()
+            pending[dp] = None
         self.previous_dps = active
         self.stats.prepare_seconds += perf_counter() - prepared
-        self.stats.input_bytes += sum(map(len, pending.values()))
+        self.stats.input_bytes += sum(len(image) for image in pending.values() if image is not None)
         now = perf_counter()
         self.target.run(2, tuple(self.block if dp in active else 0 for dp in range(4)), capture_owner=capture_owner)
         self.stats.graph_seconds += perf_counter() - now

@@ -227,6 +227,13 @@ class NativeResidentForward:
     def _workers(self, dp):
         return tuple(self.ranks.index(dp * self.tp + lane) for lane in range(self.tp))
 
+    def upload_idle(self, inputs, dp):
+        image = inputs.images[0]
+        self.memory.upload_to_ranks(
+            image.data_ptr(), image.nbytes,
+            ((worker, inputs.devices[worker].data_ptr, 0) for worker in self._workers(dp)),
+        )
+
     def _upload(self, phase, dp):
         inputs = self.inputs[phase]
         workers = self._workers(dp)

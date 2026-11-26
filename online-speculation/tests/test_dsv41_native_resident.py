@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import torch
 
-from blockspec.dsv41_native_forward import DRAFT, DRAFT_CAPTURE, ROWS_AND_MASK, NativeForwardTarget
+from blockspec.dsv41_native_forward import DRAFT, DRAFT_CAPTURE, ROWS_AND_MASK, ForwardNode, NativeForwardTarget
 from blockspec.dsv41_native_resident import NativeRankMemory
 
 
@@ -62,20 +62,40 @@ def test_native_draft_keeps_global_counts_and_routes_images_to_their_owner():
     images = dict.fromkeys(("prefill", "decode"), SimpleNamespace(fields=({},)))
     artifacts = SimpleNamespace(sample_shape=(16, 8))
     target = NativeForwardTarget(endpoint, None, artifacts, images, {}, None)
-    target.staged[2].update({0: b"owner-zero", 3: b"owner-three"})
+    target.staged[2].update({0: b"owner-zero", 1: None, 2: None, 3: b"owner-three"})
     target.sampled[2] = "old"
     target.run(2, (16, 0, 0, 16), capture_owner=12)
     opcode, messages, replies, options = dispatched.pop()
     assert opcode == DRAFT and options == {"phase": "draft"}
     assert replies == (1024, 1024)
-    assert ROWS_AND_MASK.unpack_from(messages[0]) == (16, 0, 0, 16, 1)
-    assert ROWS_AND_MASK.unpack_from(messages[1]) == (16, 0, 0, 16, 8)
+    assert ROWS_AND_MASK.unpack_from(messages[0]) == (16, 0, 0, 16, 1 | 1 << 5)
+    assert ROWS_AND_MASK.unpack_from(messages[1]) == (16, 0, 0, 16, 8 | 1 << 6)
     assert tuple(DRAFT_CAPTURE.unpack_from(msg, ROWS_AND_MASK.size) for msg in messages) == ((12,), (12,))
     size = ROWS_AND_MASK.size + DRAFT_CAPTURE.size
     assert tuple(msg[size:] for msg in messages) == (b"owner-zero", b"owner-three")
     assert target.staged[2] == {}
     assert torch.equal(target.read_sampled(2), samples)
     assert dispatched == []
+
+    # Replay the same packet on each of the node-local Draft receivers.
+    stages = []
+    for node_id, (msg, active, idle) in enumerate(zip(messages, (0, 3), (1, 2), strict=True)):
+        node = ForwardNode(node_id, {"draft": {}})
+        draft_inputs = SimpleNamespace(images=[None, None, SimpleNamespace(nbytes=len(msg[size:]))])
+        node.bank = SimpleNamespace(tp=4, upload_idle=lambda io, dp: stages.append(("idle", dp, io)))
+        count_buffer = bytearray(16 * 4)
+        node.draft = SimpleNamespace(
+            draft=SimpleNamespace(inputs=draft_inputs), capture_args={}, arguments={"ids": None},
+            capture_parameter="capture", count_buffer=SimpleNamespace(host_view=lambda: memoryview(count_buffer)),
+        )
+        graph = SimpleNamespace(submit=lambda *_args, **_kw: stages.append(("submit", node_id)))
+        node.artifacts = SimpleNamespace(draft=SimpleNamespace(graph=graph), sample_parameters={"draft": "ids"})
+        node.stage_draft = lambda dp, image, **_kw: stages.append(("active", dp, image))
+        node.bind_samples = lambda *_args: None
+        rpc = SimpleNamespace(tensor=lambda _idx: None, scalar=lambda _idx: 0)
+        node.forward(None, rpc, None, msg, 1024, "draft")
+        assert stages == [("active", active, msg[size:]), ("idle", idle, draft_inputs), ("submit", node_id)]
+        stages.clear()
 
 
 def test_native_checks_first_sample_on_each_dp_in_smoke():
