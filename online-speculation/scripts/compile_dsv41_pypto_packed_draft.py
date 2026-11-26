@@ -20,31 +20,65 @@ def main():
                         help="Use the native 16-row MoE dispatch configuration")
     parser.add_argument("--artifact-dir", type=Path,
                         help="Fresh directory for the loadable graph")
+    parser.add_argument("--local-ranks", type=int, choices=(8,),
+                        help="Compile a draft bundle for each host in an 8+8 EP16 job")
+    parser.add_argument("--slots-per-dp", type=int, default=1)
     parser.add_argument("--output", type=Path, help="Compilation report")
     args = parser.parse_args()
-
-    from models.deepseek_v4_1_flash_a3.config import EP_SIZE, FLASH
+    if args.local_ranks is not None and args.artifact_dir is None:
+        parser.error("--local-ranks requires --artifact-dir")
+    from models.deepseek_v4_1_flash_a3.config import EP_SIZE, FLASH, MAX_BATCH_PER_DP
     from pypto.backend import BackendType
     from pypto.ir import DistributedConfig
     from pypto.runtime import ExecutionMode, RunConfig
 
-    pages, c1a_bucket, c2a_bucket = draft_geometry(args.context)
-    graph = make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, args.block, last_layers=args.last_layers)
+    if not 1 <= args.slots_per_dp <= MAX_BATCH_PER_DP or (args.local_ranks is None and args.slots_per_dp != 1):
+        parser.error("Invalid slot count for the requested draft bundle")
+
+    pages, c1a_bucket, c2a_bucket = draft_geometry(args.context, args.slots_per_dp)
+    graph = make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, args.block, last_layers=args.last_layers,
+                                    staged_ranks=args.local_ranks)
     extra = {}
     if args.artifact_dir is not None:
         args.artifact_dir.mkdir(parents=True, exist_ok=False)
         extra = dict(save_kernels=True, save_kernels_dir=str(args.artifact_dir.resolve()))
-    config = RunConfig(backend_type=BackendType.Ascend910, execution_mode=ExecutionMode.ONBOARD,
-                       distributed_config=DistributedConfig(device_ids=list(range(EP_SIZE)), num_sub_workers=0),
-                       **extra)
+    distributed = DistributedConfig(device_ids=list(range(args.local_ranks or EP_SIZE)), num_sub_workers=0)
 
     start = perf_counter()
-    program = graph.compile(config=config)
-    manifest = draft_graph_manifest(args.context, args.block, last_layers=args.last_layers)
-    (program.output_dir / "orthrus_draft_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    if args.local_ranks is None:
+        config = RunConfig(backend_type=BackendType.Ascend910, execution_mode=ExecutionMode.ONBOARD,
+                           distributed_config=distributed, **extra)
+        directory = graph.compile(config=config).output_dir
+    else:
+        from blockspec.dsv41_packed_decode import make_decode_ffn_tail, make_decode_final_head
+        from blockspec.dsv41_packed_ep_graph import make_hccl_ep_graphs
+        from models.deepseek_v4_1_flash_a3 import driver
+
+        directory = args.artifact_dir.resolve()
+        ep = make_hccl_ep_graphs(args.decode_capacity, args.block, args.local_ranks, prefill=False)
+        entries = {
+            "attention": graph,
+            "ffn-restore": make_decode_ffn_tail(args.block, args.local_ranks),
+            "head": make_decode_final_head(args.local_ranks),
+            **dict(zip(("ep-prepare", "ep-compute", "ep-restore"), ep, strict=True)),
+        }
+        for name, entry in entries.items():
+            options = dict(distributed_config=distributed, save_kernels=True, save_kernels_dir=str(directory / name))
+            if name == "head":
+                specs = driver.build_specs(entry, mode="decode", capacity=args.block, prepare_windows=True)
+                result = driver.run(fn=entry, specs=specs, compile_only=True,
+                                    config=dict(options, backend_type="a2a3", execution_mode=False))
+                if not result.passed:
+                    raise SystemExit(result.error or 1)
+            else:
+                entry.compile(config=RunConfig(backend_type=BackendType.Ascend910,
+                                               execution_mode=ExecutionMode.ONBOARD, **options))
+    manifest = draft_graph_manifest(args.context, args.block, last_layers=args.last_layers,
+                                    local_ranks=args.local_ranks, request_slots=args.slots_per_dp)
+    (directory / "orthrus_draft_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     report = dict(compiled=True, npu_execution=False, layers=FLASH.num_hidden_layers,
                   block=args.block, context=args.context, last_layers=args.last_layers, seconds=perf_counter() - start,
-                  work_dir=str(program.output_dir))
+                  local_ranks=args.local_ranks, request_slots=args.slots_per_dp, work_dir=str(directory))
     payload = json.dumps(report, indent=2)
     if args.output is not None:
         args.output.write_text(payload + "\n")

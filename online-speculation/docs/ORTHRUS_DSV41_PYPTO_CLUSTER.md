@@ -105,6 +105,34 @@ Draft 和 Verify 只回读实际参与本轮的词表行。Draft 结果直接交
 
 投机阶段的 Host 元数据按 DP 构造，TP rank 保留自己的序列并行切片。常规 K32 Draft 和 Verify 共享相同的位置、页表和分片控制，并复用同一份元数据；Verify 的候选 token ID 保存在独立的输入契约。每次写盘将动态控制合成一个文件，原生调用继续接收完整布局和 Engram 常量。111 的四请求 K32 小测中，按字段核对结果一致，构造元数据从 188 ms 降到 47 ms，单次证据序列化及校验从 431 ms 降到 92 ms，文件体积从 19.6 MB 降到 0.71 MB。两项均为 Host 局部计时。
 
+### 1122 分阶段双机推理
+
+`1122` 的八卡节点分别执行本机的 TP4 Attention 和输出头。每层 FFN 的专家派发和回传使用跨机 EP16 HCCL。Draft 复用目标模型的只读历史页和冻结的 FFN，临时双向块及输出缓冲由 Draft 独立持有。Verify 根据接受长度推进提交位置。候选写过的页可以留在本请求的分配里，后续读取由提交位置和可见长度限制，在复用前写入新值。只有请求所在节点更新或截断 Engram 历史。
+
+在 1122 镜像中创建三个新输出目录。两台使用同一份源码和相同的编译配置，产物可在相同环境之间复制。
+
+```bash
+python /opt/dsv41-1122/validate_dsv41_pypto_packed_prefill.py \
+  --capacity 272 --prefill-moe-slab-rows 64 --context 512 --slots-per-dp 2 --output /results/prefill
+python /opt/dsv41-1122/validate_dsv41_pypto_packed_decode_attention.py \
+  --decode-capacity 16 --context 512 --slots-per-dp 2 --output /results/decode
+python /opt/dsv41-1122/compile_dsv41_pypto_packed_draft.py \
+  --local-ranks 8 --block 16 --decode-capacity 16 --context 512 --slots-per-dp 2 --artifact-dir /results/draft
+```
+
+两台都用已验证的 HCCL 网卡和 8 张可见设备。将 `NODE_RANK` 在 node7 设为 0、在 node8 设为 1，`RANK0_IP` 设为 node7 的 HCCL 地址。两端使用同一份请求 JSON 和相同的 draft head。请求形如 `[{"id":"r0","dp":0,"input_ids":[42,43,44],"new_tokens":4},{"id":"r1","dp":2,"input_ids":[45,46,47],"new_tokens":4}]`。两个 DP 归属不同节点。
+
+```bash
+python /opt/dsv41-1122/run_dsv41_pypto_staged_target.py \
+  --node "$NODE_RANK" --rank0-ip "$RANK0_IP" --key-file "$JOB_KEY" --checkpoint "$TARGET_WEIGHTS" \
+  --prefill-graph /results/prefill --decode-graph /results/decode --draft-graph /results/draft \
+  --prefill-capacity 272 --prefill-moe-tokens 64 --decode-capacity 16 --context 512 --slots-per-dp 2 \
+  --draft-head "$DRAFT_HEAD" --draft-block 16 --verify-width 8 --workload /results/workload.json \
+  --output "/results/compare-node-$NODE_RANK.json"
+```
+
+报告分别记录 AR 与 Orthrus 的生成 ID、起草和 Verify/Accept 阶段耗时、候选接受数、逐 token 对照，以及端到端 Decode 计时。当前这条入口覆盖固定 head 推理，已通过编译、产物回载和宿主回归。真实双机整模和 last-N 在线学习仍需验收。 [编译和宿主验证记录](validation/dsv41/pypto-1122-949a-staged-draft.json)
+
 ### GSM8K 在线更新报告
 
 在两台公司节点使用同一份 checkout，分别执行 `run_dsv41_pypto_company_online.sh node7 report 1` 和 `run_dsv41_pypto_company_online.sh node8 report 1`。脚本使用现有 GSM8K 目录，从 `tuning.jsonl` 取 8 题在线更新，从 `quality_test.jsonl` 取 4 道留出题。默认每个 DP 分区放 1 个请求，最多 4 个并发，每题最多生成 32 个 token。两端可用相同的 `DSV41_REPORT_TRAIN`、`DSV41_REPORT_EVAL`、`DSV41_REPORT_TOKENS` 调整规模。

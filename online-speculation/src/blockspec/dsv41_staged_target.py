@@ -41,7 +41,8 @@ def load_staged_target_programs(prefill_root, decode_root, capacities, tokens, *
 
 
 @contextmanager
-def open_staged_target(config, plan, link, weights, engram, programs, *, capacities, context, slots, tokens):
+def open_staged_target(config, plan, link, weights, engram, programs, *, capacities, context, slots, tokens,
+                       draft_programs=()):
     """Own the graph worker and HCCL lifetimes for both model phases."""
     from pypto.runtime.distributed_runner import DistributedWorker
 
@@ -51,6 +52,7 @@ def open_staged_target(config, plan, link, weights, engram, programs, *, capacit
         *(entry for group in prefill["experts"].values() for entry in group),
         decode["attention"], decode["head"], decode["restore"],
         *(entry for group in decode["ep_programs"].values() for entry in group),
+        *draft_programs,
     ]
     devices = config.distributed_config.device_ids
     with (

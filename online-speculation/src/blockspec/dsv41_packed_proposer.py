@@ -33,17 +33,17 @@ _CACHE_VIEWS = {
 }
 
 
-def draft_geometry(context):
+def draft_geometry(context, request_slots=1):
     if not 1 <= context <= INDEX_CAPACITIES[-1]:
         raise ValueError("Packed draft context capacity must be in 1..16384")
     from models.deepseek_v4_1_flash_a3.config import BLOCK_SIZE
 
-    pages = (context + BLOCK_SIZE - 1) // BLOCK_SIZE + 1
+    pages = ((context + BLOCK_SIZE - 1) // BLOCK_SIZE) * request_slots + 1
     buckets = tuple(next(size for size in INDEX_CAPACITIES if size >= context // ratio) for ratio in (1, 2))
     return pages, *buckets
 
 
-def draft_graph_manifest(context, block, *, last_layers=0):
+def draft_graph_manifest(context, block, *, last_layers=0, local_ranks=None, request_slots=1):
     from models.deepseek_v4_1_flash_a3 import config as native
 
     sources = ("pypto_dsv41_packed_graph.py", "pypto_dsv41_packed_draft_attention.py",
@@ -53,12 +53,18 @@ def draft_graph_manifest(context, block, *, last_layers=0):
     native_root = Path(native.__file__).parent
     native_sources = ("config.py", "decode_fwd.py", "decode_indexer.py", "engram.py",
                       "gemm.py", "hc.py", "lm_head.py", "moe.py", "o_proj.py", "rope.py")
+    deployment = {}
+    if local_ranks is not None:
+        sources += ("dsv41_packed_decode.py", "dsv41_packed_ep_graph.py", "dsv41_packed_ep_hccl.py")
+        deployment = dict(local_ranks=local_ranks, request_slots=request_slots, moe_tokens=16)
     return dict(
-        schema=4, context=context, block=block, last_layers=last_layers, geometry=list(draft_geometry(context)),
+        schema=4, context=context, block=block, last_layers=last_layers,
+        geometry=list(draft_geometry(context, request_slots)),
         weight_layout=native.WEIGHT_LAYOUT_VERSION, cache_layout=native.CACHE_LAYOUT_VERSION,
         topology=dict(dp=native.DP_SIZE, tp=native.TP_SIZE, ep=native.EP_SIZE),
         sources={name: sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in sources},
         native_sources={name: sha256((native_root / name).read_bytes()).hexdigest() for name in native_sources},
+        **deployment,
     )
 
 
@@ -72,6 +78,19 @@ def load_packed_draft_graph(directory, config, *, context, block=32, last_layers
         directory, backend_type=config.arch, execution_mode=config.execution_mode,
         distributed_config=config.distributed_config,
     )
+
+
+_STAGED_ENTRIES = ("attention", "ffn-restore", "head", "ep-prepare", "ep-compute", "ep-restore")
+
+
+def load_staged_draft_graphs(directory, *, context, block, local_ranks, request_slots):
+    from pypto.ir import DistributedCompiledProgram
+
+    manifest = json.loads((directory / "orthrus_draft_manifest.json").read_text())
+    expected = draft_graph_manifest(context, block, local_ranks=local_ranks, request_slots=request_slots)
+    if manifest != expected:
+        raise ValueError("Staged draft bundle does not match the head width, source or resident page geometry")
+    return tuple(DistributedCompiledProgram.from_dir(directory / entry) for entry in _STAGED_ENTRIES)
 
 
 def read_packed_head(checkpoint, head, block):
@@ -180,6 +199,32 @@ class PackedDraftProposer:
     def __init__(self, runtime, graph, config, target_ranks, decode_inputs, weights, engram,
                  rope_tables, counts, *, draft_head, block, context, tp, head_artifact=None,
                  retain_final_state=False, last_layers=0):
+        self.graph, self.config, self.counts = graph, config, counts
+        self._bind_inputs(runtime, target_ranks, decode_inputs, weights, engram, rope_tables,
+                          draft_head=draft_head, block=block, context=context, tp=tp,
+                          head_artifact=head_artifact, retain_final_state=retain_final_state,
+                          last_layers=last_layers)
+        self.arguments = []
+        self._input_arguments = {}
+        self._tape_arguments = {}
+        for index, parameter in enumerate(graph._get_metadata()[0]):
+            name = parameter.name.removesuffix("__ssa_v0")
+            if name == "ffn_capture_owner":
+                self._capture_owner_argument = index
+                argument = -1
+            else:
+                argument = counts if name == "moe_num_tokens" else self._rank_argument(name, parameter)
+            self.arguments.append(argument)
+            if name == "logits":
+                self._logits_argument = index, parameter
+            elif name in self.inputs.fields[0]:
+                self._input_arguments[name] = index, parameter
+            elif name in self.tape_specs:
+                self._tape_arguments[name] = index, parameter
+
+    def _bind_inputs(self, runtime, target_ranks, decode_inputs, weights, engram, rope_tables, *,
+                     draft_head, block, context, tp, head_artifact=None, retain_final_state=False,
+                     last_layers=0, request_slots=1):
         import torch
         from models.deepseek_v4_1_flash_a3.config import BLOCK_SIZE, FLASH
         from models.deepseek_v4_1_flash_a3.engram import ENGRAM_K
@@ -187,11 +232,11 @@ class PackedDraftProposer:
         from models.deepseek_v4_1_flash_a3.replay import DecodeInputs
         from pypto.runtime import DeviceTensor
 
-        self.runtime, self.graph, self.config = runtime, graph, config
+        self.runtime = runtime
         self.weights, self.engram, self.rope_tables = weights, engram, rope_tables
-        self.counts, self.tp, self.block = counts, tp, block
+        self.tp, self.block = tp, block
         self.world = len(target_ranks)
-        self.pages, *self.buckets = draft_geometry(context)
+        self.pages, *self.buckets = draft_geometry(context, request_slots)
         self.page_tables = tuple(decode_inputs.fields[0][key][0] for key in
                                  ("c1a_index_block_table", "c2a_index_block_table"))
         self.sampled = torch.empty((MAX_LOGIT_ROWS, SAMPLED_IDS_PAD), dtype=torch.int32)
@@ -256,23 +301,6 @@ class PackedDraftProposer:
             bound.update(self._alloc_tape(rank))
             self.inputs.upload(runtime, rank, owner=-tp)
             self.ranks.append(bound)
-        self.arguments = []
-        self._input_arguments = {}
-        self._tape_arguments = {}
-        for index, parameter in enumerate(graph._get_metadata()[0]):
-            name = parameter.name.removesuffix("__ssa_v0")
-            if name == "ffn_capture_owner":
-                self._capture_owner_argument = index
-                argument = -1
-            else:
-                argument = counts if name == "moe_num_tokens" else self._rank_argument(name, parameter)
-            self.arguments.append(argument)
-            if name == "logits":
-                self._logits_argument = index, parameter
-            elif name in template:
-                self._input_arguments[name] = index, parameter
-            elif name in self.tape_specs:
-                self._tape_arguments[name] = index, parameter
 
     def _alloc_tape(self, rank):
         import torch
@@ -430,3 +458,130 @@ class PackedDraftProposer:
                 for tensor in record.values():
                     self.runtime.free_tensor(tensor, worker_id=rank)
             del self.student[history_key]
+
+
+class StagedPackedDraftProposer(PackedDraftProposer):
+    """Execute local draft Attention and send routed expert rows over EP16."""
+
+    def __init__(self, target, programs, *, draft_head, head_artifact, block):
+        import torch
+        from models.deepseek_v4_1_flash_a3.config import DP_SIZE, FLASH
+
+        from .dsv41_packed_decode import ResidentDecodeFFN
+        from .dsv41_packed_ep_graph import GraphResidentHcclMoE
+
+        self.target = target
+        self.dp_size = DP_SIZE
+        slots, context, _ = target.geometry
+        geometry = target.graphs
+        self._bind_inputs(
+            target.runtime, target.handles[0], target.inputs[1], geometry.weights, geometry.engram,
+            geometry.rope_tables, draft_head=draft_head, block=block, context=context, tp=target.tp,
+            head_artifact=head_artifact, request_slots=slots,
+        )
+        self.attention, restore, self.head, *ep = programs
+        transport = target.decode.ffn.moe.transport
+        moe = GraphResidentHcclMoE(self.runtime, transport, {"decode": tuple(ep)}, tokens=16, rows=block)
+        self.ffn = ResidentDecodeFFN(moe, restore)
+        self.layer_weights = target.decode.layer_weights
+        scratch = {
+            "selected": ((block, FLASH.index_topk), torch.int32),
+            "lengths": ((block,), torch.int32),
+            "mask": ((block, FLASH.index_topk), torch.float32),
+            "h_attention": ((block, FLASH.hc_mult, FLASH.hidden_size), torch.float32),
+            "pre_attention": ((block, FLASH.hc_mult), torch.float32),
+            "ffn_input": ((block, FLASH.hidden_size), torch.bfloat16),
+        }
+        for rank, values in enumerate(self.ranks):
+            values.update({name: self.runtime.alloc_tensor(shape, dtype, worker_id=rank)
+                           for name, (shape, dtype) in scratch.items()})
+
+        self.attention_args = self._bind_stage(self.attention, ("layer_index", "ffn_capture_owner", "execute_layers"),
+                                               count_meta=moe.meta)
+        self.head_args = self._bind_stage(self.head, ("execute_layers",))
+        self.attention_rows = self._stack("h_attention")
+        self.ffn_rows = self._stack("ffn_input")
+        self.x_hc = self._stack("x_hc")
+        self.pre_mix = self._stack("pre_mix")
+        self.runtime.run(self.attention, *self.attention_args, 0, -1, 0)
+        self.ffn.reserve_windows(self.attention_rows, self.layer_weights[0][2], self.x_hc, self.pre_mix)
+        self.runtime.run(self.head, *self.head_args, 0)
+
+    def _stack(self, name):
+        from pypto.runtime import StackedDeviceTensor
+
+        shards = tuple(values[name] for values in self.ranks)
+        return StackedDeviceTensor(shards, (self.world, *shards[0].shape), tuple(range(self.world)))
+
+    def _bind_stage(self, program, scalars, **supplied):
+        arguments, runtime_scalars = [], []
+        for parameter in program._get_metadata()[0]:
+            name = parameter.name.removesuffix("__ssa_v0")
+            if name in scalars:
+                runtime_scalars.append(name)
+            elif name in supplied:
+                arguments.append(supplied[name])
+            else:
+                arguments.append(self._rank_argument(name, parameter))
+        if tuple(runtime_scalars) != scalars:
+            raise ValueError(f"Unexpected staged draft scalar arguments: {runtime_scalars}")
+        return tuple(arguments)
+
+    def propose_batch(self, requests, *, uploads, capture=None):
+        from .dsv41_online_profile import timed_stage
+
+        if capture is not None:
+            raise ValueError("Staged draft capture is not bound to an online learner")
+        if not requests:
+            return {}
+        local = {request.owner - self.target.rank_offset: request for request in requests
+                 if request.owner in self.target.global_ranks}
+        counts = [0] * self.dp_size
+        for request in requests:
+            counts[request.owner // self.tp] = self.block
+
+        def upload(owner, active):
+            start = perf_counter()
+            list(uploads.map(lambda rank: self.inputs.upload(self.runtime, rank, active),
+                             range(owner, owner + self.tp)))
+            self.stats.upload_seconds += perf_counter() - start
+            self.stats.input_bytes += self.tp * self.inputs.images[0].nbytes
+
+        for owner, request in local.items():
+            start = perf_counter()
+            self._stage(request)
+            self.stats.prepare_seconds += perf_counter() - start
+            upload(owner, owner)
+        for owner in sorted(self.previous_owners - local.keys()):
+            upload(owner, -self.tp)
+        self.previous_owners = set(local)
+
+        stage = f"staged-draft/{self.stats.calls}"
+        start = perf_counter()
+        self.ffn.moe.bind_batch(counts)
+        for layer, (shared, routed, mixes) in enumerate(self.layer_weights):
+            with timed_stage("draft_attention"):
+                self.runtime.run(self.attention, *self.attention_args, layer, -1, 1)
+            self.ffn.run_layer(f"{stage}/layer-{layer}", attention=self.attention_rows, ffn_input=self.ffn_rows,
+                               shared_weights=shared, routed_weights=routed, mixes=mixes,
+                               output=self.x_hc, pre_mix=self.pre_mix)
+        with timed_stage("draft_final_head"):
+            self.runtime.run(self.head, *self.head_args, 1)
+        self.stats.graph_seconds += perf_counter() - start
+
+        start = perf_counter()
+        result = {}
+        for owner, request in local.items():
+            ids = self.sampled[:request.candidates]
+            handle = self.ranks[owner]["sampled_ids"]
+            self.runtime.copy_from(ids.data_ptr(), handle.data_ptr, ids.nbytes, worker_id=owner)
+            self.stats.sampled_id_bytes += ids.nbytes
+            result[str(request.owner)] = ids[:, 0].tolist()
+        self.stats.readback_seconds += perf_counter() - start
+        peer = self.target.link.exchange(f"{stage}/sampled", result)
+        expected = {str(request.owner): request.candidates for request in requests
+                    if request.owner not in self.target.global_ranks}
+        if {owner: len(tokens) for owner, tokens in peer.items()} != expected:
+            raise ValueError("Draft owners returned a different set of candidate rows")
+        self.stats.calls += 1
+        return {int(owner): ids for owner, ids in (result | peer).items()}

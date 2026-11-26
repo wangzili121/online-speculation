@@ -1132,7 +1132,7 @@ index 502fa5b..365e535 100644
  @pl.jit.inline(auto_scope=False)
  def decode_o_proj_nz_from_attention(
 diff --git a/models/deepseek_v4_1_flash_a3/packed.py b/models/deepseek_v4_1_flash_a3/packed.py
-index 98f9f0c..e4cd6e8 100644
+index 98f9f0c..ecf7815 100644
 --- a/models/deepseek_v4_1_flash_a3/packed.py
 +++ b/models/deepseek_v4_1_flash_a3/packed.py
 @@ -11,6 +11,7 @@
@@ -1207,7 +1207,7 @@ index 98f9f0c..e4cd6e8 100644
          except BaseException:
              self.failed = True
              raise
-@@ -108,11 +148,301 @@ class PackedSession:
+@@ -108,11 +148,306 @@ class PackedSession:
 
      def advance_batch(self, phase, queries):
          """Run (handle, token IDs) pairs in caller order. Return sampled rows keyed by handle."""
@@ -1422,6 +1422,9 @@ index 98f9f0c..e4cd6e8 100644
 +    def verify_batch(self, queries, *, teacher_limits=None):
 +        """Verify (handle, anchor followed by candidates) on the native Decode graph."""
 +        feedback = {}
++        if self.staged is not None and teacher_limits is not None:
++            teacher_limits = {handle: count for handle, count in teacher_limits.items()
++                              if self.staged.owns(handle.dp)}
 +        limits = teacher_limits
 +        collecting = {}
 +        if self.feedback:
@@ -1442,6 +1445,7 @@ index 98f9f0c..e4cd6e8 100644
 +
 +    def speculate_batch(self, anchors, *, width=8, teacher_limits=None, output_limits=None, student_capture=None):
 +        """Draft one request per DP and verify the resulting candidates in one wave."""
++        from blockspec.dsv41_online_profile import timed_stage
 +        from blockspec.dsv41_packed_proposer import DraftRequest
 +
 +        self._ready()
@@ -1486,10 +1490,11 @@ index 98f9f0c..e4cd6e8 100644
 +
 +                        self.feedback[handle] = PackedTeacherRows(student)
 +            proposals = {handle: tuple(tokens.get(owner, ())) for owner, (handle, _) in by_owner.items()}
-+            verified = self.verify_batch(
-+                ((handle, (anchor, *proposals[handle])) for handle, anchor in by_owner.values()),
-+                teacher_limits=teacher_limits,
-+            )
++            with timed_stage("verify_accept"):
++                verified = self.verify_batch(
++                    ((handle, (anchor, *proposals[handle])) for handle, anchor in by_owner.values()),
++                    teacher_limits=teacher_limits,
++                )
 +        except BaseException:
 +            self.failed = True
 +            raise
@@ -1509,7 +1514,7 @@ index 98f9f0c..e4cd6e8 100644
          groups = [[] for _ in range(C.DP_SIZE)]
          seen = set()
          queries = list(queries)
-@@ -124,27 +454,63 @@ class PackedSession:
+@@ -124,27 +459,69 @@ class PackedSession:
              if handle in seen or not tokens or any(type(t) is not int or not 0 <= t < C.FLASH.vocab_size for t in tokens):
                  raise ValueError("Invalid or repeated query")
              end = record.committed + len(tokens)
@@ -1544,10 +1549,11 @@ index 98f9f0c..e4cd6e8 100644
 +                if teacher_limits:
 +                    self._capture_teacher(groups, result, teacher_limits, teacher_logits)
 +                for handle, emitted in result.items():
-+                    record = self._lookup(handle)
-+                    stop = record.committed + len(emitted)
-+                    history = self.graphs.engram.history
-+                    history[handle] = history[handle][:stop]
++                    if self.staged is None or self.staged.owns(handle.dp):
++                        record = self._lookup(handle)
++                        stop = record.committed + len(emitted)
++                        history = self.graphs.engram.history
++                        history[handle] = history[handle][:stop]
          except BaseException:
              self.failed = True
              raise
@@ -1562,6 +1568,8 @@ index 98f9f0c..e4cd6e8 100644
 +        """Read only supervised rows along the accepted prefix and its correction."""
 +        g = self.graphs
 +        for dp, group in enumerate(groups):
++            if self.staged is not None and not self.staged.owns(dp):
++                continue
 +            owner = dp * C.TP_SIZE
 +            first = 0
 +            for record, tokens in group:
@@ -1569,9 +1577,12 @@ index 98f9f0c..e4cd6e8 100644
 +                if handle in limits:
 +                    count = min(limits[handle], len(emitted[handle]))
 +                    values = torch.empty((count, C.FLASH.vocab_size), dtype=torch.float32)
-+                    src = g.ranks[1][owner]["logits"]
-+                    g.runtime.copy_from(values.data_ptr(), src.data_ptr, values.nbytes,
-+                                        src_offset=first * values[0].nbytes, worker_id=owner)
++                    if self.staged is not None:
++                        self.staged.read(1, dp, "logits", values, row=first)
++                    else:
++                        src = g.ranks[1][owner]["logits"]
++                        g.runtime.copy_from(values.data_ptr(), src.data_ptr, values.nbytes,
++                                            src_offset=first * values[0].nbytes, worker_id=owner)
 +                    feedback[handle] = values
 +                first += len(tokens)
 +
@@ -1579,11 +1590,13 @@ index 98f9f0c..e4cd6e8 100644
          g = self.graphs
          # Prefill and Decode share the same packed positions, page maps and cache allocations.
          template = g.host_io["idle_inputs"][0]
-@@ -161,20 +527,25 @@ class PackedSession:
+@@ -161,20 +538,27 @@ class PackedSession:
              end = start + len(tokens)
              needed = (end + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
              record.pages.extend(self.free_pages[dp].pop() for _ in range(needed - len(record.pages)))
 -            physical = torch.tensor(record.pages, dtype=torch.int32)
++            # Speculative writes beyond the committed prefix remain invisible
++            # until overwritten. Retain reserved pages until request release.
 +            physical = torch.tensor(record.pages[:needed], dtype=torch.int32)
              table[row, :needed] = physical
              n_half = (end // 2 + C.BLOCK_SIZE - 1) // C.BLOCK_SIZE
@@ -1609,7 +1622,7 @@ index 98f9f0c..e4cd6e8 100644
          pos = torch.tensor(positions, dtype=torch.int32)
          req = torch.tensor(owners, dtype=torch.int32)
          slots, window, _ = window_metadata(pos, req, table)
-@@ -210,7 +581,11 @@ class PackedSession:
+@@ -210,7 +594,11 @@ class PackedSession:
                            identity_rows=order, replay_rows=order)
          return values, sampled, count
 
@@ -1622,7 +1635,7 @@ index 98f9f0c..e4cd6e8 100644
          g = self.graphs
          selections = []
          with ThreadPoolExecutor(max_workers=C.TP_SIZE) as workers:
-@@ -221,7 +596,7 @@ class PackedSession:
+@@ -221,7 +609,7 @@ class PackedSession:
                  if not group and dp not in self._active_dps[index]:
                      continue
                  if group:
@@ -1631,7 +1644,7 @@ index 98f9f0c..e4cd6e8 100644
                  else:
                      if index not in self._idle_values:
                          self._idle_values[index] = self._inputs(dp, [], index, capacity)
-@@ -243,6 +618,19 @@ class PackedSession:
+@@ -243,6 +631,19 @@ class PackedSession:
          self._active_dps[index] = {dp for dp, group in enumerate(groups) if group}
          args = [g.arguments[index][name] for name in g.names[index]]
          g.runtime.run(g.programs[index], *args, config=g.config)
@@ -1651,7 +1664,7 @@ index 98f9f0c..e4cd6e8 100644
          result = {}
          for handle, rank, row in selections:
              logits = g.host_io["logits"][0]
-@@ -252,6 +640,55 @@ class PackedSession:
+@@ -252,6 +653,55 @@ class PackedSession:
              result[handle] = logits.clone()
          return result
 
@@ -1707,7 +1720,7 @@ index 98f9f0c..e4cd6e8 100644
      def _upload_prefill_group(self, owner, values, workers):
          g = self.graphs
          inputs = {}
-@@ -282,9 +719,77 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
+@@ -282,9 +732,77 @@ def open_packed_session(args, devices, weights, engram, memory, report, *, reque
                                                 (args.decode_runtime_dir, "decode", args.decode_capacity))]
      if any(m["history_capacity"] != args.context_capacity for m in manifests):
          raise ValueError("History capacity differs from the compiled graph pair")
@@ -2571,10 +2584,10 @@ index d920055..c3262a3 100644
          copy("engram_rotation", checkpoint.rotation_blocks())
          total_layers = M.num_hidden_layers
 diff --git a/tests/contract/test_ds41_packed.py b/tests/contract/test_ds41_packed.py
-index 961d34e..fb6d058 100644
+index 961d34e..42b4a10 100644
 --- a/tests/contract/test_ds41_packed.py
 +++ b/tests/contract/test_ds41_packed.py
-@@ -64,3 +64,390 @@ def test_packed_page_boundary_and_recycled_handle():
+@@ -64,3 +64,454 @@ def test_packed_page_boundary_and_recycled_handle():
      with pytest.raises(ValueError, match="Expired"):
          session.advance_batch("decode", [(a, [1])])
      assert new is not a and live.pages == live_pages
@@ -2965,3 +2978,67 @@ index 961d34e..fb6d058 100644
 +    session.release(b)
 +    assert clears == [(2, 0, (0,))]
 +    assert session.free_pages[0] == session.free_pages[2] == [1, 0]
++
++
++def test_staged_rejection_hides_reserved_page_and_truncates_only_local_engram():
++    from models.deepseek_v4_1_flash_a3 import config as c
++    from models.deepseek_v4_1_flash_a3.host import prepare_prefill_inputs
++    from models.deepseek_v4_1_flash_a3.packed import PackedSession
++    from models.deepseek_v4_1_flash_a3.utils import prepare_decode_inputs
++
++    template = prepare_prefill_inputs(torch.empty(0, c.FLASH.hidden_size), 16, max_seq_len=256)
++    history, page_tables, teacher_reads = {}, [], []
++    remote_samples = iter(([90, 91, 92],))
++
++    def lookup(ids, n, start, *, request_id):
++        history[request_id] = history[request_id][:start] + list(ids)
++        return torch.zeros(2, n, 6144, dtype=torch.bfloat16)
++
++    def read(phase, dp, name, output, *, row=0):
++        assert (phase, dp, row) == (1, 2, 0)
++        if name == "sampled_ids":
++            output[:, 0] = torch.tensor([99, 100, 101][:len(output)])
++        else:
++            teacher_reads.append((name, len(output)))
++            output.fill_(42)
++
++    def exchange(stage, payload):
++        return {"0": next(remote_samples)} if stage == "staged-target/1/0/sampled" else {}
++
++    def stage(phase, dp, values, pool):
++        assert (phase, dp) == (1, 2)
++        page_tables.append(values["c1a_index_block_table"][0].tolist())
++
++    staged = SimpleNamespace(
++        templates=(template, prepare_decode_inputs(template)),
++        owns=lambda dp: dp == 2,
++        stage=stage,
++        decode=SimpleNamespace(step=lambda *_: None),
++        read=read,
++        link=SimpleNamespace(exchange=exchange),
++    )
++    graphs = SimpleNamespace(
++        staged_target=staged, host_io={"idle_inputs": staged.templates},
++        weights=SimpleNamespace(lookup_rows=lambda ids: torch.zeros(len(ids), c.FLASH.hidden_size)),
++        engram=SimpleNamespace(lookup=lookup, history=history),
++        rope_tables=(template["freqs_cos"], template["freqs_sin"]),
++    )
++    session = PackedSession(graphs, 1, 256, (16, 16))
++    remote, local = session.admit("remote", 0, 126), session.admit("local", 2, 126)
++    for handle in (remote, local):
++        record = session.history[handle.request_id]
++        record.committed = 126
++        record.pages.append(session.free_pages[handle.dp].pop())
++    history[local] = [3] * 126
++
++    verified = session.verify_batch([(remote, (76, 56, 67)), (local, (77, 55, 66))],
++                                    teacher_limits={remote: 3, local: 3})
++    assert verified.emitted == {remote: (90,), local: (99,)}
++    assert set(verified.teacher_logits) == {local}
++    assert teacher_reads == [("logits", 1)]
++    assert history == {local: [3] * 126 + [77]}
++    assert [session.history[handle.request_id].committed for handle in (remote, local)] == [127, 127]
++    assert session.history["local"].pages == [0, 1]
++    assert session.decode_greedy_batch([(local, (99,))]) == {local: 99}
++    assert history[local][-2:] == [77, 99]
++    assert page_tables == [[0, 1], [0, -1]]

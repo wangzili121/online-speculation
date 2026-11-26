@@ -356,3 +356,56 @@ def test_draft_wave_dispatches_once_without_changing_target_counts(retain_state,
         expected_freed.extend((tape[tape_name], rank) for rank, tape in captured.ffn_tape.items())
     assert freed == expected_freed
     assert not draft.student
+
+
+def test_staged_draft_uses_local_worker_ids_and_exchanges_only_candidates():
+    from blockspec.dsv41_packed_proposer import DraftRequest, DraftRoundStats, StagedPackedDraftProposer
+
+    draft = StagedPackedDraftProposer.__new__(StagedPackedDraftProposer)
+    draft.tp, draft.block, draft.dp_size = 4, 16, 4
+    draft.previous_owners, draft.stats = set(), DraftRoundStats()
+    draft.sampled = torch.empty(16, 8, dtype=torch.int32)
+    draft.ranks = [{"sampled_ids": SimpleNamespace(data_ptr=rank)} for rank in range(8)]
+    draft.attention, draft.head = object(), object()
+    draft.attention_args = draft.head_args = ()
+    draft.attention_rows = draft.ffn_rows = draft.x_hc = draft.pre_mix = object()
+    draft.layer_weights = [(None, None, None)] * 2
+    observed = []
+    draft._stage = lambda request: observed.append(("stage", request.owner))
+    draft.inputs = SimpleNamespace(
+        images=torch.zeros(3, 128, dtype=torch.uint8),
+        upload=lambda _, rank, owner: observed.append(("upload", rank, owner)),
+    )
+
+    def exchange(stage, sent):
+        observed.append(("exchange", stage, sent))
+        return {"0": [32, 33]}
+
+    def read(dst, src, size, *, worker_id):
+        assert src == worker_id == 4
+        draft.sampled[0, 0] = 51
+
+    draft.target = SimpleNamespace(global_ranks=range(8, 16), rank_offset=8,
+                                   link=SimpleNamespace(exchange=exchange))
+    draft.runtime = SimpleNamespace(run=lambda *args: observed.append(("run", *args)), copy_from=read)
+    draft.ffn = SimpleNamespace(
+        moe=SimpleNamespace(bind_batch=lambda counts: observed.append(("counts", tuple(counts)))),
+        run_layer=lambda name, **_: observed.append(("ffn", name)),
+    )
+    remote = DraftRequest(7, 129, 0, 2, "remote", (0, 1))
+    local = DraftRequest(8, 95, 12, 1, "local", (3,))
+    uploads = SimpleNamespace(map=map)
+    assert draft.propose_batch([remote, local], uploads=uploads) == {0: [32, 33], 12: [51]}
+    assert observed == [
+        ("stage", 12), *(("upload", rank, 4) for rank in range(4, 8)), ("counts", (16, 0, 0, 16)),
+        ("run", draft.attention, 0, -1, 1), ("ffn", "staged-draft/0/layer-0"),
+        ("run", draft.attention, 1, -1, 1), ("ffn", "staged-draft/0/layer-1"),
+        ("run", draft.head, 1), ("exchange", "staged-draft/0/sampled", {"12": [51]}),
+    ]
+    observed.clear()
+    assert draft.propose_batch([remote], uploads=uploads) == {0: [32, 33]}
+    assert observed[:5] == [*(("upload", rank, -4) for rank in range(4, 8)), ("counts", (16, 0, 0, 0))]
+    assert observed[-1] == ("exchange", "staged-draft/1/sampled", {})
+    assert draft.propose_batch([], uploads=uploads) == {}
+    assert draft.stats.calls == 2
+    assert draft.stats.sampled_id_bytes == 32

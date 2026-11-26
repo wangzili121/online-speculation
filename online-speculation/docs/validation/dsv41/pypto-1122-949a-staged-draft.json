@@ -1,0 +1,43 @@
+{
+  "lib": "949a18db40fca66f677fb041e98b32f824e7afb1",
+  "compiler_environment": {"server": "111", "cann": "9.0.0"},
+  "topology": {"hosts": 2, "ranks_per_host": 8, "dp": 4, "tp": 4, "ep": 16},
+  "compile": {
+    "staged_k16": {
+      "command": "python compile_dsv41_pypto_packed_draft.py --decode-capacity 16 --block 16 --local-ranks 8 --slots-per-dp 2 --context 512 --artifact-dir /results/staged-draft-k16-s2",
+      "seconds": 44.3009,
+      "artifacts_reloaded": ["attention", "ffn-restore", "head", "ep-prepare", "ep-compute", "ep-restore"]
+    },
+    "staged_k32": {
+      "command": "python compile_dsv41_pypto_packed_draft.py --decode-capacity 16 --block 32 --local-ranks 8 --slots-per-dp 2 --context 512 --artifact-dir /results/staged-draft-k32-s2",
+      "seconds": 44.8451
+    },
+    "monolithic_regression": {
+      "command": "python compile_dsv41_pypto_packed_draft.py --decode-capacity 16 --block 32 --last-layers 4 --context 512 --artifact-dir /results/monolithic-draft-k32-last4-refactor",
+      "seconds": 45.5751
+    }
+  },
+  "host_validation": {
+    "orthrus_tests": 213,
+    "orthrus_subtests": 5,
+    "native_packed_contract_tests": 14,
+    "rejection_case": {
+      "committed_before": 126,
+      "verify_rows": 3,
+      "committed_after": 127,
+      "teacher_rows_read": 1,
+      "speculatively_reserved_page_hidden_on_next_decode": true,
+      "local_engram_truncated": true
+    },
+    "abi_dry_run": {
+      "local_global_ranks": [8, 9, 10, 11, 12, 13, 14, 15],
+      "graph_binds_checked": 204,
+      "ep_collective_calls_scheduled": 80,
+      "mock_candidates": {"0": [41, 42], "12": [59, 60, 61]},
+      "engram_restored": true
+    }
+  },
+  "dual_host_checkpoint_execution": false,
+  "staged_online_update": false,
+  "throughput_measured": false
+}

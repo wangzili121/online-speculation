@@ -13,7 +13,7 @@ from .pypto_dsv41_packed_draft_attention import (
 from .pypto_dsv41_packed_swa import make_packed_compressed_chain, make_packed_swa_chain
 
 
-def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers=0):
+def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers=0, staged_ranks=None):
     """Compile the 40-layer rank program for one fixed-width draft request per DP group."""
     import pypto.language as pl
     import pypto.language.distributed as pld
@@ -87,6 +87,350 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
     moe_source_mask, moe = native._moe_source_mask, native.prefill_moe_sublayer
     restore, clear = native.prefill_ffn_restore, native.clear_moe_signals
     retire, engram, output = native.retire_prefill_signals, native.engram_from_rows, native.final_output
+
+    @pl.jit.inline(auto_scope=False)
+    def draft_attention_layer(
+        x_hc: pl.InOut[pl.Tensor[[capacity, mix, hidden], pl.FP32]],
+        pre_mix: pl.InOut[pl.Tensor[[capacity, mix], pl.FP32]],
+        engram_rows: pl.Tensor[[2, block, engram_k], pl.BF16],
+        engram_wkv: pl.Tensor[[2, engram_k, engram_out], pl.BF16, pl.NZ],
+        engram_weight: pl.Tensor[[2, mix, hidden], pl.FP32],
+        engram_rotation: pl.Tensor[[hidden // 32, 32, 32], pl.FP32],
+        hc_attn_fn: pl.Tensor[[layers * mix_width, mix_input], pl.FP32],
+        hc_attn_scale: pl.Tensor[[layers * 3], pl.FP32],
+        hc_attn_base: pl.Tensor[[layers * mix_width], pl.FP32],
+        attn_norm_weight: pl.Tensor[[layers * hidden], pl.BF16],
+        draft_q_a_kv: pl.Tensor[[layers, hidden, latent + dim], pl.BF16],
+        draft_q_gamma: pl.Tensor[[layers, latent], pl.BF16],
+        draft_q_b: pl.Tensor[[layers, latent, heads * dim], pl.BF16],
+        draft_kv_gamma: pl.Tensor[[layers, dim], pl.BF16],
+        draft_sink: pl.Tensor[[layers, heads], pl.FP32],
+        draft_wo_a: pl.Tensor[[layers * groups, wo_in, wo_rank], pl.BF16, pl.NZ],
+        draft_wo_b: pl.Tensor[[layers, groups * wo_rank, hidden], pl.BF16, pl.NZ],
+        draft_index_q: pl.Tensor[[index_count, latent, index_heads * index_dim], pl.BF16],
+        draft_index_weight: pl.Tensor[[index_count, hidden, index_heads], pl.BF16],
+        draft_cos: pl.Tensor[[2, capacity, norm_span], pl.FP32],
+        draft_sin: pl.Tensor[[2, capacity, norm_span], pl.FP32],
+        window_cache_pool: pl.Tensor[[layers * pages, page, 1, dim], pl.UINT8],
+        window_cache_scale_pool: pl.Tensor[[layers * pages, page, 1, dim // win_scale], pl.BF16],
+        compressed_cache_pool: pl.Tensor[[kv_count * pages, page, 1, dim // 2], pl.UINT8],
+        compressed_cache_scale_pool: pl.Tensor[[kv_count * pages, page, 1, dim // kv_scale], pl.BF16],
+        index_cache_pool: pl.Tensor[[kv_count * pages, page, 1, index_dim // 2], pl.UINT8],
+        index_cache_scale_pool: pl.Tensor[[kv_count * pages, page, 1, index_dim // key_scale], pl.UINT8],
+        window_lookup: pl.Tensor[[1, 256], pl.INT32],
+        compressed_lookup: pl.Tensor[[1, 256], pl.INT32],
+        window_rows: pl.Tensor[[8, 16], pl.INT32],
+        window_starts: pl.Tensor[[8], pl.INT32],
+        window_spans: pl.Tensor[[2, 3], pl.INT32],
+        window_bias: pl.Tensor[[1, page], pl.FP32],
+        c1a_table: pl.Tensor[[1, c1a_bucket // page], pl.INT32],
+        c2a_table: pl.Tensor[[1, c1a_bucket // page], pl.INT32],
+        request_ids: pl.Tensor[[capacity], pl.INT32],
+        c1a_visible: pl.Tensor[[capacity], pl.INT32],
+        c2a_visible: pl.Tensor[[capacity], pl.INT32],
+        zero_kv: pl.Tensor[[page, dim], pl.BF16],
+        attention_tape_residual: pl.Out[pl.Tensor[attention_residual, pl.FP32]],
+        attention_tape_mixes: pl.Out[pl.Tensor[attention_mixes, pl.FP32]],
+        attention_tape_delta: pl.Out[pl.Tensor[attention_delta, pl.BF16]],
+        attention_tape_wo_input: pl.Out[pl.Tensor[wo_input_shape, pl.BF16]],
+        attention_tape_wo_latent: pl.Out[pl.Tensor[wo_latent_shape, pl.BF16]],
+        attention_tape_normed: pl.Out[pl.Tensor[core_normed, pl.BF16]],
+        attention_tape_query: pl.Out[pl.Tensor[core_query, pl.BF16]],
+        attention_tape_temporary: pl.Out[pl.Tensor[core_temporary, pl.BF16]],
+        attention_tape_context: pl.Out[pl.Tensor[core_context, pl.FP32]],
+        attention_tape_lse: pl.Out[pl.Tensor[core_lse, pl.FP32]],
+        attention_tape_selection: pl.Out[pl.Tensor[core_selection, pl.INT32]],
+        attention_tape_lengths: pl.Out[pl.Tensor[core_lengths, pl.INT32]],
+        attention_tape_q_normed: pl.Out[pl.Tensor[qkv_low, pl.BF16]],
+        attention_tape_qkv_raw: pl.Out[pl.Tensor[qkv_raw, pl.BF16]],
+        ffn_capture_owner: pl.Scalar[pl.INT32],
+        output_window: pld.DistributedTensor[[block, hidden], pl.BF16],
+        output_arrived: pld.DistributedTensor[[tp, 1], pl.INT32],
+        rank: pl.Scalar[pl.INT32],
+        live_x: pl.Tensor[[block, mix, hidden], pl.FP32],
+        live_mix: pl.Tensor[[block, mix], pl.FP32],
+        selected: pl.Tensor[[block, index_topk], pl.INT32],
+        lengths: pl.Tensor[[block], pl.INT32],
+        mask: pl.Tensor[[block, index_topk], pl.FP32],
+        count: pl.Scalar[pl.INT32],
+        group: pl.Scalar[pl.INT32],
+        layer: pl.Scalar[pl.INDEX],
+        epoch: pl.Scalar[pl.INT32],
+        h_attention: pl.Tensor[[block, mix, hidden], pl.FP32],
+        pre_attention: pl.Tensor[[block, mix], pl.FP32],
+        ffn_input: pl.Tensor[[block, hidden], pl.BF16],
+    ):
+        """Read the target history and produce the temporary bidirectional attention rows."""
+        if count != 0:
+            if layer == 1 or layer == 14:
+                slot = layer // 14
+                engram(engram_rows[slot], engram_wkv[slot], engram_weight[slot], engram_rotation, live_x, live_x)
+            fn = pl.slice(hc_attn_fn, [mix_width, mix_input], [layer * mix_width, 0])
+            scale = pl.slice(hc_attn_scale, [3], [layer * 3])
+            base = pl.slice(hc_attn_base, [mix_width], [layer * mix_width])
+            norm = pl.slice(attn_norm_weight, [hidden], [layer * hidden])
+            window = pl.slice(window_cache_pool, [pages, page, 1, dim], [layer * pages, 0, 0, 0])
+            window_scales = pl.slice(window_cache_scale_pool, [pages, page, 1, dim // win_scale], [layer * pages, 0, 0, 0])
+            wo_a = pl.slice(draft_wo_a, [groups, wo_in, wo_rank], [layer * groups, 0, 0])
+            wo_b = draft_wo_b[layer]
+            q_a_kv, q_gamma = draft_q_a_kv[layer], draft_q_gamma[layer]
+            q_b, kv_gamma, sink = draft_q_b[layer], draft_kv_gamma[layer], draft_sink[layer]
+            delta = pl.create_tensor([block, hidden], dtype=pl.BF16)
+            context = pl.create_tensor([block * heads, dim], dtype=pl.FP32)
+            lse = pl.create_tensor([block * heads, 1], dtype=pl.FP32)
+            raw = pl.create_tensor([block, latent + dim], dtype=pl.BF16)
+            profile = 0
+            if layer >= 2:
+                profile = 1
+            normed, low_rank, query, temporary = prepare(
+                x_hc, pre_mix, norm, q_a_kv, q_gamma, q_b, kv_gamma, draft_cos[profile], draft_sin[profile], raw,
+            )
+            slot = pl.cast(layer, pl.INT32) - first_saved_layer
+            capture_slot = -1
+            if group == ffn_capture_owner:
+                capture_slot = slot
+            if layer < 2:
+                swa(window, window_scales, window_lookup, window_rows, window_starts, window_spans,
+                    window_bias, query, temporary, sink, zero_kv, context, lse)
+                project_wo(context, wo_a, wo_b, draft_cos[0], draft_sin[0], delta,
+                           attention_tape_wo_input, attention_tape_wo_latent, 1, capture_slot)
+            else:
+                kv_source = pl.min(3, (layer - 2) // 6)
+                compressed = pl.slice(compressed_cache_pool, [pages, page, 1, dim // 2], [kv_source * pages, 0, 0, 0])
+                compressed_scales = pl.slice(compressed_cache_scale_pool, [pages, page, 1, dim // kv_scale], [kv_source * pages, 0, 0, 0])
+                if layer < 20 and (layer - 2) % 6 == 0:
+                    key = pl.slice(index_cache_pool, [pages, page, 1, index_dim // 2], [kv_source * pages, 0, 0, 0])
+                    key_scales = pl.slice(index_cache_scale_pool, [pages, page, 1, index_dim // key_scale], [kv_source * pages, 0, 0, 0])
+                    c2a(
+                        normed, low_rank,
+                        draft_index_q[kv_source], draft_index_weight[kv_source], draft_cos[1], draft_sin[1],
+                        key, key_scales, c2a_table, request_ids, c2a_visible,
+                        window, window_scales, window_lookup, window_rows, window_starts, window_spans, window_bias,
+                        compressed, compressed_scales, compressed_lookup, query, temporary, sink, zero_kv,
+                        selected, lengths, mask, context, lse,
+                    )
+                elif layer >= 20 and (layer - 20) % 4 == 0:
+                    index_source = 3 + (layer - 20) // 4
+                    key = pl.slice(index_cache_pool, [pages, page, 1, index_dim // 2], [kv_source * pages, 0, 0, 0])
+                    key_scales = pl.slice(index_cache_scale_pool, [pages, page, 1, index_dim // key_scale], [kv_source * pages, 0, 0, 0])
+                    c1a(
+                        normed, low_rank,
+                        draft_index_q[index_source], draft_index_weight[index_source], draft_cos[1], draft_sin[1],
+                        key, key_scales, c1a_table, request_ids, c1a_visible,
+                        window, window_scales, window_lookup, window_rows, window_starts, window_spans, window_bias,
+                        compressed, compressed_scales, compressed_lookup, query, temporary, sink, zero_kv,
+                        selected, lengths, mask, context, lse,
+                    )
+                else:
+                    reuse(
+                        window, window_scales, window_lookup, window_rows, window_starts, window_spans, window_bias,
+                        compressed, compressed_scales, compressed_lookup, selected, lengths, mask,
+                        query, temporary, sink, zero_kv, context, lse,
+                    )
+                project_wo(context, wo_a, wo_b, draft_cos[1], draft_sin[1], delta,
+                           attention_tape_wo_input, attention_tape_wo_latent, 0, capture_slot)
+            if last_layers > 0:
+                save_core(normed, query, temporary, context, lse, selected, lengths,
+                          attention_tape_normed, attention_tape_query, attention_tape_temporary,
+                          attention_tape_context, attention_tape_lse, attention_tape_selection,
+                          attention_tape_lengths, layer < 2, capture_slot)
+                save_qkv(low_rank, raw, attention_tape_q_normed, attention_tape_qkv_raw,
+                         rank == ffn_capture_owner, capture_slot)
+            h_attention, pre_attention, ffn_input = post(
+                live_x, live_mix, delta, fn, scale, base, output_window, output_arrived, rank, epoch,
+                h_attention, pre_attention, ffn_input, attention_tape_residual, attention_tape_mixes,
+                attention_tape_delta, ffn_capture_owner, slot,
+            )
+        return h_attention, pre_attention, ffn_input
+
+    if staged_ranks is not None:
+        if staged_ranks < tp or staged_ranks % tp:
+            raise ValueError("Staged draft requires complete local TP groups")
+
+        @pl.jit(auto_scope=False)
+        def attention_rank(
+            x_hc: pl.Tensor,
+            pre_mix: pl.Tensor,
+            engram_rows: pl.Tensor,
+            engram_wkv: pl.Tensor,
+            engram_weight: pl.Tensor,
+            engram_rotation: pl.Tensor,
+            hc_attn_fn: pl.Tensor,
+            hc_attn_scale: pl.Tensor,
+            hc_attn_base: pl.Tensor,
+            attn_norm_weight: pl.Tensor,
+            draft_q_a_kv: pl.Tensor,
+            draft_q_gamma: pl.Tensor,
+            draft_q_b: pl.Tensor,
+            draft_kv_gamma: pl.Tensor,
+            draft_sink: pl.Tensor,
+            draft_wo_a: pl.Tensor,
+            draft_wo_b: pl.Tensor,
+            draft_index_q: pl.Tensor,
+            draft_index_weight: pl.Tensor,
+            draft_cos: pl.Tensor,
+            draft_sin: pl.Tensor,
+            window_cache_pool: pl.Tensor,
+            window_cache_scale_pool: pl.Tensor,
+            compressed_cache_pool: pl.Tensor,
+            compressed_cache_scale_pool: pl.Tensor,
+            index_cache_pool: pl.Tensor,
+            index_cache_scale_pool: pl.Tensor,
+            window_lookup: pl.Tensor,
+            compressed_lookup: pl.Tensor,
+            window_rows: pl.Tensor,
+            window_starts: pl.Tensor,
+            window_spans: pl.Tensor,
+            window_bias: pl.Tensor,
+            c1a_table: pl.Tensor,
+            c2a_table: pl.Tensor,
+            request_ids: pl.Tensor,
+            c1a_visible: pl.Tensor,
+            c2a_visible: pl.Tensor,
+            zero_kv: pl.Tensor,
+            attention_tape_residual: pl.Tensor,
+            attention_tape_mixes: pl.Tensor,
+            attention_tape_delta: pl.Tensor,
+            attention_tape_wo_input: pl.Tensor,
+            attention_tape_wo_latent: pl.Tensor,
+            attention_tape_normed: pl.Tensor,
+            attention_tape_query: pl.Tensor,
+            attention_tape_temporary: pl.Tensor,
+            attention_tape_context: pl.Tensor,
+            attention_tape_lse: pl.Tensor,
+            attention_tape_selection: pl.Tensor,
+            attention_tape_lengths: pl.Tensor,
+            attention_tape_q_normed: pl.Tensor,
+            attention_tape_qkv_raw: pl.Tensor,
+            selected: pl.Tensor,
+            lengths: pl.Tensor,
+            mask: pl.Tensor,
+            count_meta: pl.Tensor,
+            h_attention: pl.Tensor,
+            pre_attention: pl.Tensor,
+            ffn_input: pl.Tensor,
+            output_window: pld.DistributedTensor[[block, hidden], pl.BF16],
+            output_arrived: pld.DistributedTensor[[tp, 1], pl.INT32],
+            rank: pl.Scalar[pl.INT32],
+            layer_index: pl.Scalar[pl.INT32],
+            ffn_capture_owner: pl.Scalar[pl.INT32],
+        ):
+            count = pl.read(count_meta, [0])
+            group = rank // tp * tp
+            if count != 0:
+                draft_attention_layer(
+                    x_hc, pre_mix, engram_rows, engram_wkv, engram_weight, engram_rotation, hc_attn_fn,
+                    hc_attn_scale, hc_attn_base, attn_norm_weight, draft_q_a_kv, draft_q_gamma, draft_q_b,
+                    draft_kv_gamma, draft_sink, draft_wo_a, draft_wo_b, draft_index_q, draft_index_weight,
+                    draft_cos, draft_sin, window_cache_pool, window_cache_scale_pool, compressed_cache_pool,
+                    compressed_cache_scale_pool, index_cache_pool, index_cache_scale_pool, window_lookup,
+                    compressed_lookup, window_rows, window_starts, window_spans, window_bias, c1a_table,
+                    c2a_table, request_ids, c1a_visible, c2a_visible, zero_kv, attention_tape_residual,
+                    attention_tape_mixes, attention_tape_delta, attention_tape_wo_input,
+                    attention_tape_wo_latent, attention_tape_normed, attention_tape_query,
+                    attention_tape_temporary, attention_tape_context, attention_tape_lse,
+                    attention_tape_selection, attention_tape_lengths, attention_tape_q_normed,
+                    attention_tape_qkv_raw, ffn_capture_owner, output_window, output_arrived, rank, x_hc,
+                    pre_mix, selected, lengths, mask, count, group, pl.cast(layer_index, pl.INDEX), 1,
+                    h_attention, pre_attention, ffn_input,
+                )
+                retire(h_attention, output_arrived, group, rank % tp)
+
+        @pl.jit.host
+        def draft_attention_stage(
+            x_hc: pl.InOut[pl.Tensor[[staged_ranks, capacity, mix, hidden], pl.FP32]],
+            pre_mix: pl.InOut[pl.Tensor[[staged_ranks, capacity, mix], pl.FP32]],
+            engram_rows: pl.Tensor[[staged_ranks, 2, block, engram_k], pl.BF16],
+            engram_wkv: pl.Tensor[[staged_ranks, 2, engram_k, engram_out], pl.BF16, pl.NZ],
+            engram_weight: pl.Tensor[[staged_ranks, 2, mix, hidden], pl.FP32],
+            engram_rotation: pl.Tensor[[staged_ranks, hidden // 32, 32, 32], pl.FP32],
+            hc_attn_fn: pl.Tensor[[staged_ranks, layers * mix_width, mix_input], pl.FP32],
+            hc_attn_scale: pl.Tensor[[staged_ranks, layers * 3], pl.FP32],
+            hc_attn_base: pl.Tensor[[staged_ranks, layers * mix_width], pl.FP32],
+            attn_norm_weight: pl.Tensor[[staged_ranks, layers * hidden], pl.BF16],
+            draft_q_a_kv: pl.Tensor[[staged_ranks, layers, hidden, latent + dim], pl.BF16],
+            draft_q_gamma: pl.Tensor[[staged_ranks, layers, latent], pl.BF16],
+            draft_q_b: pl.Tensor[[staged_ranks, layers, latent, heads * dim], pl.BF16],
+            draft_kv_gamma: pl.Tensor[[staged_ranks, layers, dim], pl.BF16],
+            draft_sink: pl.Tensor[[staged_ranks, layers, heads], pl.FP32],
+            draft_wo_a: pl.Tensor[[staged_ranks, layers * groups, wo_in, wo_rank], pl.BF16, pl.NZ],
+            draft_wo_b: pl.Tensor[[staged_ranks, layers, groups * wo_rank, hidden], pl.BF16, pl.NZ],
+            draft_index_q: pl.Tensor[[staged_ranks, index_count, latent, index_heads * index_dim], pl.BF16],
+            draft_index_weight: pl.Tensor[[staged_ranks, index_count, hidden, index_heads], pl.BF16],
+            draft_cos: pl.Tensor[[staged_ranks, 2, capacity, norm_span], pl.FP32],
+            draft_sin: pl.Tensor[[staged_ranks, 2, capacity, norm_span], pl.FP32],
+            window_cache_pool: pl.Tensor[[staged_ranks, layers * pages, page, 1, dim], pl.UINT8],
+            window_cache_scale_pool: pl.Tensor[[staged_ranks, layers * pages, page, 1, dim // win_scale], pl.BF16],
+            compressed_cache_pool: pl.Tensor[[staged_ranks, kv_count * pages, page, 1, dim // 2], pl.UINT8],
+            compressed_cache_scale_pool: pl.Tensor[[staged_ranks, kv_count * pages, page, 1, dim // kv_scale], pl.BF16],
+            index_cache_pool: pl.Tensor[[staged_ranks, kv_count * pages, page, 1, index_dim // 2], pl.UINT8],
+            index_cache_scale_pool: pl.Tensor[[staged_ranks, kv_count * pages, page, 1, index_dim // key_scale], pl.UINT8],
+            window_lookup: pl.Tensor[[staged_ranks, 1, 256], pl.INT32],
+            compressed_lookup: pl.Tensor[[staged_ranks, 1, 256], pl.INT32],
+            window_rows: pl.Tensor[[staged_ranks, 8, 16], pl.INT32],
+            window_starts: pl.Tensor[[staged_ranks, 8], pl.INT32],
+            window_spans: pl.Tensor[[staged_ranks, 2, 3], pl.INT32],
+            window_bias: pl.Tensor[[staged_ranks, 1, page], pl.FP32],
+            c1a_table: pl.Tensor[[staged_ranks, 1, c1a_bucket // page], pl.INT32],
+            c2a_table: pl.Tensor[[staged_ranks, 1, c1a_bucket // page], pl.INT32],
+            request_ids: pl.Tensor[[staged_ranks, capacity], pl.INT32],
+            c1a_visible: pl.Tensor[[staged_ranks, capacity], pl.INT32],
+            c2a_visible: pl.Tensor[[staged_ranks, capacity], pl.INT32],
+            zero_kv: pl.Tensor[[staged_ranks, page, dim], pl.BF16],
+            attention_tape_residual: pl.InOut[pl.Tensor[[staged_ranks, *attention_residual], pl.FP32]],
+            attention_tape_mixes: pl.InOut[pl.Tensor[[staged_ranks, *attention_mixes], pl.FP32]],
+            attention_tape_delta: pl.InOut[pl.Tensor[[staged_ranks, *attention_delta], pl.BF16]],
+            attention_tape_wo_input: pl.InOut[pl.Tensor[[staged_ranks, *wo_input_shape], pl.BF16]],
+            attention_tape_wo_latent: pl.InOut[pl.Tensor[[staged_ranks, *wo_latent_shape], pl.BF16]],
+            attention_tape_normed: pl.InOut[pl.Tensor[[staged_ranks, *core_normed], pl.BF16]],
+            attention_tape_query: pl.InOut[pl.Tensor[[staged_ranks, *core_query], pl.BF16]],
+            attention_tape_temporary: pl.InOut[pl.Tensor[[staged_ranks, *core_temporary], pl.BF16]],
+            attention_tape_context: pl.InOut[pl.Tensor[[staged_ranks, *core_context], pl.FP32]],
+            attention_tape_lse: pl.InOut[pl.Tensor[[staged_ranks, *core_lse], pl.FP32]],
+            attention_tape_selection: pl.InOut[pl.Tensor[[staged_ranks, *core_selection], pl.INT32]],
+            attention_tape_lengths: pl.InOut[pl.Tensor[[staged_ranks, *core_lengths], pl.INT32]],
+            attention_tape_q_normed: pl.InOut[pl.Tensor[[staged_ranks, *qkv_low], pl.BF16]],
+            attention_tape_qkv_raw: pl.InOut[pl.Tensor[[staged_ranks, *qkv_raw], pl.BF16]],
+            selected: pl.InOut[pl.Tensor[[staged_ranks, block, index_topk], pl.INT32]],
+            lengths: pl.InOut[pl.Tensor[[staged_ranks, block], pl.INT32]],
+            mask: pl.InOut[pl.Tensor[[staged_ranks, block, index_topk], pl.FP32]],
+            count_meta: pl.Tensor[[staged_ranks, 2], pl.INT32],
+            h_attention: pl.Out[pl.Tensor[[staged_ranks, block, mix, hidden], pl.FP32]],
+            pre_attention: pl.Out[pl.Tensor[[staged_ranks, block, mix], pl.FP32]],
+            ffn_input: pl.Out[pl.Tensor[[staged_ranks, block, hidden], pl.BF16]],
+            layer_index: pl.Scalar[pl.INT32],
+            ffn_capture_owner: pl.Scalar[pl.INT32],
+            execute_layers: pl.Scalar[pl.INT32],
+        ):
+            window_buffer = pld.alloc_window_buffer([block, hidden], dtype=pl.BF16)
+            arrived_buffer = pld.alloc_window_buffer([tp, 1], dtype=pl.INT32)
+            for rank in pl.range(pld.world_size()):
+                output_window = pld.window(window_buffer, [block, hidden], dtype=pl.BF16)
+                output_arrived = pld.window(arrived_buffer, [tp, 1], dtype=pl.INT32)
+                if execute_layers != 0:
+                    attention_rank(
+                        x_hc[rank], pre_mix[rank], engram_rows[rank], engram_wkv[rank], engram_weight[rank],
+                        engram_rotation[rank], hc_attn_fn[rank], hc_attn_scale[rank], hc_attn_base[rank],
+                        attn_norm_weight[rank], draft_q_a_kv[rank], draft_q_gamma[rank], draft_q_b[rank],
+                        draft_kv_gamma[rank], draft_sink[rank], draft_wo_a[rank], draft_wo_b[rank],
+                        draft_index_q[rank], draft_index_weight[rank], draft_cos[rank], draft_sin[rank],
+                        window_cache_pool[rank], window_cache_scale_pool[rank], compressed_cache_pool[rank],
+                        compressed_cache_scale_pool[rank], index_cache_pool[rank], index_cache_scale_pool[rank],
+                        window_lookup[rank], compressed_lookup[rank], window_rows[rank], window_starts[rank],
+                        window_spans[rank], window_bias[rank], c1a_table[rank], c2a_table[rank],
+                        request_ids[rank], c1a_visible[rank], c2a_visible[rank], zero_kv[rank],
+                        attention_tape_residual[rank], attention_tape_mixes[rank], attention_tape_delta[rank],
+                        attention_tape_wo_input[rank], attention_tape_wo_latent[rank],
+                        attention_tape_normed[rank], attention_tape_query[rank], attention_tape_temporary[rank],
+                        attention_tape_context[rank], attention_tape_lse[rank], attention_tape_selection[rank],
+                        attention_tape_lengths[rank], attention_tape_q_normed[rank],
+                        attention_tape_qkv_raw[rank], selected[rank], lengths[rank], mask[rank],
+                        count_meta[rank], h_attention[rank], pre_attention[rank], ffn_input[rank], output_window,
+                        output_arrived, rank, layer_index, ffn_capture_owner,
+                        device=rank,
+                    )
+
+        return draft_attention_stage
 
     @pl.jit(auto_scope=False)
     def draft_rank(
@@ -202,87 +546,23 @@ def make_packed_draft_graph(pages, c1a_bucket, c2a_bucket, block, *, last_layers
                 h_attention = pl.create_tensor([block, mix, hidden], dtype=pl.FP32)
                 pre_attention = pl.create_tensor([block, mix], dtype=pl.FP32)
                 ffn_input = pl.create_tensor([block, hidden], dtype=pl.BF16)
-                if count != 0:
-                    if layer == 1 or layer == 14:
-                        slot = layer // 14
-                        engram(engram_rows[slot], engram_wkv[slot], engram_weight[slot], engram_rotation, live_x, live_x)
-                    fn = pl.slice(hc_attn_fn, [mix_width, mix_input], [layer * mix_width, 0])
-                    scale = pl.slice(hc_attn_scale, [3], [layer * 3])
-                    base = pl.slice(hc_attn_base, [mix_width], [layer * mix_width])
-                    norm = pl.slice(attn_norm_weight, [hidden], [layer * hidden])
-                    window = pl.slice(window_cache_pool, [pages, page, 1, dim], [layer * pages, 0, 0, 0])
-                    window_scales = pl.slice(window_cache_scale_pool, [pages, page, 1, dim // win_scale], [layer * pages, 0, 0, 0])
-                    wo_a = pl.slice(draft_wo_a, [groups, wo_in, wo_rank], [layer * groups, 0, 0])
-                    wo_b = draft_wo_b[layer]
-                    q_a_kv, q_gamma = draft_q_a_kv[layer], draft_q_gamma[layer]
-                    q_b, kv_gamma, sink = draft_q_b[layer], draft_kv_gamma[layer], draft_sink[layer]
-                    delta = pl.create_tensor([block, hidden], dtype=pl.BF16)
-                    context = pl.create_tensor([block * heads, dim], dtype=pl.FP32)
-                    lse = pl.create_tensor([block * heads, 1], dtype=pl.FP32)
-                    raw = pl.create_tensor([block, latent + dim], dtype=pl.BF16)
-                    profile = 0
-                    if layer >= 2:
-                        profile = 1
-                    normed, low_rank, query, temporary = prepare(
-                        x_hc, pre_mix, norm, q_a_kv, q_gamma, q_b, kv_gamma, draft_cos[profile], draft_sin[profile], raw,
-                    )
-                    slot = pl.cast(layer, pl.INT32) - first_saved_layer
-                    capture_slot = -1
-                    if group == ffn_capture_owner:
-                        capture_slot = slot
-                    if layer < 2:
-                        swa(window, window_scales, window_lookup, window_rows, window_starts, window_spans,
-                            window_bias, query, temporary, sink, zero_kv, context, lse)
-                        project_wo(context, wo_a, wo_b, draft_cos[0], draft_sin[0], delta,
-                                   attention_tape_wo_input, attention_tape_wo_latent, 1, capture_slot)
-                    else:
-                        kv_source = pl.min(3, (layer - 2) // 6)
-                        compressed = pl.slice(compressed_cache_pool, [pages, page, 1, dim // 2], [kv_source * pages, 0, 0, 0])
-                        compressed_scales = pl.slice(compressed_cache_scale_pool, [pages, page, 1, dim // kv_scale], [kv_source * pages, 0, 0, 0])
-                        if layer < 20 and (layer - 2) % 6 == 0:
-                            key = pl.slice(index_cache_pool, [pages, page, 1, index_dim // 2], [kv_source * pages, 0, 0, 0])
-                            key_scales = pl.slice(index_cache_scale_pool, [pages, page, 1, index_dim // key_scale], [kv_source * pages, 0, 0, 0])
-                            c2a(
-                                normed, low_rank,
-                                draft_index_q[kv_source], draft_index_weight[kv_source], draft_cos[1], draft_sin[1],
-                                key, key_scales, c2a_table, request_ids, c2a_visible,
-                                window, window_scales, window_lookup, window_rows, window_starts, window_spans, window_bias,
-                                compressed, compressed_scales, compressed_lookup, query, temporary, sink, zero_kv,
-                                selected, lengths, mask, context, lse,
-                            )
-                        elif layer >= 20 and (layer - 20) % 4 == 0:
-                            index_source = 3 + (layer - 20) // 4
-                            key = pl.slice(index_cache_pool, [pages, page, 1, index_dim // 2], [kv_source * pages, 0, 0, 0])
-                            key_scales = pl.slice(index_cache_scale_pool, [pages, page, 1, index_dim // key_scale], [kv_source * pages, 0, 0, 0])
-                            c1a(
-                                normed, low_rank,
-                                draft_index_q[index_source], draft_index_weight[index_source], draft_cos[1], draft_sin[1],
-                                key, key_scales, c1a_table, request_ids, c1a_visible,
-                                window, window_scales, window_lookup, window_rows, window_starts, window_spans, window_bias,
-                                compressed, compressed_scales, compressed_lookup, query, temporary, sink, zero_kv,
-                                selected, lengths, mask, context, lse,
-                            )
-                        else:
-                            reuse(
-                                window, window_scales, window_lookup, window_rows, window_starts, window_spans, window_bias,
-                                compressed, compressed_scales, compressed_lookup, selected, lengths, mask,
-                                query, temporary, sink, zero_kv, context, lse,
-                            )
-                        project_wo(context, wo_a, wo_b, draft_cos[1], draft_sin[1], delta,
-                                   attention_tape_wo_input, attention_tape_wo_latent, 0, capture_slot)
-                    if last_layers > 0:
-                        save_core(normed, query, temporary, context, lse, selected, lengths,
-                                  attention_tape_normed, attention_tape_query, attention_tape_temporary,
-                                  attention_tape_context, attention_tape_lse, attention_tape_selection,
-                                  attention_tape_lengths, layer < 2, capture_slot)
-                        save_qkv(low_rank, raw, attention_tape_q_normed, attention_tape_qkv_raw,
-                                 rank == ffn_capture_owner, capture_slot)
-                    h_attention, pre_attention, ffn_input = post(
-                        live_x, live_mix, delta, fn, scale, base, output_window, output_arrived, rank, layer + 1,
-                        h_attention, pre_attention, ffn_input, attention_tape_residual, attention_tape_mixes,
-                        attention_tape_delta, ffn_capture_owner, slot,
-                    )
-                else:
+                h_attention, pre_attention, ffn_input = draft_attention_layer(
+                    x_hc, pre_mix, engram_rows, engram_wkv, engram_weight, engram_rotation, hc_attn_fn,
+                    hc_attn_scale, hc_attn_base, attn_norm_weight, draft_q_a_kv, draft_q_gamma, draft_q_b,
+                    draft_kv_gamma, draft_sink, draft_wo_a, draft_wo_b, draft_index_q, draft_index_weight,
+                    draft_cos, draft_sin, window_cache_pool, window_cache_scale_pool, compressed_cache_pool,
+                    compressed_cache_scale_pool, index_cache_pool, index_cache_scale_pool, window_lookup,
+                    compressed_lookup, window_rows, window_starts, window_spans, window_bias, c1a_table,
+                    c2a_table, request_ids, c1a_visible, c2a_visible, zero_kv, attention_tape_residual,
+                    attention_tape_mixes, attention_tape_delta, attention_tape_wo_input,
+                    attention_tape_wo_latent, attention_tape_normed, attention_tape_query,
+                    attention_tape_temporary, attention_tape_context, attention_tape_lse,
+                    attention_tape_selection, attention_tape_lengths, attention_tape_q_normed,
+                    attention_tape_qkv_raw, ffn_capture_owner, output_window, output_arrived, rank, live_x,
+                    live_mix, selected, lengths, mask, count, group, layer, layer + 1, h_attention,
+                    pre_attention, ffn_input,
+                )
+                if count == 0:
                     h_attention, pre_attention = live_x, live_mix
 
                 expert_base = layer * experts
