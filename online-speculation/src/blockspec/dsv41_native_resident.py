@@ -118,6 +118,62 @@ class NativeResidualInputPacket:
         self.tail[:] = packet[size:]
 
 
+class NativePrefillInputPacket:
+    """Elide padding in the large token-row fields of a packed Prefill image."""
+
+    def __init__(self, inputs):
+        image = inputs.images[2]
+        fields = inputs.fields[2]
+        raw = memoryview(image.numpy())
+        self.capacity = fields["embedding"].shape[0]
+        spans = [(fields["embedding"], 0)]
+        spans.extend((field, 0) for field in fields["engram_lookup"].unbind())
+        spans.extend((field, -1) for field in fields["window_indices"].unbind())
+        self.spans = []
+        omitted_per_row = end = 0
+        for field, padding in sorted(spans, key=lambda item: item[0].data_ptr()):
+            offset = field.data_ptr() - image.data_ptr()
+            if not field.is_contiguous() or field.shape[0] != self.capacity or offset < end:
+                raise ValueError("Native Prefill token rows do not match the packed input image")
+            end_of_field = offset + field.nbytes
+            row_bytes = field[0].nbytes
+            self.spans.append((raw[end:offset], raw[offset:end_of_field], row_bytes, field, padding))
+            omitted_per_row += row_bytes
+            end = end_of_field
+        self.tail = raw[end:]
+        self.full_bytes = len(raw)
+        self.row_bytes = omitted_per_row
+
+    def size(self, rows):
+        if not 0 < rows <= self.capacity:
+            raise ValueError("Invalid live row count for the native Prefill image")
+        return self.full_bytes - (self.capacity - rows) * self.row_bytes
+
+    def pack(self, rows):
+        self.size(rows)
+        parts = []
+        for gap, data, stride, _, _ in self.spans:
+            parts.extend((gap, data[:rows * stride]))
+        parts.append(self.tail)
+        return b"".join(parts)
+
+    def stage(self, packet, rows):
+        start = 0
+        for gap, data, stride, field, padding in self.spans:
+            live = rows * stride
+            end = start + len(gap)
+            gap[:] = packet[start:end]
+            data[:live] = packet[end:end + live]
+            field[rows:].fill_(padding)
+            start = end + live
+        self.tail[:] = packet[start:]
+
+
+def native_target_packets(inputs):
+    return {"prefill": NativePrefillInputPacket(inputs["prefill"]),
+            "decode": NativeResidualInputPacket(inputs["decode"])}
+
+
 def graph_argument(shards, workers, parameter, world):
     """Bind local shards to the same ND or folded NZ ABI as the original graph."""
     from models.deepseek_v4_1_flash_a3.device_views import resident_graph_argument
@@ -169,7 +225,7 @@ class NativeResidentForward:
         }
         constants = {*weights.tensor_layouts, *initial_cache, *cache_views, "freqs_cos", "freqs_sin"}
         parameters, self.inputs = forward_inputs(programs, weights, templates, initial_cache)
-        self.decode_packet = NativeResidualInputPacket(self.inputs["decode"])
+        self.input_packets = native_target_packets(self.inputs)
         for phase, params in parameters.items():
             supported = set(templates[phase]) | constants | set(outputs) | set(self.count_names) | {"execute_layers"}
             unknown = set(params) - supported
@@ -248,12 +304,8 @@ class NativeResidentForward:
         """Receive one owner image and keep logits disabled on the three TP peers."""
         inputs = self.inputs[phase]
         logit_name = "logit_rows" if phase == "prefill" else "logit_row_indices"
-        owner_image = inputs.images[2]
-        if phase == "decode":
-            self.decode_packet.stage(payload, rows)
-        else:
-            memoryview(owner_image.numpy())[:] = payload
-        inputs.images[1].copy_(owner_image)
+        self.input_packets[phase].stage(payload, rows)
+        inputs.images[1].copy_(inputs.images[2])
         inputs.fields[1][logit_name].copy_(self.idle[phase][logit_name])
         self._upload(phase, dp)
 

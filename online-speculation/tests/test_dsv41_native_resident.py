@@ -9,7 +9,7 @@ from blockspec.dsv41_native_forward import (
     DRAFT, DRAFT_CAPTURE, READ_ROWS, ROWS_AND_MASK, ForwardNode, NativeForwardTarget, NativeSampleError,
 )
 from blockspec.dsv41_native_graph_pair import NativePeerMailbox
-from blockspec.dsv41_native_resident import NativeRankMemory, NativeResidualInputPacket
+from blockspec.dsv41_native_resident import NativePrefillInputPacket, NativeRankMemory, NativeResidualInputPacket
 
 
 class Buffer:
@@ -101,6 +101,34 @@ def test_native_residual_packet_reconstructs_the_full_input_image(rows, repeat_t
         packet = bytearray(outgoing.pack(rows))
         assert len(packet) == incoming.size(rows) == rows * 32 * 4 + 64
         incoming.stage(packet, rows, repeat_to=repeat_to)
+        assert torch.equal(source, target)
+
+
+def test_native_prefill_packet_restore_padding_without_touching_control_bytes():
+    def allocate():
+        image = torch.arange(352).remainder(251).to(torch.uint8)
+        fields = {
+            "embedding": image[32:96].view(torch.bfloat16).view(4, 8),
+            "engram_lookup": image[128:192].view(torch.bfloat16).view(2, 4, 4),
+            "window_indices": image[224:320].view(torch.int32).view(2, 4, 3),
+        }
+        return image, fields, NativePrefillInputPacket(
+            SimpleNamespace(images=[None, None, image], fields=[None, None, fields]),
+        )
+
+    source, fields, sender = allocate()
+    target, _, receiver = allocate()
+    for rows in (4, 1, 3, 2):
+        fields["embedding"][:rows].fill_(rows)
+        fields["embedding"][rows:].zero_()
+        fields["engram_lookup"][:, :rows].fill_(-rows)
+        fields["engram_lookup"][:, rows:].zero_()
+        fields["window_indices"][:, :rows].fill_(5 + rows)
+        fields["window_indices"][:, rows:].fill_(-1)
+        packet = memoryview(sender.pack(rows))
+        assert len(packet) == receiver.size(rows) == len(source) - (4 - rows) * 56
+        target.fill_(233)
+        receiver.stage(packet, rows)
         assert torch.equal(source, target)
 
 

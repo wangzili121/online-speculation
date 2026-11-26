@@ -18,7 +18,7 @@ from .dsv41_native_online_runtime import ARENA, TRAIN_GRAPH, NativeOnlineArena, 
 from .dsv41_native_rank_dispatch import NativeRankGraph, RankLocalStack
 from .dsv41_native_resident import (
     NativeRankMemory, NativeResidentForward, NativeResidualInputPacket, bind_native_draft, forward_inputs,
-    forward_templates,
+    forward_templates, native_target_packets,
 )
 from .dsv41_packed_proposer import (
     DraftRoundStats, PackedFinalState, PackedStudentRows, draft_geometry, draft_graph_manifest,
@@ -203,10 +203,8 @@ class ForwardNode:
             start += DRAFT_CAPTURE.size
         if is_draft:
             sizes = [self.draft_packet.size(2)] * len(active)
-        elif phase == "decode":
-            sizes = [bank.decode_packet.size(counts[dp]) for dp in active]
         else:
-            sizes = [images.images[2].nbytes] * len(active)
+            sizes = [bank.input_packets[phase].size(counts[dp]) for dp in active]
         if len(payload) != start + sum(sizes):
             raise ValueError(f"{phase} request does not match the negotiated packed image size")
         capture = self.draft.capture_args.get(capture_owner) if is_draft else None
@@ -330,7 +328,7 @@ class NativeForwardTarget:
         self.config = config
         self.artifacts = artifacts
         self.images = images
-        self.decode_packet = NativeResidualInputPacket(images["decode"])
+        self.input_packets = native_target_packets(images)
         self.templates = tuple({name: templates[phase][name] for name in images[phase].fields[0]} for phase in PHASES)
         self.ropes = ropes
         self.sample_shape = artifacts.sample_shape
@@ -351,8 +349,8 @@ class NativeForwardTarget:
         io = self.images[phase]
         for name, field in io.fields[2].items():
             field.copy_(values[name])
-        self.staged[index][dp] = (self.decode_packet.pack(int(values["query_start_loc"][-1])) if index else
-                                  io.images[2].numpy().tobytes())
+        rows = int(values["query_start_loc"].reshape(-1)[-1])
+        self.staged[index][dp] = self.input_packets[phase].pack(rows)
 
     def run(self, index, counts, *, capture_owner=-1):
         import torch
