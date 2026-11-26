@@ -8,8 +8,13 @@ if [[ "$mode" == native-fabric && $# == 1 ]]; then
   exec bash "$(dirname "${BASH_SOURCE[0]}")/check_dsv41_pypto_native_peer.sh"
 fi
 case "$mode" in
+  native-prepare|native-smoke|native-study)
+    exec bash "$(dirname "${BASH_SOURCE[0]}")/run_dsv41_pypto_company_native.sh" "$mode" "$last"
+    ;;
+esac
+case "$mode" in
   prepare|smoke|study) ;;
-  *) echo "Usage: $0 {prepare|smoke|study} [last-N] | native-fabric" >&2; exit 2 ;;
+  *) echo "Usage: $0 {prepare|smoke|study|native-prepare|native-smoke|native-study} [last-N] | native-fabric" >&2; exit 2 ;;
 esac
 [[ "$last" =~ ^([1-9]|1[0-9]|2[0-6])$ ]] || { echo 'last-N must be 1–26.' >&2; exit 2; }
 

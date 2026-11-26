@@ -8,29 +8,29 @@ from struct import pack, unpack
 @dataclass(frozen=True)
 class NativeChipGraph:
     graph: object
-    name: str
-    chip: object
-    host_tensor_indices: tuple[int, ...] = ()
+    chips: dict
+    abi: tuple[tuple[str, tuple[int, ...]], ...]
 
     @classmethod
     def from_program(cls, rank_graph, program):
         from pypto.runtime.distributed_runner import _assemble_chip_callables
 
         callables, runtime, sdma = _assemble_chip_callables(program)
-        if len(callables) != 1 or runtime != "tensormap_and_ringbuffer" or sdma:
-            raise ValueError("Expected the pinned 1122 whole-graph chip runtime")
-        name, = callables
-        return cls(rank_graph, name, callables[name], tuple(sorted(callables.host_tensor_indices[name])))
+        if runtime != "tensormap_and_ringbuffer" or sdma:
+            raise ValueError("Expected the pinned 1122 chip runtime")
+        abi = tuple((name, tuple(sorted(callables.host_tensor_indices[name]))) for name in callables)
+        return cls(rank_graph, callables, abi)
 
-    def bind(self, handle):
-        return bind_chip(self.name, handle, self.host_tensor_indices)
+    def bind(self, register):
+        return bind_chips(self.abi, (register(self.chips[name]) for name, _ in self.abi))
 
 
-def bind_chip(name, handle, host_tensor_indices):
+def bind_chips(abi, handles):
     from pypto.runtime.distributed_runner import _ChipCallables
 
     callables = _ChipCallables()
-    callables.add(name, handle, {"host_tensor_indices": host_tensor_indices})
+    for (name, host_tensor_indices), handle in zip(abi, handles, strict=True):
+        callables.add(name, handle, {"host_tensor_indices": host_tensor_indices})
     return callables
 
 
@@ -40,6 +40,10 @@ def remote_chip(args, scalar_offset):
 
     digest = pack("<4Q", *(args.scalar(scalar_offset + index) for index in range(4)))
     return get_inner_handle(digest.hex())
+
+
+def remote_chips(abi, args, offset):
+    return bind_chips(abi, (remote_chip(args, offset + index * 4) for index in range(len(abi))))
 
 
 @contextmanager
@@ -131,10 +135,11 @@ def open_native_graph_pair(phases, *, endpoint, peer_listen_host, devices, platf
             comm_profile=comm_profile,
         ))
         # The forked L3 gets local handles. The daemon receives the same binaries through the L4 registry.
-        local_bound = {name: phase.bind(local.register(phase.chip)) for name, phase in phases.items()}
+        local_bound = {name: phase.bind(local.register) for name, phase in phases.items()}
         local_call = parent.register(local_endpoint(local_bound))
         remote_call = parent.register(RemoteCallable(remote_endpoint), workers=[remote_id])
-        digests = {name: parent.register(phase.chip).digest for name, phase in phases.items()}
+        digests = {name: tuple(parent.register(phase.chips[chip]).digest for chip, _ in phase.abi)
+                   for name, phase in phases.items()}
         parent.init()
         members = tuple(
             (node, worker) for node, cards in ((local_id, local_devices), (remote_id, remote_devices))
@@ -168,14 +173,15 @@ class NativeGraphPair:
                 if initialize is not None:
                     initialize(orch, domain)
                 for args in arguments:
-                    args.add_scalar(domain.domain_id)
-                for word in unpack("<4Q", self.digests[phase]):
-                    arguments[1].add_scalar(word)
+                    args.add_scalar(domain.domain_id if domain is not None else 0)
+                for digest in self.digests[phase]:
+                    for word in unpack("<4Q", digest):
+                        arguments[1].add_scalar(word)
             for node, callback, args in zip(self.nodes, self.callbacks, arguments, strict=True):
                 orch.submit_next_level(callback, args, cfg, worker=node)
 
         self.parent.run(submit, config=config)
-        if phase is not None:
+        if phase is not None and self.phases[phase].graph.window is not None:
             self._used_phases.add(phase)
 
     def reserve_windows(self, config):
@@ -184,7 +190,7 @@ class NativeGraphPair:
                 item.graph.allocate_domain(orch, f"dsv41/{phase}", self.members)
 
         self.parent.run(reserve, config=config)
-        self._used_phases.update(self.phases)
+        self._used_phases.update(phase for phase, item in self.phases.items() if item.graph.window is not None)
 
     def release_windows(self, config):
         def release(orch, _args, _cfg):

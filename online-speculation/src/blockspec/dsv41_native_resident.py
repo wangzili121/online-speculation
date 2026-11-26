@@ -81,6 +81,11 @@ class NativeRankMemory:
             self.worker.copy_from(host, device, src_offset=src_offset + start, nbytes=size)
             memmove(dst + dst_offset + start, int(host.base), size)
 
+    def free_tensor(self, tensor, *, worker_id):
+        key = worker_id, tensor.data_ptr
+        self.worker.free(self.allocations[key])
+        del self.allocations[key]
+
 
 def graph_argument(shards, workers, parameter, world):
     """Bind local shards to the same ND or folded NZ ABI as the original graph."""
@@ -294,4 +299,22 @@ def bind_native_draft(target, graph, program, artifacts, head, block, last_layer
         raise ValueError("Draft forward graph rank layout differs from the resident parameter layout")
     scratch, buffers = graph.bind_remote_intermediates(worker, target.ranks)
     arguments.update(scratch)
-    return SimpleNamespace(draft=draft, arguments=arguments, count_buffer=count_buffer, scratch_buffers=buffers)
+    bindings, capture = {}, {}
+    if artifacts.online:
+        for owner in target.ranks[::target.tp]:
+            local = target.ranks.index(owner)
+            output = draft.ranks[local]["logits"]
+            retained_logits = target.memory.alloc_tensor(output.shape, output.dtype, worker_id=local)
+            allocation, views = draft.inputs.reserve(target.memory, local)
+            bound = dict(arguments)
+            bound[parameters[draft._capture_owner_argument].name] = owner
+            _, parameter = draft._logits_argument
+            bound[parameter.name] = draft._rank_argument("logits", parameter, replacement={local: retained_logits})
+            for name, (_, parameter) in draft._input_arguments.items():
+                bound[parameter.name] = draft._rank_argument(name, parameter, replacement={local: views[name]})
+            bindings[owner] = bound, allocation
+            capture[owner] = {"logits": retained_logits, "streams": views["x_hc"], "premix": views["pre_mix"],
+                              "inputs": allocation}
+    return SimpleNamespace(draft=draft, arguments=arguments, count_buffer=count_buffer, scratch_buffers=buffers,
+                           capture_args=bindings, capture=capture,
+                           capture_parameter=parameters[draft._capture_owner_argument].name)

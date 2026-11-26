@@ -105,6 +105,24 @@ Draft 和 Verify 只回读实际参与本轮的词表行。Draft 结果直接交
 
 投机阶段的 Host 元数据按 DP 构造，TP rank 保留自己的序列并行切片。常规 K32 Draft 和 Verify 共享相同的位置、页表和分片控制，并复用同一份元数据；Verify 的候选 token ID 保存在独立的输入契约。每次写盘将动态控制合成一个文件，原生调用继续接收完整布局和 Engram 常量。111 的四请求 K32 小测中，按字段核对结果一致，构造元数据从 188 ms 降到 47 ms，单次证据序列化及校验从 431 ms 降到 92 ms，文件体积从 19.6 MB 降到 0.71 MB。两项均为 Host 局部计时。
 
+### 1122 原生整图双机推理和在线更新
+
+原生入口使用固定的 `949a18d`。node7 和 node8 各管理 8 张本机卡，Simpler L4 为两个 L3 worker 建立设备共享窗口。AR 与 Orthrus 共用同一套目标 Prefill 和 Decode 整图。教师 logits 随校验提交在设备侧分段保存，last‑N 反向完成后再在设备侧发布参数。
+
+两台切换到 `orthrus-dsv41-pypto-1122` 并更新到同一提交，各执行一次 `dsv41_pypto_env.sh refresh-1122`。从 node7 仓库根目录运行下列命令。默认通过免交互 SSH 启动 node8，可用 `NODE8_SSH` 和 `NODE8_CHECKOUT` 指定远端账号和路径。
+
+```bash
+RUN=online-speculation/scripts/run_dsv41_pypto_company_pair.sh
+bash "$RUN" native-fabric
+bash "$RUN" native-prepare 1
+bash "$RUN" native-smoke 1
+bash "$RUN" native-study 1
+```
+
+`native-fabric` 使用每台一张空闲卡检查设备窗口导出和跨机访问。默认物理卡分别为 node7 的 1 号和 node8 的 0 号，可通过 `NODE7_FABRIC_NPU` 和 `NODE8_FABRIC_NPU` 调整。`native-prepare` 用 CPU 编译并分发整图和初始化 head。`native-smoke` 需要两台各 8 张空闲卡，检查 AR 和在线更新的逐 token 一致性以及至少一次更新。公司双机的原生 Fabric 和整模仍待实测。
+
+GSM8K 默认使用 64 道在线题和 16 道留出题，四并发，每题最多生成 64 token，K8，last‑1，TV loss，学习率 `1e-5`。训练每隔 16 个验证轮次至多采一个反馈块，每块最多 7 个位置。`result.json` 记录 AR 与在线更新的实测吞吐、扣除更新时间的估算、候选接受率、首次及后续更新耗时，以及训练前后冻结 head 在同一留出集上的结果。每个完成批次写入 `study-waves.jsonl`，完整运行日志写入同目录的 `node7.log` 和 `node8.log`。
+
 ### 1122 分阶段双机推理
 
 `1122` 的八卡节点分别执行本机的 TP4 Attention 和输出头。每层 FFN 的专家派发和回传使用跨机 EP16 HCCL。Draft 复用目标模型的只读历史页和冻结的 FFN，临时双向块及输出缓冲由 Draft 独立持有。Verify 根据接受长度推进提交位置。候选写过的页可以留在本请求的分配里，后续读取由提交位置和可见长度限制，在复用前写入新值。只有请求所在节点更新或截断 Engram 历史。

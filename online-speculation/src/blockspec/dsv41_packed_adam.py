@@ -284,7 +284,7 @@ class PackedAdam:
         self.version = 0
         self.epoch = 0
         self.failed = False
-        self.host = torch.empty((2, 8), dtype=torch.float32)
+        self.host = torch.empty((self.tp, 2, 8), dtype=torch.float32)
         self.diagnostics = {
             shared: tuple(self._allocate((1, 8), ranks) for _ in range(2))
             for shared, ranks in ((True, self.ranks[:1]), (False, self.ranks[:self.tp]))
@@ -327,12 +327,21 @@ class PackedAdam:
         flat = self._stack([self._flat(shard, size) for shard in source.shards], devices)
         self.epoch += 1
         self.runtime.run(stage, flat, bound.state, sums, flags, gradient.owner, self.epoch, config=self.config)
+        transfers = [
+            (out.data_ptr(), tensor.data_ptr, out.nbytes, rank)
+            for index, rank in enumerate(sums.worker_ids)
+            for out, tensor in zip(self.host[index], (sums.shards[index], flags.shards[index]), strict=True)
+        ]
+        read_many = getattr(self.runtime, "copy_from_many", None)
+        if read_many is None:
+            for dst, src, size, rank in transfers:
+                self.runtime.copy_from(dst, src, size, worker_id=rank)
+        else:
+            read_many(transfers)
         norm_sq, valid = 0., True
-        for index, rank in enumerate(sums.worker_ids):
-            for out, tensor in zip(self.host, (sums.shards[index], flags.shards[index]), strict=True):
-                self.runtime.copy_from(out.data_ptr(), tensor.data_ptr, out.nbytes, worker_id=rank)
-            norm_sq += float(self.host[0].sum(dtype=self.host.dtype))
-            valid &= bool(self.host[1].all())
+        for norm, flags in self.host[:len(sums.worker_ids)]:
+            norm_sq += float(norm.sum(dtype=self.host.dtype))
+            valid &= bool(flags.all())
         return norm_sq, valid
 
     def update(self, differentiate, *, rate, max_norm=1., prepare=None, agree=None):

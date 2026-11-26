@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from hashlib import sha256
 from math import isfinite
 from pathlib import Path
+from statistics import median
 from threading import Lock
 from time import perf_counter
 from types import SimpleNamespace
@@ -55,7 +56,7 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
     if any(len(rows) != 1 for rows in outputs.values()):
         raise RuntimeError("Packed Prefill must produce exactly one token per request")
     prefill = perf_counter()
-    steps = proposed = accepted = 0
+    steps = proposed = accepted = draft_requests = 0
     pending = None
     updates = []
     draft_before = asdict(session.draft.stats) if speculative else {}
@@ -79,6 +80,7 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
                 student_capture=capture,
             )
             proposed += sum(map(len, result.proposals.values()))
+            draft_requests += sum(bool(rows) for rows in result.proposals.values())
             accepted += sum(len(rows) - 1 for rows in result.verified.emitted.values())
             emitted = result.verified.emitted
         else:
@@ -111,6 +113,7 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
         "rounds": steps,
         "proposed_candidates": proposed,
         "accepted_candidates": accepted,
+        "draft_requests": draft_requests,
         "prefill_seconds": prefill - begin,
         "decode_seconds": decode - prefill,
         "draft_seconds": draft_seconds,
@@ -123,7 +126,7 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
     }
 
 
-def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, online=None):
+def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, online=None, on_wave=None):
     from blockspec.dsv41_online_profile import profile_online
 
     begin = perf_counter()
@@ -143,7 +146,7 @@ def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, o
     arms = {name: [] for name in ("ar", "orthrus")}
     matched = 0
     divergence = None
-    for wave in waves:
+    for index, wave in enumerate(waves, 1):
         ar, orthrus = run(wave, False), run(wave, True, online)
         arms["ar"].append(ar)
         arms["orthrus"].append(orthrus)
@@ -156,6 +159,8 @@ def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, o
                 divergence = dict(request_id=request_id, position=offset,
                                   target=target[offset:offset + 1], orthrus=observed[offset:offset + 1])
                 break
+        if on_wave is not None:
+            on_wave(index, len(waves), ar, orthrus, divergence)
         if divergence:
             break
     for name, samples in arms.items():
@@ -163,12 +168,23 @@ def benchmark(session, requests, *, chunk, tokens, width, concurrency, warmup, o
         seconds = sum(wave["total_seconds"] for wave in samples)
         decode_seconds = sum(wave["decode_seconds"] for wave in samples)
         updated = sum(wave["update_seconds"] for wave in samples)
+        updates = [update for wave in samples for update in wave["updates"]]
+        proposed = sum(wave["proposed_candidates"] for wave in samples)
+        accepted = sum(wave["accepted_candidates"] for wave in samples)
+        draft_requests = sum(wave["draft_requests"] for wave in samples)
         decode_tokens = emitted - sum(len(wave["requests"]) for wave in samples)
         arms[name] = dict(
             waves=samples, emitted_tokens=emitted, tokens_per_second=emitted / seconds,
             decode_tokens_per_second=decode_tokens / decode_seconds,
             update_seconds=updated, tokens_per_second_excluding_update=emitted / (seconds - updated),
             decode_tokens_per_second_excluding_update=decode_tokens / (decode_seconds - updated),
+            updates_applied=sum(update["applied"] for update in updates),
+            first_update_seconds=updates[0]["wall_seconds"] if updates else None,
+            later_updates_median_seconds=median(update["wall_seconds"] for update in updates[1:])
+            if len(updates) > 1 else None,
+            proposed_candidates=proposed, accepted_candidates=accepted,
+            candidate_acceptance=accepted / proposed if proposed else None,
+            mean_accepted_per_draft=accepted / draft_requests if draft_requests else None,
         )
     return dict(passed=divergence is None and (online is None or online.updates > 0),
                 online_schedule=asdict(online) if online else None,

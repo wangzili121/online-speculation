@@ -22,15 +22,15 @@ _LOCAL_STAGES = ("loss", "lm-head", "final-norm", "ffn-output", "ffn-input", "ff
                  "attention-output", "wo", "attention", "qkv")
 
 
-def make_staged_reverse_graphs(block, layers, *, physical_pages, local_ranks):
-    from models.deepseek_v4_1_flash_a3.config import EP_SIZE, FLASH, TP_SIZE
+def make_ranked_reverse_graphs(block, layers, *, physical_pages, ranks, loss_kind):
+    from models.deepseek_v4_1_flash_a3.config import FLASH, TP_SIZE
     from models.deepseek_v4_1_flash_a3.lm_head import MAX_LOGIT_ROWS
 
     model, tp, rows = FLASH, TP_SIZE, MAX_LOGIT_ROWS
-    dp = local_ranks // tp
+    dp = ranks // tp
     hidden, copies, vocab = model.hidden_size, model.hc_mult, model.vocab_size
     graphs = {
-        "loss": make_packed_loss_graph(rows, vocab, dp, tp, "tv"),
+        "loss": make_packed_loss_graph(rows, vocab, dp, tp, loss_kind),
         "teacher-copy": make_packed_teacher_copy(rows, vocab, dp, tp),
         "lm-head": make_packed_lm_head_vjp(rows, vocab, hidden, dp, tp),
         "final-norm": make_packed_final_vjp(rows, hidden, copies, dp, tp, model.rms_norm_eps, output_rows=block),
@@ -38,14 +38,22 @@ def make_staged_reverse_graphs(block, layers, *, physical_pages, local_ranks):
         "ffn-input": make_packed_ffn_input_vjp(block, layers, model, dp, tp),
         "ffn-mhc": make_packed_ffn_mhc_vjp(block, layers, model, dp, tp),
         "attention-output": make_packed_attn_post_vjp(block, layers, model, dp, tp),
-        "wo": make_packed_wo_input_vjp(block, model, tp, world=local_ranks, parameters=True),
-        "attention": make_packed_attention_vjp(block, world=local_ranks, tp=tp, physical_pages=physical_pages),
-        "qkv": make_packed_qkv_vjp(block, model, world=local_ranks, tp=tp),
+        "wo": make_packed_wo_input_vjp(block, model, tp, world=ranks, parameters=True),
+        "attention": make_packed_attention_vjp(block, world=ranks, tp=tp, physical_pages=physical_pages),
+        "qkv": make_packed_qkv_vjp(block, model, world=ranks, tp=tp),
     }
     if layers > 1:
         graphs["attention-input"] = make_packed_attn_input_vjp(block, layers, model, dp, tp)
+    return graphs
+
+
+def make_staged_reverse_graphs(block, layers, *, physical_pages, local_ranks):
+    from models.deepseek_v4_1_flash_a3.config import EP_SIZE, FLASH, TP_SIZE
+
+    graphs = make_ranked_reverse_graphs(block, layers, physical_pages=physical_pages, ranks=local_ranks,
+                                       loss_kind="tv")
     graphs.update(zip(_EXPERT_STAGES, make_staged_expert_vjp(
-        model, block, layers, world=EP_SIZE, local_ranks=local_ranks, tp=tp,
+        FLASH, block, layers, world=EP_SIZE, local_ranks=local_ranks, tp=TP_SIZE,
     ), strict=True))
     return graphs
 

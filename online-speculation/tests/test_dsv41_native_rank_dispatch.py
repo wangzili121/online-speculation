@@ -4,7 +4,7 @@ from types import ModuleType, SimpleNamespace
 
 import torch
 
-from blockspec.dsv41_native_rank_dispatch import NativeRankGraph
+from blockspec.dsv41_native_rank_dispatch import NativeRankGraph, RankLocalStack
 
 
 HOST_SOURCE = """
@@ -97,3 +97,60 @@ def test_daemon_scratch_uses_worker_owned_buffers(tmp_path, monkeypatch):
     for storage, view in tensors["__comm_d0_ord"].values():
         assert storage == bytes(4)
         assert view == {"shapes": (1,), "dtype": torch.int32}
+
+
+def test_owner_only_graph_skips_the_peer_and_uses_global_dp_index(tmp_path):
+    host = tmp_path / "orchestration"
+    host.mkdir()
+    (host / "host_orch.py").write_text("""
+def _alloc_intermediates(tensors, world_size=1):
+    pass
+
+def entry(orch, _args, config, *, tensors, callables, sub_ids, _keep, world_size,
+          _domain_provider=None, _window_sources=None):
+    owner = tensors["owner"]
+    replica = int(owner) // 4
+    rows = tensors["student"][replica]
+    _submit_chip(orch, callables["loss"], (rows, owner), config, owner)
+
+entry._pypto_distributed_entry = True
+""")
+    graph = NativeRankGraph(tmp_path, 16)
+    submitted = []
+    graph.entry.__globals__["_submit_chip"] = lambda orch, chip, args, cfg, worker: submitted.append((worker, args))
+    assert graph.allocate_domain(None, "loss", ()) is None
+    for first in (0, 8):
+        replicas = (first // 4, first // 4 + 1)
+        graph.submit(None, None, domain_id=0, ranks=tuple(range(first, first + 8)),
+                     tensors={"owner": 12, "student": RankLocalStack(FakeStack(replicas), replicas, 4)},
+                     callables={"loss": 0}, keepalive=[])
+    assert submitted == [(4, ((3, "ND"), 12))]
+
+
+def test_static_adam_loop_keeps_its_four_canonical_ranks(tmp_path):
+    host = tmp_path / "orchestration"
+    host.mkdir()
+    (host / "host_orch.py").write_text("""
+def _alloc_intermediates(tensors, world_size=1):
+    pass
+
+def entry(orch, _args, config, *, tensors, callables, sub_ids, _keep, world_size,
+          _domain_provider=None, _window_sources=None):
+    for rank in range(0, 4, 1):
+        state = tensors["state"][rank]
+        if rank == 0:
+            _submit_chip(orch, callables["first"], state, config, rank)
+        else:
+            _submit_chip(orch, callables["peer"], state, config, rank)
+
+entry._pypto_distributed_entry = True
+""")
+    graph = NativeRankGraph(tmp_path, 16)
+    submitted = []
+    graph.entry.__globals__["_submit_chip"] = lambda orch, chip, args, cfg, worker: submitted.append((worker, chip))
+    for first in (0, 8):
+        indices = tuple(range(4)) if first == 0 else ()
+        graph.submit(None, None, domain_id=0, ranks=tuple(range(first, first + 8)),
+                     tensors={"state": RankLocalStack(FakeStack(indices), indices, 4)},
+                     callables={"first": 0, "peer": 1}, keepalive=[])
+    assert submitted == [(0, 0), (1, 1), (2, 1), (3, 1)]
