@@ -1,0 +1,164 @@
+{
+  "passed": true,
+  "executed": true,
+  "layer": 2,
+  "resident_commit": true,
+  "cases": [
+    {
+      "anchor": 31,
+      "width": 8,
+      "committed": 1,
+      "continuation": 32,
+      "kept_fp4_rows": 1,
+      "rejected_fp4_rows": 3,
+      "continuation_fp4_rows": 8,
+      "exact": true,
+      "unprotected_differences": [
+        "committed ring predecessor"
+      ]
+    },
+    {
+      "anchor": 32,
+      "width": 16,
+      "committed": 1,
+      "continuation": 33,
+      "kept_fp4_rows": 0,
+      "rejected_fp4_rows": 8,
+      "continuation_fp4_rows": 8,
+      "exact": true,
+      "unprotected_differences": [
+        "committed ring predecessor",
+        "next latent",
+        "next FP4 payload",
+        "next scales"
+      ]
+    },
+    {
+      "anchor": 127,
+      "width": 8,
+      "committed": 2,
+      "continuation": 129,
+      "kept_fp4_rows": 1,
+      "rejected_fp4_rows": 3,
+      "continuation_fp4_rows": 8,
+      "exact": true,
+      "unprotected_differences": [
+        "committed ring predecessor",
+        "next latent",
+        "next FP4 payload",
+        "next scales"
+      ]
+    },
+    {
+      "anchor": 253,
+      "width": 16,
+      "committed": 2,
+      "continuation": 255,
+      "kept_fp4_rows": 1,
+      "rejected_fp4_rows": 7,
+      "continuation_fp4_rows": 8,
+      "exact": true,
+      "unprotected_differences": [
+        "committed ring predecessor",
+        "next latent",
+        "next FP4 payload",
+        "next scales"
+      ]
+    },
+    {
+      "anchor": 255,
+      "width": 16,
+      "committed": 8,
+      "continuation": 263,
+      "kept_fp4_rows": 4,
+      "rejected_fp4_rows": 4,
+      "continuation_fp4_rows": 8,
+      "exact": true,
+      "unprotected_differences": [
+        "committed ring predecessor",
+        "next latent",
+        "next FP4 payload",
+        "next scales"
+      ]
+    }
+  ],
+  "benchmark": {
+    "case": {
+      "anchor": 31,
+      "width": 8,
+      "committed": 1
+    },
+    "warmup": 3,
+    "rounds": 30,
+    "wall_median_us": {
+      "journal_replay": 37245.19,
+      "resident_commit": 34789.29
+    },
+    "samples_us": {
+      "journal_replay": [
+        37233.774,
+        37291.135,
+        37236.685,
+        37268.015,
+        37240.445,
+        38033.377,
+        37241.325,
+        37239.665,
+        37413.725,
+        37286.675,
+        37411.365,
+        37211.545,
+        37263.235,
+        37313.865,
+        37286.305,
+        37219.605,
+        37233.245,
+        37236.194,
+        38027.286,
+        38537.087,
+        37247.405,
+        37434.585,
+        37242.985,
+        37882.986,
+        37215.565,
+        37211.375,
+        37199.325,
+        37184.505,
+        37168.085,
+        37364.825
+      ],
+      "resident_commit": [
+        34800.421,
+        34802.63,
+        34786.721,
+        34799.21,
+        34815.151,
+        34786.481,
+        34761.39,
+        34739.421,
+        34786.65,
+        34791.86,
+        34841.041,
+        34849.53,
+        34795.571,
+        34775.161,
+        34760.97,
+        34892.011,
+        34796.55,
+        34746.54,
+        34886.641,
+        34793.161,
+        34779.87,
+        34784.97,
+        34771.64,
+        34844.121,
+        34764.28,
+        34757.71,
+        34761.661,
+        34805.781,
+        34793.21,
+        34771.07
+      ]
+    }
+  }
+}

@@ -61,3 +61,5 @@ python "$STUDY" --serving-root "$SERVING_ROOT" --lib-root "$LIB_ROOT" \
 ```
 
 有现成的 GSM8K 原始文件时，数据脚本支持 `--source-directory`。当前实验并发为 1。在线阶段与 AR 使用相同输入，初始和冻结 head 使用相同的独立留出题。JSON 报告记录端到端吞吐、扣除同步更新时间的估算、每轮接受长度、阶段计时和更新次数。逐请求 token、对齐和更新明细在同名 JSONL。
+
+单卡和四卡的调度对照及 C2A 提交验证见 [调度实验](ORTHRUS_DSV41_PYPTO_A3_SCHEDULE.md)。
