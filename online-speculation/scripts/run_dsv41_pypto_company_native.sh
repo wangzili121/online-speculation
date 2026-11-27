@@ -169,19 +169,18 @@ flags=(--graphs "$bundle/graphs" --draft-graph "$bundle/draft" --head "$bundle/h
 if [[ "$mode" == native-study ]]; then
   flags+=(--study --heldout-workload /run-data/heldout.jsonl --concurrency 4
           --warmup-waves "${PYPTO_NATIVE_WARMUP_WAVES:-1}")
+elif [[ "$mode" == native-windows ]]; then
+  flags+=(--windows-only)
 fi
 
 # Check the local workload before either host starts a device worker.
 "${base[@]}" -v "$bundle:$bundle:ro" -v "$run:/run-data" "$image" \
   /opt/dsv41-1122/run_dsv41_pypto_native_ar.py "${flags[@]}" --contract-only \
-  --output /run-data/contract.json >"$run/contract.log"
+  --output /run-data/contract.json >"$run/contract.log" 2>&1 ||
+  { tail -n 12 "$run/contract.log" >&2; exit 2; }
 if ! check_peer_bundle "$run/contract.json" >"$run/node8-contract.log" 2>&1; then
     tail -n 16 "$run/node8-contract.log" >&2
     exit 2
-fi
-
-if [[ "$mode" == native-windows ]]; then
-  flags+=(--windows-only)
 fi
 
 check_npus='

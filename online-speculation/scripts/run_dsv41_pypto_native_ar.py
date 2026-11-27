@@ -13,7 +13,9 @@ from blockspec.dsv41_native_forward import (
     ForwardArtifacts, NativeSampleError, assemble_native_graphs, check_native_windows, open_native_forward,
 )
 from blockspec.dsv41_online import read_workload
-from validate_dsv41_pypto_packed_generation import OnlineSchedule, benchmark, failure_evidence, run_wave
+from validate_dsv41_pypto_packed_generation import (
+    OnlineSchedule, benchmark, can_capture_feedback, failure_evidence, run_wave,
+)
 
 
 def write_report(output, report):
@@ -47,18 +49,35 @@ def prepare_callables(artifacts, output):
         write_report(output, report)
 
 
+def smoke_update_dps(requests):
+    return (0, 2) if len(requests) > 2 else (0,)
+
+
+def feedback_contract(requests, *, tokens, draft_block, context, concurrency, study):
+    eligible = {index % concurrency for index, (_, prompt) in enumerate(requests)
+                if can_capture_feedback(len(prompt), 1, tokens, draft_block, context)}
+    required = () if study else smoke_update_dps(requests)
+    if not eligible or set(required) - eligible:
+        scope = "at least one request" if study else f"each required DP {list(required)}"
+        raise ValueError(f"Online feedback needs at least three output tokens and room for a {draft_block}-row "
+                         f"draft block after Prefill in context {context} for {scope}. Eligible DPs: {sorted(eligible)}")
+    return dict(eligible_dps=sorted(eligible), required_smoke_dps=list(required))
+
+
 def run_smoke(target, session, report, requests, *, options, draft, schedule):
     arms = [("ar", None)]
-    if draft:
-        arms.append(("orthrus_online" if schedule else "orthrus_frozen", 0 if schedule else None))
-    if schedule and len(requests) > 2:
-        arms.append(("orthrus_online_peer", 2))
+    if schedule:
+        arms.extend(("orthrus_online" if dp == 0 else "orthrus_online_peer", dp)
+                    for dp in smoke_update_dps(requests))
+    elif draft:
+        arms.append(("orthrus_frozen", None))
     for name, owner_dp in arms:
         print(json.dumps(dict(stage="smoke_arm", mode=name, update_dp=owner_dp)), flush=True)
         target.sample_checks = {}
         if owner_dp is not None:
             schedule.next_dp = owner_dp
             schedule.next_capture = schedule.rounds + 1
+            prior_version = session.draft_optimizer.version
         progress = dict(arm=name)
         try:
             wave = run_wave(session, requests, speculative=name != "ar",
@@ -78,14 +97,23 @@ def run_smoke(target, session, report, requests, *, options, draft, schedule):
                                       phase=failure.get("phase"))), flush=True)
             return
         report[name] = dict(wave, sample_checks=target.sample_checks)
-        updated_dps = {update["dp"] for update in wave["updates"] if update["applied"]}
         if wave["divergence"]:
             print(json.dumps(dict(stage="token_divergence", arm=name, **wave["divergence"])), flush=True)
-        if wave["divergence"] or (
-            owner_dp is not None and owner_dp not in updated_dps
-        ):
             report["passed"] = False
             return
+        if owner_dp is not None:
+            applied = [update for update in wave["updates"] if update["applied"]]
+            versions = [update["version"] for update in applied]
+            current = session.draft_optimizer.version
+            owners = sorted({update["dp"] for update in applied})
+            publication = dict(required_dp=owner_dp, updated_dps=owners, versions=versions,
+                               initial_version=prior_version, final_version=current)
+            report[name]["publication"] = publication
+            expected = list(range(prior_version + 1, prior_version + 1 + len(versions)))
+            if owner_dp not in owners or versions != expected or current != prior_version + len(versions):
+                report["passed"] = False
+                print(json.dumps(dict(stage="publication_failed", arm=name, **publication)), flush=True)
+                return
 
 
 def run_study(session, report, requests, heldout, *, schedule, timing, output):
@@ -185,11 +213,13 @@ def main():
     checks.add_argument("--contract-only", action="store_true")
     checks.add_argument("--assemble-only", action="store_true",
                         help="Assemble and register the native chip callables on the host without occupying NPUs")
-    checks.add_argument("--windows-only", action="store_true",
-                        help="Reserve the model's communication windows without loading device weights")
+    parser.add_argument("--windows-only", action="store_true",
+                        help="Reserve model communication windows or check their contract with --contract-only")
     args = parser.parse_args()
     if not args.assemble_only and args.workload is None:
         parser.error("Native verification and benchmarks require a workload")
+    if args.assemble_only and args.windows_only:
+        parser.error("--assemble-only and --windows-only are separate modes")
     if not (args.assemble_only or args.contract_only) and not (args.endpoint and args.peer_listen_host):
         parser.error("Native execution requires the daemon endpoint and peer listen address")
     if args.tokens < 2:
@@ -226,6 +256,15 @@ def main():
     heldout = workload(args.heldout_workload) if args.heldout_workload else []
     if {tuple(prompt) for _, prompt in requests}.intersection(tuple(prompt) for _, prompt in heldout):
         parser.error("Training and held-out workloads contain an identical prompt")
+    feedback = None
+    if artifacts.online and not args.windows_only:
+        try:
+            feedback = feedback_contract(
+                requests, tokens=args.tokens, draft_block=artifacts.draft.block, context=artifacts.context,
+                concurrency=args.concurrency, study=args.study,
+            )
+        except ValueError as error:
+            parser.error(str(error))
     mode = ("native-contract" if args.contract_only else "native-windows" if args.windows_only else
             "native-study" if args.study else "native-smoke")
     windows = artifacts.native_windows()
@@ -236,6 +275,7 @@ def main():
         last_layers=artifacts.draft.last_layers if artifacts.online else 0,
         workload_sha256=sha256(args.workload.read_bytes()).hexdigest(),
         loss=args.loss if artifacts.online else None,
+        feedback_contract=feedback,
         planned_windows=windows,
         planned_window_bytes_per_rank=sum(windows.values()),
         passed=True,

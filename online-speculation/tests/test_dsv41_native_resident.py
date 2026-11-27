@@ -54,6 +54,70 @@ def test_native_window_failure_preserves_contract_and_stage(tmp_path, monkeypatc
     )
 
 
+def test_native_checks_feedback_space_before_device_launch(tmp_path, monkeypatch, capsys):
+    scripts = Path(__file__).parents[1] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts))
+    main = run_path(str(scripts / "run_dsv41_pypto_native_ar.py"))["main"]
+    output, workload = tmp_path / "contract.json", tmp_path / "input.jsonl"
+    workload.write_text("".join(json.dumps({"id": str(i), "prompt": str(rows)}) + "\n"
+                                for i, rows in enumerate((48, 49, 49, 1))))
+    manifest = SimpleNamespace(
+        capacities=(272, 16), context=64, draft=SimpleNamespace(block=16, last_layers=1), online={"loss": None},
+        tokenizer=SimpleNamespace(encode=lambda text: SimpleNamespace(ids=list(range(int(text))))),
+        identity=b"test", native_windows=lambda: {"prefill": 4096},
+    )
+    monkeypatch.setitem(main.__globals__, "ForwardArtifacts", lambda *_a, **_kw: manifest)
+    argv = [
+        "run", "--graphs", "unused", "--checkpoint", "unused", "--workload", str(workload),
+        "--output", str(output), "--draft-graph", "draft", "--head", "head", "--online-artifacts", "online",
+        "--contract-only",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit, match="2"):
+        main()
+    assert "each required DP [0, 2]. Eligible DPs: [0, 3]" in capsys.readouterr().err
+    assert not output.exists()
+
+    monkeypatch.setattr(sys, "argv", [*argv, "--study"])
+    main()
+    assert json.loads(output.read_text())["feedback_contract"] == dict(eligible_dps=[0, 3], required_smoke_dps=[])
+    monkeypatch.setattr(sys, "argv", [*argv, "--study", "--tokens", "2"])
+    with pytest.raises(SystemExit, match="2"):
+        main()
+    assert "Eligible DPs: []" in capsys.readouterr().err
+
+    monkeypatch.setattr(sys, "argv", [*argv, "--windows-only", "--tokens", "2"])
+    main()
+    assert json.loads(output.read_text())["feedback_contract"] is None
+
+
+@pytest.mark.parametrize("bump_on_peer", (True, False))
+def test_native_smoke_requires_a_new_publication_from_each_owner(monkeypatch, bump_on_peer):
+    scripts = Path(__file__).parents[1] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts))
+    module = run_path(str(scripts / "run_dsv41_pypto_native_ar.py"))
+    run_smoke = module["run_smoke"]
+    optimizer = SimpleNamespace(version=0)
+
+    def wave(_session, _requests, *, online, **_options):
+        updates = []
+        if online is not None:
+            optimizer.version += int(online.next_dp == 0 or bump_on_peer)
+            updates.append(dict(applied=True, dp=online.next_dp, version=optimizer.version))
+        return dict(requests={}, updates=updates, divergence=None)
+
+    monkeypatch.setitem(run_smoke.__globals__, "run_wave", wave)
+    report = {"passed": True}
+    run_smoke(SimpleNamespace(), SimpleNamespace(draft_optimizer=optimizer), report, [object()] * 4,
+              options={}, draft=True, schedule=module["OnlineSchedule"](16, 7, 1e-5, 8))
+    assert report["passed"] is bump_on_peer
+    assert report["orthrus_online"]["publication"]["versions"] == [1]
+    assert report["orthrus_online_peer"]["publication"] == dict(
+        required_dp=2, updated_dps=[2], versions=[2 if bump_on_peer else 1],
+        initial_version=1, final_version=2 if bump_on_peer else 1,
+    )
+
+
 @pytest.mark.parametrize("reusable", (True, False))
 def test_prepare_targets_checks_the_pair_before_reusing_it(tmp_path, monkeypatch, reusable):
     previous = tmp_path / "previous"

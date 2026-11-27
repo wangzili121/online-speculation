@@ -128,6 +128,8 @@ bash "$RUN" native-study 1
 
 `native-smoke` 需要两台各 8 张空闲卡，一次装载后从 node7 和 node8 的请求分别触发一次更新，检查 Prefill、Draft 和 Decode/Verify 中所有采样行的有限性及 greedy ID，再逐 token 对照两组输出。数值检查失败时，`result.json` 记录具体阶段、DP 和出错行。公司双机的原生 Fabric 和整模仍待实测。
 
+占卡前，短验要求 DP0 和 DP2 的请求在 Prefill 后都能容纳完整 Draft 块，且各有至少两个待生成位置。GSM8K 在线阶段至少需要一条满足该条件的训练请求。`contract.json` 记录可采集反馈的 DP。短验报告分别核对两端的实际更新归属和连续发布版本。
+
 `native-windows` 可单独用两台各 8 张空闲卡预留整图的实际通信窗口。它涵盖 Prefill、Decode、Draft、后缀反向和 Adam 中需要通信的图，跳过设备 callable 装配和权重上传。报告写入 `native-windows.*/result.json`。窗口预留失败时，日志注明对应图、参与 rank 数和每卡窗口大小。这个检查和常规短验、GSM8K 都在启动设备进程前核对两端的权重清单、head 清单和编译图标识，在上传权重前预留同一组窗口。
 
 按默认产物的张量形状、通信窗口和 ring heap 核算，峰值 rank 的已知 HBM 分配约为 last‑1 51.8 GiB、last‑4 53.5 GiB。实卡峰值还会包含运行时的其他分配。原生在线路径复用驻留教师缓冲。Adam 把整个后缀的梯度范数和有限性检查结果一次回读，校验全部通过后才更新并发布权重。

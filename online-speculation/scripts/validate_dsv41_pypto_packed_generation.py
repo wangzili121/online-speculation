@@ -67,6 +67,11 @@ def failure_evidence(error, progress):
     return evidence
 
 
+def can_capture_feedback(prompt_rows, generated, tokens, draft_block, context):
+    """The current anchor needs room for a draft block and a candidate."""
+    return tokens - generated > 1 and prompt_rows + generated - 1 + draft_block <= context
+
+
 def run_wave(session, requests, *, chunk, tokens, width, speculative, online=None, expected=None, progress=None):
     """Run one wave, with one request per DP and a fixed output budget."""
     begin = perf_counter()
@@ -106,8 +111,9 @@ def run_wave(session, requests, *, chunk, tokens, width, speculative, online=Non
             if online:
                 eligible = [
                     handle for handle in active
-                    if pending is None and tokens - len(outputs[handle]) > 1
-                    and len(staged[handle]) + len(outputs[handle]) - 1 + session.draft.block <= session.context
+                    if pending is None and can_capture_feedback(
+                        len(staged[handle]), len(outputs[handle]), tokens, session.draft.block, session.context,
+                    )
                 ]
                 capture = online.capture(eligible)
                 if capture:
