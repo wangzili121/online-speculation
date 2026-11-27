@@ -11,7 +11,9 @@ from traceback import print_exc
 
 from blockspec.dsv41_native_forward import (
     ForwardArtifacts, NativeSampleError, assemble_native_graphs, check_native_windows, open_native_forward,
+    remote_forward,
 )
+from blockspec.dsv41_native_graph_pair import validate_native_startup_manifest
 from blockspec.dsv41_online import read_workload
 from validate_dsv41_pypto_packed_generation import (
     OnlineSchedule, benchmark, can_capture_feedback, failure_evidence, run_wave,
@@ -26,20 +28,20 @@ def write_report(output, report):
 
 def prepare_callables(artifacts, output):
     from _task_interface import MAX_REGISTERED_CALLABLE_IDS
-    from simpler.worker import Worker
 
     start = perf_counter()
     report = dict(passed=False, identity=artifacts.identity.hex(), callables={},
                   runtime_capacity=MAX_REGISTERED_CALLABLE_IDS)
     try:
-        with Worker(level=3, platform="a2a3", runtime="tensormap_and_ringbuffer", num_sub_workers=0,
-                    device_ids=tuple(range(8)), comm_profile="a3-fabric-v1") as worker:
-            # Register the real binaries without calling init(), which starts the device processes.
-            for phase, chip in assemble_native_graphs(artifacts):
-                chip.bind(worker.register)
-                report["callables"][phase] = len(chip.chips)
-                print(json.dumps(dict(stage="assembled", phase=phase, elapsed_seconds=perf_counter() - start)),
-                      flush=True)
+        phases = {}
+        for phase, chip in assemble_native_graphs(artifacts):
+            phases[phase] = chip
+            report["callables"][phase] = len(chip.chips)
+            print(json.dumps(dict(stage="assembled", phase=phase, elapsed_seconds=perf_counter() - start)),
+                  flush=True)
+        report["startup_manifest"] = validate_native_startup_manifest(
+            phases, f"{remote_forward.__module__}:{remote_forward.__name__}",
+        )
         report["passed"] = True
     except Exception as error:
         report["error"] = str(error)

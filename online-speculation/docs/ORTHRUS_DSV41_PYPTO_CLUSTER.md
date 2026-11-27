@@ -120,7 +120,7 @@ bash "$RUN" native-smoke 1
 bash "$RUN" native-study 1
 ```
 
-`native-fabric` 使用每台一张空闲卡检查设备窗口导出和跨机访问。默认物理卡分别为 node7 的 1 号和 node8 的 0 号，可通过 `NODE7_FABRIC_NPU` 和 `NODE8_FABRIC_NPU` 调整。`native-prepare` 用 CPU 编译并分发整图和初始化 head，再在 node7 装配并登记 Prefill、Decode、Draft、反向和 Adam 的二进制，无需空闲 NPU。产物目录中的 `callable-assembly.json` 记录每张图注册的 callable 数量和总耗时，详细日志保存在 `callable-assembly.log`。
+`native-fabric` 使用每台一张空闲卡检查设备窗口导出和跨机访问。默认物理卡分别为 node7 的 1 号和 node8 的 0 号，可通过 `NODE7_FABRIC_NPU` 和 `NODE8_FABRIC_NPU` 调整。`native-prepare` 用 CPU 编译并分发整图和初始化 head，再在 node7 装配并登记 Prefill、Decode、Draft、反向和 Adam 的二进制，无需空闲 NPU。产物目录中的 `callable-assembly.json` 记录每张图注册的 callable 数量、实际 L3 启动清单大小和总耗时，详细日志保存在 `callable-assembly.log`。固定版 Simpler 的启动清单上限已从 16 MiB 提到 256 MiB，普通推理帧上限仍为 16 MiB。启动失败时，node7 的报告目录保存 node8 容器退出状态和日志。
 
 整图产物目录带编译源码指纹。更新镜像后重新执行 `native-prepare`，脚本会为新源码选择匹配的产物目录。未准备当前版本时，验收脚本会在启动设备前提示。
 

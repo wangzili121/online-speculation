@@ -35,6 +35,18 @@ RUN set -e; \
     fi; \
     /opt/pypto/venv/bin/python -c 'import _task_interface as t; assert t.MAX_REGISTERED_CALLABLE_IDS == 256'
 
+COPY online-speculation/runtime/pypto_dsv41_a3/runtime-1122-manifest.patch ./
+RUN set -e; \
+    if ! git -C pypto/runtime apply --reverse --check "$PWD/runtime-1122-manifest.patch" >/dev/null 2>&1; then \
+        git -C pypto/runtime apply "$PWD/runtime-1122-manifest.patch"; \
+    fi; \
+    installed="$(/opt/pypto/venv/bin/python -c 'import pathlib, simpler; print(pathlib.Path(simpler.__file__).parent)')"; \
+    source_dir=pypto/runtime/python/simpler; \
+    if [[ ! "$source_dir" -ef "$installed" ]]; then \
+        cp "$source_dir"/{remote_l3_limits,remote_l3_worker,worker}.py "$installed/"; \
+    fi; \
+    /opt/pypto/venv/bin/python -c 'from simpler.remote_l3_worker import MAX_DAEMON_MANIFEST_BYTES; assert MAX_DAEMON_MANIFEST_BYTES == 256 * 1024**2'
+
 COPY online-speculation/src/blockspec /opt/dsv41-1122/orthrus/blockspec
 COPY online-speculation/scripts/run_dsv41_pypto_staged_target.py \
      online-speculation/scripts/prepare_dsv41_gsm8k.py \

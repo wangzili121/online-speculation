@@ -134,9 +134,8 @@ class NativePeerMailbox:
 
 
 @contextmanager
-def open_native_graph_pair(phases, *, endpoint, peer_listen_host, devices, platform, comm_profile,
-                           timeout, local_endpoint, remote_endpoint):
-    """Attach both rank ranges; the local factory returns a module-level callback."""
+def _register_native_graph_pair(phases, *, endpoint, peer_listen_host, devices, platform,
+                                comm_profile, timeout, local_endpoint, remote_endpoint):
     from simpler.worker import RemoteCallable, RemoteWorkerSpec, Worker
 
     local_devices, remote_devices = map(tuple, devices)
@@ -151,29 +150,65 @@ def open_native_graph_pair(phases, *, endpoint, peer_listen_host, devices, platf
     try:
         local_id = parent.add_worker(local)
         attached = True
-        remote_id = parent.add_remote_worker(RemoteWorkerSpec(
+        remote = RemoteWorkerSpec(
             endpoint=endpoint, platform=platform, runtime=runtime, device_ids=remote_devices,
             global_device_ranks=tuple(range(len(local_devices), world)), session_listen_host=peer_listen_host,
             comm_profile=comm_profile,
-        ))
+        )
+        remote_id = parent.add_remote_worker(remote)
         # The forked L3 gets local handles. The daemon receives the same binaries through the L4 registry.
         local_bound = {name: phase.bind(local.register) for name, phase in phases.items()}
         local_call = parent.register(local_endpoint(local_bound))
         remote_call = parent.register(RemoteCallable(remote_endpoint), workers=[remote_id])
         digests = {name: tuple(parent.register(phase.chips[chip]).digest for chip, _ in phase.abi)
                    for name, phase in phases.items()}
-        parent.init()
         members = tuple(
             (node, worker) for node, cards in ((local_id, local_devices), (remote_id, remote_devices))
             for worker in range(len(cards))
         )
-        yield NativeGraphPair(parent, phases, (local_id, remote_id), (local_call, remote_call), members, digests)
+        pair = NativeGraphPair(parent, phases, (local_id, remote_id), (local_call, remote_call), members, digests)
+        yield pair, remote
     finally:
         try:
             parent.close()
         finally:
             if not attached:
                 local.close()
+
+
+@contextmanager
+def open_native_graph_pair(phases, **options):
+    """Attach both rank ranges and start their workers."""
+    with _register_native_graph_pair(phases, **options) as (pair, _):
+        pair.parent.init()
+        yield pair
+
+
+def validate_native_startup_manifest(phases, remote_endpoint):
+    """Size the actual Simpler startup request without starting device workers."""
+    import json
+    from simpler.remote_l3_limits import MAX_DAEMON_MANIFEST_BYTES
+
+    devices = (tuple(range(8)), tuple(range(8)))
+    with _register_native_graph_pair(
+        phases, endpoint="255.255.255.255:65535", peer_listen_host="255.255.255.255",
+        devices=devices, platform="a2a3", comm_profile="a3-fabric-v1", timeout=1200,
+        local_endpoint=lambda _: _prepare_only, remote_endpoint=remote_endpoint,
+    ) as (pair, remote):
+        # Use the longest session ID and a representative float for the deadline.
+        manifest = pair.parent._build_remote_manifest(
+            spec=remote, worker_id=pair.nodes[1], session_id=(1 << 63) - 1,
+            startup_remaining_s=1199.9999999999998,
+        )
+        nbytes = len(json.dumps(manifest, sort_keys=True))
+    if nbytes > MAX_DAEMON_MANIFEST_BYTES:
+        raise ValueError(f"Native startup manifest is {nbytes} bytes; limit is {MAX_DAEMON_MANIFEST_BYTES}")
+    return dict(bytes=nbytes, limit_bytes=MAX_DAEMON_MANIFEST_BYTES,
+                entries=len(manifest["inner_l3_worker"]))
+
+
+def _prepare_only(*_):
+    raise RuntimeError("CPU preparation does not dispatch device work")
 
 
 class NativeGraphPair:

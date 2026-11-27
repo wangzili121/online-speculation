@@ -19,11 +19,13 @@ ssh_peer=(ssh -o BatchMode=yes -o ConnectTimeout=8 -- "${NODE8_SSH:-root@$peer_i
 [[ "$loss" == tv || "$loss" == forward_kl ]] || { echo 'Use tv or forward_kl.' >&2; exit 2; }
 bundle_revision="$(
   cd "$checkout/online-speculation"
-  git hash-object runtime/pypto_dsv41_a3/docker/Dockerfile.1122 \
-    runtime/pypto_dsv41_a3/{lib-1122-verification,pypto-1122-stacked-nz,runtime-release}.patch \
-    scripts/compile_dsv41_pypto_{packed_draft,native_online}.py \
-    src/blockspec/{pypto_dsv41_*,dsv41_packed_*,dsv41_native_online_artifacts,dsv41_staged_reverse,dsv41_staged_ep_vjp}.py |
-    git hash-object --stdin | cut -c1-12
+  {
+    # The Python-only L3 handshake patch does not change a compiled graph.
+    sed '/runtime-1122-manifest\.patch/d' runtime/pypto_dsv41_a3/docker/Dockerfile.1122 | git hash-object --stdin
+    git hash-object runtime/pypto_dsv41_a3/{lib-1122-verification,pypto-1122-stacked-nz,runtime-release}.patch \
+      scripts/compile_dsv41_pypto_{packed_draft,native_online}.py \
+      src/blockspec/{pypto_dsv41_*,dsv41_packed_*,dsv41_native_online_artifacts,dsv41_staged_reverse,dsv41_staged_ep_vjp}.py
+  } | git hash-object --stdin | cut -c1-12
 )"
 bundle="$workspace/last-$last-$loss-$bundle_revision"
 
@@ -34,13 +36,14 @@ printf -v remote '%q ' git -C "$peer_checkout" rev-parse HEAD
 image_check='
     cd /opt/dsv41-1122
     cmp /checkout/runtime/pypto_dsv41_a3/lib-1122-verification.patch lib-1122-verification.patch
+    cmp /checkout/runtime/pypto_dsv41_a3/runtime-1122-manifest.patch runtime-1122-manifest.patch
     for script in run_dsv41_pypto_native_ar.py compile_dsv41_pypto_native_online.py compile_dsv41_pypto_packed_draft.py validate_dsv41_pypto_packed_generation.py; do
         cmp "/checkout/scripts/$script" "$script"
     done
     for source in /checkout/src/blockspec/{dsv41_native_*,dsv41_packed_*,pypto_dsv41_*,dsv41_staged_reverse,dsv41_staged_ep_vjp}.py; do
         cmp "$source" "orthrus/blockspec/${source##*/}"
     done
-    /opt/pypto/venv/bin/python -c "from _task_interface import MAX_REGISTERED_CALLABLE_IDS as limit; assert limit >= 256"
+    /opt/pypto/venv/bin/python -c "from _task_interface import MAX_REGISTERED_CALLABLE_IDS as limit; from simpler.remote_l3_worker import MAX_DAEMON_MANIFEST_BYTES; assert limit >= 256 and MAX_DAEMON_MANIFEST_BYTES == 256 * 1024**2"
 '
 check=(docker run --rm --network none --entrypoint /bin/bash)
 if ! "${check[@]}" -v "$checkout/online-speculation:/checkout:ro" "$image" -ec "$image_check"; then
@@ -203,9 +206,15 @@ container=(docker run --network host --shm-size 4g --init
 for dev in {0..7}; do container+=(--device "/dev/davinci$dev"); done
 tag="orthrus-dsv41-${run##*/}"
 cleanup() {
+  local status=$?
   docker stop -t 3 "$tag-node7" >/dev/null 2>&1 || true
+  "${ssh_peer[@]}" "docker inspect --format '{{json .State}}' $tag-node8" >"$run/node8-state.json" 2>&1 || true
   "${ssh_peer[@]}" "docker logs $tag-node8" >"$run/node8.log" 2>&1 || true
   "${ssh_peer[@]}" "docker rm -f $tag-node8" >/dev/null 2>&1 || true
+  if ((status)); then
+    echo "Peer diagnostics: $run/node8-state.json and $run/node8.log" >&2
+    tail -n 8 "$run/node8.log" >&2
+  fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT

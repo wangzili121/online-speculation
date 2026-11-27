@@ -1,0 +1,52 @@
+diff --git a/python/simpler/remote_l3_limits.py b/python/simpler/remote_l3_limits.py
+--- a/python/simpler/remote_l3_limits.py
++++ b/python/simpler/remote_l3_limits.py
+@@ -11,3 +11,6 @@
+ FRAME_HEADER_BYTES = 40
+ MAX_FRAME_PAYLOAD_BYTES = 16 * 1024 * 1024
+ MAX_FRAME_BYTES = FRAME_HEADER_BYTES + MAX_FRAME_PAYLOAD_BYTES
++
++# Startup embeds the complete callable registry. Dispatch frames retain their own cap.
++MAX_DAEMON_MANIFEST_BYTES = 256 * 1024 * 1024
+diff --git a/python/simpler/remote_l3_worker.py b/python/simpler/remote_l3_worker.py
+--- a/python/simpler/remote_l3_worker.py
++++ b/python/simpler/remote_l3_worker.py
+@@ -27,6 +27,7 @@
+ from typing import Any
+ 
+ from .global_comm_domain import GLOBAL_DOMAIN_PROFILE_SIM
++from .remote_l3_limits import MAX_DAEMON_MANIFEST_BYTES
+ from .remote_l3_protocol import HOST_TCP_TRANSPORT_PROFILE
+ 
+ 
+@@ -42,8 +43,8 @@
+ 
+ def _read_json(sock: socket.socket) -> dict[str, Any]:
+     size = struct.unpack("<I", _read_exact(sock, 4))[0]
+-    if size > 16 * 1024 * 1024:
+-        raise ValueError("remote daemon manifest exceeds maximum")
++    if size > MAX_DAEMON_MANIFEST_BYTES:
++        raise ValueError(f"remote daemon manifest is {size} bytes; limit is {MAX_DAEMON_MANIFEST_BYTES}")
+     return json.loads(_read_exact(sock, size).decode("utf-8"))
+ 
+ 
+diff --git a/python/simpler/worker.py b/python/simpler/worker.py
+--- a/python/simpler/worker.py
++++ b/python/simpler/worker.py
+@@ -294,6 +294,7 @@
+     _check_domain_initializer_context,
+     direct_control,
+ )
++from .remote_l3_limits import MAX_DAEMON_MANIFEST_BYTES
+ from .remote_l3_protocol import HOST_TCP_TRANSPORT_PROFILE
+ from .startup_artifacts import StartupArtifactSpec
+ from .startup_preparation import NodeStartupHook, normalize_startup_artifacts, normalize_startup_hooks
+@@ -6771,6 +6772,8 @@
+     @staticmethod
+     def _send_remote_daemon_json(sock: socket.socket, payload: dict[str, Any]) -> None:
+         data = json.dumps(payload, sort_keys=True).encode("utf-8")
++        if len(data) > MAX_DAEMON_MANIFEST_BYTES:
++            raise ValueError(f"remote daemon manifest is {len(data)} bytes; limit is {MAX_DAEMON_MANIFEST_BYTES}")
+         sock.sendall(struct.pack("<I", len(data)) + data)
+ 
+     @staticmethod
