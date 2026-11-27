@@ -11,7 +11,7 @@ from models.deepseek_v4_1_flash_a3.orthrus_draft.attention_history import make_p
 from models.deepseek_v4_1_flash_a3.orthrus_draft.history import packed_history_lookup
 from models.deepseek_v4_1_flash_a3.orthrus_draft.packed_indexer import make_packed_draft_indexer, packed_index_controls
 from models.deepseek_v4_1_flash_a3.orthrus_draft.sparse_attention import TOPK
-from models.deepseek_v4_1_flash_a3.quant import quantize_mxfp4_cache, quantize_mxfp8_cache
+from models.deepseek_v4_1_flash_a3.quant import dequantize_mxfp8_cache, quantize_mxfp4_cache, quantize_mxfp8_cache
 from pypto.backend import BackendType
 from pypto.runtime import ChipWorker, ExecutionMode, RunConfig
 
@@ -49,9 +49,17 @@ def validate(args):
     payloads = [tuple(quantize_mxfp8_cache(x)) for x in (keys, altered)]
     temporary = random((capacity, head), torch.bfloat16)
     temporary[rows:].zero_()
+    q = random((rows, heads * head), torch.bfloat16)
+    sink = torch.linspace(-4, 4, heads)
+    history = dequantize_mxfp8_cache(*payloads[0]).bfloat16().float().reshape(-1, head)
+    visible = history[physical_prefix(table, 257)[-BLOCK_SIZE:]]
+    keys = torch.cat((visible, temporary[:rows].float()))
+    scores = q.reshape(rows, heads, head).transpose(0, 1).float() @ keys.T * (head ** -0.5)
+    scores = torch.cat((scores, sink[:, None, None].expand(-1, rows, 1)), dim=-1)
+    golden_swa = ((scores.softmax(dim=-1)[..., :-1] @ keys).reshape(-1, head),
+                  scores.logsumexp(dim=-1).reshape(-1, 1))
     common = (packed_history_lookup("fp8"), *packed_swa_controls(table, 257, pages),
-              random((rows, heads * head), torch.bfloat16), temporary,
-              torch.linspace(-4, 4, heads), torch.zeros((BLOCK_SIZE, head), dtype=torch.bfloat16))
+              q, temporary, sink, torch.zeros((BLOCK_SIZE, head), dtype=torch.bfloat16))
     output = (torch.empty((rows * heads, head)), torch.empty((rows * heads, 1)))
     cases = [("swa", 257, 257, dirty, make_packed_swa_chain(pages, heads, rows),
               [[p.view(torch.uint8), scale, *common] for p, scale in payloads], output)]
@@ -101,7 +109,13 @@ def validate(args):
                         selected, lengths, _ = outputs
                         assert torch.all(lengths == TOPK)
                         assert bool(torch.isin(selected, visible_rows).all())
-        reports.append(dict(operator=name, anchor=anchor, committed=visible, changed_tail=dirty, exact=True))
+        report = dict(operator=name, anchor=anchor, committed=visible, changed_tail=dirty, exact=True)
+        if name == "swa":
+            torch.testing.assert_close(outputs[0], golden_swa[0], atol=1e-5, rtol=1.3e-6)
+            torch.testing.assert_close(outputs[1], golden_swa[1], atol=2e-5, rtol=2e-6)
+            report.update(output_max_abs=float((outputs[0] - golden_swa[0]).abs().max()),
+                          lse_max_abs=float((outputs[1] - golden_swa[1]).abs().max()))
+        reports.append(report)
     return dict(passed=True, block=rows, cases=reports)
 
 

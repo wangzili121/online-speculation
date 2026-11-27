@@ -83,7 +83,7 @@ done
 
 做短验收时可将 `--data "$DATA_DIR"` 换为 `--smoke --verify-gate`，输出用新文件名。正式对照看同题的 Draft 耗时、每轮接受长度、端到端吞吐和与 AR 的 greedy 一致性。
 
-K16 的 embedding 和 Engram 两个输入字段为每 rank 140 KiB，之前为 1664 KiB。111 单卡用真实 checkpoint 的数据验证了 312 组 Engram 历史哈希，以及 K8/K16/K32 的主机准备和设备展开，结果逐位一致。K16 单 rank 这两个字段的上传中位数为 0.374 → 0.265 ms。该计时只覆盖输入传输。K8 的 SWA、C1A 和 C2A 在长历史、非连续物理页上通过拒绝后缀隔离检查。升级后让脚本用新目录编译，Draft 清单为 `a3-orthrus-draft-v2`。[输入验证数据](validation/dsv41/pypto-a3-compact-draft-seed.json) · [K8 缓存验证数据](validation/dsv41/pypto-a3-k8-cache-visibility.json)
+K16 的 embedding 和 Engram 两个输入字段为每 rank 140 KiB，之前为 1664 KiB。111 单卡用真实 checkpoint 的数据验证了 312 组 Engram 历史哈希，以及 K8/K16/K32 的主机准备和设备展开，结果逐位一致。K16 单 rank 这两个字段的上传中位数为 0.374 → 0.265 ms。该计时只覆盖输入传输。K8 的 SWA、C1A 和 C2A 在长历史、非连续物理页上通过拒绝后缀隔离检查。K8 SWA 与 Torch FP32 参考的输出最大绝对误差为 2.08e-6 以内。升级后让脚本用新目录编译，Draft 清单为 `a3-orthrus-draft-v2`。[输入验证数据](validation/dsv41/pypto-a3-compact-draft-seed.json) · [K8 缓存验证数据](validation/dsv41/pypto-a3-k8-cache-visibility.json)
 
 单卡和四卡的调度对照及 C2A 提交验证见 [调度实验](ORTHRUS_DSV41_PYPTO_A3_SCHEDULE.md)。
 
