@@ -97,6 +97,7 @@ def measure_frozen_batch(runner, rows, tokens, output, baseline, concurrency, *,
     waiting = iter(rows)
     active = {}
     totals = Counter()
+    phases = Counter()
     token_gaps, ttft = [], []
     wall = 0.
 
@@ -120,6 +121,7 @@ def measure_frozen_batch(runner, rows, tokens, output, baseline, concurrency, *,
         completed = runner.step_frozen([state for state, _, _ in active.values()])
         now = perf_counter()
         wall += now - start
+        phases.update(runner.last_wave_seconds)
         for handle, result in completed.items():
             _, times, admitted = active.pop(handle.dp)
             emitted = result["output_sequences"][0]["token_ids"]
@@ -139,6 +141,7 @@ def measure_frozen_batch(runner, rows, tokens, output, baseline, concurrency, *,
             totals["tokens"] += len(emitted)
     summary = dict(requests=len(rows), concurrency=concurrency, seconds=wall,
                    wall_tok_s=totals["tokens"] / wall, **totals,
+                   phase_seconds=dict(phases),
                    ttft_median_seconds=median(ttft),
                    token_gap_p95_seconds=p95(token_gaps),
                    accepted_per_round=totals["accepted"] / totals["rounds"] if totals["rounds"] else None)
