@@ -85,6 +85,8 @@ done
 
 K16 的 embedding 和 Engram 两个输入字段为每 rank 140 KiB，之前为 1664 KiB。111 单卡用真实 checkpoint 的数据验证了 312 组 Engram 历史哈希，以及 K8/K16/K32 的主机准备和设备展开，结果逐位一致。K16 单 rank 这两个字段的上传中位数为 0.374 → 0.265 ms。该计时只覆盖输入传输。K8 的 SWA、C1A 和 C2A 在长历史、非连续物理页上通过拒绝后缀隔离检查。K8 SWA 与 Torch FP32 参考的输出最大绝对误差为 2.08e-6 以内。升级后让脚本用新目录编译，Draft 清单为 `a3-orthrus-draft-v2`。[输入验证数据](validation/dsv41/pypto-a3-compact-draft-seed.json) · [K8 缓存验证数据](validation/dsv41/pypto-a3-k8-cache-visibility.json)
 
+使用真实 checkpoint 与同一份初始化 head，K8 冻结和 K16 last-1 均通过 Serving 的宿主启动预检，分别注册 3 张图的 3 个 callable 和 33 张图的 56 个 callable。配套 Lib 和 Serving 的 28 个宿主测试通过。公司 EP16 的整模一致性和吞吐仍需实测。
+
 单卡和四卡的调度对照及 C2A 提交验证见 [调度实验](ORTHRUS_DSV41_PYPTO_A3_SCHEDULE.md)。
 
 ## 直接提交版本的验证
