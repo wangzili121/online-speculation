@@ -90,6 +90,8 @@ def main(argv=None):
     workload = parser.add_mutually_exclusive_group(required=True)
     workload.add_argument("--data", type=Path, help="Prepared GSM8K directory containing tuning and quality_test")
     workload.add_argument("--smoke", action="store_true", help="Exercise all arms on two built-in prompts")
+    parser.add_argument("--verify-gate", action="store_true",
+                        help="Audit all acceptance lengths and chained rejections on the same smoke worker")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--train-count", type=int, default=64)
     parser.add_argument("--heldout-count", type=int, default=16)
@@ -110,6 +112,8 @@ def main(argv=None):
     config = launch_config(parse_args(service_args))
     if not config.online_last_layers:
         parser.error("The study requires --online-last-layers and --orthrus-head")
+    if experiment.verify_gate and not experiment.smoke:
+        parser.error("--verify-gate is a smoke check")
     if min(experiment.train_count, experiment.heldout_count) <= 0 or experiment.tokens < 3 or experiment.warmup_count < 0:
         parser.error("Choose positive sample counts and at least three output tokens")
     from tokenizers import Tokenizer
@@ -122,6 +126,14 @@ def main(argv=None):
         return tokenizer.encode(text).ids
 
     tokens = min(8, experiment.tokens) if experiment.smoke else experiment.tokens
+    gate_prompt = None
+    if experiment.verify_gate:
+        from models.deepseek_v4_1_flash_a3.config import BLOCK_SIZE
+
+        if config.context < BLOCK_SIZE + config.verify_width + 3:
+            parser.error("--verify-gate requires context for the physical page boundary and chained rejections")
+        gate_prompt = encode("We can verify the mathematical result by working through each step. " * 128)
+        gate_prompt = gate_prompt[:BLOCK_SIZE - 1]
     if experiment.smoke:
         train = [("smoke-train", encode("Compute seven plus five. Show each step."))]
         heldout = [("smoke-heldout", encode("Compute nine minus three. Show each step."))]
@@ -149,6 +161,18 @@ def main(argv=None):
         learner = runner.learner
         summary = dict(cold_start_seconds=cold, concurrency=1, tokens_per_request=tokens,
                        runtime=session.metadata, ignore_eos=True)
+        if gate_prompt is not None:
+            from models.deepseek_v4_1_flash_a3.validate_orthrus import validate_resident_verifier
+
+            start = perf_counter()
+            runner.target.audit_logits = True
+            try:
+                checks = validate_resident_verifier(runner.target, gate_prompt, width=config.verify_width)
+            finally:
+                runner.target.audit_logits = False
+            session.graphs.reset()
+            summary["verifier_gate"] = dict(cases=checks, seconds=perf_counter() - start)
+            print(json.dumps(dict(stage="verifier_gate", passed=True, cases=len(checks))), flush=True)
         if warmup:
             runner.learner = None
             session.orthrus = None

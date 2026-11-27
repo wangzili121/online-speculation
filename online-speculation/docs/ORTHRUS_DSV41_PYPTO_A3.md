@@ -6,8 +6,8 @@
 
 | 仓库 | 分支 | 配套提交 |
 | --- | --- | --- |
-| [pypto-lib](https://github.com/wangzili121/pypto-lib) | `feature/orthrus-dsv41-a3` | `c2396a52c2e78485399bfb1f4c9d6abef4ee3afb` |
-| [DeepSeek-V4.1-Flash-A3](https://github.com/wangzili121/DeepSeek-V4.1-Flash-A3) | `feature/orthrus-dsv41-a3` | `b7117c261e61a953aacb18f75ffe2b227e2d1267` |
+| [pypto-lib](https://github.com/wangzili121/pypto-lib) | `feature/orthrus-dsv41-a3` | `23d852076bf620d9e18e1e790bb18853e8ddb276` |
+| [DeepSeek-V4.1-Flash-A3](https://github.com/wangzili121/DeepSeek-V4.1-Flash-A3) | `feature/orthrus-dsv41-a3` | `519795dcf7c0e49dc8aa226952676d47543e7606` |
 | [online-speculation](https://github.com/wangzili121/online-speculation) | `orthrus-dsv41-pypto-a3` | 本文所在提交 |
 
 Lib 提供模型、起草、验证和在线更新。Serving 通过 `PYPTO_LIB_ROOT` 加载对应模型包，并处理请求和流式输出。本仓维护效果实验、数据集和报告。更新 Lib 或 Serving 时，在这里更新配套提交和受影响的验证命令。
@@ -45,6 +45,8 @@ python "$STUDY" --serving-root "$SERVING_ROOT" --lib-root "$LIB_ROOT" \
 
 通过条件是 greedy 输出与 AR 逐 token 一致，且完成至少一次在线更新。复用图时，取终端 `A3_SERVING_GRAPH_DIR` 后的目录。切换配套源码后首次执行让脚本重新编译。
 
+在同一个 smoke 进程加 `--verify-gate` 可复用已加载权重，遍历当前 Verify 宽度的全部接受长度，并检查连续拒绝、跨页续算和教师行对齐。加 `--verify-width 16` 可用宽度 16 执行相同门槛。新版本的图清单会显示 `v41-a3-u8-paged128-prefix-commit-v2`。
+
 ## GSM8K 对照
 
 ```bash
@@ -63,3 +65,13 @@ python "$STUDY" --serving-root "$SERVING_ROOT" --lib-root "$LIB_ROOT" \
 有现成的 GSM8K 原始文件时，数据脚本支持 `--source-directory`。当前实验并发为 1。在线阶段与 AR 使用相同输入，初始和冻结 head 使用相同的独立留出题。JSON 报告记录端到端吞吐、扣除同步更新时间的估算、每轮接受长度、阶段计时和更新次数。逐请求 token、对齐和更新明细在同名 JSONL。
 
 单卡和四卡的调度对照及 C2A 提交验证见 [调度实验](ORTHRUS_DSV41_PYPTO_A3_SCHEDULE.md)。
+
+## 直接提交版本的验证
+
+- 单卡 910B3 使用 W8A8 checkpoint 第 2 层验证 C2A。K8/K16 的全部有效前缀、跨逻辑页和非连续物理页共 29 组，检查保留的环形状态、FP4 数据、scale 和后续输出，结果逐位一致。单层首拒绝对照的中位数由 35.31 ms 降到 16.66 ms。[原始数据](validation/dsv41/pypto-a3-prefix-c2a.json)
+- 单卡修改已提交前缀之外的数百个物理缓存行，Draft 的 SWA 输出及 C1A/C2A Indexer 的 Top-K 结果逐位一致。[原始数据](validation/dsv41/pypto-a3-prefix-cache-visibility.json)
+- 单卡验证全词表 greedy 和设备有限值标志，覆盖跨词表分块并列及 NaN、正负无穷。原版与新版本的阻塞提交中位数均约 17.18 ms。[原始数据](validation/dsv41/pypto-a3-prefix-sampler.json)
+- 单卡按 `1+3+3` 行收集真实路径所用的 TV 教师反馈。拒绝行填 NaN，前缀反馈与一次性输入同一批有效行的 GPU loss 和梯度逐位一致。相对 Torch 的梯度最大绝对误差为 `2.85e-8`。[原始数据](validation/dsv41/pypto-a3-prefix-online-teacher.json)
+- Lib 和 Serving 联动的 27 个宿主测试通过。512 上下文下的 Prefill、Decode、Draft 和 last-1、last-2 在线图已通过编译。使用的是 111 的兼容工具链，上公司机时按 Serving 的 `pypto.pin` 构建。
+
+该版本的 Draft 和 Verify 走紧凑回传，验证通过后直接发布有效长度。完整词表只为在线教师反馈和精度诊断按需读取。两个前向之间仍要在主机上按候选 token 查询 Engram，整轮吞吐和 EP16 精度由公司实机 smoke 验证。

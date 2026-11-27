@@ -66,7 +66,7 @@ def resident_commit_entries(capacity, blocks, state_blocks):
     return verify_pending, commit_prefix
 
 
-def validate(checkpoint_path, device, resident_commit=False):
+def validate(checkpoint_path, device, resident_commit=False, prefix_sweep=False):
     from models.deepseek_v4_1_flash_a3.compressor import l2_compressor
     from models.deepseek_v4_1_flash_a3.config import BLOCK_SIZE, FLASH, STATE_CAPACITY
     from models.deepseek_v4_1_flash_a3.utils import paged_slots
@@ -164,6 +164,9 @@ def validate(checkpoint_path, device, resident_commit=False):
                 worker.run(commit, *saved, starts, positions, requests, state_table, state[0], keep, config=config)
 
         cases = ((31, 8, 1), (32, 16, 1), (127, 8, 2), (253, 16, 2), (255, 16, 8))
+        if prefix_sweep:
+            cases += tuple((start, width, keep) for start, width in ((127, 8), (255, 16))
+                           for keep in range(1, width + 1))
         for start, width, keep in cases:
             continuation = start + keep
             kept_rows = physical_rows(start, continuation)
@@ -185,7 +188,8 @@ def validate(checkpoint_path, device, resident_commit=False):
                         launch(start + offset, samples[offset:offset + 1])
                 predecessor = read(0)[1, (continuation - 1) % STATE_CAPACITY]
                 cache = read(2).flatten(0, 1)
-                assert (not torch.equal(cache[suffix_rows], blank[2].flatten(0, 1)[suffix_rows])) == (path != "serial")
+                if suffix_rows:
+                    assert (not torch.equal(cache[suffix_rows], blank[2].flatten(0, 1)[suffix_rows])) == (path != "serial")
                 committed = (cache[kept_rows], read(3).flatten(0, 1)[kept_rows])
                 launch(continuation, replacement)
                 observed.append((predecessor, *committed, read(1), read(2).flatten(0, 1)[next_rows],
@@ -208,7 +212,7 @@ def validate(checkpoint_path, device, resident_commit=False):
                                                         zip(labels, serial, unprotected, strict=True)
                                                         if not torch.equal(ref, actual)]))
 
-        if resident_commit:
+        if resident_commit or prefix_sweep:
             # Compare the ring commit with the current journal/replay approach
             # on the same single-layer workload. Journal the whole ring and
             # only the contiguous compressed rows this case overwrites.
@@ -230,7 +234,7 @@ def validate(checkpoint_path, device, resident_commit=False):
                 if status:
                     raise RuntimeError(f"aclrtMemcpy failed with code {status}")
 
-            modes = ("journal_replay", "resident_commit")
+            modes = ("journal_replay", "resident_commit" if resident_commit else "direct_prefix")
             samples_us = {mode: [] for mode in modes}
             for index in range(33):
                 for mode in modes[index % 2:] + modes[:index % 2]:
@@ -244,9 +248,11 @@ def validate(checkpoint_path, device, resident_commit=False):
                         for target, host, offset in journal:
                             copy_region(target.data_ptr + offset, host.data_ptr(), host.nbytes, 1)
                         launch(start, samples[:keep])
-                    else:
+                    elif mode == "resident_commit":
                         pending_run(width)
                         commit_run(keep)
+                    else:
+                        worker.run(compiled, *device_inputs, width, 2, *state, config=config)
                     elapsed = (perf_counter_ns() - begin) / 1000
                     if index >= 3:
                         samples_us[mode].append(elapsed)
@@ -263,9 +269,11 @@ def main():
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--resident-commit", action="store_true",
                         help="Validate an isolated Verify and resident prefix commit against serial Decode")
+    parser.add_argument("--prefix-sweep", action="store_true",
+                        help="Check all accepted prefix lengths across K8 and K16 page boundaries")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    report = validate(args.checkpoint, args.device, args.resident_commit)
+    report = validate(args.checkpoint, args.device, args.resident_commit, args.prefix_sweep)
     if args.output:
         args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)
