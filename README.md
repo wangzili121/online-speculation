@@ -1,5 +1,7 @@
 # Orthrus-DSV4.1 / Ascend
 
+单机 16 卡 PyPTO A3 的 smoke、GSM8K 实验和配套代码版本见 [A3 验证说明](online-speculation/docs/ORTHRUS_DSV41_PYPTO_A3.md)。
+
 `feature/orthrus-dsv41` 面向 DeepSeek-V4.1-Flash-1017，目标是在 Ascend 上接入 Orthrus 的共享历史和块内双向起草。
 
 - Draft 共享主干权重，读取目标 SWA、C1A 和 C2A 历史。vLLM-Ascend MRV2 推理已在单机八卡 A2 上完成相同候选回放对照。
