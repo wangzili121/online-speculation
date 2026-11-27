@@ -93,7 +93,7 @@ def measure(session, rows, tokens, output, *, name, baseline=None):
     return summary, traces
 
 
-def measure_frozen_batch(runner, rows, tokens, output, baseline, concurrency, *, name):
+def measure_batch(runner, rows, tokens, output, baseline, concurrency, *, name, speculate=True):
     waiting = iter(rows)
     active = {}
     totals = Counter()
@@ -118,7 +118,7 @@ def measure_frozen_batch(runner, rows, tokens, output, baseline, concurrency, *,
                 active[dp] = state, times, admitted
         if not active:
             break
-        completed = runner.step_frozen([state for state, _, _ in active.values()])
+        completed = runner.step_frozen([state for state, _, _ in active.values()], speculate=speculate)
         now = perf_counter()
         wall += now - start
         phases.update(runner.last_wave_seconds)
@@ -158,7 +158,7 @@ def main(argv=None):
     workload.add_argument("--smoke", action="store_true", help="Exercise all arms on two built-in prompts")
     parser.add_argument("--frozen-only", action="store_true", help="Compare a fixed head with AR on held-out requests")
     parser.add_argument("--frozen-concurrency", type=int, choices=(1, 2, 3, 4), default=1,
-                        help="Add an on-worker batched frozen-head comparison on the same held-out requests")
+                        help="Compare batched AR and a batched frozen head at the same concurrency")
     parser.add_argument("--verify-gate", action="store_true",
                         help="Audit all acceptance lengths and chained rejections on the same smoke worker")
     parser.add_argument("--output", type=Path, required=True)
@@ -262,7 +262,11 @@ def main(argv=None):
             session.orthrus = runner
             summary["warmup_draft"], _ = measure(session, warmup, tokens, out, name="warmup_draft", baseline=warmup_ar)
             if experiment.frozen_concurrency > 1:
-                summary["warmup_batched"] = measure_frozen_batch(
+                summary["warmup_ar_batched"] = measure_batch(
+                    runner, warmup, tokens, out, warmup_ar, experiment.frozen_concurrency,
+                    name="warmup_ar_batched", speculate=False,
+                )
+                summary["warmup_batched"] = measure_batch(
                     runner, warmup, tokens, out, warmup_ar, experiment.frozen_concurrency, name="warmup_batched",
                 )
             runner.learner = learner
@@ -273,7 +277,11 @@ def main(argv=None):
             summary["initial"], _ = measure(session, heldout, tokens, out, name="initial", baseline=heldout_ar)
             summary["passed"] = summary["initial"]["proposed"] > 0
             if experiment.frozen_concurrency > 1:
-                batched = measure_frozen_batch(
+                summary["ar_heldout_batched"] = measure_batch(
+                    runner, heldout, tokens, out, heldout_ar, experiment.frozen_concurrency,
+                    name="ar_heldout_batched", speculate=False,
+                )
+                batched = measure_batch(
                     runner, heldout, tokens, out, heldout_ar, experiment.frozen_concurrency, name="initial_batched",
                 )
                 summary["initial_batched"] = batched

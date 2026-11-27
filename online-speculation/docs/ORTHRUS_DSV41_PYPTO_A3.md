@@ -7,7 +7,7 @@
 | 仓库 | 分支 | 配套提交 |
 | --- | --- | --- |
 | [pypto-lib](https://github.com/wangzili121/pypto-lib) | `feature/orthrus-dsv41-a3` | `5633e3fd40a6ae0c4c0fcbd826e47cbc2e8c1099` |
-| [DeepSeek-V4.1-Flash-A3](https://github.com/wangzili121/DeepSeek-V4.1-Flash-A3) | `feature/orthrus-dsv41-a3` | `efe4e4a76b22b3ba32f4733c3aa32cfc27752ac7` |
+| [DeepSeek-V4.1-Flash-A3](https://github.com/wangzili121/DeepSeek-V4.1-Flash-A3) | `feature/orthrus-dsv41-a3` | `9137e4e7232f353f81bfb4b075fe051bfb1e7d07` |
 | [online-speculation](https://github.com/wangzili121/online-speculation) | `orthrus-dsv41-pypto-a3` | 本文所在提交 |
 
 Lib 提供模型、起草、验证和在线更新。Serving 通过 `PYPTO_LIB_ROOT` 加载对应模型包，并处理请求和流式输出。本仓维护效果实验、数据集和报告。更新 Lib 或 Serving 时，在这里更新配套提交和受影响的验证命令。
@@ -85,15 +85,15 @@ done
 
 K16 的 embedding 和 Engram 两个输入字段为每 rank 140 KiB，之前为 1664 KiB。111 单卡用真实 checkpoint 的数据验证了 312 组 Engram 历史哈希，以及 K8/K16/K32 的主机准备和设备展开，结果逐位一致。K16 单 rank 这两个字段的上传中位数为 0.374 → 0.265 ms。该计时只覆盖输入传输。K8 的 SWA、C1A 和 C2A 在长历史、非连续物理页上通过拒绝后缀隔离检查。K8 SWA 与 Torch FP32 参考的输出最大绝对误差为 2.08e-6 以内。升级后让脚本用新目录编译，Draft 清单为 `a3-orthrus-draft-v2`。[输入验证数据](validation/dsv41/pypto-a3-compact-draft-seed.json) · [K8 缓存验证数据](validation/dsv41/pypto-a3-k8-cache-visibility.json)
 
-在上一版 Lib `6d7dd1e` 上，使用真实 checkpoint 与同一份初始化 head，K8 冻结和 K16 last-1 均通过 Serving 的宿主启动预检，分别注册 3 张图的 3 个 callable 和 33 张图的 56 个 callable。
+使用本页固定的 Lib、真实 W8A8 checkpoint 与同一份初始化 head，K8 四 DP 冻结和 K16 last-1 均通过 Serving 的宿主启动预检。两组分别校验了 3 张图的 3 个 callable 和 33 张图的 56 个 callable。
 
 ## 冻结 head 的多 DP 对照
 
-在上一节的任一 `--frozen-only` 命令加 `--frozen-concurrency 4`。一个驻留 worker 内会用同一批题依次测 AR、单请求冻结 head 和四 DP 冻结 head。短验收用 `--smoke --verify-gate --frozen-only --frozen-concurrency 4`。报告比较逐 token greedy，并记录总体 tok/s、首 token 延迟、token 间隔 P95 和各阶段用时。HTTP 服务可用 `--max-num-seqs 4` 打开同样的逐轮批处理。在线更新仍按单活跃请求启动。
+在上一节的任一 `--frozen-only` 命令加 `--frozen-concurrency 4`。一个驻留 worker 内用同一批题测试单请求 AR、单请求冻结 head、四 DP AR 和四 DP 冻结 head。比较 `ar_heldout_batched` 与 `initial_batched` 可测出相同并发下投机解码的收益。短验收用 `--smoke --verify-gate --frozen-only --frozen-concurrency 4`。报告比较逐 token greedy，并记录总体 tok/s、首 token 延迟、token 间隔 P95 和各阶段用时。HTTP 服务可用 `--max-num-seqs 4` 打开冻结 head 的逐轮批处理。在线更新仍按单活跃请求启动。
 
-每个 DP 同时持有一个请求，空位可在一轮结束后立即补入新请求。需要回退到逐 token Decode 的请求，以一行输入和其他请求一起进入 Verify。Orthrus 的常规 Prefill 或单行 Decode 只回读 32 B 的采样记录。111 单卡单行回读与主机判定的中位数为 3.03 → 0.32 ms，输入与采样记录预先放在设备上，Python 侧使用一个 Torch 线程。在线更新的教师反馈按需回读全词表。[回读原始数据](validation/dsv41/pypto-a3-greedy-readback.json)
+每个 DP 同时持有一个请求，空位可在一轮结束后立即补入新请求。同一轮里有 Draft 的时候，回退到逐 token Decode 的请求以一行输入进入 Verify。全部回退时直接用常规 Decode。Orthrus 的常规 Prefill 或单行 Decode 只回读 32 B 的采样记录。111 单卡单行回读与主机判定的中位数为 3.03 → 0.32 ms，输入与采样记录预先放在设备上，Python 侧使用一个 Torch 线程。在线更新的教师反馈按需回读全词表。[回读原始数据](validation/dsv41/pypto-a3-greedy-readback.json)
 
-新版本的 Lib 和 Serving 通过了 34 个宿主测试，覆盖同轮四 DP、拒绝诊断、队列取消、活跃请求取消、slot 复用和由 Verify 转到逐 token Decode 后的教师反馈。四卡合成 logits 回放通过接受 0/3/7 个候选的算子对照。真实模型的 EP16 并行一致性和吞吐仍需实测。
+新版本的 Lib 和 Serving 通过了 35 个宿主测试，覆盖同轮四 DP、拒绝诊断、队列取消、活跃请求取消、slot 复用和由 Verify 转到逐 token Decode 后的教师反馈。HTTP 宿主对照覆盖四个并发请求，其中两个流式、两个非流式。四卡合成 logits 回放通过接受 0/3/7 个候选的算子对照。真实模型的 EP16 并行一致性和吞吐仍需实测。
 
 ## Greedy 采样算子
 
