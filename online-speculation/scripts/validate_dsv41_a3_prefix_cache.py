@@ -37,7 +37,8 @@ def validate(args):
         return torch.randn(shape, generator=generator).to(dtype)
 
     table = torch.tensor([3, 0, 5, 2, 7, 1, 6, 4], dtype=torch.int32)
-    pages, rows, head = len(table), 16, FLASH.head_dim
+    pages, rows, head = len(table), args.block, FLASH.head_dim
+    capacity = max(16, rows)
     heads = FLASH.num_attention_heads // TP_SIZE
     config = RunConfig(backend_type=BackendType.Ascend910, execution_mode=ExecutionMode.ONBOARD,
                        device_id=args.device)
@@ -46,8 +47,10 @@ def validate(args):
     keys = random((pages, BLOCK_SIZE, 1, head))
     altered, dirty = change_tail(keys, table, 257)
     payloads = [tuple(quantize_mxfp8_cache(x)) for x in (keys, altered)]
+    temporary = random((capacity, head), torch.bfloat16)
+    temporary[rows:].zero_()
     common = (packed_history_lookup("fp8"), *packed_swa_controls(table, 257, pages),
-              random((rows, heads * head), torch.bfloat16), random((rows, head), torch.bfloat16),
+              random((rows, heads * head), torch.bfloat16), temporary,
               torch.linspace(-4, 4, heads), torch.zeros((BLOCK_SIZE, head), dtype=torch.bfloat16))
     output = (torch.empty((rows * heads, head)), torch.empty((rows * heads, 1)))
     cases = [("swa", 257, 257, dirty, make_packed_swa_chain(pages, heads, rows),
@@ -63,10 +66,11 @@ def validate(args):
         payloads = [quantize_mxfp4_cache(x, 32, "e8m0", round_to_even=True) for x in (keys, altered)]
         bucket, *control = packed_index_controls(table, anchor, ratio, rows)
         common = (
-            random((rows, FLASH.hidden_size), torch.bfloat16), random((rows, FLASH.q_lora_rank), torch.bfloat16),
+            random((capacity, FLASH.hidden_size), torch.bfloat16),
+            random((capacity, FLASH.q_lora_rank), torch.bfloat16),
             random((FLASH.q_lora_rank, index_heads * index_dim), torch.bfloat16) * 0.01,
             random((FLASH.hidden_size, index_heads), torch.bfloat16) * 0.01,
-            torch.ones((rows, half_rope)), torch.zeros((rows, half_rope)),
+            torch.ones((capacity, half_rope)), torch.zeros((capacity, half_rope)),
         )
         output = (torch.empty((rows, TOPK), dtype=torch.int32),
                   torch.empty((rows,), dtype=torch.int32), torch.empty((rows, TOPK)))
@@ -98,12 +102,13 @@ def validate(args):
                         assert torch.all(lengths == TOPK)
                         assert bool(torch.isin(selected, visible_rows).all())
         reports.append(dict(operator=name, anchor=anchor, committed=visible, changed_tail=dirty, exact=True))
-    return dict(passed=True, cases=reports)
+    return dict(passed=True, block=rows, cases=reports)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=int, default=0)
+    parser.add_argument("--block", type=int, choices=(8, 16, 32), default=16)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     report = validate(args)

@@ -90,6 +90,7 @@ def main(argv=None):
     workload = parser.add_mutually_exclusive_group(required=True)
     workload.add_argument("--data", type=Path, help="Prepared GSM8K directory containing tuning and quality_test")
     workload.add_argument("--smoke", action="store_true", help="Exercise all arms on two built-in prompts")
+    parser.add_argument("--frozen-only", action="store_true", help="Compare a fixed head with AR on held-out requests")
     parser.add_argument("--verify-gate", action="store_true",
                         help="Audit all acceptance lengths and chained rejections on the same smoke worker")
     parser.add_argument("--output", type=Path, required=True)
@@ -110,8 +111,10 @@ def main(argv=None):
     from serving.runtime import open_session
 
     config = launch_config(parse_args(service_args))
-    if not config.online_last_layers:
-        parser.error("The study requires --online-last-layers and --orthrus-head")
+    if config.orthrus_head is None or (not experiment.frozen_only and not config.online_last_layers):
+        parser.error("The study requires --orthrus-head and, for online training, --online-last-layers")
+    if experiment.frozen_only and config.online_last_layers:
+        parser.error("A frozen-head study does not use --online-last-layers")
     if experiment.verify_gate and not experiment.smoke:
         parser.error("--verify-gate is a smoke check")
     if min(experiment.train_count, experiment.heldout_count) <= 0 or experiment.tokens < 3 or experiment.warmup_count < 0:
@@ -134,11 +137,14 @@ def main(argv=None):
             parser.error("--verify-gate requires context for the physical page boundary and chained rejections")
         gate_prompt = encode("We can verify the mathematical result by working through each step. " * 128)
         gate_prompt = gate_prompt[:BLOCK_SIZE - 1]
+    train = []
     if experiment.smoke:
-        train = [("smoke-train", encode("Compute seven plus five. Show each step."))]
+        if not experiment.frozen_only:
+            train = [("smoke-train", encode("Compute seven plus five. Show each step."))]
         heldout = [("smoke-heldout", encode("Compute nine minus three. Show each step."))]
     else:
-        train = load_prompts(experiment.data / "tuning.jsonl", experiment.train_count, encode, config.context, tokens)
+        if not experiment.frozen_only:
+            train = load_prompts(experiment.data / "tuning.jsonl", experiment.train_count, encode, config.context, tokens)
         heldout = load_prompts(experiment.data / "quality_test.jsonl", experiment.heldout_count, encode, config.context, tokens)
     warmup = []
     if not experiment.smoke and experiment.warmup_count:
@@ -147,8 +153,9 @@ def main(argv=None):
         parser.error("Online training and heldout prompts overlap")
     if any(not prompt or len(prompt) + tokens > config.context for _, prompt in (*train, *heldout)):
         parser.error("A workload exceeds the configured history")
-    if not any(len(prompt) + config.draft_block <= config.context for _, prompt in train):
-        parser.error("The training workload leaves no room to capture an online draft")
+    draft_prompts = heldout if experiment.frozen_only else train
+    if not any(len(prompt) + config.draft_block <= config.context for _, prompt in draft_prompts):
+        parser.error("The workload leaves no room to run a complete draft block")
 
     predictions = experiment.output.with_suffix(".jsonl")
     if predictions == experiment.output or predictions.exists() or experiment.output.exists():
@@ -181,6 +188,15 @@ def main(argv=None):
             summary["warmup_draft"], _ = measure(session, warmup, tokens, out, name="warmup_draft", baseline=warmup_ar)
             runner.learner = learner
         session.orthrus = None
+        if experiment.frozen_only:
+            summary["ar_heldout"], heldout_ar = measure(session, heldout, tokens, out, name="ar_heldout")
+            session.orthrus = runner
+            summary["initial"], _ = measure(session, heldout, tokens, out, name="initial", baseline=heldout_ar)
+            summary["passed"] = summary["initial"]["proposed"] > 0
+            experiment.output.write_text(json.dumps(summary, indent=2) + "\n")
+            if not summary["passed"]:
+                raise SystemExit("The held-out run completed without a speculative round")
+            return
         for name, rows in (("ar", train), ("ar_heldout", heldout)):
             summary[name], baseline = measure(session, rows, tokens, out, name=name)
             if name == "ar":

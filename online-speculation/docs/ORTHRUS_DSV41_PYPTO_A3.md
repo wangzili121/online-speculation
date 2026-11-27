@@ -6,8 +6,8 @@
 
 | 仓库 | 分支 | 配套提交 |
 | --- | --- | --- |
-| [pypto-lib](https://github.com/wangzili121/pypto-lib) | `feature/orthrus-dsv41-a3` | `23d852076bf620d9e18e1e790bb18853e8ddb276` |
-| [DeepSeek-V4.1-Flash-A3](https://github.com/wangzili121/DeepSeek-V4.1-Flash-A3) | `feature/orthrus-dsv41-a3` | `519795dcf7c0e49dc8aa226952676d47543e7606` |
+| [pypto-lib](https://github.com/wangzili121/pypto-lib) | `feature/orthrus-dsv41-a3` | `6d7dd1e12ec107bb6b9c54b852d525811126b849` |
+| [DeepSeek-V4.1-Flash-A3](https://github.com/wangzili121/DeepSeek-V4.1-Flash-A3) | `feature/orthrus-dsv41-a3` | `f3fda4587dfeb8a188e2236cf9ec1114b5ff3be7` |
 | [online-speculation](https://github.com/wangzili121/online-speculation) | `orthrus-dsv41-pypto-a3` | 本文所在提交 |
 
 Lib 提供模型、起草、验证和在线更新。Serving 通过 `PYPTO_LIB_ROOT` 加载对应模型包，并处理请求和流式输出。本仓维护效果实验、数据集和报告。更新 Lib 或 Serving 时，在这里更新配套提交和受影响的验证命令。
@@ -63,6 +63,27 @@ python "$STUDY" --serving-root "$SERVING_ROOT" --lib-root "$LIB_ROOT" \
 ```
 
 有现成的 GSM8K 原始文件时，数据脚本支持 `--source-directory`。当前实验并发为 1。在线阶段与 AR 使用相同输入，初始和冻结 head 使用相同的独立留出题。JSON 报告记录端到端吞吐、扣除同步更新时间的估算、每轮接受长度、阶段计时和更新次数。逐请求 token、对齐和更新明细在同名 JSONL。
+
+`phase_seconds` 还分别记录 Draft 准备、上传与绑定、整图和回读，以及 Verify 准备与上传、整图、ID 回读和提交与教师回读。子项包含在对应的大阶段耗时中。
+
+## K8 与 K16 冻结 head 对照
+
+使用同一个初始化 head 和同一份留出集，将下面的命令在一个已分配的 16 卡组上执行一次。两组 Verify 都用 8 行，Draft 分别用 8 和 16 个有效位置。K8 的部分算子仍使用 16 行对齐的工作区。K8 当前只支持冻结推理，做在线实验时沿用上面的 K16 命令。按宽度训练的 head 要与导出的宽度一致。
+
+```bash
+for width in 8 16; do
+  python "$STUDY" --serving-root "$SERVING_ROOT" --lib-root "$LIB_ROOT" \
+    --data "$DATA_DIR" --frozen-only --output "$RESULTS/fixed-k$width.json" \
+    --model-root "$CHECKPOINT" --devices "$DEVICES" --graph-dir "$GRAPH_DIR" \
+    --max-model-len 512 --chunk-size 128 --prefill-moe-slab-rows 64 \
+    --orthrus-head "$HEAD_DIR" --draft-block "$width" --verify-width 8 \
+    --heldout-count 16 --tokens 64 || break
+done
+```
+
+做短验收时可将 `--data "$DATA_DIR"` 换为 `--smoke --verify-gate`，输出用新文件名。正式对照看同题的 Draft 耗时、每轮接受长度、端到端吞吐和与 AR 的 greedy 一致性。
+
+K16 的 embedding 和 Engram 两个输入字段为每 rank 140 KiB，之前为 1664 KiB。111 单卡用真实 checkpoint 的数据验证了 312 组 Engram 历史哈希，以及 K8/K16/K32 的主机准备和设备展开，结果逐位一致。K16 单 rank 这两个字段的上传中位数为 0.374 → 0.265 ms。该计时只覆盖输入传输。K8 的 SWA、C1A 和 C2A 在长历史、非连续物理页上通过拒绝后缀隔离检查。升级后让脚本用新目录编译，Draft 清单为 `a3-orthrus-draft-v2`。[输入验证数据](validation/dsv41/pypto-a3-compact-draft-seed.json) · [K8 缓存验证数据](validation/dsv41/pypto-a3-k8-cache-visibility.json)
 
 单卡和四卡的调度对照及 C2A 提交验证见 [调度实验](ORTHRUS_DSV41_PYPTO_A3_SCHEDULE.md)。
 
