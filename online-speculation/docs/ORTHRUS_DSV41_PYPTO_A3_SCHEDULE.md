@@ -33,7 +33,7 @@ Lib 为 `c2396a5`，使用兼容 PyPTO 镜像 `orthrus-dsv41-pypto:1122-native-m
 
 ## 复现
 
-在已分配设备的容器里，激活 PyPTO 环境，再把配套 Lib 放到 `PYTHONPATH` 的最前面。从实验仓根目录执行。
+在已分配设备的容器里，激活 PyPTO 环境，再把配套 Lib 放到 `PYTHONPATH` 的最前面。从实验仓根目录执行。复现表中原始数据使用 Lib `c2396a5` 和实验仓 `f98f8e5`，当前脚本已适配新版 sampler 的行索引参数。
 
 ```bash
 export PYTHONPATH="$LIB_ROOT${PYTHONPATH:+:$PYTHONPATH}"

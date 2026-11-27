@@ -10,7 +10,10 @@
 
 import argparse
 from collections import Counter
+from functools import partial
+from itertools import pairwise
 import json
+from math import ceil
 import os
 from pathlib import Path
 from statistics import median
@@ -34,8 +37,13 @@ def load_prompts(path, limit, encode, context, tokens):
     return records
 
 
+def p95(values):
+    return sorted(values)[ceil(.95 * len(values)) - 1] if values else None
+
+
 def measure(session, rows, tokens, output, *, name, baseline=None):
     summaries, traces = [], {}
+    token_gaps = []
     for request_id, prompt in rows:
         emitted = []
         token_times = []
@@ -47,6 +55,7 @@ def measure(session, rows, tokens, output, *, name, baseline=None):
         start = perf_counter()
         result = session.generate(request_id, prompt, tokens, True, record, lambda: False)
         seconds = perf_counter() - start
+        token_gaps.extend(b - a for a, b in pairwise(token_times))
         updates = result.get("online_updates", [])
         row = dict(arm=name, request=request_id, token_ids=emitted, seconds=seconds,
                    ttft_seconds=token_times[0] - start,
@@ -76,11 +85,65 @@ def measure(session, rows, tokens, output, *, name, baseline=None):
     summary = dict(requests=len(rows), tokens=count, seconds=wall,
                    wall_tok_s=count / wall, estimated_tok_s_without_updates=count / max(wall - update, 1e-9),
                    ttft_median_seconds=median(row["ttft_seconds"] for row in summaries),
+                   token_gap_p95_seconds=p95(token_gaps),
                    updates=len(full_updates), update_seconds=update, phase_seconds=dict(phases),
                    publication_seconds=sum(u["publication_seconds"] for u in full_updates),
                    proposed=proposed, accepted=accepted, accepted_per_round=accepted / rounds if rounds else None)
     print(json.dumps(dict(arm=name, **summary)), flush=True)
     return summary, traces
+
+
+def measure_frozen_batch(runner, rows, tokens, output, baseline, concurrency, *, name):
+    waiting = iter(rows)
+    active = {}
+    totals = Counter()
+    token_gaps, ttft = [], []
+    wall = 0.
+
+    def record(times, _):
+        times.append(perf_counter())
+
+    while True:
+        start = perf_counter()
+        for dp in range(concurrency):
+            if dp in active:
+                continue
+            item = next(waiting, None)
+            if item is not None:
+                key, prompt = item
+                times = []
+                admitted = perf_counter()
+                state = runner.begin_frozen(key, dp, prompt, tokens, True, partial(record, times), lambda: False)
+                active[dp] = state, times, admitted
+        if not active:
+            break
+        completed = runner.step_frozen([state for state, _, _ in active.values()])
+        now = perf_counter()
+        wall += now - start
+        for handle, result in completed.items():
+            _, times, admitted = active.pop(handle.dp)
+            emitted = result["output_sequences"][0]["token_ids"]
+            key = handle.request_id
+            stats = result["speculation"]
+            matched = emitted == baseline[key]
+            row = dict(arm=name, request=key, token_ids=emitted, seconds=now - admitted,
+                       ttft_seconds=times[0] - admitted, decode_seconds=times[-1] - times[0],
+                       speculation=stats, greedy_match=matched)
+            output.write(json.dumps(row) + "\n")
+            output.flush()
+            if not matched:
+                raise ValueError(f"{name} diverged from AR on request {key}")
+            ttft.append(row["ttft_seconds"])
+            token_gaps.extend(b - a for a, b in pairwise(times))
+            totals.update(stats)
+            totals["tokens"] += len(emitted)
+    summary = dict(requests=len(rows), concurrency=concurrency, seconds=wall,
+                   wall_tok_s=totals["tokens"] / wall, **totals,
+                   ttft_median_seconds=median(ttft),
+                   token_gap_p95_seconds=p95(token_gaps),
+                   accepted_per_round=totals["accepted"] / totals["rounds"] if totals["rounds"] else None)
+    print(json.dumps(dict(arm=name, **summary)), flush=True)
+    return summary
 
 
 def main(argv=None):
@@ -91,6 +154,8 @@ def main(argv=None):
     workload.add_argument("--data", type=Path, help="Prepared GSM8K directory containing tuning and quality_test")
     workload.add_argument("--smoke", action="store_true", help="Exercise all arms on two built-in prompts")
     parser.add_argument("--frozen-only", action="store_true", help="Compare a fixed head with AR on held-out requests")
+    parser.add_argument("--frozen-concurrency", type=int, choices=(1, 2, 3, 4), default=1,
+                        help="Add an on-worker batched frozen-head comparison on the same held-out requests")
     parser.add_argument("--verify-gate", action="store_true",
                         help="Audit all acceptance lengths and chained rejections on the same smoke worker")
     parser.add_argument("--output", type=Path, required=True)
@@ -115,10 +180,14 @@ def main(argv=None):
         parser.error("The study requires --orthrus-head and, for online training, --online-last-layers")
     if experiment.frozen_only and config.online_last_layers:
         parser.error("A frozen-head study does not use --online-last-layers")
+    if experiment.frozen_concurrency > 1 and not experiment.frozen_only:
+        parser.error("Batched comparison requires --frozen-only")
     if experiment.verify_gate and not experiment.smoke:
         parser.error("--verify-gate is a smoke check")
     if min(experiment.train_count, experiment.heldout_count) <= 0 or experiment.tokens < 3 or experiment.warmup_count < 0:
         parser.error("Choose positive sample counts and at least three output tokens")
+    if not experiment.smoke and experiment.heldout_count < experiment.frozen_concurrency:
+        parser.error("Provide at least one held-out prompt per active DP group")
     from tokenizers import Tokenizer
 
     tokenizer = Tokenizer.from_file(str(config.model_root / "tokenizer.json"))
@@ -142,13 +211,16 @@ def main(argv=None):
         if not experiment.frozen_only:
             train = [("smoke-train", encode("Compute seven plus five. Show each step."))]
         heldout = [("smoke-heldout", encode("Compute nine minus three. Show each step."))]
+        for index in range(1, experiment.frozen_concurrency):
+            heldout.append((f"smoke-heldout-{index}", encode(f"Compute {index} plus 19. Explain your calculation.")))
     else:
         if not experiment.frozen_only:
             train = load_prompts(experiment.data / "tuning.jsonl", experiment.train_count, encode, config.context, tokens)
         heldout = load_prompts(experiment.data / "quality_test.jsonl", experiment.heldout_count, encode, config.context, tokens)
     warmup = []
     if not experiment.smoke and experiment.warmup_count:
-        warmup = load_prompts(experiment.data / "warmup.jsonl", experiment.warmup_count, encode, config.context, tokens)
+        warmup_count = max(experiment.warmup_count, experiment.frozen_concurrency)
+        warmup = load_prompts(experiment.data / "warmup.jsonl", warmup_count, encode, config.context, tokens)
     if {tuple(prompt) for _, prompt in train} & {tuple(prompt) for _, prompt in heldout}:
         parser.error("Online training and heldout prompts overlap")
     if any(not prompt or len(prompt) + tokens > config.context for _, prompt in (*train, *heldout)):
@@ -186,6 +258,10 @@ def main(argv=None):
             summary["warmup_ar"], warmup_ar = measure(session, warmup, tokens, out, name="warmup_ar")
             session.orthrus = runner
             summary["warmup_draft"], _ = measure(session, warmup, tokens, out, name="warmup_draft", baseline=warmup_ar)
+            if experiment.frozen_concurrency > 1:
+                summary["warmup_batched"] = measure_frozen_batch(
+                    runner, warmup, tokens, out, warmup_ar, experiment.frozen_concurrency, name="warmup_batched",
+                )
             runner.learner = learner
         session.orthrus = None
         if experiment.frozen_only:
@@ -193,6 +269,12 @@ def main(argv=None):
             session.orthrus = runner
             summary["initial"], _ = measure(session, heldout, tokens, out, name="initial", baseline=heldout_ar)
             summary["passed"] = summary["initial"]["proposed"] > 0
+            if experiment.frozen_concurrency > 1:
+                batched = measure_frozen_batch(
+                    runner, heldout, tokens, out, heldout_ar, experiment.frozen_concurrency, name="initial_batched",
+                )
+                summary["initial_batched"] = batched
+                summary["passed"] &= batched["proposed"] > 0
             experiment.output.write_text(json.dumps(summary, indent=2) + "\n")
             if not summary["passed"]:
                 raise SystemExit("The held-out run completed without a speculative round")

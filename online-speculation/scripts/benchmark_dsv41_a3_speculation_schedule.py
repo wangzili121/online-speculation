@@ -44,10 +44,20 @@ def finite_rows(logits: pl.Tensor[[ROWS, VOCAB], pl.FP32],
 
 
 @pl.jit.inline(auto_scope=False)
+def sample_all_rows(logits: pl.Tensor[[ROWS, VOCAB], pl.FP32],
+                    ids: pl.Out[pl.Tensor[[ROWS, PAD], pl.INT32]]):
+    active = pl.create_tensor([1, ROWS], dtype=pl.INT32)
+    for block in pl.spmd(1, name_hint="sample_all_rows"):
+        zeros = pl.tile.full([1, ROWS], dtype=pl.INT32, value=0)
+        pl.store(zeros, [block, 0], active)
+    return greedy_sample(logits, pl.reshape(active, [ROWS]), ids)
+
+
+@pl.jit.inline(auto_scope=False)
 def sample_draft(logits: pl.Tensor[[ROWS, VOCAB], pl.FP32],
                  ids: pl.Out[pl.Tensor[[ROWS, PAD], pl.INT32]],
                  flags: pl.Out[pl.Tensor[[ROWS, 8], pl.FP32]]):
-    greedy_sample(logits, ids)
+    sample_all_rows(logits, ids)
     finite_rows(logits, flags, CANDIDATES)
 
 
@@ -63,7 +73,7 @@ def verify(logits: pl.InOut[pl.Tensor[[ROWS, VOCAB], pl.FP32]],
     for owner in pl.spmd(1, name_hint="wait_for_draft"):
         token = pl.read(candidates, [owner, 0])
         pl.write(logits, [owner, 0], -100000. - pl.cast(token, pl.FP32))
-    greedy_sample(logits, ids)
+    sample_all_rows(logits, ids)
     finite_rows(logits, flags, WIDTH)
     for owner in pl.spmd(1, name_hint="accept_prefix"):
         answer = pl.tile.full([1, REPLY_WORDS], dtype=pl.INT32, value=-1)
@@ -90,7 +100,7 @@ def verify(logits: pl.InOut[pl.Tensor[[ROWS, VOCAB], pl.FP32]],
 @pl.jit
 def raw_sample(logits: pl.Tensor[[ROWS, VOCAB], pl.FP32],
                ids: pl.Out[pl.Tensor[[ROWS, PAD], pl.INT32]]):
-    greedy_sample(logits, ids)
+    sample_all_rows(logits, ids)
 
 
 @pl.jit
