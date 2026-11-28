@@ -1,0 +1,101 @@
+# Copyright (c) PyPTO Contributors.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+# -----------------------------------------------------------------------------------------------------------
+"""Merge per-query compressed history into the V4.1 SWA and draft-block output."""
+
+
+from .swa import BLOCK, HEAD_DIM
+
+TOPK = 512
+TILE = 128
+HEAD_TILE = 16
+PARTS = TOPK // TILE
+
+
+def make_sparse_attention(*, head_major_swa=False, block_size=BLOCK, gathered_selection=False):
+    import pypto.language as pl
+
+    @pl.jit
+    def attend(
+        query: pl.Tensor, pages: pl.Tensor, rows: pl.Tensor, lengths: pl.Tensor,
+        bias: pl.Tensor, zeros: pl.Tensor, local_output: pl.Tensor, local_lse: pl.Tensor,
+        output: pl.Out[pl.Tensor], lse: pl.Out[pl.Tensor],
+    ):
+        segment_output = pl.create_tensor([block_size * PARTS * HEAD_TILE, HEAD_DIM], dtype=pl.FP32)
+        segment_lse = pl.create_tensor([block_size * PARTS * HEAD_TILE, 1], dtype=pl.FP32)
+        if head_major_swa:
+            # SWA emits one block per head. Merge consumes all heads of one token.
+            local_values = pl.create_tensor([block_size * HEAD_TILE, HEAD_DIM], dtype=pl.FP32)
+            lse_rows = pl.create_tensor([block_size, HEAD_TILE], dtype=pl.FP32)
+            with pl.spmd(block_size, name_hint="orthrus_v41_swa_layout"):
+                token = pl.tile.get_block_idx()
+                lse_row = pl.tile.full([1, HEAD_TILE], pl.FP32, value=0.0)
+                for head in pl.range(HEAD_TILE):
+                    source = head * block_size + token
+                    dest = token * HEAD_TILE + head
+                    local_values[dest:dest + 1, :] = local_output[source:source + 1, :]
+                    pl.tile.write(lse_row, [0, head], pl.read(local_lse, [source, 0]))
+                pl.store(lse_row, [token, 0], lse_rows)
+            local_logsumexp = pl.reshape(lse_rows, [block_size * HEAD_TILE, 1])
+        else:
+            local_values = local_output
+            local_logsumexp = local_lse
+
+        # Each query has its own Top-K. Heads within that query reuse the same KV tile.
+        with pl.spmd(block_size * PARTS, name_hint="orthrus_v41_compressed"):
+            task = pl.tile.get_block_idx()
+            token, offset = task // PARTS, task % PARTS * TILE
+            count = pl.cast(pl.read(lengths, [token]), pl.INDEX)
+            if offset < count:
+                kv = pl.create_l1([TILE, HEAD_DIM], pl.BF16)
+                if gathered_selection:
+                    kv = pl.gather_row(kv, pages, [0, 0], [token * TOPK + offset, 0], [TILE, HEAD_DIM])
+                else:
+                    kv = pl.gather_row(kv, zeros, [0, 0], [0, 0], [TILE, HEAD_DIM])
+                    for row in pl.range(pl.min(TILE, count - offset)):
+                        physical = pl.cast(pl.read(rows, [token, offset + row]), pl.INDEX)
+                        kv = pl.gather_row(kv, pages, [row, 0], [physical, 0], [1, HEAD_DIM])
+                q = pl.slice(query, [HEAD_TILE, HEAD_DIM], [token * HEAD_TILE, 0])
+                scores = pl.mul(pl.matmul(q, kv, b_trans=True, out_dtype=pl.FP32), HEAD_DIM ** -0.5)
+                scores = pl.col_expand_add(scores, pl.slice(bias, [1, TILE], [token, offset]))
+                ref = pl.row_max(scores)
+                numerator = pl.exp(pl.row_expand_sub(scores, ref))
+                denom = pl.row_sum(numerator)
+                probability = pl.row_expand_div(numerator, denom)
+                high = pl.cast(probability, pl.BF16, mode="rint")
+                low = pl.cast(pl.sub(probability, pl.cast(high, pl.FP32)), pl.BF16, mode="rint")
+                dst = task * HEAD_TILE
+                value = pl.matmul(high, kv, out_dtype=pl.FP32)
+                segment_output[dst:dst + HEAD_TILE, 0:HEAD_DIM] = pl.matmul_acc(value, low, kv)
+                segment_lse[dst:dst + HEAD_TILE, 0:1] = pl.add(ref, pl.log(denom))
+
+        with pl.spmd(block_size, name_hint="orthrus_v41_compressed_merge"):
+            token = pl.tile.get_block_idx()
+            start = token * HEAD_TILE
+            count = pl.cast(pl.read(lengths, [token]), pl.INDEX)
+            merged = pl.slice(local_values, [HEAD_TILE, HEAD_DIM], [start, 0])
+            merged_lse = pl.slice(local_logsumexp, [HEAD_TILE, 1], [start, 0])
+            for part in pl.range(PARTS):
+                if part * TILE < count:
+                    source = (token * PARTS + part) * HEAD_TILE
+                    value = pl.slice(segment_output, [HEAD_TILE, HEAD_DIM], [source, 0])
+                    value_lse = pl.slice(segment_lse, [HEAD_TILE, 1], [source, 0])
+                    # Local LSE already accounts for the sink, exactly once.
+                    common = pl.maximum(merged_lse, value_lse)
+                    left = pl.exp(pl.sub(merged_lse, common))
+                    right = pl.exp(pl.sub(value_lse, common))
+                    total = pl.add(left, right)
+                    merged = pl.row_expand_div(
+                        pl.add(pl.row_expand_mul(merged, left), pl.row_expand_mul(value, right)), total,
+                    )
+                    merged_lse = pl.add(common, pl.log(total))
+            output[start:start + HEAD_TILE, 0:HEAD_DIM] = merged
+            lse[start:start + HEAD_TILE, 0:1] = merged_lse
+        return output, lse
+
+    return attend

@@ -12,6 +12,10 @@
 
 Lib 提供模型、起草、验证和在线更新。Serving 通过 `PYPTO_LIB_ROOT` 加载对应模型包，并处理请求和流式输出。本仓维护效果实验、数据集和报告。更新 Lib 或 Serving 时，在这里更新配套提交和受影响的验证命令。
 
+## 公司机单仓构建
+
+从实验仓根目录运行 `bash online-speculation/runtime/pypto_dsv41_a3/company/build.sh`。Lib 和 Serving 的运行源码随实验仓交付，构建时读取仓内快照。更新 Lib 或 Serving 后运行同目录的 `sync-sources.sh` 并提交快照和来源提交。参见 [单仓构建与同步](../runtime/pypto_dsv41_a3/company/README.md)。
+
 ## 准备
 
 从本仓根目录执行。将 `LIB_ROOT` 和 `SERVING_ROOT` 指向上表的 checkout，`DEVICES` 填分配到的 16 张可见卡，按 rank 顺序排列。Python 环境使用 Serving 的 `pypto.pin` 对应的 PyPTO、Simpler、PTOAS 及 A3 CANN。
